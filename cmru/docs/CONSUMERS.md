@@ -685,7 +685,7 @@ run-gate --list
 run-gate gate
 ```
 
-The CMRU aggregate requires the stable Run-Gate wheel `23.11.0` or later.
+The CMRU aggregate requires the Run-Gate wheel SemVer `24.0.0` or later.
 `run-gate --version` reports its SemVer; the CMRU gate verifies that it matches
 the installed wheel metadata and refuses development, local, or older builds
 before any CMRU sub-lane starts. It records the wheel version in the snapshot

@@ -88,6 +88,7 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
     read_generated_facts,
     resolve_env_root,
     validate_required_certs,
+    verify_workspace_runtime_network,
 )
 
 # Global logger instance (configured after parsing config).
@@ -1117,12 +1118,24 @@ def execute_docker_compose_with_logs(
     Returns ``{'status': 'success'|'error'|'interrupted', 'message', 'stdout'}``.
     """
     result = {"status": "success", "message": "", "stdout": ""}
-    print("[INFO] Executing docker compose up...", flush=True)
     cmd = [
         "docker", "compose", "-p", project,
         "--project-directory", str(Path(repo_root).resolve()),
         *file_args, "up", "-d",
     ]
+
+    # Native and shipped startup share this process boundary. Recheck managed
+    # network ownership immediately before Compose resolves the configured
+    # network name; a separate Docker actor can still race after this check.
+    try:
+        verify_workspace_runtime_network(Path(repo_root))
+    except WorkspaceEnvError as exc:
+        result["status"] = "error"
+        result["message"] = str(exc)
+        print(f"[ERROR] {result['message']}", flush=True)
+        return result
+
+    print("[INFO] Executing docker compose up...", flush=True)
 
     proc = None
     try:
@@ -1608,7 +1621,10 @@ def main_execution(
             print("[SUCCESS] Rendered CIU TOML files (ciu.global.toml, ciu.toml)", flush=True)
             return result
 
-        ensure_workspace_network(auto_connect=auto_connect_setting)
+        ensure_workspace_network(
+            auto_connect=auto_connect_setting,
+            verify_managed_instance=True,
+        )
 
         # ---- Step 4: merge (S3.3) ----
         print("[STEP 4/17] Merging configurations...", flush=True)
@@ -2141,7 +2157,10 @@ def run_shipped(
         auto_connect_setting = global_config.get("ciu", {}).get("auto_connect_network", True)
         if auto_connect_network is not None:
             auto_connect_setting = auto_connect_network
-        ensure_workspace_network(auto_connect=auto_connect_setting)
+        ensure_workspace_network(
+            auto_connect=auto_connect_setting,
+            verify_managed_instance=True,
+        )
 
         # ---- DooD preflight (S1.5) before the first daemon bind use ----
         _dood_preflight(to_physical_path(working_dir, repo_root=repo_root))

@@ -111,7 +111,7 @@ echo "run-gate-project assay-r1 canary"
 # asserts exactly 10.0 and must fail.
 #
 # S9b (round-1 review): the median-computing block below is BYTE-IDENTICAL
-# in duration_stats and series_stats's own non-byte-valued arm (run-gate.py),
+# in duration_stats and series_stats's own non-byte-valued arm (run_gate.py),
 # so `find` is widened to include each function's own distinct empty-input
 # `return` line as an anchor -- `text.replace(find, replace, 1)` would
 # otherwise silently target whichever copy appears FIRST in the file
@@ -134,7 +134,7 @@ echo "run-gate-project assay-r1 canary"
 # the second canary anchors the else branch so its existing non-byte outlier
 # assertion remains the oracle rather than mutating an intentionally
 # nearest-rank byte path.
-canary median-not-mean run-gate.py \
+canary median-not-mean run_gate.py \
   '                "max_seconds": None}
     mid = len(values) // 2
     median = values[mid] if len(values) % 2 else \
@@ -144,7 +144,7 @@ canary median-not-mean run-gate.py \
     median = round(sum(values) / len(values), 3)' \
   tests/test_run_gate.py::TestHistoryRollingSeries::test_one_slow_outlier_does_not_become_the_typical_cost
 
-canary median-not-mean-series-stats run-gate.py \
+canary median-not-mean-series-stats run_gate.py \
   '        return {"count": 0, "min": None, "median": None, "max": None}
     if byte_valued:
         median = _nearest_rank_value(values, 50)

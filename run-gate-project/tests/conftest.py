@@ -1,6 +1,6 @@
 """Shared fixtures for the run-gate test suite.
 
-RW-46a: `run_gate.SHARED_LOCK_DIR` (`run-gate.py:168`) is `/tmp` — HOST-WIDE
+RW-46a: `run_gate.SHARED_LOCK_DIR` (`run_gate.py:168`) is `/tmp` — HOST-WIDE
 by design in production, because R-41's exec mutex and R-29's shared-infra
 mutex both exist specifically to coordinate SEPARATE run-gate invocations on
 one host. That design is correct for production and stays unchanged here.

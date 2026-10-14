@@ -2,7 +2,7 @@
 """Mechanical diff-coverage gate for run-gate-project.
 
 Fails the release gate when a change adds or edits *executable* lines of
-run-gate.py that no test exercises. The project's TOTAL line+branch coverage
+run_gate.py that no test exercises. The project's TOTAL line+branch coverage
 is ~47% today (909 stmts / 444 branches accumulated before any floor existed);
 a total --cov-fail-under=100 therefore cannot pass yet. This gate enforces the
 floor the estate actually applies to legacy code (topos/nyxloom pattern):
@@ -42,7 +42,7 @@ BASE hiding real source changes; the judge cannot tell that apart from
 "this change genuinely touches no source line" by the zero alone, so the
 zero is made visible and NAMED (which base, and how HEAD relates to it)
 instead of being hidden behind a plain `100.0% OK` or blocking every
-gate run that happens not to touch the judged file (e.g. `./run-gate.py
+gate run that happens not to touch the judged file (e.g. `run-gate
 selftest` on `main` itself, where merge-base(main, HEAD) == HEAD). Hard
 refusal (exit 2, naming the three known routes to a false 0/0) is now
 OPT-IN via `--refuse-empty-diff`; `--allow-empty-diff` no longer exists.
@@ -359,7 +359,7 @@ def _resolve_base(repo: str, base: str) -> str:
     return _git(repo, ["merge-base", base, "HEAD"]).strip()
 
 
-def _git_added_lines(repo: str, base_rev: str, source: str) -> dict[str, set[int]]:
+def _git_added_lines(repo: str, base_rev: str) -> dict[str, set[int]]:
     # RG-40: diff against the WORKING TREE, not HEAD. The coverage.json this
     # gate cross-references is generated from whatever bytes are actually on
     # disk (`--allow-dirty` runs the suite there directly) -- diffing against
@@ -371,9 +371,15 @@ def _git_added_lines(repo: str, base_rev: str, source: str) -> dict[str, set[int
     # tree directly (staged + unstaged), which is byte-identical to `base_rev
     # HEAD` on a CLEAN tree (working tree == HEAD there) and correct on a
     # dirty one -- unconditional, no dirty/clean branch to keep in sync.
+    # Discover renames before applying the source filter in `evaluate()`.
+    # A path-limited diff cannot match a deleted source with its replacement;
+    # in particular, replacing the old `run_gate.py` symlink with the wheel
+    # module made the entire module look newly added. `-B` breaks a rewritten
+    # destination into delete/add pairs so `-M` can pair it with the old file.
     out = _git(
         repo,
-        ["diff", "--relative", "--unified=0", base_rev, "--", source],
+        ["diff", "--relative", "--find-renames=50%",
+         "--break-rewrites=50%", "--unified=0", base_rev],
     )
     return parse_added_lines(out)
 
@@ -412,7 +418,7 @@ def _is_ancestor(repo: str, ancestor: str, descendant: str) -> bool:
 def _base_relation(repo: str, base_rev: str, head_rev: str) -> str:
     """Describe HEAD's relationship to the resolved base, for the 0/0
     notice (RW-5). "HEAD is on the base" when HEAD is an ancestor of (or
-    equal to) the resolved base — the exact shape `./run-gate.py selftest`
+equal to) the resolved base — the exact shape `run-gate selftest`
     hits on `main` itself, where merge-base(main, HEAD) == HEAD. Otherwise
     HEAD is some N commits ahead of the base and none of those N commits
     touched an executable source line under `--source`.
@@ -483,8 +489,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                     help="path to `coverage json` output")
     p.add_argument("--base", default="main",
                     help="ref the change is measured against (default: main)")
-    p.add_argument("--source", default="run-gate-project/run-gate.py",
-                   help="source path prefix (default: run-gate-project/run-gate.py)")
+    p.add_argument("--source", default="run-gate-project/run_gate.py",
+                   help="source path prefix (default: run-gate-project/run_gate.py)")
     p.add_argument("--fail-under", type=float, default=100.0,
                    help="minimum %% of changed executable lines (default: 100)")
     p.add_argument("--repo", default=".",
@@ -502,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         base_rev = _resolve_base(args.repo, args.base)
         head_rev = _git(args.repo, ["rev-parse", "HEAD"]).strip()
-        added = _git_added_lines(args.repo, base_rev, args.source)
+        added = _git_added_lines(args.repo, base_rev)
         coverage_files = _load_coverage(args.coverage_json)
     except CoverageGateError as exc:
         print(f"diff-coverage ERROR: {exc}", file=sys.stderr)

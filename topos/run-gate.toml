@@ -1,5 +1,5 @@
 # =============================================================================
-# topos project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# topos project gate lanes — parsed ONLY by Run-Gate CLI (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml. The
 # topos-suite argv is the pre-adoption nyxloom gate mechanics VERBATIM (only
 # re-homed) — including its hardcoded-slice removal: the central environment

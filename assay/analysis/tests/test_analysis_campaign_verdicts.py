@@ -143,6 +143,7 @@ def test_o17_f4_a_sharded_pass_verdict_is_never_a_complete_campaign(tmp_path, mo
     assert result["status"] == "incomplete"
     assert "inventory_not_exhausted" in result["complete_blockers"]
     assert result["plan"]["shard"] == "0/4"
+    assert result["qualifying"] is False
 
 
 # ---- O18 ------------------------------------------------------------------

@@ -2,10 +2,9 @@
 
 **Status:** BUILT (P01, 2026-08-22). First consumer: **nyxloom** (controller
 amendment A1 — ciu was under parallel development and is DEFERRED; its assay
-lane ships construction-tested with live proof at its adoption). This README
-remains the design authority; **`SPEC.md` is the normative implementation
-contract** the code and tests adhere to (`__revision__` in `run-gate.py`
-tracks it). Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.md`;
+lane ships construction-tested with live proof at its adoption). This README describes the current user-facing surface; **`SPEC.md` is the
+normative implementation contract**. The installed wheel's SemVer is the
+public tool identity. Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.md`;
 chronological build log incl. every failure:
 `HANDOFF-P01-build-and-adopt-ciu-LOG.md`.
 
@@ -23,15 +22,14 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    merging). Lookup stops at the project's Git toplevel, so a nested standalone
    repository cannot inherit an enclosing repository's config.
 2. **Config discovery:** without `--worktree`, the project config is found
-   next to the INVOKED script path WITHOUT resolving symlinks (a symlink's
-   parent is the project), CWD as fallback. With `--worktree`, run-gate first
+   in the current working directory. The installed console command carries
+   no project identity in its executable path. With `--worktree`, run-gate first
    preserves that project's path relative to its Git toplevel, then reads
    `run-gate.toml` and the nearest `run-gate.root.toml` within that Git tree.
    A missing target `run-gate.toml` is an error; the invoking checkout's
    lanes are never substituted (see the
    [design rationale](docs/DESIGN-GUIDE.md#a-worktree-is-the-complete-judgment-boundary)).
-   CWD-first (the handoff's wording) breaks `nyxloom/run-gate.py --list` from
-   the repo root.
+   Invoke Run-Gate from the project directory that owns `run-gate.toml`.
 3. **Slice policy (controller A3):** the repository root's central
    `[environments.tester-unified]` binds `cgroup_slice_env` to
    `$CGROUP_PARENT_DEV_GATES`, so every inheriting project uses the same
@@ -111,6 +109,12 @@ five process statuses: **PASS 0**, **FAIL 1**, **ERROR 2**, **NOT_RUN 3**, or
 `--json` to read `verdict`, raw `exit_code`, `reason`, `log_path`, and assay
 outcome and admission as structured result fields. The full mapping is in
 [the CLI contract](SPEC.md#2-cli-contract).
+For an Assay lane, run-gate verifies that the process exit code equals the
+verdict artifact's `exit_code`, and that the artifact's outcome uses Assay's
+closed exit table (PASS 0, FAIL 1, ERROR 2, NO_MEASUREMENT 3,
+BUDGET_EXCEEDED 4, INCONCLUSIVE 5). A missing or inconsistent value is
+infrastructure ERROR with the raw process code and Assay outcome retained; a
+PASS verdict alone cannot override a failed runner.
 NOT_RUN reasons are closed: realness-mismatch, service-down,
 environment-down, environment-mismatch, env-missing, external-missing,
 external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
@@ -123,8 +127,8 @@ runs on the invoking host. Existing configs can be migrated one at a
 time without losing comments:
 
 ```console
-./run-gate.py migrate-modes run-gate.toml
-./run-gate.py migrate-modes run-gate.root.toml  # when this repo has one
+run-gate migrate-modes run-gate.toml
+run-gate migrate-modes run-gate.root.toml  # when this repo has one
 ```
 
 The tool refuses a missing mode. Review the diff, then migrate wrapper
@@ -248,12 +252,13 @@ manifest. See [failure evidence and footprint updates](CONSUMERS.md#failure-evid
 
 ### Version probe
 
-The script accepts `./run-gate.py --version` and prints exactly one
-`run-gate rev N` identity line on stdout before exiting 0, with no stderr. Help,
-usage, missing-argument, unknown-argument, and configuration diagnostics begin
-with `RUN-GATE rev N — per-project gate entrypoint` as line 1. Lane runs now end with a one-line verdict summary; --json sends ordinary run output
-to stderr and prints one result object on stdout. N is the script's `__revision__` copy-drift marker;
-the wheel's SemVer remains a separate distribution identity.
+`run-gate --version` prints exactly one `run-gate X.Y.Z` line from installed
+wheel metadata, exits 0 without loading project configuration, and writes
+nothing to stderr. Help, usage, argument errors, and configuration diagnostics
+identify the same installed version. Missing or malformed package metadata is
+a refusal; Run-Gate does not invent a version from source files. Lane runs end
+with a one-line verdict summary; `--json` sends ordinary run output to stderr
+and prints one result object on stdout.
 
 This project's own `run-gate.toml` declares five lanes (dogfooding — see
 "Built deltas" above):
@@ -261,18 +266,21 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
 1. **`selftest`** — the release gate (`cmru.toml [steps.run-tests]`
    points at it; a release cannot be tagged unless it passes). It owns a
    capped `tester-unified` container and runs from the selected worktree's
-   project directory. Zero install: `python3 -m pytest tests -q --cov=. --cov-branch`
-   followed by
-   the vendored `tools/coverage_gate.py`, scoped to `--source run-gate.py`
+   project directory. In `tester-unified`, it runs
+   `python3 -m pytest tests -q --cov=. --cov-branch` directly, followed by
+   the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since `main`. The release contract deliberately does not claim a
+   since `main`. The comparison detects renames before filtering to
+   `run_gate.py`, so replacing the retired compatibility symlink does not
+   make the whole module appear new; see the [coverage design](docs/DESIGN-GUIDE.md#changed-line-coverage-follows-content-across-renames).
+   The release contract deliberately does not claim a
    whole-project 100% floor; the separate `assay-r1` lane is the broader
    line-and-branch judge.
 2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND
    judge in its own `tester-unified` container: the selected worktree's
    assay source running the same test command, `assay.toml [lanes.r1]`
    judging `source_roots = ["."]`
-   — the whole project, not just `run-gate.py`. `tools/coverage_gate.py`
+   — the whole project, not just `run_gate.py`. `tools/coverage_gate.py`
    itself is IN SCOPE here (a controller ruling, RW-8: "100% on every
    changed line" means every changed line in this project, and the
    coverage command already measures it with `--cov=.`); `tests/` stays
@@ -337,21 +345,22 @@ ciu checkpoint P07):
 are code that nothing tests and only one consumer exercises. An argv proves
 construction, not acceptance.
 
-**The fix:** ONE small, tested program — `run-gate.py` — owned per project,
-visible at the project root, carrying ALL of the mechanics. Every consumer
-(nyxloomd, cmru, Buildkite, a CLI agent, a human) runs the same file:
+**The tool:** one tested Run-Gate wheel provides the installed `run-gate`
+command and owns all lane mechanics. Every consumer (nyxloomd, CMRU,
+Buildkite, a CLI agent, a human) invokes the command from the project's
+directory:
 
 ```
-./run-gate.py <lane>          # run one gate lane
-./run-gate.py <lane> --base REF   # comparison base for a lane that delegates it
-./run-gate.py doctor          # preflight: docker, slices, git, images, assay toolchains
-./run-gate.py doctor --worktree B   # … for tree B's state, not this checkout's
-./run-gate.py --check-env --worktree B   # … same redirect for the drift/toolchain report
-./run-gate.py history [LANE]  # what each lane last did + what it typically costs
-./run-gate.py history --json  #   … the same, machine-readable (this verb only)
-./run-gate.py history --worktree B   # … for tree B's store, not this checkout's
-./run-gate.py --list          # machine-readable lane inventory (for CI fan-out)
-./run-gate.py --help          # usage(), incl. the tool revision
+run-gate <lane>          # run one gate lane
+run-gate <lane> --base REF   # comparison base for a lane that delegates it
+run-gate doctor          # preflight: docker, slices, git, images, assay toolchains
+run-gate doctor --worktree B   # … for tree B's state, not this checkout's
+run-gate --check-env --worktree B   # … same redirect for the drift/toolchain report
+run-gate history [LANE]  # what each lane last did + what it typically costs
+run-gate history --json  #   … the same, machine-readable (this verb only)
+run-gate history --worktree B   # … for tree B's store, not this checkout's
+run-gate --list          # machine-readable lane inventory (for CI fan-out)
+run-gate --help          # usage(), incl. the installed SemVer
 ```
 
 A defect fixed in the tool is fixed for every consumer at once, and the
@@ -366,11 +375,11 @@ The estate explicitly REJECTED a neutral `gates.toml` meta-schema that all
 consumers parse (D-110): N parsers of a shared format is a meta-CI system —
 schema drift, per-consumer bugs, governance forever. What we build instead:
 
-- **`run-gate.py`** — the ONLY parser. A shared tool, developed here.
-- **`run-gate.toml`** — per project, next to the script. Declarative lane
-  definitions read by run-gate.py alone. No other program ever parses it.
+- **`run-gate`** — the ONLY parser. A shared tool distributed as a wheel.
+- **`run-gate.toml`** — per project, in its project directory. Declarative
+  lane definitions read by the installed CLI alone. No other program parses it.
 - **Consumers speak argv.** nyxloom's `[gates]` entry shrinks to
-  `argv = ["./run-gate.py", "<lane>"]`. Buildkite steps, cmru release gates,
+  `argv = ["run-gate", "<lane>"]`. Buildkite steps, cmru release gates,
   and humans use the identical invocation.
 
 Same TOML bytes as the rejected design — completely different maintenance
@@ -410,7 +419,7 @@ before it runs a lane: **what toolchain does this lane need from its
 environment** (RG-25 — reported by `doctor`/`--check-env` instead of
 surfacing as a mid-run `MISSING_EXTERNAL_TOOL`) and **does this lane take its
 comparison base from the gate** (RG-26 — `judge.base_source = "request"`,
-supplied with `./run-gate.py <lane> --base REF`). Neither becomes a
+supplied with `run-gate <lane> --base REF`). Neither becomes a
 `run-gate.toml` key: a second spelling of a fact `assay.toml` already owns is
 the drift this design exists to remove.
 
@@ -540,7 +549,7 @@ the tool's reason to exist and MUST be implemented + tested:
   `latest` slot holding the most recent invocation whatever happened to it,
   and a bounded per-commit trend series that only trustworthy measurements
   join (completed, clean tree, no rebase in flight, real commit). Read it
-  with `./run-gate.py history [LANE] [--worktree PATH] [--json]` — the read
+  with `run-gate history [LANE] [--worktree PATH] [--json]` — the read
   scope follows `--worktree` exactly as the write scope does, and the answer
   names the tree it describes. run-gate MEASURES; the
   rigor/defer policy built on the numbers belongs to whoever reads them
@@ -556,7 +565,7 @@ the tool's reason to exist and MUST be implemented + tested:
   container; a hostname match alone is never identity. Never nothing, unless
   profiling is disabled outright
   (`RUN_GATE_PROFILE=off`, `[profile] enabled = false`, or a lane's own
-  `profile = false`). `./run-gate.py footprint [LANE] [--json] [--write]`
+  `profile = false`). `run-gate footprint [LANE] [--json] [--write]`
   distills that history into a COMMITTED `run-gate.footprint.json` —
   budgets other projects and `doctor` can compare against, not just this
   invocation's own number (SPEC `R-44`).
@@ -583,33 +592,32 @@ the tool's reason to exist and MUST be implemented + tested:
   documented R-36h non-verdict fallback still applies. See the
   [placement launch rationale](docs/DESIGN-GUIDE.md#explicit-placement-is-a-pre-body-launch-gate).
 
-### Distribution — symlink inside vbpub, copy outside
+### Distribution — installed wheel
 
-The tool is a **mini-project of the vbpub monorepo** (this directory): its own
-tests, its own revision discipline (`__revision__ = N` in-file, printed by
-`--help`). Consumption:
+Run-Gate is distributed and invoked as the `run-gate` console command from
+its installed wheel. Install the released wheel into each environment that
+drives lanes. Run `run-gate --version` to read its SemVer compatibility
+identity. There is no consumer script to copy, symlink, or synchronize.
+The [design guide](docs/DESIGN-GUIDE.md#semver-names-the-installed-tool)
+explains why release SemVer replaces the old copied-script revision marker.
 
-- **vbpub-internal projects** (ciu, cmru, assay, nyxloom, tester-unified):
-  `run-gate.py` at the project root is a **relative symlink** to
-  `../run-gate-project/run-gate.py`. One edit updates all; git tracks symlinks.
-- **External repos** (dstdns, groop): **copy** the file in; the in-file
-  `__revision__` is the drift detector (estate sweeps compare it against this
-  directory's source of truth). A cross-repo symlink dies on fresh clone.
-- **Why not a pip wheel:** chick-egg. A fresh clone of any repo must be able
-  to run its gate with zero release artifacts available (same reasoning that
-  moved assay from per-repo vendored pyz blobs to being baked into the
-  tester-unified image, built from in-repo source via the cmru dependency
-  chain — D-110.2). A single-file stdlib-only script needs no install step.
+Project lane declarations remain in `run-gate.toml`; the installed command
+loads that file from the current project directory. Internal revision values
+may appear in persisted history records to identify their writer, but they do
+not identify the installed package or act as an upgrade floor.
 
-Consequence: **run-gate.py is stdlib-only** (tomllib, argparse, subprocess,
-hashlib, pathlib). Any richer dependency belongs in the environments it
-launches, not in the launcher.
+Install the published artifact with pip:
+
+```console
+python -m pip install run_gate-<version>-py3-none-any.whl
+run-gate --version
+```
 
 ### Future: async long lanes
 
 Mutation campaigns and fuzzing become additional `run-gate.toml` lanes with
 large budgets, executed asynchronously by Buildkite agents on remote hosts —
-which call the SAME `./run-gate.py <lane>`. nyxloomd, the operator, and a
+which call the SAME `run-gate <lane>`. nyxloomd, the operator, and a
 controller session are equal triggers. (Backlogged: assay B009 forward note;
 carved after the dstdns config-cutover.)
 
@@ -617,14 +625,14 @@ carved after the dstdns config-cutover.)
 
 - dstdns `nyxloom-trove/decisions.md` **D-110** (gate layering, assay
   distribution, assay.toml role, async lanes) and **D-111** (+amendment:
-  run-gate.py/run-gate.toml naming, this home, one-parser rationale,
-  distribution model).
+  original run-gate.py/run-gate.toml naming, this home, one-parser rationale,
+  distribution model; the script distribution was retired by RG-94).
 - ciu backlog **CIU-40** (build + first adoption), assay backlog **B009**
   (assay.toml role docs + image-baked distribution), assay **B008** (the
   merge-tip R1 base-resolution finding from the same review day).
 - vbpub `AGENTS.md` "Manual tester-unified gate runs — the four traps" — the
   prose this tool turns into tested code (the section gains a pointer here
-  when the tool ships, and per-project AGENTS.md name `run-gate.py` as the
+  when the tool ships, and per-project AGENTS.md name `run-gate` as the
   canonical starting point IN the adoption carve, never before).
 
-The standalone parser's help, usage, and argument errors begin with `RUN-GATE rev <revision> — per-project gate entrypoint`. The revision is the script's existing `__revision__` source, so a zero-install checkout can identify the exact launcher without importing another project.
+The installed parser's help, usage, and argument errors begin with `RUN-GATE <version> — per-project gate entrypoint`. The version comes from wheel metadata; missing metadata is an error.

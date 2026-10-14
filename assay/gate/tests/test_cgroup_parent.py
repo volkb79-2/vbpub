@@ -642,8 +642,8 @@ def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
     The pointer itself is parsed STRUCTURALLY (RG-2): exactly one cd into this
     project, an exact-token run-gate invocation carrying --worktree {worktree},
     naming a lane that exists in the SSOT — not substrings, which a broken
-    pointer (`echo run-gate.py`; `tester-unified-typo`) satisfies trivially.
-    `./run-gate.py validate-pointers nyxloom-trove/nyxloom.toml` enforces the
+    pointer (`echo run-gate`; `tester-unified-typo`) satisfies trivially.
+    `run-gate validate-pointers nyxloom-trove/nyxloom.toml` enforces the
     same contract estate-wide; this pins THIS project's specific shape."""
     document = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))
     argv = document["gates"]["tester-unified"]["argv"]
@@ -655,8 +655,8 @@ def test_nyxloom_gate_uses_verified_value_without_a_literal_slice():
 
     pointer = argv[-1]
     assert re.findall(r"\bcd\s+(\S+)", pointer) == ["{worktree}/assay"]
-    invocation = re.search(r"run-gate\.py\s+([^&;]*)$", pointer)
-    assert invocation is not None, "no run-gate.py invocation in pointer"
+    invocation = re.search(r"\brun-gate\s+([^&;]*)$", pointer)
+    assert invocation is not None, "no installed run-gate invocation in pointer"
     assert invocation.group(1).split() == [
         "--worktree", "{worktree}", "tester-unified"
     ]

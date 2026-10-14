@@ -107,6 +107,11 @@ Rev 21 (run-gate rev 66): RG-89 permits the observer on any Assay or command
 lane whose resolved environment is ephemeral. Before launching such a lane,
 Run-Gate requires cgprofile's version response to advertise observer contract
 2 at the configured socket path with `listening = true`.
+Rev 22 (Run-Gate 24.0.0): wheel-only distribution. The installed `run-gate`
+console command and its wheel SemVer are the only supported CLI identity;
+copied scripts and consumer symlinks are retired. Project discovery is from
+the current working directory, and persisted `revision` values remain only
+record-format provenance, never an upgrade floor.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -116,9 +121,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 ## 1. Terms
 
-- **project config** — `run-gate.toml` in the directory of the *invoked script
-  path* (symlink's parent, never the symlink target's dir), CWD as fallback.
-  Defines lanes; may also define environments.
+- **project config** — `run-gate.toml` in the current working directory of the
+  installed `run-gate` command. The command's location in the Python
+  environment carries no project identity. Defines lanes; may also define
+  environments.
 - **central config** — the nearest `run-gate.root.toml` in a STRICT ancestor
   directory of the project dir. Optional. Defines shared environment facts
   and (since Rev 3, RG-16) shared lanes inherited by every consumer. An
@@ -145,15 +151,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
 ## 2. CLI contract
 
-- `R-00` `--version` prints `run-gate rev <__revision__>` to stdout and exits 0
-  without reading project configuration. `__revision__` is the copied-script
-  identity; the wheel's SemVer remains a separate distribution identity. The
-  output is exactly one identity line with no stderr. Every help, usage, and
-  configuration diagnostic starts with `RUN-GATE rev <__revision__> —
-  per-project gate entrypoint` as line 1; lane runs end with a verdict summary; --json emits one result object on stdout.
+- `R-00` `--version` prints the installed wheel's version as
+  `run-gate <version>` to stdout and exits 0 without reading project
+  configuration. A SemVer release is the public compatibility identity; a
+  setuptools-scm development version may also include its normal prerelease,
+  `.dev`, or local segment. Missing or malformed distribution metadata is an
+  error: the CLI never falls back to a source revision or copied-file marker.
+  The output is exactly one identity line with no stderr. Every help, usage,
+  and configuration diagnostic starts with `RUN-GATE <version> — per-project
+  gate entrypoint` as line 1; lane runs end with a verdict summary; `--json`
+  emits one result object on stdout.
 - `R-01` `<lane>` runs one lane; `--list` emits `name<TAB>kind<TAB>environment`
   per lane, sorted by name — THREE columns, stable, machine-readable, never
-  extended (consumers parse it). `--help`/no-args prints revision + the
+  extended (consumers parse it). `--help`/no-args prints the installed version + the
   human lane table — each lane's `clean_tree`, hard `budget`, `memory`,
   and declared `description` — plus a FLAGS section (`--worktree`;
   `--allow-dirty` with the caveat that assay lanes still enforce assay's own
@@ -227,7 +237,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `BUDGET_EXCEEDED` if another result has that status, and FAIL if another has
   `FAIL`, `INCONCLUSIVE`, or `NO_MEASUREMENT`; malformed claim/evidence records
   map to ERROR. The raw outcome is retained as `assay_outcome`. Missing/invalid
-  judge provenance is ERROR.
+  judge provenance is ERROR. The top-level `exit_code` in the verified Assay
+  verdict must be an integer (booleans are invalid), equal the raw lane process
+  status, and match the closed Assay outcome table: PASS 0, FAIL 1, ERROR 2,
+  NO_MEASUREMENT 3, BUDGET_EXCEEDED 4, INCONCLUSIVE 5. A missing, malformed,
+  runner-mismatched, or outcome-mismatched code returns infrastructure ERROR
+  and retains the raw runner code and Assay outcome; it can never certify PASS.
   `--json` lane results contain `verdict`, raw `exit_code`, `reason`,
   `log_path`, `assay_outcome`, and `admission`. The human lane summary names
   verdict, raw code when present, reason when present, and log path when one
@@ -270,7 +285,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   starts or stops; `host` is a bare subprocess and forbids `image`. An
   environment named `host` is a container only when it explicitly declares
   `mode = "ephemeral"`; `bare-host` is an ordinary name, not a built-in.
-  `run-gate.py migrate-modes PATH` mechanically inserts missing modes in one
+  `run-gate migrate-modes PATH` mechanically inserts missing modes in one
   config while preserving comments. `cgroup_slice` (optional non-empty
   string) or `cgroup_slice_env` (optional valid environment-variable name;
   the two are mutually exclusive), `container_name` (optional non-empty string — an
@@ -334,7 +349,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   like a verb could never be invoked anyway. `history` joined the set in
   rev 30 and `footprint` in rev 10 — each a LOAD-TIME BREAKING change for
   any consumer that had declared a lane by that name (no estate project
-  had either; flagged in CHANGES and CONSUMERS for copied-script repos).
+  had either; flagged in CHANGES and CONSUMERS for external consumers).
 - `R-08b` **Declared invocation arguments (RG-71).** A command lane may set
   `accepts_args = true`. Only then are arguments after the invocation's `--`
   appended to the lane argv, in order and as separate argv elements. They are
@@ -399,7 +414,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 
     ```sh
     python3 -c 'import importlib.util as I, tomllib, pathlib
-    s = I.spec_from_file_location("rg", "run-gate.py"); rg = I.module_from_spec(s); s.loader.exec_module(rg)
+    s = I.spec_from_file_location("rg", "run_gate.py"); rg = I.module_from_spec(s); s.loader.exec_module(rg)
     L = tomllib.loads(pathlib.Path("/workspaces/dstdns/run-gate.toml").read_text())["lanes"]
     def refuses(n, t):
      try: rg._validate_lane(n, t, "run-gate.toml"); return False
@@ -555,7 +570,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `exec` means a persistent external runner. The environment name `host` has
   no special status; the repository may declare `[environments.host]` with
   `mode = "ephemeral"` as an ordinary named container. Existing consumers
-  can use `run-gate.py migrate-modes PATH` on each local or root config; the
+  can use `run-gate migrate-modes PATH` on each local or root config; the
   migration inserts the former implicit modes as text and preserves comments.
 
 - `R-45` **Trunk bases and native sequences (RG-74).** `[project].trunk`
@@ -1000,7 +1015,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     drift.
   - A **leading `-`** is refused separately and named as a POSITION problem:
     `-` is legal later in a ref, and the hazard is that a sub-invoked
-    `./run-gate.py --base <ref>` parses it as an option.
+    `run-gate --base <ref>` parses it as an option.
   - This makes the substituted VALUE inert. It does not make a lane author's
     surrounding argv well-quoted, which remains their own.
 
@@ -1017,7 +1032,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     (`create`/`add`) or the adopted checkout's HEAD (`adopt`). run-gate
     `json.loads`es it with the stdlib. There is **no dependency on `ciu`**:
     the two are separate projects and this launcher must run on a fresh
-    clone with zero installs.
+    checkout with the Run-Gate wheel installed.
   - **Two candidate directories, in order:** the judged worktree root, then
     the effective project dir inside it (`R-15`) — ciu writes the record at
     the CIU root, which sits BELOW the git worktree root in a monorepo. An
@@ -1239,42 +1254,34 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `bare_host_stall_timeout_inert_reason()` both sites use so the two
   surfaces cannot drift apart.
 
-- `R-31` **Wheel as second artifact (RG-14):** the script stays PRIMARY —
-  fresh clone, zero installs, `./run-gate.py --list` unchanged is the design
-  win and must never regress. A wheel wraps the SAME bytes for
-  pip-installable distribution: `pyproject.toml` maps module `run_gate`
-  (committed symlink `run_gate.py -> run-gate.py`, dereferenced at build
-  time — py_modules cannot carry a hyphen) and exposes console script
-  `run-gate = run_gate:main`; the shipped `run_gate.py` is byte-identical to
-  the canonical file. Version identity is TWO-TIER (superseding this rule's
-  original `__revision__`-attr coupling, release-adoption program): the
-  wheel's version is DERIVED from the git tag (`run-gate-vX.Y.Z`) by
-  setuptools-scm — `[tool.setuptools_scm]` with `root = ".."` and
-  `--match run-gate-v*`, matching ciu/cmru/assay/topos/nyxloom exactly —
-  while `__revision__` inside the script stays the SEPARATE copy-drift
-  marker external repos compare; the two never need to agree, and
-  CONSUMERS.md states which one governs which decision. A release build
-  never runs `git describe` live: cmru's wheel-build step sets
-  `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE` from the tag it just
-  minted (`cmru.toml`'s `scm_dist = "run_gate"`). Build toolchain pinned
-  exactly (assay/ciu precedent); a release tag names the semver version
-  (`run-gate-v<version>`) — because the pre-existing tag `run-gate-v22` is
-  itself matched by the tag pattern and parses as version `22`, the first
-  semver release MUST be numbered `>= run-gate-v23` (e.g. `run-gate-v23.0.0`)
-  or version ordering inverts (pip would read a `run-gate-v1.0.0` release as
-  older than the untagged `22`-based dev builds that precede it). The wheel
-  NEVER becomes required — CONSUMERS.md states it in prose and this contract
-  forbids any lane or check that assumes an install.
+- `R-31` **Wheel-only SemVer distribution (RG-14, superseded by RG-94):**
+  the installed wheel is the only supported distribution and the
+  `run-gate` console command is the only supported CLI entrypoint. The wheel
+  packages the regular `run_gate` module and exposes
+  `run-gate = run_gate:main`. Consumer repositories install the wheel and run
+  the command from the directory containing their `run-gate.toml`; there is
+  no copied script, symlink, source-tree invocation, or zero-install mode.
+  Wheel metadata is the public version source. Release tags are
+  `run-gate-vX.Y.Z`, resolved by setuptools-scm from the configured tag
+  pattern; CMRU supplies the exact release version during its isolated build.
+  The legacy integer tag `run-gate-v22` is excluded from that pattern, so the
+  first SemVer release must be at least `23.0.0`. Version output, banners,
+  and compatibility floors use the installed metadata version; missing or
+  malformed metadata fails closed. Internal persisted `revision` fields may
+  remain where they identify the writer or record format, but they never
+  determine whether an installed consumer must upgrade. This is a breaking
+  migration: all active consumer configs, Buildkite generation, docs, tester
+  tooling, and symlinks must migrate in the same release wave.
 
 - `R-32` **Adoption hygiene + estate pairing sweep (RG-13):** the adoption
   contract in CONSUMERS.md is complete enough to execute without tribal
   knowledge: a worked run-gate × assay example stitches both halves; the
   gitignore obligation for lane-written evidence (`.assay/`, declared
-  `artifacts`) is stated as an adoption step, because copied-script repos do
+  `artifacts`) is stated as an adoption step, because consumer repos do
   not inherit the monorepo root's ignores and a dirty tree fails the NEXT
-  lane's clean-tree check; every adopting project names `./run-gate.py` as
+  lane's clean-tree check; every adopting project names `run-gate` as
   its canonical test entrypoint in its own README; and the repo-root README
-  carries the discovery line (`cd <project> && ./run-gate.py --list`).
+  carries the discovery line (`cd <project> && run-gate --list`).
   Consumer `timeout_seconds` paired with a lane's hard `budget` must
   never be TIGHTER than it: `TestEstateBudgetTimeoutPairing` loads each
   nyxloom-trove project's lanes with the REAL parser and enforces
@@ -1295,8 +1302,8 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   status`/`cmru release` CRASH for this project's first release without an
   explicit `--set-version 23.0.0` override (verified live) — every release
   after that resolves normally. The release gate IS the project's own
-  dogfooded lane (`cmru.toml [steps.run-tests]` runs `./run-gate.py
-  selftest` — SSOT, D-110/D-111: one parser, no duplicated pytest
+  dogfooded lane (`cmru.toml [steps.run-tests]` runs `run-gate selftest` —
+  SSOT, D-110/D-111: one parser, no duplicated pytest
   invocation), run in `bare-host` mode deliberately (R-42; not `host`'s
   now-default container, and not tester-unified either: this suite is
   self-referential — it exercises `physical_path()`'s real
@@ -1304,7 +1311,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   breaks under any container layer) which chains `pytest` with
   `tools/coverage_gate.py` (vendored from `topos/tools/`, the estate's
   thinnest copy — MIGRATION PENDING per its header, do not fork further;
-  its own `--source` default is scoped to `run-gate.py` alone, not the
+  its own `--source` default is scoped to `run_gate.py` alone, not the
   whole project, so a bare invocation can't silently reproduce the
   scoping bug this floor was built to prevent). Because TOTAL line+branch
   coverage measured ~47% at adoption time, the floor enforced is DIFF
@@ -2513,21 +2520,22 @@ verdict meaning); no non-stdlib imports; no silent defaults for environment
 facts; no test definitions in consumer configs — the SSOT is the applicable
 run-gate document; release policy stays with the consumer (cmru/nyxloom).
 
-## 7. Distribution — script first, wheel second (`R-31`)
+## 7. Distribution — installed wheel only (`R-31`, RG-94)
 
-PRIMARY, unchanged: vbpub-internal relative symlink
-`../run-gate-project/run-gate.py` committed at the project root; external
-repos copy the file; `__revision__` is the drift marker; stdlib only, runs
-on a fresh clone with zero installs.
+Run-Gate is shipped and invoked as an installed wheel. The public command is
+`run-gate`; consumers run it from the project directory containing
+`run-gate.toml`. The package version from installed wheel metadata is the
+compatibility identity: tagged releases use SemVer (`run-gate-vX.Y.Z`), and
+`run-gate --version` reports that value. Development wheels may report the
+PEP 440 version setuptools-scm derives from the same SemVer tag.
 
-SECONDARY: the wheel (`pyproject.toml` here) packages the same bytes as
-module `run_gate` with a `run-gate` console script, published through
-cmru's wheel-publish and tagged `run-gate-v<version>`. Adoption never
-requires it; nothing in the gate's own lanes or checks may assume an
-install exists. Version identity is TWO-TIER (superseding RG-14's
-original wording here): the wheel's semver version is DERIVED from the
-git tag by setuptools-scm, NOT from `__revision__` — the two numbers are
-independent and can legitimately disagree at any moment (`R-31`).
+Copied source files, source-tree execution, consumer symlinks, and zero-install
+operation are unsupported and are removed by the migration. A missing or
+invalid installed version is an error; no source revision fallback is allowed.
+Historical persisted `revision` fields remain only as provenance for existing
+records and schemas. They are not a compatibility floor, and consumers decide
+whether to upgrade by comparing the installed SemVer with the version they
+require.
 
 ## 8. Controller amendments (this session, 2026-08-22)
 

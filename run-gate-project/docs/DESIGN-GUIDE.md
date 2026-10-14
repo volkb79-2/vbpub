@@ -1,5 +1,37 @@
 # run-gate design guide
 
+## SemVer names the installed tool
+
+Consumers install Run-Gate as a wheel and invoke its `run-gate` console
+command. The wheel's SemVer, read from installed distribution metadata, is the
+public version and compatibility floor. `run-gate --version` and the normal
+CLI banners all report that same value. Missing or malformed package metadata
+is an error; Run-Gate does not guess from a source checkout.
+
+The old integer `__revision__` existed to show whether copied scripts had
+drifted. Once copied scripts and consumer symlinks are retired, that number
+cannot tell an adopter whether its installed package satisfies a release
+floor. Release tags therefore carry SemVer (`run-gate-vX.Y.Z`), and consumers
+compare that value with their required version. Persisted `revision` fields
+can remain where they identify the writer of older records or a record
+format; those are data provenance, not the installed tool's identity.
+
+This separates two questions: package compatibility is answered by SemVer,
+while saved-record compatibility is answered by the record's schema and
+provenance contract. See the [user-facing version contract](../CONSUMERS.md#distribution-installed-wheel-and-semver)
+and [CLI overview](../README.md#distribution-installed-wheel).
+
+## Changed-line coverage follows content across renames
+
+The selftest coverage floor compares executable lines changed since the
+selected base. Git must identify renames before Run-Gate filters the diff to
+`run_gate.py`. A path-limited diff hides the deleted path from rename
+detection; when a compatibility symlink becomes the wheel module, Git then
+reports every line in the module as newly added. The gate uses rename and
+rewrite detection on the project diff, then applies its source filter to the
+parsed paths. This keeps the denominator tied to changed content while still
+ignoring unrelated files. See the [release-gate description](../README.md#version-probe).
+
 ## A worktree is the complete judgment boundary
 
 `--worktree W` selects the source tree whose commit is judged. The lane policy
@@ -277,6 +309,19 @@ its event window cannot be attributed. See the
 [consumer example](../CONSUMERS.md#native-r2-resource-observation-refusals).
 The v16 reason-code mapping requires Assay 10.0.0 or newer because older
 versions do not provide the independent claim and evidence rollup it inspects.
+
+### Assay result requires agreement between process and artifact
+
+An Assay verdict artifact is not a substitute for the process status that
+produced it. Run-Gate compares the raw lane exit with the artifact's top-level
+`exit_code`, then checks that this code matches the outcome's closed table
+(PASS 0, FAIL 1, ERROR 2, NO_MEASUREMENT 3, BUDGET_EXCEEDED 4,
+INCONCLUSIVE 5). Missing, malformed, or disagreeing codes produce infrastructure
+ERROR with the raw runner status and Assay outcome preserved. The gate does not
+repair a mismatch by trusting whichever source says PASS: the artifact can be
+stale or forged, while the process can fail after writing its verdict. This
+comparison keeps both facts visible and fails closed only on an actual
+inconsistency.
 
 ## Preflight probes preserve lane context
 

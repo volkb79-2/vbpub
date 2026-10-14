@@ -191,7 +191,9 @@ def test_bootstrap_after_generate_adopts_file_fqdn_over_ambient(
         workspace_env, "_detect_physical_repo_root", lambda repo_root: tmp_path
     )
     monkeypatch.setattr(
-        workspace_env, "ensure_workspace_network", lambda name, auto_connect=True: None
+        workspace_env,
+        "ensure_workspace_network",
+        lambda name, auto_connect=True, **_kwargs: None,
     )
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
 

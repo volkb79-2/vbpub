@@ -886,6 +886,9 @@ def test_ensure_does_not_reset_a_checkout_after_fork_point_was_recorded(
         _record(tmp_path, state="recovery-required"),
         fork_point_sha="a" * 40,
         recovery_status="env-generation-failed",
+        schema_version=3,
+        initial_overlay=None,
+        overlay_intent_known=True,
     )
     calls = {}
     monkeypatch.setattr(worktree, "_allocation_lock", lambda _root: nullcontext())

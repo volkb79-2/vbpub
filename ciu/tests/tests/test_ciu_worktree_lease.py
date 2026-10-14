@@ -119,10 +119,12 @@ def _held(**overrides) -> dict:
 
 
 class TestSchemaVersionConstants:
-    def test_current_version_is_two_and_both_are_supported(self):
+    def test_lease_and_overlay_record_schemas_are_supported(self):
         assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSION == 2
+        assert worktree.WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION == 3
+        assert worktree.WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION == 4
         assert worktree.WORKTREE_INSTANCE_BASE_SCHEMA_VERSION == 1
-        assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSIONS == {1, 2}
+        assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSIONS == {1, 2, 3, 4}
 
     def test_lease_vocabularies_are_closed(self):
         assert worktree.WORKTREE_LEASE_MODES == {"held", "perpetual"}
@@ -287,6 +289,65 @@ class TestReadingV1AndV2Records:
         assert record.lease.mode == "perpetual"
         assert record.lease.expires_at_utc is None
 
+    def test_v3_record_with_initial_overlay_intent_reads_and_round_trips(self, tmp_path):
+        raw = {
+            **_raw_v1(tmp_path),
+            "schema_version": 3,
+            "lease": None,
+            "initial_overlay": '[ciu.instance]\nservice_profiles = ["core"]\n',
+            "overlay_intent_known": True,
+        }
+
+        record = worktree._record_from_dict(raw, tmp_path / "r.json")
+
+        assert record.schema_version == 3
+        assert record.initial_overlay == raw["initial_overlay"]
+        assert record.overlay_intent_known is True
+        assert record.initial_overlay_pending is False
+        assert record.adopted is None
+        assert record.to_dict() == raw
+
+    def test_v4_record_with_overlay_pending_marker_reads_and_round_trips(self, tmp_path):
+        raw = {
+            **_raw_v1(tmp_path),
+            "schema_version": 4,
+            "lease": None,
+            "initial_overlay": None,
+            "overlay_intent_known": True,
+            "initial_overlay_pending": True,
+            "adopted": True,
+        }
+
+        record = worktree._record_from_dict(raw, tmp_path / "r.json")
+
+        assert record.schema_version == 4
+        assert record.initial_overlay is None
+        assert record.overlay_intent_known is True
+        assert record.initial_overlay_pending is True
+        assert record.adopted is True
+        assert record.to_dict() == raw
+
+    def test_v5_record_with_reset_and_network_identity_round_trips(self, tmp_path):
+        raw = {
+            **_raw_v1(tmp_path),
+            "schema_version": 5,
+            "lease": None,
+            "initial_overlay": None,
+            "overlay_intent_known": True,
+            "initial_overlay_pending": False,
+            "adopted": False,
+            "checkout_reset_pending": False,
+            "network_id": "a" * 64,
+            "fork_point_sha": "b" * 40,
+        }
+
+        record = worktree._record_from_dict(raw, tmp_path / "r.json")
+
+        assert record.schema_version == 5
+        assert record.checkout_reset_pending is False
+        assert record.network_id == "a" * 64
+        assert record.to_dict() == raw
+
     def test_v2_record_missing_the_lease_key_is_refused(self, tmp_path):
         """O1's key-set rule: v2 REQUIRES `lease`. The refusal names the
         schema_version, so the reason is legible without diffing key sets."""
@@ -300,7 +361,7 @@ class TestReadingV1AndV2Records:
             worktree._record_from_dict(raw, tmp_path / "r.json")
 
     def test_unsupported_future_version_is_refused(self, tmp_path):
-        raw = {**_raw_v1(tmp_path), "schema_version": 3}
+        raw = {**_raw_v1(tmp_path), "schema_version": 5}
         with pytest.raises(worktree.WorktreeError, match="unsupported"):
             worktree._record_from_dict(raw, tmp_path / "r.json")
 
@@ -706,7 +767,7 @@ class TestApplyLease:
         assert record.lease.mode == "held"
         assert record.lease.expires_at_utc is not None
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
-        assert stored["schema_version"] == 2
+        assert stored["schema_version"] == 5
         assert stored["lease"]["holder"].startswith("ciu@dev-box:")
 
     def test_perpetual_sets_an_unbounded_lease(self, tmp_repo, fake_generate_env):
@@ -731,12 +792,12 @@ class TestApplyLease:
         assert record.lease is None
         assert json.loads(record.record_path.read_text("utf-8"))["lease"] is None
 
-    def test_release_is_unconditional_and_normalizes_a_v1_record(
+    def test_release_does_not_downgrade_the_overlay_record(
         self, tmp_repo, fake_generate_env
     ):
         worktree.create(tmp_repo, "one", base="main")
         record = worktree.apply_lease(tmp_repo, "one", release=True)
-        assert record.schema_version == 2
+        assert record.schema_version == 5
         assert record.lease is None
 
     def test_extend_renews_rather_than_restarting_the_claim(
@@ -833,7 +894,7 @@ class TestLeaseCli:
         assert code == 0
         doc = json.loads(out)
         assert doc["operation"] == "lease"
-        assert doc["instance"]["schema_version"] == 2
+        assert doc["instance"]["schema_version"] == 5
         assert doc["instance"]["lease"]["mode"] == "held"
 
     def test_unknown_instance_exits_two(self, tmp_repo, capsys):
@@ -882,7 +943,7 @@ class TestTeardownClearsTheLease:
         with pytest.raises(worktree.WorktreeError, match="locked"):
             worktree.remove(tmp_repo, "one")
         assert seen[0]["lease"] is None
-        assert seen[0]["schema_version"] == 2
+        assert seen[0]["schema_version"] == 5
 
     def test_a_failed_clean_leaves_the_lease_exactly_as_it_was(
         self, tmp_repo, fake_generate_env, monkeypatch

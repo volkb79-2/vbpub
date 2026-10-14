@@ -270,7 +270,10 @@ def test_user_docs_link_the_namespace_and_placement_rationale():
     assert "host PID namespace" in design
     assert "not an independent attestation" in design
     assert "create_host_path: false" in design
-    assert "refuses a missing source" in consumers
+    assert (
+        "refuses a missing source rather than creating an empty directory"
+        in consumers_normalized
+    )
     assert "process-table/PID-operation authority" in " ".join(design.split())
     assert "host-PID mode" in consumers
     assert "not an independent proof" in consumers_normalized
@@ -295,7 +298,7 @@ def test_image_recipes_use_one_working_directory_and_build_before_ciu_up():
     assert "From the repository root" in pre_release
     assert "cd scripts/cgroup-profiler" in pre_release
     assert pre_release.index("python3 build-push.py --build") < pre_release.index(
-        "ciu up --dir ."
+        "ciu up"
     )
 
     consumers = " ".join(

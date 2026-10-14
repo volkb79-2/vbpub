@@ -41,6 +41,10 @@ _GITIGNORE_ENTRIES = (
     ("**/.ciu/", "per-stack machine dirs: rendered ciu.toml, secrets, overlays"),
     ("**/ciu.compose.yml", "CIU's rendered compose output for .j2 templates (S8.1)"),
     ("ciu.worktree-instance.json", "managed worktree identity/lifecycle record (S16)"),
+    ("**/.ciu.worktree-instance.json.*.tmp",
+     "atomic worktree-record staging files (CIU-135) — ignored until publication"),
+    ("**/.ciu.global.instance.toml.j2.*.tmp",
+     "atomic initial-overlay staging files (CIU-135) — ignored until publication"),
     ("ciu.global.instance.toml.j2",
      "per-checkout sparse global override (S3.1b) — hand-authored, "
      "machine-specific; CIU never writes it"),

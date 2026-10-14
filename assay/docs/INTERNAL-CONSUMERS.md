@@ -26,7 +26,7 @@ the project-level `[isolation.limits]` table and a lane can opt into
 `assay run/plan --allow-dirty` flags are available from the same source. The
 editable install reads those keys from this worktree's shipped loader. An older
 pinned zipapp fails closed on the new keys, so these settings must land together
-with the worktree that installs them. The `run-gate.py --allow-dirty` flag is an
+with the worktree that installs them. The `run-gate --allow-dirty` flag is an
 independent outer clean-tree decision and is not forwarded to assay.
 
 In a `run-gate.toml` lane this is selected simply by omitting both
@@ -42,7 +42,7 @@ argv = ["bash", "-c",
 ```
 
 - `{worktree}` is already bind-mounted into every `tester-unified` lane —
-  `run-gate.py`'s own `resolve_repo_and_worktree` / mountinfo-based host-path
+  `run-gate`'s own `resolve_repo_and_worktree` / mountinfo-based host-path
   resolution does this for every project already; nothing new to configure.
 - `pip install --editable assay` against that mount installs from whatever commit is
   currently checked out in *this* worktree. `assay` has zero third-party

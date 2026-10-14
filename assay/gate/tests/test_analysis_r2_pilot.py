@@ -19,6 +19,7 @@ import pytest
 
 from assay.candidate_identity import candidate_id_from_fields
 from assay.mutation import MUTATION_BUCKETS, MUTATION_STATE_SCHEMA_VERSION
+from assay.process_tree import ProcessTreeEvidence
 from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
 from gate.tests.support import PROJECT_ROOT
 
@@ -30,6 +31,15 @@ if _tool_path not in sys.path:
 import analysis_r2_pilot_select as selector  # noqa: E402
 import analysis_r2_pilot_check as checker  # noqa: E402
 from assay.resource_limits import CounterDelta, ResourceLimitEvidence  # noqa: E402
+
+_CLEAN_PROCESS_TREE_EVIDENCE = ProcessTreeEvidence(
+    leader_status="exited",
+    group_signalled_before_reap=False,
+    outliving_descendants=0,
+    descendants_signalled=0,
+    cleanup_seconds=0.001,
+    clean=True,
+).to_dict()
 
 _analysis_src = str(PROJECT_ROOT / "analysis" / "src")
 if _analysis_src not in sys.path:
@@ -305,6 +315,7 @@ def _valid_pilot(tmp_path: Path, *, size: int = 1) -> dict:
                 "returncode": 1,
             },
             "resource_limit_evidence": resources,
+            "process_tree_evidence": _CLEAN_PROCESS_TREE_EVIDENCE,
         }
         (state_dir / f"{identity}.json").write_text(json.dumps(record), encoding="utf-8")
 
@@ -507,6 +518,34 @@ def test_analysis_pilot_checker_rejects_coherent_state_progress_judge_mismatch(
     ).encode()
 
     with pytest.raises(ValueError, match="summary judge_sha256 differs"):
+        checker.verify_pilot(**evidence)
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("missing", "no process-tree evidence"),
+        ("invalid", "invalid process-tree evidence"),
+        ("outliving-descendant", "terminal result disagrees with its bucket"),
+    ],
+)
+def test_analysis_pilot_checker_requires_consistent_process_tree_evidence(
+    tmp_path: Path, damage: str, message: str
+):
+    evidence = _valid_pilot(tmp_path)
+    selection = json.loads(evidence["selection_raw"])
+    identity = selection["selected_ids"][0]
+    state_path = evidence["state_dir"] / f"{identity}.json"
+    state_record = json.loads(state_path.read_text(encoding="utf-8"))
+    if damage == "missing":
+        del state_record["process_tree_evidence"]
+    elif damage == "invalid":
+        state_record["process_tree_evidence"]["protocol"] = "unsupported"
+    else:
+        state_record["process_tree_evidence"]["outliving_descendants"] = 1
+    state_path.write_text(json.dumps(state_record), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=message):
         checker.verify_pilot(**evidence)
 
 
@@ -1673,6 +1712,10 @@ def test_analysis_pilot_hung_progress_must_match_the_validated_state_trace(
         "outcome": "BUDGET_EXCEEDED",
         "reason_code": "CANDIDATE_HUNG",
         "returncode": None,
+    }
+    state_record["process_tree_evidence"] = {
+        **state_record["process_tree_evidence"],
+        "leader_status": "timeout-killed",
     }
     state_record["execution"].pop("witness", None)
     state_record["liveness_resource_evidence"] = {"trace": "validated state"}

@@ -64,9 +64,9 @@ qualification is required. It runs in the dedicated `tester-unified`
 environment, uses the exact selected worktree source, resumes native R2 from
 gitignored state, and verifies its verdict before it can report success.
 Use the registered commands from the same clean worktree:
-`./run-gate.py tester-unified`, followed by
-`./run-gate.py self-qualification-preflight` or
-`./run-gate.py self-qualification`. The B105 lanes execute a bare-host Assay
+`run-gate tester-unified`, followed by
+`run-gate self-qualification-preflight` or
+`run-gate self-qualification`. The B105 lanes execute a bare-host Assay
 wrapper that launches the inner lane in a detached `tester-unified` container
 with the host gates cgroup namespace visible, explicit CPU/memory bounds,
 network disabled, and the whole workspace root mounted at both its physical
@@ -95,7 +95,7 @@ pyproject's `pythonpath = ["src", "analysis/src"]`, with no `--override-ini`) so
 coverage and R2 mutations apply to the snapshot being judged. It collects the judge
 tests in `tests/` only; the tooling tests in `gate/tests/` run in `tester-unified`
 (B123). **The full lane needs a same-commit `tester-unified` pass:** run
-`./run-gate.py tester-unified` first. After a green run at a commit and tree it
+`run-gate tester-unified` first. After a green run at a commit and tree it
 writes `.assay/registered-gate/tester-unified.json` and prints
 `ASSAY_REGISTERED_GATE_RECEIPT=`; the full lane's driver and the B105 checker refuse
 to proceed without a receipt for the commit and tree being judged (the preflight
@@ -287,7 +287,7 @@ the 100% whole-source coverage floor:
 
 ```bash
 cd assay
-./run-gate.py self-qualification-preflight
+run-gate self-qualification-preflight
 ```
 
 A red preflight is a verified failure report and stops the full gate before
@@ -495,7 +495,7 @@ not dirty the judged tree:
 ```bash
 cd assay
 mkdir -p .assay
-if ./run-gate.py self-qualification >.assay/self-qualification-gate.log 2>&1; then
+if run-gate self-qualification >.assay/self-qualification-gate.log 2>&1; then
   cat .assay/self-qualification-gate.log
 else
   status=$?
@@ -719,7 +719,7 @@ assay plan unit --allow-dirty
 The flag applies only to R1+ snapshot lanes; R0 remains strict. The verdict's
 `worktree_integrity.overridden_dirty_paths` is accepted, with an explicit
 warning, by `assay verify` but is refused by `assay analyze receipt` by
-default. `run-gate.py --allow-dirty` is a separate outer clean-tree policy;
+default. `run-gate --allow-dirty` is a separate outer clean-tree policy;
 run-gate does not forward or reinterpret it as assay's flag.
 
 ## Scope a changed-lines lane to one file (B141)
@@ -1156,8 +1156,8 @@ to carry the outcome; diagnostic text adds context.
 Use the registered lanes for reviewable gate evidence:
 
 ```sh
-./run-gate.py b110-pilot
-./run-gate.py b110-screen
+run-gate b110-pilot
+run-gate b110-screen
 ```
 
 `b110-pilot` initializes a two-hour campaign after building the exact commit,
@@ -1184,7 +1184,11 @@ transformed R2 command, configuration digest, and coverage/R2 baselines. The
 gate retains `.assay/r2-manifest-b110-pilot.txt` with the summary. The checker
 recomputes its ordered collection digest, requires candidate collection facts
 to match the appropriate baseline, and requires every kill witness to name a
-collected test. It validates candidate elapsed and phase evidence and binds
+collected test. It also validates each v16 `process_tree_evidence` object from
+resumable state before accepting the terminal outcome: killed, survived and
+equivalent require a normally exited leader and no outliving descendants;
+timeout and hung records must prove the corresponding timeout-killed leader.
+It validates candidate elapsed and phase evidence and binds
 CPU/RSS/phase/startup measurements between progress and state. It also
 validates resource evidence, pending and resumed progress, campaign deadline,
 the 90-minute attempt window and wheel digest. The 90-minute cap
@@ -3137,13 +3141,13 @@ sha256 = "tools/assay/assay-<version>.pyz.sha256"
 ```
 
 The product owns the `assay.toml` lane; an external consumer owns its pinned
-artifact, while `run-gate.py` owns the isolated execution boundary. A
-consumer invokes it as `./run-gate.py assay`; see run-gate's own `CONSUMERS.md`
+artifact, while `run-gate` owns the isolated execution boundary. A
+consumer invokes it as `run-gate assay`; see run-gate's own `CONSUMERS.md`
 for orchestration mechanics.
 
 ### Preflighting a gate environment with `assay lanes --json` (B044)
 
-A gate tool that owns WHERE a lane runs (`ciu`, `run-gate.py`) needs to know
+A gate tool that owns WHERE a lane runs (`ciu`, `run-gate`) needs to know
 WHAT a lane needs from its environment before it launches a container for
 it — does this project even declare a `javascript` lane, and if so, does the
 chosen environment actually have Node on `PATH`? Reading `assay.toml`
@@ -5282,7 +5286,7 @@ report hashes the complete supplied files but displays at most the selected
 bounded error lines, so a controller can retrieve the full log by the reported
 path when necessary. See the [B100 design and limits](DESIGN-GUIDE.md#bounded-live-gate-snapshot-b100).
 
-Set `WORKTREE` to the reviewed project's directory containing `run-gate.py`
+Set `WORKTREE` to the reviewed project's directory containing `run-gate.toml`
 (for P5, the checkout's `run-gate-project/`) and `REVIEW_HEAD` to the full expected
 commit from the controller. Do not compute the expected value from the current
 HEAD as a substitute for checking the agreed candidate. The examples below
@@ -5299,7 +5303,7 @@ be hidden by a pipe or a shell wrapper. Its stdout is JSON; job output is in
 <!-- assay-analysis-example -->
 ```bash
 assay analyze record --worktree "$WORKTREE" --expected-head "$REVIEW_HEAD" \
-  --output "$WORKTREE/.assay/review-selftest" -- ./run-gate.py selftest
+  --output "$WORKTREE/.assay/review-selftest" -- run-gate selftest
 assay analyze receipt --worktree "$WORKTREE" --expected-head "$REVIEW_HEAD" \
   --recorded selftest "$WORKTREE/.assay/review-selftest/job" ASSAY_ANALYSIS_JOB_EXIT \
   --verdict r2 "$WORKTREE/.assay/verdict-r2.json" \
@@ -5407,7 +5411,8 @@ assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --project --project-jobs 1 --outcome survived --limit 20
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json \
-  --command-exit 0 --outcome survived --outcome hung
+  --coverage .assay/coverage-r2.json --command-exit 0 \
+  --outcome survived --outcome hung
 ```
 
 Without `--verdict` the status is never `complete` (blocker `no_verdict`). The
@@ -5423,6 +5428,20 @@ measured runtime before adding candidate costs to the projection. Exit codes:
 0 complete PASS, 1 complete and not PASS, 2 evidence error, 3 incomplete.
 `complete_blockers` names why a campaign is incomplete. Without `--verdict`, a
 plan whose lane delegates its base to the request needs `--request-base`.
+For a lane that declares R1 coverage, include `--coverage` with its declared
+artifact; without it the report stays incomplete. The artifact must be present
+in the worktree (and ignored by Git) even when the judge produced it inside a
+snapshot. `qualifying: true` identifies whole-plan scope only; it does not
+mean the verdict passed or that all evidence is complete.
+
+The reader is bounded: a supplied state directory may contain at most 50,000
+directory entries, 10,000 mutation records and 64 MiB of record data. The
+pretty-printed JSON report has a 16 MiB limit. If a large store or campaign
+history exceeds a limit, Assay returns `evidence_error` with the exceeded
+budget; it does not drop records and present a partial summary. Refusal JSON
+is limited to 64 KiB and each input-derived error detail to 768 characters, so
+a malformed input with a very long error detail cannot produce an unbounded
+response. Candidate details remain paged with `--offset` and `--limit`.
 
 - **Plan rows.** The JSON rows printed by `assay plan --json` carry `source_sha256` (the
   candidate's source file) and `mutated_file_sha256` (the file with the
@@ -5464,7 +5483,7 @@ For B131, use the analysis lane's retained artifacts instead:
 ```bash
 assay analyze campaign analysis-r2 --file assay.toml \
   --expected-commit "$REVIEW_HEAD" --progress .assay/progress-analysis-r2-pilot.jsonl \
-  --state-dir .assay/analysis-r2-pilot-state \
+  --state-dir ".assay/analysis-r2-pilot-state-${REVIEW_HEAD:0:12}" \
   --plan-json .assay/analysis-r2-pilot-plan.json \
   --selection-file .assay/analysis-r2-pilot-selection.json \
   --project --project-jobs 1 --outcome survived --limit 20
@@ -5487,7 +5506,7 @@ checkout, run the registered gate from the Assay project directory:
 ```bash
 WORKTREE=/workspaces/vbpub/.worktrees/assay-analysis-r2
 cd "$WORKTREE/assay"
-./run-gate.py --worktree "$WORKTREE" analysis-r2-pilot
+run-gate --worktree "$WORKTREE" analysis-r2-pilot
 ```
 
 The gate builds Assay from that exact worktree commit, then uses the detached,
@@ -5526,7 +5545,11 @@ failure, including a recognized first failing test.
 The checker verifies that each candidate's collection evidence matches its
 baseline and each kill witness names a collected test. Read
 `.assay/progress-analysis-r2-pilot.jsonl` plus
-`.assay/analysis-r2-pilot-state/` for resumable execution evidence. A successful
+`.assay/analysis-r2-pilot-state-<commit12>/` for resumable execution evidence.
+Each state record must include valid v16 process-tree evidence; the checker
+uses it when reconciling the terminal result with the reported bucket.
+The commit-bound directory keeps a new source revision's selection separate
+from older pilot state while preserving those earlier records. A successful
 gate means only that the sample completed and its evidence verified. It does
 not create a verdict or qualify the full plan. A timeout, partial sample,
 host-busy refusal or cgroup resource event is not a successful measurement.

@@ -62,6 +62,11 @@ selects the separate `cgprofile-release` Bake target, which contains only the
 versioned `ghcr.io/volkb79-2/cgprofile:<version>` tag; it does not publish the
 unqualified local alias to Docker Hub.
 
+The managed Compose file declares `create_host_path: false` for required host
+binds. If `/run/cgprofile` is missing, CIU refuses a missing source rather
+than creating an empty directory; host setup must also provision the observer
+subdirectory before the contract-2 listener can start.
+
 ## One-shot collector behavior
 
 If `cgprofile run` or `attach` requests DAMON while the host's `nr_kdamonds`
@@ -461,6 +466,10 @@ pass it through the lane as `RUN_GATE_PROFILE_SESSION`; the token makes a
 retry-safe `(container_id, token)` start idempotent. The `meta` object is
 required and its `kind` is either `command` or `assay`.
 
+Use the installed Run-Gate wheel, not a copied project-local `run-gate.py`
+script. Check the installed SemVer with `run-gate --version` before adopting a
+lane; see [Run-Gate's wheel contract](../../../run-gate-project/CONSUMERS.md#distribution-installed-wheel-and-semver).
+
 The following is a minimal shell-shaped integration. Replace the image,
 command, and metadata values for the consuming project:
 
@@ -581,9 +590,9 @@ pass that commit explicitly to both registered entrypoints:
 
 ```bash
 P1_BASE=eb3af770eb16362cff4c39388193c0180c2d370c
-./run-gate.py --base "$P1_BASE" --dry-run r2
-./run-gate.py --base "$P1_BASE" r2
-./run-gate.py --base "$P1_BASE" gate
+run-gate --base "$P1_BASE" --dry-run r2
+run-gate --base "$P1_BASE" r2
+run-gate --base "$P1_BASE" gate
 ```
 
 Run these from `scripts/cgroup-profiler/`. The dry run shows the expanded

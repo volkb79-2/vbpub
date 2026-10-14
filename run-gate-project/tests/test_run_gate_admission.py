@@ -877,7 +877,7 @@ def test_disabled_cli_accepts_flags_with_one_notice_and_no_admission_docker_call
     monkeypatch.setenv("PATH", f"{shim_dir}:{os.environ['PATH']}")
     invoke_dir = tmp_path / "invoke"
     invoke_dir.mkdir()
-    invoke = invoke_dir / "run-gate.py"
+    invoke = invoke_dir / "run_gate.py"
     invoke.symlink_to(Path(run_gate.__file__))
     proc = subprocess.run([sys.executable, str(invoke), "unit",
                            "--admission-wait", "3m", "--override-admission"],
@@ -942,7 +942,6 @@ def _admission_run_project(tmp_path, argv, budget=None):
         "clean_tree = false\n"
         "profile = false\n"
         + budget_line)
-    (project / "run-gate.py").symlink_to(Path(run_gate.__file__))
     subprocess.run(["git", "add", "-A"], cwd=repo, check=True,
                    capture_output=True)
     subprocess.run(["git", "commit", "-qm", "admission lane"], cwd=repo,
@@ -979,7 +978,8 @@ def test_lane_outcome_releases_admission_ticket(
     lock_dir.mkdir()
     monkeypatch.setenv("RUN_GATE_PROFILE", "off")
     monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
-    monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ['run-gate'])
     monkeypatch.chdir(project)
     monkeypatch.setattr(run_gate, "local_docker_endpoint",
                         lambda: (True, "local test endpoint"))
@@ -997,7 +997,8 @@ def test_sigterm_unwinds_and_releases_admission_ticket(tmp_path, monkeypatch):
     lock_dir.mkdir()
     monkeypatch.setenv("RUN_GATE_PROFILE", "off")
     monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
-    monkeypatch.setattr(sys, "argv", [str(project / "run-gate.py")])
+    monkeypatch.chdir(project)
+    monkeypatch.setattr(sys, "argv", ['run-gate'])
     monkeypatch.chdir(project)
     monkeypatch.setattr(run_gate, "local_docker_endpoint",
                         lambda: (True, "local test endpoint"))

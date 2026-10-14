@@ -172,4 +172,3 @@ Moving the notes after publication creates findings 3, 4 and 6, plus a history p
 - Anything that needs execution: the coverage result at HEAD, and the KI-78 test outcomes.
 
 **Next step:** after you lift the gate hold, run `cd cmru && ./run-gate.py coverage` and then the aggregate `./run-gate.py gate` on the final commit. Fix findings 1 and 2 first, or record them as BLOCKED, and decide on the KI-78 design before any CMRU release.
-

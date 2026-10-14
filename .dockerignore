@@ -7,10 +7,15 @@
 *
 !ciu
 !cmru
-!run-gate-project
 !assay
 !topos
 !nyxloom
+!run-gate-project
+run-gate-project/*
+!run-gate-project/pyproject.toml
+!run-gate-project/README.md
+!run-gate-project/run_gate.py
+!run-gate-project/run_gate_admission.py
 !wheel-builder
 # Nyxloom's image now builds with the repository root as context. Expose only
 # what its cli-extended WHEEL build copies (pyproject.toml + README.md + src;

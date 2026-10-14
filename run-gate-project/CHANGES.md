@@ -1,14 +1,22 @@
-# Changelog — run-gate
+# Changelog — Run-Gate
 
-All notable changes to `run-gate.py` and its estate adoption are recorded
-here. The in-file `__revision__` is the drift marker: estate sweeps compare
-it, and any consumer holding a COPY (not a symlink) must re-copy when it
-moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
+Changes to the Run-Gate wheel and its estate adoption are recorded here.
+Release SemVer from the installed wheel is the public tool identity. Historical
+`__revision__` values and persisted `revision` fields are provenance only; they
+do not track consumer copies or define upgrade floors. Normative behavior
+lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
-<!-- Empty on purpose: CMRU generates versioned history from project-scoped commits. -->
+- Documentation: state that the installed SemVer wheel is the only supported
+  Run-Gate consumer; copied `run-gate.py` scripts are retired.
+- Fix: require Assay's verdict exit code to be a non-boolean integer matching
+  both the runner status and the closed outcome table, preventing a stale or
+  inconsistent PASS artifact from certifying a failed process (RG-95).
+- Fix: detect source renames before filtering the selftest diff-coverage scope,
+  so replacing the retired compatibility symlink measures changed content
+  instead of treating the whole wheel module as new (RG-96).
 
 <!-- cmru: release history -->
 

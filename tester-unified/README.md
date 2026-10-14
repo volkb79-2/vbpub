@@ -3,10 +3,30 @@
 `tester-unified` is the vbpub gate environment. The devcontainer is only the
 cockpit used to launch it; pytest and the actual gate command run in the image.
 
-Build the image from the repository root:
+Build the Run-Gate wheel from the same checkout first, then use its metadata
+version to build the image. The image builds that exact source into a separate
+wheel so nested gate commands use the same Run-Gate release:
 
 ```bash
-docker buildx build --load -f tester-unified/Dockerfile -t tester-unified:local .
+cmru handler wheel-build --cwd run-gate-project
+run_gate_test_version="$(python3 - <<'PY'
+from email.parser import Parser
+from pathlib import Path
+from zipfile import ZipFile
+
+wheels = sorted(Path("run-gate-project/dist").glob("run_gate-*.whl"))
+if len(wheels) != 1:
+    raise SystemExit(f"expected one Run-Gate wheel, found {len(wheels)}")
+with ZipFile(wheels[0]) as archive:
+    metadata_path = next(name for name in archive.namelist()
+                         if name.endswith(".dist-info/METADATA"))
+    metadata = Parser().parsestr(archive.read(metadata_path).decode("utf-8"))
+print(metadata["Version"])
+PY
+)"
+docker buildx build --load -f tester-unified/Dockerfile \
+  --build-arg "RUN_GATE_TESTER_VERSION=$run_gate_test_version" \
+  -t tester-unified:local .
 ```
 
 Image contents worth knowing (KI-52 / BG-05, 2026-10):
@@ -62,6 +82,14 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   user without traversing `/home/vscode` in the base image. See the
   [design rationale](docs/DESIGN-GUIDE.md#the-installed-run-gate-cli) and
   [consumer command](docs/CONSUMERS.md#invoking-run-gate-from-a-cmru-step).
+
+- **Run-Gate is installed as a wheel.** The image builds the Run-Gate source
+  from this checkout using the exact version extracted from the candidate wheel
+  above, installs it into `/opt/tester-venv`, and verifies that
+  `run-gate --version` agrees with installed distribution metadata. Run-Gate
+  uses a separate build environment because it pins a different build backend
+  from CMRU. The image contains no project-local `run-gate.py` CLI script or
+  revision-marker compatibility shim; it uses the installed wheel.
 
 Run a gate through the canonical launcher:
 

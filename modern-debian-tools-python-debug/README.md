@@ -717,22 +717,22 @@ External references:
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+`run-gate` is the canonical test entrypoint — `run-gate --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
 The declared lanes run in `tester-unified`, not in the cockpit devcontainer:
 
-- `./run-gate.py smoke` runs Python syntax checks, the host-setup renderer and
+- `run-gate smoke` runs Python syntax checks, the host-setup renderer and
   the complete `scripts/` pytest suite (73 tests at the current baseline).
-- `./run-gate.py release` is the image-release gate for the Docker/OCI release
+- `run-gate release` is the image-release gate for the Docker/OCI release
   flow tests; CMRU consumes this declaration instead of carrying a second
   `tester-gate` command.
-- `./run-gate.py assay-full` runs the wizard's assay lane at R0, R1, R2 and R3.
+- `run-gate assay-full` runs the wizard's assay lane at R0, R1, R2 and R3.
   R2 generates and runs the full native mutation campaign for the current
   source, and resumes from the git-ignored `.assay/` progress stream after an
   interrupted session.
-- `./run-gate.py vm-system` runs the MDT host setup acceptance in the shared
+- `run-gate vm-system` runs the MDT host setup acceptance in the shared
   QEMU/TCG harness. The bare-host lane only drives the runner; its assertions
   execute inside the guest and verify systemd PID 1, cgroup v2, Docker,
   rendered slice units, daemon configuration, and the installed host check.

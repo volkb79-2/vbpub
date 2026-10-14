@@ -333,5 +333,5 @@ def test_launcher_docs_are_linked_and_document_the_complete_cli():
     combined = "\n".join(path.read_text() for path in DOCS)
     for token in ("--workdir", "--evidence-dir", "--network none", "--help", " -- "):
         assert token in combined
-    assert "tester-unified/run --workdir run-gate-project -- ./run-gate.py selftest" \
+    assert "tester-unified/run --workdir run-gate-project -- run-gate selftest" \
         in (DOCS[0].read_text() + DOCS[2].read_text())

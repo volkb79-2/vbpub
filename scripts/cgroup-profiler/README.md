@@ -32,6 +32,11 @@ matching `CGPROFILE <version> — cgroup resource profiler` headline. Normal
 profiling output is unchanged. The shell shim and `cgprofile.py` therefore
 expose the same top-level compatibility option.
 
+RG-55 integrations use the installed Run-Gate wheel and its SemVer identity;
+copied `run-gate.py` scripts are not a supported consumer. See the
+[design rationale](docs/DESIGN-GUIDE.md#run-gate-is-an-installed-semver-consumer)
+and [adoption steps](docs/CONSUMERS.md#attach-a-run-gate-lane).
+
 The Dockerfile requires explicit `CGPROFILE_VERSION` and `GIT_REVISION` build
 arguments and fails before package installation when either is absent. The
 Bake file uses a literal development version and tag, but has no fabricated

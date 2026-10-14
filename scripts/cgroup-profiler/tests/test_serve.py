@@ -3485,6 +3485,24 @@ def test_ctl_fails_closed_on_invalid_version_payloads(monkeypatch, capsys, respo
     assert "invalid response" in captured.err
 
 
+@pytest.mark.parametrize("observer", [
+    {"contract": 0, "path": "/run/observer.sock", "listening": True},
+    {"contract": True, "path": "/run/observer.sock", "listening": True},
+    {"contract": 2, "path": "/run/observer.sock", "listening": "yes"},
+])
+def test_ctl_fails_closed_on_invalid_resource_observer_metadata(
+    monkeypatch, capsys, observer,
+):
+    response = _ctl_response_fixture("version")
+    response["resource_observer"] = observer
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "version", response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
+
+
 def test_ctl_validator_falls_through_only_for_an_unknown_internal_verb():
     # `build_parser()` exposes only the closed ctl vocabulary, but this
     # direct envelope check keeps the validator's final dispatch branch
@@ -3694,6 +3712,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
     socket_path = str(tmp_path / "ctl.sock")
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+        observer_socket_path=str(tmp_path / "resource-observer.sock"),
         cgroup_root=str(root_link), proc_root=str(proc_link),
         clock=lambda: clock_box["t"], sampler_clock=_counting_sampler_clock(),
         sampler_sleep=lockstep, session_id_fn=lambda: SESSION_ID, accept_timeout=0.05,
@@ -3749,7 +3768,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         }
         assert version_out["resource_observer"] == {
             "contract": 2,
-            "path": str(Path(socket_path).with_name("resource-observer.sock")),
+            "path": str(tmp_path / "resource-observer.sock"),
             "listening": True,
         }
         version_out.pop("transports")

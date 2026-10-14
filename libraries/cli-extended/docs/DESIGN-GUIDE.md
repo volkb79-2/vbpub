@@ -508,7 +508,7 @@ correct code from being mistaken for evidence that it detects the defect it
 claims to prevent.
 
 The gate is an in-repo consumer and uses the current checkout's Assay source
-through `run-gate.py`; it does not pin a stale zipapp. All three lanes execute
+through `run-gate`; it does not pin a stale zipapp. All three lanes execute
 inside `tester-unified`. The project gate is reproducible from the same source
 and environment used for adoption, while remaining outside the interactive
 development cockpit.

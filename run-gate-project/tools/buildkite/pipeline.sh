@@ -11,9 +11,9 @@
 #       - label: ":pipeline: lanes"
 #         command: "tools/buildkite/pipeline.sh | buildkite-agent pipeline upload"
 #
-# LANE METADATA COMES FROM `./run-gate.py --list` AND NOWHERE ELSE. CONSUMERS.md
+# LANE METADATA COMES FROM `run-gate --list` AND NOWHERE ELSE. CONSUMERS.md
 # "Anti-goals" forbids a second parser of run-gate.toml, so this script never
-# opens that file. The listing's contract, verified against run-gate.py rev 33
+# opens that file. The listing's contract is verified against the installed CLI
 # `cmd_list()` and its own usage line, is one lane per line:
 #
 #     name<TAB>kind<TAB>environment
@@ -37,12 +37,12 @@
 #                             listing does not carry -> exit 2 naming it.
 #   RUN_GATE_TIMEOUT_MINUTES  Optional, default 300. Positive integer.
 #
-# Argument: $1 = the project directory holding run-gate.py, relative to the
+# Argument: $1 = the project directory holding run-gate.toml, relative to the
 # checkout root the agent builds in (default "."). It is used BOTH to invoke
 # `--list` here and, verbatim, inside the emitted `command` and
 # `artifact_paths` — so pass the path as the agent will see it.
 #
-# Dependencies: bash and the project's own run-gate.py (python3, stdlib only).
+# Dependencies: bash and an installed Run-Gate wheel on the agent's PATH.
 # No awk/jq/yaml tooling: the document is small enough to print exactly.
 #
 # There is no --dry-run: this script only ever writes to stdout, starts no
@@ -58,16 +58,16 @@ usage: pipeline.sh [PROJECT_DIR]        (default: .)
        pipeline.sh --help
 
 Emits Buildkite pipeline YAML on stdout: one command step per selected
-run-gate lane, each running `./run-gate.py <lane>` on the agent.
+run-gate lane, each running `run-gate <lane>` on the agent.
 
 environment:
   RUN_GATE_QUEUE            required — agent queue; also the concurrency group
   RUN_GATE_LANES            optional — space-separated lane names
-                            (empty = every lane `./run-gate.py --list` shows)
+                            (empty = every lane `run-gate --list` shows)
   RUN_GATE_TIMEOUT_MINUTES  optional — per-step timeout, default 300
 
 exit codes: 0 emitted, 2 refused (bad environment, unknown lane, unusable
-listing). Lane metadata is read ONLY from `./run-gate.py --list`.
+listing). Lane metadata is read ONLY from `run-gate --list`.
 EOF
 }
 
@@ -95,7 +95,10 @@ case "$project" in
         die "project directory '$project' contains a character that cannot be quoted safely inside the emitted YAML (\" \$ \` \\\\ or newline)" ;;
 esac
 [ -d "$project" ] || die "project directory '$project' does not exist"
-[ -x "$project/run-gate.py" ] || die "'$project/run-gate.py' is not an executable file — this generator reads lane metadata only through it"
+[ -f "$project/run-gate.toml" ] \
+    || die "project config '$project/run-gate.toml' does not exist"
+command -v run-gate >/dev/null 2>&1 \
+    || die "the Run-Gate wheel is not installed on PATH — install the required Run-Gate SemVer before generating remote lanes"
 
 # Path prefix used inside the emitted step. "." means "the checkout root IS the
 # project", so neither a `cd` nor an artifact prefix is emitted for it.
@@ -125,8 +128,8 @@ case "$timeout" in
 esac
 
 # --- the listing -----------------------------------------------------------
-if ! listing=$(cd "$project" && ./run-gate.py --list); then
-    die "'$project/run-gate.py --list' failed — fix the project's lane config first; this generator has no second way to learn the lanes"
+if ! listing=$(cd "$project" && run-gate --list); then
+    die "'run-gate --list' failed in '$project' — fix the project's lane config first; this generator has no second way to learn the lanes"
 fi
 
 available=""
@@ -136,10 +139,10 @@ while IFS=$'\t' read -r name kind environment; do
     fi
     case "$environment" in
         *$'\t'*)
-            die "'$project/run-gate.py --list' produced a line with more than the three documented columns (name<TAB>kind<TAB>environment): '$name/$kind/$environment' — the listing contract moved; re-read this generator against it" ;;
+            die "'run-gate --list' produced a line with more than the three documented columns (name<TAB>kind<TAB>environment): '$name/$kind/$environment' — the listing contract moved; re-read this generator against it" ;;
     esac
     if [ -z "$kind" ] || [ -z "$environment" ]; then
-        die "'$project/run-gate.py --list' produced a line that is not name<TAB>kind<TAB>environment: '$name'"
+        die "'run-gate --list' produced a line that is not name<TAB>kind<TAB>environment: '$name'"
     fi
     case "$name" in
         *[!A-Za-z0-9._-]*)
@@ -152,7 +155,7 @@ while IFS=$'\t' read -r name kind environment; do
 done <<EOF
 $listing
 EOF
-[ -n "$available" ] || die "'$project/run-gate.py --list' listed no lane of kind \"command\" or \"assay\" — nothing to run remotely"
+[ -n "$available" ] || die "'run-gate --list' in '$project' listed no lane of kind \"command\" or \"assay\" — nothing to run remotely"
 
 # --- selection -------------------------------------------------------------
 requested=${RUN_GATE_LANES-}
@@ -190,7 +193,7 @@ else
         esac
     done
     if [ -n "$unknown" ]; then
-        die "RUN_GATE_LANES names lane(s)$unknown that '$project/run-gate.py --list' does not show; it shows:$available"
+        die "RUN_GATE_LANES names lane(s)$unknown that 'run-gate --list' does not show; it shows:$available"
     fi
     if [ -n "$duplicate" ]; then
         die "RUN_GATE_LANES names lane(s)$duplicate more than once; that would emit two identical steps with the same label, which is never what was meant"
@@ -202,7 +205,7 @@ fi
 printf 'steps:\n'
 for lane in $selected; do
     printf '  - label: "run-gate: %s on %s"\n' "$lane" "$queue"
-    printf '    command: "%s./run-gate.py %s"\n' "$cd_prefix" "$lane"
+    printf '    command: "%srun-gate %s"\n' "$cd_prefix" "$lane"
     printf '    agents:\n'
     printf '      queue: "%s"\n' "$queue"
     printf '    concurrency: 1\n'

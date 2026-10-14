@@ -256,6 +256,7 @@ def _committed_self_qualification_plan_sha256(
             "-m",
             "assay.cli",
             "plan",
+            "--json",
             "self-qualification",
             "--file",
             str(repo_root / "assay" / "assay.toml"),

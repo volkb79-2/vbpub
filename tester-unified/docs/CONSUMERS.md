@@ -5,6 +5,10 @@
 From a vbpub checkout or linked worktree, keep the gate command after `--` so
 its argv is passed without a second shell parse:
 
+Build the image with the current Run-Gate wheel version first (see the
+[image build steps](../README.md#tester-unified)); its installed CLI must match
+the Run-Gate wheel built from the same checkout.
+
 ```bash
 tester-unified/run --workdir run-gate-project -- run-gate selftest
 tester-unified/run --workdir run-gate-project -- run-gate --base BASE_SHA assay-r1

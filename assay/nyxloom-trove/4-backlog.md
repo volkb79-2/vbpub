@@ -10963,7 +10963,7 @@ campaign trees and do not relabel the `hung` result as equivalent.
 
 ## B108 — deterministic mutation-campaign analysis and automatic post-lane closeout
 
-**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns). Phased 2026-09-28: phase 1 is the deterministic `assay analyze campaign` core that the B110 pilot and survivor screen need (brief `reports/b110/P8-campaign-analysis-core.md`). Phase 2 is the automatic run-gate post-lane closeout and its `run-gate-project/SPEC.md` integration, and stays open.**
+**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns). Phased 2026-09-28: phase 1 is the deterministic `assay analyze campaign` core that the B110 pilot and survivor screen need (brief `reports/b110/P8-campaign-analysis-core.md`). Controller update 2026-10-13: phase 1's state scan and report output now have explicit budgets, and its adopter docs distinguish whole-plan scope from a completed/passing result; exact tester-unified gate and review are pending on `assay-b108-phase1-closeout-20261013`. Phase 2—the automatic run-gate post-lane closeout and its `run-gate-project/SPEC.md` integration—remains open.**
 
 **Observed need:** operators repeatedly call Assay and then write one-off
 Python/LLM analysis to answer basic campaign questions: how many candidates
@@ -11046,6 +11046,11 @@ interpretation step.
       the machine-readable and text closeout in tester-unified gate evidence.
       A command lane without explicit analysis declarations does not guess;
       a closeout failure preserves the original command status and verdict.
+- [ ] A large unrelated state store, a state directory over the entry/record/
+      byte budgets, and a campaign report over the output budget each produce
+      a named evidence error; no path silently drops state, runs, or
+      reclassification history. README, DESIGN-GUIDE and CONSUMERS state the
+      shipped limits and explain that `qualifying` describes scope, not result.
 - [ ] README explains the analysis surface, DESIGN-GUIDE records its identity,
       failure, and estimate rules, and CONSUMERS.md includes pasteable direct
       and run-gate workflows. `run-gate-project/SPEC.md` documents the
@@ -11873,7 +11878,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 **Status: IMPLEMENTED (stage 1); bounded measurement pending on the current release candidate; full R2 stage 2 remains open.** The analysis package (A-478) has an R0+R1 whole-target lane and a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. B131 owns its analysis selector and checker; the P8 extension in this wave lets its selection report and progress be summarized without qualifying the selected sample (A-490). The candidate plan and bounded pilot measure the declared target without choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker and selected-summary tests and syncs README, DESIGN-GUIDE, CONSUMERS and this backlog entry in the same package. The final integrated `tester-unified` gate and MDT `smoke` passed on `b8713d56`; a fresh preflight retry on `595b4069` refused before child launch with 1,375,588,352 bytes of headroom against its 2 GiB requirement. On 2026-10-10, the registered `b110-pilot` and `analysis-r2-pilot` attempts on `2980858b` both refused before child launch at the shared 2 GiB `dev-gates.slice` reserve check (1,315,123,200 and 1,314,852,864 bytes available, respectively). These are capacity refusals, not failed mutation campaigns. A later exact-tip retry on `77805722` also refused before child launch: the B105 pilot had 1,048,875,008 bytes and the analysis pilot had 1,048,760,320 bytes of headroom, versus 2,147,483,648 required; logs are recorded in B118. None of those attempts produced a measurement.
 
-**Controller update (2026-10-13):** The selector and checker are integrated in the release candidate. Run the registered `b110-pilot` and `analysis-r2-pilot` on the exact committed candidate after contract-2 observer deployment. These are non-qualifying measurements and do not block the Assay release. Record admission refusals as capacity outcomes, not mutation results. No full analysis R2 qualification is claimed.
+**Controller update (2026-10-13):** The selector and checker are integrated in the release candidate. The first exact-candidate attempt at `341abd66a07d` planned 923 candidates and selected a bounded sample, then refused before candidate execution because the fixed `.assay/analysis-r2-pilot-state/PILOT-STATE` belonged to an older selection. It produced no pilot measurement. The launcher and host checker now use a commit-bound state directory, preserving the older selection state while allowing this exact revision to resume independently. Rerun the registered `analysis-r2-pilot` and record its result. The B105 bounded pilot is a separate failed attempt: its baseline ended `ERROR/EXEC_FAILED` before R2 selection execution, with no retained evidence establishing OOM; investigate before retry. Both pilots are non-qualifying measurements and do not block the Assay release. Record admission refusals as capacity outcomes, not mutation results. No full analysis R2 qualification is claimed.
 
 ## B132 — SQL constructs PostgreSQL may refuse
 
@@ -12802,42 +12807,48 @@ profiling. Do not direct consumers to unreleased candidate versions or imply
 that JavaScript, Go, or SQL have capabilities the matrix marks absent or
 ingestion-only.
 
-**Environment choice:** use one fresh ephemeral test-runner container per
-lane invocation, launched from the declared image (dstdns can reuse
-`dstdns/test-runner:latest`). It runs the full lane, including its mutation
-candidates; Assay does not start a new container per candidate. CIU continues
-to own the selected worktree's Compose stack and its dependencies. Run-Gate
-must attach the lane container to that same worktree's CIU network, deriving
-the network from the judged worktree's rendered CIU configuration rather
-than from the invoking checkout or a hand-copied name. This preserves access
-to the lane's existing database and services without keeping a test-runner
-container alive. CIU already has an ephemeral `docker run` path that joins the
-selected stack network; the missing piece is making this network fact
-available to Run-Gate's ephemeral lane contract.
+**Environment choice:** the migration target is CIU v8's `ciu gate`, the
+consumer-facing lifecycle for a lane. With `--worktree PATH` when selecting a
+linked worktree, CIU resolves that checkout's testing declaration and starts
+one fresh test-runner container for the whole lane invocation from its
+declared image (dstdns can reuse `dstdns/test-runner:latest`). CIU attaches
+that runner to the selected instance's network, collects the result, and
+removes the container. Assay does not start a container per mutation
+candidate. `ciu up` starts the selected instance's declared dependency
+services; it does not create lane runners. Consumers do not issue
+hand-written `docker run` commands.
 
-The new container has a clean writable layer, process tree, `HOME`, and
-container-local caches. It does not inherit mutable state from a former
-test-runner container. Only declared worktree/state mounts and services
-reachable over the selected network are shared. In particular, Assay resume
-state must live under its declared bind-mounted state directory. Each lane
-container gets its own Docker identity, so multiple containers from the same
-image can run at once without Compose project-name collisions. Lanes that
-mutate the same database must use isolated database/schema names or Run-Gate's
-declared shared-resource lock; network sharing alone does not make their test
-data isolated.
+During the pre-v8 transition, use the registered Run-Gate workflow. Keep an
+`exec` runner only as a temporary compatibility path for lanes whose
+requirements it supports; it is not the R2 observer solution because
+`docker exec` candidates share cgroup counters with unrelated processes in
+that long-running container. Do not require an observer for R0/R1. The dstdns
+native-R2 migration waits for the released `ciu gate` contract rather than
+assuming current `exec` lanes can provide candidate-level event attribution.
 
-Do not add observer access to a long-running `exec` test-runner as the normal
-solution. Every `docker exec` candidate would share that container's cgroup
-counters with unrelated processes, including commands left running by another
-tool. Keep `exec` only as a temporary compatibility path for a lane until its
-CIU network and state requirements work with the ephemeral contract. Do not
-require an observer for R0/R1.
+Multiple `ciu gate` runs can use the same image and selected worktree network
+concurrently; each run has a unique container identity, so a separate CIU
+worktree is not needed just to avoid container-name collisions. Create a
+separate CIU worktree/instance only when a lane needs different checkout
+configuration or an independent service stack/network, accounting for the
+additional service cost.
+
+The lane container has a clean writable layer, process tree, `HOME`, and
+container-local caches. No test may rely on mutable state left by an earlier
+runner. The worktree and explicitly declared Assay resume-state mount are
+available to the lane; Assay resume data must use that state mount. CIU
+services and their declared volumes are separate and may persist across lane
+runs. Lanes that mutate the same database need isolated database/schema names,
+a reset policy, or a declared shared-resource lock; network sharing alone does
+not isolate their test data.
 
 **Dependencies:** B108/P8 phase 2 must finish before this guide describes
 campaign closeout as complete. Run-Gate and cgprofile must publish the
-contract-2 observer path Assay requires, and Run-Gate must support attaching
-an ephemeral lane container to the judged worktree's CIU network. The consumer
-guidance must name the released environment and observer contracts.
+contract-2 observer path Assay requires. CIU v8's `ciu gate` must be released
+with the selected-worktree network and state-mount behavior described above;
+that workflow owns the post-v8 lane attachment, so a separate Run-Gate network
+attachment feature is not a dependency. The consumer guidance must name the
+released environment and observer contracts.
 
 **Acceptance:** README's capability matrix, DESIGN-GUIDE rationale, and
 CONSUMERS migration steps agree on released versions, schemas, language
@@ -12858,25 +12869,35 @@ have unique container identities; lanes sharing mutable services are isolated
 or serialized. Examples use the shipped Assay loader and versioned consumer
 interface; cross-document links resolve.
 
-**Amendment 4 (2026-10-13, CIU v8 lifecycle clarification):** CIU owns the
-consumer-facing lane lifecycle. Once the v8 merge is released, invoke a lane
-through `ciu gate` (including `--worktree PATH` when selecting a linked
-worktree); CIU resolves that checkout's testing declaration, creates a
-run-scoped ephemeral lane container with a unique run identity, joins it to
-that CIU instance's network, collects the result, and removes the container.
-Consumers do not issue `docker run`. `ciu up` brings up the selected worktree
-instance's declared service stack; it is not the mechanism for creating a
-second lane runner. Multiple `ciu gate` runs can use the same image and
-worktree network concurrently without creating a CIU worktree per lane.
-Create a separate CIU worktree/instance only when the lane needs its own
-checkout configuration or an independent service stack/network; that choice
-also duplicates the stack's resource cost.
+## B168 — B110 and B131 pilot checkers omit v16 process-tree evidence
 
-The lane container's processes, writable layer, `HOME`, and local caches are
-disposable. No test may rely on state left by an earlier lane container.
-Assay resume data is the intentional exception and must use the explicitly
-declared CIU/run state mount. A CIU service's database or volume is separate
-from runner state and may persist across lanes, so mutable service data still
-needs per-lane isolation or a declared lock/reset policy. Until the v8
-cutover, use the registered `run-gate` workflow; this transition does not
-authorize hand-written Docker commands.
+**Status: IMPLEMENTED IN THE ASSAY 10 CANDIDATE; exact-tip gate pending.**
+
+The native R2 state-record contract now requires `process_tree_evidence` for
+executed outcomes. `_terminal_result_matches_bucket()` uses that evidence to
+refuse a killed, survived or equivalent result unless the leader exited
+normally and no descendants remained. A timeout or hung result must retain
+the matching timeout-killed leader status. The B110 and B131 independent
+pilot checkers called this classifier without parsing or passing the evidence,
+so valid pilot records failed validation and the checkers did not enforce the
+same process-window boundary as `assay verify`.
+
+**Required behavior.** Both pilot readers require the field on every native
+state record, validate its exact schema with `ProcessTreeEvidence.from_dict`,
+and pass it to `_terminal_result_matches_bucket()`. Missing or malformed
+evidence is a named pilot-state refusal. Fixtures describe ordinary exits and
+timeout-killed hung candidates accurately. The public docs explain this
+state-record requirement and how it protects candidate classification.
+
+**Files:** `tools/b110_pilot_report_check.py`,
+`tools/analysis_r2_pilot_check.py`, their gate tests,
+`README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and this backlog.
+
+**Oracles:** (1) B110 and B131 pilot fixtures with valid normal-exit evidence
+are accepted. (2) Removing the evidence from either fixture is refused with
+the named missing-evidence diagnostic. (3) Malformed evidence is refused and
+cannot be downgraded to a cache miss. (4) A killed/survived/equivalent state
+with a non-exited leader or outliving descendants is not accepted as that
+bucket. (5) A hung state is accepted only with `timeout-killed` evidence and
+the existing complete liveness resource trace. (6) All config examples and
+documentation anchors remain valid.

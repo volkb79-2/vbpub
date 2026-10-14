@@ -267,7 +267,10 @@ run_analysis_r2_pilot() {
   local pilot_plan_status pilot_selection_status checker_status pilot_init_status
   local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s
   local pilot_checker_stdout pilot_attestation_sha256
-  local state_dir=.assay/analysis-r2-pilot-state
+  # Keep resume records separate for each exact source revision. A fixed path
+  # would make a new pilot collide with the previous
+  # commit's PILOT-STATE sentinel; the old records remain available for audit.
+  local state_dir=.assay/analysis-r2-pilot-state-${source_commit:0:12}
   local plan_path=.assay/analysis-r2-pilot-plan.json
   local candidates_path=.assay/analysis-r2-pilot-candidates.txt
   local selection_path=.assay/analysis-r2-pilot-selection.json
@@ -585,7 +588,7 @@ source_epoch="$(assay_git -C "$scratch/source" log -1 --format=%ct "$source_comm
   || die "cannot derive SOURCE_DATE_EPOCH from selected commit $source_commit"
 
 # S1 (B123): the full lane needs the registered tester-unified gate to have passed
-# at this exact commit and tree. `./run-gate.py tester-unified` writes this receipt
+# at this exact commit and tree. `run-gate tester-unified` writes this receipt
 # only after a green run; the preflight lane does not require it (CD9).
 receipt="$project/.assay/registered-gate/tester-unified.json"
 if [[ "$requested_lane" == "self-qualification" ]]; then
@@ -595,7 +598,7 @@ if [[ "$requested_lane" == "self-qualification" ]]; then
     --tester-unified-receipt "$receipt" \
     --expected-commit "$source_commit" \
     --expected-tree "$source_tree" \
-    || die "no registered tester-unified pass at $source_commit; run ./run-gate.py tester-unified first"
+    || die "no registered tester-unified pass at $source_commit; run run-gate tester-unified first"
 fi
 
 distribution="$project/gate/distribution"

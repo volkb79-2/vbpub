@@ -587,5 +587,5 @@ normal command output is unchanged.
 
 The broad `tester-unified` lane is Assay-judged with 100% whole-source line and
 branch coverage. The `session-extract` lane additionally carries its declared
-mutation and canary checks. Invoke both through the project's `./run-gate.py`
+mutation and canary checks. Invoke both through the project's `run-gate`
 entrypoint; local cockpit test results do not certify a release.

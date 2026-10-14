@@ -9419,3 +9419,12 @@ tree must run the registered contract-2 R2 lane. Before that run, the two
 survivor-specific oracle additions cover a forbidden root target and a
 counter/path disagreement while the other six dispositions remain
 masked/equivalent pending fresh R2 confirmation.
+
+### RW-570 — 2026-10-14 — installed Run-Gate wheel is the only supported consumer
+
+The operator confirmed that copied `run-gate.py` scripts are no longer a
+supported integration. The supported consumer is the installed Run-Gate wheel;
+its SemVer from `run-gate --version` is the public compatibility identity.
+Updated the canonical RG-55 interface contract and its cgroup-profiler copy,
+and aligned the adopter docs. This changes distribution identity wording, not
+the daemon wire protocol.

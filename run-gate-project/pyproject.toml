@@ -1,23 +1,7 @@
-# RG-14 — the wheel as a SECOND artifact beside the canonical script.
-#
-# The script stays PRIMARY: fresh clone, zero installs, `./run-gate.py --list`
-# unchanged (CONSUMERS step 1). This file wraps the launcher and its
-# standalone `run_gate_admission.py` module for pip-installable distribution,
-# published through cmru's wheel-publish like assay/ciu. The wheel must never
-# become a requirement — CONSUMERS.md says so in prose and this file cannot
-# make it one.
-#
-# Version is DERIVED from git tags by setuptools-scm (no clock, no manual
-# bump), exactly like ciu/cmru: release = annotated tag `run-gate-vX.Y.Z`
-# minted by the cmru release transaction; untagged commit =
-# `X.Y.(Z+1).devN+g<sha>`. This DECOUPLES the release identity (semver) from
-# `__revision__` (the copy-drift marker external repos compare) — two tiers,
-# two jobs: consumers still re-copy on `__revision__` movement alone
-# (CONSUMERS.md), while pip/GitHub Releases speak semver. The original
-# rev-as-version coupling died when cmru adoption required semver tags:
-# bump_version("22") is unparseable and conventional-commit automation cannot
-# drive an integer counter. tests/test_run_gate.py enforces both halves of
-# the split identity structurally.
+# Run-Gate is distributed and invoked as an installed wheel. Its console
+# command and wheel metadata share the release SemVer; there is no copied
+# script compatibility marker. Internal record revisions remain only where
+# they describe persisted record provenance or schemas.
 [build-system]
 # Pinned exactly like assay/ciu so wheel builds are reproducible (same
 # toolchain + SOURCE_DATE_EPOCH -> identical sha256).
@@ -26,9 +10,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "run-gate"
-description = "run-gate — the per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script"
+description = "run-gate — the per-project gate entrypoint: declared lanes and reserved exit codes"
 readme = "README.md"
-requires-python = ">=3.11"   # floor: tomllib import in run-gate.py (same reason every estate wheel declares it)
+requires-python = ">=3.11"   # floor: tomllib import in run_gate.py (same reason every estate wheel declares it)
 license = "MIT"
 authors = [{name = "Volker Badziong"}]
 dependencies = []            # stdlib-only is the design win; this staying empty keeps the wheel honest
@@ -39,25 +23,14 @@ dynamic = ["version"]
 run-gate = "run_gate:main"
 
 [tool.setuptools]
-# run-gate.py keeps its hyphenated canonical name; Python identifiers cannot
-# carry hyphens, so py_modules cannot auto-find it. The committed symlink
-# run_gate.py -> run-gate.py gives the build an importable name for the SAME
-# bytes (dereferenced at copy time), and the console script binds to it.
+# The installed console entrypoint imports this regular Python module.
 py-modules = ["run_gate", "run_gate_admission"]
 
-# Version comes from the git tag, resolved against the enclosing checkout
+# Version comes from SemVer git tags, resolved against the enclosing checkout
 # (root = ".."): the release transaction always builds from a worktree whose
-# parent is the checkout root. `--match run-gate-v*` keeps unrelated tags
-# (assay-v*, ciu-v*, …) out of the derivation; the legacy non-semver baseline
-# `run-gate-v22` sorts below every future X.Y.Z tag and only ever surfaces as
-# a transitional dev version until the first semver release lands.
+# parent is the checkout root. The tag regex excludes the retired integer tag
+# and unrelated project tags.
 [tool.setuptools_scm]
 root = ".."
-tag_regex = "^run-gate-v(?P<version>[0-9].*)$"
+tag_regex = "^run-gate-v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+(?:[a-zA-Z0-9.+-]*)?)$"
 git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "run-gate-v*"]
-# A real release build never reaches this: cmru sets
-# SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE from the tag it just minted.
-# fallback_version only matters for a bare sdist/tarball install with no
-# .git and no pretend-version env var — without it that install hard-fails
-# instead of degrading to a placeholder, matching assay/nyxloom/topos.
-fallback_version = "0.1.0"

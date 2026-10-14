@@ -26,6 +26,7 @@ from analysis.tests.test_analysis_campaign import (
     _validate,
     _write_progress,
 )
+from assay_analysis import campaign as campaign_api
 
 def _synthetic(tmp_path, monkeypatch, count):
     """A lane repository with ``count`` synthetic plan rows installed as the plan."""
@@ -57,6 +58,43 @@ def test_o1_a_pass_campaign_without_command_exit_is_incomplete(tmp_path, monkeyp
     assert document["complete_blockers"] == ["command_exit_not_observed"]
     assert document["verdict"]["observed_command_exit"] is None
     assert document["verdict"]["command_exit_matches"] is False
+
+
+def test_o1_report_output_budget_is_a_named_evidence_refusal(tmp_path, monkeypatch):
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    monkeypatch.setattr(campaign_api, "MAX_ANALYSIS_OUTPUT_BYTES", 1)
+
+    code, out, err = _invoke(
+        root, head, verdict, progress, command_exit=0,
+    )
+    document = json.loads(out)
+    _validate(document)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"] == [{
+        "source": "input",
+        "message": "analysis report exceeds 1 output bytes",
+    }]
+    assert "analysis report exceeds 1 output bytes" in err
+
+
+def test_o1_refusal_streams_bound_a_large_duplicate_json_key(tmp_path, monkeypatch):
+    root, head, _rows = _synthetic(tmp_path, monkeypatch, 1)
+    progress = tmp_path / "progress.jsonl"
+    duplicate_key = "x" * (campaign_api.MAX_ANALYSIS_OUTPUT_BYTES + 1)
+    progress.write_text(
+        '{"' + duplicate_key + '":0,"' + duplicate_key + '":1}\n',
+        encoding="utf-8",
+    )
+
+    code, out, err = _invoke(root, head, None, progress)
+    document = json.loads(out)
+    _validate(document)
+    assert code == 2
+    assert document["status"] == "evidence_error"
+    assert document["errors"][0]["message"].startswith("duplicate JSON key: ")
+    assert len(out.encode("utf-8")) <= campaign_api.MAX_ERROR_OUTPUT_BYTES
+    assert len(err.encode("utf-8")) <= 4 * campaign_api.MAX_ERROR_MESSAGE_CHARS
 
 
 # ---- O3 -------------------------------------------------------------------

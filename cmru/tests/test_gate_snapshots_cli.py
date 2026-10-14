@@ -31,7 +31,7 @@ def repository(tmp_path, monkeypatch):
     source = tmp_path / "source"
     _git(primary, "worktree", "add", "--quiet", "-b", "gate-source", str(source), "HEAD")
     snapshot = gate_snapshot.open_gate_snapshot(source)
-    snapshot.run_gate_identity = {"revision": 68, "version": "23.11.0"}
+    snapshot.run_gate_identity = {"revision": 68, "version": "24.0.0"}
     gate_snapshot.write_snapshot_manifest(snapshot, "failed")
     gate_snapshot.close_gate_snapshot(snapshot)
     monkeypatch.chdir(source)

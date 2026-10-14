@@ -2491,7 +2491,7 @@ pre-existing dirt for R1+ snapshot lanes. The verdict records those paths as
 lanes retain their strict/pre-post policy because an override there would need
 a separate pre/post dirty-set proof. `assay verify` accepts a structurally
 valid marker but warns; release receipt consumers refuse non-empty override
-lists by default. `run-gate.py --allow-dirty` remains an independent outer
+lists by default. `run-gate --allow-dirty` remains an independent outer
 clean-tree policy and is not forwarded to assay.
 
 ### Liveness side-file placement (B093)
@@ -2697,7 +2697,7 @@ even one the container wrote itself. The full lane's driver checks it
 first (`b105_report_check.py --receipt-only`, phase
 `require-same-commit-tester-unified-pass`), and the checker refuses a full
 report without a matching receipt. The preflight lane needs none. Run
-`./run-gate.py tester-unified` before `./run-gate.py self-qualification`, in the same
+`run-gate tester-unified` before `run-gate self-qualification`, in the same
 worktree and with no commit in between: any later commit, a docs-only or merge
 commit included, needs a fresh `tester-unified` run first. A
 gate started while another `run-gate-*` container runs exits 3 with
@@ -2763,7 +2763,7 @@ source lines and branches.
 
 ```bash
 cd assay
-./run-gate.py self-qualification
+run-gate self-qualification
 ```
 
 The invocation is failure-bounded, but the current B105 campaign is not yet
@@ -4781,7 +4781,21 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
 - **Shape.** JSON is closed and schema-validated; `--format text` prints a
   summary whose `projection (diagnostic)` line appears only with `--project`.
   Adverse candidates are paged (`--outcome`, `--path-prefix`, `--offset`,
-  `--limit`) and always carry `matching_total` and `next_offset`.
+  `--limit`) and always carry `matching_total` and `next_offset`. The optional
+  state directory scan is capped at 50,000 entries, 10,000 matching records
+  and 64 MiB of record bytes. A complete JSON report is capped at 16 MiB; if
+  unpaged run or reclassification history exceeds that limit, analysis returns
+  a named `evidence_error` rather than silently truncating evidence. Progress
+  input remains capped at 64 MiB and 10,000 runs.
+  Refusal JSON has a 64 KiB cap and each input-derived error detail has a
+  768-character cap; details are truncated while retaining the failure kind,
+  so a duplicate key or other input-derived detail cannot bypass the output
+  cap.
+- **`qualifying` is scope metadata.** `true` means analysis used the whole
+  declared plan rather than a selected pilot. It does not mean the campaign is
+  complete, passed, or acceptable. Read `status`, `verdict`, and
+  `complete_blockers` for those conclusions. A report can be
+  `qualifying: true` with `status: incomplete` or a non-PASS verdict.
 - **Projection contract.** For a native R2 lane, `--project-jobs` must equal
   the lane's declared `mutation.jobs`; a different worker count describes an
   execution model the lane cannot run and is refused in ordinary campaign
@@ -4803,6 +4817,11 @@ Both files are read through Assay's bounded no-follow reader and their
 fingerprints are retained in the output. Supplying either file without the
 other, combining a selection with a verdict, or projecting a native pilot with
 a worker count different from the lane's declared `mutation.jobs` is refused.
+The B110 and B131 report checkers independently validate the v16
+`process_tree_evidence` object from every native candidate state record and
+pass it into the terminal-result classifier. A killed, survived or equivalent
+result requires an exited leader and zero outliving descendants; timeout and
+hung records must prove the corresponding timeout-killed leader.
 
 A selected sample is a measurement, not a whole-plan judgment. Its report is
 always `status: incomplete`, `qualifying: false`, with no verdict and exit 3,
@@ -4849,6 +4868,9 @@ This second boundary catches replacement or mutation after the inner checker
 runs. The campaign deadline name includes the source commit; the
 registered host runner prints its resolved path in the lane output because
 declaring the containing `.assay` directory does not disclose a child file.
+Each native state record's v16 process-tree evidence is validated and supplied
+to terminal-result classification; a pilot cannot count a kill or survivor
+from a bucket label whose process window is absent or inconsistent.
 No verdict is written: a completed sample
 is a measurement, while timeout, partial state, host refusal or resource limit
 is incomplete. Only measurements from this pilot may set an analysis-specific

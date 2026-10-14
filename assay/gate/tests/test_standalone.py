@@ -703,8 +703,29 @@ def _expected_r2_artifact(
                     "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
                 },
             }
-            for item in outcomes:
-                item["resource_limit_evidence"] = zero_resource_limit_evidence
+            for bucket_name in (
+                "killed",
+                "survived",
+                "crashed",
+                "budget_exceeded",
+                "equivalent",
+                "hung",
+            ):
+                for item in mutation.get(bucket_name, []):
+                    item["resource_limit_evidence"] = zero_resource_limit_evidence
+                    item["process_tree_evidence"] = {
+                        "protocol": "assay-process-tree/1",
+                        "leader_status": (
+                            "timeout-killed"
+                            if bucket_name in {"budget_exceeded", "hung"}
+                            else "exited"
+                        ),
+                        "group_signalled_before_reap": False,
+                        "outliving_descendants": 0,
+                        "descendants_signalled": 0,
+                        "cleanup_seconds": 0.0,
+                        "clean": True,
+                    }
             mutation["candidate_ids"] = [
                 item["candidate_id"]
                 for item in sorted(
@@ -877,15 +898,57 @@ def _assert_complete(real: dict, expected: dict) -> None:
                         sample["before"] = 0
                         sample["after"] = 0
 
+    def normalize_process_tree_evidence(mutation: object) -> None:
+        if not isinstance(mutation, dict):
+            return
+        for bucket in (
+            "killed",
+            "survived",
+            "crashed",
+            "budget_exceeded",
+            "equivalent",
+            "hung",
+        ):
+            for candidate in mutation.get(bucket, []):
+                evidence = candidate.get("process_tree_evidence")
+                assert isinstance(evidence, dict)
+                assert set(evidence) == {
+                    "protocol",
+                    "leader_status",
+                    "group_signalled_before_reap",
+                    "outliving_descendants",
+                    "descendants_signalled",
+                    "cleanup_seconds",
+                    "clean",
+                }
+                assert evidence["protocol"] == "assay-process-tree/1"
+                assert evidence["clean"] is True
+                assert evidence["outliving_descendants"] == 0
+                assert evidence["descendants_signalled"] == 0
+                assert evidence["group_signalled_before_reap"] is False
+                expected_leader_status = (
+                    "timeout-killed"
+                    if bucket in {"budget_exceeded", "hung"}
+                    else "exited"
+                )
+                assert evidence["leader_status"] == expected_leader_status
+                assert isinstance(evidence["cleanup_seconds"], (int, float))
+                assert evidence["cleanup_seconds"] >= 0
+                evidence["cleanup_seconds"] = 0.0
+
     # R2 outcome data is duplicated in the top-level claims and in the
     # judgment summary. Validate and normalize both copies before comparing
     # the complete artifact; their absolute cgroup counters are runtime facts.
     for claim in filtered.get("claims", []):
         if isinstance(claim, dict) and claim.get("rigor") == "R2":
             normalize_resource_limit_evidence(claim.get("mutation"))
+            normalize_process_tree_evidence(claim.get("mutation"))
     judgment = filtered.get("judgment")
     r2 = judgment.get("r2") if isinstance(judgment, dict) else None
     normalize_resource_limit_evidence(
+        r2.get("mutation") if isinstance(r2, dict) else None
+    )
+    normalize_process_tree_evidence(
         r2.get("mutation") if isinstance(r2, dict) else None
     )
     if isinstance(r2, dict) and "budget_per_candidate_derived_s" in r2:

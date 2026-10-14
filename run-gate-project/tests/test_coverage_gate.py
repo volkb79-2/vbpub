@@ -26,20 +26,20 @@ def test_arg_parser_default_source_is_run_gate_py():
     the test suite and leaving this tool itself [file unmeasured]."""
     args = coverage_gate._build_arg_parser().parse_args(
         ["--coverage-json", "x.json"])
-    assert args.source == "run-gate-project/run-gate.py"
+    assert args.source == "run-gate-project/run_gate.py"
 
 
 def test_parse_added_lines_basic():
     diff = (
-        "diff --git a/run-gate.py b/run-gate.py\n"
-        "--- a/run-gate.py\n"
-        "+++ b/run-gate.py\n"
+        "diff --git a/run_gate.py b/run_gate.py\n"
+        "--- a/run_gate.py\n"
+        "+++ b/run_gate.py\n"
         "@@ -10,0 +11,2 @@\n"
         "+new line one\n"
         "+new line two\n"
     )
     added = coverage_gate.parse_added_lines(diff)
-    assert added == {"run-gate.py": {11, 12}}
+    assert added == {"run_gate.py": {11, 12}}
 
 
 def test_parse_added_lines_ignores_deleted_files():
@@ -55,26 +55,26 @@ def test_parse_added_lines_ignores_deleted_files():
 
 
 def test_evaluate_covered_change_passes():
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {
-        "run-gate-project/run-gate.py": {"executed_lines": [5], "missing_lines": []},
+        "run-gate-project/run_gate.py": {"executed_lines": [5], "missing_lines": []},
     }
     v = coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
     assert v.passed
     assert v.covered == 1 and v.changed_executable == 1
     assert v.uncovered == {}
 
 
 def test_evaluate_uncovered_change_fails():
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {
-        "run-gate-project/run-gate.py": {"executed_lines": [], "missing_lines": [5]},
+        "run-gate-project/run_gate.py": {"executed_lines": [], "missing_lines": [5]},
     }
     v = coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
     assert not v.passed
-    assert v.uncovered == {"run-gate-project/run-gate.py": {5}}
+    assert v.uncovered == {"run-gate-project/run_gate.py": {5}}
 
 
 def test_evaluate_ignores_files_outside_source_prefix():
@@ -84,7 +84,7 @@ def test_evaluate_ignores_files_outside_source_prefix():
             {"executed_lines": [], "missing_lines": [5]},
     }
     v = coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
     assert v.passed  # nothing in scope changed
     assert v.changed_executable == 0
 
@@ -134,23 +134,23 @@ def test_evaluate_does_not_collide_source_and_test_file_coverage():
 
 
 def test_malformed_coverage_record_raises():
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {
-        "run-gate-project/run-gate.py": {"executed_lines": "not-a-list", "missing_lines": []},
+        "run-gate-project/run_gate.py": {"executed_lines": "not-a-list", "missing_lines": []},
     }
     import pytest
     with pytest.raises(coverage_gate.CoverageGateError):
         coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
 
 
 def test_evaluate_branch_partial_line_counts_as_uncovered():
     """RG-53: a changed line that RAN but left an arm untaken (present in
     `missing_branches`, absent from `missing_lines`) must count as
     uncovered — the whole point of `--cov-branch` for the diff judge."""
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {
-        "run-gate-project/run-gate.py": {
+        "run-gate-project/run_gate.py": {
             "executed_lines": [5],
             "missing_lines": [],
             "executed_branches": [[5, 6]],
@@ -158,10 +158,10 @@ def test_evaluate_branch_partial_line_counts_as_uncovered():
         },
     }
     v = coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
     assert not v.passed
-    assert v.uncovered == {"run-gate-project/run-gate.py": {5}}
-    assert v.branch_partial_lines == {"run-gate-project/run-gate.py": {5}}
+    assert v.uncovered == {"run-gate-project/run_gate.py": {5}}
+    assert v.branch_partial_lines == {"run-gate-project/run_gate.py": {5}}
     assert v.covered == 0 and v.changed_executable == 1
     assert v.branches_total == 2 and v.branches_missed == 1
 
@@ -169,9 +169,9 @@ def test_evaluate_branch_partial_line_counts_as_uncovered():
 def test_evaluate_branch_fully_taken_line_stays_covered():
     """A changed, executed line whose every branch arm was taken stays
     covered — no `missing_branches` entry for it."""
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {
-        "run-gate-project/run-gate.py": {
+        "run-gate-project/run_gate.py": {
             "executed_lines": [5],
             "missing_lines": [],
             "executed_branches": [[5, 6], [5, 7]],
@@ -179,7 +179,7 @@ def test_evaluate_branch_fully_taken_line_stays_covered():
         },
     }
     v = coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
     assert v.passed
     assert v.uncovered == {}
     assert v.branch_partial_lines == {}
@@ -190,12 +190,12 @@ def test_evaluate_branch_fully_taken_line_stays_covered():
 def test_evaluate_no_branch_data_is_a_noop_line_only_behavior():
     """A coverage record with no branch-arc keys at all (branch coverage was
     not collected) behaves exactly like the pre-RG-53 line-only gate."""
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {
-        "run-gate-project/run-gate.py": {"executed_lines": [5], "missing_lines": []},
+        "run-gate-project/run_gate.py": {"executed_lines": [5], "missing_lines": []},
     }
     v = coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
     assert v.passed
     assert v.branches_total == 0 and v.branches_missed == 0
     assert v.branch_partial_lines == {}
@@ -205,9 +205,9 @@ def test_evaluate_branches_total_missed_scoped_to_changed_lines_only():
     """A branch on a line the diff never touched must not pollute the
     branch totals — they are reported "beside" the changed-line counts,
     never a second, whole-file denominator."""
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {
-        "run-gate-project/run-gate.py": {
+        "run-gate-project/run_gate.py": {
             "executed_lines": [5, 10],
             "missing_lines": [],
             "executed_branches": [[5, 6]],
@@ -217,15 +217,15 @@ def test_evaluate_branches_total_missed_scoped_to_changed_lines_only():
         },
     }
     v = coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
     assert v.passed
     assert v.branches_total == 1 and v.branches_missed == 0
 
 
 def test_validate_cov_record_rejects_malformed_branch_arc():
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {
-        "run-gate-project/run-gate.py": {
+        "run-gate-project/run_gate.py": {
             "executed_lines": [5],
             "missing_lines": [],
             "missing_branches": [[5]],  # missing the target line
@@ -234,7 +234,7 @@ def test_validate_cov_record_rejects_malformed_branch_arc():
     import pytest
     with pytest.raises(coverage_gate.CoverageGateError):
         coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
 
 
 def test_arg_parser_refuse_empty_diff_defaults_false():
@@ -252,7 +252,7 @@ def test_verdict_zero_zero_is_skipped_never_ok():
     (existing direct callers of `evaluate()` see identical numbers); the
     tri-state `verdict` property is what a caller must check first, so a
     0/0 is never reported or serialized as a plain 100% pass."""
-    v = coverage_gate.evaluate({}, {}, source_prefix="run-gate-project/run-gate.py")
+    v = coverage_gate.evaluate({}, {}, source_prefix="run-gate-project/run_gate.py")
     assert v.changed_executable == 0
     assert v.skipped is True
     assert v.pct == 100.0 and v.passed is True
@@ -260,23 +260,23 @@ def test_verdict_zero_zero_is_skipped_never_ok():
 
 
 def test_verdict_nonzero_diff_is_ok_or_fail():
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     ok = coverage_gate.evaluate(
         added,
-        {"run-gate-project/run-gate.py": {"executed_lines": [5], "missing_lines": []}},
-        source_prefix="run-gate-project/run-gate.py")
+        {"run-gate-project/run_gate.py": {"executed_lines": [5], "missing_lines": []}},
+        source_prefix="run-gate-project/run_gate.py")
     assert ok.skipped is False
     assert ok.verdict == "ok"
     fail = coverage_gate.evaluate(
         added,
-        {"run-gate-project/run-gate.py": {"executed_lines": [], "missing_lines": [5]}},
-        source_prefix="run-gate-project/run-gate.py")
+        {"run-gate-project/run_gate.py": {"executed_lines": [], "missing_lines": [5]}},
+        source_prefix="run-gate-project/run_gate.py")
     assert fail.skipped is False
     assert fail.verdict == "fail"
 
 
 def test_base_relation_ancestor_reads_head_is_on_the_base(tmp_path):
-    """The exact shape `./run-gate.py selftest` hits on `main` itself:
+    """The exact shape `./run_gate.py selftest` hits on `main` itself:
     merge-base(main, HEAD) == HEAD."""
     import subprocess
 
@@ -322,24 +322,24 @@ def test_base_relation_ahead_names_commit_count(tmp_path):
 
 def test_empty_diff_notice_skipped_by_default():
     kind, msg = coverage_gate._empty_diff_notice(
-        "deadbeefcafe", "run-gate.py", "HEAD is on the base",
+        "deadbeefcafe", "run_gate.py", "HEAD is on the base",
         refuse_empty_diff=False)
     assert kind == "skipped"
     assert msg == (
         "diff-coverage SKIPPED: 0 changed executable lines under "
-        "'run-gate.py' between deadbeefca and HEAD (HEAD is on the base)"
+        "'run_gate.py' between deadbeefca and HEAD (HEAD is on the base)"
     )
 
 
 def test_empty_diff_notice_error_when_refused():
     kind, msg = coverage_gate._empty_diff_notice(
-        "deadbeefcafe", "run-gate.py",
+        "deadbeefcafe", "run_gate.py",
         "HEAD is 3 commits ahead of the base; the diff touches no "
         "executable source line",
         refuse_empty_diff=True)
     assert kind == "error"
     assert msg.startswith(
-        "diff-coverage ERROR: 0 changed executable lines under 'run-gate.py'"
+        "diff-coverage ERROR: 0 changed executable lines under 'run_gate.py'"
     )
     assert "--refuse-empty-diff" in msg
     # Names the three known routes, so a reader does not have to guess.
@@ -361,8 +361,8 @@ def test_main_reports_skipped_on_zero_changed_diff_by_default(tmp_path, capsys):
     git("init", "-q", "-b", "main")
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "test")
-    (tmp_path / "run-gate.py").write_text("a = 1\n", encoding="utf-8")
-    git("add", "run-gate.py")
+    (tmp_path / "run_gate.py").write_text("a = 1\n", encoding="utf-8")
+    git("add", "run_gate.py")
     git("commit", "-q", "-m", "base")
 
     cov_json = tmp_path / "coverage.json"
@@ -372,7 +372,7 @@ def test_main_reports_skipped_on_zero_changed_diff_by_default(tmp_path, capsys):
         "--repo", str(tmp_path),
         "--base", "main",
         "--coverage-json", str(cov_json),
-        "--source", "run-gate.py",
+        "--source", "run_gate.py",
     ])
     assert rc == 0
     captured = capsys.readouterr()
@@ -386,7 +386,7 @@ def test_main_reports_skipped_on_zero_changed_diff_by_default(tmp_path, capsys):
         "--repo", str(tmp_path),
         "--base", "main",
         "--coverage-json", str(cov_json),
-        "--source", "run-gate.py",
+        "--source", "run_gate.py",
         "--refuse-empty-diff",
     ])
     assert rc_refused == 2
@@ -408,15 +408,15 @@ def test_main_reports_branch_note_on_pass_and_fail(tmp_path, capsys):
     git("init", "-q", "-b", "main")
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "test")
-    (tmp_path / "run-gate.py").write_text("a = 1\n", encoding="utf-8")
-    git("add", "run-gate.py")
+    (tmp_path / "run_gate.py").write_text("a = 1\n", encoding="utf-8")
+    git("add", "run_gate.py")
     git("commit", "-q", "-m", "base")
-    (tmp_path / "run-gate.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
+    (tmp_path / "run_gate.py").write_text("a = 1\nb = 2\n", encoding="utf-8")
 
     cov_json = tmp_path / "coverage.json"
     cov_json.write_text(json.dumps({
         "files": {
-            "run-gate.py": {
+            "run_gate.py": {
                 "executed_lines": [2],
                 "missing_lines": [],
                 "executed_branches": [[2, 3]],
@@ -429,7 +429,7 @@ def test_main_reports_branch_note_on_pass_and_fail(tmp_path, capsys):
         "--repo", str(tmp_path),
         "--base", "main",
         "--coverage-json", str(cov_json),
-        "--source", "run-gate.py",
+        "--source", "run_gate.py",
     ])
     assert rc == 0
     out = capsys.readouterr().out
@@ -441,9 +441,9 @@ def test_validate_cov_record_rejects_non_list_branch_key():
     (RG-53) — present but the WRONG TYPE entirely (not even a list), the
     sibling case to test_validate_cov_record_rejects_malformed_branch_arc's
     "right container, wrong element shape"."""
-    added = {"run-gate-project/run-gate.py": {5}}
+    added = {"run-gate-project/run_gate.py": {5}}
     coverage_files = {
-        "run-gate-project/run-gate.py": {
+        "run-gate-project/run_gate.py": {
             "executed_lines": [5],
             "missing_lines": [],
             "missing_branches": "not-a-list",
@@ -452,7 +452,7 @@ def test_validate_cov_record_rejects_non_list_branch_key():
     import pytest
     with pytest.raises(coverage_gate.CoverageGateError):
         coverage_gate.evaluate(added, coverage_files,
-                               source_prefix="run-gate-project/run-gate.py")
+                               source_prefix="run-gate-project/run_gate.py")
 
 
 def test_is_ancestor_raises_on_real_git_failure(tmp_path):
@@ -496,8 +496,8 @@ def test_main_reports_error_when_base_relation_fails(tmp_path, monkeypatch, caps
     git("init", "-q", "-b", "main")
     git("config", "user.email", "test@example.invalid")
     git("config", "user.name", "test")
-    (tmp_path / "run-gate.py").write_text("a = 1\n", encoding="utf-8")
-    git("add", "run-gate.py")
+    (tmp_path / "run_gate.py").write_text("a = 1\n", encoding="utf-8")
+    git("add", "run_gate.py")
     git("commit", "-q", "-m", "base")
 
     cov_json = tmp_path / "coverage.json"
@@ -512,7 +512,7 @@ def test_main_reports_error_when_base_relation_fails(tmp_path, monkeypatch, caps
         "--repo", str(tmp_path),
         "--base", "main",
         "--coverage-json", str(cov_json),
-        "--source", "run-gate.py",
+        "--source", "run_gate.py",
     ])
     assert rc == 2
     err = capsys.readouterr().err
@@ -608,8 +608,56 @@ def test_git_added_lines_reports_the_working_trees_own_line_numbers_dirty(tmp_pa
     # An UNCOMMITTED edit on top: two lines prepended push `d` to line 6.
     (tmp_path / "demo.py").write_text("x\ny\na\nb\nc\nd\n", encoding="utf-8")
 
-    added = coverage_gate._git_added_lines(str(tmp_path), base_rev, "demo.py")
+    added = coverage_gate._git_added_lines(str(tmp_path), base_rev)
     # `d`'s REAL on-disk position is 6, not the committed diff's 4 -- and the
     # two prepended uncommitted lines are correctly reported too, at 1 and 2,
     # since they are equally new relative to base_rev.
     assert added == {"demo.py": {1, 2, 6}}, added
+
+
+def test_git_added_lines_tracks_content_when_symlink_becomes_module(tmp_path):
+    """A filename filter hides the old path from Git's rename detector.
+
+    Run-Gate's wheel migration replaces a tracked `run_gate.py` symlink with
+    a real module while retiring `run-gate.py`. The changed-line judge must
+    count the edited content, not certify or reject the whole destination as
+    a new file. It still parses unrelated project changes; `evaluate()` owns
+    the source-scope filter.
+    """
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    old = [f"original line {i}\n" for i in range(100)]
+    (tmp_path / "run-gate.py").write_text("".join(old), encoding="utf-8")
+    (tmp_path / "run_gate.py").symlink_to("run-gate.py")
+    (tmp_path / "unrelated.py").write_text("answer = 1\n", encoding="utf-8")
+    git("add", "run-gate.py", "run_gate.py", "unrelated.py")
+    git("commit", "-q", "-m", "base")
+    base_rev = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+
+    (tmp_path / "run-gate.py").unlink()
+    (tmp_path / "run_gate.py").unlink()
+    additions = [f"new executable {i}\n" for i in range(8)]
+    new = old[:50] + additions + old[50:]
+    (tmp_path / "run_gate.py").write_text("".join(new), encoding="utf-8")
+    (tmp_path / "unrelated.py").write_text("answer = 2\n", encoding="utf-8")
+
+    added = coverage_gate._git_added_lines(str(tmp_path), base_rev)
+    assert added["run_gate.py"] == set(range(51, 59)), added
+    assert added["unrelated.py"] == {1}, added
+    verdict = coverage_gate.evaluate(
+        added,
+        {"run_gate.py": {
+            "executed_lines": list(range(51, 59)), "missing_lines": []}},
+        source_prefix="run_gate.py",
+    )
+    assert verdict.passed
+    assert verdict.changed_executable == 8

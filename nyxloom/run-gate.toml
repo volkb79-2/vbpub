@@ -1,5 +1,5 @@
 # =============================================================================
-# nyxloom project gate lanes -- parsed ONLY by run-gate.py (one parser, D-110).
+# nyxloom project gate lanes -- parsed ONLY by Run-Gate CLI (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml (nearest
 # ancestor); judgment policy lives in assay.toml [lanes.tester-unified] (R0+R1:
 # the existing pytest-cov suite with a whole-source line and branch floor).

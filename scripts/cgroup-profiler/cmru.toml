@@ -52,8 +52,8 @@ build_step = "build"
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "cgprofile: r0-r1 (unit + 100% line/branch coverage)", argv = ["./run-gate.py", "r0-r1"], cwd = "." },
-  { label = "cgprofile: r3 (canary rejection)", argv = ["./run-gate.py", "r3"], cwd = "." },
+  { label = "cgprofile: r0-r1 (unit + 100% line/branch coverage)", argv = ["run-gate", "r0-r1"], cwd = "." },
+  { label = "cgprofile: r3 (canary rejection)", argv = ["run-gate", "r3"], cwd = "." },
 ]
 
 [steps.build]

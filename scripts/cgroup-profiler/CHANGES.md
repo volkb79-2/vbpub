@@ -8,6 +8,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
-<!-- Empty on purpose: CMRU generates versioned history from project-scoped commits. -->
+- Documentation: identify the installed Run-Gate SemVer wheel as the supported
+  consumer of the CGProfile interface; copied `run-gate.py` scripts are retired.
 
 <!-- cmru: release history -->

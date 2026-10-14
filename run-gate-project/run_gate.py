@@ -1,1 +1,14784 @@
-run-gate.py
+#!/usr/bin/env python3
+"""run-gate — the per-project gate entrypoint (one parser, argv for everyone).
+
+Owns ALL gate invocation mechanics that used to live scattered in consumer
+config strings: container image + mounts, cgroup slice placement, source-backed
+assay setup or external artifact-pin verification, clean-tree refusal,
+detached run form, closed exit mapping.
+Lane declarations live in run-gate.toml in the caller's current project
+directory (per project);
+shared environment facts may be declared once in an enclosing
+run-gate.root.toml (nearest ancestor wins; project tables shadow central by
+name).
+Judgment policy is NOT here: assay lanes reference assay.toml by name.
+
+See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
+"""
+# Public CLI distribution: the installed wheel's metadata supplies its version.
+# __revision__ is retained only for persisted-record provenance.
+# rev 65: send single-line JSON over the newline-framed cgprofile control socket
+__revision__ = 68  # rev 68: pin worktree Git pointers and harden host Git readers
+# rev 66: preflight observer contract before private R2 lanes
+# rev 64: refuse failed ctl carriers and foreign watch verdicts
+# Rev 63 holds requested exec/bare-host children behind a ready/continue
+# handshake until daemon placement is read back; explicit refusal is an
+# infrastructure refusal before the body, not an unplaced candidate run.
+# Rev 62 keeps local silence from racing a healthy daemon watch, uses a
+# terminal kill in the stopped session summary, and refuses shared-scope
+# daemon kill policy without an explicit placement request.
+# Rev 61 restores the reviewed P5 v1.1 profiler transport/watch, placement,
+# gates-slice admission and calibrated fallback atop the current rev-60 tree.
+# rev 60: suppress ETA without current-run pending_total
+# R2 Assay lanes and explicit tester-unified command wrappers may opt into
+# the cgprofile observer-only socket; its mount, GID grant, and namespace
+# constraints are closed in the lane schema.
+# selective assay and command requests; failed-assay evidence; completed-fail
+# and partial footprint manifests; native sequences with trunk bases; shared
+# assay inventory import; documented durable --state-dir; closed results,
+# explicit modes, and Docker-name gate admission compatible with CIU v8.
+# rev 48: RG-78 closed results and explicit runner modes
+# before lane resolution; run records retain config provenance, and exec-mode
+# runner identity is resolved only from the judged worktree (RG-47/65/79).
+# rev 46: declared versioned entrypoints accept top-level
+# --version with a stdout version line and zero exit status.
+# rev 45: shared root configuration uses the distinct
+# run-gate.root.toml filename; ancestor run-gate.toml files remain project-local
+# and are never treated as inherited configuration.
+# rev 44: gate/lane containers resolve their host placement
+# from CGROUP_PARENT_DEV_GATES; long-running stack placement is forwarded
+# separately where a lane deliberately starts one.
+# rev 43: source-backed Assay lanes are accepted by the
+# dedicated tester-unified image and record the selected worktree's runtime
+# judge; the explicit artifact+pin branch remains for external consumers.
+# rev 42: RG-55 wave, package P4 (run-gate follow-ups,
+# third track, RW-27) -- RG-57: bare-host lanes are profiled (RW-27b),
+# where rev 41 shipped them categorically unprofiled. Daemon path: the
+# target is run-gate's OWN process (self container id from /etc/hostname +
+# a direct `docker inspect`, never `container_state()` -- that one raises
+# on an ambiguous docker failure), scope ALWAYS `container-shared`,
+# disclosed as DEVCONTAINER-WIDE; daemon-absent path: `os.wait4(pid, 0)` on
+# the LANE'S OWN child (`method: "rusage"`, `memory.source:
+# "rusage-maxrss"` -- that child's own peak RSS, exact, never a number
+# borrowed from some other child run-gate happened to reap first; `scope:
+# null` since rusage measures via wait4(), not a cgroup read), NEVER a
+# `BasicSampler` fallback on this path (RW-27b: no cgroup here is safely
+# attributable to one lane's own child). Round-1 review (RW-43) found the
+# Historical rejected first cut of the daemon-absent path used
+# `getrusage(RUSAGE_CHILDREN)`
+# deltas instead -- a monotone high-water mark over every child this
+# process had EVER reaped, so a `["true"]` lane was credited with
+# run-gate's own docker/git subprocess RSS (~36 MiB) instead of its own;
+# repaired to the `wait4()`-on-the-lane's-own-pid shape described above,
+# which cannot mix in another child's number by construction. This
+# project's own five lanes are all bare-host, so its own `selftest` now
+# records a profile and `footprint --write` stops refusing for this
+# project. RG-60: an exec lane now writes the same inflight record a
+# container lane does (client-death recovery, RW-1's rule extended to the
+# second lane kind that lacked it) -- round-1 review (RW-43/B3) found the
+# record indistinguishable from a container-written one, so the container
+# path could `docker rm -f` a shared runner it never created; both writers
+# now stamp `runner` and the container path refuses a foreign one.
+# RG-59: a live run's daemon-not-running warning names the real cause
+# (`daemon_not_running_reason()`, shared with `doctor`'s own wording,
+# RG-59) instead of reusing "produced unparsable stdout" for two
+# structurally different failures. RG-58: a bare-host lane declaring
+# `stall_timeout` (silently inert -- no watch of any kind exists on that
+# runner) gets a load-time WARNING + a matching `doctor` WARN (RW-27a: warn,
+# never refuse), one shared reason function. RG-61: eight-item SPEC/
+# CONSUMERS/LANE-AUTHORING/backlog/usage() documentation drift sweep (new
+# `R-30c` for the doctor profiler check, R-30's status count, the stale
+# 0/0-as-100% narrative corrected to RW-5's actual SKIPPED design,
+# [profile]/[footprint] CONSUMERS schema blocks, a real footprint
+# transcript, RUN_GATE_PROC_ROOT in usage(), two stale cross-references).
+# RW-28: assay.toml's r2 lane sets `budget_per_candidate = "900s"`
+# (mandatory for every R2 lane from now on -- a hung mutation candidate
+# blocks the whole run otherwise, nothing else bounds ONE candidate).
+# rev 41: RG-55 wave, package P2 (the run-gate client side
+# of the cgroup-profiler integration; contract-first against
+# RG55-INTERFACE-CONTRACT.md, alongside P1's daemon in a separate worktree)
+# -- per-lane resource profiling: peak memory (+baseline, p90, DAMON
+# hot-set), CPU cores and memory-full stall now ride alongside duration in
+# history schema 2 (`resources`/`profile_error`/`profile_ref` per entry,
+# five new `series_stats` series -- median, never mean, same RG-27 reasoning
+# `duration_stats` already used). Precisely from the daemon
+# (`cgprofile-host-daemon`, `docker exec ... cgprofile ctl ...`,
+# `ProfilerClient`) when reachable, or a coarser in-lane `docker exec`
+# cgroup sample (`method: "basic"`, `BasicSampler`/`ResourceAccumulator`,
+# the three cgroupfs parsers ported verbatim from
+# scripts/cgroup-profiler/lib/util.py) when it is not -- never nothing,
+# short of `RUN_GATE_PROFILE=off`/`[profile] enabled = false`/a lane's own
+# `profile = false`. Live acceptance, real docker: an ephemeral lane
+# allocating >= 100 MiB measured a peak of 115523584 bytes (110.17 MiB, no
+# daemon present, basic-path fallback); an exec-mode lane allocating 80 MiB
+# on a persistent runner measured a peak_over_baseline of 88612864 bytes
+# (84.51 MiB) over a 90.14 MiB baseline, >= 2 samples mid-run -- both
+# against this package's own numeric acceptance thresholds. New `footprint
+# [LANE] [--json] [--write]` verb (SPEC R-44) distills that history into a
+# COMMITTED `run-gate.footprint.json` (joins `doctor`/`validate-pointers`/
+# `history` as a reserved lane name, BREAKING); `doctor` reads it for
+# drift/staleness warnings and gains a whole new "profiler" check (daemon
+# presence, `ctl version`, effective [profile] settings incl.
+# RUN_GATE_PROFILE, `ctl host` pressure) plus a WHY on the pre-existing R-29
+# "no derivable memory ceiling" WARNING when the cause is a private cgroup
+# namespace (host-side slice truth then reachable only through that same
+# daemon). RG-48: `resources.cpus` (lane, or an environment-level fallback)
+# -> a real `docker run --cpus`, with a `doctor` warning for a container
+# lane spawning workers by name (`-n auto`/`--workers auto`) with no cap
+# declared anywhere. Vendored `tools/coverage_gate.py` also gained two
+# independent, BREAKING semantic changes this same wave: it now reads
+# coverage.py's `missing_branches` (a changed line that ran but left an arm
+# untaken now counts as uncovered -- `--cov-branch` was previously
+# decorative for the diff judge), and a 0/0 changed-line diff reports as a
+# distinct SKIPPED verdict (exit 0) rather than a silent `100.0% OK`,
+# closing the RG-51/RG-53 false-green trap without making this project's
+# own `selftest` on `main` permanently red. Full detail: SPEC.md Rev 10,
+# CHANGES.md [Unreleased], KNOWN_ISSUES_TODO_BACKLOG.md RG-55/RG-48/RG-53.
+# rev 40: RG-51 -- a lane that DELEGATES its comparison base (`judge.base_source = "request"`, or a `{base}` token in a command lane's argv) and is invoked WITHOUT `--base` fell straight through to `derive_upstream_base` -- `merge-base HEAD @{upstream}`, i.e. a REMOTE-TRACKING ref. Under this estate's standing "batch commits locally, push later" policy that ref drifts behind local work with nobody touching a line of config (measured at 85 and 88 commits behind in two different projects' lanes the same week), so the DEFAULT path silently reproduced the very stale-base hazard `base_source = "request"` exists to escape -- just relocated out of a project's `assay.toml` into run-gate's own fallback (assay README, "Pitfall: a `judge.base` literal pointing at a remote-tracking ref rots silently"). `resolve_comparison_base` now consults, BETWEEN the winning `--base` flag and that unchanged `@{upstream}` fallback, the `base_ref` string `ciu worktree create|add|adopt` records in `ciu.worktree-instance.json` at the managed worktree's CIU root -- the ref the tree was actually forked from, typically a LOCAL branch (`main`). Read as a FILE FORMAT (stdlib `json`, well-known filename), never a Python import from `ciu`: the two are separate projects and Run-Gate itself is installed from its wheel. Both the worktree root and the effective project dir inside it are checked, in that order, because ciu writes the record at the CIU root, which sits BELOW the git worktree root in a monorepo. A recorded ref is used ONLY when it is gate-safe ref text, the record's `branch` still matches the tree, git resolves the ref IN THE JUDGED TREE to a LOCAL branch, `merge-base(base_ref, HEAD)` still EQUALS the `fork_point_sha` ciu recorded when the worktree was created, that branch does not already contain the tree's HEAD, and the fork point and HEAD do not have the same TREE. Those clauses are what make this safe rather than merely convenient, and three of them exist because three independent adversarial review rounds each found a FALSE GREEN in the preceding cut of this change. (1) `ciu worktree adopt` records the adopted checkout's HEAD, a FROZEN COMMIT ID that is an ancestor of HEAD, so `merge-base(base, HEAD)` collapses to that commit and every line committed before the adopt silently leaves the changed-line set (run the gate right after `adopt` and the base IS HEAD: zero changed lines, lane passes trivially). (2) Being a live branch is NECESSARY but NOT SUFFICIENT: a merged-but-not-torn-down worktree has a perfectly real `base_ref = "main"` that local `main` has since absorbed -- the same collapse, and it was the state of 4 of the 7 real ciu worktrees in this estate when the check was written. `git merge-base --is-ancestor HEAD <base>` (FAIL-CLOSED: any error refuses) closes (2), plus the tree's own branch and the literal `HEAD`; (1) is caught by the must-be-a-local-branch clause, NOT by this one -- an adopt SHA becomes an ANCESTOR of HEAD as soon as any commit follows the adopt, and is then waved through here. (3) A THIRD round found that neither of those closes the case where the base absorbed the branch and the branch then moved ON again: containment stops firing while `merge-base` still sits on the pre-merge branch tip, so everything committed before the merge silently leaves the judged set, and in the fast-forward variant no local signal distinguishes that from a healthy fork at all. That needed a fact `base_ref` cannot supply, so ciu CIU-106 now records `fork_point_sha` at `worktree create` time and this reader requires `merge-base(base_ref, HEAD)` to still EQUAL it -- equality rather than an ordering test, because a base gaining UNRELATED commits leaves merge-base unmoved and so already passes. Fail-closed on a missing or malformed fork point (`adopt` never records one, nor did any ciu before CIU-106), which means an existing worktree keeps its previous `@{upstream}` behaviour, and says so, until it is recreated. Verified empirically, not derived: the equality clause does NOT subsume the containment one -- a worktree that has committed nothing of its own has fork == merge-base == HEAD, passes equality, and is caught only by containment. What is finally handed to the judge is that verified fork COMMIT, not the branch name: an OID cannot be moved by another session between this check and the judge's own merge-base minutes later. Downstream neither collapse is loud: an assay lane reaches assay's own BASE_IS_HEAD refusal three layers down naming neither the record nor the remedy, and a `kind = "command"` lane has no such guard at all while tools/coverage_gate.py scores zero changed lines as `0/0 = 100%` (filed as RG-53). A tag and a `refs/remotes/...` ref are refused too -- the latter because a remote-tracking ref is precisely what RG-51 exists to stop defaulting to. The gate-safe allow-list (GATE_SAFE_BASE_RE) is narrower than git's own ref grammar, which permits `;`, backticks and `$`: `git branch 'main;touch$IFS/tmp/PWNED'` is a legal branch that EXECUTES when substituted into a conjunction lane's inner `bash -c` via `{base}` (R-25) -- `shlex.join` quotes the argv ELEMENT, but that element IS the script the inner shell re-parses. That hole predates RG-51 (`--base` carried it too, on a bare-host lane, on the real host) and is fixed here as RG-52, folded in on an operator size call: `check_base_charset` refuses any `--base` outside the same regex (exit 2, with a separate message for a leading `-`, a POSITION problem a sub-invoked `./run-gate --base -weird` would misparse as an option), while a RECORDED base outside it merely degrades to `@{upstream}` -- a file must never abort a gate run. One regex, two consumers, the same reasoning as check_worktree_charset (RG-5). RG-53, from the same review round, is NOT fixed here and stays OPEN: tools/coverage_gate.py never reads `missing_branches`, so this project's own `--cov-branch` is decorative for the DIFF judge -- changing that alters pass/fail semantics for every `--cov-branch` lane in the estate and needs its own cycle. A record whose `branch` field no longer matches the tree's checked-out branch is refused as well, the way ciu's own reader refuses it -- that is the reused-worktree case, where a stale record would widen the judged diff to everything since some other branch diverged. Every failure mode -- absent, unreadable, permission-denied, a FIFO or device that would block or explode on read, not JSON, not an object, RecursionError from deeply nested JSON (a RuntimeError, NOT a ValueError), missing/non-string/blank `base_ref`, and each rejection above -- degrades to the pre-existing `@{upstream}` path: this is a better default, never a requirement, and a malformed record must not be able to abort a gate run. `--base` still wins outright and the plain checkout (which `ciu worktree adopt` structurally refuses, and where the git-excluded record can never arrive by checkout) is bit-for-bit unchanged. Staleness is made VISIBLE, which was half of RG-51's point: the winning record is named along with the `@{upstream}` ref it displaced (`run-gate: <record> pins this tree's fork point at <sha> (its base_ref still resolves there) -- using that COMMIT instead of merge-base HEAD @{upstream} (<sha>)`, plus `(from ciu.worktree-instance.json fork point)` on the comparison-base line), and a record that is found and REJECTED prints `run-gate: ignoring <record>: <why>` rather than rotting back to `@{upstream}` in silence -- the refusal message names it too. Two limits, both known and both documented rather than papered over: the record is SPENT by merging the base INTO the branch or rebasing onto it (the merge-base moves either way), so keeping a long-lived worktree current drops it back to `@{upstream}` -- a loss of benefit, not a new hazard, since the fallback errs WIDE; and this rule is sound at RUN-GATE's OWN boundary only -- only the base STRING changes here, and assay's `resolve_base` returns HEAD's FIRST PARENT and discards the supplied base entirely when HEAD is a merge commit (assay B008), which predates RG-51, is unaffected by it, and behaves identically under `--base` (filed as RG-54). A fourth review round, spanning both projects, found no further false green (confirmed by mutation testing both new regions) but did find that the fork point was captured in the WRONG PLACE on the ciu side -- `create()` resolved it in repo_root right after `git worktree add --no-checkout`, whereas it is the LATER `git reset --hard base_ref` inside `_finish_allocation` that actually sets the branch tip and re-resolves the ref, so a commit landing on `main` in between made the recorded SHA differ from the real fork point and this reader then refused a healthy record; the capture moved to immediately after that reset, reading the worktree's own `HEAD^{commit}`. Same round: the "has MOVED" refusal no longer asserts a cause (the identical inequality is produced by the base absorbing the branch, by the branch merging the base in, by a rebase, or by a record describing a different tree) -- telling an operator to tear down a worktree for a reason that did not happen is its own defect. A fifth round, reviewing those fixes, likewise found no false green but two more real defects, both reproduced first. (a) Every clause listed above asks the commit GRAPH a question, which is NOT the same question as "is there anything to judge": a branch that committed work and then REVERTED it has a real fork point, an unmoved merge-base and ancestry in neither direction, and still produces an EMPTY diff that tools/coverage_gate.py scores as `0/0 = 100%`. No work ESCAPES there (there is none), so it is not the false-green class the other clauses exist for -- it is another inlet into RG-53, and `git diff --quiet <fork> HEAD` closes it for the cost of falling back to a base that has something to judge. That clause logically subsumes the containment one (verified, not derived); containment is kept, and kept first, because it names a far more common cause and answers from the graph without diffing trees. (b) On the ciu side, `adopt()` wrote its instance record and then called `_write_worktree_overlay` UNGUARDED, while `ensure()` decides `checkout_required` from `recovery_status in (None, "checkout-incomplete")` -- so a failed overlay write left a record whose resume ran `git reset --hard <the adopted HEAD>` in the operator's own checkout, destroying every commit made there since, and (CIU-106) stamped a fork point onto an adopt-shaped record. Wrapped and marked; the structural half a SIGKILL can still reach is filed as ciu CIU-107. See KNOWN_ISSUES_TODO_BACKLOG.md's RG-51 entry. rev 39: RG-50 -- `ProgressWatch._rate_per_min`'s B065 own-clock branch (`index / elapsed * 60.0`, gated only on `elapsed > 0`) treated a real mutation candidate's 0-based `candidate_index` literally: index 0 (the FIRST candidate, already completed by the time this event is seen) computed a literal `0.0` rate, and `_report`'s own ETA line then divided by it -- `ZeroDivisionError`, crashing the whole gate run before any verdict, found running nyxloom's real `session-extract` mutation lane. The same unguarded branch also produced a nonsensical negative rate/ETA (`candidate -1/81, -3.3/min, ETA -25m`) for assay's own `-1` baseline-phase sentinel. Now also requires `index > 0`; `index <= 0` falls through to the existing `None` path (bare `candidate N/M` count, no rate/ETA) the same way "no clock yet" already does. See KNOWN_ISSUES_TODO_BACKLOG.md's RG-50 entry. rev 38: RG-41 -- a `kind = "command"` container lane had NO liveness signal at all: `stall_timeout` was refused there at load (rev 34, R-40c judges it from `.assay/progress-<assay_lane>.jsonl`, which only an assay lane writes), so the lane shape most likely to hang on a shared host -- an arbitrary consumer command, a pytest suite, a gate-conjunction of sub-lanes -- had no bound but a `budget` run-gate only prints and never enforces. `await_container` already tails `docker logs -f` for every container lane; the ARRIVAL TIME of its last line, on run-gate's own clock, carries exactly `R-40`'s "silence, never total elapsed" semantics one signal over. `stall_timeout` is now legal on a `kind = "command"` lane too, judged from that log stream via a new `LogStreamWatch` (mirrors `ProgressWatch`'s poll-and-report shape, sourced from a background thread pumping the container's stdout instead of a file's mtime) -- constructed inside `await_container` itself (assay's `ProgressWatch` stays constructed by its callers via `make_progress_watch`, which keeps returning `None` for a command lane; the two watches are DISJOINT BY PRIORITY, not by construction -- a re-attach whose lane changed `kind` from assay to command between two invocations can leave a stale non-null `ProgressWatch` armed alongside a live `LogStreamWatch`, harmless only because `log_watch` always wins the check first, round-1 review). The pass-through stays LIVE and IN ORDER, never captured-then-replayed (the real cost this item was filed against): the pump thread re-prints each line to run-gate's own stdout as it arrives, and `LogStreamWatch.join()` drains anything still in flight before `await_container`'s own status lines print, so "lane X exit 0" cannot outrun the container's own last few lines. The SOURCE is disclosed by name, never inferred, on the fresh, re-attach AND follow paths alike (`print_lane_bounds`, one site, RW-18's own rule extended): `(source: progress file)` vs `(source: log stream)` -- the two signals differ in what they can miss (a single silent compile is the log stream's known blind spot), so which one is judging THIS lane is a fact the operator is entitled to. An assay lane's behavior is unchanged; it still judges from its progress file and never downgrades to the log stream. Adversarial review (round 1, folded into this SAME unreleased rev) found the re-attach case above was NOT actually correct and fixed it here: `LogStreamWatch` timed every line's arrival by its OWN clock, right for a fresh lane but wrong for a re-attach -- `docker logs -f` REPLAYS a hung container's entire backlog in a burst, so a lane silent for hours arrived at the watch within milliseconds of construction and read as `age ~= 0`, silently granting a fresh full stall window to the exact case `stall_timeout` exists to catch (CONFIRMED by direct reproduction). Fixed via the SAME mechanism `ProgressWatch` already uses for its own analogous re-attach gap (RW-27, review round 2 G1): `await_container` now invokes `docker logs -f --timestamps` for a watched command lane, and `LogStreamWatch` reads each line's own RFC3339Nano stamp (parsed via the same `parse_docker_timestamp` RW-17 already trusts) and translates it into the watch's own clock domain via the identical `now - max(0, time.time() - wall_ts)` arithmetic -- the stamp is stripped before the line is re-printed, so the pass-through stays byte-identical to a lane with no `stall_timeout`. Two more findings from the same round, also fixed: `LogStreamWatch.join()` now returns whether the drain actually finished, and `await_container` DISCLOSES (WARNING, stderr) rather than silently proceeds when it did not; and a real read-then-emit race in the test-only `fake_docker_logstream` shim (separate `wc -l` + `tail` reads let a line appended between them be re-emitted) was fixed by reading the stream once per check, with the "keeps printing" end-to-end test strengthened from substring containment to an exact, ordered line list. A follower's own lack of independent stall detection is a real, PRE-EXISTING gap (assay lanes already had it; RG-41 only widens exposure by lane count) -- filed separately as RG-46, not fixed here. A CONFIRMING round-2 review of the round-1 fix above (folded into this SAME unreleased rev) found a real bug IN the fix itself, triple-independently reproduced: `log_watch.join()` was called on the STALL branch, but a stalled container's pump thread is, BY DEFINITION, still blocked reading a pipe with nothing more coming (that is what "stalled" means) -- nothing unblocks that read until `finally`'s `proc.terminate()` runs, AFTER the join call, so the bounded `join(timeout=2.0)` timed out on EVERY stall, not the rare host-contention case the disclosure was written for, printing a confusing (and separately malformed -- `{lane_name!r}` already quotes the name before a literal `'s` was appended) WARNING alongside every genuine STALLED message. Fixed by moving the drain+disclosure to the non-stalled completion branch only, where the ordering concern it protects against (a trailing container line racing this function's own status prints) actually exists -- the stalled branch's own message prints to stderr and never races the pump's stdout lines. A new assertion (the WARNING text must be ABSENT) was added to the existing silent-lane stall test, red-first proven against the pre-fix code. Two further round-2 findings also addressed: `_translate`'s wall-clock-translation arithmetic, duplicated verbatim from `ProgressWatch`'s own mtime-seeding line, is now a single shared `_seed_from_wall_clock` helper both watchers call, so a future correction cannot silently apply to only one; and a new construction-level test pins that the real `docker logs -f --timestamps` argv is actually issued for a watched command lane, closing the blind spot where `TestLogStreamWatch`'s direct `FakeContainerProc` construction would never notice the flag silently dropped. Two more round-2 findings (recomputing the wall-clock translation on every line rather than once, like `ProgressWatch`; and `_split` trusting the `--timestamps` prefix without verifying the flag is honored) were considered and deliberately NOT changed: the per-line recompute is self-correcting against a wall-clock step between lines, and an unrecognized `--timestamps` flag fails the whole `docker logs` invocation loudly (Docker CLI flag parsing is strict) rather than silently misparsing. A round-3 CONFIRMING review of the round-2 fix (folded into this SAME unreleased rev) ACCEPTED the join()-relocation as correct (independently reproduced the round-2 bug via mutation testing) and confirmed both "deliberately not fixed" round-2 items hold up -- its own requested broader sweep found two more real gaps, both fixed here: (1) the stall branch never joined the pump thread even AFTER `finally`'s `proc.terminate()`/`proc.wait()` had genuinely unblocked its read, leaving thread lifecycle unsynchronized with this function's return -- sharpest under IN-PROCESS reuse (this project's own test suite calling `main()` repeatedly in one interpreter). `finally` now joins it unconditionally (no disclosure needed there -- the process really is gone by then); proven by tracking the CALL rather than thread liveness afterward, since against this fixture's own fast teardown the thread often finishes on its own before anything checks. (2) `LogStreamWatch._pump`'s `except (OSError, ValueError): pass` also catches `UnicodeDecodeError` -- a single non-UTF-8 byte anywhere in a container's real output used to silently end the pump thread and freeze its liveness signal, so a perfectly healthy lane eventually read as falsely stalled with nothing pointing at the real cause; fixed with `errors="replace"` on the `Popen` construction, proven against a REAL subprocess (the `FakeContainerProc` unit tests bypass Python's text-decoding machinery entirely). `join()`'s own docstring now names its caller precondition explicitly, for RG-46's own future follower stall detection -- a concrete next caller that cannot copy `await_container`'s terminate-then-join structure. rev 37: RG-44 -- GONE_SIGNALS matched docker's "gone" stderr case-sensitively; this host's real docker emits it lowercase ("error: no such object: NAME"), which the exact-case comparison never matched, so a genuinely gone container read as an AMBIGUOUS failure and left a stale inflight record that wedged the lane for every future invocation until a human deleted it by hand -- fixed by case-folding the match (both directions, docker's wording and this project's own declared signals). RG-38 -- assay mutation-lane resume state (`.assay/mutation-state/`, distinct from the progress file rev 33 already asks for) lived under `project_dir`, which does not survive an ephemeral worktree (a cmru release transaction, a Mode-B instance) -- a retried lane there restarted from mutant #1 despite `--resume`, having spent its whole budget on the first target file (dstdns `sql-mutation`, three retries, state never written). Now unconditionally passed `--state-dir <repo>/.run-gate/assay-state/<project>/` on every assay-kind lane (all three runners: container, exec, bare-host) -- `repo` (the checkout owning the shared .git) is durable BY CONSTRUCTION even when the judged worktree is not, and `.run-gate/` is git-ignored estate-wide so the store can never dirty the judged tree. Requires assay >= 5.2.0 (B066, `--state-dir`); an older judge fails loudly by argparse, same class of refusal RG-33's floor already established for `--resume`/`--progress`. RG-40 -- `tools/coverage_gate.py` diffed committed `base_rev HEAD` while the coverage.json it cross-references is generated from whatever bytes are ON DISK (`--allow-dirty` runs the suite there directly), so an uncommitted edit above a committed change shifted that change's real line number without shifting the diff's -- measured live: the same code read 175/177 (98.9%) dirty vs 153/153 (100.0%) once committed. Diffing `base_rev` alone (working tree, not HEAD) is unconditionally correct: byte-identical to the old behavior on a clean tree, correct on a dirty one, no dirty/clean branch to keep in sync. Also found while getting this project's own `selftest` gate green for this batch: RG-43's own rev-36 flip left this file's `--fresh` refusal message naming "the built-in host environment" for a branch (`not env`) that flip made reachable only by `bare-host` now -- corrected the message and the one test that had silently stopped testing the refusal it claimed to (RG-43 table note carries the detail). Adversarial review (round 2, folded into this SAME unreleased rev) found three real gaps in the RG-38 work above, all fixed here: (1) `ASSAY_FLAG_FLOOR` had NOT actually been raised to cover `--state-dir` (5.2.0) despite CHANGES.md/this comment already claiming it was -- a pin between 2.4.1 and 5.1.x cleared the stale floor and failed inside the already-started container instead of at construction; now `(5, 2, 0)`. (2) `state_dir` was keyed by a bare `project_dir.name` -- two projects sharing a directory basename (e.g. two nested `backend/` projects) would have shared one state store; a new `assay_state_dir()` keys by the project's full path RELATIVE to `repo` instead (falling back to a filesystem-safe full resolved path when a `--worktree` override relocates the project outside `repo`), and both `build_assay_inner` and the extended `assay_artifact_paths()` (now a 3-tuple: verdict, progress, state_dir) call the SAME function so the two can never drift apart (R-38's own rule, extended). (3) `print_lane_artifacts` (RG-10's unconditional evidence-disclosure function) never mentioned the new state directory -- `repo` threaded through it and its two callers (`await_container`, `follow_container`) so every assay-kind lane run now discloses `run-gate: state directory: <path>` alongside the verdict/progress lines. rev 36: RG-43 -- 'host'/'bare-host' role swap — 'host' now routes through run_container_lane() (DEFAULT_HOST_IMAGE / $RUN_GATE_HOST_IMAGE, --cgroup-parent from $CGROUP_PARENT_DEV_GATES, same as any named environment); 'bare-host' is the literal old 'host' behavior (run_bare_host_lane, renamed from run_host_lane, RG-28's KeyError('argv') assay-lane fix ported onto it since that's where bare execution now lives) for the rare lane that must observe the real host — see run-gate-project's own selftest lane, the one known case (R-42); rev 35: RG-39 -- exec-mode lanes no longer depend on every CALLER wrapping its own `flock` around the `docker exec` (dstdns `GUIDE.md` S1) to avoid two lanes racing the SAME persistent container: a new internal lock keyed on the resolved container name (`resolve_container_name()`'s own identity, resolved ONCE in `main()` and threaded into `run_exec_lane()` rather than re-derived, so the lock key and the eventual `docker exec` target can never drift apart) -- `/tmp/run-gate-exec-<container>.lock`, the SAME O_NOFOLLOW+0600 discipline as RG-20's shared-infra locks via a new shared `_open_lockfile()` helper (R-41). Acquired strictly AFTER every RG-20 shared-infra lock the lane declares is already held (a fixed global order -- shared-infra, then exec target -- that makes an ABBA deadlock between the two lock kinds impossible), released from the SAME `finally`, with RG-27's `flush_run_record` staying outside the held window as it already was. `LOCK_EX` blocking (a racing lane WAITS, never fails); isolated container names never meet; `--dry-run` plans the lock (name + path) but never takes or blocks on it, RG-8's pattern. Ephemeral `docker run` lanes have nothing to serialize (each container is per-invocation already) and are untouched. rev 34 (the "resumable, observable gate" wave): RG-36 -- liveness for a long assay lane is judged from its PROGRESS FILE, not from a guessed total: `budget` is advisory here and hard in assay, so the only bound available was a number someone made up (dstdns raised `sql-mutation` 90m -> 120m and it still could not finish a window). While an assay lane's container runs, `.assay/progress-<assay_lane>.jsonl` (the file rev 33 already asks for) is read every PROGRESS_POLL_SECONDS = 30 and, when it moved, `progress <lane>: candidate i/N, <rate>/min, ETA <m>m` is printed; a judge that writes no candidate events is disclosed ONCE and never treated as a fault; a file that VANISHES after events were seen is a different fact with its own sentence and is SILENCE that keeps the stall clock running (review N4 -- it used to print "no candidate events" and disable stall detection forever, so a lane that lost its file became permanently unstoppable), and silence is measured from the last time the FILE moved -- on the first observation the age is `wall_now - mtime`, which for a re-attach is a moment before this client existed. Seeding that clock from the watch's CONSTRUCTION instead (rev 34's first cut, review round 2 G1) bought the re-attach case at the price of the case RG-36 exists for: a lane whose first candidate arrives later than `stall_timeout` -- image entry, a Postgres provision, collection, the baseline suite and mutant generation all precede candidate #1 on an assay mutation lane -- was ANNOUNCED and killed by the same `poll()` (`candidate 1/172` printed, then `has not advanced for 1200s`), with `rm -f` already done by the time anyone read the self-refuting pair. The mtime answers both exactly and `_newest()` already read it: a frozen re-attached file is as old as its silence and stalls at once, a fresh lane's first event was written seconds ago and gets its full window. On a re-attach or follow the progress file WATCHED and the verdict DISCLOSED are the ones the RECORD names, not the live config's (review N3): they are that run's declared artifacts, and a record that NAMES no path (key absent, or the `null` a command lane's record writes) falls back to the config -- presence of the key used to be the test, so a `null` silently disabled the stall watch of a lane whose `kind` changed between two invocations (review round 2 N-a; the other nit, N-b, is `repoll_owner_race` seeding `owner` from the caller's known-live pid instead of None, which at a tuned OWNER_RACE_REPOLLS of 1 reported "the owner exited without clearing" about an owner nobody re-checked). The record's `schema` is CHECKED on read (review N2) and a record of ANOTHER schema is REFUSED, exit 2, naming both schema numbers and every way out -- upgrade run-gate, `--fresh` where the container NAME is readable (under which exactly two fields are read out of a grammar this client does not know: that name and `started_at`), else the record path to delete (RW-25): degrading to "no record" was worse than the silent misread it replaced, because this client then starts a SECOND container for the lane and overwrites a NEWER client's record -- the loss R-39 exists to end, performed by the tool, and a warning printed before the damage does not undo it. New optional lane key `stall_timeout` (assay lanes only, the `budget` grammar) stops the lane ONLY while its container is still RUNNING and the file has been silent that long -- rm -f, evidence, exit 3, naming the last event and the age -- NEVER on total elapsed time. Coarse by necessity (assay's events carry no timestamp yet, B065) but written so an event carrying `elapsed_s` is preferred, making the same code exact without a rewrite (R-40). RG-34 -- `doctor` names a `kind = "command"` container lane whose argv[0] is a RELATIVE path containing `/` and not `{worktree}`-anchored, with the fix and the mechanism: a container that mounts only the judged worktree (a Mode-B instance's own runner) has nothing at the bare repo root its --workdir names, so dstdns P152's `argv = ["scripts/schema-gate.sh", "{worktree}"]` -- argument templated, script path not -- was `exit 127`, 100% reproducible there and invisible under the shared full-repo mount. A WARNING, never a refusal, and run-gate never rewrites argv: the same argv is correct under a full-repo mount and which one a lane gets is not statically visible (R-30b). RG-32 (BREAKING) -- `[lanes.*.pins.*]` validates its keys at last (`sha256`, `version`, nothing else), and `budget` there is refused BY NAME with the owner of the value it was mistaken for: run-gate never read it, the governing number is the target `assay.toml`'s own `[lanes.<assay_lane>] budget`, and the dead key sat one nesting level below a REAL lane-level `budget` that reads identically -- misread as governing three times in ONE dstdns session (two independent review agents and the controller), against a lane whose assay.toml had drifted 90m -> 120m with nothing able to notice. Renaming it to `budget_hint` + a drift check was rejected: a second reading of an assay-owned fact (R-35's own rule). Migration is one deletion per lane, in CHANGES (R-08a). RG-35 -- a lane's container outlives its client BY DESIGN (`docker run -d`, `rm -f` in a finally a killed client never reaches), and until now nothing on disk named it: the exit status, the evidence and the history record were lost and the NEXT invocation started a SECOND container for the same lane on the same commit -- the one-gate rule broken by the tool itself, on a host that shares 8 cores with a production workload. A successful `docker run -d` now writes `.run-gate/inflight/<lane>.json` (same store, same R-36f/g discipline: per (judged worktree x project x lane), git-ignore CHECKED, sibling lock + atomic rename) naming the container, its id, the judged commit, the tree and the assay artifacts; a later invocation of the same lane re-attaches to a RUNNING container (plain `docker logs -f` + `wait`), COLLECTS an exited one and finishes exactly as an attached run would, reports and clears a GONE one (recording that run as `aborted`, never as a pass) and runs fresh, and REFUSES (exit 2) when the record judges another commit -- naming both commits and `--fresh`, which removes the named container first. History records such a run ONCE, with the duration measured from the CONTAINER's start (R-39) -- and for a COLLECT, from the container's OWN clock, `FinishedAt - StartedAt` off the same inspect that answered the state question (RW-17), because a collect happens an arbitrary time after the container exited and that idle gap is not part of the run: left as `now - started` it charged one overnight collect 10800s for a run of minutes, inside the very median/min/max series RG-27 exists to make trustworthy. Docker's stamps are hand-parsed (nanosecond fractions, and the year-1 zero value that means "never set" -- a RUNNING container's FinishedAt is exactly that); either stamp missing or zero falls back to the record's `started_at`, never to half a pair. And two disclosure corrections (RW-18): `--dry-run` resolves HEAD and the owner BEFORE it speaks and walks the live decision's branches in the live decision's ORDER, so it names the refusal / the follow / the `--fresh` removal instead of announcing "re-attach or collect" for a record the live run refuses with exit 2 -- a dry run's whole audience is someone about to act on it; and the `budget`/`stall_timeout` lines, which lived on the fresh path only while `resolve_inflight` armed the watch and returned before them, now print on the RE-ATTACH and FOLLOW paths too (`print_lane_bounds`, one site so they cannot drift), because a re-attached lane was being stopped against a `stall_timeout` its own invocation had never mentioned -- unlike the `rev | lane | env | slice` header these are facts about the LANE, not claims about mounts this client never chose. Review round 1 found the concurrency half of that claim FALSE and it is fixed here (R-39e): a second client on the same lane re-attached to a container whose client was still ALIVE, `rm -f`'d it out from under that client and cleared the record, so the client that actually started the run got `docker wait` on a container that no longer existed and reported exit 3 on a GREEN lane. The record now names its OWNER (pid + the process start time from /proc/<pid>/stat + boot id + the PID-NAMESPACE inode, a conjunction so a recycled or post-reboot pid reads as dead -- and so a pid from ANOTHER namespace reads as neither alive nor dead but UNKNOWN, which resolves to ALIVE: boot id is host-GLOBAL, identical in every container, so without the inode two clients that bind-mount one worktree into two containers each looked the other's pid up where it never existed, read "dead", and hijacked the other's container -- review round 2 G3, and this host bind-mounts exactly that way; the boundary is disclosed by name because an assumption of life is not a reading of it) and an ALIVE owner is FOLLOWED, never hijacked -- same log stream, same exit code, and no `rm`, no cleared record, no history entry, all three still the owner's; `--fresh` against a live owner refuses by pid, because run-gate never removes another client's container. Those three duties are RE-DECIDED after `docker wait` returns rather than assumed from the decision taken at the start (review round 2 G2): a follower that OUTLIVES its owner re-reads the record and the owner's liveness, and finding itself alone is PROMOTED -- it saves a failing container's evidence, `rm -f`s it, clears the record and writes the one history entry with the exit code it holds and the container's own start, disclosing by name ("the owning client (pid N) is gone; this client is finishing its cleanup"). Without it a completed run left a finished container squatting the host's one gate slot, a record pointing at it and NO history entry until the lane's next invocation self-healed. The one state in which a live owner's container is ALREADY gone is that owner's own `rm -f` -> `clear_inflight_record` window, microseconds wide, so the decision is re-read OWNER_RACE_REPOLLS = 3 times over ~1 s before any refusal (RW-20): the second read normally finds no record and this client runs fresh, because a refusal naming a pid whose run is already over is worse than a one-second wait -- bounded, never a wait loop. A DEAD owner is adopted exactly as before, so "after its client dies" is now literally what the code checks. Two more round-1 corrections in the same decision: "gone" is ONLY `No such object`/`No such container` on docker inspect's stderr -- every other inspect failure (an unreachable daemon above all) is exit 3 with the record UNTOUCHED and nothing recorded, because reading a daemon outage as gone wrote a false `aborted` AND deleted the only thing on disk that can find the still-running container once the daemon returns; and the container's `{{.Id}}` now rides along in the same inspect format, so a record whose name has been taken by a DIFFERENT container is disclosed as such ("a different container now wears this name; run-gate will not touch it"), cleared and re-run fresh, never re-attached to and never `rm -f`'d. A fourth: the re-attach log stream is PLAIN `docker logs -f`, not `--since <started_at>` -- `logs -f` already replays from the container's first line, so the filter could only ever SUBTRACT, and the stamp it filtered on was run-gate's own clock AFTER `docker run -d` returned, truncated to whole seconds, i.e. exactly the container's opening output (RW-15). rev 33: RG-33 -- every `kind = "assay"` lane is invoked with `--resume --progress .assay/progress-<assay_lane>.jsonl`, unconditionally (R-38): both are no-ops on a lane without R2 and, on a mutation lane, the difference between a budget-capped retry resuming from `.assay/mutation-state/` and one re-testing every mutant from #1 (dstdns `sql-mutation`, three retries, state never written). Progress lands beside the verdict under the git-ignored `.assay/`, never in the judged tree. Requires a judge that knows both flags (assay >= 2.4.2); an older pin fails the lane by argparse, loudly, not silently. rev 32: RG-31 --`assay_toolchain_findings()`'s own worktree resolution (shared by `doctor` check 5 and `--check-env`) still took the RAW `--worktree` string through the run-path's lenient `resolve_repo_and_worktree` (no upfront validation) instead of RG-30's validated `resolve_worktree_scope()`; a bad override silently produced a `probe_dir` nothing mounted, and the resulting SKIP blamed "assay older than 3.2.0" instead of the real `--worktree` problem `doctor` check 3 already names correctly two checks earlier in the same report. Now routed through `resolve_worktree_scope()` like every other RG-30/R-37 read-scope site, so a bad override raises the SAME `GateError` and is caught by the existing per-lane SKIP handler with the real cause. rev 31: RG-30 -- `doctor` and `--check-env` both passed `None` to `resolve_repo_and_worktree` instead of the caller's `--worktree`, so `doctor --worktree B` silently reported the INVOKING tree's answers under B's name (including the R-30a host-lane git-view WARN); the same read-scope hazard `history` (RG-27 B1, rev 30) already closed for that verb, now closed for the last remaining instance. `doctor`'s per-tree checks (git identity, R-30a, mountinfo) and the shared assay-toolchain probe's `cd` target (`assay_toolchain_findings`) both follow `--worktree` now, resolved+validated via a new shared `resolve_worktree_scope()`; a bad override becomes a `[FAIL] git` record inside doctor's own existing try/except rather than a false `[OK]` on the R-30a check. `--check-env`'s env-drift scan follows it too and refuses upfront (no per-check ledger to degrade into). Both verbs disclose the selected tree in their output (R-37). rev 30 (round-2 review fixes folded in: `history` honors --worktree on the READ side and refuses an override that names no git work tree, so a query can never answer with the invoking checkout's data under another tree's name; flushing a record is at-most-once, so a Ctrl-C inside the telemetry write surfaces as the KeyboardInterrupt instead of a second-flush traceback; `--json` is refused by name outside `history` instead of accepted and ignored; `history` as a lane name is a flagged LOAD-TIME breaking change): RG-27 lane invocation history — a per-(judged worktree × project) `.run-gate/history.json` store holding, per lane, a `latest` slot (ANY outcome, dirty/aborted/mid-rebase included) and a bounded per-commit trend series ([history] keep, default 10); completed fails join history WITH their outcome and the stats are split passes/completed, aborted+dirty+mid-rebase runs never do; new `history [LANE] [--json]` query verb; concurrency answered by SCOPE first (two worktrees address two files) then a sibling-lockfile + atomic-rename write; the store must be git-ignored or the write is refused with the remedy rather than dirtying the tree (R-36); rev 29: P02 review round — the RG-25 `command -v` fitness probe is BATCHED per environment over the union of every lane's tools (was one container per lane, which made R-30's own cost claim quantitatively false), and the three places still claiming `--dry-run`/`doctor` start nothing now say what they actually start; rev 28: RG-26 `--base REF` reaches a delegating assay lane as `--request-base` (assay B019 usable from the gate at last) — delegation DERIVED from `assay lanes --json`, no new run-gate.toml key; conjunction lanes propagate it through a `{base}` token; a non-delegating lane refuses it by name (R-35). Also RG-28: an assay lane on the built-in host environment no longer raises KeyError('argv') (R-19); rev 27: RG-25 doctor/--check-env ask the JUDGE (`assay lanes --json`, B044) what each assay lane needs and check the environment for it, through ONE in-environment probe builder shared with the pin probe; FAIL only for facts the inventory established, SKIP for every "could not determine" so an older judge never turns a healthy project red (R-34); rev 26: RG-21 doctor names the linked-worktree host-lane git view before a downstream host-path-mounting harness fails mid-run (R-30a; warning only — run-gate is not the defect, the harness's single mount is); rev 25: RG-23 exec-mode env forwarding is DECLARED, never implicit — the dropped MOCK_MODE/RUN_LIVE_TESTS allowlist is documented as a breaking change with its migration (R-24a), and --check-env's drift sweep is AST-based so it sees helper-wrapped reads, the shape that hid the false-green flag (R-24b); rev 24: RG-24 exec-mode container names resolve from the JUDGED WORKTREE's ciu.global.toml first (repo-relative is the fallback, not the authority — a Mode-B worktree no longer execs into the main landscape's runner); rev 23: RG-22 safe.directory global-config write is now idempotent under pre-existing entries (--replace-all, R-19a); rev 21-22: adversarial-review hardening — size grammar unified (_SIZE_RE), shared-infra locks sorted-order+O_NOFOLLOW+0600 with admission-before-wait, pointer collector recognizes console-script form + prose/discovery exemptions, exec-lane slice/argv disclosure (naming-only), central-lanes docs truth, evidence only-on-failure at 0600, doctor survives broken hosts, verdict dedup normalized, pin-version whole-token match, reserved lane names + symmetric sidecar checks; rev 20: RG-13 adoption hygiene — worked run-gate×assay example, gitignore obligation, estate README retro ×9, root discovery line, budget↔timeout pairing sweep (R-32; docs/test-only, no behavior change); rev 19: RG-14 wheel as second artifact — pyproject derives version from __revision__, `run-gate` console script, byte-identical module discipline (R-31); rev 18: RG-9 doctor preflight verb — docker/slices/mountinfo/git/images in one command (R-30); rev 17: RG-20 resource-aware admission — slice-RAM budget from cgroupfs + shared-infra locks, lane `resources` key (R-29); rev 16: RG-8 --dry-run plan rehearsal on all three runners (R-28); rev 15: RG-2 validate-pointers verb + estate linkage certification (R-27); rev 14: RG-10 declared artifacts + unconditional evidence-path disclosure in all three runners (R-08/R-18); rev 13: RG-12 evidence preservation + stderr tail (R-26); rev 12: RG-1 override guard (R-25); rev 11: RG-17/19 required_env preflight + forwarding log + --check-env (R-24); rev 10 RG-6; rev 9 RG-5 (R-02); rev 8 RG-3 (R-23); rev 7 RG-16 (R-22); rev 6 RG-4; rev 5 RG-11; rev 4 RG-15
+
+import argparse
+import ast
+import atexit
+import calendar
+import copy
+import contextlib
+from collections.abc import Callable
+from dataclasses import dataclass, field
+import fcntl
+import grp
+import hashlib
+import importlib.metadata as importlib_metadata
+import io
+import json
+import math
+import os
+import queue
+import re
+import secrets
+import select
+import shlex
+import shutil
+import signal
+import stat
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import tomllib
+from pathlib import Path, PurePosixPath
+
+# A console-script import (including the unit suite's file-based loader) may
+# not put this module's sibling directory on sys.path. The canonical launcher
+# and the admission helper ship side by side, so resolve that path directly.
+_RUN_GATE_MODULE_DIR = str(Path(__file__).resolve().parent)
+if _RUN_GATE_MODULE_DIR not in sys.path:
+    sys.path.insert(0, _RUN_GATE_MODULE_DIR)
+from run_gate_admission import (DEFAULT_LANE_DEADLINE_SECONDS,
+                                AdmissionDockerUnavailable, AdmissionError,
+                                AdmissionRefused, DockerAdmission,
+                                local_docker_endpoint)
+
+PROG = "run-gate"
+CONFIG_NAME = "run-gate.toml"
+ROOT_CONFIG_NAME = "run-gate.root.toml"
+SCHEMA_VERSION = 1
+
+VERDICT_EXIT_CODES = {
+    "PASS": 0,
+    "FAIL": 1,
+    "ERROR": 2,
+    "NOT_RUN": 3,
+    "BUDGET_EXCEEDED": 4,
+}
+NOT_RUN_REASONS = frozenset({
+    "realness-mismatch", "service-down", "environment-down",
+    "environment-mismatch", "env-missing", "external-missing",
+    "external-down", "dirty-tree", "no-headroom", "lock-busy",
+    "no-base", "judge-floor", "judge-digest", "provenance-mismatch",
+    "state-mount",
+})
+ASSAY_OUTCOMES = frozenset({
+    "PASS", "FAIL", "ERROR", "NO_MEASUREMENT", "BUDGET_EXCEEDED",
+    "INCONCLUSIVE",
+})
+ASSAY_OUTCOME_EXIT_CODES = {
+    "PASS": 0,
+    "FAIL": 1,
+    "ERROR": 2,
+    "NO_MEASUREMENT": 3,
+    "BUDGET_EXCEEDED": 4,
+    "INCONCLUSIVE": 5,
+}
+ASSAY_RIGORS = frozenset({"R0", "R1", "R2", "R3", "R4"})
+ASSAY_IDENTITY_MODES = frozenset({"source", "artifact"})
+DEFAULT_LOCK_WAIT = "10m"
+DEFAULT_ADMISSION_WAIT = "10m"
+LOCK_POLL_SECONDS = 0.1
+LANE_KILL_GRACE_SECONDS = 5
+FAILED_EVIDENCE_KEEP = 10
+FAILED_NODE_LIMIT = 5
+
+
+@dataclass(frozen=True)
+class LaneResult:
+    """Closed run-gate result. ``exit_code`` is always the lane's raw code."""
+
+    verdict: str
+    exit_code: int | None = None
+    reason: str | None = None
+    log_path: str | None = None
+    assay_outcome: str | None = None
+    admission: dict | None = None
+    _record: dict | None = field(default=None, repr=False, compare=False)
+    _lane_name: str | None = field(default=None, repr=False, compare=False)
+    _json: bool = field(default=False, repr=False, compare=False)
+    members: list | None = None
+
+    def __post_init__(self) -> None:
+        if self.verdict not in VERDICT_EXIT_CODES:
+            raise ValueError(f"unknown run-gate verdict {self.verdict!r}")
+        if self.verdict == "NOT_RUN" and self.reason not in NOT_RUN_REASONS:
+            raise ValueError(f"unknown NOT_RUN reason {self.reason!r}")
+
+    @property
+    def gate_exit_code(self) -> int:
+        return VERDICT_EXIT_CODES[self.verdict]
+
+    def as_dict(self) -> dict:
+        return {
+            "verdict": self.verdict,
+            "exit_code": self.exit_code,
+            "reason": self.reason,
+            "log_path": self.log_path,
+            "assay_outcome": self.assay_outcome,
+            "admission": self.admission,
+            "members": self.members,
+        }
+
+
+def command_lane_result(exit_code: int, lane: dict | None = None,
+                        *, reason: str | None = None,
+                        log_path: str | None = None) -> LaneResult:
+    """Map a command's raw status through the closed table."""
+    lane = lane or {}
+    mapped = lane.get("exit_map", {}).get(str(exit_code))
+    verdict = mapped or ("PASS" if exit_code == 0 else "FAIL")
+    if verdict == "ERROR" and reason is None:
+        reason = "command-exit-map"
+    if exit_code == 5 and reason is None:
+        argv = lane.get("argv", [])
+        if "pytest" in argv or any(
+                part.endswith("pytest") for part in argv if isinstance(part, str)):
+            reason = "pytest-collected-no-tests"
+    return LaneResult(verdict, exit_code, reason, log_path)
+
+
+def assay_lane_result(exit_code: int, outcome: str | None,
+                      *, verdict_exit_code: object = None,
+                      judge_provenance: object = None,
+                      source_mode: bool = False,
+                      source_version: object = None,
+                      source_commit: object = None,
+                      expected_source_commit: object = None,
+                      reason: str | None = None,
+                      claims: object = None,
+                      evidence: object = None,
+                      log_path: str | None = None) -> LaneResult:
+    """Map Assay's verdict only when its configured judge identity is verified."""
+    provenance_keys = {"name", "version", "artifact", "digest_algorithm", "digest"}
+    provenance_ok = (isinstance(judge_provenance, dict)
+                     and set(judge_provenance) == provenance_keys
+                     and all(isinstance(judge_provenance[key], str)
+                             and judge_provenance[key].strip()
+                             for key in provenance_keys)
+                     and judge_provenance["digest_algorithm"] == "sha256"
+                     and re.fullmatch(r"[0-9a-f]{64}",
+                                      judge_provenance["digest"]) is not None)
+    if not isinstance(outcome, str) or outcome not in ASSAY_OUTCOMES:
+        return LaneResult("ERROR", exit_code, "invalid-assay-outcome", log_path,
+                          assay_outcome=outcome)
+    if type(verdict_exit_code) is not int:
+        return LaneResult("ERROR", exit_code,
+                          "missing-or-invalid-assay-verdict-exit-code",
+                          log_path, assay_outcome=outcome)
+    if type(exit_code) is not int:
+        return LaneResult("ERROR", exit_code,
+                          "missing-or-invalid-assay-runner-exit-code",
+                          log_path, assay_outcome=outcome)
+    if exit_code != verdict_exit_code:
+        return LaneResult("ERROR", exit_code, "assay-exit-code-mismatch",
+                          log_path, assay_outcome=outcome)
+    if verdict_exit_code != ASSAY_OUTCOME_EXIT_CODES[outcome]:
+        return LaneResult("ERROR", exit_code,
+                          "assay-outcome-exit-code-mismatch", log_path,
+                          assay_outcome=outcome)
+    if source_mode:
+        source_commit_ok = (isinstance(source_commit, str)
+                            and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                                             source_commit) is not None)
+        expected_commit_ok = (
+            isinstance(expected_source_commit, str)
+            and re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+                             expected_source_commit) is not None)
+        if not isinstance(source_version, str) or not source_version.strip() \
+                or not source_commit_ok or not expected_commit_ok:
+            return LaneResult("ERROR", exit_code,
+                              "missing-or-invalid-source-identity", log_path,
+                              assay_outcome=outcome)
+        if source_commit != expected_source_commit:
+            return LaneResult("ERROR", exit_code, "source-commit-mismatch",
+                              log_path, assay_outcome=outcome)
+    elif not provenance_ok:
+        return LaneResult("ERROR", exit_code,
+                          "missing-or-invalid-judge-provenance", log_path,
+                          assay_outcome=outcome)
+    verdict = {
+        "PASS": "PASS",
+        "FAIL": "FAIL",
+        "ERROR": "ERROR",
+        "BUDGET_EXCEEDED": "BUDGET_EXCEEDED",
+        "NO_MEASUREMENT": "FAIL",
+        "INCONCLUSIVE": "FAIL",
+    }[outcome]
+    if outcome == "NO_MEASUREMENT" and reason == "CGROUP_OBSERVATION_UNAVAILABLE":
+        # The top-level rollup can hide an independent R1/R3 failure because
+        # NO_MEASUREMENT outranks FAIL. Preserve adverse claims instead of
+        # treating every observer refusal as infrastructure-only.
+        verdict, mapped_reason = _observer_unavailable_rollup(claims, evidence)
+        if mapped_reason is not None:
+            reason = mapped_reason
+    return LaneResult(verdict, exit_code, reason, log_path,
+                      assay_outcome=outcome)
+
+
+def _observer_unavailable_rollup(
+        claims: object, evidence: object) -> tuple[str, str | None]:
+    """Map observer unavailability without masking another failed claim."""
+    if not isinstance(claims, list) or not claims:
+        return "ERROR", "invalid-assay-claims-for-observer-refusal"
+    if not isinstance(evidence, list):
+        return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+
+    matching_refusals = 0
+    seen_rigors: set[str] = set()
+    other_statuses: list[str] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            return "ERROR", "invalid-assay-claims-for-observer-refusal"
+        rigor = claim.get("rigor")
+        status = claim.get("status")
+        reason_code = claim.get("reason_code")
+        if (not isinstance(rigor, str) or rigor not in ASSAY_RIGORS
+                or rigor in seen_rigors
+                or claim.get("source") != "computed"
+                or claim.get("verified_by_assay") is not True
+                or not isinstance(status, str) or status not in ASSAY_OUTCOMES):
+            return "ERROR", "invalid-assay-claims-for-observer-refusal"
+        seen_rigors.add(rigor)
+        if reason_code is not None and not isinstance(reason_code, str):
+            return "ERROR", "invalid-assay-claims-for-observer-refusal"
+        if (status == "NO_MEASUREMENT"
+                and reason_code == "CGROUP_OBSERVATION_UNAVAILABLE"):
+            if rigor != "R2":
+                return "ERROR", "invalid-assay-observer-refusal-claim"
+            matching_refusals += 1
+        else:
+            other_statuses.append(status)
+
+    for item in evidence:
+        if not isinstance(item, dict):
+            return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+        source = item.get("source")
+        status = item.get("status")
+        if (not isinstance(source, str)
+                or source not in {"adjudicated", "attested"}
+                or not isinstance(item.get("key"), str)
+                or not item.get("key")
+                or not isinstance(item.get("verified_by_assay"), bool)
+                or not isinstance(status, str) or status not in ASSAY_OUTCOMES):
+            return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+        reason_code = item.get("reason_code")
+        if reason_code is not None and not isinstance(reason_code, str):
+            return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+        other_statuses.append(status)
+
+    if matching_refusals != 1:
+        return "ERROR", "invalid-assay-observer-refusal-claim"
+    if "BUDGET_EXCEEDED" in other_statuses:
+        return "BUDGET_EXCEEDED", "assay-budget-exceeded-alongside-observer-refusal"
+    if any(status in {"FAIL", "INCONCLUSIVE", "NO_MEASUREMENT"}
+           for status in other_statuses):
+        return "FAIL", "assay-adverse-claim-alongside-observer-refusal"
+    if "ERROR" in other_statuses:
+        return "ERROR", "assay-error-alongside-observer-refusal"
+    # All valid non-PASS statuses are handled above; the closed outcome table
+    # leaves PASS as the only remaining status.
+    # The observer refusal is infrastructure-only only when every other
+    # computed claim and external evidence entry passed.
+    return "ERROR", None
+
+
+def finish(result: LaneResult) -> int:
+    """The single normal exit path; persist once, summarize, and close the table."""
+    record = result._record
+    log_path = result.log_path or (record.get("log_path")
+                                   if record is not None else None)
+    if record is not None:
+        record["verdict"] = result.verdict
+        record["reason"] = result.reason
+        record["log_path"] = log_path
+        record["assay_outcome"] = result.assay_outcome
+        record["admission"] = result.admission
+        flush_run_record(record, exit_code=result.exit_code)
+    if result._json:
+        print(json.dumps({**result.as_dict(), "log_path": log_path},
+                         sort_keys=True))
+    elif result._lane_name is not None:
+        details = [f"verdict {result.verdict}"]
+        if result.exit_code is not None:
+            details.append(f"exit_code {result.exit_code}")
+        if result.reason:
+            details.append(f"reason {result.reason}")
+        if log_path:
+            details.append(f"log {log_path}")
+        print(f"run-gate: lane {result._lane_name!r} " + "; ".join(details),
+              flush=True)
+    return result.gate_exit_code
+
+
+def operation_result(code: int, reason: str) -> LaneResult:
+    """Map non-lane CLI operations to the same closed process table."""
+    if code == 0:
+        return LaneResult("PASS")
+    return LaneResult("ERROR", reason=reason)
+
+
+def cli_headline() -> str:
+    return f"RUN-GATE {installed_version()} — per-project gate entrypoint"
+
+
+_DISTRIBUTION_VERSION_RE = re.compile(
+    r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:(?:a|b|rc)[0-9]+)?(?:\.dev[0-9]+)?"
+    r"(?:\+[A-Za-z0-9]+(?:[._-][A-Za-z0-9]+)*)?"
+)
+
+
+def installed_version() -> str:
+    """Return the installed wheel identity, never a source-revision fallback."""
+    try:
+        version = importlib_metadata.version("run-gate")
+    except importlib_metadata.PackageNotFoundError as exc:
+        raise GateError(
+            "Run-Gate distribution metadata is unavailable; install the "
+            "run-gate wheel before using its CLI") from exc
+    if (not isinstance(version, str)
+            or _DISTRIBUTION_VERSION_RE.fullmatch(version) is None):
+        raise GateError(
+            f"installed Run-Gate distribution has an invalid version "
+            f"{version!r}; expected a SemVer release or valid wheel dev version")
+    return version
+
+
+class RunGateArgumentParser(argparse.ArgumentParser):
+    """Give the installed CLI parser its wheel-metadata identity."""
+
+    def format_help(self) -> str:
+        return f"{cli_headline()}\n\n{argparse.ArgumentParser.format_help(self)}"
+
+    def format_usage(self) -> str:
+        return f"{cli_headline()}\n{argparse.ArgumentParser.format_usage(self)}"
+
+    def error(self, message: str) -> None:
+        self._print_message(f"{cli_headline()}\n", sys.stderr)
+        self._print_message(argparse.ArgumentParser.format_usage(self), sys.stderr)
+        self._print_message(f"{self.prog}: error: {message}\n", sys.stderr)
+        raise GateError(f"invalid command line: {message}")
+
+
+CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
+CGPROFILE_RESOURCE_OBSERVER_DIRECTORY = "/run/cgprofile/observer"
+CGPROFILE_RESOURCE_OBSERVER_SOURCE = (
+    f"{CGPROFILE_RESOURCE_OBSERVER_DIRECTORY}/resource-observer.sock"
+)
+CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY = "/run/cgprofile-observer"
+CGPROFILE_RESOURCE_OBSERVER_TARGET = (
+    f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY}/resource-observer.sock"
+)
+ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
+# `host` (default) and `bare-host` (opt-out) swapped roles in the
+# host/bare-host flip (RG-43) — `host`
+# now routes through the same container machinery every named environment
+# uses (dual-mount, --cgroup-parent from $CGROUP_PARENT_DEV_GATES,
+# pointed at DEFAULT_HOST_IMAGE unless $RUN_GATE_HOST_IMAGE overrides it);
+# `bare-host` is literally the OLD `host` behavior verbatim (no container at
+# all) for the rare lane that genuinely needs to observe the real host (see
+# run-gate-project/run-gate.toml's own selftest lane for the one known case).
+HOST_ENV = "host"
+BARE_HOST_ENV = "bare-host"
+HOST_IMAGE_ENV_VAR = "RUN_GATE_HOST_IMAGE"
+DEFAULT_HOST_IMAGE = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
+EXTRA_MOUNT_ENV_VAR = "RUN_GATE_EXTRA_MOUNTS"
+MOUNT_ALIAS_ENV_VAR = "RUN_GATE_MOUNT_ALIAS"
+# RG-NARROW: a container lane sees only the judged worktree + the git metadata
+# it needs. The plain (main) checkout has no narrower view, so it is refused
+# unless the operator opts in explicitly. Applies to containers run-gate itself
+# creates (mode = "ephemeral" lanes and probes), never to `mode = "exec"`.
+ALLOW_MAIN_CHECKOUT_ENV_VAR = "RUN_GATE_ALLOW_MAIN_CHECKOUT"
+EVIDENCE_DIR_ENV_VAR = "RUN_GATE_EVIDENCE_DIR"
+EVIDENCE_DIR_DEFAULT = "/tmp/run-gate"
+EVIDENCE_TAIL_LINES = 10
+CGROUPFS_ROOT_ENV_VAR = "RUN_GATE_CGROUPFS_ROOT"  # tests / hidden cgroup mounts
+PROC_ROOT_ENV_VAR = "RUN_GATE_PROC_ROOT"  # tests / hidden /proc mounts (RG-55 host PSI)
+# RG-55 / SPEC R-43g: `RUN_GATE_PROFILE` ('on'|'off') is an OPERATOR-FACING
+# ambient override for `[profile] enabled`, the same class of knob as
+# `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT` -- a real environment fact
+# (e.g. a CI runner with no `docker exec` rights to a profiler daemon it will
+# never have), NOT a test-only switch (RW-17 superseded the original
+# `RUN_GATE_TEST_DISABLE_PROFILING` kill switch on exactly this ground).
+# Checked BEFORE any config table; absent means config decides; any value
+# other than 'on'/'off' is refused BY NAME (`fail`, exit 2). 'off' forces
+# `enabled = False` unconditionally, records `disabled_reason` naming
+# itself, and needs no daemon/lane config to do it. 'on' forces
+# `enabled = True` unconditionally, overriding even a lane's own
+# `profile = false`.
+#
+# It is also this suite's own escape hatch: `[profile] enabled = true` is
+# the CONTRACT default, so every one of this file's ~800 pre-existing
+# lane-execution tests -- none of which declare `[profile]` at all, and
+# every one of which pins an EXACT docker call log, argv list, or
+# stdout/stderr -- would silently pick up a new `docker exec <daemon>
+# cgprofile ctl version` probe, very likely a further basic-path fallback
+# `docker exec` (no real daemon is ever running in these fixtures), a new
+# `-e RUN_GATE_PROFILE_SESSION=` argv flag, and new disclosure lines, on
+# every run. Retrofitting every one of those tests with an explicit
+# `profile = false` is not practical in one session and would also bury the
+# ONE thing that matters (what that test was actually pinning) under an
+# unrelated new lane key. Set to 'off' process-wide for the whole
+# pre-existing suite by one autouse fixture; the RG-55 wiring tests that
+# mean to exercise the real default unset it, or set it to 'on', explicitly.
+PROFILE_AMBIENT_ENV_VAR = "RUN_GATE_PROFILE"
+SHARED_LOCK_DIR = "/tmp"  # RG-20/R-41 default: host-wide by design (see below)
+LOCK_DIR_ENV_VAR = "RUN_GATE_LOCK_DIR"  # tests / a namespaced lock directory
+
+
+def _lock_dir() -> Path:
+    """The RG-20 (`R-29`)/R-41 shared coordination directory. `SHARED_LOCK_DIR`
+    (`/tmp`) is the PRODUCTION default and stays host-wide on purpose — R-41's
+    exec mutex and R-29's shared-infra mutex both exist specifically to
+    coordinate SEPARATE run-gate invocations on one host, so scoping this
+    per-worktree/per-project would defeat their own purpose. `RUN_GATE_LOCK_DIR`
+    is the same override shape as `RUN_GATE_CGROUPFS_ROOT`/`RUN_GATE_PROC_ROOT`
+    (an operator-facing namespacing knob, and this suite's own escape hatch —
+    RW-46a: the test suite must never write its locks into host /tmp, where
+    several concurrently-run copies of this same suite would otherwise
+    collide). Re-read on every call, never cached at import, so a test's
+    `monkeypatch.setenv` reaches every call site including a freshly spawned
+    subprocess."""
+    return Path(os.environ.get(LOCK_DIR_ENV_VAR, SHARED_LOCK_DIR))
+
+# RG-27 lane invocation history. The store is PER (judged worktree × project):
+# it lives under the EFFECTIVE project dir, which R-21 already relocates into
+# the judged tree — so two worktrees' gates address two different files by
+# construction and never contend. The remaining contention is real but small
+# (two lanes of ONE project, in ONE tree, in parallel), and it is arbitrated by
+# a sibling lock file + atomic rename, never by a lock on the store itself
+# (the rename changes the inode; a lock held on the old one guards nothing).
+HISTORY_DIR_NAME = ".run-gate"
+HISTORY_FILE_NAME = "history.json"
+HISTORY_LOCK_NAME = "history.lock"
+# schema 2 (RG-55/C4, contract Sec 4 obligation 4, SPEC R-36 amended): every
+# entry gains `resources` (Summary | null), `profile_error` (str | null),
+# `profile_ref` (dict | null) -- already written into every `run_record` by
+# the C3 wiring, so a schema-1 STORE loaded today already has real data in
+# any entry recorded since. A schema-1 store loads and reads fine as-is
+# (`.get("resources")` everywhere an entry is read, never a bare subscript,
+# so an old entry with none of the three keys reads as `resources: None`
+# rather than raising); `_apply_record` stamps `HISTORY_SCHEMA` on the STORE
+# itself on every write, so the store's own `schema` field flips to 2 the
+# first time ANY lane in it runs again, while entries that are never re-run
+# stay schema-1-shaped in the JSON forever -- `schema` is a store-level
+# field, not a per-entry one, and mixed-shape entries under one `schema: 2`
+# store is the documented, permanent steady state, not a transient one.
+HISTORY_SCHEMA = 2
+HISTORY_KEEP_DEFAULT = 10
+HISTORY_LOCK_TIMEOUT = 5.0   # seconds — telemetry NEVER blocks a gate
+HISTORY_OUTCOMES = ("pass", "fail", "error", "aborted")
+
+# RG-55/R-44: the footprint manifest lives NEXT TO run-gate.toml itself —
+# unlike the history store (HISTORY_DIR_NAME, gitignored, per-instance
+# telemetry) this file is TRACKED (CONSUMERS.md, C8): a distilled, committed
+# snapshot of what each lane costs, meant to travel with the config it
+# describes so a NEW clone (with no `.run-gate/` of its own yet) still has a
+# budget to compare against.
+FOOTPRINT_FILE_NAME = "run-gate.footprint.json"
+FOOTPRINT_SCHEMA = 1
+
+# RG-35 inflight (re-attach) records. One file per lane inside the SAME
+# `.run-gate/` store the history file lives in, so the scope is (judged
+# worktree x project x lane) by construction — R-36f's scoping answer, reused
+# rather than re-derived. A lane's container outlives its client by design
+# (`docker run -d`, `rm -f` in a finally the client may never reach); this
+# record is the only thing that can tell the NEXT invocation that the
+# container it is about to duplicate already exists.
+INFLIGHT_DIR_NAME = "inflight"
+INFLIGHT_LOCK_NAME = "inflight.lock"
+INFLIGHT_SCHEMA = 2
+
+# RW-20: the ONE state a live owner and a gone container can both be true in
+# is the owner's own `docker rm -f` -> `clear_inflight_record` window, which
+# is microseconds wide. Refusing there would tell a client to wait for a pid
+# whose run is already over, so the decision is re-read a bounded number of
+# times first — three reads spanning about a second, which is far longer than
+# the window and short enough that a human never notices it. Bounded, never a
+# wait loop: if the owner really is stuck between those two statements, the
+# refusal naming its pid is the right answer and must still arrive.
+OWNER_RACE_REPOLLS = 3            # total reads of the record, first included
+OWNER_RACE_PAUSE_SECONDS = 0.5    # -> ~1.0 s across the two extra reads
+
+# RG-36: how often the container loop looks at the lane's progress file.
+# 30 s judges a 15-minute stall_timeout to within 3%. What one poll COSTS is
+# a stat(), a full read_text() and a json.loads() of every line — the file is
+# append-only and there is no saved offset — so a 4-hour lane costs 480 of
+# those, and on a 4 000-candidate mutation lane the parse half is ~2M line
+# loads over the run. Still cheap beside the lane it is watching (the judge
+# is running mutants), and honest about what it is: the earlier "480 stat()s"
+# in this comment and in `R-40a` undercounted it by two whole operations
+# (review round 1 N1). An incremental read from a saved offset is the
+# obvious next step if the file ever gets big enough to matter; it is not
+# needed at these sizes and would add a resume-after-truncate case.
+# This is NOT the disclosure interval: a poll that sees no new event prints
+# nothing.
+PROGRESS_POLL_SECONDS = 30
+
+# RG-55 / SPEC R-43: cgroup-profiler daemon client
+# (RG55-INTERFACE-CONTRACT.md, contract 1). run-gate never depends on the
+# daemon being present -- every daemon-shaped constant here governs the
+# OPTIONAL `cgprofile ctl` path; a lane still gets a "basic" (in-lane
+# sampling) profile when the daemon is absent or refuses, and no profile at
+# all only when [profile] enabled=false or a lane opts out.
+PROFILE_DAEMON_DEFAULT = "cgprofile-host-daemon"
+# 5s: the basic-path sampling tick. Balances docker-exec overhead per tick
+# (a real `docker exec ... sh -c 'cat ...'` round trip) against useful
+# sample resolution, given HOST LOAD (8 cores, shared with a production
+# workload, RG55 handoff Sec 6) -- a tighter interval multiplies exec
+# overhead across every profiled lane for no material gain in profile
+# fidelity a gate lane needs.
+PROFILE_SAMPLE_SECONDS = 5
+PROFILE_CTL_TIMEOUTS = {"version": 5, "host": 5, "start": 10,
+                        "status": 5, "stop": 30}   # contract Sec 1.5, verbatim
+PROFILE_TRANSPORT_ENV_VAR = "RUN_GATE_PROFILE_TRANSPORT"
+PROFILE_TRANSPORTS = ("auto", "exec", "socket")
+PROFILE_TRANSPORT_DEFAULT = "auto"
+PROFILE_SOCKET_PATH_DEFAULT = "/run/cgprofile/ctl.sock"
+PROFILE_ADMISSION_WAIT_DEFAULT = "10m"
+# Self-target discovery is optional profiling preflight, so neither Docker
+# identity probe may hold a lane longer than the ctl status/version probes.
+PROFILE_IDENTITY_TIMEOUT_SECONDS = 5
+PROFILE_CONTRACT = 1                # contract Sec 1.4
+PROFILE_TOKEN_ENV = "RUN_GATE_PROFILE_SESSION"     # contract Sec 4.1
+PROFILE_ENABLED_DEFAULT = True
+PROFILE_INTERVAL_DEFAULT = "1s"
+PROFILE_DAMON_DEFAULT = True
+FOOTPRINT_TOLERANCE_PCT_DEFAULT = 25   # C5 territory; validated now (Sec below)
+FOOTPRINT_MAX_AGE_DAYS_DEFAULT = 30
+# Contract Sec 4.3's basic-path file list, verbatim, PLUS `memory.max`/
+# `memory.high`: the contract's own literal list omits them, but Sec 7's
+# `events.limit_drift` rule ("number of sample pairs where memory.max or
+# memory.high changed") and the golden `summary-basic-v1.json` fixture
+# (limit_drift: 1, identical to the daemon-path fixture) both require them
+# -- the basic path cannot reproduce the golden fixture without reading the
+# same two files the daemon path reads for the same purpose. Flagged as a
+# contract drift for the controller (REPORT "Decision asks"); read here
+# regardless, because the fixture is the tie-breaker the handoff's own read
+# order says to trust over a stated-but-inconsistent list.
+PROFILE_BASIC_FILES = ["memory.current", "memory.peak", "memory.swap.current",
+                       "memory.stat", "cpu.stat", "memory.pressure",
+                       "cpu.pressure", "io.pressure", "memory.events.local",
+                       "pids.peak", "memory.max", "memory.high"]
+
+
+class GateError(Exception):
+    """One-line, user-facing failure. Never a traceback for config/env errors.
+
+    RG-78 maps configuration and infrastructure failures to ERROR 2;
+    preconditions refused before execution use NOT_RUN 3."""
+    exit_code = 2
+
+
+class GateInfraError(GateError):
+    """Execution-infrastructure failure: the environment could not do its
+    job (docker absent/failing, git failing, physical path underivable).
+    This remains a diagnostic class; configuration and infrastructure errors
+    both map to ERROR at the CLI."""
+    exit_code = 2
+
+
+class GateNotRunError(GateError):
+    """A declared precondition refused before the lane began running."""
+
+    exit_code = 3
+
+    def __init__(self, reason: str, message: str):
+        if reason not in NOT_RUN_REASONS:
+            raise ValueError(f"unknown NOT_RUN reason {reason!r}")
+        self.reason = reason
+        super().__init__(message)
+
+
+class GateBudgetExceeded(GateError):
+    """The lane ran, but run-gate stopped it at its declared hard budget."""
+
+    def __init__(self, exit_code: int | None, log_path: str | None = None):
+        self.exit_code = exit_code
+        self.log_path = log_path
+        super().__init__("lane budget exceeded; assay state is resumable")
+
+
+class LaneCgroupEventError(GateInfraError):
+    """A lane's cgroup rejected forks or killed a process for memory pressure."""
+
+    def __init__(self, lane_exit_code: int | None, message: str):
+        self.lane_exit_code = lane_exit_code
+        super().__init__(message)
+
+
+@dataclass(frozen=True)
+class CgroupEventSnapshot:
+    cgroup: str
+    pids_max: int
+    oom_kill: int
+
+
+def _read_cgroup_event(path: Path, key: str) -> int:
+    try:
+        text = path.read_text(encoding="ascii")
+    except (OSError, UnicodeError) as exc:
+        raise GateInfraError(
+            f"cannot read cgroup event file {path}: {exc}") from exc
+    values: dict[str, int] = {}
+    for line_number, line in enumerate(text.splitlines(), 1):
+        fields = line.split()
+        if (len(fields) != 2 or not re.fullmatch(r"[a-z_]+", fields[0])
+                or not re.fullmatch(r"[0-9]+", fields[1])
+                or fields[0] in values):
+            raise GateInfraError(
+                f"malformed cgroup event file {path}, line {line_number}")
+        values[fields[0]] = int(fields[1], 10)
+    if key not in values:
+        raise GateInfraError(
+            f"cgroup event file {path} does not report {key!r}")
+    return values[key]
+
+
+def read_current_cgroup_events(
+        proc_cgroup: Path = Path("/proc/self/cgroup"),
+        cgroup_root: Path = Path("/sys/fs/cgroup")) -> CgroupEventSnapshot:
+    """Read v2 event counters for this process's cgroup, mapping private
+    namespaces (`0::/`) and host cgroup paths without guessing a directory.
+    """
+    try:
+        rows = proc_cgroup.read_text(encoding="ascii").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise GateInfraError(
+            f"cannot identify run-gate's cgroup from {proc_cgroup}: {exc}") from exc
+    paths = []
+    for row in rows:
+        parts = row.split(":", 2)
+        if len(parts) == 3 and parts[0] == "0" and parts[1] == "":
+            paths.append(parts[2])
+    if len(paths) != 1:
+        raise GateInfraError(
+            f"cannot identify one cgroup v2 path in {proc_cgroup}; "
+            "run-gate requires readable pids.events and memory.events")
+    cgroup_path = PurePosixPath(paths[0])
+    if (not cgroup_path.is_absolute()
+            or any(part in ("..", ".") for part in cgroup_path.parts)):
+        raise GateInfraError(
+            f"invalid cgroup v2 path {paths[0]!r} in {proc_cgroup}")
+    try:
+        root = cgroup_root.resolve(strict=True)
+        current = root.joinpath(*cgroup_path.parts[1:]).resolve(strict=True)
+        current.relative_to(root)
+    except (OSError, ValueError) as exc:
+        raise GateInfraError(
+            f"cannot map run-gate's cgroup {paths[0]!r} under "
+            f"{cgroup_root}: {exc}") from exc
+    pids_max = _read_cgroup_event(current / "pids.events", "max")
+    oom_kill = _read_cgroup_event(current / "memory.events", "oom_kill")
+    return CgroupEventSnapshot(
+        "/" + "/".join(cgroup_path.parts[1:]), pids_max, oom_kill)
+
+
+def _cgroup_event_error(before: CgroupEventSnapshot,
+                        after: CgroupEventSnapshot, lane_name: str,
+                        exit_code: int | None) -> LaneCgroupEventError | None:
+    if before.cgroup != after.cgroup:
+        return LaneCgroupEventError(
+            exit_code,
+            f"lane {lane_name!r}: run-gate moved from cgroup "
+            f"{before.cgroup!r} to {after.cgroup!r} during execution; "
+            "resource events could not be compared; lane verdict forced to ERROR")
+    pids_delta = after.pids_max - before.pids_max
+    oom_delta = after.oom_kill - before.oom_kill
+    if pids_delta < 0 or oom_delta < 0:
+        return LaneCgroupEventError(
+            exit_code,
+            f"lane {lane_name!r}: cgroup event counters moved backwards "
+            "during execution; resource events could not be compared; "
+            "lane verdict forced to ERROR")
+    if not pids_delta and not oom_delta:
+        return None
+    details = []
+    if pids_delta:
+        details.append(f"pids.events max +{pids_delta}")
+    if oom_delta:
+        details.append(f"memory.events oom_kill +{oom_delta}")
+    return LaneCgroupEventError(
+        exit_code,
+        f"lane {lane_name!r}: cgroup resource event during execution "
+        f"({'; '.join(details)}; lane verdict forced to ERROR)")
+
+
+def _read_cgroup_events_after_lane(
+        lane_name: str, exit_code: int | None, proc_cgroup: Path,
+        cgroup_root: Path) -> CgroupEventSnapshot:
+    try:
+        return read_current_cgroup_events(proc_cgroup, cgroup_root)
+    except GateInfraError as exc:
+        raise LaneCgroupEventError(
+            exit_code,
+            f"lane {lane_name!r}: cgroup resource events could not be read "
+            f"after execution ({exc}; lane verdict forced to ERROR)") from exc
+
+
+def run_lane_with_cgroup_event_guard(
+        lane_name: str, runner: Callable[[], int], *, enabled: bool = True,
+        proc_cgroup: Path = Path("/proc/self/cgroup"),
+        cgroup_root: Path = Path("/sys/fs/cgroup")) -> int:
+    """Run one lane and refuse to certify it after a cgroup resource event."""
+    if not enabled:
+        return runner()
+    before = read_current_cgroup_events(proc_cgroup, cgroup_root)
+    try:
+        exit_code = runner()
+    except Exception as exc:
+        lane_exit_code = (exc.exit_code
+                          if isinstance(exc, GateBudgetExceeded) else None)
+        after = _read_cgroup_events_after_lane(
+            lane_name, lane_exit_code, proc_cgroup, cgroup_root)
+        event_error = _cgroup_event_error(
+            before, after, lane_name, lane_exit_code)
+        if event_error is not None:
+            raise event_error from exc
+        raise
+    after = _read_cgroup_events_after_lane(
+        lane_name, exit_code, proc_cgroup, cgroup_root)
+    event_error = _cgroup_event_error(before, after, lane_name, exit_code)
+    if event_error is not None:
+        raise event_error
+    return exit_code
+
+
+def fail(msg: str) -> None:
+    """Configuration error (ERROR 2)."""
+    raise GateError(msg)
+
+
+def fail_infra(msg: str) -> None:
+    """Execution-infrastructure failure (ERROR 2)."""
+    raise GateInfraError(msg)
+
+
+# ---------------------------------------------------------------------------
+# config loading + validation (loud, names key + file, no silent defaults)
+# ---------------------------------------------------------------------------
+
+def _read_toml_snapshot(path: Path) -> tuple[dict, str]:
+    try:
+        raw = path.read_bytes()
+        return tomllib.loads(raw.decode("utf-8")), hashlib.sha256(raw).hexdigest()
+    except FileNotFoundError:
+        fail(f"{CONFIG_NAME} not found at {path} — run-gate resolves it next to "
+             f"the invoked script (symlink or copy); create it there")
+    except tomllib.TOMLDecodeError as exc:
+        fail(f"{path}: invalid TOML: {exc}")
+
+
+def _read_toml(path: Path) -> dict:
+    return _read_toml_snapshot(path)[0]
+
+
+def _check_keys(table: dict, allowed: set, where: str) -> None:
+    unknown = sorted(set(table) - allowed)
+    if unknown:
+        fail(f"{where}: unknown key(s) {', '.join(unknown)} "
+             f"(allowed: {', '.join(sorted(allowed))})")
+
+
+def _validate_environment(name: str, table: dict, where: str) -> None:
+    _check_keys(table, {"image", "cgroup_slice", "cgroup_slice_env", "mode", "container_name",
+                        "forward_env", "resources", "state_root"},
+                f"{where} [environments.{name}]")
+    image = table.get("image")
+    mode = table.get("mode")
+    if mode not in ("ephemeral", "exec", "host"):
+        if mode is None:
+            fail(f"{where} [environments.{name}]: missing required 'mode' — "
+                 "declare 'ephemeral', 'exec', or 'host'")
+        fail(f"{where} [environments.{name}]: 'mode' must be "
+             f"\"ephemeral\", \"exec\" or \"host\" (got {mode!r})")
+    if mode == "host":
+        if image is not None:
+            fail(f"{where} [environments.{name}]: mode = \"host\" runs a bare "
+                 "host subprocess and cannot declare 'image'")
+    elif not isinstance(image, str) or not image.strip():
+        fail(f"{where} [environments.{name}]: 'image' must be a non-empty string")
+    state_root = table.get("state_root")
+    if state_root is not None:
+        if mode == "host":
+            fail(f"{where} [environments.{name}]: 'state_root' names a "
+                 "container path and cannot be declared for mode = \"host\"")
+        if (not isinstance(state_root, str) or not state_root.startswith("/")
+                or "\x00" in state_root
+                or any(part in ("", ".", "..")
+                       for part in state_root.split("/")[1:])):
+            fail(f"{where} [environments.{name}]: 'state_root' must be a "
+                 "canonical absolute container path without empty, '.' or "
+                 "'..' components")
+    slice_ = table.get("cgroup_slice")
+    if slice_ is not None and (not isinstance(slice_, str) or not slice_.strip()):
+        fail(f"{where} [environments.{name}]: 'cgroup_slice' must be a non-empty string")
+    slice_env = table.get("cgroup_slice_env")
+    if slice_env is not None and (
+            not isinstance(slice_env, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", slice_env)):
+        fail(f"{where} [environments.{name}]: 'cgroup_slice_env' must be a valid "
+             "environment-variable name")
+    if slice_ is not None and slice_env is not None:
+        fail(f"{where} [environments.{name}]: declare only one of 'cgroup_slice' "
+             "or 'cgroup_slice_env'")
+
+    container_name = table.get("container_name")
+    if container_name is not None and (not isinstance(container_name, str)
+                                       or not container_name.strip()):
+        fail(f"{where} [environments.{name}]: 'container_name' must be a non-empty string")
+    forward_env = table.get("forward_env", [])
+    if not isinstance(forward_env, list) or any(
+            isinstance(item, bool) or not isinstance(item, str)
+            or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", item)
+            for item in forward_env):
+        fail(f"{where} [environments.{name}]: 'forward_env' must be a list of "
+             f"environment-variable names")
+    if len(set(forward_env)) != len(forward_env):
+        fail(f"{where} [environments.{name}]: 'forward_env' contains duplicates")
+    if "resources" in table:
+        # RG-48/R-29: the environment-level fallback for `cpus` — a lane
+        # with no `resources.cpus` of its own inherits its ENVIRONMENT's
+        # declared cap (the lane still wins when both declare one,
+        # `run_container_lane`'s own read order). No other resources key is
+        # accepted here: `memory`/`memory_swap`/`cpu_weight`/`io_weight`/
+        # `shared` are per-INVOCATION facts (RAM budget, shared-infra
+        # collision) that belong to the lane, not to an environment shared
+        # by many lanes with different footprints.
+        res = table["resources"]
+        if not isinstance(res, dict):
+            fail(f"{where} [environments.{name}]: 'resources' must be a table")
+        _check_keys(res, {"cpus"}, f"{where} [environments.{name}.resources]")
+        if "cpus" in res:
+            _validate_cpus(res["cpus"], f"{where} [environments.{name}.resources]")
+
+
+# The lane table's own keys, in ONE place: `_validate_lane` checks a lane
+# against them, and the pin-table check (R-08a) asks whether an unrecognized
+# PIN key is one of them — which is the difference between "delete this" and
+# "move it one level up, it is load-bearing there".
+def command_lane_is_composite(lane: dict) -> bool:
+    """Recognize legacy shell conjunctions that invoke run-gate more than once."""
+    if lane.get("kind") != "command":
+        return False
+    source = "\n".join(arg for arg in lane.get("argv", [])
+                       if isinstance(arg, str))
+    invocations = re.findall(
+        r"(?<![A-Za-z0-9_.-])(?:\./)?run-gate(?:\.py)?(?=\s|$)", source)
+    return len(invocations) > 1
+
+
+LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
+             "pins", "clean_tree", "budget", "stall_timeout", "memory",
+             "description", "required_env", "artifacts", "resources",
+             "profile", "exit_map", "accepts_args", "lanes", "stop_on",
+             "resource_observer"}
+PIN_KEYS = {"sha256", "version"}
+
+
+def _validate_budget(value: object, where: str, key: str = "budget") -> None:
+    if not isinstance(value, str) or not re.fullmatch(r"\d+[smh]", value):
+        fail(f"{where}: '{key}' must look like '30s', '20m' or '2h' (got {value!r})")
+
+
+def budget_seconds(value: str) -> int:
+    """`\\d+[smh]` -> seconds. The grammar is validated at load, so this is
+    total on any value that reaches it."""
+    return int(value[:-1]) * {"s": 1, "m": 60, "h": 3600}[value[-1]]
+
+
+def _validate_memory(value: object, where: str) -> None:
+    if not isinstance(value, str) or not _SIZE_RE.fullmatch(value):
+        fail(f"{where}: 'memory' must look like '536870912', '512m' or '4g' (got {value!r})")
+
+
+_CPUS_RE = re.compile(r"\d+(\.\d+)?")
+
+
+def _validate_cpus(value: object, where: str) -> None:
+    """RG-48/R-29: `docker run --cpus`'s own grammar — a decimal string,
+    strictly positive (`--cpus 0` is not "no limit", it is a Docker refusal;
+    catching it here names the lane instead of a `docker run` stderr tail)."""
+    if not isinstance(value, str) or not _CPUS_RE.fullmatch(value) \
+            or float(value) <= 0:
+        fail(f"{where}: 'cpus' must be a positive decimal string like '2' "
+             f"or '1.5' (docker's own --cpus grammar; got {value!r})")
+
+
+def _validate_pids(value: object, where: str) -> None:
+    if type(value) is not int or value <= 0:
+        fail(f"{where}: 'pids' must be a positive integer Docker PID limit "
+             f"(got {value!r})")
+
+
+def host_mode_stall_timeout_inert_reason(lane_name: str) -> str:
+    """RG-58 (RW-27a: WARN, never refuse — D5's option 2). The ONE wording
+    both the load-time WARNING (`_validate_lane`) and `doctor`'s matching
+    WARN use for a host-mode lane declaring `stall_timeout`:
+    `run_bare_host_lane` is a plain `subprocess.run` with no ProgressWatch,
+    no LogStreamWatch, no timer of any kind (R-40 applies to container/exec
+    lanes only, where `await_container` actually tails logs/polls
+    progress) — the key is accepted at load and then silently inert for
+    the lane's entire run, exactly the "copied a container lane's config
+    as a template" trap the backlog entry describes."""
+    return (f"lane {lane_name!r}: stall_timeout is inert on a host-mode "
+            f"lane (no watch, no timer; R-40 applies to container/exec "
+            f"lanes only)")
+
+
+def _validate_lane(name: str, table: dict, where: str) -> None:
+    _check_keys(table, LANE_KEYS, f"{where} [lanes.{name}]")
+    kind = table.get("kind")
+    if kind not in ("command", "assay", "sequence"):
+        fail(f"{where} [lanes.{name}]: 'kind' must be \"command\", \"assay\" or \"sequence\" (got {kind!r})")
+    if name in _RESERVED_POINTER_VERBS:
+        # Review fix: a lane named like a CLI verb can never be invoked (the
+        # verb wins) and validate-pointers deliberately exempts the verbs —
+        # refuse the shadowing name at load instead.
+        fail(f"{where} [lanes.{name}]: lane name {name!r} is reserved — it is "
+             f"a run-gate CLI verb; rename the lane")
+    if kind == "command" and (not isinstance(table.get("environment"), str)
+                               or not table["environment"].strip()):
+        fail(f"{where} [lanes.{name}]: 'environment' must be a non-empty string")
+    if kind == "assay" and "environment" in table and (
+            not isinstance(table["environment"], str)
+            or not table["environment"].strip()):
+        fail(f"{where} [lanes.{name}]: 'environment' must be a non-empty string")
+    if "resource_observer" in table:
+        if table["resource_observer"] != "cgprofile":
+            fail(f"{where} [lanes.{name}]: 'resource_observer' must be "
+                 "'cgprofile'")
+        if kind not in ("assay", "command"):
+            fail(f"{where} [lanes.{name}]: 'resource_observer' is supported "
+                 "only for assay or command lanes")
+    if kind == "sequence":
+        members = table.get("lanes")
+        if not isinstance(members, list) or not members or not all(
+                isinstance(member, str) and member.strip() for member in members):
+            fail(f"{where} [lanes.{name}]: sequence requires a non-empty list "
+                 "of lane names in 'lanes'")
+        if len(set(members)) != len(members):
+            fail(f"{where} [lanes.{name}]: 'lanes' contains duplicate members")
+        if table.get("stop_on", "FAIL") not in ("FAIL", "never"):
+            fail(f"{where} [lanes.{name}]: 'stop_on' must be \"FAIL\" or "
+                 f"\"never\" (got {table.get('stop_on')!r})")
+        invalid = sorted(set(table) - {"kind", "lanes", "stop_on", "description"})
+        if invalid:
+            fail(f"{where} [lanes.{name}]: sequence does not accept "
+                 f"{', '.join(invalid)}; declare those settings on its members")
+        return
+    if "lanes" in table or "stop_on" in table:
+        fail(f"{where} [lanes.{name}]: 'lanes' and 'stop_on' are supported "
+             "only for kind = \"sequence\"")
+    if "accepts_args" in table:
+        if not isinstance(table["accepts_args"], bool):
+            fail(f"{where} [lanes.{name}]: 'accepts_args' must be a boolean")
+        if table["accepts_args"] and kind != "command":
+            fail(f"{where} [lanes.{name}]: 'accepts_args' is supported only "
+                 "for command lanes")
+        if table["accepts_args"] and command_lane_is_composite(table):
+            fail(f"{where} [lanes.{name}]: a composite command lane cannot "
+                 "accept selective arguments")
+    if "exit_map" in table:
+        exit_map = table["exit_map"]
+        if kind != "command":
+            fail(f"{where} [lanes.{name}]: 'exit_map' is supported only on "
+                 "kind = \"command\"")
+        if not isinstance(exit_map, dict) or not exit_map:
+            fail(f"{where} [lanes.{name}]: 'exit_map' must be a non-empty "
+                 "table of raw exit codes to PASS, FAIL or ERROR")
+        for raw_code, mapped in exit_map.items():
+            if not re.fullmatch(r"-?\d+", raw_code) or mapped not in (
+                    "PASS", "FAIL", "ERROR"):
+                fail(f"{where} [lanes.{name}].exit_map: key {raw_code!r} and "
+                     f"value {mapped!r} must map an integer code to PASS, "
+                     "FAIL or ERROR")
+    if "description" in table and (not isinstance(table["description"], str)
+                                   or not table["description"].strip()):
+        fail(f"{where} [lanes.{name}]: 'description' must be a non-empty string "
+             f"(shown by --help; keep it one line)")
+    if "required_env" in table:
+        req = table["required_env"]
+        if not isinstance(req, list) or \
+                not all(isinstance(v, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", v)
+                        for v in req):
+            fail(f"{where} [lanes.{name}]: 'required_env' must be a list of "
+                 f"valid environment-variable names")
+        if len(set(req)) != len(req):
+            fail(f"{where} [lanes.{name}]: 'required_env' entries must be unique")
+    if "artifacts" in table:
+        arts = table["artifacts"]
+        if not isinstance(arts, list) or not arts \
+                or not all(isinstance(v, str) and v.strip() for v in arts):
+            fail(f"{where} [lanes.{name}]: 'artifacts' must be a non-empty "
+                 f"list of non-empty path strings (relative to the effective "
+                 f"project dir or absolute; printed on lane exit)")
+    if "budget" in table:
+        _validate_budget(table["budget"], f"{where} [lanes.{name}]")
+    if "stall_timeout" in table:
+        # RG-36: the SAME duration grammar as `budget`, deliberately — the
+        # two are read side by side and a second grammar would be a second
+        # thing to get wrong.
+        _validate_budget(table["stall_timeout"], f"{where} [lanes.{name}]",
+                         "stall_timeout")
+        # RG-41: legal for kind = "command" now too, judged from LOG-STREAM
+        # silence (await_container already tails `docker logs -f` for every
+        # container lane) rather than the assay progress file — the two
+        # sources are disclosed by name at run time (print_lane_bounds), not
+        # distinguished here. Nothing left to refuse by kind alone.
+    if "memory" in table:
+        _validate_memory(table["memory"], f"{where} [lanes.{name}]")
+    if "resources" in table:
+        res = table["resources"]
+        if not isinstance(res, dict):
+            fail(f"{where} [lanes.{name}]: 'resources' must be a table")
+        _check_keys(res, {"memory", "memory_max", "memory_swap", "cpu_weight",
+                          "io_weight", "shared", "cpus", "pids"},
+                    f"{where} [lanes.{name}.resources]")
+        if "cpus" in res:
+            _validate_cpus(res["cpus"], f"{where} [lanes.{name}.resources]")
+        if "pids" in res:
+            _validate_pids(res["pids"], f"{where} [lanes.{name}.resources]")
+        if "memory" in res and table.get("memory"):
+            fail(f"{where} [lanes.{name}]: declare RAM once — top-level 'memory' "
+                 f"and 'resources.memory' are the same knob; use 'resources.memory'")
+        for key in ("memory", "memory_max", "memory_swap"):
+            if key in res and (not isinstance(res[key], str)
+                               or not _SIZE_RE.fullmatch(res[key])):
+                fail(f"{where} [lanes.{name}.resources]: '{key}' must be a size "
+                     f"like '512m' or '4g'")
+        for key in ("cpu_weight", "io_weight"):
+            if key in res and (not isinstance(res[key], int)
+                               or isinstance(res[key], bool)
+                               or not 1 <= res[key] <= 10000):
+                fail(f"{where} [lanes.{name}.resources]: '{key}' must be an "
+                     f"integer 1..10000 (cgroup v2 weight scale)")
+        shared = res.get("shared")
+        if shared is not None:
+            if not isinstance(shared, list) \
+                    or not all(isinstance(v, str)
+                               and re.fullmatch(r"[A-Za-z0-9_.-]+", v) for v in shared):
+                fail(f"{where} [lanes.{name}.resources]: 'shared' must be a list "
+                     f"of service names ([A-Za-z0-9_.-]+)")
+            if len(set(shared)) != len(shared):
+                fail(f"{where} [lanes.{name}.resources]: 'shared' names must "
+                     f"be unique")
+    if "profile" in table:
+        # RG-55/R-43: `profile = false` opts a lane out entirely; a table
+        # overrides `enabled`/`damon` without disabling by default.
+        # `profile = true` is refused BY NAME — enabled-by-default is
+        # already the policy, so the bare flag can only be a no-op typo for
+        # either deleting the key or writing the table form.
+        prof = table["profile"]
+        if isinstance(prof, bool):
+            if prof:
+                fail(f"{where} [lanes.{name}]: 'profile = true' is redundant "
+                     f"-- profiling is enabled by default; delete the key, "
+                     f"use 'profile = false' to disable it, or a "
+                     f"'[lanes.{name}.profile]' table to override "
+                     f"'enabled'/'damon'")
+        elif isinstance(prof, dict):
+            _check_keys(prof, {"enabled", "damon"},
+                        f"{where} [lanes.{name}.profile]")
+            if "enabled" in prof and not isinstance(prof["enabled"], bool):
+                fail(f"{where} [lanes.{name}.profile]: 'enabled' must be a boolean")
+            if "damon" in prof and not isinstance(prof["damon"], bool):
+                fail(f"{where} [lanes.{name}.profile]: 'damon' must be a boolean")
+        else:
+            fail(f"{where} [lanes.{name}]: 'profile' must be a boolean or a "
+                 f"table (got {type(prof).__name__})")
+    if kind == "command":
+        argv = table.get("argv")
+        if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+            fail(f'{where} [lanes.{name}]: kind "command" requires a non-empty '
+                 f"string list 'argv'")
+    else:
+        if not isinstance(table.get("assay_lane"), str) or not table["assay_lane"].strip():
+            fail(f'{where} [lanes.{name}]: kind "assay" requires a non-empty '
+                 f"string 'assay_lane' (the lane name in the project's assay.toml)")
+        cmd = table.get("assay_command")
+        if cmd is not None and (not isinstance(cmd, list) or not cmd
+                                or not all(isinstance(a, str) for a in cmd)):
+            fail(f'{where} [lanes.{name}]: kind "assay" optional '
+                 f"'assay_command' must be a non-empty string list when supplied")
+        pins = table.get("pins", {})
+        if not isinstance(pins, dict):
+            fail(f"{where} [lanes.{name}]: 'pins' must be a table")
+        # `assay_command` and `pins` can be supplied by a top-level `[assay]`
+        # table; the effective lane is validated again after that table is
+        # applied in `merge_lanes`.
+        for pin_name, pin in pins.items():
+            if not isinstance(pin, dict) or not isinstance(pin.get("sha256"), str) \
+                    or not pin["sha256"].strip():
+                fail(f'{where} [lanes.{name}].pins.{pin_name}: requires a non-empty '
+                     f"string 'sha256' (path to the .sha256 file, relative to the project)")
+            if "version" in pin and (not isinstance(pin["version"], str)
+                                     or not pin["version"].strip()):
+                fail(f"{where} [lanes.{name}].pins.{pin_name}: 'version' must be a "
+                     f"non-empty string; declaring it asserts the lane's "
+                     f"assay_command supports '--version' (verified in-lane)")
+            # RG-32 (R-04 class, and BREAKING for a consumer that declares
+            # it): `budget` under a pin looked exactly like the real,
+            # load-bearing lane-level `budget` one nesting level up, and was
+            # dead text — three readers on one dstdns session (two review
+            # agents and the controller) each read `pins.assay.budget = 90m`
+            # as the governing bound of a mutation lane whose assay.toml
+            # actually said 120m. Refused BY NAME rather than renamed to
+            # `budget_hint`: a hint that must be cross-checked against the
+            # target assay.toml would be a second reading of an assay-owned
+            # fact, which R-35 already forbids for the comparison base.
+            if "budget" in pin:
+                fail(f"{where} [lanes.{name}].pins.{pin_name}: pin "
+                     f"{pin_name!r} declares 'budget' — this pin table is not "
+                     f"the lane budget; the lane's budget lives in the consumer's "
+                     f"assay.toml [lanes.{table['assay_lane']}] (delete this "
+                     f"key; the lane-level run-gate 'budget' is a hard limit)")
+            # …and a pin key that is itself a legal LANE key is named as
+            # exactly that (review round 1, B1). The generic "unknown key(s)
+            # clean_tree (allowed: sha256, version)" is the message shape
+            # RG-32's own rationale says is not good enough: a key one
+            # nesting level below a real one that reads identically. It is
+            # also actively dangerous here, because the obvious remedy — the
+            # one the migration text used to give for `budget` — is to
+            # DELETE, and deleting a misplaced `clean_tree = false` silently
+            # flips its lane to the default `true`. Measured on dstdns
+            # 2026-09-02: four lanes (assay-dlq, assay, sql-mutation,
+            # assay-p129-enumeration-cursor) carry `clean_tree = false` under
+            # `[lanes.<n>.pins.assay]`, where it has been inert all along.
+            misplaced = sorted((set(pin) & LANE_KEYS) - PIN_KEYS - {"budget"})
+            if misplaced:
+                keys = ", ".join(f"'{key}'" for key in misplaced)
+                one = len(misplaced) == 1
+                fail(f"{where} [lanes.{name}].pins.{pin_name}: {keys} "
+                     f"{'is a lane key' if one else 'are lane keys'}; "
+                     f"{'it belongs' if one else 'they belong'} one level up "
+                     f"in [lanes.{name}], where "
+                     f"{'it is' if one else 'they are'} load-bearing — move "
+                     f"{'it' if one else 'them'}, do not delete "
+                     f"{'it' if one else 'them'} (under a pin table "
+                     f"{'it has' if one else 'they have'} never done "
+                     f"anything, so the lane has been running with the "
+                     f"default instead)")
+            # …and every other unrecognized pin key gets the same treatment
+            # `_validate_lane` gives an unrecognized lane key: a pin table
+            # that silently accepted anything is how `budget` survived there
+            # in the first place.
+            _check_keys(pin, PIN_KEYS,
+                        f"{where} [lanes.{name}].pins.{pin_name}")
+    if "clean_tree" in table and not isinstance(table["clean_tree"], bool):
+        fail(f"{where} [lanes.{name}]: 'clean_tree' must be a boolean")
+
+
+def _validate_history_policy(table: object, where: str) -> None:
+    """RG-27 `[history]`: the retention BOUND is declared policy, not ambient
+    state. It belongs in the config (auditable, reviewable, shadowable by the
+    R-09 rule) even though the data it bounds is per-instance — how much trend
+    a project keeps is a decision, not a fact about this machine."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'history' must be a table")
+    _check_keys(table, {"keep"}, f"{where} [history]")
+    if "keep" in table:
+        keep = table["keep"]
+        # bool is an int subclass — `keep = true` is a config mistake, not 1.
+        if isinstance(keep, bool) or not isinstance(keep, int) or keep < 1:
+            fail(f"{where} [history]: 'keep' must be an integer >= 1 "
+                 f"(got {keep!r})")
+
+
+def resolve_footprint_policy(cfg: dict, cfg_path: Path, central: dict,
+                             central_path: Path | None) -> tuple[int, int, str]:
+    """RG-55/R-44: `[footprint]` shadowing -- the exact pattern
+    `resolve_history_keep` already establishes (R-09, whole-table, never a
+    per-key merge). Returns `(tolerance_pct, max_age_days, source)`; both
+    numbers always come from the SAME table (no cross-table mixing of one
+    key from the project and the other from central)."""
+    if "footprint" in cfg:
+        table, source = cfg["footprint"], f"[footprint] in {cfg_path}"
+    elif central_path is not None and "footprint" in central:
+        table, source = central["footprint"], f"[footprint] in central {central_path}"
+    else:
+        table, source = {}, f"default"
+    return (table.get("tolerance_pct", FOOTPRINT_TOLERANCE_PCT_DEFAULT),
+           table.get("max_age_days", FOOTPRINT_MAX_AGE_DAYS_DEFAULT), source)
+
+
+def resolve_history_keep(cfg: dict, cfg_path: Path, central: dict,
+                         central_path: Path | None) -> tuple[int, str]:
+    """Project `[history]` shadows the central one entirely (R-09's rule,
+    applied to the same-shaped question), then the documented default."""
+    if "keep" in cfg.get("history", {}):
+        return cfg["history"]["keep"], f"[history] in {cfg_path}"
+    if central_path is not None and "keep" in central.get("history", {}):
+        return central["history"]["keep"], f"[history] in central {central_path}"
+    return HISTORY_KEEP_DEFAULT, f"default ({HISTORY_KEEP_DEFAULT})"
+
+
+def _validate_profile_policy(table: object, where: str) -> None:
+    """RG-55/R-43 top-level `[profile]`: whole-table shadowing (R-09), the
+    exact pattern `_validate_history_policy` already establishes."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'profile' must be a table")
+    _check_keys(table, {"enabled", "daemon", "interval", "damon",
+                        "transport", "socket_path", "admission_wait"},
+                f"{where} [profile]")
+    if "enabled" in table and not isinstance(table["enabled"], bool):
+        fail(f"{where} [profile]: 'enabled' must be a boolean")
+    if "daemon" in table and (not isinstance(table["daemon"], str)
+                              or not table["daemon"].strip()):
+        fail(f"{where} [profile]: 'daemon' must be a non-empty string")
+    if "interval" in table:
+        _validate_budget(table["interval"], f"{where} [profile]", "interval")
+    if "damon" in table and not isinstance(table["damon"], bool):
+        fail(f"{where} [profile]: 'damon' must be a boolean")
+    if "transport" in table and table["transport"] not in PROFILE_TRANSPORTS:
+        fail(f"{where} [profile]: 'transport' must be one of "
+             f"{', '.join(PROFILE_TRANSPORTS)} (got {table['transport']!r})")
+    if "socket_path" in table and (not isinstance(table["socket_path"], str)
+                                    or not table["socket_path"].strip()
+                                    or not table["socket_path"].startswith("/")):
+        fail(f"{where} [profile]: 'socket_path' must be a non-empty absolute path")
+    if "admission_wait" in table:
+        _validate_budget(table["admission_wait"], f"{where} [profile]",
+                         "admission_wait")
+
+
+def _validate_footprint_policy(table: object, where: str) -> None:
+    """RG-55/R-44 top-level `[footprint]`: whole-table shadowing (R-09).
+    C5 (the `footprint` verb) consumes this; validated now so a project's
+    lane declarations never need a second config-shape pass when C5 lands."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'footprint' must be a table")
+    _check_keys(table, {"tolerance_pct", "max_age_days"}, f"{where} [footprint]")
+    if "tolerance_pct" in table:
+        v = table["tolerance_pct"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            fail(f"{where} [footprint]: 'tolerance_pct' must be an integer "
+                 f">= 0 (got {v!r})")
+    if "max_age_days" in table:
+        v = table["max_age_days"]
+        if isinstance(v, bool) or not isinstance(v, int) or v < 1:
+            fail(f"{where} [footprint]: 'max_age_days' must be an integer "
+                 f">= 1 (got {v!r})")
+
+
+def _validate_assay_policy(table: object, where: str) -> None:
+    """RG-76 shared external-judge declaration and inventory import policy."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'assay' must be a table")
+    _check_keys(table, {"command", "pins", "environment", "import"},
+                f"{where} [assay]")
+    if "environment" in table and (not isinstance(table["environment"], str)
+                                    or not table["environment"].strip()):
+        fail(f"{where} [assay]: 'environment' must be a non-empty string")
+    if "command" in table and (not isinstance(table["command"], list)
+                               or not table["command"]
+                               or not all(isinstance(x, str) and x
+                                          for x in table["command"])):
+        fail(f"{where} [assay]: 'command' must be a non-empty string list")
+    pins = table.get("pins", {})
+    if not isinstance(pins, dict):
+        fail(f"{where} [assay]: 'pins' must be a table")
+    for pin_name, pin in pins.items():
+        if not isinstance(pin, dict) or not isinstance(pin.get("sha256"), str) \
+                or not pin["sha256"].strip():
+            fail(f"{where} [assay].pins.{pin_name}: requires a non-empty "
+                 "'sha256' sidecar path")
+        if "version" in pin and (not isinstance(pin["version"], str)
+                                 or not pin["version"].strip()):
+            fail(f"{where} [assay].pins.{pin_name}: 'version' must be a "
+                 "non-empty string")
+        _check_keys(pin, PIN_KEYS, f"{where} [assay].pins.{pin_name}")
+    if "import" in table:
+        value = table["import"]
+        if not isinstance(value, dict):
+            fail(f"{where} [assay]: 'import' must be a table with "
+                 "'environment' and 'lanes'")
+        _check_keys(value, {"environment", "lanes"},
+                    f"{where} [assay.import]")
+        env = value.get("environment")
+        if not isinstance(env, str) or not env.strip():
+            fail(f"{where} [assay.import]: 'environment' must be a "
+                 "non-empty environment name")
+        wanted = value.get("lanes")
+        if wanted != "all" and (not isinstance(wanted, list) or not wanted
+                                 or not all(isinstance(x, str) and x.strip()
+                                            and not any(c in x for c in "*?[]")
+                                            for x in wanted)):
+            fail(f"{where} [assay.import]: 'lanes' must be \"all\" or a "
+                 "non-empty list of exact assay lane names (globs are not supported)")
+        if isinstance(wanted, list) and len(set(wanted)) != len(wanted):
+            fail(f"{where} [assay.import]: 'lanes' contains duplicate names")
+        missing = {"command", "pins"} - set(table)
+        if missing:
+            fail(f"{where} [assay]: 'import' requires "
+                 f"{', '.join(sorted(missing))} to be declared in the same "
+                 "[assay] table")
+        if not pins:
+            fail(f"{where} [assay]: inventory imports require at least one "
+                 "judge pin so imported lanes are verified")
+
+
+def resolve_profile_settings(lane: dict, cfg: dict, cfg_path: Path,
+                             central: dict, central_path: Path | None) -> dict:
+    """Always-fully-populated `[profile]` settings for ONE lane:
+    `{'enabled', 'daemon', 'interval', 'damon', 'transport', 'socket_path',
+    'admission_wait', 'source'}`. Project
+    `[profile]` shadows the central one WHOLE-TABLE (R-09,
+    `resolve_history_keep`'s pattern — never a per-key merge), then the
+    documented defaults, then the lane's own `profile` key on top (a bool
+    `false` disables outright; a table overrides `enabled`/`damon` only).
+    `source` names where `enabled`/`daemon`/`interval`/`damon` came from
+    before any lane-level override, for disclosure (R-05). `disabled_reason`
+    is the exact `profile_error` text a disabled lane's record gets
+    (RW-17) -- 'disabled' by default, naming `RUN_GATE_PROFILE` when that
+    is what disabled it.
+
+    `RUN_GATE_PROFILE` ('on'|'off', SPEC R-43g) is an unconditional
+    ambient override checked before any config table: 'off' short-circuits
+    everything below (no daemon/lane config is even consulted -- a disabled
+    lane needs none of it); 'on' is applied LAST, after config and the
+    lane's own `profile` key, so it wins even over a lane's
+    `profile = false`. Any other value is refused by name at exit 2 (never
+    silently ignored -- a mistyped override that appears to do nothing is
+    the exact hazard a named refusal exists to catch)."""
+    ambient = os.environ.get(PROFILE_AMBIENT_ENV_VAR)
+    if ambient == "":
+        # RW-23c (round-1 review S3): an exported-but-empty value counts as
+        # ABSENT everywhere else this file reads an env knob (e.g.
+        # `forward_env`'s own "empty string counts as ABSENT" comment) --
+        # refusing it here instead bricks every invocation behind a CI
+        # wrapper that does `export RUN_GATE_PROFILE=${SOMETHING}` with
+        # SOMETHING unset.
+        ambient = None
+    if ambient is not None and ambient not in ("on", "off"):
+        fail(f"{PROFILE_AMBIENT_ENV_VAR} must be 'on' or 'off' (got "
+             f"{ambient!r})")
+    if ambient == "off":
+        return {"enabled": False, "daemon": PROFILE_DAEMON_DEFAULT,
+               "interval": PROFILE_INTERVAL_DEFAULT,
+               "damon": PROFILE_DAMON_DEFAULT,
+               "transport": PROFILE_TRANSPORT_DEFAULT,
+               "socket_path": PROFILE_SOCKET_PATH_DEFAULT,
+               "admission_wait": PROFILE_ADMISSION_WAIT_DEFAULT,
+               "source": f"${PROFILE_AMBIENT_ENV_VAR}=off",
+               "disabled_reason": f"disabled ({PROFILE_AMBIENT_ENV_VAR}=off)"}
+    if "profile" in cfg:
+        table, source = cfg["profile"], f"[profile] in {cfg_path}"
+    elif central_path is not None and "profile" in central:
+        table, source = central["profile"], f"[profile] in central {central_path}"
+    else:
+        table, source = {}, "default"
+    settings = {
+        "enabled": table.get("enabled", PROFILE_ENABLED_DEFAULT),
+        "daemon": table.get("daemon", PROFILE_DAEMON_DEFAULT),
+        "interval": table.get("interval", PROFILE_INTERVAL_DEFAULT),
+        "damon": table.get("damon", PROFILE_DAMON_DEFAULT),
+        "transport": table.get("transport", PROFILE_TRANSPORT_DEFAULT),
+        "socket_path": table.get("socket_path", PROFILE_SOCKET_PATH_DEFAULT),
+        "admission_wait": table.get("admission_wait",
+                                      PROFILE_ADMISSION_WAIT_DEFAULT),
+        "source": source,
+        "disabled_reason": "disabled",
+    }
+    lane_prof = lane.get("profile")
+    if lane_prof is False:
+        settings["enabled"] = False
+        settings["source"] = "lane 'profile = false'"
+    elif isinstance(lane_prof, dict):
+        # S12 (round-1 review): the bool `profile = false` branch above
+        # attributes `source` to itself; this branch used to leave `source`
+        # pointing at the base config/default even when it overrode
+        # `enabled`/`damon`, so `--dry-run`/`doctor` misattributed the
+        # override to the wrong place.
+        changed = []
+        if "enabled" in lane_prof:
+            settings["enabled"] = lane_prof["enabled"]
+            changed.append("enabled")
+        if "damon" in lane_prof:
+            settings["damon"] = lane_prof["damon"]
+            changed.append("damon")
+        if changed:
+            settings["source"] = (f"lane '[profile]' table "
+                                  f"({', '.join(changed)})")
+    if ambient == "on":
+        settings["enabled"] = True
+        settings["source"] = f"${PROFILE_AMBIENT_ENV_VAR}=on (base: {settings['source']})"
+    transport = os.environ.get(PROFILE_TRANSPORT_ENV_VAR)
+    if transport == "":
+        transport = None
+    if transport is not None and transport not in PROFILE_TRANSPORTS:
+        fail(f"{PROFILE_TRANSPORT_ENV_VAR} must be one of "
+             f"{', '.join(PROFILE_TRANSPORTS)} (got {transport!r})")
+    if transport is not None:
+        settings["transport"] = transport
+        settings["source"] = (f"${PROFILE_TRANSPORT_ENV_VAR}={transport} "
+                               f"(base: {settings['source']})")
+    return settings
+
+
+def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
+    where = str(path)
+    _check_keys(cfg, {"schema_version", "environments", "lanes", "history",
+                      "profile", "footprint", "project", "assay", "admission"},
+                where)
+    if "project" in cfg:
+        project = cfg["project"]
+        if not isinstance(project, dict):
+            fail(f"{where}: 'project' must be a table")
+        _check_keys(project, {"trunk"}, f"{where} [project]")
+        if "trunk" in project and (not isinstance(project["trunk"], str)
+                                    or not project["trunk"].strip()
+                                    or not re.fullmatch(r"[A-Za-z0-9._/+@-]+",
+                                                        project["trunk"])):
+            fail(f"{where} [project]: 'trunk' must be a non-empty, gate-safe "
+                 "local branch name")
+    if "history" in cfg:
+        _validate_history_policy(cfg["history"], where)
+    if "profile" in cfg:
+        _validate_profile_policy(cfg["profile"], where)
+    if "footprint" in cfg:
+        _validate_footprint_policy(cfg["footprint"], where)
+    if "assay" in cfg:
+        _validate_assay_policy(cfg["assay"], where)
+    if "admission" in cfg:
+        if central:
+            fail(f"{where}: [admission] is project-local and is never "
+                 "inherited from run-gate.root.toml")
+        _validate_admission_policy(cfg["admission"], where)
+    if cfg.get("schema_version") != SCHEMA_VERSION:
+        fail(f"{where}: 'schema_version' must be {SCHEMA_VERSION} (got "
+             f"{cfg.get('schema_version')!r})")
+    envs = cfg.get("environments", {})
+    lanes = cfg.get("lanes", {})
+    if not isinstance(envs, dict) or not isinstance(lanes, dict):
+        fail(f"{where}: 'environments' and 'lanes' must be tables")
+    for name, table in envs.items():
+        _validate_environment(name, table, where)
+    for name, table in lanes.items():
+        _validate_lane(name, table, where)
+        # RG-58 (RW-27a): a host-mode lane has no stall watch. Resolve this
+        # from the declaration, not the environment name: explicit modes
+        # deliberately removed name-based behavior (RG-78).
+        env = envs.get(table.get("environment"))
+        if table.get("stall_timeout") and isinstance(env, dict) \
+                and env.get("mode") == "host":
+            print(f"{PROG}: WARNING "
+                  f"{host_mode_stall_timeout_inert_reason(name)}",
+                  file=sys.stderr, flush=True)
+    for name, table in lanes.items():
+        if table.get("kind") == "sequence":
+            for member in table["lanes"]:
+                if central and member not in lanes:
+                    fail(f"{where} [lanes.{name}]: sequence member {member!r} "
+                         "is not declared in this config")
+    _validate_sequence_cycles(lanes, where)
+    return cfg
+
+
+def _validate_admission_policy(table: object, where: str) -> None:
+    """RG-80: validate the closed project-local ticket switch and image."""
+    if not isinstance(table, dict):
+        fail(f"{where}: 'admission' must be a table")
+    _check_keys(table, {"enabled", "ticket_image", "unreadable_policy"},
+                f"{where} [admission]")
+    enabled = table.get("enabled", False)
+    if not isinstance(enabled, bool):
+        fail(f"{where} [admission]: 'enabled' must be a boolean")
+    if "ticket_image" in table and (not isinstance(table["ticket_image"], str)
+                                     or not table["ticket_image"].strip()
+                                     or any(ch.isspace()
+                                            for ch in table["ticket_image"])):
+        fail(f"{where} [admission]: 'ticket_image' must be one non-empty "
+             "Docker image reference")
+    if enabled and not table.get("ticket_image"):
+        fail(f"{where} [admission]: enabled = true requires an explicit "
+             "ticket_image already present locally")
+    policy = table.get("unreadable_policy", "unbudgeted")
+    if policy not in ("refuse", "unbudgeted"):
+        fail(f"{where} [admission]: 'unreadable_policy' must be 'refuse' or "
+             f"'unbudgeted' (got {policy!r})")
+
+
+def _validate_sequence_cycles(lanes: dict, where: str) -> None:
+    """Refuse missing transitive members and cycles at config load."""
+    visiting: list[str] = []
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            cycle = visiting[visiting.index(name):] + [name]
+            fail(f"{where}: sequence cycle: {' -> '.join(cycle)}")
+        if name in visited:
+            return
+        lane = lanes[name]
+        if lane.get("kind") == "sequence":
+            visiting.append(name)
+            for member in lane["lanes"]:
+                if member in lanes:
+                    visit(member)
+            visiting.pop()
+        visited.add(name)
+
+    for lane_name in lanes:
+        visit(lane_name)
+
+
+_ENVIRONMENT_HEADER_RE = re.compile(
+    r'^\s*\[environments\.(?P<name>[A-Za-z0-9_-]+)\]\s*(?:#.*)?$')
+
+
+def migrate_environment_modes_text(text: str, *,
+                                   known_environment_names: set[str] | None = None
+                                   ) -> tuple[str, bool]:
+    """Insert explicit modes without reserializing or dropping TOML comments.
+
+    Existing environment sections defaulted to ephemeral before RG-78.
+    The old implicit ``host`` and ``bare-host`` aliases are materialized only
+    when referenced and not declared by this or a known central config.
+    Re-parsing and structural equality checks make the edit narrowly
+    mechanical: existing values are unchanged except for the new ``mode``.
+    """
+    try:
+        before = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        fail(f"cannot migrate invalid TOML: {exc}")
+    known = set(known_environment_names or ())
+    environments = before.get("environments", {})
+    lanes = before.get("lanes", {})
+    if not isinstance(environments, dict) or not isinstance(lanes, dict):
+        fail("cannot migrate: 'environments' and 'lanes' must be TOML tables")
+    lines = text.splitlines(keepends=True)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    changed = False
+    i = 0
+    while i < len(lines):
+        match = _ENVIRONMENT_HEADER_RE.fullmatch(lines[i].rstrip("\r\n"))
+        if not match:
+            if re.match(r"^\s*\[\[?environments\.", lines[i]):
+                fail("cannot migrate a quoted or nested environment header "
+                     f"without changing its spelling: {lines[i].strip()!r}")
+            i += 1
+            continue
+        name = match.group("name")
+        table = environments.get(name)
+        # tomllib accepted the matching [environments.<name>] header, so its
+        # corresponding value is necessarily a table. Avoid a dead type guard
+        # here: malformed root shapes are rejected above and this one cannot
+        # be reached from valid TOML.
+        if "mode" in table:
+            i += 1
+            continue
+        mode = "host" if name == BARE_HOST_ENV else "ephemeral"
+        lines.insert(i + 1, f'mode = "{mode}"{newline}')
+        changed = True
+        i += 2
+
+    references: set[str] = set()
+    for lane in lanes.values():
+        if isinstance(lane, dict) and isinstance(lane.get("environment"), str):
+            references.add(lane["environment"])
+    added: dict[str, dict] = {}
+    for name in sorted(references & {HOST_ENV, BARE_HOST_ENV}):
+        if name in environments or name in known:
+            continue
+        if name == HOST_ENV:
+            added[name] = {"mode": "ephemeral", "image": DEFAULT_HOST_IMAGE}
+            block = (f"[environments.{name}]{newline}"
+                     f'mode = "ephemeral"{newline}'
+                     f"image = {json.dumps(DEFAULT_HOST_IMAGE)}{newline}")
+        else:
+            added[name] = {"mode": "host"}
+            block = (f"[environments.{name}]{newline}"
+                     f'mode = "host"{newline}')
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            lines[-1] += newline
+        if lines and lines[-1].strip():
+            lines.append(newline)
+        lines.append(block)
+        changed = True
+
+    migrated = "".join(lines)
+    try:
+        after = tomllib.loads(migrated)
+    except tomllib.TOMLDecodeError as exc:
+        fail(f"mode migration generated invalid TOML: {exc}")
+    comparable = copy.deepcopy(after)
+    for name, old_table in environments.items():
+        if isinstance(old_table, dict) and "mode" not in old_table:
+            comparable.get("environments", {}).get(name, {}).pop("mode", None)
+    for name in added:
+        comparable.get("environments", {}).pop(name, None)
+    if "environments" not in before and not comparable.get("environments"):
+        comparable.pop("environments", None)
+    if comparable != before:
+        fail("mode migration changed configuration data beyond explicit "
+             "environment modes")
+    return migrated, changed
+
+
+def migrate_environment_modes(path: Path,
+                              known_environment_names: set[str] | None = None
+                              ) -> bool:
+    """Atomically apply ``migrate_environment_modes_text`` to one config."""
+    try:
+        original = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        fail(f"cannot read {path}: {exc}")
+    migrated, changed = migrate_environment_modes_text(
+        original, known_environment_names=known_environment_names)
+    if not changed:
+        return False
+    try:
+        mode = path.stat().st_mode & 0o777
+        tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+        fd = os.open(tmp, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                     mode or 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as stream:
+                stream.write(migrated)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(tmp, path)
+            dir_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+    except OSError as exc:
+        fail(f"cannot write migrated config {path}: {exc}")
+    return True
+
+
+def load_config_snapshot(project_dir: Path
+                         ) -> tuple[dict, Path, dict, Path | None, str, str | None]:
+    """Load the project config + the nearest ancestor root config.
+
+    Root configs may define shared environments AND shared lanes (RG-16);
+    every declared lane is schema-validated wherever it lives. Only the
+    root-specific filename is eligible here, so an ancestor project's local
+    run-gate.toml cannot become shared configuration by accident. Hashes
+    describe the exact bytes parsed, so history records the policy actually
+    used even if a file changes while a lane is running."""
+    project_path = project_dir / CONFIG_NAME
+    project_raw, project_sha256 = _read_toml_snapshot(project_path)
+    project = _validate_config(project_raw, project_path, central=False)
+    central_path: Path | None = None
+    central_sha256: str | None = None
+    central: dict = {"environments": {}}
+    resolved_project = project_dir.resolve()
+    git_root = _git_toplevel_if_available(project_dir)
+    for parent in resolved_project.parents:  # nearest first, strictly above
+        candidate = parent / ROOT_CONFIG_NAME
+        if candidate.is_file():
+            central_path = candidate
+            central_raw, central_sha256 = _read_toml_snapshot(candidate)
+            central = _validate_config(central_raw, candidate, central=True)
+            break
+        if git_root is not None and parent == git_root:
+            break
+    _validate_effective_resource_observers(project, central, project_path)
+    _validate_effective_assay_pins(project, central, project_path,
+                                   central_path)
+    return (project, project_path, central, central_path,
+            project_sha256, central_sha256)
+
+
+def load_config(project_dir: Path) -> tuple[dict, Path, dict, Path | None]:
+    """Compatibility wrapper for callers that do not need provenance."""
+    project, project_path, central, central_path, _project_sha, _central_sha = \
+        load_config_snapshot(project_dir)
+    return project, project_path, central, central_path
+
+
+def _git_toplevel_if_available(project_dir: Path) -> Path | None:
+    """Find this project's repository root without making config reads
+    require Git. Root config inheritance must not cross this boundary."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"], cwd=project_dir,
+            capture_output=True, text=True, check=False)
+    except (OSError, UnicodeError):
+        return None
+    if result.returncode or not result.stdout.strip():
+        return None
+    return Path(result.stdout.strip()).resolve()
+
+
+def _validate_effective_assay_pins(project: dict, central: dict,
+                                   project_path: Path,
+                                   central_path: Path | None) -> None:
+    """Pins must identify an explicit external command after defaults merge."""
+    defaults = project.get("assay", central.get("assay", {}))
+    lanes = dict(central.get("lanes", {}))
+    lanes.update(project.get("lanes", {}))
+    for name, lane in lanes.items():
+        if lane.get("kind") != "assay":
+            continue
+        command = lane.get("assay_command", defaults.get("command"))
+        pins = lane.get("pins", defaults.get("pins", {}))
+        if pins and command is None:
+            source = (f"central lane '[lanes.{name}]' ({central_path})"
+                      if name in central.get("lanes", {})
+                      and name not in project.get("lanes", {})
+                      else f"lane '[lanes.{name}]'")
+            fail(f"{project_path} {source} declares judge pins but has no "
+                 f"'assay_command' — pins verify an external judge artifact; "
+                 f"declare the command on the lane or in [assay], or remove "
+                 f"the pins for a source-backed Assay lane")
+
+
+def _validate_effective_resource_observers(project: dict, central: dict,
+                                           project_path: Path) -> None:
+    """Observer-backed lanes must resolve to an ephemeral container at load.
+
+    The runtime Docker-flag check remains defense in depth, but a host or exec
+    lane must not appear valid in ``lanes`` or ``doctor``. Resolve project
+    shadows and Assay's inherited environment default after both configs load.
+    """
+    lanes = dict(central.get("lanes", {}))
+    lanes.update(project.get("lanes", {}))
+    environments = dict(central.get("environments", {}))
+    environments.update(project.get("environments", {}))
+    defaults = project.get("assay", central.get("assay", {}))
+    for name, lane in lanes.items():
+        if lane.get("resource_observer") is None:
+            continue
+        environment_name = lane.get("environment")
+        if environment_name is None and lane.get("kind") == "assay":
+            environment_name = defaults.get("environment")
+        if not isinstance(environment_name, str) or not environment_name.strip():
+            # The established lane/default validator reports the missing
+            # environment during effective-lane construction.
+            continue
+        environment = environments.get(environment_name)
+        if not isinstance(environment, dict):
+            # Keep resolve_environment's source-specific missing-name error.
+            continue
+        if environment.get("mode") != "ephemeral":
+            fail(f"{project_path} [lanes.{name}]: resource_observer="
+                 f"'cgprofile' requires the resolved environment "
+                 f"{environment_name!r} to have mode = 'ephemeral' "
+                 f"(got {environment.get('mode')!r})")
+        resources = lane.get("resources", {})
+        if not isinstance(resources, dict) or not isinstance(
+            resources.get("memory"), str
+        ) or "pids" not in resources:
+            fail(f"{project_path} [lanes.{name}]: resource_observer='cgprofile' "
+                 "requires explicit resources.memory and resources.pids so "
+                 "candidate-local memory and PID limit events are attributable")
+
+
+def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
+                project_path: Path, central_path: Path | None,
+                assay_defaults: dict | None = None,
+                imported_lanes: dict | None = None) -> dict:
+    """Effective lane set: central [lanes.*] inherited, project entries
+    shadow BY NAME (whole lane — no field merging, RG-16).
+
+    Per-consumer existence check: a pin sidecar must exist relative to THIS
+    consuming project — for INHERITED lanes (a shared gate referencing
+    artifacts the project does not vendor) and, symmetrically (review fix),
+    for the project's OWN lane pins. Both refuse at load naming lane,
+    sidecar, and project dir. Free-form argv strings are deliberately NOT
+    stat'd: they are shell text, not declared paths, and pretending
+    otherwise would certify nothing.
+    """
+    merged = dict(central.get("lanes", {}))
+    merged.update(project_lanes)
+    imported_names: set[str] = set()
+    for name, lane in (imported_lanes or {}).items():
+        if name not in merged:
+            merged[name] = lane
+            imported_names.add(name)
+    defaults = assay_defaults or {}
+    for name, original in list(merged.items()):
+        if original.get("kind") != "assay":
+            continue
+        lane = copy.deepcopy(original)
+        was_imported = name in imported_names
+        for key, global_key in (("environment", "environment"),
+                                ("assay_command", "command"),
+                                ("pins", "pins")):
+            if key not in lane and global_key in defaults:
+                lane[key] = copy.deepcopy(defaults[global_key])
+        if lane.get("pins") and lane.get("assay_command") is None:
+            fail(f"lane '[lanes.{name}]' declares judge pins but has no "
+                 f"'assay_command' — pins verify an external judge artifact; "
+                 f"declare the command on the lane or in [assay], or remove "
+                 f"the pins for a source-backed Assay lane")
+        if not isinstance(lane.get("environment"), str) \
+                or not lane["environment"].strip():
+            fail(f"lane '[lanes.{name}]' has no 'environment'; set it on the "
+                 f"lane or in [assay] ({project_path})")
+        _validate_lane(name, lane, str(project_path))
+        if was_imported:
+            lane["assay_command"] = copy.deepcopy(defaults["command"])
+            lane["pins"] = copy.deepcopy(defaults["pins"])
+            lane["_imported"] = True
+        merged[name] = lane
+    for name, lane in merged.items():
+        if lane.get("kind") == "sequence":
+            for member in lane["lanes"]:
+                if member not in merged:
+                    fail(f"lane '[lanes.{name}]': sequence member {member!r} "
+                         f"is not declared in {project_path} or "
+                         f"{central_path or 'the nearest run-gate.root.toml'}")
+    _validate_sequence_cycles(merged, str(project_path))
+    for name, lane in merged.items():
+        inherited = name in central.get("lanes", {}) \
+            and name not in project_lanes
+        for pin_name, pin in lane.get("pins", {}).items():
+            sidecar = project_dir / pin["sha256"]
+            if sidecar.is_file():
+                continue
+            origin = (f"central lane '[lanes.{name}]' ({central_path})"
+                      if inherited else f"lane '[lanes.{name}]'")
+            fail(f"{origin}: pin '{pin_name}' sidecar {pin['sha256']} does not "
+                 f"exist in this project ({project_dir}) — vendor it or shadow "
+                 f"the lane")
+    return merged
+
+
+def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict,
+                        project_path: Path, central_path: Path | None
+                        ) -> tuple[dict, str]:
+    """Resolve an explicitly declared environment and its execution mode."""
+    name = lane["environment"]
+    resolved = None
+    source = None
+    if name in project.get("environments", {}):
+        resolved = dict(project["environments"][name])
+        source = f"[environments.{name}] in {project_path}"
+    elif central_path is not None and name in central.get("environments", {}):
+        resolved = dict(central["environments"][name])
+        source = f"[environments.{name}] in central {central_path}"
+    if resolved is not None:
+        if resolved["mode"] == "host":
+            return {}, source
+        # Preserve the repository's existing override for its explicitly
+        # declared `host` container environment. The name alone selects no
+        # behavior; its required `mode` does.
+        if name == HOST_ENV and os.environ.get(HOST_IMAGE_ENV_VAR):
+            resolved["image"] = os.environ[HOST_IMAGE_ENV_VAR]
+            resolved["user"] = f"{os.getuid()}:{os.getgid()}"
+        return resolved, source
+    # Review fix: name the file ACTUALLY searched, never a generic claim —
+    # when no root config exists at all, say which root-specific filename the
+    # operator can create rather than sending them to a project-local file.
+    if central_path is not None:
+        fail(f"[lanes.{lane_name}] in {project_path}: environment '{name}' is "
+             f"not defined in {project_path} nor in central config {central_path}")
+    fail(f"[lanes.{lane_name}] in {project_path}: environment '{name}' is not "
+         f"defined in {project_path} (no central {ROOT_CONFIG_NAME} exists)")
+
+
+def lane_environment_name(lane: dict) -> str:
+    return str(lane["environment"])
+
+
+# ---------------------------------------------------------------------------
+# RG-55 / SPEC R-43: cgroup-profiler daemon client + basic-path fallback
+# (RG55-INTERFACE-CONTRACT.md). This section is the self-contained,
+# docker-agnostic-where-possible core: the ported cgroupfs parsers,
+# ProfilerClient (talks to the optional daemon), ResourceAccumulator (pure
+# arithmetic, contract Sec 7), and BasicSampler (the in-lane fallback that
+# owns the actual `docker exec` plumbing). Wiring these into
+# await_container/run_exec_lane/run_container_lane/run_bare_host_lane (the
+# token, the per-tick call sites, the disclosure lines, --dry-run) is a
+# SEPARATE deliverable, not yet done as of this section landing — see
+# CHANGES.md / the wave's own tracking docs for status.
+# ---------------------------------------------------------------------------
+
+
+def generate_profile_token() -> str:
+    """Contract Sec 4.1: `secrets.token_hex(16)` per lane invocation — 32
+    hex chars, comfortably inside the daemon's accepted `--token`
+    `[A-Za-z0-9._-]{8,64}` grammar."""
+    return secrets.token_hex(16)
+
+
+def _profile_parse_int(text: str | None) -> int | None:
+    """Ported from scripts/cgroup-profiler/lib/util.py:read_int (STRING
+    variant — run-gate reads via `docker exec ... cat`, never a path
+    directly). 'max' and empty read back as None (absent is never zero,
+    contract Sec 1.7)."""
+    if text is None:
+        return None
+    text = text.strip()
+    if text in ("", "max"):
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _profile_parse_raw_limit(text: str | None) -> int | str | None:
+    """Special-purpose reader for `memory.max`/`memory.high` ONLY: keeps the
+    literal string 'max' (unlimited) distinct from both an integer ceiling
+    and an unreadable file (None) — `events.limit_drift` (contract Sec 7)
+    must detect a 'max' <-> integer TRANSITION, which `_profile_parse_int`
+    (which folds 'max' into None, correct for every other caller) cannot
+    represent."""
+    if text is None:
+        return None
+    text = text.strip()
+    if text == "":
+        return None
+    if text == "max":
+        return "max"
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _profile_parse_kv(text: str | None) -> dict[str, int]:
+    """Ported from .../read_kv (string variant). Non-integer values are
+    skipped, not fatal — a newer kernel field must not blind the rest."""
+    out: dict[str, int] = {}
+    if not text:
+        return out
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        try:
+            out[parts[0]] = int(parts[1])
+        except ValueError:
+            continue
+    return out
+
+
+def _profile_parse_pressure(text: str | None) -> dict[str, float]:
+    """Ported from .../read_pressure (string variant).
+    {'some avg10=.. avg60=.. avg300=.. total=..', 'full ...'} ->
+    {'some_avg10': .., 'some_total': .., 'full_avg10': .., 'full_total': ..}
+    — total is MICROSECONDS (contract Sec 1.6 converts to seconds only in
+    the final Summary, not here)."""
+    out: dict[str, float] = {}
+    if not text:
+        return out
+    for line in text.splitlines():
+        parts = line.split()
+        if not parts:
+            continue
+        kind = parts[0]  # "some" | "full"
+        for kv in parts[1:]:
+            key, _, val = kv.partition("=")
+            try:
+                out[f"{kind}_{key}"] = float(val)
+            except ValueError:
+                continue
+    return out
+
+
+def _split_basic_dump(text: str, files: list[str]) -> dict[str, str | None]:
+    """Split the concatenated '== <file>\\n<content>' dump BasicSampler's
+    one `docker exec ... sh -c 'for f in ...; do echo "== $f"; cat ...
+    2>/dev/null; done'` invocation produces back into
+    `{file: content_or_None}`. A missing/unreadable file (`cat`'s stderr is
+    redirected to /dev/null) reads as an empty marker body, folded to None
+    here (absent, never zero, contract Sec 1.7) rather than "" — the
+    parsers above already treat "" the same as None, but keying by marker
+    name here makes a single missing file's test failure legible instead of
+    a silent positional shift."""
+    out: dict[str, str | None] = {name: None for name in files}
+    current: str | None = None
+    buf: list[str] = []
+
+    def _flush() -> None:
+        if current is not None:
+            body = "\n".join(buf)
+            out[current] = body if body.strip() else None
+
+    for line in text.splitlines():
+        if line.startswith("== "):
+            _flush()
+            current = line[3:].strip()
+            buf = []
+        else:
+            buf.append(line)
+    _flush()
+    return out
+
+
+def _iso_utc(epoch: float) -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch))
+
+
+def _parse_iso_utc(stamp: str) -> float:
+    """Contract Sec 1.6's exact timestamp grammar (`YYYY-MM-DDTHH:MM:SSZ`,
+    no fraction, always UTC) — deliberately NOT `parse_docker_timestamp` (a
+    different, fraction+offset-bearing grammar for a different producer)."""
+    return float(calendar.timegm(time.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")))
+
+
+def _delta_or_none(first: object, last: object):
+    """Contract Sec 7's own explicit rule: a field whose inputs were
+    unreadable at EITHER end of a delta is null, never a delta against
+    nothing."""
+    if first is None or last is None:
+        return None
+    return last - first
+
+
+def _max_or_none(values) -> int | None:
+    vals = [v for v in values if v is not None]
+    return max(vals) if vals else None
+
+
+def _nearest_rank_value(values, pct: float) -> int | None:
+    """Contract Sec 7: nearest-rank percentile, no interpolation, so two
+    stdlib implementations agree byte-for-byte. `rank = ceil(p/100 * N)`,
+    1-based, N = the number of READABLE (non-None) values — a None cannot
+    be sorted or ranked, so it is excluded from N as well as from the
+    sorted list, the same "absent, never a fabricated value" treatment
+    every other field here gets."""
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    rank = max(1, min(math.ceil(pct / 100 * len(vals)), len(vals)))
+    return vals[rank - 1]
+
+
+def _last_successful(values) -> object:
+    """RW-7 (bound to P2 by RW-23a, round-1 review S7/D1): "the last read"
+    (contract Sec 7) means the last read that SUCCEEDED, skipping trailing
+    `None`s — not simply the final sample taken unconditionally, which a
+    partial final read (a total-failure-tolerant tick, or RW-21's absolute
+    counters in scope `container`) could otherwise null out even though an
+    earlier sample read it fine. Consumed lazily (any iterable), reversed
+    once."""
+    for v in reversed(list(values)):
+        if v is not None:
+            return v
+    return None
+
+
+# RG-59: docker's OWN stderr wording for "the target of `docker exec`
+# is not a live container" -- case-folded (RG-44's own precedent:
+# GONE_SIGNALS above learned the hard way that a docker version's exact
+# casing is not portable across hosts/versions). Matched against
+# ProfilerClient._ctl's `stderr_tail` to tell "the daemon container itself
+# is absent/stopped" apart from "a RUNNING daemon returned genuinely
+# malformed stdout" -- the two used to collapse into the SAME generic
+# "produced unparsable stdout" reason, naming the wrong cause in the far
+# more common case (no daemon deployed at all).
+#
+# S2 (round-1 review): the FIRST cut of this matched any stderr line
+# CONTAINING "is not running"/"no such container" (case-folded) -- which
+# also matches a daemon container that IS running and IS reachable, but
+# whose own `cgprofile` process crashed with an application-level
+# exception that happens to mention those same words (e.g.
+# `cgprofile.errors.TargetError: target container 9f01 is not running`,
+# with stdout carrying the traceback and an ordinary Python exit code of
+# 1) -- reporting "daemon not running, start it" for a daemon that is
+# demonstrably running is the opposite of RG-59's own goal. Narrowed to
+# docker's own exec failure signature specifically: `docker exec` itself
+# never reaching `cgprofile` returns one of docker's own reserved exit
+# wording that both belongs to Docker and specifically names absence or a
+# stopped container -- never an exit code alone, and never a bare substring
+# match against arbitrary stderr content a daemon's OWN application code
+# might have produced.
+#
+# S11 (round-2 review, RW-51): those reserved exit codes are NOT all the
+# same condition. 125 says only that the Docker CLI itself failed; permission,
+# transport, argument, and daemon failures all collapse into it, so it cannot
+# certify that a particular container is absent. 126/127 (container command not
+# found) mean `docker exec` DID reach a live container -- the container is
+# running, `cgprofile` itself could not be started inside it (a broken
+# image or PATH), and telling the operator to `ciu up` a container that is
+# already up is the wrong remedy for the wrong cause, reproduced live on
+# this host (an OCI runtime exec failure, exit 126). Split into two exit-
+# code set and a distinct reason instead of folding them into absence.
+_DAEMON_BROKEN_EXIT_CODES = (126, 127)
+_DOCKER_EXEC_FAILURE_STDERR_PREFIXES = ("docker:", "Error response from daemon:")
+_DOCKER_CONTAINER_ABSENCE_MARKERS = (
+    "no such container", "no such object", "is not running")
+
+
+def _stderr_names_daemon_not_running(stderr_tail: str,
+                                     returncode: int | None = None) -> bool:
+    del returncode  # absence is a statement about stderr content, not a code
+    text = stderr_tail.strip()
+    if not text.startswith(_DOCKER_EXEC_FAILURE_STDERR_PREFIXES):
+        return False
+    folded = text.casefold()
+    return any(marker in folded for marker in _DOCKER_CONTAINER_ABSENCE_MARKERS)
+
+
+def daemon_not_running_reason(daemon_name: str) -> str:
+    """RG-59: the ONE wording both `cmd_doctor`'s "profiler daemon" WARN
+    and `ProfilerClient._ctl`'s live-run warning use for "the daemon
+    container is not running" -- factored into one function so the two
+    surfaces can never drift apart (the whole point of this backlog entry:
+    doctor already named the real cause and the right remedy, the live-run
+    warning did not)."""
+    return (f"{daemon_name!r} not running (start it: cd "
+           f"scripts/cgroup-profiler && ciu up)")
+
+
+def daemon_broken_reason(daemon_name: str) -> str:
+    """S11 (round-2 review, RW-51): exit 126/127 means `docker exec`
+    reached the daemon container but could not start `cgprofile` inside it
+    (a broken image or PATH) -- the container IS running, so
+    `daemon_not_running_reason`'s "not running ... ciu up" wording names
+    the wrong condition and the wrong remedy. Named separately so a
+    caller never tells the operator to start a container that is already
+    up."""
+    return (f"{daemon_name!r} container is running but could not start "
+           f"`cgprofile` in it (exit 126/127 — broken image or PATH, not "
+           f"a stopped container)")
+
+
+class ProfilerClient:
+    """The v1.1 daemon client with one parser behind two carriers.
+
+    The exec carrier remains the compatibility path.  The socket carrier is
+    deliberately stdlib-only: it sends the same request object the daemon's
+    in-image translator sends, then reads one response to EOF.  Transport
+    failures always return a profiling warning to the caller; they never
+    alter the lane verdict (R-36h).
+    """
+
+    def __init__(self, docker: str, daemon: str,
+                 transport: str = PROFILE_TRANSPORT_DEFAULT,
+                 socket_path: str = PROFILE_SOCKET_PATH_DEFAULT):
+        self.docker = docker
+        self.daemon = daemon
+        self.transport = transport
+        self.socket_path = socket_path
+        self._carrier: str | None = None
+        self.transport_reason: str | None = None
+
+    _REQUIRED_KEY = {"start": "session", "stop": "summary"}
+
+    @property
+    def carrier(self) -> str:
+        """The selected carrier, or the configured carrier before a call."""
+        return self._carrier or self.transport
+
+    def _parse_response(self, verb: str, raw: str, returncode: int = 0,
+                        stderr: str = "") -> tuple[dict | None, str | None]:
+        stderr_tail = (stderr.strip().splitlines() or ["(no stderr)"])[-1]
+        try:
+            doc = json.loads(raw)
+        except json.JSONDecodeError:
+            if returncode and _stderr_names_daemon_not_running(
+                    stderr_tail, returncode):
+                return None, daemon_not_running_reason(self.daemon)
+            if returncode in _DAEMON_BROKEN_EXIT_CODES:
+                return None, daemon_broken_reason(self.daemon)
+            if returncode != 0 and not raw.strip():
+                return None, (f"`cgprofile ctl {verb}` failed before a valid "
+                              f"cgprofile response (exit {returncode}); "
+                              f"stderr: {stderr_tail}")
+            return None, (f"`cgprofile ctl {verb}` produced unparsable stdout "
+                          f"(exit {returncode}); stderr: {stderr_tail}")
+        except Exception as exc:
+            return None, (f"`cgprofile ctl {verb}` JSON parser failed "
+                          f"unexpectedly: {exc}")
+        if not isinstance(doc, dict):
+            return None, (f"`cgprofile ctl {verb}` returned non-object JSON "
+                          f"(exit {returncode})")
+        if (type(doc.get("contract")) is not int
+                or doc["contract"] != PROFILE_CONTRACT):
+            return None, (f"`cgprofile ctl {verb}` reports contract "
+                          f"{doc.get('contract')!r}, this client accepts "
+                          f"{PROFILE_CONTRACT} only")
+        if "ok" not in doc:
+            return None, f"`cgprofile ctl {verb}` refused (missing 'ok' key)"
+        if type(doc["ok"]) is not bool:
+            return None, (f"`cgprofile ctl {verb}` response has a "
+                          "non-boolean 'ok' value")
+        if not doc["ok"]:
+            err = doc.get("error")
+            if err is not None and not isinstance(err, dict):
+                return None, (f"`cgprofile ctl {verb}` response has a "
+                              "non-object 'error' value")
+            err = err or {}
+            return None, (f"`cgprofile ctl {verb}` refused "
+                          f"({err.get('code', 'unknown')}): "
+                          f"{err.get('message', stderr_tail)}")
+        if returncode != 0:
+            return None, (f"`cgprofile ctl {verb}` reported success but "
+                          f"its carrier exited {returncode}; stderr: "
+                          f"{stderr_tail}")
+        required = self._REQUIRED_KEY.get(verb)
+        if required is not None and required not in doc:
+            return None, (f"`cgprofile ctl {verb}` response is missing the "
+                          f"required {required!r} key (contract Sec 1.4 "
+                          f"minor-version skew?)")
+        if verb == "start" and (
+                not isinstance(doc.get("session"), str)
+                or not doc["session"].strip()):
+            return None, ("`cgprofile ctl start` response has an unusable "
+                          "'session' value (expected a non-empty string)")
+        if verb == "stop" and not isinstance(doc.get("summary"), dict):
+            return None, ("`cgprofile ctl stop` response has an unusable "
+                          "'summary' value (expected an object)")
+        return doc, None
+
+    @staticmethod
+    def _wire_args(verb: str, args: tuple[str, ...]) -> dict:
+        if verb in ("version", "host", "gc"):
+            return {}
+        if verb in ("status", "stop", "report", "watch"):
+            result = {"session": args[0] if args else None}
+            if verb == "watch":
+                result["watch_interval"] = 30
+                for index, value in enumerate(args[1:]):
+                    if value == "--watch-interval" and index + 2 < len(args):
+                        result["watch_interval"] = float(args[index + 2])
+            return result
+        if verb != "start":
+            raise ValueError(f"unsupported cgprofile verb {verb!r}")
+        result = {"target": None, "scope": None, "token": None,
+                  "damon": None, "interval": None, "meta": {},
+                  "progress_stream": None, "idle_bound": None,
+                  "ceiling": None, "on_stall": None, "place": False,
+                  "memory_high": None, "memory_max": None,
+                  "cpu_weight": None}
+        index = 0
+        while index < len(args):
+            value = args[index]
+            if value == "--place":
+                result["place"] = True
+                index += 1
+                continue
+            if not value.startswith("--") or index + 1 >= len(args):
+                raise ValueError(f"invalid {verb} argument {value!r}")
+            key = value[2:].replace("-", "_")
+            raw = args[index + 1]
+            if key == "meta":
+                result[key] = json.loads(raw)
+            elif key in ("interval", "idle_bound", "ceiling"):
+                result[key] = (float(raw) if key == "interval"
+                               else (raw if raw == "auto" else float(raw)))
+            elif key in ("memory_high", "memory_max", "cpu_weight"):
+                result[key] = int(raw)
+            elif key in result:
+                result[key] = raw
+            else:
+                raise ValueError(f"unknown {verb} argument {value!r}")
+            index += 2
+        return result
+
+    def _socket_request(self, verb: str, args: tuple[str, ...]) -> str:
+        payload = {"verb": verb, "args": self._wire_args(verb, args),
+                   "contract": PROFILE_CONTRACT}
+        request = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ) + "\n"
+        timeout = PROFILE_CTL_TIMEOUTS.get(verb, PROFILE_CTL_TIMEOUTS["status"])
+        chunks: list[bytes] = []
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as carrier:
+            carrier.settimeout(timeout)
+            carrier.connect(self.socket_path)
+            carrier.sendall(request.encode("utf-8"))
+            carrier.shutdown(socket.SHUT_WR)
+            while True:
+                chunk = carrier.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8", errors="replace")
+
+    def _socket_ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        try:
+            raw = self._socket_request(verb, args)
+        except FileNotFoundError:
+            return None, (f"cgprofile socket carrier path absent: "
+                          f"{self.socket_path}")
+        except PermissionError as exc:
+            return None, (f"cgprofile socket carrier permission denied at "
+                          f"{self.socket_path}: {exc}")
+        except socket.timeout:
+            return None, (f"cgprofile socket ctl {verb} timed out after "
+                          f"{PROFILE_CTL_TIMEOUTS.get(verb, 5)}s")
+        except OSError as exc:
+            return None, (f"cgprofile socket carrier failed for ctl {verb}: "
+                          f"{exc}")
+        except Exception as exc:
+            return None, (f"cgprofile socket ctl {verb} failed unexpectedly: "
+                          f"{exc}")
+        return self._parse_response(verb, raw)
+
+    def _exec_ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        argv = [self.docker, "exec", self.daemon, "cgprofile", "ctl", verb,
+                *args, "--json"]
+        try:
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  errors="replace",
+                                  timeout=PROFILE_CTL_TIMEOUTS[verb])
+        except subprocess.TimeoutExpired:
+            return None, (f"`cgprofile ctl {verb}` timed out after "
+                          f"{PROFILE_CTL_TIMEOUTS[verb]}s")
+        except OSError as exc:
+            return None, f"`cgprofile ctl {verb}` could not be run: {exc}"
+        except Exception as exc:
+            return None, f"`cgprofile ctl {verb}` failed unexpectedly: {exc}"
+        return self._parse_response(verb, proc.stdout, proc.returncode,
+                                    proc.stderr)
+
+    def _ctl(self, verb: str, *args: str) -> tuple[dict | None, str | None]:
+        if self.transport not in PROFILE_TRANSPORTS:
+            return None, (f"unknown profiler transport {self.transport!r}")
+        if self.transport == "auto" and self._carrier is None:
+            if os.path.exists(self.socket_path):
+                probe_doc, probe_reason = self._socket_ctl("version")
+                if probe_doc is not None:
+                    self._carrier = "socket"
+                    self.transport_reason = "socket version probe succeeded"
+                    if verb == "version":
+                        return probe_doc, None
+                else:
+                    self.transport_reason = (probe_reason or
+                                             "socket version probe failed")
+            else:
+                self.transport_reason = f"socket path absent: {self.socket_path}"
+            if self._carrier is None:
+                self._carrier = "exec"
+        carrier = self._carrier or self.transport
+        if carrier == "socket":
+            return self._socket_ctl(verb, *args)
+        return self._exec_ctl(verb, *args)
+
+    def version(self) -> tuple[dict | None, str | None]:
+        return self._ctl("version")
+
+    def host(self) -> tuple[dict | None, str | None]:
+        return self._ctl("host")
+
+    def status(self, session: str | None = None) -> tuple[dict | None, str | None]:
+        return self._ctl("status", *([session] if session else []))
+
+    def start(self, container_id: str, scope: str, *, token: str | None = None,
+             damon: bool | None = None, interval: float | None = None,
+             meta: dict | None = None, progress_stream: str | None = None,
+             idle_bound: str | float | None = None,
+             ceiling: str | float | None = None, on_stall: str | None = None,
+             place: bool = False, memory_high: int | None = None,
+             memory_max: int | None = None,
+             cpu_weight: int | None = None) -> tuple[dict | None, str | None]:
+        args = ["--target", f"containerid:{container_id}", "--scope", scope]
+        if token:
+            args += ["--token", token]
+        if damon is not None:
+            args += ["--damon", "on" if damon else "off"]
+        if interval is not None:
+            args += ["--interval", str(interval)]
+        args += ["--meta", json.dumps(meta or {})]
+        for key, value in (("progress-stream", progress_stream),
+                           ("idle-bound", idle_bound), ("ceiling", ceiling),
+                           ("on-stall", on_stall)):
+            if value is not None:
+                args += [f"--{key}", str(value)]
+        if place:
+            args += ["--place"]
+        for key, value in (("memory-high", memory_high),
+                           ("memory-max", memory_max),
+                           ("cpu-weight", cpu_weight)):
+            if value is not None:
+                args += [f"--{key}", str(value)]
+        return self._ctl("start", *args)
+
+    def stop(self, session: str) -> tuple[dict | None, str | None]:
+        return self._ctl("stop", session)
+
+    def watch(self, session: str, watch_interval: int = 30) -> "ProfilerWatch":
+        return ProfilerWatch(self, session, watch_interval)
+
+
+class ProfilerWatch:
+    """One reader thread for the daemon's streaming `ctl watch` response."""
+
+    def __init__(self, client: ProfilerClient, session: str,
+                 watch_interval: int = 30, clock=time.monotonic):
+        self.client = client
+        self.session = session
+        self.watch_interval = watch_interval
+        self.clock = clock
+        self._events: queue.SimpleQueue[tuple[str, object]] = queue.SimpleQueue()
+        self._last_event_at = clock()
+        self._socket = None
+        self._process = None
+        self._closed = False
+        self._failed = False
+        self._thread = threading.Thread(target=self._read, daemon=True,
+                                        name=f"cgprofile-watch-{session}")
+        self._thread.start()
+
+    def _read(self) -> None:
+        try:
+            if self.client.carrier == "socket":
+                sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                self._socket = sock
+                sock.connect(self.client.socket_path)
+                payload = {"verb": "watch", "args": {
+                    "session": self.session,
+                    "watch_interval": self.watch_interval},
+                    "contract": PROFILE_CONTRACT}
+                request = json.dumps(
+                    payload, ensure_ascii=False, separators=(",", ":")
+                ) + "\n"
+                sock.sendall(request.encode("utf-8"))
+                sock.shutdown(socket.SHUT_WR)
+                stream = sock.makefile("rb")
+                for raw in stream:
+                    self._accept(raw.decode("utf-8", errors="replace"))
+                stream.close()
+            else:
+                proc = subprocess.Popen(
+                    [self.client.docker, "exec", self.client.daemon,
+                     "cgprofile", "ctl", "watch", self.session,
+                     "--watch-interval", str(self.watch_interval), "--json"],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    text=True, errors="replace", bufsize=1)
+                self._process = proc
+                for line in proc.stdout:
+                    self._accept(line)
+                returncode = proc.wait()
+                if returncode != 0 and not self._closed:
+                    self._events.put(("error", f"watch command exited {returncode}"))
+        except Exception as exc:
+            if not self._closed:
+                self._events.put(("error", str(exc)))
+        finally:
+            self._events.put(("end", None))
+
+    def _accept(self, raw: str) -> None:
+        if getattr(self, "_failed", False):
+            return
+        try:
+            event = json.loads(raw)
+        except (ValueError, TypeError):
+            self._events.put(("error", "watch returned unparsable JSON"))
+            self._failed = True
+            return
+        if not isinstance(event, dict):
+            self._events.put(("error", "watch returned non-object JSON"))
+            self._failed = True
+            return
+        if (type(event.get("contract")) is not int
+                or event["contract"] != PROFILE_CONTRACT
+                or event.get("session") != self.session
+                or event.get("event") not in ("reading", "verdict", "end")):
+            self._events.put(("error", "watch returned a mismatched protocol event"))
+            self._failed = True
+            return
+        if event["event"] == "verdict":
+            decision = event.get("watch")
+            if (not isinstance(decision, dict)
+                    or decision.get("state") not in (
+                        "stalled", "runaway", "over_ceiling", "hung",
+                        "throttled", "ok")
+                    or decision.get("verdict") not in (
+                        "killed", "reported", "none")
+                    or not isinstance(decision.get("reason"), str)
+                    or type(decision.get("readings")) is not int
+                    or decision["readings"] < 0):
+                self._events.put(("error", "watch returned a malformed verdict"))
+                self._failed = True
+                return
+        self._last_event_at = self.clock()
+        self._events.put(("event", event))
+
+    def drain(self) -> list[tuple[str, object]]:
+        events = []
+        while True:
+            try:
+                events.append(self._events.get_nowait())
+            except queue.Empty:
+                return events
+
+    def idle(self) -> bool:
+        return self._thread.is_alive() and \
+            self.clock() - self._last_event_at > 3 * self.watch_interval
+
+    def ended(self) -> bool:
+        """Whether the reader has closed without an active watch stream.
+
+        A clean thread exit is still a transport failure while the lane is
+        running: `ctl watch` is expected to remain open until the session is
+        stopped.  Keeping this separate from `idle()` matters because an
+        ended reader is no longer alive and therefore cannot satisfy
+        `idle()`'s liveness predicate.
+        """
+        return getattr(self, "_failed", False) or not self._thread.is_alive()
+
+    def close(self) -> None:
+        self._closed = True
+        if self._socket is not None:
+            try:
+                self._socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            self._socket.close()
+        if self._process is not None and self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait()
+        self._thread.join(timeout=1)
+
+
+class ResourceAccumulator:
+    """RG55-INTERFACE-CONTRACT.md Sec 7, basic-path implementation — pure
+    arithmetic over per-tick samples (no docker/filesystem access of its
+    own; BasicSampler owns that). One instance per lane invocation. `scope`
+    is 'container' or 'container-shared' (contract Sec 3); governs only the
+    peak-bytes formula (Sec 7's first bullet). Always produces
+    `method: "basic"` — the daemon computes its own Summary server-side and
+    hands it back verbatim via `stop`; this class exists ONLY for the
+    basic-fallback path.
+
+    `host.slice` is ALWAYS null here (contract Sec 4.3: only the daemon
+    computes `host.slice`) — no slice-level cgroupfs sampling is attempted
+    by this class at all, on purpose."""
+
+    def __init__(self, scope: str):
+        if scope not in ("container", "container-shared"):
+            raise ValueError(
+                f"scope must be 'container' or 'container-shared' (got {scope!r})")
+        self.scope = scope
+        self._samples: list[dict] = []
+        self._ats: list[float] = []
+        self._host_first: dict | None = None
+        self._host_last: dict | None = None
+
+    def add_sample(self, container: dict, host: dict | None = None,
+                   at: float | None = None) -> None:
+        """`container`: a dict keyed exactly as BasicSampler's
+        `_read_container` (or a test reading golden frames directly)
+        produces — `memory_current`, `memory_peak`, `memory_swap_current`,
+        `memory_stat`, `cpu_stat`, `memory_pressure`, `cpu_pressure`,
+        `io_pressure`, `memory_events_local`, `memory_max`, `memory_high`,
+        `pids_peak`. `host`: `{'memory_pressure_raw', 'cpu_pressure_raw',
+        'loadavg1'}` or None when host PSI was unreadable this tick (only
+        the FIRST and LAST readable host sample are used, contract Sec 7).
+        `at`: a monotonic-clock float for computing REAL per-tick deltas
+        (`cores_max`, `interval_seconds`) — defaults to a synthetic
+        one-unit-per-tick clock when the caller does not track wall time
+        itself (exercised by the golden-fixture tests, whose frames are
+        exactly 1s apart by construction)."""
+        if at is None:
+            at = float(len(self._samples))
+        self._samples.append(container)
+        self._ats.append(at)
+        if host is not None:
+            if self._host_first is None:
+                self._host_first = host
+            self._host_last = host
+
+    def _cores_max(self) -> float | None:
+        """Sec 7: max over CONSECUTIVE sample pairs of
+        `(delta_usage_usec / 1e6) / delta_t` — `delta_t` from the REAL
+        per-sample clock (`_ats`), not an assumed fixed interval, so a
+        production run's real wall-clock jitter between `docker exec`
+        calls cannot silently understate a genuine CPU spike."""
+        best = None
+        for i in range(1, len(self._samples)):
+            u0 = self._samples[i - 1]["cpu_stat"].get("usage_usec")
+            u1 = self._samples[i]["cpu_stat"].get("usage_usec")
+            if u0 is None or u1 is None:
+                continue
+            dt = self._ats[i] - self._ats[i - 1]
+            if dt <= 0:
+                continue
+            rate = (u1 - u0) / 1e6 / dt
+            if best is None or rate > best:
+                best = rate
+        return round(best, 3) if best is not None else None
+
+    def _limit_drift(self) -> int:
+        """Sec 7: COUNT of sample-PAIRS (not a single delta) where
+        `memory.max` OR `memory.high`'s RAW value changed — the two fields
+        are OR'd together per pair, never counted separately (fixtures/
+        rg55/README.md's own worked example: `memory.high` changes at one
+        transition, `memory.max` never changes, `limit_drift` is still 1,
+        not 0). A pair with either side unreadable cannot be judged
+        changed, so it does not count — not the same "null propagation"
+        rule as a scalar delta, because this is a count, and a count with
+        no eligible pairs is validly 0, never null."""
+        count = 0
+        for i in range(1, len(self._samples)):
+            prev, cur = self._samples[i - 1], self._samples[i]
+            max_changed = (prev["memory_max"] is not None
+                          and cur["memory_max"] is not None
+                          and prev["memory_max"] != cur["memory_max"])
+            high_changed = (prev["memory_high"] is not None
+                           and cur["memory_high"] is not None
+                           and prev["memory_high"] != cur["memory_high"])
+            if max_changed or high_changed:
+                count += 1
+        return count
+
+    @staticmethod
+    def _host_view(raw: dict | None) -> dict | None:
+        if raw is None:
+            return None
+
+        def _sel(pressure: dict) -> dict:
+            return {"some_avg10": pressure.get("some_avg10"),
+                    "full_avg10": pressure.get("full_avg10"),
+                    "some_avg60": pressure.get("some_avg60"),
+                    "full_avg60": pressure.get("full_avg60")}
+
+        return {"memory_pressure": _sel(raw.get("memory_pressure_raw") or {}),
+                "cpu_pressure": _sel(raw.get("cpu_pressure_raw") or {}),
+                "loadavg1": raw.get("loadavg1")}
+
+    def _host_pressure_seconds(self, key: str) -> float | None:
+        if self._host_first is None or self._host_last is None:
+            return None
+        first = (self._host_first.get("memory_pressure_raw") or {}).get(key)
+        last = (self._host_last.get("memory_pressure_raw") or {}).get(key)
+        d = _delta_or_none(first, last)
+        return round(d / 1e6, 3) if d is not None else None
+
+    def finish(self, container_id: str, cgroup: str, started_at: str,
+              ended_at: str) -> dict:
+        """The schema-1 Summary (contract Sec 3), `method: "basic"`.
+        `container_id`/`cgroup` are the docker facts the caller already
+        resolved (`docker inspect`); `started_at`/`ended_at` are ISO-8601
+        UTC strings the caller stamped at the first/last `add_sample` call."""
+        samples = self._samples
+        n = len(samples)
+        if n == 0:
+            raise ValueError("ResourceAccumulator.finish() called with zero samples")
+        duration_seconds = round(_parse_iso_utc(ended_at) - _parse_iso_utc(started_at), 3)
+        interval_seconds = (round((self._ats[-1] - self._ats[0]) / (n - 1), 3)
+                            if n > 1 else None)
+
+        absolute = (self.scope == "container")  # RW-21 (round-1 review D2)
+
+        mem_current = [s["memory_current"] for s in samples]
+        baseline_bytes = mem_current[0]
+        if self.scope == "container":
+            # RW-7/RW-23a (S7): last SUCCESSFUL read, not samples[-1] taken
+            # unconditionally.
+            peak_bytes = _last_successful(s["memory_peak"] for s in samples)
+            source = "memory.peak"
+        else:
+            peak_bytes = _max_or_none(mem_current)
+            source = "sampled-max"
+        if absolute:
+            # RW-21: not meaningful when the profiled cgroup IS the lane --
+            # always null in scope `container` (contract Sec 3's
+            # nullability note), never computed even when both operands
+            # are readable.
+            peak_over_baseline_bytes = None
+        else:
+            peak_over_baseline_bytes = (
+                max(0, peak_bytes - baseline_bytes)
+                if peak_bytes is not None and baseline_bytes is not None else None)
+
+        memory = {
+            "peak_bytes": peak_bytes,
+            "source": source,
+            "baseline_bytes": baseline_bytes,
+            "peak_over_baseline_bytes": peak_over_baseline_bytes,
+            "p90_bytes": _nearest_rank_value(mem_current, 90),
+            "median_bytes": _nearest_rank_value(mem_current, 50),
+            "swap_peak_bytes": _max_or_none(s["memory_swap_current"] for s in samples),
+            "anon_peak_bytes": _max_or_none(s["memory_stat"].get("anon") for s in samples),
+            "file_peak_bytes": _max_or_none(s["memory_stat"].get("file") for s in samples),
+        }
+
+        # RW-21 (contract Sec 7 "Scope `container`: absolute counters"): in
+        # scope `container` the cgroup was created for the lane, so its
+        # cumulative counters already measure the lane alone from their
+        # first instruction -- deltaing from s_0 drops everything before
+        # the first sample (measured live: a 3.3x CPU understatement).
+        # `cpu`/`pressure`/`faults`/`events` below all branch on `absolute`;
+        # `limit_drift`, `cores_max`, `memory.peak_bytes` above, and every
+        # `host.*` field are UNCHANGED in both scopes (they were never a
+        # delta-from-s_0 quantity, or host counters are never lane-scoped).
+        if absolute:
+            usage_last = _last_successful(s["cpu_stat"].get("usage_usec") for s in samples)
+            cpu_seconds = round(usage_last / 1e6, 3) if usage_last is not None else None
+            throttled_last = _last_successful(s["cpu_stat"].get("throttled_usec") for s in samples)
+            throttled_seconds = round(throttled_last / 1e6, 3) if throttled_last is not None else None
+            nr_throttled = _last_successful(s["cpu_stat"].get("nr_throttled") for s in samples)
+        else:
+            usage_delta = _delta_or_none(samples[0]["cpu_stat"].get("usage_usec"),
+                                         samples[-1]["cpu_stat"].get("usage_usec"))
+            cpu_seconds = round(usage_delta / 1e6, 3) if usage_delta is not None else None
+            throttled_delta = _delta_or_none(samples[0]["cpu_stat"].get("throttled_usec"),
+                                             samples[-1]["cpu_stat"].get("throttled_usec"))
+            throttled_seconds = (round(throttled_delta / 1e6, 3)
+                                 if throttled_delta is not None else None)
+            nr_throttled = _delta_or_none(samples[0]["cpu_stat"].get("nr_throttled"),
+                                          samples[-1]["cpu_stat"].get("nr_throttled"))
+        cores_avg = (round(cpu_seconds / duration_seconds, 3)
+                    if cpu_seconds is not None and duration_seconds else None)
+        cpu = {
+            "seconds": cpu_seconds,
+            "cores_avg": cores_avg,
+            "cores_max": self._cores_max(),
+            "throttled_seconds": throttled_seconds,
+            "nr_throttled": nr_throttled,
+        }
+
+        def _pressure_seconds(field: str, key: str) -> float | None:
+            if absolute:
+                v = _last_successful(s[field].get(key) for s in samples)
+                return round(v / 1e6, 3) if v is not None else None
+            d = _delta_or_none(samples[0][field].get(key), samples[-1][field].get(key))
+            return round(d / 1e6, 3) if d is not None else None
+
+        pressure = {
+            "memory_some_stall_seconds": _pressure_seconds("memory_pressure", "some_total"),
+            "memory_full_stall_seconds": _pressure_seconds("memory_pressure", "full_total"),
+            "cpu_some_stall_seconds": _pressure_seconds("cpu_pressure", "some_total"),
+            "io_some_stall_seconds": _pressure_seconds("io_pressure", "some_total"),
+            "io_full_stall_seconds": _pressure_seconds("io_pressure", "full_total"),
+        }
+
+        def _fault_value(key: str):
+            if absolute:
+                return _last_successful(s["memory_stat"].get(key) for s in samples)
+            return _delta_or_none(samples[0]["memory_stat"].get(key),
+                                  samples[-1]["memory_stat"].get(key))
+
+        faults = {
+            "pgmajfault": _fault_value("pgmajfault"),
+            "workingset_refault_anon": _fault_value("workingset_refault_anon"),
+            "workingset_refault_file": _fault_value("workingset_refault_file"),
+        }
+
+        def _event_value(key: str):
+            if absolute:
+                return _last_successful(s["memory_events_local"].get(key) for s in samples)
+            return _delta_or_none(samples[0]["memory_events_local"].get(key),
+                                  samples[-1]["memory_events_local"].get(key))
+
+        events = {
+            "oom_kill": _event_value("oom_kill"),
+            "limit_drift": self._limit_drift(),
+            "memory_high_breach": _event_value("high"),
+        }
+
+        host = {
+            "start": self._host_view(self._host_first),
+            "end": self._host_view(self._host_last),
+            "memory_full_stall_seconds": self._host_pressure_seconds("full_total"),
+            "memory_some_stall_seconds": self._host_pressure_seconds("some_total"),
+            "slice": None,
+        }
+
+        return {
+            "schema": 1,
+            "session": None,
+            "daemon": None,
+            "scope": self.scope,
+            "method": "basic",
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "duration_seconds": duration_seconds,
+            "interval_seconds": interval_seconds,
+            "samples": n,
+            "target": {"container_id": container_id, "cgroup": cgroup,
+                      "token": None, "targets_seen": None},
+            "memory": memory,
+            "cpu": cpu,
+            "pressure": pressure,
+            "faults": faults,
+            # RW-7/RW-23a: last SUCCESSFUL read, not samples[-1] unconditionally.
+            "pids": {"peak": _last_successful(s.get("pids_peak") for s in samples)},
+            "damon": None,
+            "host": host,
+            "events": events,
+        }
+
+
+class BasicSampler:
+    """RG-55 basic-path fallback (contract Sec 4.3): samples the LANE
+    container's own cgroup with ONE `docker exec <container> sh -c '...'`
+    per tick — the file list is `PROFILE_BASIC_FILES` (contract Sec 4.3's
+    ten files plus `memory.max`/`memory.high`, see that constant's own
+    comment for why) — parsed with the ported parsers above and fed into a
+    `ResourceAccumulator`. Host PSI is read directly (not via docker exec —
+    the devcontainer shares the host's /proc), honoring
+    `RUN_GATE_PROC_ROOT` for tests (mirrors `RUN_GATE_CGROUPFS_ROOT`).
+
+    `clock`/`wall_clock` are injectable for tests: `clock()` returns a
+    float used only for relative-time arithmetic (`cores_max`,
+    `interval_seconds`); `wall_clock()` returns an ISO-8601 UTC string
+    stamped as `started_at`/`ended_at`."""
+
+    def __init__(self, docker: str, container: str, scope: str,
+                container_id: str = "", cgroup: str | None = None,
+                clock=time.monotonic, wall_clock=None):
+        self.docker = docker
+        self.container = container
+        self.container_id = container_id
+        self.cgroup = cgroup
+        self._clock = clock
+        self._wall = wall_clock or (lambda: _iso_utc(time.time()))
+        self.accumulator = ResourceAccumulator(scope)
+        self._first_at: float | None = None
+        self.started_at: str | None = None
+        self.ended_at: str | None = None
+
+    def _read_container(self) -> dict:
+        script = ("for f in " + " ".join(PROFILE_BASIC_FILES) + "; do "
+                 'echo "== $f"; cat /sys/fs/cgroup/$f 2>/dev/null; done')
+        argv = [self.docker, "exec", self.container, "sh", "-c", script]
+        try:
+            # errors="replace" (B1a): the lane container's own stdout can
+            # legitimately carry non-UTF-8 bytes (it is arbitrary test/build
+            # output on the same fd `cat` writes to) -- same discipline as
+            # ProfilerClient._ctl and the pre-existing `docker logs` guard.
+            proc = subprocess.run(argv, capture_output=True, text=True,
+                                  errors="replace", timeout=30)
+            dump = _split_basic_dump(proc.stdout, PROFILE_BASIC_FILES)
+        except (subprocess.TimeoutExpired, OSError):
+            dump = {name: None for name in PROFILE_BASIC_FILES}
+        except Exception:
+            # B1b: this is the basic-path sampler's ONLY docker-exec call --
+            # it must never raise past a caller that assumes "a tick can at
+            # worst produce an all-null reading", never an exception.
+            dump = {name: None for name in PROFILE_BASIC_FILES}
+        return {
+            "memory_current": _profile_parse_int(dump["memory.current"]),
+            "memory_peak": _profile_parse_int(dump["memory.peak"]),
+            "memory_swap_current": _profile_parse_int(dump["memory.swap.current"]),
+            "memory_stat": _profile_parse_kv(dump["memory.stat"]),
+            "cpu_stat": _profile_parse_kv(dump["cpu.stat"]),
+            "memory_pressure": _profile_parse_pressure(dump["memory.pressure"]),
+            "cpu_pressure": _profile_parse_pressure(dump["cpu.pressure"]),
+            "io_pressure": _profile_parse_pressure(dump["io.pressure"]),
+            "memory_events_local": _profile_parse_kv(dump["memory.events.local"]),
+            "memory_max": _profile_parse_raw_limit(dump["memory.max"]),
+            "memory_high": _profile_parse_raw_limit(dump["memory.high"]),
+            "pids_peak": _profile_parse_int(dump["pids.peak"]),
+        }
+
+    def _read_host(self) -> dict | None:
+        root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+        try:
+            mem_text = (root / "pressure" / "memory").read_text()
+        except OSError:
+            mem_text = None
+        try:
+            cpu_text = (root / "pressure" / "cpu").read_text()
+        except OSError:
+            cpu_text = None
+        try:
+            loadavg1 = float((root / "loadavg").read_text().split()[0])
+        except (OSError, ValueError, IndexError):
+            loadavg1 = None
+        if mem_text is None and cpu_text is None and loadavg1 is None:
+            return None
+        return {
+            "memory_pressure_raw": _profile_parse_pressure(mem_text),
+            "cpu_pressure_raw": _profile_parse_pressure(cpu_text),
+            "loadavg1": loadavg1,
+        }
+
+    def sample_once(self) -> None:
+        """One tick: a container read + a host PSI read, fed into the
+        accumulator. The FIRST call also stamps `started_at`; every call
+        (including the last, taken by the caller right before `finish()`)
+        updates `ended_at`."""
+        now = self._clock()
+        if self._first_at is None:
+            self._first_at = now
+            self.started_at = self._wall()
+        container = self._read_container()
+        host = self._read_host()
+        self.accumulator.add_sample(container, host=host, at=now)
+        self.ended_at = self._wall()
+
+    @staticmethod
+    def _is_total_failure(container: dict) -> bool:
+        """Every field unreadable — a `docker exec` that could not reach the
+        container AT ALL (RG-55 P2 live probe finding, contract Sec 4.2):
+        for the ephemeral scope, `docker exec` on an already-exited-but-not-
+        yet-removed container fails outright ("is not running") every time,
+        because `finish_lane_profiling`'s final sample runs AFTER
+        `await_container` has already confirmed the process exited. That is
+        categorically different from the PARTIAL per-file misses
+        `_read_container` already tolerates mid-run (RW-12's ticks only ever
+        read a container the wait loop just confirmed is alive) — a container
+        that could not be reached took no reading at all, not a reading of
+        all-absent values."""
+        scalars = ("memory_current", "memory_peak", "memory_swap_current",
+                  "pids_peak", "memory_max", "memory_high")
+        dicts = ("memory_stat", "cpu_stat", "memory_pressure", "cpu_pressure",
+                "io_pressure", "memory_events_local")
+        return (all(container.get(k) is None for k in scalars)
+               and all(not container.get(k) for k in dicts))
+
+    def sample_final(self) -> None:
+        """The LAST sample (contract Sec 4.2), taken in the SAME `finally`
+        that removes the container / ends the exec, immediately before
+        `finish()`. Unlike `sample_once()` (used for every mid-run tick),
+        a TOTAL read failure here is silently dropped rather than recorded:
+        for scope "container", contract Sec 7 defines `memory.peak_bytes` as
+        the LAST READ of `memory.peak`, and a call that never reached the
+        container took no reading to be "last" — recording it anyway would
+        silently discard the run's actual last GOOD sample (measured live:
+        every ephemeral basic-path run's final sample failed this way,
+        nulling `memory.peak_bytes` on every single one, until this method
+        existed). `ended_at` still advances either way — that is a wall-
+        clock fact about when this client stopped watching, not a cgroup
+        reading, and stays true whether or not the read itself succeeded."""
+        now = self._clock()
+        if self._first_at is None:
+            self._first_at = now
+            self.started_at = self._wall()
+        container = self._read_container()
+        host = self._read_host()
+        # The `or not self.accumulator._samples` half is a safety net for a
+        # caller that (unlike this wiring) never took an earlier sample:
+        # `finish()` requires at least one, and a genuinely-empty run
+        # recording ITS total failure is still better than crashing.
+        if not self._is_total_failure(container) or not self.accumulator._samples:
+            self.accumulator.add_sample(container, host=host, at=now)
+        self.ended_at = self._wall()
+
+    def finish(self) -> dict:
+        """The Summary (contract Sec 3, `method: "basic"`). The caller must
+        call `sample_once()` at least once (session start) before this —
+        typically once more immediately before, as the "final sample"
+        contract Sec 4.2 requires before `ctl stop`/`docker rm -f`."""
+        if self._first_at is None:
+            raise RuntimeError("BasicSampler.finish() called with no samples taken")
+        return self.accumulator.finish(self.container_id, self.cgroup,
+                                       self.started_at, self.ended_at)
+
+
+# ---------------------------------------------------------------------------
+# RG-55 / SPEC R-43: the wiring glue. Everything above this line (config,
+# ProfilerClient, ResourceAccumulator, BasicSampler) is a narrow, independently
+# testable contract. These functions are the orchestration a lane invocation
+# actually calls: resolve what to do (`start_lane_profiling`), do it once per
+# tick (`tick_lane_profiling`), close it out in the SAME `finally` that removes
+# the container (`finish_lane_profiling`), and disclose it (the `print_*`
+# helpers). A profiler STATE is a plain dict (not a class) — it is threaded
+# through await_container()/run_exec_lane() the same way `record`/`watch`
+# already are, and every field is documented at its first write below.
+# ---------------------------------------------------------------------------
+
+def profile_meta(lane: dict, lane_name: str, project_dir: Path, worktree: Path
+                 ) -> dict:
+    """Contract Sec 2.2 `--meta`. `expected` (RG-55/C5) is the FROZEN
+    contract's five-key object (`memory_peak_median_bytes`, `hot_set_p90_bytes`,
+    `cpu_cores_avg`, `duration_median_s`, `source` — B5, round-2 review
+    RW-51, contract Sec 3a) built from this LANE's entry in
+    `run-gate.footprint.json` when a manifest exists next to the effective
+    project's `run-gate.toml` and names this lane — `null` otherwise (no
+    manifest yet, or a lane the manifest has never seen a profiled run for).
+    B2 (round-1 review): this used to emit a bare int/None (the object's
+    `memory_peak_median_bytes` field alone) — contract Sec 2.2 requires the
+    object or `null`, never a scalar."""
+    return {"lane": lane_name, "project": str(project_dir),
+           "worktree": str(worktree), "commit": head_commit(worktree),
+           "run_gate_revision": __revision__, "kind": lane["kind"],
+           "expected": footprint_manifest_lane_expected(
+               load_footprint_manifest(project_dir), lane_name)}
+
+
+def read_host_pressure_snapshot() -> dict | None:
+    """Direct `/proc/pressure/memory` read for the host-PSI disclosure line
+    (contract Sec 4.6) — honors `RUN_GATE_PROC_ROOT` like `BasicSampler`
+    does, so a test can drive it the same way. `None` when unreadable
+    (contract Sec 1.7: absent is never zero, and a line naming numbers this
+    process could not read would be fabrication)."""
+    root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+    try:
+        text = (root / "pressure" / "memory").read_text()
+    except (OSError, UnicodeError):
+        return None
+    return _profile_parse_pressure(text) or None
+
+
+def cgroup_namespace_is_private() -> bool:
+    """RG-55/C7: `/proc/self/cgroup` reads exactly `0::/` under a PRIVATE
+    cgroup namespace (cgroupns=private — the devcontainer/CI default this
+    project itself runs under): the unified-hierarchy line names the
+    process's OWN root, which the kernel makes read AS the namespace root
+    when it is private, so nothing beyond it — a host slice directory
+    included — is visible from here at all, ever, regardless of
+    `$RUN_GATE_CGROUPFS_ROOT`. Honors `$RUN_GATE_PROC_ROOT` like
+    `read_host_pressure_snapshot`, so a test can drive it the same way.
+    `False` (never raises) when `/proc/self/cgroup` is unreadable — that is
+    a DIFFERENT, unrelated failure, not evidence of a private namespace."""
+    root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+    try:
+        text = (root / "self" / "cgroup").read_text().strip()
+    except OSError:
+        return False
+    return text == "0::/"
+
+
+def print_host_pressure_line(profiler_status: str | None = None) -> None:
+    """Contract Sec 4.6, line 1 — the `| slice …` segment is never emitted
+    (v1 never calls `ctl host`, RW-12) and the `| profiler …` segment only
+    when the caller already knows it (the daemon path's own `version`
+    response), never guessed."""
+    snap = read_host_pressure_snapshot()
+    if snap is None or snap.get("full_avg10") is None or snap.get("full_avg60") is None:
+        return
+    line = (f"run-gate: host memory PSI full avg10={snap['full_avg10']}% "
+           f"avg60={snap['full_avg60']}%")
+    if profiler_status:
+        line += f" | profiler {profiler_status}"
+    print(line, flush=True)
+
+
+def resolve_self_container_id(docker: str) -> tuple[str | None, str | None]:
+    """RG-57/RW-27b — the bare-host daemon path's own target resolution: is
+    THIS run-gate process itself running inside a container? Read
+    `/etc/hostname` only to locate a CANDIDATE Docker object, resolve its full
+    id with direct `docker inspect`, then require the candidate's mount-
+    namespace inode (read by `docker exec`) to equal this process's own. A
+    hostname/name match alone proves only that some object has that name; it
+    is never accepted as proof that the object contains this process. Never
+    call `container_state()` — that
+    one calls `fail_infra()` and raises on an AMBIGUOUS docker failure
+    (contract: leave the inflight record untouched, let a human fix
+    docker), which must never be allowed to abort a bare-host lane's own
+    run just because profiling could not resolve a target. Written in
+    `ProfilerClient._ctl`'s own never-raises style instead: neither a read
+    failure nor an inspect miss is fatal to the lane. A positive Docker
+    "no such object/container" answer is the ordinary "not running in a
+    container" case; inaccessible Docker, malformed output, and a namespace
+    mismatch are reported as indeterminate identity instead of being folded
+    into absence. The caller degrades to the rusage path with the precise
+    reason disclosed.
+
+    Returns `(container_id, skip_reason)` — exactly one is not `None`."""
+    try:
+        hostname = Path("/etc/hostname").read_text().strip()
+    except OSError as exc:
+        return None, f"not running in a container (could not read /etc/hostname: {exc})"
+    if not hostname:
+        return None, "not running in a container (/etc/hostname is empty)"
+    try:
+        self_mount_ns = os.readlink("/proc/self/ns/mnt")
+    except OSError as exc:
+        return None, ("could not verify current container identity "
+                      f"(could not read /proc/self/ns/mnt: {exc})")
+    if re.fullmatch(r"mnt:\[\d+\]", self_mount_ns) is None:
+        return None, ("could not verify current container identity "
+                      f"(/proc/self/ns/mnt returned {self_mount_ns!r})")
+    try:
+        probe = subprocess.run([docker, "inspect", "-f", "{{.Id}}", hostname],
+                               capture_output=True, text=True,
+                               errors="replace",
+                               timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return None, ("could not verify current container identity "
+                      f"(docker inspect failed: {exc})")
+    if probe.returncode != 0:
+        tail = (probe.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+        if any(marker in tail.casefold()
+               for marker in ("no such object", "no such container")):
+            return None, (f"not running in a container (docker inspect "
+                          f"{hostname!r}: {tail})")
+        return None, ("could not verify current container identity "
+                      f"(docker inspect {hostname!r} failed with exit "
+                      f"{probe.returncode}: {tail})")
+    container_id = probe.stdout.strip()
+    if not container_id:
+        return None, ("could not verify current container identity "
+                      f"(docker inspect {hostname!r} returned no id)")
+    if re.fullmatch(r"[0-9a-f]{64}", container_id) is None:
+        return None, ("could not verify current container identity "
+                      f"(docker inspect returned malformed container id "
+                      f"{container_id!r})")
+    try:
+        namespace_probe = subprocess.run(
+            [docker, "exec", container_id, "/usr/bin/readlink",
+             "/proc/self/ns/mnt"], capture_output=True, text=True,
+            errors="replace", timeout=PROFILE_IDENTITY_TIMEOUT_SECONDS)
+    except Exception as exc:
+        return None, ("could not verify current container identity "
+                      f"(mount-namespace probe failed: {exc})")
+    if namespace_probe.returncode != 0:
+        tail = (namespace_probe.stderr.strip().splitlines()
+                or ["(no stderr)"])[-1]
+        return None, ("could not verify current container identity "
+                      f"(mount-namespace probe failed with exit "
+                      f"{namespace_probe.returncode}: {tail})")
+    candidate_mount_ns = namespace_probe.stdout.strip()
+    if re.fullmatch(r"mnt:\[\d+\]", candidate_mount_ns) is None:
+        return None, ("could not verify current container identity "
+                      f"(mount-namespace probe returned "
+                      f"{candidate_mount_ns!r})")
+    if candidate_mount_ns != self_mount_ns:
+        return None, (f"hostname {hostname!r} resolves to container "
+                      f"{container_id}, but that object does not identify "
+                      f"this process's container (mount namespaces differ)")
+    return container_id, None
+
+
+def profile_start_policy(lane: dict, project_dir: Path, scope: str,
+                         placement_requested: bool) -> dict:
+    """Build the v1.1 stall policy from the lane's authoritative facts.
+
+    `stall_timeout` remains the lane's existing R-40 declaration; run-gate
+    does not invent a second timeout grammar or ask the daemon to infer it.
+    Assay progress is the only filesystem stream whose path is known to the
+    client.  Command lanes are watched from Docker's log stream by the
+    existing wait path, so they deliberately omit `progress_stream`.
+    """
+    stall = lane.get("stall_timeout")
+    return {
+        "progress_stream": (str(project_dir / assay_progress_rel(
+            lane["assay_lane"])) if lane["kind"] == "assay" else None),
+        "idle_bound": budget_seconds(stall) if stall else "auto",
+        "ceiling": "auto",
+        # A shared cgroup contains other work. Its daemon may kill only an
+        # explicitly requested, verified placement leaf; otherwise the
+        # already-declared local stall watch remains the verdict authority.
+        "on_stall": ("kill" if stall and (scope == "container" or
+                                    placement_requested) else "report"),
+    }
+
+
+def start_lane_profiling(lane: dict, lane_name: str, project_dir: Path,
+                         worktree: Path, docker: str, plan: dict,
+                         container_name: str, container_id: str,
+                         cgroup: str | None, scope: str,
+                         preflight: dict | None = None) -> dict:
+    """Contract Sec 4 obligations 1-3, called once per lane invocation AFTER
+    the container/runner id is resolved (`docker inspect`) and BEFORE the
+    caller's wait loop. Tries the daemon exactly once (`version` then
+    `start`); ANY failure at either step degrades to `BasicSampler`, which
+    takes its first sample (the baseline, contract Sec 7's `s_0`)
+    immediately — never raises, never itself decides a verdict (R-04/R-36h).
+
+    Returns a profiler STATE dict:
+      mode              "disabled" | "daemon" | "basic"
+      client            ProfilerClient | None (kept for `finish_lane_profiling`)
+      daemon            the daemon container name (for a promoted follower)
+      session           the daemon session id, or None
+      session_line      the ready-to-print profile-session line, or None
+      warning           the ONE failure reason to disclose, or None
+      sampler           BasicSampler | None
+      profiler_status   the `version` response rendered for the host-PSI
+                        line's optional segment, or None
+      disabled_reason   the `profile_error` text when `mode == "disabled"`
+                        (RW-17: names `RUN_GATE_PROFILE` when that is why)
+    """
+    state = {"mode": "disabled", "client": None, "daemon": plan.get("daemon"),
+             "session": None, "session_line": None, "warning": None,
+             "sampler": None, "profiler_status": None,
+             "placement": None, "admission": None,
+             "profile_error": None,
+             "disabled_reason": plan.get("disabled_reason", "disabled")}
+    if not plan["enabled"]:
+        return state
+    client = (preflight["client"] if preflight is not None else
+              ProfilerClient(docker, plan["daemon"],
+                             transport=plan.get("transport",
+                                                PROFILE_TRANSPORT_DEFAULT),
+                             socket_path=plan.get("socket_path",
+                                                  PROFILE_SOCKET_PATH_DEFAULT)))
+    state["client"] = client
+    version_doc = (preflight.get("version") if preflight is not None
+                   else None)
+    reason = (preflight.get("reason") if preflight is not None else None)
+    if preflight is None:
+        try:
+            version_doc, reason = client.version()
+        except Exception as exc:
+            version_doc, reason = None, (
+                f"profiling version probe failed unexpectedly: {exc}")
+    elif preflight.get("fatal_reason"):
+        state["profile_error"] = preflight["fatal_reason"]
+    if version_doc is not None:
+        cgprofile_ver = version_doc.get("cgprofile", "?")
+        daemon_damon = (version_doc.get("daemon") or {}).get("damon", "unavailable")
+        state["profiler_status"] = (f"{plan['daemon']} (cgprofile "
+                                    f"{cgprofile_ver}, damon {daemon_damon})")
+        meta = profile_meta(lane, lane_name, project_dir, worktree)
+        interval = float(budget_seconds(plan["interval"]))
+        placement = {"place": False, "memory_high": None,
+                     "memory_max": None, "cpu_weight": None}
+        if scope == "container-shared":
+            if preflight is not None:
+                host_doc = preflight.get("host")
+                host_reason = preflight.get("reason")
+                placement = preflight.get("placement") or placement
+                state["admission"] = preflight.get("admission")
+            else:
+                try:
+                    host_doc, host_reason = client.host()
+                except Exception as exc:
+                    host_doc, host_reason = None, (
+                        f"profiling host probe failed unexpectedly: {exc}")
+                if host_doc is not None:
+                    placement = profile_placement_plan(
+                        lane, lane_name, project_dir, host_doc)
+                    state["admission"] = profile_admission(
+                        client, lane_name, placement, plan.get(
+                            "admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT),
+                        host_doc)
+            if host_doc is None:
+                state["warning"] = host_reason
+        policy = profile_start_policy(lane, project_dir, scope,
+                                      bool(placement["place"]))
+        start_doc, start_reason = client.start(
+            container_id, scope, token=plan.get("token"), damon=plan["damon"],
+            interval=interval, meta=meta,
+            progress_stream=policy["progress_stream"],
+            idle_bound=policy["idle_bound"], ceiling=policy["ceiling"],
+            on_stall=policy["on_stall"], place=placement["place"],
+            memory_high=placement["memory_high"],
+            memory_max=placement["memory_max"],
+            cpu_weight=placement["cpu_weight"])
+        if start_doc is not None:
+            state["mode"] = "daemon"
+            # B1c (round-1 review): `_ctl` already validates `session` is
+            # present for a successful `start` response (defense in depth
+            # rather than a load-bearing check) -- `.get()` regardless, per
+            # the prescription that every remaining daemon-data access
+            # becomes `.get()`.
+            state["session"] = start_doc.get("session")
+            state["placement"] = start_doc.get("placement")
+            target = start_doc.get("target")
+            baseline = (target.get("baseline_memory_bytes")
+                        if isinstance(target, dict) else None)
+            baseline_mib = (round(baseline / (1024 * 1024))
+                            if isinstance(baseline, (int, float))
+                            and not isinstance(baseline, bool) else "?")
+            damon_state = start_doc.get("damon", "unavailable")
+            state["session_line"] = (
+                f"run-gate: profile session {state['session']} "
+                f"(scope {scope}, baseline {baseline_mib} MiB, "
+                f"damon {damon_state}, via {client.carrier}, policy idle "
+                f"{policy['idle_bound']} ceiling {policy['ceiling']} "
+                f"on-stall {policy['on_stall']})")
+            return state
+        reason = start_reason
+    state["warning"] = reason
+    state["mode"] = "basic"
+    state["sampler"] = BasicSampler(docker, container_name, scope,
+                                    container_id=container_id, cgroup=cgroup)
+    state["sampler"].sample_once()   # sample 0 / the baseline, contract Sec 7
+    return state
+
+
+def tick_lane_profiling(state: dict) -> None:
+    """One `PROFILE_SAMPLE_SECONDS` tick. A no-op for the daemon path (it
+    samples itself; the daemon path does no per-tick work in v1, RW-12) and
+    for a disabled/never-started profiler — a real sample for the basic
+    path only."""
+    if state["mode"] == "basic" and state["sampler"] is not None:
+        state["sampler"].sample_once()
+
+
+def finish_lane_profiling(state: dict) -> dict:
+    """Contract Sec 4 obligation 2: called in the SAME `finally` that removes
+    the container/runner exec, BEFORE it. Returns the three record-level
+    fields (contract Sec 4.4): `{'resources', 'profile_error', 'profile_ref'}`.
+    May set `state['warning']` (daemon `stop` failing after a successful
+    `start` is a NEW, distinct failure the caller has not disclosed yet)."""
+    if state["mode"] == "daemon" and state["client"] is not None:
+        stop_doc, reason = state["client"].stop(state["session"])
+        if stop_doc is None:
+            state["warning"] = state["warning"] or reason
+            return {"resources": None, "profile_error": reason,
+                    "profile_ref": None}
+        # B1c: `.get()` -- see the matching comment on `start_doc["session"]`
+        # above; `_ctl` already validates `summary` is present, this is
+        # defense in depth, not a load-bearing check.
+        return {"resources": stop_doc.get("summary"), "profile_error": None,
+                "profile_ref": {"daemon": state["daemon"],
+                                "session": state["session"],
+                                "session_dir": stop_doc.get("session_dir")}}
+    if state["mode"] == "basic" and state["sampler"] is not None:
+        state["sampler"].sample_final()   # contract Sec 4.2's final sample
+        return {"resources": state["sampler"].finish(),
+                "profile_error": state.get("profile_error"),
+                "profile_ref": None}
+    if state["mode"] == "disabled":
+        return {"resources": None,
+                "profile_error": state.get("disabled_reason", "disabled"),
+                "profile_ref": None}
+    # Enabled, but neither path ever got going — e.g. a re-attach that
+    # adopted no recorded session (basic-path in-memory samples cannot
+    # survive a client restart) or a profiler state built for a container
+    # collected already-exited.
+    return {"resources": None,
+           "profile_error": state["warning"] or "no profile recorded",
+           "profile_ref": None}
+
+
+def start_bare_host_profiling(lane: dict, lane_name: str, project_dir: Path,
+                              worktree: Path, docker: str | None,
+                              plan: dict,
+                              preflight: dict | None = None) -> dict:
+    """RG-57/RW-27b — the bare-host counterpart to `start_lane_profiling`.
+    A bare-host lane has no container/runner of run-gate's own to hand a
+    caller-supplied id: the TARGET is run-gate's own process
+    (`resolve_self_container_id`), and the scope is ALWAYS
+    `container-shared` (RG55-INTERFACE-CONTRACT.md Sec 3 — a bare-host
+    invocation shares its devcontainer's cgroup with everything else
+    running in it, the same relationship an exec lane's persistent runner
+    has). On ANY failure — docker missing, not running in a container,
+    `ctl version` failing, `ctl start` failing — this NEVER falls back to a
+    `BasicSampler` (RW-27b: explicit and deliberate — there is no cgroup
+    here safely attributable to just this lane's own child the way a fresh
+    ephemeral container's cgroup is; a basic-path sample would silently mix
+    in run-gate's own process and every OTHER bare-host lane running
+    concurrently in this devcontainer, which is worse than no sample, not
+    better). It degrades to `mode: "rusage"` instead, for the caller to
+    finish with `os.wait4(pid, 0)` on its own child, which hands back that
+    child's exact resource accounting directly (round-1 review B1/RW-43).
+
+    On `start` success this returns the SAME state shape `start_lane_
+    profiling` returns (mode "daemon", client/session/session_line/
+    profiler_status) so `finish_lane_profiling(state)` can be reused
+    VERBATIM for the daemon sub-case — only how the target id and the scope
+    were decided differs, not what happens afterward."""
+    state = {"mode": "rusage", "client": None, "daemon": plan.get("daemon"),
+             "session": None, "session_line": None, "warning": None,
+             "sampler": None, "profiler_status": None,
+             "placement": None, "admission": None,
+             "disabled_reason": plan.get("disabled_reason", "disabled")}
+    if not docker:
+        state["warning"] = "docker not found on PATH"
+        return state
+    container_id, skip_reason = resolve_self_container_id(docker)
+    if container_id is None:
+        state["warning"] = skip_reason
+        return state
+    client = (preflight.get("client") if preflight is not None else
+              ProfilerClient(docker, plan["daemon"],
+                             transport=plan.get("transport",
+                                                PROFILE_TRANSPORT_DEFAULT),
+                             socket_path=plan.get("socket_path",
+                                                  PROFILE_SOCKET_PATH_DEFAULT)))
+    state["client"] = client
+    if preflight is not None:
+        version_doc = preflight.get("version")
+        reason = preflight.get("reason")
+        if preflight.get("fatal_reason"):
+            state["warning"] = preflight["fatal_reason"]
+    else:
+        try:
+            version_doc, reason = client.version()
+        except Exception as exc:
+            # R-36h: an unexpected optional probe failure degrades to the
+            # daemon-unavailable state; it must not escape into the lane.
+            state["warning"] = f"profiling version probe failed unexpectedly: {exc}"
+            return state
+    if version_doc is None:
+        state["warning"] = reason
+        return state
+    cgprofile_ver = version_doc.get("cgprofile", "?")
+    daemon_damon = (version_doc.get("daemon") or {}).get("damon", "unavailable")
+    state["profiler_status"] = (f"{plan['daemon']} (cgprofile "
+                                f"{cgprofile_ver}, damon {daemon_damon})")
+    meta = profile_meta(lane, lane_name, project_dir, worktree)
+    interval = float(budget_seconds(plan["interval"]))
+    if preflight is not None:
+        host_doc = preflight.get("host")
+        host_reason = preflight.get("reason")
+        placement = preflight.get("placement") or {
+            "place": False, "memory_high": None,
+            "memory_max": None, "cpu_weight": None}
+        state["admission"] = preflight.get("admission")
+    else:
+        try:
+            host_doc, host_reason = client.host()
+        except Exception as exc:
+            host_doc, host_reason = None, (
+                f"profiling host probe failed unexpectedly: {exc}")
+        placement = profile_placement_plan(
+            lane, lane_name, project_dir, host_doc) if host_doc is not None \
+            else {"place": False, "memory_high": None,
+                  "memory_max": None, "cpu_weight": None}
+        if host_doc is not None:
+            state["admission"] = profile_admission(
+                client, lane_name, placement,
+                plan.get("admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT),
+                host_doc)
+    if host_doc is None:
+        state["warning"] = host_reason
+    policy = profile_start_policy(lane, project_dir, "container-shared",
+                                  bool(placement["place"]))
+    start_doc, start_reason = client.start(
+        container_id, "container-shared", token=plan.get("token"),
+        damon=plan["damon"], interval=interval, meta=meta,
+        progress_stream=policy["progress_stream"],
+        idle_bound=policy["idle_bound"], ceiling=policy["ceiling"],
+        on_stall=policy["on_stall"], place=placement["place"],
+        memory_high=placement["memory_high"],
+        memory_max=placement["memory_max"],
+        cpu_weight=placement["cpu_weight"])
+    if start_doc is None:
+        state["warning"] = start_reason
+        return state
+    state["mode"] = "daemon"
+    # B1c (round-1 review precedent, same defense in depth as
+    # `start_lane_profiling`): `.get()`, never a bare subscript.
+    state["session"] = start_doc.get("session")
+    state["placement"] = start_doc.get("placement")
+    target = start_doc.get("target")
+    baseline = (target.get("baseline_memory_bytes")
+                if isinstance(target, dict) else None)
+    baseline_mib = (round(baseline / (1024 * 1024))
+                    if isinstance(baseline, (int, float))
+                    and not isinstance(baseline, bool) else "?")
+    damon_state = start_doc.get("damon", "unavailable")
+    state["session_line"] = (
+        f"run-gate: profile session {state['session']} "
+        f"(scope container-shared, baseline {baseline_mib} MiB, "
+        f"damon {damon_state}, via {client.carrier}, policy idle "
+        f"{policy['idle_bound']} ceiling {policy['ceiling']} "
+        f"on-stall {policy['on_stall']})")
+    return state
+
+
+def _self_rss_bytes() -> int | None:
+    """RW-46b. `os.wait4()`'s `ru_maxrss` is a fork+exec hiwater mark, and
+    COW page-table inheritance means a short-lived child's own high-water
+    RSS can never fall below the PARENT's (run-gate's own) resident size
+    at the moment of fork — proven directly against `Popen`/`posix_spawn`/
+    raw `fork()+exec()` (round-1 review B1 residual finding, RW-43's own
+    REPORT): an artificial small parent (~11 MiB resident) forking
+    `/bin/true` measured `ru_maxrss` ~11 MiB for the trivial child; the
+    SAME fork with a big parent (300 MiB allocated first) measured
+    ~311-318 MiB for the SAME trivial child, on all three mechanisms
+    identically. `run_bare_host_lane` reads this IMMEDIATELY BEFORE
+    spawning the lane's own child (the closest this process can get to
+    "resident size at fork time" without racing the fork itself) and
+    hands it to `finish_bare_host_profiling` as the rusage summary's
+    `memory.floor_bytes` — not a bug fix (there is nothing left in the
+    accounting itself to fix; `os.wait4` already reports the ONE child's
+    own exact numbers, RW-43/B1), but an honest disclosure that a peak at
+    or below this floor cannot be distinguished from "no measurable
+    footprint beyond run-gate's own", per contract Sec 1.7. Reads resident
+    pages (field index 1) from `/proc/self/statm`, honors `RUN_GATE_PROC_
+    ROOT` like `read_host_pressure_snapshot`/`cgroup_namespace_is_private`
+    so a test can drive it with a fake `<root>/self/statm`. `None` when
+    unreadable or malformed — absent is never zero, and a fabricated floor
+    would be worse than no floor at all."""
+    root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+    try:
+        fields = (root / "self" / "statm").read_text().split()
+        resident_pages = int(fields[1])
+        page_size = os.sysconf("SC_PAGE_SIZE")
+    except (OSError, IndexError, ValueError):
+        return None
+    if resident_pages < 0 or page_size <= 0:
+        return None
+    return resident_pages * page_size
+
+
+# RG-57/RW-27b: the schema-1 Summary's non-rusage sections, built once so
+# `finish_bare_host_profiling`'s rusage branch does not hand-roll four
+# separate all-null dicts inline. Every leaf here is a fact wait4()
+# structurally cannot supply (contract Sec 1.7: absent means unknown, never
+# fabricated) -- `pressure`/`faults`/`events`/`host`/`pids`/`damon` are all
+# session- or cgroup-scoped facts a wait4()-based accounting call has no way
+# to read at all, not merely facts this run chose not to sample.
+_RUSAGE_NULL_SECTIONS = {
+    "pressure": {"memory_some_stall_seconds": None, "memory_full_stall_seconds": None,
+                "cpu_some_stall_seconds": None, "io_some_stall_seconds": None,
+                "io_full_stall_seconds": None},
+    "faults": {"pgmajfault": None, "workingset_refault_anon": None,
+              "workingset_refault_file": None},
+    "pids": {"peak": None},
+    "host": {"start": None, "end": None, "memory_full_stall_seconds": None,
+            "memory_some_stall_seconds": None, "slice": None},
+    "events": {"oom_kill": None, "limit_drift": None, "memory_high_breach": None},
+}
+
+
+def finish_bare_host_profiling(state: dict, ru,
+                               started_at: str, ended_at: str,
+                               measured_duration_seconds: float,
+                               floor_bytes: int | None = None) -> dict:
+    """RG-57/RW-27b's counterpart to `finish_lane_profiling` — same
+    three-field return shape (`{'resources', 'profile_error',
+    'profile_ref'}`), called from `run_bare_host_lane`'s own `finally`
+    around the child's own `os.wait4()`. `mode == 'daemon'` delegates
+    VERBATIM to `finish_lane_profiling` (the daemon-path Summary comes back
+    from `ctl stop` exactly like an exec lane's does — contract Sec 4
+    obligation 2 is unchanged by WHERE the target container id came from).
+
+    `mode == 'rusage'` builds the schema-1 Summary BY HAND from `ru`, the
+    `resource.struct_rusage` that `os.wait4(pid, 0)` hands back for the
+    LANE'S OWN child and ONLY that child (round-1 review B1/RW-43: the
+    historical rejected `getrusage(RUSAGE_CHILDREN)`-delta shape was a monotone
+    high-water mark over EVERY child this run-gate process had ever reaped
+    -- including its own `docker inspect`/`ctl version` subprocesses --
+    so a lane smaller than something already reaped was credited with the
+    larger number; a live `["true"]` probe recorded ~36 MiB of run-gate's
+    own tooling instead of a few hundred KiB of its own). `os.wait4`
+    returns the exact accounting of the one pid it waited on, so there is
+    no before/after bracket to get wrong and no honest case where the
+    number can be stale or borrowed from another child -- `ru` is always
+    exactly this lane's own child, never `None` once the wait succeeds.
+    `scope: None` is a deliberate design choice, not an oversight: the
+    contract's `scope` enum (`"container"|"container-shared"`) describes a
+    CGROUP relationship, and rusage measures via `wait4()`/process
+    accounting, never a cgroup read at all — no contract value is honest
+    here, and the handoff's own "everything wait4 cannot give is null"
+    rule extends naturally to a fact (cgroup scope) wait4 structurally
+    cannot supply. `memory.peak_bytes` is `ru.ru_maxrss * 1024` (Linux
+    reports KiB) — the lane's own child's peak RSS (`source:
+    "rusage-maxrss"` discloses exactly that caveat downstream, in
+    `footprint`/`doctor`/`history`).
+
+    `floor_bytes` (RW-46b) is run-gate's OWN resident memory, read by the
+    caller immediately before spawning the child (`_self_rss_bytes()`) —
+    fork+exec's COW inheritance means `peak_bytes` can never honestly fall
+    below it (see `_self_rss_bytes`'s own docstring for the proof).
+    `memory.peak_at_floor` is `True` when `peak_bytes <= floor_bytes`
+    (unmeasurable beyond that floor — not necessarily this lane's true
+    peak), `False` when it exceeds it (this child genuinely pushed the
+    high-water mark higher, a real measurement), and `None` only when
+    `floor_bytes` itself is `None` (unreadable `/proc/self/statm` —
+    contract Sec 1.7: absent is never fabricated as either True or
+    False). `measured_duration_seconds` is a monotonic-clock interval supplied
+    by the caller; the whole-second UTC stamps remain display metadata and are
+    never subtracted to derive a subsecond duration."""
+    if state["mode"] == "daemon":
+        return finish_lane_profiling(state)
+    if state["mode"] == "disabled":
+        return {"resources": None,
+               "profile_error": state.get("disabled_reason", "disabled"),
+               "profile_ref": None}
+    if state["mode"] != "rusage" or ru is None:
+        # Enabled and attempted, but `os.wait4()` never ran or raised —
+        # e.g. a state built for a lane whose child never started, or the
+        # R-36h containment around the wait4() bracket degrading a planted
+        # failure. Same shape `finish_lane_profiling`'s own "neither path
+        # ever got going" fallback returns.
+        return {"resources": None,
+               "profile_error": state.get("warning") or "no profile recorded",
+               "profile_ref": None}
+    duration_seconds = round(max(0.0, measured_duration_seconds), 3)
+    cpu_seconds = round(ru.ru_utime + ru.ru_stime, 3)
+    cores_avg = (round(cpu_seconds / duration_seconds, 3)
+                if duration_seconds else None)
+    peak_bytes = ru.ru_maxrss * 1024
+    peak_at_floor = (peak_bytes <= floor_bytes) if floor_bytes is not None \
+        else None
+    resources = {
+        "schema": 1,
+        "session": None,
+        "daemon": None,
+        "scope": None,
+        "method": "rusage",
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_seconds": duration_seconds,
+        "interval_seconds": None,
+        "samples": None,
+        "target": {"container_id": None, "cgroup": None,
+                  "token": None, "targets_seen": None},
+        "memory": {
+            "peak_bytes": peak_bytes,
+            "source": "rusage-maxrss",
+            "floor_bytes": floor_bytes,
+            "peak_at_floor": peak_at_floor,
+            "baseline_bytes": None,
+            "peak_over_baseline_bytes": None,
+            "p90_bytes": None,
+            "median_bytes": None,
+            "swap_peak_bytes": None,
+            "anon_peak_bytes": None,
+            "file_peak_bytes": None,
+        },
+        "cpu": {
+            "seconds": cpu_seconds,
+            "cores_avg": cores_avg,
+            "cores_max": None,
+            "throttled_seconds": None,
+            "nr_throttled": None,
+        },
+        "damon": None,
+        **{k: dict(v) for k, v in _RUSAGE_NULL_SECTIONS.items()},
+    }
+    return {"resources": resources, "profile_error": None, "profile_ref": None}
+
+
+def print_profile_warning(state: dict) -> None:
+    """Contract Sec 4.6, line 4 — ONE stderr warning per lane invocation
+    (contract Sec 1.3), guarded by `state['_warned']` so a `stop` failure
+    disclosed via a second `finish_lane_profiling()` call never double-prints
+    the SAME reason (it cannot: a session either fails at `start` — the
+    'basic in-lane sampling only' case — or fails at `stop` after a
+    successful `start` — the 'no profile recorded' case — never both)."""
+    if state.get("warning") and not state.get("_warned"):
+        state["_warned"] = True
+        suffix = ("basic in-lane sampling only" if state["mode"] == "basic"
+                 else "coarse rusage sampling only" if state["mode"] == "rusage"
+                 else "no profile recorded")
+        print(f"run-gate: WARNING profiling: {state['warning']} — {suffix}",
+              file=sys.stderr, flush=True)
+
+
+def print_profile_session_line(state: dict) -> None:
+    if state.get("session_line"):
+        print(state["session_line"], flush=True)
+
+
+def print_profile_plan_dry_run(plan: dict, scope: str,
+                               placement: dict | None = None) -> None:
+    """`--dry-run` (contract Sec 4 obligation, handoff C3): the plan, never
+    a real call. When disabled, names the SOURCE `resolve_profile_settings`
+    resolved (RW-17: a `RUN_GATE_PROFILE=off` override discloses itself the
+    same way `[profile] enabled = false` or a lane's own `profile = false`
+    would)."""
+    if not plan["enabled"]:
+        print(f"run-gate: profiling disabled ({plan['source']}) — no "
+             "token, no daemon call, no sampler", flush=True)
+        return
+    print(f"run-gate: DRY RUN — profile plan: daemon {plan['daemon']!r}, "
+         f"scope {scope!r}, damon {'on' if plan['damon'] else 'off'}, "
+         f"transport {plan.get('transport', PROFILE_TRANSPORT_DEFAULT)!r}, "
+         f"socket {plan.get('socket_path', PROFILE_SOCKET_PATH_DEFAULT)!r}, "
+         f"admission_wait {plan.get('admission_wait', PROFILE_ADMISSION_WAIT_DEFAULT)}, "
+         f"token env {PROFILE_TOKEN_ENV}", flush=True)
+    if placement is not None and scope != "container":
+        if placement.get("place"):
+            print(f"run-gate: DRY RUN — placement plan: "
+                  f"request {placement['request']} bytes "
+                  f"({placement.get('source')}), memory.high "
+                  f"{placement['memory_high']}, memory.max "
+                  f"{placement['memory_max']} "
+                  f"({placement.get('ceiling_source')})", flush=True)
+        else:
+            print("run-gate: DRY RUN — placement plan: no request; "
+                  "lane runs unplaced", flush=True)
+
+
+def _fmt_stall_seconds(value: object) -> str:
+    """`{s} s stalled on memory (full)` (contract Sec 4.6, line 3) — a
+    SPACE before the literal 's', unlike `_fmt_seconds`'s compact '4.8s'
+    (that one is a table cell; this one is a sentence)."""
+    return f"{value:.1f}" if isinstance(value, (int, float)) \
+        and not isinstance(value, bool) else "-"
+
+
+def print_footprint_line(lane_name: str, project_dir: Path,
+                         resources: dict | None) -> None:
+    """Contract Sec 4.6, line 3 (RG-55/C5). A no-op when THIS invocation
+    recorded no resources at all — disabled, or a profile error the
+    WARNING line already named; there is nothing to distill a footprint
+    line FROM. Reads the history store fresh (no lock, like `history` —
+    this is disclosure, not the record write) for the STANDING median this
+    run is being compared against, deliberately BEFORE this run's own
+    flush: the sentence reads as "this run measured X; the trend has been
+    Y" — a comparison, not a number quietly folded into itself."""
+    if resources is None:
+        return
+    mem = resources.get("memory") or {}
+    cpu = resources.get("cpu") or {}
+    # `host.memory_full_stall_seconds`, deliberately NOT `pressure.*`
+    # (contract Sec 3 has both, session-scoped and host-scoped): this is
+    # the SAME field `RESOURCE_SERIES_GETTERS["memory_full_stall_seconds"]`
+    # (C4) already feeds into the "history median" figure two segments
+    # later in this same line — one name, one source, or the two numbers
+    # in one sentence would silently describe different things.
+    host = resources.get("host") or {}
+    damon = resources.get("damon")
+    hot_bytes = damon.get("hot_bytes") if isinstance(damon, dict) else None
+    hot = hot_bytes.get("p90") if isinstance(hot_bytes, dict) else None
+    over = mem.get("peak_over_baseline_bytes")
+    over_seg = f" (+{_fmt_mib(over)} over baseline)" \
+        if isinstance(over, (int, float)) and not isinstance(over, bool) else ""
+    hot_seg = f", hot-set p90 {_fmt_mib(hot)}" \
+        if isinstance(hot, (int, float)) and not isinstance(hot, bool) else ""
+    store = load_history_store(history_store_path(project_dir))
+    hist_peak = lane_history_report(store, lane_name)["stats"]["passes"][
+        "memory_peak_bytes"]
+    manifest_peak = footprint_manifest_lane_peak_median(
+        load_footprint_manifest(project_dir), lane_name)
+    manifest_seg = f" | manifest {_fmt_mib(manifest_peak)}" \
+        if isinstance(manifest_peak, (int, float)) \
+        and not isinstance(manifest_peak, bool) else ""
+    # S1 + RW-46b: the SAME two caveats `_fmt_footprint_row`/`doctor`
+    # already print, here on the LIVE per-run line — read far more often
+    # than `footprint --write`'s own table (round-1 review S1).
+    source_note = " [source: rusage-maxrss]" \
+        if mem.get("source") == "rusage-maxrss" else ""
+    floor_note = " (peak <= floor)" if mem.get("peak_at_floor") else ""
+    print(f"run-gate: footprint {lane_name}: peak {_fmt_mib(mem.get('peak_bytes'))}"
+         f"{over_seg}, p90 {_fmt_mib(mem.get('p90_bytes'))}, "
+         f"{_fmt_cores(cpu.get('cores_avg'))} cores avg, "
+         f"{_fmt_stall_seconds(host.get('memory_full_stall_seconds'))} "
+         f"s stalled on memory (full){hot_seg}; history median peak "
+         f"{_fmt_mib(hist_peak['median'])} ({hist_peak['count']} runs)"
+         f"{manifest_seg}{source_note}{floor_note}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# environment-fact derivation (DERIVE / READ / FAIL — never invent)
+# ---------------------------------------------------------------------------
+
+_UNESCAPES = {"040": " ", "011": "\t", "012": "\n", "134": "\\"}
+
+
+def _unescape_mountinfo(value: str) -> str:
+    return re.sub(r"\\(040|011|012|134)",
+                  lambda m: _UNESCAPES[m.group(1)], value)
+
+
+def physical_path(path: Path, mountinfo_text: str | None = None,
+                  container: bool | None = None) -> Path:
+    """Map a namespace path to the host path Docker binds, via /proc/self/mountinfo.
+
+    Outside a container the path is already physical. Inside one, the repo MUST
+    appear as a bind mount whose mount point contains it; no entry -> hard error
+    (a wrong guess would mount the wrong tree silently).
+    """
+    if container is None:
+        container = Path("/.dockerenv").exists()
+    if not container:
+        return path
+    if mountinfo_text is None:
+        try:
+            mountinfo_text = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+        except OSError as exc:
+            fail_infra(f"cannot read /proc/self/mountinfo to derive the physical host path "
+                       f"of {path}: {exc}")
+    best_mp, best_root = "", ""
+    for line in mountinfo_text.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        root, mountpoint = _unescape_mountinfo(fields[3]), _unescape_mountinfo(fields[4])
+        if mountpoint == "/":
+            continue  # the container's own root overlay maps nothing usefully
+        if str(path) == mountpoint or str(path).startswith(mountpoint.rstrip("/") + "/"):
+            if len(mountpoint) > len(best_mp):
+                best_mp, best_root = mountpoint, root
+    if not best_mp:
+        fail_infra(f"could not derive a physical host path for {path} from /proc/self/mountinfo "
+                   f"— is the repo bind-mounted into this container?")
+    return Path(best_root + str(path)[len(best_mp):])
+
+
+def git_out(*args: str, cwd: Path) -> str:
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                          text=True, env=host_git_environment())
+    if proc.returncode != 0:
+        detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() \
+            else f"exit {proc.returncode}"
+        fail_infra(f"git {' '.join(args)} failed in {cwd}: {detail}")
+    return proc.stdout.strip()
+
+
+def host_git_environment() -> dict[str, str]:
+    """Keep host-side Git readers from executing worktree supplied helpers.
+
+    A lane needs a writable index and shared refs to support the documented
+    in-container commit behavior. Its worktree pointers are separately mounted
+    read-only, while every host Git reader disables fsmonitor and hooks so a
+    config file created through some other path cannot run code on the host.
+    """
+    environment = os.environ.copy()
+    raw_count = environment.get("GIT_CONFIG_COUNT", "0")
+    if not raw_count.isdecimal():
+        fail_infra("GIT_CONFIG_COUNT is malformed; cannot harden host Git")
+    index = int(raw_count)
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_COUNT": str(index + 2),
+        f"GIT_CONFIG_KEY_{index}": "core.fsmonitor",
+        f"GIT_CONFIG_VALUE_{index}": "false",
+        f"GIT_CONFIG_KEY_{index + 1}": "core.hooksPath",
+        f"GIT_CONFIG_VALUE_{index + 1}": os.devnull,
+    })
+    return environment
+
+
+def resolve_repo_and_worktree(project_dir: Path, worktree_override: str | None
+                              ) -> tuple[Path, Path, Path]:
+    """repo = the checkout owning the shared .git (worktrees live under it);
+    judged worktree = the toplevel containing the project, unless overridden;
+    also returns the invocation toplevel (the base the project dir is
+    relocated from when an override selects a different tree).
+
+    NOTE: `--git-common-dir` is relative to the INVOCATION CWD (here:
+    project_dir), never to the toplevel — joining it onto the wrong base
+    silently relocates the repo root."""
+    toplevel = Path(git_out("rev-parse", "--show-toplevel", cwd=project_dir))
+    common = git_out("rev-parse", "--git-common-dir", cwd=project_dir)
+    common_path = Path(common)
+    if not common_path.is_absolute():
+        common_path = (project_dir / common_path).resolve()
+    if common_path == (toplevel / ".git").resolve():
+        repo = toplevel                      # plain checkout
+    else:
+        repo = common_path.parent            # linked worktree: common-dir owner
+    worktree = Path(worktree_override) if worktree_override else toplevel
+    return repo, worktree, toplevel
+
+
+def effective_project_dir(project_dir: Path, toplevel: Path,
+                          worktree: Path) -> Path:
+    """RG-15: the project's position INSIDE the judged tree.
+
+    All user-declared execution paths — the assay cd target, pin verification,
+    verdict/artifact locations, host-lane cwd — resolve against the SELECTED
+    worktree, never the invocation checkout: <worktree>/<project-relative-
+    to-toplevel>. With no --worktree override this is exactly project_dir.
+    Refuses when the project sits outside its own toplevel: nothing then
+    defines its position inside the override tree, and guessing would run the
+    lane against an unrelated directory. Existence is deliberately NOT
+    pre-checked here — the override tree may live in another mount namespace,
+    and a local stat would ask the wrong kernel; the inner `cd` fails loudly
+    where the right view exists.
+    """
+    try:
+        rel = project_dir.relative_to(toplevel)
+    except ValueError:
+        try:  # symlinked layouts: compare through realpath, keep caller's prefix
+            rel = project_dir.resolve().relative_to(toplevel.resolve())
+        except ValueError:
+            fail(f"project dir {project_dir} is outside its git toplevel "
+                 f"{toplevel} — cannot relocate it into the judged worktree "
+                 f"{worktree}")
+    return worktree / rel
+
+
+def resolve_worktree_scope(project_dir: Path, worktree_override: str | None,
+                           what: str) -> tuple[Path, Path, Path, str | None]:
+    """RG-30: the read-only-verb counterpart of the run path's own
+    `resolve_repo_and_worktree` + `effective_project_dir` pair, shared by
+    every REPORT-ONLY verb that takes `--worktree` (`doctor`, `--check-env`;
+    `history`'s own read-side fix, RG-27 B1, predates this helper and stays
+    inline). Returns (repo, worktree, effective project dir, disclosure
+    scope) — the effective project dir is what a probe/scan must read
+    INSTEAD of `project_dir` so its answer actually describes the selected
+    tree, and the disclosure scope is `worktree` as a string when an
+    override was given (None otherwise) for the caller to name in its own
+    output (R-05: an answer that can differ by tree must say which tree it
+    describes, never leave it to be inferred).
+
+    A run-path lane resolves the identical override string through
+    `resolve_repo_and_worktree` with no upfront validation because it has a
+    natural downstream failure to die against (`check_clean_tree` runs `git
+    status` IN the tree). A report-only verb starts no such check — asking
+    it to report on a `--worktree` that names nothing would otherwise let it
+    silently manufacture an answer about a tree that does not exist (worse:
+    `doctor`'s RG-21 check reads "no gitdir file here" as "plain checkout,
+    nothing to warn about", so an unvalidated override would print a FALSE
+    OK rather than staying silent). Refuses loud, upfront, before any check
+    reads the world — same shape as `history`'s own B1 fix.
+    """
+    if not worktree_override:
+        repo, worktree, _ = resolve_repo_and_worktree(project_dir, None)
+        return repo, worktree, project_dir, None
+    if not Path(worktree_override).is_dir():
+        fail(f"--worktree {worktree_override!r}: not a directory — `{what}` "
+             f"reports THAT tree's state, so it must name a real worktree")
+    git_out("rev-parse", "--show-toplevel",
+            cwd=Path(worktree_override))  # refuses with git's own line
+    repo, worktree, toplevel = resolve_repo_and_worktree(project_dir,
+                                                          worktree_override)
+    eff_proj = effective_project_dir(project_dir, toplevel, worktree)
+    return repo, worktree, eff_proj, str(worktree)
+
+
+def resolve_slice(env: dict, env_source: str) -> tuple[str, str]:
+    """Resolve the declared slice policy, then the ambient gates variable.
+
+    ``cgroup_slice_env`` lets a central repository config bind the policy to a
+    host-injected fact without copying a slice name into every project. A
+    missing declared variable is still a hard error; there is no silent
+    fallback to Docker's unconfined default.
+    """
+    declared = env.get("cgroup_slice")
+    if declared:
+        return declared, f"declared {env_source}"
+    declared_env = env.get("cgroup_slice_env")
+    if declared_env:
+        value = os.environ.get(declared_env)
+        if not value:
+            fail(f"no cgroup slice for the gate: ${declared_env} declared by "
+                 f"{env_source} is unset")
+        return value, f"${declared_env} (declared {env_source})"
+    ambient = os.environ.get(CGROUP_ENV_VAR)
+    if not ambient:
+        fail(f"no cgroup slice for the gate: set ${CGROUP_ENV_VAR} (ambient, from "
+             f"devcontainer.json) or declare cgroup_slice on the lane's environment "
+             f"{env_source}")
+    return ambient, f"${CGROUP_ENV_VAR}"
+
+
+def verify_slice_loaded(slice_name: str) -> None:
+    """Verify a configured systemd slice where systemd is reachable.
+
+    A misspelled ``.slice`` can be auto-created by systemd and still report
+    ``LoadState=loaded``. Requiring a non-empty ``FragmentPath`` distinguishes
+    an installed unit from that transient, unlimited slice. Containerized
+    contexts without host systemd leave this proof to their outer gate
+    launcher and its host-side governance preflight."""
+    if not os.path.isdir("/run/systemd/system"):
+        return
+    try:
+        proc = subprocess.run(["systemctl", "show", slice_name,
+                               "--property=LoadState,FragmentPath",
+                               "--no-pager"],
+                              capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        fail(f"cannot verify gate slice {slice_name}: systemctl is unavailable: "
+             f"{exc}")
+    properties = dict(line.split("=", 1) for line in proc.stdout.splitlines()
+                      if "=" in line)
+    load_state = properties.get("LoadState", "")
+    fragment_path = properties.get("FragmentPath", "")
+    if proc.returncode != 0 or load_state != "loaded":
+        state = load_state or f"systemctl exit {proc.returncode}"
+        fail(f"gate slice {slice_name} is not LoadState=loaded (got: {state})")
+    if not fragment_path:
+        fail(f"gate slice {slice_name} is transient (LoadState=loaded but "
+             "FragmentPath is empty); install the configured host slice")
+
+
+# ---------------------------------------------------------------------------
+# RG-20 — resource-aware admission: RAM is the real contention hazard
+# ---------------------------------------------------------------------------
+
+_SIZE_MULT = {"": 1, "b": 1, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}
+# ONE size grammar for every declaration site and the parser (review fix:
+# _validate_memory accepted '512M' case-insensitively while this parser was
+# case-sensitive — a grammar-valid config used to traceback at admission).
+_SIZE_RE = re.compile(r"(\d+)([bkmg]?)", re.IGNORECASE)
+
+
+def parse_size_bytes(value: str) -> int:
+    """'4g' -> bytes. Callers validate the \\d+[bkmg]? shape first."""
+    m = _SIZE_RE.fullmatch(value)
+    return int(m.group(1)) * _SIZE_MULT[m.group(2).lower()]
+
+
+def _fmt_mb(n: int) -> str:
+    return f"{n / 1024 ** 2:.0f}MB"
+
+
+def slice_cgroupfs_dir(slice_name: str) -> Path:
+    """systemd slice nesting under the cgroupfs root: dev-gates.slice
+    lives at dev.slice/dev-gates.slice (dashes are hierarchy)."""
+    stem = slice_name[:-len(".slice")] if slice_name.endswith(".slice") \
+        else slice_name
+    parts = stem.split("-")
+    if len(parts) == 1:
+        return Path(f"{stem}.slice")
+    return Path("/".join(p + ".slice" for p in parts[:-1])) / slice_name
+
+
+def check_slice_memory_admission(lane: dict, lane_name: str,
+                                 slice_name: str, slice_src: str) -> None:
+    """RG-20 admission, memory half: the lane's declared RAM must fit in the
+    slice's REMAINING budget, read from cgroupfs kernel truth at admission
+    time (memory.current + declared <= memory.max). This counts EVERYTHING
+    already running in the slice — other gates, live services — not just
+    gates this tool started, so no cross-process bookkeeping can drift.
+
+    No derivable ceiling ('max', cgroupfs hidden/unreadable): say so loudly
+    and admit on shared-infra rules only — a hard refuse here would make the
+    gate unusable in every namespace that cannot see the host cgroupfs."""
+    res = lane.get("resources", {})
+    declared = res.get("memory") or lane.get("memory")
+    if not declared:
+        print(f"run-gate: admission: lane {lane_name!r} declares no "
+              f"resources.memory — not memory-accounted (shared-infra rules "
+              f"still apply)", flush=True)
+        return
+    root = Path(os.environ.get(CGROUPFS_ROOT_ENV_VAR, "/sys/fs/cgroup"))
+    sl_dir = root / slice_cgroupfs_dir(slice_name)
+
+    def _read(name: str) -> str | None:
+        try:
+            return (sl_dir / name).read_text().strip()
+        except OSError:
+            return None
+
+    max_raw = _read("memory.max")
+    cur_raw = _read("memory.current")
+    if max_raw is None or max_raw == "max":
+        # RG-55/C7: name WHY when the reason is a private cgroup namespace
+        # (this devcontainer's own default) rather than leave a reader to
+        # guess between "wrong path" and "structurally unreachable from
+        # here" — the two calls for different fixes (export
+        # $RUN_GATE_CGROUPFS_ROOT vs. nothing this process can do about it
+        # at all, ever).
+        why = ""
+        if max_raw is None and cgroup_namespace_is_private():
+            why = (f" — /proc/self/cgroup is '0::/' and no slice directory "
+                   f"is visible: cgroupns=private; host-side slice truth is "
+                   f"only reachable through the profiler daemon ({PROG} "
+                   f"doctor's own 'profiler' check, RG-55/C7)")
+        print(f"run-gate: admission WARNING: no derivable memory ceiling for "
+              f"slice {slice_name} ({sl_dir}/memory.max "
+              f"{'absent' if max_raw is None else '= max'}; export "
+              f"${CGROUPFS_ROOT_ENV_VAR} if the host cgroupfs hides here)"
+              f"{why} — admission by shared-infra rules only", flush=True)
+        return
+    if cur_raw is None or not cur_raw.isdigit():
+        print(f"run-gate: admission WARNING: slice {slice_name} current usage "
+              f"unreadable ({sl_dir}/memory.current) — admission by shared-infra "
+              f"rules only", flush=True)
+        return
+    cap = int(max_raw)
+    current = int(cur_raw)
+    need = parse_size_bytes(declared)
+    if current + need > cap:
+        fail(f"resource admission REFUSED for lane {lane_name!r}: slice "
+             f"{slice_name} ({slice_src}) is using {_fmt_mb(current)} of its "
+             f"{_fmt_mb(cap)} budget and this lane declares {declared} — "
+             f"{_fmt_mb(current + need - cap)} over. Wait for a consumer to "
+             f"finish, or lower 'resources.memory'")
+    print(f"run-gate: admission OK: slice {slice_name} usage {_fmt_mb(current)} "
+          f"+ {lane_name!r} {declared} <= budget {_fmt_mb(cap)}", flush=True)
+
+
+def _open_lockfile(path: Path) -> int:
+    """Shared RG-20/RG-39 discipline for a content-free coordination file
+    with a predictable /tmp name: 0600 + O_NOFOLLOW — don't follow a
+    planted symlink, don't share it across accounts. Every flock-based
+    lock in this file opens through here so the two lock kinds stay
+    siblings, never near-copies with subtly different flag sets."""
+    return os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+
+
+def acquire_shared_locks(lane: dict, lane_name: str, dry_run: bool,
+                         lock_deadline: float | None = None) -> list[int]:
+    """RG-20 admission, shared-infra half: lanes declaring the same
+    resources.shared service name serialize on a per-name flock
+    (/tmp/run-gate-shared-<name>.lock), so two gates hitting one PG/Redis
+    instance wait instead of corrupting each other — while fully isolated
+    instances never meet here and run concurrently. Dry runs plan the wait
+    but never block. Returns held fds; closing each releases its lock."""
+    names = lane.get("resources", {}).get("shared") or []
+    if dry_run:
+        if names:
+            print(f"run-gate: DRY RUN — shared-infra serialization planned "
+                  f"for: {', '.join(sorted(names))}", flush=True)
+        return []
+    fds: list[int] = []
+    # Sorted order is the deadlock fix (review MAJOR): declared-order
+    # acquisition let gate A hold 'pg' while waiting on 'redis' and gate B
+    # hold 'redis' while waiting on 'pg' — a classic ABBA hang with no
+    # diagnostic. A canonical GLOBAL order makes hold-and-wait cycles
+    # impossible regardless of how each project lists its services.
+    for svc in sorted(names):
+        path = _lock_dir() / f"run-gate-shared-{svc}.lock"
+        try:
+            fd = _open_lockfile(path)
+            try:
+                _acquire_lock_before_deadline(
+                    fd, lock_deadline,
+                    f"lane {lane_name!r}: waiting for shared infra {svc!r}",
+                    path)
+            except BaseException:
+                os.close(fd)
+                raise
+        except OSError as exc:
+            # Release everything this call already holds, then refuse as
+            # infrastructure failure (exit 3 one-liner, never a traceback).
+            for held in fds:
+                os.close(held)
+            fail_infra(f"lane {lane_name!r}: shared-infra lock {path} "
+                       f"unusable: {exc}")
+        except BaseException:
+            for held in fds:
+                os.close(held)
+            raise
+        fds.append(fd)
+    return fds
+
+
+def _acquire_lock_before_deadline(fd: int, deadline: float | None,
+                                 waiting_message: str, path: Path) -> None:
+    """Wait for a flock only until this invocation's one lock deadline."""
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return
+    except BlockingIOError:
+        print(f"run-gate: {waiting_message} — another gate holds {path}",
+              flush=True)
+    while True:
+        if deadline is not None and time.monotonic() >= deadline:
+            raise GateNotRunError(
+                "lock-busy",
+                f"lane could not acquire lock {path} within --lock-wait; "
+                f"retry after the holder finishes")
+        time.sleep(LOCK_POLL_SECONDS if deadline is None else
+                   min(LOCK_POLL_SECONDS,
+                       max(0.0, deadline - time.monotonic())))
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            continue
+
+
+def acquire_exec_lock(container_name: str, lane_name: str,
+                      dry_run: bool,
+                      lock_deadline: float | None = None) -> int | None:
+    """RG-39: exec-mode lanes serialize on the RESOLVED CONTAINER IDENTITY
+    itself (/tmp/run-gate-exec-<container>.lock), so a caller-side `flock`
+    (dstdns GUIDE.md §1) is no longer required for correctness — only two
+    lanes that resolve to the SAME container ever meet here; a genuinely
+    independent container (different project_name/environment_tag,
+    including a Mode-B instance, or a declared container_name) gets a
+    distinct lock name and is never delayed by this call.
+
+    Caller contract (enforced by main(), not here): this must be called
+    only AFTER every RG-20 shared-infra lock the lane declares is already
+    held, and released from the SAME `finally` that releases those — a
+    fixed global order (shared-infra, then exec target) that makes an
+    ABBA deadlock between the two lock kinds impossible regardless of
+    which a project declares. `LOCK_EX` blocking: a second lane racing the
+    same container WAITS, it does not fail. Dry runs plan the lock but
+    never take or block on it (RG-8's pattern, `acquire_shared_locks`'
+    dry-run half). Returns the held fd (closing it releases the flock), or
+    None for a dry run — there is nothing to close."""
+    path = _lock_dir() / f"run-gate-exec-{container_name}.lock"
+    if dry_run:
+        print(f"run-gate: DRY RUN — exec-mode serialization planned for "
+              f"container {container_name!r} ({path})", flush=True)
+        return None
+    try:
+        fd = _open_lockfile(path)
+        try:
+            _acquire_lock_before_deadline(
+                fd, lock_deadline,
+                f"lane {lane_name!r}: waiting for container {container_name!r}",
+                path)
+        except BaseException:
+            os.close(fd)
+            raise
+    except OSError as exc:
+        fail_infra(f"lane {lane_name!r}: exec-mode lock {path} unusable: {exc}")
+    return fd
+
+
+def check_clean_tree(worktree: Path) -> None:
+    proc = subprocess.run(["git", "-C", str(worktree), "status", "--porcelain"],
+                          capture_output=True, text=True,
+                          env=host_git_environment())
+    if proc.returncode != 0:
+        detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() \
+            else proc.returncode
+        fail_infra(f"git status failed in {worktree}: {detail}")
+    entries = [l for l in proc.stdout.splitlines() if l.strip()]
+    if entries:
+        raise GateNotRunError(
+            "dirty-tree",
+            f"refusing to judge a dirty tree: {worktree} has {len(entries)} "
+            f"uncommitted change(s) (first: {entries[0]!r}) — commit or "
+            "pass --allow-dirty")
+
+
+# ---------------------------------------------------------------------------
+# lane invocation history (RG-27) — measure and persist; decide NOTHING
+# ---------------------------------------------------------------------------
+#
+# run-gate is the layer that actually starts each lane, so it is the only one
+# that sees start/stop and exit status first-hand. It records them and stops
+# there: no rigor/defer POLICY lives here (RG-27 scope), only the series a
+# controller needs to have such a policy at all.
+#
+# Two slots per lane, with DIFFERENT contracts, and the difference is the
+# whole design:
+#
+#   latest  — the most recent invocation, WHATEVER happened to it (pass, fail,
+#             tool error, Ctrl-C, dirty tree, mid-rebase). Diagnostics.
+#   history — a curated trend series keyed by (lane, commit), bounded to the
+#             last `keep` commits. ONLY runs whose (commit, duration) pairing
+#             is actually meaningful get in.
+#
+# Letting the second inherit the first's permissiveness is the named trap: a
+# dirty-tree run's duration attributed to a commit that never ran it, silently
+# overwriting the real measurement.
+
+def history_dir(project_dir: Path) -> Path:
+    return project_dir / HISTORY_DIR_NAME
+
+
+def history_store_path(project_dir: Path) -> Path:
+    return history_dir(project_dir) / HISTORY_FILE_NAME
+
+
+def history_written_paths(project_dir: Path) -> list[Path]:
+    """EVERY path the recorder can leave in the tree — the store, the lock,
+    and the temp file a crash between write and rename would strand. The
+    ignore question has to be asked about all three, not just the one we
+    think of first."""
+    hdir = history_dir(project_dir)
+    return [hdir / HISTORY_FILE_NAME, hdir / HISTORY_LOCK_NAME,
+            hdir / f"{HISTORY_FILE_NAME}.tmp.{os.getpid()}"]
+
+
+def paths_are_git_ignored(worktree: Path, targets: list[Path]) -> bool | None:
+    """True only when EVERY target is ignored. True / False / None ("git
+    could not tell us").
+
+    Two things here are load-bearing and were both verified against real git
+    rather than assumed:
+
+    1. The paths asked about are the FILES, never the bare directory. `git
+       check-ignore .run-gate` on a directory that does not exist yet answers
+       *not ignored* even when `.gitignore` says `.run-gate/` — the
+       trailing-slash pattern needs a directory to match, and the first run
+       of a correctly-configured project has none. Asking about
+       `.run-gate/history.json` answers correctly in every case.
+    2. The verdict is read from the REPORTED PATHS, not the exit status.
+       `git check-ignore a b` exits 0 when ANY argument matches — reading
+       that as "both are ignored" is the false-certification shape AGENTS.md
+       names: the message says "safe to write" while the comparison only
+       established "at least one of these is safe".
+
+    Run deliberately WITHOUT `--no-index`: the question is not "do the ignore
+    rules match" but "would writing here dirty the tree", and a TRACKED path
+    dirties it whatever .gitignore says — which is what the index-aware
+    default reports."""
+    wanted = [str(t) for t in targets]
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "check-ignore",
+                               "--", *wanted], capture_output=True, text=True,
+                              env=host_git_environment())
+    except OSError:
+        return None
+    if proc.returncode not in (0, 1):
+        return None  # 128 and friends: not an answer, do not pretend it is
+    reported = {line.strip() for line in proc.stdout.splitlines()
+                if line.strip()}
+    return all(path in reported for path in wanted)
+
+
+def git_operation_in_progress(worktree: Path) -> str | None:
+    """Names an in-flight git operation (rebase/merge/cherry-pick/revert/
+    bisect) whose HEAD is a transient the trend series must not be keyed to,
+    else None. `None` is also returned when the git dir is unreadable — the
+    caller pairs this with a separate 'could we even determine it' flag."""
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
+                               "--git-dir"], capture_output=True, text=True,
+                              env=host_git_environment())
+    except OSError:
+        return None
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return None
+    gitdir = Path(proc.stdout.strip())
+    if not gitdir.is_absolute():
+        gitdir = worktree / gitdir
+    for marker in ("rebase-merge", "rebase-apply", "MERGE_HEAD",
+                   "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG"):
+        if (gitdir / marker).exists():
+            return marker
+    return None
+
+
+def head_commit(worktree: Path) -> str | None:
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
+                               "--verify", "HEAD"], capture_output=True,
+                              text=True, env=host_git_environment())
+    except OSError:
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and re.fullmatch(
+        r"(?:[0-9a-f]{40}|[0-9a-f]{64})", sha) \
+        else None
+
+
+def worktree_is_dirty(worktree: Path) -> bool | None:
+    """None = could not determine. Sampled INDEPENDENTLY of clean_tree policy:
+    the discriminator for the trend series is whether the tree WAS dirty, not
+    whether dirt was permitted — a `clean_tree = false` lane run on a clean
+    tree produces a perfectly good measurement and must not be excluded."""
+    try:
+        proc = subprocess.run(["git", "-C", str(worktree), "status",
+                               "--porcelain"], capture_output=True, text=True,
+                              env=host_git_environment())
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    return any(line.strip() for line in proc.stdout.splitlines())
+
+
+def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
+                     config_path: Path | None = None,
+                     config_sha256: str | None = None,
+                     central_config_path: Path | None = None,
+                     central_config_sha256: str | None = None) -> dict:
+    """Sample the state that is ABOUT to be judged, BEFORE the lane runs.
+
+    Sampling afterwards would be a different tree: a lane may commit, stash,
+    or leave artifacts behind, and a history entry keyed to a commit must
+    describe the state that commit actually had when it was measured."""
+    dirty = worktree_is_dirty(worktree)
+    record = {
+        "run_id": secrets.token_hex(16),
+        "lane": lane_name,
+        "commit": head_commit(worktree),
+        "outcome": None,
+        "exit_code": None,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "duration_seconds": None,
+        "worktree": str(worktree),
+        "repo": str(repo),
+        "dirty": dirty,
+        "git_operation": git_operation_in_progress(worktree),
+        "history_eligible": False,
+        "excluded_reason": None,
+        # RG-55/C8: these are nullable telemetry facts, not verdict inputs.
+        # Keeping the keys on every invocation makes history JSON shape
+        # stable even when profiling is disabled or unavailable.
+        "watch": None,
+        "placement": None,
+        "revision": __revision__,
+        "_started_monotonic": time.monotonic(),
+    }
+    if config_path is not None:
+        record["config_path"] = str(config_path)
+        record["config_sha256"] = config_sha256
+    if central_config_path is not None:
+        record["central_config_path"] = str(central_config_path)
+        record["central_config_sha256"] = central_config_sha256
+    return record
+
+
+def finish_run_record(record: dict, *, exit_code: int | None = None,
+                      error: BaseException | None = None) -> dict:
+    """Close a record and decide — once, here — whether it may join history.
+
+    Eligibility is a CONJUNCTION of four facts, each of which independently
+    makes a (commit, duration) pair a lie:
+      1. the lane completed and reported its own status (an abort measured a
+         partial run; an infrastructure error measured no run at all);
+      2. the tree was clean (a dirty tree is not the commit it claims to be);
+      3. no git operation was in flight (a rebase's HEAD is a transient);
+      4. HEAD resolved to a real commit sha (nothing to key on otherwise).
+    "Could not determine" resolves toward EXCLUSION for 2-4: a possibly-wrong
+    trend entry is worse than a missing one, because the missing one is
+    visible in `count` and the wrong one is not visible at all."""
+    # Tolerant of a missing start stamp rather than raising on it: this
+    # function must not be the thing that turns a recording problem into a
+    # traceback (R-36h). No stamp => no duration => not a measurement, which
+    # the eligibility conjunction below then refuses on its own terms.
+    started = record.pop("_started_monotonic", None)
+    # Paths carried from a re-attached inflight record are execution-local
+    # facts used to judge and archive that run, not public history fields.
+    record.pop("_verdict_path", None)
+    record.pop("_progress_path", None)
+    record.pop("_assay_identity_mode", None)
+    # RG-35 (RW-3): a re-attached or collected run is ONE run, and its
+    # duration belongs to the CONTAINER, not to the client that happened to
+    # attach to it — `adopt_inflight_start` swaps this invocation's monotonic
+    # stamp for the recorded container start, which is wall-clock by
+    # necessity (it was taken in another process).
+    epoch = record.pop("_started_epoch", None)
+    # RW-17: a COLLECTED run's duration is measured by the CONTAINER's own
+    # clock (`FinishedAt - StartedAt`), because the client arrived after the
+    # container had already exited and the idle gap between the two is not
+    # part of the run. Popped unconditionally so the private channel can
+    # never leak into the stored record.
+    fixed = record.pop("_duration_seconds", None)
+    if fixed is not None:
+        record["duration_seconds"] = fixed
+    elif epoch is not None:
+        record["duration_seconds"] = round(max(0.0, time.time() - epoch), 3)
+    else:
+        record["duration_seconds"] = None if started is None \
+            else round(time.monotonic() - started, 3)
+    if error is not None:
+        record["outcome"] = "aborted" if not isinstance(error, Exception) \
+            else "error"
+        record["excluded_reason"] = (
+            f"{record['outcome']}: {type(error).__name__} — the lane did not "
+            f"report its own status, so its duration measures a partial run")
+    else:
+        record["exit_code"] = exit_code
+        verdict = record.get("verdict")
+        if verdict in ("PASS", "FAIL"):
+            record["outcome"] = verdict.lower()
+        elif verdict == "BUDGET_EXCEEDED":
+            record["outcome"] = "budget_exceeded"
+            record["excluded_reason"] = (
+                "the lane stopped at its budget and may resume its assay state")
+        elif verdict in ("ERROR", "NOT_RUN"):
+            record["outcome"] = verdict.lower()
+            record["excluded_reason"] = (
+                f"{verdict}: the lane did not complete a measurement")
+        else:
+            record["outcome"] = "pass" if exit_code == 0 else "fail"
+    reasons = []
+    if record["duration_seconds"] is None:
+        reasons.append("no duration was measured — clause 1 of R-36b: an "
+                       "entry without a duration is not a measurement")
+    if record["outcome"] in ("aborted", "error", "not_run",
+                              "budget_exceeded"):
+        pass  # already explained above; keep the specific message
+    elif record["dirty"] is None:
+        reasons.append("could not determine whether the tree was clean")
+    elif record["dirty"]:
+        reasons.append("the judged tree was dirty — the duration does not "
+                       "belong to this commit")
+    if record["git_operation"]:
+        reasons.append(f"git operation in progress ({record['git_operation']})"
+                       " — HEAD is a transient")
+    if not record["commit"]:
+        reasons.append("HEAD did not resolve to a commit")
+    if record.get("selective"):
+        reasons.append("selective lane arguments do not certify the whole lane")
+    if reasons:
+        record["excluded_reason"] = (record["excluded_reason"] or
+                                     "; ".join(reasons))
+    if record["excluded_reason"] is None:
+        # RG-27 design call, recorded: a COMPLETED fail joins history. Its
+        # duration is real measured cost of the same work — but it is stored
+        # WITH its outcome, and the reported stats are split pass/completed,
+        # because a failing lane can short-circuit (this project's own
+        # `pytest && coverage_gate` never reaches the gate when pytest is
+        # red), so averaging the two understates the lane's true cost in
+        # exactly the direction that makes a "cheap, always run it" call
+        # wrong. run-gate hands over both series; it does not pick one.
+        record["history_eligible"] = True
+    return record
+
+
+def _empty_history_store() -> dict:
+    return {"schema": HISTORY_SCHEMA, "lanes": {}}
+
+
+def load_history_store(path: Path) -> dict:
+    """Never raises: a missing, unreadable, or corrupt store yields an empty
+    one. Telemetry that could take a gate down would be a net loss."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return _empty_history_store()
+    if not isinstance(data, dict) or not isinstance(data.get("lanes"), dict):
+        return _empty_history_store()
+    data.setdefault("schema", HISTORY_SCHEMA)
+    return data
+
+
+def footprint_manifest_path(project_dir: Path) -> Path:
+    return project_dir / FOOTPRINT_FILE_NAME
+
+
+def load_footprint_manifest(project_dir: Path) -> dict | None:
+    """RG-55/R-44. `None` — never raises — for missing, unreadable, corrupt,
+    or malformed-shape JSON: a manifest is an OPTIONAL cross-check (`doctor`
+    staleness/drift, `meta.expected`, the footprint line's `| manifest …`
+    tail), never a fact anything downstream depends on to keep running."""
+    try:
+        data = json.loads(footprint_manifest_path(project_dir).read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("lanes"), dict):
+        return None
+    return data
+
+
+def footprint_manifest_lane_peak_median(manifest: dict | None,
+                                        lane_name: str) -> object:
+    """`memory_peak_bytes.median` for ONE lane, or `None` — the single
+    number `profile_meta()` (daemon `--meta`) and the footprint disclosure
+    line's `| manifest …` tail both read out of a manifest; one place to
+    walk the (possibly absent) shape rather than two copies of the same
+    three `.get()` calls."""
+    if manifest is None:
+        return None
+    lane = manifest.get("lanes", {}).get(lane_name)
+    if not isinstance(lane, dict):
+        return None
+    peak = lane.get("memory_peak_bytes")
+    return peak.get("median") if isinstance(peak, dict) else None
+
+
+# B5 (round-2 review, RW-51; contract Sec 3a): a manifest written before
+# this fix carries no per-lane `source` key at all -- `footprint_manifest_
+# lane_expected` still owes admission (RG-56) a best-effort provenance
+# rather than a bare `null` when `method`/`scope` alone already say it
+# (Sec 3's own `source = "memory.peak" | "sampled-max"` rule for the
+# daemon/basic paths, Sec 3a's `"rusage-maxrss"` for rusage). Never
+# GUESSED beyond what those two fields pin down -- an unrecognized
+# `(method, scope)` pair stays `None`, exactly like a manifest with no
+# `source` key and no derivable one.
+_METHOD_SCOPE_DERIVED_SOURCE = {
+    ("daemon", "container"): "memory.peak",
+    ("daemon", "container-shared"): "sampled-max",
+    ("basic", "container"): "memory.peak",
+    ("basic", "container-shared"): "sampled-max",
+    ("rusage", None): "rusage-maxrss",
+}
+
+
+def footprint_manifest_lane_expected(manifest: dict | None,
+                                     lane_name: str) -> dict | None:
+    """B2 (round-1 review): contract Sec 2.2's `--meta` `expected` field --
+    `null` or the five-key object `{memory_peak_median_bytes, hot_set_p90_bytes,
+    cpu_cores_avg, duration_median_s, source}` (B5, round-2 review, RW-51:
+    contract Sec 3a requires `source` -- "the manifest's" -- so admission
+    (RG-56) knows the provenance of a rusage-derived number mixed in among
+    cgroup-measured ones). `profile_meta()` is the ONLY caller; kept
+    separate from `footprint_manifest_lane_peak_median` (which returns a
+    bare scalar for the footprint disclosure line's `| manifest …` tail) so
+    neither caller's contract-mandated shape leaks into the other's."""
+    if manifest is None:
+        return None
+    lane = manifest.get("lanes", {}).get(lane_name)
+    if not isinstance(lane, dict):
+        return None
+    peak = lane.get("memory_peak_bytes")
+    hot = lane.get("hot_set_bytes")
+    cores = lane.get("cpu_cores")
+    duration = lane.get("duration_s")
+    source = lane.get("source")
+    if source is None:
+        source = _METHOD_SCOPE_DERIVED_SOURCE.get(
+            (lane.get("method"), lane.get("scope")))
+    return {
+        "memory_peak_median_bytes": peak.get("median") if isinstance(peak, dict) else None,
+        "hot_set_p90_bytes": hot.get("p90_median") if isinstance(hot, dict) else None,
+        "cpu_cores_avg": cores.get("avg_median") if isinstance(cores, dict) else None,
+        "source": source,
+        "duration_median_s": duration.get("median") if isinstance(duration, dict) else None,
+    }
+
+
+def profile_placement_plan(lane: dict, lane_name: str, project_dir: Path,
+                           host_doc: dict | None) -> dict:
+    """Derive the v1.1 memory placement request from declared facts.
+
+    A declaration wins over measured history.  Otherwise the committed
+    footprint median is enlarged by 1.5 as the request; with neither source
+    available the daemon is not asked to place the session.  The host cap is
+    read only when the daemon supplied a valid gates-slice object, never
+    invented from the local/private cgroup namespace.
+    """
+    resources = lane.get("resources", {})
+    declared = resources.get("memory") or lane.get("memory")
+    source = "declared" if declared else None
+    request = parse_size_bytes(declared) if declared else None
+    if request is None:
+        expected = footprint_manifest_lane_expected(
+            load_footprint_manifest(project_dir), lane_name)
+        median = expected.get("memory_peak_median_bytes") if expected else None
+        if isinstance(median, (int, float)) and not isinstance(median, bool) \
+                and median > 0:
+            request = int(math.ceil(median * 1.5))
+            source = "derived"
+    if request is None:
+        return {"place": False, "reason": "no request", "request": None,
+                "memory_high": None, "memory_max": None,
+                "cpu_weight": None, "source": None}
+
+    gates = ((host_doc or {}).get("host") or {}).get("gates_slice") or {}
+    gates_max = gates.get("memory_max_bytes")
+    if not isinstance(gates_max, int) or isinstance(gates_max, bool) \
+            or gates_max <= 0:
+        gates_max = None
+    declared_max = resources.get("memory_max")
+    if declared_max:
+        ceiling = parse_size_bytes(declared_max)
+        ceiling_source = "declared"
+    else:
+        ceiling = request * 2
+        ceiling_source = "derived"
+        if gates_max is not None:
+            ceiling = min(ceiling, gates_max)
+            ceiling_source = "derived; gates slice cap"
+    return {"place": True, "reason": f"{source} request",
+            "request": request, "memory_high": request,
+            "memory_max": ceiling,
+            "cpu_weight": resources.get("cpu_weight"), "source": source,
+            "ceiling_source": ceiling_source, "gates_max": gates_max}
+
+
+def profile_admission(client: ProfilerClient, lane_name: str,
+                      placement: dict, wait_value: str,
+                      host_doc: dict | None, *, dry_run: bool = False,
+                      clock=time.monotonic, sleeper=time.sleep) -> dict:
+    """Wait for v1.1 gates-slice headroom, then proceed regardless.
+
+    This is intentionally a wait-then-proceed policy.  Host pressure and
+    registry contention are facts about scheduling, not a test verdict; a
+    busy or partially observable daemon therefore produces disclosure and
+    never a refusal.  The injected clock/sleeper make the bounded behavior
+    deterministic without shortening production's 30-second poll cadence.
+    """
+    result = {"state": "skipped", "waited_seconds": 0.0,
+              "warning": None}
+    request = placement.get("request") if placement else None
+    gates = ((host_doc or {}).get("host") or {}).get("gates_slice") or {}
+    if not gates.get("present"):
+        print("run-gate: admission: skipped — profiler has no gates slice",
+              flush=True)
+        return result
+    current = gates.get("memory_current_bytes")
+    maximum = gates.get("memory_max_bytes")
+    if (not isinstance(request, int) or isinstance(request, bool)
+            or not isinstance(current, int) or isinstance(current, bool)
+            or not isinstance(maximum, int) or isinstance(maximum, bool)
+            or maximum <= 0):
+        print("run-gate: admission: skipped — gates slice capacity is "
+              "not derivable", flush=True)
+        return result
+
+    def over_limit(doc: dict) -> bool | None:
+        fresh = ((doc.get("host") or {}).get("gates_slice") or {})
+        cur, cap = fresh.get("memory_current_bytes"), fresh.get(
+            "memory_max_bytes")
+        if (not isinstance(cur, int) or isinstance(cur, bool)
+                or not isinstance(cap, int) or isinstance(cap, bool)
+                or cap <= 0):
+            return None
+        return cur + request > cap * 0.9
+
+    if current + request <= maximum * 0.9:
+        result["state"] = "admitted"
+        print(f"run-gate: admission: gates slice {_fmt_mb(current)} of "
+              f"{_fmt_mb(maximum)} used; lane needs {_fmt_mb(request)} "
+              "— admitted", flush=True)
+        return result
+    if dry_run:
+        result["state"] = "would-wait"
+        print(f"run-gate: admission: would wait — gates slice "
+              f"{_fmt_mb(current)} of {_fmt_mb(maximum)} used; lane needs "
+              f"{_fmt_mb(request)}", flush=True)
+        return result
+
+    limit = max(0, budget_seconds(wait_value))
+    started = clock()
+    last_notice = -60.0
+    while clock() - started < limit:
+        elapsed = clock() - started
+        if elapsed - last_notice >= 60.0:
+            print(f"run-gate: admission: gates slice {_fmt_mb(current)} of "
+                  f"{_fmt_mb(maximum)} used, lane needs {_fmt_mb(request)} "
+                  f"— waiting ({int(elapsed)}s)", flush=True)
+            last_notice = elapsed
+        remaining = max(0.0, limit - elapsed)
+        sleeper(min(30.0, remaining))
+        try:
+            fresh, reason = client.host()
+        except Exception as exc:
+            fresh, reason = None, (
+                f"admission host probe failed unexpectedly: {exc}")
+        if fresh is None:
+            result["warning"] = result["warning"] or reason
+            continue
+        state = over_limit(fresh)
+        if state is False:
+            result["state"] = "admitted-after-wait"
+            result["waited_seconds"] = clock() - started
+            print(f"run-gate: admission: gates slice headroom is available "
+                  f"after {int(result['waited_seconds'])}s — admitted",
+                  flush=True)
+            return result
+        if state is True:
+            fresh_gates = ((fresh.get("host") or {}).get("gates_slice") or {})
+            current = fresh_gates.get("memory_current_bytes", current)
+            maximum = fresh_gates.get("memory_max_bytes", maximum)
+    result["state"] = "proceeded-after-bound"
+    result["waited_seconds"] = max(0.0, clock() - started)
+    result["warning"] = (result["warning"] or
+                          f"admission wait bound {wait_value} expired")
+    print(f"run-gate: WARNING: admission wait bound {wait_value} expired; "
+          "proceeding with the lane", file=sys.stderr, flush=True)
+    return result
+
+
+def prepare_profile_start(lane: dict, lane_name: str, project_dir: Path,
+                          worktree: Path, docker: str, plan: dict,
+                          scope: str, *, dry_run: bool = False) -> dict | None:
+    """Perform the read-only daemon/host preflight before a lane starts.
+
+    The returned client is reused by `start_lane_profiling`, so auto transport
+    selection and the host/admission read happen once per invocation.  A
+    failed optional probe returns a context with its reason; the caller still
+    starts the lane and the normal basic fallback remains authoritative.
+    Dry runs may request the same host facts to disclose `would-wait`, but
+    admission never sleeps and no profiler session is started.
+    """
+    if not plan.get("enabled"):
+        return None
+    client = ProfilerClient(
+        docker, plan["daemon"], transport=plan.get(
+            "transport", PROFILE_TRANSPORT_DEFAULT), socket_path=plan.get(
+                "socket_path", PROFILE_SOCKET_PATH_DEFAULT))
+    try:
+        version_doc, reason = client.version()
+    except Exception as exc:
+        # R-36h: the optional pre-start probe is not allowed to turn a
+        # profiling transport exception into a lane traceback.  Keep the
+        # failed context so the normal start path can disclose/fallback.
+        return {"client": client, "version": None, "host": None,
+                "placement": {"place": False, "memory_high": None,
+                               "memory_max": None, "cpu_weight": None},
+                "admission": None,
+                "fatal_reason": f"profiling crashed unexpectedly: {exc}",
+                "reason": f"profiling preflight failed unexpectedly: {exc}"}
+    context = {"client": client, "version": version_doc, "host": None,
+               "placement": {"place": False, "memory_high": None,
+                              "memory_max": None, "cpu_weight": None},
+               "admission": None, "reason": reason}
+    if version_doc is None:
+        return context
+    try:
+        host_doc, host_reason = client.host()
+    except Exception as exc:
+        host_doc, host_reason = None, (
+            f"profiling host probe failed unexpectedly: {exc}")
+    context["host"] = host_doc
+    context["reason"] = host_reason
+    if host_doc is not None:
+        admission_plan = profile_placement_plan(
+            lane, lane_name, project_dir, host_doc)
+        context["admission"] = profile_admission(
+            client, lane_name, admission_plan, plan.get(
+                "admission_wait", PROFILE_ADMISSION_WAIT_DEFAULT), host_doc,
+            dry_run=dry_run)
+        if scope == "container-shared":
+            context["placement"] = admission_plan
+    return context
+
+
+def _apply_record(store: dict, record: dict, keep: int) -> dict:
+    # RG-55/C4: every WRITE stamps the current schema on the store itself,
+    # regardless of what was loaded -- a schema-1 store (or one missing the
+    # key entirely) is rewritten as schema 2 the moment anything in it is
+    # next recorded (contract Sec 4 obligation 4: "written back as schema 2
+    # on the next write"). Existing entries this call does not touch are
+    # left byte-for-byte alone below; only the store's own top-level field
+    # changes here.
+    store["schema"] = HISTORY_SCHEMA
+    slot = store["lanes"].setdefault(record["lane"],
+                                     {"latest": None, "history": []})
+    entry = {k: v for k, v in record.items() if not k.startswith("_")}
+    slot["latest"] = entry
+    if not entry["history_eligible"]:
+        return store
+    hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+    # Keyed by (lane, commit): a re-run of the same commit REPLACES its entry
+    # rather than adding a second — otherwise ten re-runs of one commit fill
+    # the whole window and "the last N commits" stops being true. It moves to
+    # the tail, so eviction means "least recently measured".
+    hist = [e for e in hist if e.get("commit") != entry["commit"]]
+    hist.append(entry)
+    slot["history"] = hist[-keep:]
+    return store
+
+
+def _write_json_atomic(data: dict, path: Path) -> None:
+    """Atomic replace. This is what lets READERS take no lock at all: a
+    reader either sees the whole old file or the whole new one, never a
+    half-written middle. Shared by the history store and RG-35's inflight
+    record — same store, same discipline."""
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+def _acquire_store_lock(lock_path: Path, what: str) -> int:
+    """Exclusive, BOUNDED flock on a SIBLING lock file; returns the fd, which
+    the caller closes (that releases it). 0600 + O_NOFOLLOW, matching
+    acquire_shared_locks: content-free coordination state at a predictable
+    path. Bounded unlike RG-20's shared-infra lock, which blocks forever ON
+    PURPOSE — that one protects the CORRECTNESS of the run, this one protects
+    a small record, and a gate that hangs waiting to write one has inverted
+    the priority."""
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    deadline = time.monotonic() + HISTORY_LOCK_TIMEOUT
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return fd
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                os.close(fd)
+                raise GateError(f"{what}: {lock_path} held by another gate "
+                                f"for >{HISTORY_LOCK_TIMEOUT:g}s")
+            time.sleep(0.05)
+
+
+def _record_invocation(project_dir: Path, worktree: Path, record: dict,
+                       keep: int) -> None:
+    hdir = history_dir(project_dir)
+    ignored = paths_are_git_ignored(worktree, history_written_paths(project_dir))
+    if ignored is not True:
+        why = ("is not fully git-ignored" if ignored is False
+               else "could not be confirmed git-ignored")
+        raise GateError(
+            f"lane history not recorded: {hdir} {why}, and writing there "
+            f"would leave the judged tree dirty for the NEXT lane's "
+            f"clean-tree check — add '{HISTORY_DIR_NAME}/' to the .gitignore "
+            f"covering {worktree}")
+    hdir.mkdir(parents=True, exist_ok=True)
+    fd = _acquire_store_lock(hdir / HISTORY_LOCK_NAME,
+                             "lane history not recorded")
+    try:
+        store_path = history_store_path(project_dir)
+        _write_json_atomic(
+            _apply_record(load_history_store(store_path), record, keep),
+            store_path)
+    finally:
+        os.close(fd)  # releases the flock
+
+
+def record_invocation(project_dir: Path, worktree: Path, record: dict,
+                      keep: int) -> bool:
+    """Best-effort by contract: the lane's verdict is the product, this is a
+    note in the margin. Every failure degrades to ONE visible warning line —
+    never a traceback (R-04), never a changed exit status."""
+    try:
+        _record_invocation(project_dir, worktree, record, keep)
+        return True
+    except Exception as exc:  # noqa: BLE001 — deliberate, see docstring
+        detail = str(exc) if isinstance(exc, GateError) \
+            else f"lane history not recorded: {type(exc).__name__}: {exc}"
+        print(f"{PROG}: WARNING: {detail}", file=sys.stderr, flush=True)
+        return False
+
+
+def flush_run_record(record: dict | None, *, exit_code: int | None = None,
+                     error: BaseException | None = None) -> None:
+    """Close and persist in ONE step, so main()'s three exits — normal
+    return, refusal, abort — cannot drift in how they record. `None` means
+    there was nothing to record (a dry run, or a failure before the lane
+    resolved); the caller does not branch on it.
+
+    AT MOST ONCE per record, and the sentinel is set BEFORE the work. The
+    normal-path flush in main() sits inside main()'s own try, and it is not
+    instantaneous — it spawns `git check-ignore` and may wait up to
+    HISTORY_LOCK_TIMEOUT on the lock. A Ctrl-C landing in that window is
+    caught by main()'s BaseException handler, which flushes again; without
+    the sentinel that second flush re-entered an already-consumed record and
+    raised, replacing the real signal with a traceback — the exact opposite
+    of what R-36h and R-04 promise. Claiming the record first means the
+    second call is a clean no-op and the KeyboardInterrupt continues on its
+    way, which is the whole point of catching it."""
+    if record is None or record.get("_flushed"):
+        return
+    record["_flushed"] = True
+    record_invocation(record["_project_dir"], Path(record["worktree"]),
+                      finish_run_record(record, exit_code=exit_code,
+                                        error=error),
+                      record["_keep"])
+
+
+# ---------------------------------------------------------------------------
+# RG-35 / R-39 — the inflight record: what a dead client leaves behind
+# ---------------------------------------------------------------------------
+
+def inflight_dir(project_dir: Path) -> Path:
+    return history_dir(project_dir) / INFLIGHT_DIR_NAME
+
+
+def inflight_path(project_dir: Path, lane_name: str) -> Path:
+    return inflight_dir(project_dir) / f"{lane_name}.json"
+
+
+def inflight_written_paths(project_dir: Path, lane_name: str) -> list[Path]:
+    """Every path the writer can leave behind — record, lock, and the temp
+    file a crash between write and rename would strand. R-36g's rule: the
+    ignore question is asked about ALL of them, never only the obvious one."""
+    idir = inflight_dir(project_dir)
+    return [idir / f"{lane_name}.json", idir / INFLIGHT_LOCK_NAME,
+            idir / f"{lane_name}.json.tmp.{os.getpid()}"]
+
+
+def load_inflight_record(path: Path, fresh: bool = False,
+                        fresh_supported: bool = True) -> dict | None:
+    """A missing, unreadable, corrupt or container-less record reads as "no
+    inflight run": the record is a HINT that saves a duplicate container, and
+    a gate that died because its hint was malformed would be a worse tool
+    than one that starts the container.
+
+    A record of ANOTHER SCHEMA is the one exception, and it REFUSES (RW-25).
+    Rev 34's first cut disclosed the mismatch and then treated it as no
+    record — which means this client starts a second container for a lane
+    that already has one and writes its own record OVER the newer one. That
+    is exactly the loss `R-39` exists to end, performed by the tool, and a
+    warning printed before the damage does not undo it. The refusal names
+    both schema numbers and every way out; `fresh` is one of them on a lane
+    with an ephemeral container environment, so under `--fresh` a record
+    whose container NAME is readable degrades to that name (plus
+    `started_at`, for the disclosure) and nothing else — never its commit,
+    its owner or its artifacts, whose meaning under an unknown grammar is
+    unknown. The stable `runner` marker is checked only as a refusal guard:
+    a non-container value is never removed as though it were this lane's
+    disposable container."""
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if "schema" not in data:
+        # RW-37: a record that never carried a `schema` key at all is not a
+        # versioned record this client merely fails to recognize — it is
+        # CORRUPT (SPEC.md:953) and falls under the no-container rule below,
+        # not RW-25's refusal, which is for a record that DOES declare a
+        # schema. Falling through here, as the first cut did, let a
+        # schema-absent but container-bearing record reach
+        # `resolve_inflight()` -> `adopt_inflight_start()`'s bare
+        # `pending["started_at"]` subscript and raise an unhandled KeyError
+        # when that field was also missing.
+        return None
+    schema = data["schema"]
+    if isinstance(schema, bool) or not isinstance(schema, int) \
+            or schema != INFLIGHT_SCHEMA:
+        container = data.get("container")
+        named = container if isinstance(container, str) and container else None
+        runner = data.get("runner")
+        foreign_runner = ("runner" in data
+                          and runner not in (None, "container"))
+        if fresh and named:
+            if foreign_runner:
+                fail(f"the inflight record at {path} declares schema "
+                     f"{schema!r} and names runner {runner!r}; --fresh will "
+                     f"not remove a container from a foreign or unknown "
+                     f"runner. The record and named runner are untouched. "
+                     f"Use the runner's lifecycle owner to verify that run "
+                     f"has ended before removing this recovery record")
+            started = data.get("started_at")
+            print(f"{PROG}: WARNING: the inflight record at {path} declares "
+                  f"schema {schema!r} and this run-gate ({installed_version()}) "
+                  f"reads schema {INFLIGHT_SCHEMA}; --fresh is reading only "
+                  f"its container name ({named}) out of it — no commit, no "
+                  f"owner, no artifacts — and will remove that container and "
+                  f"delete the record", file=sys.stderr, flush=True)
+            return {"schema": schema, "container": named,
+                    "started_at": started if isinstance(started, str) else None}
+        if named and foreign_runner:
+            escape = (f"--fresh is refused because this record names runner "
+                      f"{runner!r}; let that runner's lifecycle owner verify "
+                      f"the run has ended before removing {path}")
+        elif named and fresh_supported:
+            escape = (f"once the old run is no longer live, re-run with "
+                      f"--fresh, which removes the container this record "
+                      f"names ({named}) and starts anew")
+        elif named:
+            escape = (f"the current lane environment cannot use --fresh; "
+                      f"keep this record until container {named!r} is "
+                      f"confirmed stopped by its lifecycle owner, then "
+                      f"remove the recovery record at {path}")
+        else:
+            escape = (f"ask the lane's lifecycle owner to confirm the run is "
+                      f"over, then delete {path} — this record does not even "
+                      f"name a container, so there is nothing run-gate can "
+                      f"remove for you")
+        fail(f"the inflight record for this lane declares schema {schema!r} "
+             f"and this run-gate ({installed_version()}) reads schema "
+             f"{INFLIGHT_SCHEMA} — refusing to act on a record whose grammar "
+             f"it does not know. Treating it as absent would start a SECOND "
+             f"container for this lane and overwrite a newer client's "
+             f"record, which is the loss the record exists to prevent. "
+             f"Upgrade or install a compatible Run-Gate version, or {escape}. "
+             f"The record is at {path}")
+    if not data.get("container"):
+        return None
+    return data
+
+
+def _proc_stat_identity(pid: int, proc_root: Path) -> tuple[str, int] | None:
+    """Return (state, start_ticks) for a process in the selected procfs."""
+    try:
+        raw = (proc_root / str(pid) / "stat").read_text(encoding="ascii")
+    except (OSError, UnicodeError):
+        return None
+    fields = raw.rpartition(")")[2].split()
+    try:
+        return fields[0], int(fields[19])  # state is field 3; starttime is 22
+    except (IndexError, ValueError):
+        return None
+
+
+def _status_pid_liveness(pid: int, proc_root: Path) -> str:
+    """Read process presence without sending a signal or guessing on errors."""
+    try:
+        (proc_root / str(pid) / "stat").read_text(encoding="ascii")
+    except FileNotFoundError:
+        # Lock rows do not contain the owner's PID namespace. A live holder
+        # outside this reader's namespace can be invisible through /proc.
+        return "unknown"
+    except (OSError, UnicodeError):
+        return "unknown"
+    identity = _proc_stat_identity(pid, proc_root)
+    if identity is None:
+        return "unknown"
+    return "dead" if identity[0] in ("Z", "X") else "alive"
+
+
+def _status_inflight_owner_liveness(record: dict, proc_root: Path) -> str:
+    """Only call an inflight owner dead when boot and PID namespace match."""
+    pid = record.get("owner_pid")
+    recorded_ns = record.get("pid_ns")
+    recorded_start = record.get("owner_start")
+    if (isinstance(pid, bool) or not isinstance(pid, int) or pid < 1
+            or isinstance(recorded_ns, bool)
+            or not isinstance(recorded_ns, int)
+            or isinstance(recorded_start, bool)
+            or not isinstance(recorded_start, int)):
+        return "unknown"
+    try:
+        boot = (proc_root / "sys/kernel/random/boot_id").read_text(
+            encoding="ascii").strip()
+        pid_ns = os.stat(proc_root / "self/ns/pid").st_ino
+    except (OSError, UnicodeError):
+        return "unknown"
+    if not boot or (record.get("boot_id"), recorded_ns) != (boot, pid_ns):
+        return "unknown"
+    try:
+        raw = (proc_root / str(pid) / "stat").read_text(encoding="ascii")
+    except FileNotFoundError:
+        return "dead"
+    except (OSError, UnicodeError):
+        return "unknown"
+    fields = raw.rpartition(")")[2].split()
+    try:
+        identity = fields[0], int(fields[19])
+    except (IndexError, ValueError):
+        return "unknown"
+    state, start_ticks = identity
+    return ("alive" if state not in ("Z", "X")
+            and start_ticks == recorded_start else "dead")
+
+
+def _read_inflight_status(project_dir: Path, proc_root: Path
+                          ) -> tuple[list[dict], list[str]]:
+    """Read this project's inflight records without adopting or repairing them."""
+    directory = inflight_dir(project_dir)
+    try:
+        info = directory.lstat()
+    except FileNotFoundError:
+        return [], []
+    except OSError as exc:
+        return [], [f"cannot list inflight directory {directory}: {exc}"]
+    if not stat.S_ISDIR(info.st_mode):
+        return [], [f"cannot list inflight directory {directory}: "
+                    "not a directory"]
+    try:
+        with os.scandir(directory) as entries:
+            paths = sorted((Path(entry.path) for entry in entries
+                            if entry.name.endswith(".json")),
+                           key=lambda path: path.name)
+    except OSError as exc:
+        return [], [f"cannot list inflight directory {directory}: {exc}"]
+    records: list[dict] = []
+    errors: list[str] = []
+    for path in paths:
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError("not a regular file")
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+            errors.append(f"cannot read inflight record {path}: {exc}")
+            records.append({"path": str(path), "state": "unreadable"})
+            continue
+        if not isinstance(data, dict):
+            errors.append(f"inflight record {path} is not a JSON object")
+            records.append({"path": str(path), "state": "unreadable"})
+            continue
+        if data.get("schema") != INFLIGHT_SCHEMA:
+            errors.append(f"inflight record {path} declares schema "
+                          f"{data.get('schema')!r}; status reads schema "
+                          f"{INFLIGHT_SCHEMA}")
+            records.append({"path": str(path), "state": "unknown-schema",
+                            "schema": data.get("schema")})
+            continue
+        lane = data.get("lane")
+        runner = data.get("runner")
+        container = data.get("container")
+        if (not isinstance(lane, str) or not lane
+                or runner not in ("container", "exec")
+                or not isinstance(container, str) or not container):
+            errors.append(f"inflight record {path} has unreadable lane, "
+                          "runner, or container fields")
+            records.append({"path": str(path), "state": "unreadable"})
+            continue
+        records.append({
+            "path": str(path), "lane": lane, "runner": runner,
+            "container": container, "container_id": data.get("container_id"),
+            "started_at": data.get("started_at"),
+            "owner_pid": data.get("owner_pid"),
+            "owner_liveness": _status_inflight_owner_liveness(data, proc_root),
+            "state": "inflight-record",
+        })
+    return records, errors
+
+
+def _parse_proc_lock_rows(
+        text: str
+        ) -> dict[tuple[int, int, int], dict[str, list[int | None]]]:
+    """Index Linux FLOCK rows by (device major, minor, inode)."""
+    result: dict[tuple[int, int, int], dict[str, list[int | None]]] = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if fields and fields[0].endswith(":"):
+            fields.pop(0)
+        queued = bool(fields and fields[0] == "->")
+        if queued:
+            fields.pop(0)
+        if len(fields) < 5 or fields[0] != "FLOCK":
+            continue
+        if fields[1] != "ADVISORY" or fields[2] not in ("READ", "WRITE"):
+            continue
+        try:
+            pid = None if fields[3] in ("-", "0") else int(fields[3], 10)
+            device, inode = fields[4].rsplit(":", 1)
+            major_text, minor_text = device.split(":", 1)
+            key = (int(major_text, 16), int(minor_text, 16),
+                   int(inode, 10))
+        except (ValueError, TypeError):
+            continue
+        if pid is not None and pid < 1:
+            continue
+        row = result.setdefault(key, {"holders": [], "waiters": []})
+        row["waiters" if queued else "holders"].append(pid)
+    for row in result.values():
+        row["holders"] = sorted(
+            set(row["holders"]), key=lambda pid: (pid is None, pid or 0))
+        row["waiters"] = sorted(
+            set(row["waiters"]), key=lambda pid: (pid is None, pid or 0))
+    return result
+
+
+def _read_exec_lock_status(lock_dir: Path, proc_root: Path
+                           ) -> tuple[list[dict], list[str]]:
+    """Read run-gate's host-wide exec flocks and Linux's holder/waiter PIDs."""
+    errors: list[str] = []
+    try:
+        proc_locks = (proc_root / "locks").read_text(encoding="ascii")
+    except (OSError, UnicodeError) as exc:
+        return [], [f"cannot read {proc_root / 'locks'}: {exc}"]
+    rows = _parse_proc_lock_rows(proc_locks)
+    try:
+        with os.scandir(lock_dir) as directory_entries:
+            entries = sorted((Path(entry.path) for entry in directory_entries
+                              if entry.name.startswith("run-gate-exec-")
+                              and entry.name.endswith(".lock")),
+                             key=lambda path: path.name)
+    except OSError as exc:
+        return [], [f"cannot list exec lock directory {lock_dir}: {exc}"]
+    locks: list[dict] = []
+    for path in entries:
+        runner = path.name.removeprefix("run-gate-exec-").removesuffix(".lock")
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode):
+                raise OSError("not a regular file")
+        except OSError as exc:
+            errors.append(f"exec lock {path} is unreadable: {exc}")
+            locks.append({"runner": runner, "path": str(path),
+                          "holders": [], "waiters": [],
+                          "state": "unreadable"})
+            continue
+        key = (os.major(info.st_dev), os.minor(info.st_dev), info.st_ino)
+        row = rows.get(key, {"holders": [], "waiters": []})
+        locks.append({
+            "runner": runner, "path": str(path),
+            "holders": [{"pid": pid,
+                         "liveness": (_status_pid_liveness(pid, proc_root)
+                                      if pid is not None else "unknown")}
+                        for pid in row["holders"]],
+            "waiters": [{"pid": pid,
+                         "liveness": (_status_pid_liveness(pid, proc_root)
+                                      if pid is not None else "unknown")}
+                        for pid in row["waiters"]],
+            "state": ("running" if row["holders"] else
+                      "queued" if row["waiters"] else "idle"),
+        })
+    return locks, errors
+
+
+def _status_command_lane(pid: int, proc_root: Path) -> str | None:
+    """Best-effort lane name from a run-gate process's argv."""
+    try:
+        argv = (proc_root / str(pid) / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    words = [part.decode("utf-8", "replace") for part in argv if part]
+    for index, word in enumerate(words[:-1]):
+        if Path(word).name in ("run-gate", "run-gate.py"):
+            tail = words[index + 1:]
+            value_flags = {"--worktree", "--base", "--lock-wait",
+                           "--admission-wait", "--reuse-from", "--rejudge",
+                           "--rejudge-outcome"}
+            pos = 0
+            while pos < len(tail):
+                candidate = tail[pos]
+                if candidate == "--":
+                    return None
+                if candidate in value_flags:
+                    pos += 2
+                    continue
+                if candidate.startswith("--"):
+                    pos += 1
+                    continue
+                return candidate
+    return None
+
+
+def write_inflight_record(project_dir: Path, worktree: Path, lane_name: str,
+                          payload: dict) -> bool:
+    """Record the container that is now running, so a restart re-attaches
+    instead of starting a second one. Returns whether it was written.
+
+    The git-ignore gate is R-36g's, applied to the same store for the same
+    reason: writing an un-ignored file here would leave the judged tree dirty
+    for the NEXT lane's clean-tree check. Refusing to WRITE is not refusing to
+    RUN — the lane proceeds, disclosing that this run cannot be re-attached,
+    because run-gate has never made an un-ignored `.run-gate/` fatal and this
+    wave is not the place to start (the one BREAKING config change here is
+    RG-32's, declared as such)."""
+    if paths_are_git_ignored(worktree, inflight_written_paths(
+            project_dir, lane_name)) is not True:
+        print(f"{PROG}: WARNING: re-attach record NOT written: "
+              f"{inflight_dir(project_dir)} could not be confirmed "
+              f"git-ignored, and writing there would leave the judged tree "
+              f"dirty for the NEXT lane's clean-tree check — add "
+              f"'{HISTORY_DIR_NAME}/' to the .gitignore covering {worktree}. "
+              f"If this client dies, its container will be orphaned and the "
+              f"next invocation will start a second one (RG-35)",
+              file=sys.stderr, flush=True)
+        return False
+    try:
+        idir = inflight_dir(project_dir)
+        idir.mkdir(parents=True, exist_ok=True)
+        fd = _acquire_store_lock(idir / INFLIGHT_LOCK_NAME,
+                                 "re-attach record not written")
+        try:
+            _write_json_atomic(payload, inflight_path(project_dir, lane_name))
+        finally:
+            os.close(fd)  # releases the flock
+        return True
+    except (OSError, GateError) as exc:
+        print(f"{PROG}: WARNING: re-attach record not written: {exc}",
+              file=sys.stderr, flush=True)
+        return False
+
+
+def clear_inflight_record(project_dir: Path, lane_name: str) -> None:
+    """Idempotent and best-effort: this runs in the same `finally` that
+    removes the container, and a gate must never die in its own cleanup."""
+    try:
+        inflight_path(project_dir, lane_name).unlink(missing_ok=True)
+    except OSError as exc:
+        print(f"{PROG}: WARNING: could not clear "
+              f"{inflight_path(project_dir, lane_name)}: {exc}",
+              file=sys.stderr, flush=True)
+
+
+def boot_id() -> str | None:
+    """This boot's id, or None where the kernel does not offer one. A pid is
+    only meaningful WITHIN a boot: after a reboot the same number names an
+    unrelated process (or nothing), so an owner claim that cannot be tied to
+    a boot is not a claim at all."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def pid_ns_inode() -> int | None:
+    """This client's PID-namespace inode, or None where `/proc` cannot say.
+
+    RW-29: `boot_id` is host-GLOBAL — every container on a host reads the
+    same one — while a pid is meaningful only inside ONE namespace. Without
+    this third fact two clients in two containers that bind-mount the same
+    worktree (this host does exactly that) both pass the boot check and then
+    look the recorded pid up where it does not exist. The inode is what turns
+    "I cannot find that pid" into the two DIFFERENT answers it always was:
+    "it is gone" and "I could never have seen it"."""
+    try:
+        return os.stat("/proc/self/ns/pid").st_ino
+    except OSError:
+        return None
+
+
+def record_is_foreign_namespace(pending: dict) -> bool:
+    """Whether this record was written from a DIFFERENT pid namespace — i.e.
+    whether its `owner_pid` is a number this client cannot look up at all.
+
+    False whenever the question cannot be asked (a record from before rev 34
+    recorded the inode, or a kernel that will not answer): the boot-id and
+    start-time conjunction then answers alone, exactly as it did."""
+    recorded = pending.get("pid_ns")
+    mine = pid_ns_inode()
+    return (isinstance(recorded, int) and not isinstance(recorded, bool)
+            and mine is not None and recorded != mine)
+
+
+def process_start_ticks(pid: int) -> int | None:
+    """Field 22 of `/proc/<pid>/stat` — the process's start time in clock
+    ticks since boot — or None when there is no such process.
+
+    Read from AFTER the last ')': field 2 is the executable's name and may
+    itself contain spaces and parentheses, which is how naive `split()`
+    parsers of this file get every later field wrong. The start time is what
+    makes the pid safe: a pid the kernel has recycled onto a different
+    process has a different start time, so a stale record can never make a
+    stranger's process look like this lane's owner."""
+    try:
+        line = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    fields = line.rpartition(")")[2].split()   # fields[0] is field 3 (state)
+    try:
+        return int(fields[19])                 # field 22
+    except (IndexError, ValueError):
+        return None
+
+
+def live_owner_pid(pending: dict) -> int | None:
+    """RW-14: the pid of the client that STARTED this container, when that
+    client is still alive — else None (dead owner, other boot, recycled pid,
+    or a record written before rev 34 recorded an owner at all).
+
+    This is the fact the whole two-client question turns on. A record whose
+    owner is alive belongs to a run someone is still watching: a second
+    client may FOLLOW it, but must never remove its container, clear its
+    record or write its history entry. A record whose owner is gone is
+    exactly RW-1's case: the container outlived its client and the next
+    invocation adopts it."""
+    pid = pending.get("owner_pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    if record_is_foreign_namespace(pending):
+        # RW-29: the pid cannot be looked up from here at all, so its
+        # liveness is UNKNOWN — and unknown resolves to ALIVE, the same
+        # direction every other "could not determine" in this decision takes
+        # (`R-39b`). Reading it as dead is what the boot check made
+        # plausible and what would hand two containers sharing one worktree
+        # each other's containers to `rm -f`. The pid is still returned: it
+        # is the number the record's own client knows itself by, and it is
+        # what the disclosures name.
+        return pid
+    recorded_boot = pending.get("boot_id")
+    this_boot = boot_id()
+    if not recorded_boot or not this_boot or recorded_boot != this_boot:
+        return None                     # another boot: the pid means nothing
+    start = process_start_ticks(pid)
+    if start is None or start != pending.get("owner_start"):
+        return None                     # gone, or the pid was recycled
+    return pid
+
+
+def repoll_owner_race(project_dir: Path, lane_name: str,
+                      pending: dict) -> tuple[dict | None, int | None]:
+    """RW-20. Re-read the inflight record and its owner's liveness, up to
+    `OWNER_RACE_REPOLLS` times in all (the caller's read is the first).
+
+    Returns `(record, live owner pid)` with either half narrowed: `(None,
+    None)` when the owner cleared its record — there is nothing to attach to
+    and the caller runs fresh; `(record, None)` when the owner exited without
+    clearing it — the ordinary lost-container case; `(record, pid)` when the
+    owner is still there after the full window, which is the only state that
+    deserves the refusal.
+
+    Only the RECORD and `/proc` are re-read here: the container is already
+    known gone, and re-inspecting it would spend docker calls on a question
+    whose answer cannot change back."""
+    # Seeded with the CALLER's answer, not None (review round 2, N-b): the
+    # caller's read is the first of `OWNER_RACE_REPOLLS`, so at a tuned value
+    # of 1 the loop body never runs and a `None` initialiser would report
+    # "the owner exited without clearing" about an owner nobody re-checked.
+    # Correct at the shipped 3, a trap for whoever tunes the constant.
+    owner: int | None = live_owner_pid(pending)
+    for _ in range(max(0, OWNER_RACE_REPOLLS - 1)):
+        time.sleep(OWNER_RACE_PAUSE_SECONDS)
+        pending = load_inflight_record(inflight_path(project_dir, lane_name))
+        if pending is None:
+            return None, None
+        owner = live_owner_pid(pending)
+        if owner is None:
+            return pending, None
+    return pending, owner
+
+
+GONE_SIGNALS = ("No such object", "No such container")
+
+# Docker's RFC3339 stamps, hand-parsed. Two shapes the stdlib parsers do not
+# handle across the versions this launcher must run on: NANOSECOND fractions
+# (nine digits), and the ZERO value docker prints for a stamp it never set —
+# `0001-01-01T00:00:00Z`, which is not a time but the absence of one (a
+# RUNNING container's `FinishedAt` is exactly that).
+_DOCKER_TS_RE = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[Tt ]"
+    r"(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?"
+    r"(?:[Zz]|([+-])(\d{2}):?(\d{2}))$")
+DOCKER_ZERO_TIMESTAMP_YEAR = 1
+
+
+def parse_docker_timestamp(stamp: object) -> float | None:
+    """A docker timestamp as a UTC epoch float, or None when it is absent,
+    unparsable, or the zero value.
+
+    None is a real answer here, not a swallowed error: the caller falls back
+    to the record's own `started_at` rather than inventing a duration from a
+    stamp that does not mean what it looks like. A container that is still
+    running carries the zero `FinishedAt`, and reading it as year 1 would
+    make every duration a two-thousand-year negative number."""
+    if not isinstance(stamp, str):
+        return None
+    match = _DOCKER_TS_RE.match(stamp.strip())
+    if match is None:
+        return None
+    year, month, day, hour, minute, second = (
+        int(match.group(n)) for n in range(1, 7))
+    if year <= DOCKER_ZERO_TIMESTAMP_YEAR:
+        return None                 # docker's "never set", not a time
+    try:
+        epoch = float(calendar.timegm(
+            (year, month, day, hour, minute, second, 0, 1, 0)))
+    except (ValueError, OverflowError):
+        return None
+    if match.group(7):
+        epoch += float("0." + match.group(7))
+    sign, off_hours, off_minutes = match.group(8), match.group(9), match.group(10)
+    if sign:
+        offset = int(off_hours) * 3600 + int(off_minutes) * 60
+        epoch += -offset if sign == "+" else offset
+    return epoch
+
+
+def adopt_container_duration(run_record: dict | None, state: dict) -> bool:
+    """RW-17 (review S4): a COLLECTED run's duration is the CONTAINER's own
+    `FinishedAt - StartedAt`, not `now - started_at`.
+
+    `now - started_at` is right for a re-attach — the client is watching the
+    container finish — but a collect happens some arbitrary time AFTER the
+    container exited, and that idle gap is not part of the run. Left alone it
+    charged an overnight collect with the whole night: the review measured
+    `duration_seconds: 10800.028` for a container that had exited three hours
+    earlier, in the store `R-27` keeps a median/min/max trend series in.
+
+    Returns whether the container's clock could be used. When either stamp is
+    missing, unparsable or zero the record keeps its `started_at` fallback:
+    an over-long duration is worse than a wrong one only because it is
+    invisible, and inventing one from half a pair would be both."""
+    if run_record is None:
+        return False
+    started = parse_docker_timestamp(state.get("started_at"))
+    finished = parse_docker_timestamp(state.get("finished_at"))
+    if started is None or finished is None or finished < started:
+        return False
+    run_record["_duration_seconds"] = round(finished - started, 3)
+    return True
+
+
+def container_state(docker: str, name: str) -> dict | None:
+    """`{status, exit_code, finished_at, started_at, id}` for a container, or
+    None when it is GONE.
+
+    GONE means ONE specific thing: docker itself said there is no such
+    object. Every OTHER `docker inspect` failure — a daemon that is not
+    running, a socket permission error, a client/server version refusal —
+    is INFRASTRUCTURE and refuses (exit 3) with the inflight record left
+    untouched. Reading a daemon outage as "gone" (rev 34's first cut did,
+    review round 1 S3) writes a false `aborted` history entry AND deletes
+    the only thing on disk that can find the still-running container once
+    the daemon returns: the exact loss `R-39` was filed to end, on a host
+    where `docker restart` is routine.
+
+    An answer that parses as neither a state nor a gone signal is NOT an
+    answer either: guessing "gone" there would start the duplicate container
+    this whole mechanism exists to prevent, so it refuses (exit 3) like
+    `docker wait` already does."""
+    probe = subprocess.run(
+        [docker, "inspect", "-f",
+         "{{.State.Status}}|{{.State.ExitCode}}|{{.State.FinishedAt}}"
+         "|{{.State.StartedAt}}|{{.Id}}",
+         name],
+        capture_output=True, text=True)
+    if probe.returncode != 0:
+        stderr = (probe.stderr or "").strip()
+        # RG-44: case-fold the match. `GONE_SIGNALS` was written against one
+        # docker version's exact casing ("No such object"); this host's own
+        # docker emits "no such object" lowercase, which the exact-case
+        # comparison never matched -- a genuinely gone container then read as
+        # an AMBIGUOUS failure (fail_infra below), leaving a stale inflight
+        # record that wedges the lane for every future invocation until a
+        # human deletes it by hand. Folding case widens the match toward
+        # docker's own wording drift without widening WHAT it matches: the
+        # phrase must still appear, just regardless of case.
+        stderr_lower = stderr.lower()
+        if any(signal.lower() in stderr_lower for signal in GONE_SIGNALS):
+            return None
+        fail_infra(f"docker inspect could not answer for container {name} "
+                   f"(exit {probe.returncode}): "
+                   f"{stderr or '(no stderr)'} — that is not a "
+                   f"'{GONE_SIGNALS[0]}' answer, so run-gate will not read "
+                   f"it as one: the inflight record is untouched and nothing "
+                   f"was recorded. Fix docker and re-run — if the container "
+                   f"is still running, the record can still find it")
+    parts = probe.stdout.strip().split("|")
+    if len(parts) != 5 or not re.fullmatch(r"-?\d+", parts[1]):
+        fail_infra(f"could not read the state of container {name}: docker "
+                   f"inspect answered {probe.stdout.strip()!r} — refusing to "
+                   f"guess whether a gate container is still running")
+    return {"status": parts[0], "exit_code": int(parts[1]),
+            "finished_at": parts[2], "started_at": parts[3], "id": parts[4]}
+
+
+def _fmt_age(epoch: object) -> str:
+    if not isinstance(epoch, (int, float)) or isinstance(epoch, bool):
+        return "for an unknown time"
+    delta = max(0.0, time.time() - epoch)
+    return f"for {int(delta // 60)}m {int(delta % 60):02d}s"
+
+
+def adopt_inflight_start(run_record: dict, pending: dict) -> None:
+    """RW-3: history records a re-attached or collected run ONCE, with the
+    duration measured from the CONTAINER's start. Without this the entry
+    would claim a mutation lane took the four seconds this client was
+    attached to it."""
+    run_record["started_at"] = pending["started_at"]
+    epoch = pending.get("started_epoch")
+    if isinstance(epoch, (int, float)) and not isinstance(epoch, bool):
+        run_record.pop("_started_monotonic", None)
+        run_record["_started_epoch"] = epoch
+
+
+def record_lost_run(project_dir: Path, worktree: Path, repo: Path,
+                    lane_name: str, pending: dict, keep: int) -> None:
+    """RW-3: a run whose container is GONE is recorded as `aborted`, never as
+    a pass. Its exit status and logs went with the container, so there is
+    nothing left to call a result — and staying silent would let a lost run
+    look like a run that never happened."""
+    record_invocation(project_dir, worktree, {
+        "lane": lane_name,
+        "commit": pending.get("commit"),
+        "outcome": "aborted",
+        "exit_code": None,
+        "started_at": pending.get("started_at"),
+        "duration_seconds": None,
+        "worktree": str(worktree),
+        "repo": str(repo),
+        "dirty": None,
+        "git_operation": None,
+        "history_eligible": False,
+        "excluded_reason": (
+            f"aborted: container {pending.get('container')} is gone — its "
+            f"exit status and logs went with it, so this run has no result"),
+        "revision": pending.get("revision"),
+    }, keep)
+
+
+def duration_stats(entries: list[dict]) -> dict:
+    """min / median / max over a set of history entries.
+
+    MEDIAN, not mean, and that is the point: the trap this whole entry exists
+    to avoid is one slow outlier being read as the lane's permanent cost, and
+    the mean is precisely the statistic that lets it. `max` is still reported
+    — an outlier is information, it just is not the typical cost."""
+    values = sorted(e["duration_seconds"] for e in entries
+                    if isinstance(e.get("duration_seconds"), (int, float)))
+    if not values:
+        return {"count": 0, "min_seconds": None, "median_seconds": None,
+                "max_seconds": None}
+    mid = len(values) // 2
+    median = values[mid] if len(values) % 2 else \
+        round((values[mid - 1] + values[mid]) / 2, 3)
+    return {"count": len(values), "min_seconds": values[0],
+            "median_seconds": median, "max_seconds": values[-1]}
+
+
+def series_stats(entries: list[dict], getter, byte_valued: bool = False) -> dict:
+    """`duration_stats`, generalized (RG-55/C4, contract Sec 4 obligation 4):
+    median never mean, same reasoning as `duration_stats` — one slow (or
+    swollen) outlier must not be read as the lane's typical cost. `getter`
+    pulls ONE numeric value (or `None`) from a history entry; a `None` —
+    unprofiled run, a profile error, or a schema-1 entry with no `resources`
+    at all — is EXCLUDED from the series, never coerced to 0 (a lane that
+    was never measured is not the same fact as a lane that measured zero).
+    `count` says how many entries actually contributed, which can be less
+    than `len(entries)` for exactly that reason.
+
+    `byte_valued` (RW-24, R-36k): a byte-valued series (`memory_peak_bytes`,
+    `memory_peak_over_baseline_bytes`, `hot_set_p90_bytes`) reports the
+    NEAREST-RANK p50 — an actual element of the series, the same rule
+    `_nearest_rank_value` already applies to Sec 3's own `hot_bytes.p90`/
+    `.median` — never the arithmetic midpoint of the middle two elements on
+    an even count: contract Sec 7 says "bytes are never rounded", and a
+    synthesized `100.5`-byte value is not a measurement anything ever took.
+    A non-byte series (`cpu_cores_avg`, `memory_full_stall_seconds`, and
+    `duration_stats`'s own `duration_seconds`, which never routes through
+    here) keeps the arithmetic median unchanged (`R-36d`)."""
+    values = sorted(v for v in (getter(e) for e in entries)
+                    if isinstance(v, (int, float)) and not isinstance(v, bool))
+    if not values:
+        return {"count": 0, "min": None, "median": None, "max": None}
+    if byte_valued:
+        median = _nearest_rank_value(values, 50)
+    else:
+        mid = len(values) // 2
+        median = values[mid] if len(values) % 2 else \
+            round((values[mid - 1] + values[mid]) / 2, 3)
+    return {"count": len(values), "min": values[0], "median": median,
+            "max": values[-1]}
+
+
+def _resource_field(entry: dict, *path: str) -> object:
+    """Walk `entry["resources"][path[0]][path[1]]…`, `None` at the first
+    missing/non-dict step — `.get`, never a bare subscript, so a schema-1
+    entry (`resources` key absent) or a `resources: null` one (unprofiled,
+    disabled, or a profile error) reads as `None` rather than raising."""
+    node = entry.get("resources")
+    for key in path:
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
+# RG-55/C4, contract Sec 3/Sec 4 obligation 4: the five new `series_stats`
+# keys `stats.passes`/`stats.completed` gain, and where each lives in the
+# Summary (Sec 3) — `hot_set_p90_bytes` comes from `damon`, not
+# `memory`/`cpu`/`host`, because DAMON's hot/warm/cold/idle classification
+# is its own top-level object in the Summary; a session with DAMON
+# unavailable (or `[profile] damon = false`) has `damon: null` and
+# contributes nothing to that one series, same as any other missing value.
+RESOURCE_SERIES_GETTERS = {
+    "memory_peak_bytes": lambda e: _resource_field(e, "memory", "peak_bytes"),
+    "memory_peak_over_baseline_bytes":
+        lambda e: _resource_field(e, "memory", "peak_over_baseline_bytes"),
+    "hot_set_p90_bytes": lambda e: _resource_field(e, "damon", "hot_bytes", "p90"),
+    "cpu_cores_avg": lambda e: _resource_field(e, "cpu", "cores_avg"),
+    "memory_full_stall_seconds":
+        lambda e: _resource_field(e, "host", "memory_full_stall_seconds"),
+}
+
+
+def _lane_stats(entries: list[dict]) -> dict:
+    stats = duration_stats(entries)
+    for key, getter in RESOURCE_SERIES_GETTERS.items():
+        # RW-24/R-36k: byte-valued series (identified structurally by the
+        # `_bytes` suffix every one of the three carries, rather than a
+        # second literal list that could drift from `RESOURCE_SERIES_
+        # GETTERS` itself) get the nearest-rank p50; `cpu_cores_avg`/
+        # `memory_full_stall_seconds` are not bytes and keep the mean-of-
+        # two-on-even-count median `series_stats` always had.
+        stats[key] = series_stats(entries, getter,
+                                  byte_valued=key.endswith("_bytes"))
+    # RG-57/C4 + RW-46b: caveat flags for `_fmt_resource_stats` (the
+    # `history` verb has no manifest to read them from, unlike `footprint`)
+    # -- ANY contributing entry carrying the caveat is enough to print it,
+    # never a majority/all requirement, so a mixed-mode series (daemon
+    # became reachable partway through) never under-discloses.
+    mems = [(e.get("resources") or {}).get("memory") or {} for e in entries]
+    stats["memory_source_rusage"] = any(m.get("source") == "rusage-maxrss"
+                                        for m in mems)
+    stats["memory_peak_at_floor"] = any(m.get("peak_at_floor") for m in mems)
+    return stats
+
+
+def lane_history_report(store: dict, lane_name: str) -> dict:
+    slot = store.get("lanes", {}).get(lane_name) or {}
+    hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+    passes = [e for e in hist if e.get("outcome") == "pass"]
+    return {
+        "latest": slot.get("latest"),
+        "history": hist,
+        "stats": {"passes": _lane_stats(passes),
+                  "completed": _lane_stats(hist)},
+    }
+
+
+def _fmt_seconds(value: object) -> str:
+    return f"{value:.1f}s" if isinstance(value, (int, float)) else "-"
+
+
+def _fmt_stats(label: str, stats: dict) -> str:
+    if not stats["count"]:
+        return f"{label}: none recorded"
+    return (f"{label}: n={stats['count']} "
+            f"median {_fmt_seconds(stats['median_seconds'])} "
+            f"(min {_fmt_seconds(stats['min_seconds'])}, "
+            f"max {_fmt_seconds(stats['max_seconds'])})")
+
+
+def _fmt_mib(value: object) -> str:
+    """Bytes -> whole MiB for display (RG-55/C4/C5) — `-` for `None`, the
+    same nullable-numeric convention `_fmt_seconds` already uses; bytes
+    themselves are never rounded (contract Sec 7), only THIS rendering is."""
+    return (f"{round(value / (1024 * 1024))} MiB"
+            if isinstance(value, (int, float)) and not isinstance(value, bool)
+            else "-")
+
+
+def _fmt_cores(value: object) -> str:
+    return (f"{value:.2f}" if isinstance(value, (int, float))
+            and not isinstance(value, bool) else "-")
+
+
+def _fmt_resource_stats(stats: dict) -> str:
+    """PEAK/+BASE/HOT p90/CORES/STALL — RG-55/C4: the median (never mean,
+    same reasoning as `_fmt_stats`) of each of the five `series_stats`
+    series over the SAME entries `_fmt_stats`'s own line just described;
+    `-` for any series with zero contributing entries (RG-27's dirty-run
+    trap generalizes: an unprofiled or errored run contributes to NEITHER
+    series, the same way it never touched `duration_stats`). S1/RW-46b:
+    the SAME `[source: rusage-maxrss]`/`(peak <= floor)` caveats
+    `_fmt_footprint_row`/`doctor` print, here driven by `_lane_stats`'
+    own ANY-of-entries flags (no per-lane manifest to read them from at
+    this call site)."""
+    peak = stats["memory_peak_bytes"]
+    over = stats["memory_peak_over_baseline_bytes"]
+    hot = stats["hot_set_p90_bytes"]
+    cores = stats["cpu_cores_avg"]
+    stall = stats["memory_full_stall_seconds"]
+    source_note = " [source: rusage-maxrss]" \
+        if stats.get("memory_source_rusage") else ""
+    floor_note = " (peak <= floor)" if stats.get("memory_peak_at_floor") else ""
+    return (f"PEAK {_fmt_mib(peak['median'])} (max {_fmt_mib(peak['max'])})  "
+            f"+BASE {_fmt_mib(over['median'])}  "
+            f"HOT p90 {_fmt_mib(hot['median'])}  "
+            f"CORES {_fmt_cores(cores['median'])}  "
+            f"STALL {_fmt_seconds(stall['median'])}"
+            f"{source_note}{floor_note}")
+
+
+def _print_lane_history(lane_name: str, report: dict, keep: int) -> None:
+    latest = report["latest"]
+    print(f"lane {lane_name}")
+    if latest is None:
+        print("  latest:  (no recorded invocation)")
+    else:
+        exit_bit = "" if latest.get("exit_code") is None \
+            else f" exit {latest['exit_code']}"
+        print(f"  latest:  {latest.get('outcome')}{exit_bit}  "
+              f"{_fmt_seconds(latest.get('duration_seconds'))}  "
+              f"{(latest.get('commit') or '(no commit)')[:12]}  "
+              f"{latest.get('started_at')}")
+        print(f"           worktree {latest.get('worktree')}")
+        if not latest.get("history_eligible"):
+            print(f"           NOT in history: {latest.get('excluded_reason')}")
+    hist = report["history"]
+    if not hist:
+        print(f"  history: (empty; keep={keep})")
+    else:
+        print(f"  history: {len(hist)} of at most {keep} commit(s), "
+              f"oldest first")
+        print(f"    {'COMMIT':<14}{'OUTCOME':<9}{'DURATION':>9}  STARTED")
+        for entry in hist:
+            print(f"    {(entry.get('commit') or '')[:12]:<14}"
+                  f"{str(entry.get('outcome')):<9}"
+                  f"{_fmt_seconds(entry.get('duration_seconds')):>9}  "
+                  f"{entry.get('started_at')}")
+        print("    " + _fmt_stats("passes", report["stats"]["passes"]))
+        print("      " + _fmt_resource_stats(report["stats"]["passes"]))
+        print("    " + _fmt_stats("completed (passes + fails)",
+                                  report["stats"]["completed"]))
+        print("      " + _fmt_resource_stats(report["stats"]["completed"]))
+
+
+def cmd_history(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
+                central: dict, central_path: Path | None,
+                lane_name: str | None, as_json: bool,
+                worktree_scope: str | None = None) -> int:
+    """RG-27 query verb. Reports; judges nothing, decides nothing, and — like
+    `--list` — exits 0 whenever the QUERY succeeded, including when there is
+    no data yet. An empty store is an answer, not a failure.
+
+    `project_dir` is the EFFECTIVE project dir — already relocated into the
+    tree the caller asked about — so the read scope always matches the write
+    scope. `worktree_scope` is that tree's path when `--worktree` selected
+    it, and it is DISCLOSED (R-05): the answer names the tree it describes,
+    it is never left to be inferred."""
+    if lane_name is not None and lane_name not in lanes:
+        fail(f"unknown lane {lane_name!r} — known lanes: "
+             f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
+             f"{f'; shared: {central_path}' if central_path else ''})")
+    keep, keep_source = resolve_history_keep(cfg, cfg_path, central,
+                                             central_path)
+    store_path = history_store_path(project_dir)
+    store = load_history_store(store_path)
+    selected = [lane_name] if lane_name else sorted(lanes)
+    if as_json:
+        print(json.dumps({
+            "schema": HISTORY_SCHEMA,
+            "revision": __revision__,
+            "store": str(store_path),
+            "worktree_scope": worktree_scope,
+            "keep": keep,
+            "keep_source": keep_source,
+            "lanes": {name: lane_history_report(store, name)
+                      for name in selected},
+        }, indent=2, sort_keys=True))
+        return 0
+    print(f"{PROG} {installed_version()} — lane invocation history")
+    if worktree_scope:
+        print(f"tree:  {worktree_scope}  (--worktree; this answer describes "
+              f"THAT tree, not the invoking checkout)")
+    print(f"store: {store_path}"
+          f"{'' if store_path.is_file() else '  (not written yet)'}")
+    print(f"keep:  {keep}  ({keep_source})")
+    if not selected:
+        print("(no lanes defined)")
+        return 0
+    for name in selected:
+        print("")
+        _print_lane_history(name, lane_history_report(store, name), keep)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# RG-55/R-44 — the footprint manifest: a distilled, COMMITTED snapshot of
+# what each lane costs (contract Sec 4.5), read by `doctor` (staleness/
+# drift) and by the run path itself (`profile_meta`'s `expected`, the
+# footprint line's `| manifest …` tail).
+# ---------------------------------------------------------------------------
+
+def build_footprint_manifest(store: dict, lanes: dict, keep: int,
+                             from_commit: str | None, *,
+                             include_failed: bool = False) -> dict:
+    """Distill completed profiled runs, with FAIL added only on opt-in.
+
+    A failed measurement must have completed, be history-eligible, and carry
+    a resource profile. Budget stops, aborts, infrastructure errors, dirty
+    runs and unprofiled failures never become measurements.
+    """
+    lanes_out: dict = {}
+    for name in sorted(lanes):
+        slot = store.get("lanes", {}).get(name) or {}
+        hist = [e for e in slot.get("history", []) if isinstance(e, dict)]
+        eligible = [e for e in hist
+                    if e.get("history_eligible", True) is True]
+        passes = [e for e in eligible if e.get("outcome") == "pass"]
+        failures = [e for e in eligible
+                    if e.get("outcome") == "fail"
+                    and e.get("resources") is not None]
+        measured = [*passes, *(failures if include_failed else [])]
+        if not any(e.get("resources") is not None for e in measured):
+            continue
+        stats = _lane_stats(measured)
+        profiled_entry = next(e for e in reversed(measured)
+                              if e.get("resources") is not None)
+        profiled_res = profiled_entry["resources"]
+        scope, method = profiled_res.get("scope"), profiled_res.get("method")
+        source = (profiled_res.get("memory") or {}).get("source")
+        peak_at_floor = (profiled_res.get("memory") or {}).get("peak_at_floor")
+        last = hist[-1]
+        peak = stats["memory_peak_bytes"]
+        over = stats["memory_peak_over_baseline_bytes"]
+        hot = stats["hot_set_p90_bytes"]
+        cores = stats["cpu_cores_avg"]
+        stall = stats["memory_full_stall_seconds"]
+        lane_out = {
+            "runs": len(passes) + (len(failures) if include_failed else 0),
+            "completed_runs": len(hist),
+            "scope": scope,
+            "method": method,
+            "source": source,
+            "peak_at_floor": peak_at_floor,
+            "duration_s": {"median": stats["median_seconds"],
+                           "max": stats["max_seconds"]},
+            "memory_peak_bytes": {"median": peak["median"],
+                                  "max": peak["max"]},
+            "memory_peak_over_baseline_bytes":
+                {"median": over["median"], "max": over["max"]},
+            "hot_set_bytes": {"p90_median": hot["median"],
+                              "p90_max": hot["max"]},
+            "cpu_cores": {"avg_median": cores["median"],
+                          "max": cores["max"]},
+            "memory_full_stall_s": {"median": stall["median"],
+                                    "max": stall["max"]},
+            "last_commit": last.get("commit"),
+            "last_at": last.get("started_at"),
+        }
+        if include_failed:
+            outcomes = []
+            if any(e.get("resources") is not None for e in passes):
+                outcomes.append("PASS")
+            if failures:
+                outcomes.append("FAIL")
+            lane_out["included_outcomes"] = outcomes
+            lane_out["failed_runs"] = len(failures)
+        lanes_out[name] = lane_out
+    return {
+        "schema": FOOTPRINT_SCHEMA,
+        "generated_by": "run-gate",
+        "revision": __revision__,
+        "distilled_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "from_commit": from_commit,
+        "keep": keep,
+        **({"include_failed": True} if include_failed else {}),
+        "lanes": lanes_out,
+    }
+
+
+def _fmt_footprint_row(name: str, lm: dict) -> str:
+    peak, over = lm["memory_peak_bytes"], lm["memory_peak_over_baseline_bytes"]
+    hot, cores = lm["hot_set_bytes"], lm["cpu_cores"]
+    stall, dur = lm["memory_full_stall_s"], lm["duration_s"]
+    # RG-57/C4: the rusage-maxrss caveat rides right next to the median it
+    # qualifies — a reader comparing lanes across a table must not have to
+    # cross-reference a separate doctor line to learn this one's PEAK column
+    # is that lane's own child's peak RSS (`os.wait4()`, RW-43/B1), not a
+    # cgroup-measured number.
+    source_note = (" [source: rusage-maxrss]" if lm.get("source") == "rusage-maxrss"
+                   else "")
+    # RW-46b: this lane's most-recent profiled run could not distinguish
+    # its own peak from run-gate's own RSS at spawn -- the median/max MiB
+    # above are still the honest wait4() numbers, this only says they may
+    # UNDERSTATE the lane's true peak.
+    floor_note = " (peak <= floor)" if lm.get("peak_at_floor") else ""
+    outcomes = lm.get("included_outcomes")
+    outcome_note = (f" [outcome={' + outcome='.join(outcomes)}]"
+                    if outcomes else "")
+    return (f"  {name:<20}{lm['runs']:>5}  "
+           f"{_fmt_mib(peak['median']):>9}/{_fmt_mib(peak['max']):<9}  "
+           f"{_fmt_mib(over['median']):>9}  "
+           f"{_fmt_mib(hot['p90_median']):>9}  "
+           f"{_fmt_cores(cores['avg_median']):>6}  "
+           f"{_fmt_seconds(stall['median']):>7}  "
+           f"{_fmt_seconds(dur['median']):>9}"
+           f"{source_note}{floor_note}{outcome_note}")
+
+
+def print_footprint_report(manifest: dict, worktree_scope: str | None,
+                           store_path: Path, manifest_path: Path,
+                           written: bool) -> None:
+    print(f"{PROG} {installed_version()} — lane resource footprint")
+    if worktree_scope:
+        print(f"tree:  {worktree_scope}  (--worktree; this answer describes "
+              f"THAT tree, not the invoking checkout)")
+    print(f"store: {store_path}"
+          f"{'' if store_path.is_file() else '  (not written yet)'}")
+    if written:
+        print(f"manifest written: {manifest_path}")
+    if not manifest["lanes"]:
+        print("(no lane has a completed, profiled run in its history yet)")
+        return
+    print(f"  {'LANE':<20}{'RUNS':>5}  {'PEAK(med/max)':<19}  {'+BASE':>9}  "
+         f"{'HOT p90':>9}  {'CORES':>6}  {'STALL':>7}  {'DURATION':>9}")
+    for name in sorted(manifest["lanes"]):
+        print(_fmt_footprint_row(name, manifest["lanes"][name]))
+
+
+def cmd_footprint(lanes: dict, project_dir: Path, cfg: dict, cfg_path: Path,
+                  central: dict, central_path: Path | None,
+                  lane_name: str | None, as_json: bool, write: bool,
+                  from_commit: str | None,
+                  worktree_scope: str | None = None, *,
+                  include_failed: bool = False,
+                  merge_lanes: list[str] | None = None) -> int:
+    """Read footprint data or write a full or lane-merged manifest."""
+    merge_lanes = list(dict.fromkeys(merge_lanes or []))
+    if lane_name is not None and lane_name not in lanes:
+        fail(f"unknown lane {lane_name!r} — known lanes: "
+             f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
+             f"{f'; shared: {central_path}' if central_path else ''})")
+    if write and lane_name is not None:
+        fail(f"footprint --write does not accept a positional LANE filter "
+             f"({lane_name!r}); use repeatable --lane {lane_name} to merge "
+             f"only that named entry into the existing manifest")
+    if merge_lanes and not write:
+        fail("footprint --lane requires --write")
+    for selected_name in merge_lanes:
+        if selected_name not in lanes:
+            fail(f"unknown lane {selected_name!r} — known lanes: "
+                 f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
+                 f"{f'; shared: {central_path}' if central_path else ''})")
+
+    keep, _keep_source = resolve_history_keep(cfg, cfg_path, central,
+                                               central_path)
+    store_path = history_store_path(project_dir)
+    store = load_history_store(store_path)
+    selected_names = merge_lanes or ([lane_name] if lane_name else sorted(lanes))
+    selected = {name: lanes[name] for name in selected_names}
+    manifest = build_footprint_manifest(
+        store, selected, keep, from_commit, include_failed=include_failed)
+    manifest_path = footprint_manifest_path(project_dir)
+    if write and merge_lanes:
+        existing = load_footprint_manifest(project_dir)
+        if existing is None or existing.get("schema") != FOOTPRINT_SCHEMA:
+            fail(f"footprint --write --lane refused: {manifest_path} is "
+                 "missing or is not a parseable schema-1 manifest; write the "
+                 "full manifest once before using per-lane merge")
+        absent = [name for name in merge_lanes
+                  if name not in manifest["lanes"]]
+        if absent:
+            fail("footprint --write --lane refused: named lane(s) have no "
+                 "completed, eligible, profiled measurement: "
+                 + ", ".join(absent))
+        merged = copy.deepcopy(existing)
+        merged_lanes = copy.deepcopy(existing["lanes"])
+        merged_lanes.update(manifest["lanes"])
+        merged["lanes"] = merged_lanes
+        for key in ("generated_by", "revision", "distilled_at",
+                    "from_commit", "keep"):
+            merged[key] = manifest[key]
+        if any("FAIL" in e.get("included_outcomes", [])
+               for e in merged_lanes.values() if isinstance(e, dict)):
+            merged["include_failed"] = True
+        else:
+            merged.pop("include_failed", None)
+        manifest = merged
+    if write:
+        if not manifest["lanes"]:
+            fail("footprint --write refused: no lane has a completed, "
+                 "profiled run in its history yet — run a profiled lane "
+                 "first (profiling must be enabled — check RUN_GATE_PROFILE "
+                 "and [profile]/lane 'profile')")
+        _write_json_atomic(manifest, manifest_path)
+    if as_json:
+        print(json.dumps(manifest, indent=2, sort_keys=True))
+        return 0
+    print_footprint_report(manifest, worktree_scope, store_path,
+                           manifest_path, write)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# command assembly + run
+# ---------------------------------------------------------------------------
+
+def substitute_worktree(argv: list[str], worktree: Path,
+                        base: str | None = None) -> list[str]:
+    """`{worktree}` in every element (R-02), and — RG-26 — `{base}` when a
+    comparison base was resolved. `{base}` is left untouched when there is
+    none, which cannot happen on the run path: `plan_comparison_base()`
+    refuses a `{base}`-carrying lane it could not resolve a base for."""
+    out = [a.replace("{worktree}", str(worktree)) for a in argv]
+    return [a.replace("{base}", base) for a in out] if base else out
+
+
+def lane_command_argv(lane: dict, worktree: Path,
+                      base: str | None = None) -> list[str]:
+    """Substitute declared argv, then append request-scoped argv literally."""
+    declared = substitute_worktree(lane["argv"], worktree, base)
+    return [*declared, *lane.get("_request_args", [])]
+
+
+def redact_forwarded_values(argv: list[str], keys: list[str]) -> list[str]:
+    """RG-19 companion to log_forwarded_env: the printed docker argv shows
+    mechanics (R-05) but must NOT echo forwarded credential VALUES — mask
+    every `-e KEY=...` payload for allowlisted keys; names stay visible.
+
+    S2 (round-1 review): `PROFILE_TOKEN_ENV` is ALWAYS included, regardless
+    of what the caller passes — it is a per-invocation nonce run-gate
+    itself generates and forwards (never a user-declared `forward_env`
+    key), so both call sites redacting it is this function's job, not
+    something each caller must remember to union in."""
+    prefixes = tuple(f"{k}=" for k in (*keys, PROFILE_TOKEN_ENV))
+    out: list[str] = []
+    expect_value = False
+    for tok in argv:
+        if expect_value:
+            if tok.startswith(prefixes):
+                out.append(tok.split("=", 1)[0] + "=<redacted>")
+            else:
+                out.append(tok)
+            expect_value = False
+        else:
+            out.append(tok)
+            expect_value = tok == "-e"
+    return out
+
+
+def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
+                         repo: Path, worktree: Path,
+                         recorded: dict | None = None,
+                         state_root: str | Path | None = None) -> None:
+    """R-18/RG-10: after EVERY run — any kind, any runner mode, success or
+    failure — say where the evidence landed. Assay lanes always disclose the
+    verdict convention AND (RG-38/RG-49) the mutation-resume-state directory;
+    declared `artifacts` add to it. Paths resolve against the EFFECTIVE
+    project dir (relocated into the judged tree, R-21); `{worktree}` tokens
+    inside entries are substituted.
+
+    `recorded` is the inflight record of a run this client RE-ATTACHED to or
+    FOLLOWED. Where it names a `verdict`, that is the answer: it is the path
+    THAT run declared and wrote to, and the live config is not the authority
+    for a run already in flight — a lane retargeted between the two
+    invocations would otherwise send an operator to a file nothing wrote
+    (N3). A record that names no verdict — absent key, or the `null` a
+    command lane's record writes — falls back to the config, which for a
+    command lane discloses nothing anyway (review round 2, N-a: presence of
+    the key used to be the test, so a `null` written when the lane was a
+    command lane silently suppressed the verdict of the assay lane it had
+    since become; `make_progress_watch` carries the same rule, where the
+    same `null` silently disabled the stall watch)."""
+    verdict_path: Path | None = None
+    if recorded is not None and recorded.get("verdict") is not None:
+        declared = recorded["verdict"]
+        if declared:
+            verdict_path = Path(os.path.normpath(declared))
+            print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
+    elif lane["kind"] == "assay":
+        verdict_path = Path(os.path.normpath(
+            project_dir / (".assay/verdict-" + lane["assay_lane"] + ".json")))
+        print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
+    if lane["kind"] == "assay":
+        # RG-38/RG-10: the mutation-resume-state directory this lane's own
+        # inner script creates and passes --state-dir -- disclosed
+        # unconditionally. Unlike verdict/progress above, there is no
+        # recorded-vs-live drift question here: repo/project_dir (what
+        # assay_state_dir derives from) are facts about THIS invocation, not
+        # about which run's config produced the recorded verdict/progress.
+        recorded_state = (recorded.get("state_dir")
+                          if recorded is not None else None)
+        state_dir = (Path(recorded_state) if isinstance(recorded_state, str)
+                     and recorded_state else
+                     assay_state_dir(repo, project_dir, state_root))
+        print(f"run-gate: state directory: {state_dir}", flush=True)
+    for entry in lane.get("artifacts", []):
+        substituted = substitute_worktree([entry], worktree)[0]
+        target = Path(substituted)
+        if not target.is_absolute():
+            target = project_dir / target
+        # Review fix: dedup compares NORMALIZED effective paths, not raw
+        # strings — './.assay/verdict-x.json' or the absolute spelling of
+        # the same file is the verdict convention too, disclosed once.
+        target = Path(os.path.normpath(target))
+        if target == verdict_path:
+            continue  # already disclosed above
+        print(f"run-gate: artifact: {target}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# failing-container evidence preservation (RG-12)
+# ---------------------------------------------------------------------------
+
+def evidence_dir() -> Path:
+    return Path(os.environ.get(EVIDENCE_DIR_ENV_VAR) or EVIDENCE_DIR_DEFAULT)
+
+
+def allocate_lane_log(lane_name: str, run_id: str) -> Path | None:
+    """Create an owner-only log destination outside the judged worktree."""
+    try:
+        safe_lane = re.sub(r"[^A-Za-z0-9_.-]+", "_", lane_name).strip("._") or "lane"
+        directory = evidence_dir() / "lanes" / safe_lane
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path = directory / f"{run_id}.log"
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                     0o600)
+        os.close(fd)
+        return path
+    except OSError as exc:
+        print(f"{PROG}: WARNING: lane log could not be created: {exc}",
+              file=sys.stderr, flush=True)
+        return None
+
+
+class OutputTee:
+    """Copy a child's combined output to a private log and the live terminal."""
+
+    def __init__(self, proc: subprocess.Popen, path: Path | None):
+        self.proc = proc
+        self.path = path
+        self.error: BaseException | None = None
+        self.thread = threading.Thread(target=self._copy, daemon=True)
+        self.thread.start()
+
+    def _copy(self) -> None:
+        stream = getattr(self.proc, "stdout", None)
+        if stream is None:
+            return
+        try:
+            target = open(self.path, "ab") if self.path is not None else None
+            try:
+                while True:
+                    chunk = stream.read(65536)
+                    if not chunk:
+                        break
+                    if isinstance(chunk, str):
+                        encoded = chunk.encode("utf-8", errors="replace")
+                        display = chunk
+                    else:
+                        encoded = chunk
+                        display = chunk.decode("utf-8", errors="replace")
+                    if target is not None:
+                        target.write(encoded)
+                        target.flush()
+                    sys.stdout.write(display)
+                    sys.stdout.flush()
+            finally:
+                if target is not None:
+                    target.close()
+        except BaseException as exc:
+            self.error = exc
+
+    def join(self) -> None:
+        self.thread.join()
+        if self.error is not None:
+            print(f"{PROG}: WARNING: output log capture stopped: {self.error}",
+                  file=sys.stderr, flush=True)
+
+
+class StdinForwarder:
+    """Preserve the caller's input after an exec placement handshake."""
+
+    def __init__(self, source, destination):
+        self.source = getattr(source, "buffer", source)
+        self.destination = destination
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._copy, daemon=True)
+        self.thread.start()
+
+    def _copy(self) -> None:
+        try:
+            while not self.stopped.is_set():
+                chunk = self.source.read(65536)
+                if not chunk or self.stopped.is_set():
+                    break
+                if isinstance(chunk, str):
+                    chunk = chunk.encode("utf-8")
+                self.destination.write(chunk)
+                self.destination.flush()
+        except (BrokenPipeError, OSError, ValueError):
+            # The lane can finish without consuming all caller input. That is
+            # ordinary EOF/early-exit behavior, not a profiler verdict.
+            pass
+        finally:
+            try:
+                self.destination.close()
+            except (OSError, ValueError):
+                pass
+
+    def close(self) -> None:
+        self.stopped.set()
+        try:
+            self.destination.close()
+        except (OSError, ValueError):
+            pass
+
+
+PLACEMENT_BARRIER_TIMEOUT_SECONDS = 300.0
+
+
+def placement_barrier_shell_argv(command: list[str], nonce: str) -> list[str]:
+    """Wrap an in-container command without entering its body yet.
+
+    `docker exec -i` supplies the one-shot release channel. The wrapper's PID
+    already carries RUN_GATE_PROFILE_SESSION and remains stable across exec,
+    so cgprofile can discover and place this process before the lane starts.
+    """
+    release = f"RUN_GATE_PLACEMENT_GO:{nonce}"
+    unprofiled = f"RUN_GATE_PLACEMENT_GO_UNPROFILED:{nonce}"
+    script = f"""printf '\\036RUN_GATE_PLACEMENT_READY:%s\\n' "$1"
+IFS= read -r __rg55_release || exit 125
+if [ "$__rg55_release" = "$2" ]; then
+  :
+elif [ "$__rg55_release" = "$3" ]; then
+  unset {PROFILE_TOKEN_ENV}
+else
+  exit 125
+fi
+shift 3
+exec "$@"
+"""
+    return ["bash", "-c", script, "run-gate-placement", nonce, release,
+            unprofiled, *command]
+
+
+def placement_barrier_python_argv(command: list[str], nonce: str,
+                                  control_fd: int) -> list[str]:
+    """Host-side exec-preserving barrier for bare-host lane children."""
+    release = f"RUN_GATE_PLACEMENT_GO:{nonce}"
+    unprofiled = f"RUN_GATE_PLACEMENT_GO_UNPROFILED:{nonce}"
+    script = f"""import os, sys
+nonce, release, unprofiled = sys.argv[1:4]
+control_fd = int(sys.argv[4])
+os.write(1, b'\\x1eRUN_GATE_PLACEMENT_READY:' + nonce.encode() + b'\\n')
+line = os.read(control_fd, 256)
+if line == (unprofiled + '\\n').encode():
+    os.environ.pop({PROFILE_TOKEN_ENV!r}, None)
+elif line != (release + '\\n').encode():
+    raise SystemExit(125)
+os.execvpe(sys.argv[5], sys.argv[5:], os.environ)
+"""
+    return [sys.executable, "-c", script, nonce, release, unprofiled,
+            str(control_fd),
+            *command]
+
+
+def wait_for_placement_barrier(proc: subprocess.Popen, nonce: str,
+                               timeout: float =
+                               PLACEMENT_BARRIER_TIMEOUT_SECONDS) -> None:
+    """Consume the wrapper's private ready line before starting cgprofile."""
+    stream = getattr(proc, "stdout", None)
+    if stream is None:
+        raise GateInfraError("placement wrapper has no readiness stream")
+    expected = b"\x1eRUN_GATE_PLACEMENT_READY:" + nonce.encode() + b"\n"
+    deadline = time.monotonic() + timeout
+    line = bytearray()
+    fd = stream.fileno()
+    while len(line) <= 256:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise GateInfraError(
+                f"placement wrapper did not become ready within {timeout:g}s")
+        readable, _, _ = select.select([fd], [], [], remaining)
+        if not readable:
+            raise GateInfraError(
+                f"placement wrapper did not become ready within {timeout:g}s")
+        chunk = os.read(fd, 1)
+        if not chunk:
+            detail = line.decode("utf-8", errors="replace").strip()
+            raise GateInfraError(
+                "placement wrapper exited before readiness" +
+                (f": {detail[:200]}" if detail else ""))
+        line.extend(chunk)
+        if chunk == b"\n":
+            if bytes(line) != expected:
+                detail = line.decode("utf-8", errors="replace").strip()
+                raise GateInfraError(
+                    "placement wrapper emitted an invalid readiness marker" +
+                    (f": {detail[:200]}" if detail else ""))
+            return
+    raise GateInfraError("placement wrapper readiness marker exceeded 256 bytes")
+
+
+def spawn_placement_barrier(argv: list[str], nonce: str, **popen_kwargs
+                            ) -> subprocess.Popen:
+    """Start a blocked wrapper and prove its target-side ready handshake."""
+    proc = subprocess.Popen(
+        argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, bufsize=0, **popen_kwargs)
+    try:
+        wait_for_placement_barrier(proc, nonce)
+    except BaseException:
+        abort_placement_barrier(proc, nonce)
+        raise
+    return proc
+
+
+def spawn_bare_host_placement_barrier(command: list[str], nonce: str,
+                                      **popen_kwargs) -> subprocess.Popen:
+    """Use a private control pipe so the lane still inherits the caller stdin."""
+    read_fd, write_fd = os.pipe()
+    try:
+        proc = subprocess.Popen(
+            placement_barrier_python_argv(command, nonce, read_fd),
+            stdin=None, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            bufsize=0, pass_fds=(read_fd,), **popen_kwargs)
+    except BaseException:
+        os.close(read_fd)
+        os.close(write_fd)
+        raise
+    os.close(read_fd)
+    proc._run_gate_placement_control_fd = write_fd
+    try:
+        wait_for_placement_barrier(proc, nonce)
+    except BaseException:
+        abort_placement_barrier(proc, nonce)
+        raise
+    return proc
+
+
+def signal_placement_barrier(proc: subprocess.Popen, nonce: str, *,
+                             release: bool, profile_active: bool = True
+                             ) -> None:
+    """Release the body only on approval; every other signal exits wrapper."""
+    if not release:
+        signal_value = f"RUN_GATE_PLACEMENT_ABORT:{nonce}"
+    elif profile_active:
+        signal_value = f"RUN_GATE_PLACEMENT_GO:{nonce}"
+    else:
+        signal_value = f"RUN_GATE_PLACEMENT_GO_UNPROFILED:{nonce}"
+    control_fd = getattr(proc, "_run_gate_placement_control_fd", None)
+    stream = getattr(proc, "stdin", None)
+    if control_fd is None and stream is None:
+        raise GateInfraError("placement wrapper has no control channel")
+    try:
+        if control_fd is not None:
+            os.write(control_fd, (signal_value + "\n").encode())
+            os.close(control_fd)
+            proc._run_gate_placement_control_fd = None
+        else:
+            stream.write((signal_value + "\n").encode())
+            stream.flush()
+    finally:
+        if stream is not None and not release:
+            stream.close()
+
+
+def abort_placement_barrier(proc: subprocess.Popen, nonce: str) -> None:
+    """Ask a not-yet-released wrapper to exit, then reap its exact client PID."""
+    try:
+        signal_placement_barrier(proc, nonce, release=False)
+    except Exception:
+        stream = getattr(proc, "stdin", None)
+        if stream is not None and not stream.closed:
+            try:
+                stream.close()
+            except OSError:
+                pass
+        control_fd = getattr(proc, "_run_gate_placement_control_fd", None)
+        if control_fd is not None:
+            try:
+                os.close(control_fd)
+            except OSError:
+                pass
+            proc._run_gate_placement_control_fd = None
+    try:
+        proc.wait(timeout=LANE_KILL_GRACE_SECONDS + 2)
+    except subprocess.TimeoutExpired:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=LANE_KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            proc.wait()
+
+
+def abandon_placement_launch(proc: subprocess.Popen | None, nonce: str | None,
+                            profiler_state: dict | None = None) -> dict | None:
+    """Close a blocked launch and stop its session on pre-body failures."""
+    if proc is not None and nonce is not None:
+        try:
+            abort_placement_barrier(proc, nonce)
+        except Exception as exc:
+            print(f"run-gate: WARNING placement wrapper cleanup failed: {exc}",
+                  file=sys.stderr, flush=True)
+    if not isinstance(profiler_state, dict) \
+            or profiler_state.get("mode") != "daemon":
+        return None
+    try:
+        return finish_lane_profiling(profiler_state)
+    except Exception as exc:
+        print(f"run-gate: WARNING profiling: refused-placement cleanup "
+              f"failed: {exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def placement_refusal_reason(state: dict, requested: bool,
+                             requested_limits: dict | None,
+                             host_doc: dict | None, token: str | None
+                             ) -> str | None:
+    """Validate a daemon's applied placement before releasing a requested lane."""
+    if not requested:
+        return None
+    placement = state.get("placement")
+    if not isinstance(placement, dict):
+        return "daemon omitted the requested placement result"
+    if placement.get("requested") is not True:
+        return "daemon did not confirm the requested placement"
+    error = placement.get("error")
+    if error is not None:
+        return f"daemon refused requested placement: {error}"
+    gates = ((host_doc or {}).get("host") or {}).get("gates_slice") or {}
+    gates_cgroup = gates.get("cgroup")
+    if (gates.get("present") is not True
+            or not isinstance(gates_cgroup, str)
+            or not gates_cgroup.startswith("/")
+            or gates_cgroup == "/"
+            or not isinstance(token, str)
+            or re.fullmatch(r"[A-Za-z0-9._-]{8,64}", token) is None):
+        return "cannot derive the expected placement leaf from host and token"
+    expected_leaf = (f"{gates_cgroup.rstrip('/')}/"
+                     f"rg-profile-{token}.scope/rg-{token}")
+    leaf = placement.get("leaf")
+    applied = placement.get("applied")
+    if not isinstance(leaf, str) or not leaf.startswith("/"):
+        return "daemon omitted the verified placement leaf"
+    if leaf != expected_leaf:
+        return "daemon reported a placement leaf different from this lane"
+    if not isinstance(applied, dict):
+        return "daemon omitted the applied placement limits"
+    readback = {}
+    for key in ("memory.high", "memory.max"):
+        value = applied.get(key)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            return f"daemon did not read back a valid {key} value"
+        readback[key] = value
+    if readback["memory.max"] < readback["memory.high"]:
+        return "daemon read back memory.max below memory.high"
+    if isinstance(requested_limits, dict):
+        for key in ("memory.high", "memory.max"):
+            requested_value = requested_limits.get(key.replace(".", "_"))
+            if (isinstance(requested_value, int)
+                    and not isinstance(requested_value, bool)
+                    and readback[key] > requested_value):
+                return f"daemon read back {key} above the requested limit"
+        cpu_weight = requested_limits.get("cpu_weight")
+        if cpu_weight is not None:
+            applied_weight = applied.get("cpu.weight")
+            if (not isinstance(applied_weight, int)
+                    or isinstance(applied_weight, bool)
+                    or not 1 <= applied_weight <= 10000):
+                return "daemon did not read back a valid cpu.weight value"
+            if applied_weight != cpu_weight:
+                return "daemon read back a different cpu.weight than requested"
+    return None
+
+
+def save_container_logs(docker: str, name: str,
+                        target: Path | None = None) -> Path | None:
+    """RG-12: copy the container's full logs somewhere readable BEFORE the
+    `rm -f` destroys them. Returns the written path, or None when capture
+    fails (never raises — evidence is best-effort, the lane result stands)."""
+    try:
+        grabbed = subprocess.run([docker, "logs", name], capture_output=True,
+                                 text=True)
+        combined = grabbed.stdout + grabbed.stderr
+        if grabbed.returncode != 0 and not combined.strip():
+            return None
+        target = target or evidence_dir() / f"{name}.log"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Review fix: container logs may echo credential material the suite
+        # exercised — owner-only, never world-readable.
+        target.write_text(combined)
+        target.chmod(0o600)
+        return target
+    except OSError:
+        return None
+
+
+def terminate_process_group(proc: subprocess.Popen,
+                           grace_seconds: int = LANE_KILL_GRACE_SECONDS) -> int:
+    """Stop a bare-host lane and its descendants, then return its raw status."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        return proc.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        return proc.wait()
+
+
+# ---------------------------------------------------------------------------
+# required_env preflight + forwarding transparency (RG-17 / RG-19)
+# ---------------------------------------------------------------------------
+
+def preflight_required_env(lane: dict, lane_name: str) -> None:
+    """RG-19: a lane that declares required_env refuses to start unless every
+    named variable is PRESENT and NON-EMPTY in the invoking environment —
+    credentials must be verified by the gate, not discovered by a fixture
+    mid-run (or worse, by silently skipped assertions inside a green run)."""
+    for key in lane.get("required_env", []):
+        value = os.environ.get(key)
+        if value is None or value == "":
+            raise GateNotRunError(
+                "env-missing",
+                f"lane '{lane_name}' requires ${key} but it is unset or empty "
+                "— export it before invoking this gate (run-gate refuses to "
+                "start a lane whose declared inputs are missing)")
+
+
+def check_required_reaches_container(lane: dict, lane_name: str, env: dict,
+                                     env_name: str, env_source: str) -> None:
+    """RG-17: for container lanes, a required variable that is not on the
+    environment's forward_env allowlist can NEVER reach the lane — refuse
+    before anything runs instead of failing (or hollow-skipping) inside the
+    container. Run-path timing is deliberate: --list/doctor stay usable on
+    an imperfect config."""
+    forwarded = set(env.get("forward_env", []))
+    missing = [k for k in lane.get("required_env", []) if k not in forwarded]
+    if missing:
+        fail(f"lane '{lane_name}' requires {', '.join(missing)} but they are "
+             f"not on environment '{env_name}'s forward_env allowlist "
+             f"({env_source}) — the container can never receive them; add "
+             f"them to forward_env or drop the required_env entry")
+
+
+def log_forwarded_env(env: dict, prefix: str) -> None:
+    """RG-19: print WHICH forwarding keys were present at start — names
+    only, never values — so omissions are visible in the run record."""
+    present, absent = [], []
+    for key in env.get("forward_env", []):
+        (present if os.environ.get(key) else absent).append(key)
+    parts = []
+    if present:
+        parts.append(f"forwarded: {', '.join(sorted(present))}")
+    if absent:
+        parts.append(f"declared but ABSENT: {', '.join(sorted(absent))}")
+    print(f"run-gate: {prefix} env ({' ; '.join(parts) if parts else 'nothing declared'})",
+          flush=True)
+
+
+ENV_REF_RE = re.compile(
+    r"(?:os\.environ\[|os\.environ\.get\(|\bgetenv\()"
+    r"\s*['\"]([A-Za-z_][A-Za-z0-9_]*)['\"]")
+
+_ENV_READ_ATTRS = {"get", "setdefault", "pop"}
+
+
+def _is_environ(node: ast.AST) -> bool:
+    """`os.environ`, or a bare `environ` (`from os import environ`)."""
+    return (isinstance(node, ast.Attribute) and node.attr == "environ") \
+        or (isinstance(node, ast.Name) and node.id == "environ")
+
+
+def _env_name_expr(node: ast.AST) -> ast.AST | None:
+    """The expression NAMING the variable this node reads from the
+    environment, or None when the node is not an environment read."""
+    if isinstance(node, ast.Subscript) and _is_environ(node.value):
+        return node.slice
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in _ENV_READ_ATTRS \
+                and _is_environ(func.value) and node.args:
+            return node.args[0]
+        called = func.attr if isinstance(func, ast.Attribute) else \
+            func.id if isinstance(func, ast.Name) else None
+        if called == "getenv" and node.args:
+            return node.args[0]
+    return None
+
+
+def _called_name(call: ast.Call) -> str | None:
+    func = call.func
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return func.id if isinstance(func, ast.Name) else None
+
+
+def scan_env_references(text: str) -> list[tuple[str, int, str]]:
+    """Every environment-variable NAME a Python source reads → (name, line,
+    shape). Raises SyntaxError when the source does not parse.
+
+    RG-23: the line regex this replaces could only see a name spelled as a
+    literal INSIDE `getenv(...)`/`os.environ[...]`. dstdns reads its live-test
+    flag through `_env_flag_enabled("RUN_LIVE_TESTS")`, whose body does
+    `os.getenv(name, "")` — the literal and the read are in different
+    functions, so the regex saw nothing and `--check-env` certified a clean
+    sweep over the exact variable whose silent absence turned an all-skipped
+    pytest run into a green live-test lane. A check whose comparison is
+    narrower than its message issues a false certification (AGENTS "a check is
+    only as strong as what it actually compares"), so the comparison is
+    widened rather than the message weakened.
+
+    Two passes over the AST:
+      1. direct reads with a literal name — `os.environ["X"]`,
+         `os.environ.get("X")/setdefault/pop`, `getenv("X")`, `"X" in
+         os.environ` — plus, in the same walk, any function whose body reads
+         the environment through one of its own PARAMETERS (an env-reader
+         helper) and the position of that parameter;
+      2. calls to those helpers, taking the literal at that position.
+
+    Still a heuristic, and still ADVISORY: a name assembled at runtime
+    (`os.getenv(prefix + suffix)`) is invisible to any static pass, which is
+    why enforcement lives in `required_env` (R-24), not here.
+    """
+    tree = ast.parse(text)
+    refs: list[tuple[str, int, str]] = []
+    helpers: dict[str, int] = {}
+    # A bound method's `self`/`cls` is not passed at the call site, so its
+    # parameter positions are offset by one against the argv the caller
+    # writes. Getting this wrong does not merely miss a read — it reports a
+    # CONFIDENT name taken from the wrong position.
+    methods = {id(fn) for cls in ast.walk(tree)
+               if isinstance(cls, ast.ClassDef) for fn in cls.body
+               if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for node in ast.walk(tree):
+        named = _env_name_expr(node)
+        if isinstance(named, ast.Constant) and isinstance(named.value, str):
+            refs.append((named.value, node.lineno,
+                         "subscript" if isinstance(node, ast.Subscript)
+                         else "access"))
+        elif isinstance(node, ast.Compare) and len(node.ops) == 1 \
+                and isinstance(node.ops[0], ast.In) \
+                and _is_environ(node.comparators[0]) \
+                and isinstance(node.left, ast.Constant) \
+                and isinstance(node.left.value, str):
+            refs.append((node.left.value, node.lineno, "membership"))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            params = [a.arg for a in (*node.args.posonlyargs, *node.args.args)]
+            if id(node) in methods and params and params[0] in ("self", "cls"):
+                params = params[1:]
+            for inner in ast.walk(node):
+                inner_named = _env_name_expr(inner)
+                if isinstance(inner_named, ast.Name) and inner_named.id in params:
+                    helpers[node.name] = params.index(inner_named.id)
+                    break
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        pos = helpers.get(_called_name(node))
+        if pos is None or pos >= len(node.args):
+            continue
+        arg = node.args[pos]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            refs.append((arg.value, node.lineno,
+                         f"helper {_called_name(node)}()"))
+    return refs
+
+
+def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
+                  cfg_path: Path, central_path: Path | None,
+                  worktree_override: str | None = None) -> int:
+    """RG-17 drift sweep (ADVISORY): scan the project's Python sources for
+    environment reads and flag names covered by neither forward_env nor
+    required_env. Heuristic by nature (a .get with a default may be
+    deliberately optional), so this WARNS; enforcement lives in required_env
+    + the preflight.
+
+    RG-23: the scan is AST-based (`scan_env_references`) so it also sees
+    reads wrapped in a project's own helper — the shape that hid dstdns's
+    `RUN_LIVE_TESTS` from the previous line regex.
+
+    RG-30: `--worktree` redirects BOTH halves of this report at THAT tree —
+    the env-drift scan reads ITS Python sources and the toolchain-fitness
+    half (`assay_toolchain_findings`) probes ITS environment, never the
+    invoking checkout's — and the report names the tree (R-05). Resolved and
+    validated upfront (`resolve_worktree_scope`, same refuse-loud shape as
+    `history`'s own `--worktree` fix, RG-27 B1): unlike `doctor`, this verb
+    has no per-check OK/FAIL ledger for a bad override to land in gracefully,
+    so it refuses outright rather than let a nonexistent tree yield an empty
+    (and misleadingly clean) scan under that tree's name."""
+    _, _, scan_dir, worktree_scope = resolve_worktree_scope(
+        project_dir, worktree_override, "--check-env")
+    if worktree_scope:
+        print(f"run-gate: check-env: --worktree {worktree_scope} — this "
+              f"report describes THAT tree, not the invoking checkout",
+              flush=True)
+    covered = {CGROUP_ENV_VAR}
+    for name, lane in lanes.items():
+        covered.update(lane.get("required_env", []))
+        try:
+            env, _ = resolve_environment(lane, name, cfg, central,
+                                         cfg_path, central_path)
+        except GateError:
+            continue  # config errors surface elsewhere, louder
+        if env:
+            covered.update(env.get("forward_env", []))
+    findings = []
+    for path in sorted(scan_dir.rglob("*.py")):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        rel = path.relative_to(scan_dir)
+        try:
+            refs = scan_env_references(text)
+        except SyntaxError as exc:
+            # "Could not read it" must never look like "there is nothing
+            # there" (AGENTS anti-pattern #2). Say so, and keep the old line
+            # regex as the degraded-but-real fallback for this file.
+            print(f"run-gate: env-drift: {rel} does not parse "
+                  f"({exc.msg} line {exc.lineno}) — fell back to a line regex, "
+                  f"which cannot see helper-wrapped reads", flush=True)
+            refs = [(m.group(1), n, "subscript" if "environ[" in line else "access")
+                    for n, line in enumerate(text.splitlines(), 1)
+                    for m in ENV_REF_RE.finditer(line)]
+        for var, lineno, form in refs:
+            if var not in covered:
+                findings.append((var, rel, lineno, form))
+    seen = set()
+    for var, rel, lineno, form in findings:
+        if (var, str(rel)) in seen:
+            continue
+        seen.add((var, str(rel)))
+        print(f"run-gate: env-drift: ${var} referenced in {rel}:{lineno} "
+              f"({form}) is neither forwarded nor declared required_env — "
+              f"add it to the environment's forward_env or the lane's "
+              f"required_env", flush=True)
+    print(f"run-gate: env-drift scan: {len(seen)} uncovered reference(s)"
+          f"{' — ADVISORY ONLY, the run was not affected' if seen else ''}",
+          flush=True)
+    # RG-25: the env-drift half above stays ADVISORY (heuristic — a .get with
+    # a default may be deliberately optional). The toolchain half is NOT a
+    # heuristic: the judge itself said the lane needs the tool and the
+    # environment does not have it, so a FAIL here exits 2, `--check-env`'s
+    # existing severity for a broken contract.
+    broken = 0
+    for status, topic, detail in assay_toolchain_findings(
+            lanes, project_dir, cfg, central, cfg_path, central_path,
+            worktree_override):
+        print(f"run-gate: check-env: [{status}] {topic}: {detail}", flush=True)
+        broken += status == "FAIL"
+    return 2 if broken else 0
+
+
+# ---------------------------------------------------------------------------
+# Pointer↔lane linkage (RG-2): a consumer pointer is certified, not assumed
+# ---------------------------------------------------------------------------
+
+_CD_TARGET_RE = re.compile(r"\bcd\s+(\S+)")
+# Scan both the supported installed command and the retired script name so
+# validation can identify and report legacy consumer pointers. The bare name
+# must not match inside run-gate.toml, run-gate-project, or hyphenated prose;
+# absolute-pathed console invocations remain unrecognized (fail closed).
+_INVOCATION_RE = re.compile(
+    r"(?:run-gate\.py|(?<![\w./-])run-gate(?![\w.-]))(?:\s+[^&;]*)?")
+_BARE_TOOL_RE = re.compile(r"(?<![\w./-])run-gate(?![\w.-])")
+_RESERVED_POINTER_VERBS = {"doctor", "validate-pointers", "history",
+                           "footprint", "migrate-modes", "admission", "status"}
+_DISCOVERY_FLAGS = {"--list", "--help", "--check-env"}
+# Fields that are prose BY NAME: a label describes an invocation, it doesn't
+# run one ("label = \"proj: run-gate gate conjunction\"" — found live in
+# cmru/cmru.toml). Certifying prose would manufacture defects out of English;
+# skipping it cannot hide a real pointer, which lives in a command-bearing
+# field (argv/commands/steps), never in a label.
+_PROSE_KEYS = {"label", "title", "description", "comment", "note", "notes",
+               "summary", "help", "doc", "readme"}
+
+
+def _collect_pointers(node, where: str) -> list[tuple[str, str]]:
+    """Every (location, text) pair in a parsed consumer document that invokes
+    run-gate (either tool name). An argv-style LIST whose first element IS a
+    run-gate invocation is one pointer (joined) — list-form consumers
+    otherwise split the command across elements, so no single string contains
+    both the tool and the lane."""
+    found: list[tuple[str, str]] = []
+
+    def visit(node, where: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                visit(value, f"{where}.{key}" if where else str(key))
+        elif isinstance(node, list):
+            if node and isinstance(node[0], str) \
+                    and os.path.basename(node[0]) in {"run-gate.py",
+                                                      "run-gate"} \
+                    and all(isinstance(v, str) for v in node):
+                visit(" ".join(node), f"{where}[argv]")
+            else:
+                for i, v in enumerate(node):
+                    visit(v, f"{where}[{i}]")
+        elif isinstance(node, str):
+            leaf = re.sub(r"\[\d+\]$", "", where.rsplit(".", 1)[-1])
+            if leaf not in _PROSE_KEYS and ("run-gate.py" in node
+                                            or _BARE_TOOL_RE.search(node)):
+                found.append((where, node))
+
+    visit(node, where)
+    return found
+
+
+def _pointer_project_dir(text: str, file_path: Path, root: Path,
+                         where: str) -> tuple[Path | None, list[str]]:
+    """Resolve the project a pointer judges: its single `cd {worktree}/rel`
+    target — or, for legacy list-form steps with no cd at all, the pointer
+    file's own directory when that directory IS a project."""
+    defects: list[str] = []
+    targets: set[str] = set()
+    noncanonical: set[str] = set()
+    for m in _CD_TARGET_RE.finditer(text):
+        raw = m.group(1).strip("'\"")
+        if raw.startswith("{worktree}/"):
+            targets.add(raw[len("{worktree}/"):])
+        elif raw == "{worktree}":
+            targets.add(".")
+        else:
+            noncanonical.add(raw)
+    for raw in sorted(noncanonical):
+        defects.append(
+            f"{where}: cd target '{raw}' is not '{{worktree}}/<project-relative>' "
+            f"— the daemon substitutes {{worktree}} textually; a cd bound to any "
+            f"other cwd judges whatever tree it happens to run from")
+    if len(targets) > 1:
+        defects.append(f"{where}: pointer cds into {sorted(targets)} — exactly "
+                       f"one project target is allowed")
+        return None, defects
+    if targets:
+        proj = root / next(iter(targets))
+        if not (proj / CONFIG_NAME).is_file():
+            defects.append(f"{where}: cd target resolves to {proj}, which has "
+                           f"no {CONFIG_NAME} — no lanes to certify against")
+            return None, defects
+        return proj, defects
+    fallback = file_path.parent
+    if (fallback / CONFIG_NAME).is_file():
+        return fallback, defects
+    defects.append(f"{where}: pointer declares no 'cd {{worktree}}/<project>' "
+                   f"and {fallback} has no {CONFIG_NAME} — cannot resolve the "
+                   f"judged project")
+    return None, defects
+
+
+def _pointer_defects(text: str, file_path: Path, root: Path, where: str,
+                     lanes_cache: dict) -> tuple[list[str], int]:
+    """Validate every Run-Gate invocation and reject retired script pointers.
+    Returns (defects, invocations_checked)."""
+    defects: list[str] = []
+    checked = 0
+    if re.search(r"(?<![\w./-])(?:\./)?run-gate\.py(?![\w.-])", text):
+        defects.append(
+            f"{where}: invokes retired `run-gate.py`; install the Run-Gate "
+            "wheel and invoke its `run-gate` console command")
+    uses_worktree = "{worktree}" in text
+    proj, resolve_defects = _pointer_project_dir(text, file_path, root, where)
+    defects += resolve_defects
+    if proj is None:
+        return defects, 0
+    key = str(proj)
+    if key not in lanes_cache:
+        try:
+            (cfg, cfg_path, central, central_path, _cfg_sha,
+             _central_sha) = load_config_snapshot(proj)
+            assay_defaults = cfg.get("assay", central.get("assay", {}))
+            imported = {}
+            if "import" in assay_defaults:
+                repo, worktree, toplevel = resolve_repo_and_worktree(proj, None)
+                effective = effective_project_dir(proj, toplevel, worktree)
+                imported = discover_imported_assay_lanes(
+                    assay_defaults, cfg, central, cfg_path, central_path,
+                    repo, worktree, effective)
+            lanes_cache[key] = merge_lanes(
+                cfg.get("lanes", {}), central, proj, cfg_path, central_path,
+                assay_defaults, imported)
+        except GateError as exc:
+            lanes_cache[key] = None
+            defects.append(f"{where}: loading {proj / CONFIG_NAME}: {exc}")
+            return defects, 0
+    lanes = lanes_cache[key]
+    if lanes is None:
+        return defects, 0
+    for m in _INVOCATION_RE.finditer(text):
+        checked += 1
+        tokens = m.group(0).split()
+        positional: list[str] = []
+        carries_worktree = False
+        i = 1
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "--worktree":
+                carries_worktree = True
+                i += 2  # flag plus its value
+                continue
+            if tok.startswith("--worktree="):
+                carries_worktree = True  # equals-form counts (review fix)
+                i += 1
+                continue
+            if tok.startswith("-"):
+                i += 1
+                continue
+            positional.append(tok)
+            i += 1
+        # Discovery/verb invocations name no lane BY DESIGN (review fix): a
+        # `--list` discovery snippet or a reserved verb is legitimate
+        # consumer surface, not a missing lane — and needs no --worktree
+        # either (--list reads config beside the script, never a tree).
+        if len(positional) == 1 and positional[0] in _RESERVED_POINTER_VERBS:
+            continue
+        if not positional and any(tok in _DISCOVERY_FLAGS for tok in tokens):
+            continue
+        if uses_worktree and not carries_worktree:
+            defects.append(
+                f"{where}: pointer substitutes {{worktree}} but its run-gate "
+                f"invocation drops '--worktree {{worktree}}' — sub-steps would "
+                f"re-derive their own tree (the RG-1 silent false-PASS class)")
+        if not positional:
+            defects.append(f"{where}: run-gate invocation names no lane")
+        elif len(positional) > 1:
+            defects.append(f"{where}: unexpected trailing arguments "
+                           f"{positional[1:]!r} — a pointer names exactly one lane")
+        elif positional[0] not in lanes:
+            defects.append(
+                f"{where}: lane {positional[0]!r} is not declared in "
+                f"{proj / CONFIG_NAME} — known lanes: "
+                f"{', '.join(sorted(lanes)) or '(none)'}")
+    return defects, checked
+
+
+# ---------------------------------------------------------------------------
+# In-environment probes (RG-25/RG-26): ask the judge, never re-parse assay.toml
+# ---------------------------------------------------------------------------
+
+# The ONLY language→toolchain facts run-gate states, and it states them
+# reluctantly. Everything else about a lane is READ from `assay lanes --json`.
+# This table exists because assay's own docs/CONSUMERS.md says the fact lives
+# in prose and NOT in the inventory: "In this release, external_tools is ()
+# for every shipped adapter … a gate consumer should not build a
+# MISSING_EXTERNAL_TOOL preflight around this field expecting it to name
+# node/npm for a javascript lane — that check today has to come from
+# `language` itself". A language absent from this table produces a CAVEAT on
+# the report line, never silence: claiming a toolchain was verified when the
+# fact is unknown is the false-certification class AGENTS forbids.
+ASSAY_LANGUAGE_TOOLCHAIN = {
+    "javascript": ("node", "npm"),
+    "go": ("go",),
+}
+
+
+def extra_mount_flags() -> list[str]:
+    """Parse the operator's extra bind mounts once for lanes and probes."""
+    raw = os.environ.get(EXTRA_MOUNT_ENV_VAR, "")
+    if not raw:
+        return []
+    specs = raw.split(":")
+    if "" in specs:
+        fail(f"invalid ${EXTRA_MOUNT_ENV_VAR}: empty element in {raw!r}")
+    flags = []
+    for spec in specs:
+        if "=" not in spec or spec.count("=") != 1:
+            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {spec!r}: "
+                 "expected 'host=container'")
+        source, target = spec.split("=", 1)
+        if not source or not target:
+            fail(f"invalid ${EXTRA_MOUNT_ENV_VAR} entry {spec!r}: empty path")
+        flags += ["-v", f"{source}:{target}"]
+    return flags
+
+
+def resource_observer_docker_flags(lane: dict, environment: dict) -> list[str]:
+    """Mount only cgprofile's read-only resource-observer socket.
+
+    The observer protocol is a separate daemon listener; never mount the
+    control socket here. Validate the host object instead of allowing Docker
+    to create a missing bind source as an empty directory or file.
+    """
+    if lane.get("resource_observer") is None:
+        return []
+    if lane.get("resource_observer") != "cgprofile":
+        fail("lane resource_observer must be 'cgprofile'")
+    if lane.get("kind") not in ("assay", "command"):
+        fail("resource_observer='cgprofile' requires an assay or command lane "
+             "in an ephemeral environment")
+    if environment.get("mode") != "ephemeral":
+        fail("resource_observer='cgprofile' requires the lane's resolved "
+             "environment to have mode = 'ephemeral'")
+    if os.environ.get(EXTRA_MOUNT_ENV_VAR):
+        fail_infra(f"${EXTRA_MOUNT_ENV_VAR} is incompatible with an observer lane; "
+                   "extra mounts could expose host control interfaces")
+    socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
+    directory_path = socket_path.parent
+    docker_group_directory = directory_path.parent
+    try:
+        parent = os.lstat(directory_path)
+        observed = os.lstat(socket_path)
+    except OSError as exc:
+        fail_infra(f"cgprofile resource observer directory or socket is unavailable: "
+                   f"{directory_path}, {socket_path}: {exc}")
+    try:
+        docker_group_source = os.lstat(docker_group_directory)
+    except OSError as exc:
+        fail_infra("cannot inspect the host Docker group source "
+                   f"{docker_group_directory}: {exc}")
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != 0
+        or parent.st_mode & 0o022
+        or not parent.st_mode & 0o010
+    ):
+        fail_infra(f"cgprofile resource observer directory is not a safe "
+                   f"root-owned, group-searchable directory: {directory_path}")
+    if not stat.S_ISSOCK(observed.st_mode):
+        fail_infra(f"cgprofile resource observer path is not a Unix socket: "
+                   f"{socket_path}")
+    if observed.st_uid != 0 or observed.st_gid != parent.st_gid:
+        fail_infra("cgprofile resource observer socket ownership does not "
+                   "match its root-owned socket directory")
+    if (
+        not stat.S_ISDIR(docker_group_source.st_mode)
+        or docker_group_source.st_uid != 0
+    ):
+        fail_infra("cannot determine the host Docker group from the root-owned "
+                   f"cgprofile control directory: {docker_group_directory}")
+    if (
+        docker_group_source.st_gid == 0
+        or stat.S_IMODE(docker_group_source.st_mode) != 0o770
+    ):
+        fail_infra("host Docker group source must be root-owned, have a "
+                   "non-root group, and mode 0770: "
+                   f"{docker_group_directory}")
+    if observed.st_mode & 0o007 or not observed.st_mode & 0o020:
+        fail_infra("cgprofile resource observer socket must be group-connectable "
+                   "and not accessible to other users")
+    # `/run/cgprofile` is provisioned root:docker by the host setup unit, so
+    # its numeric GID is the host fact. `grp.getgrnam()` reads this container's
+    # group table, which can map the name to another numeric GID or omit it.
+    if observed.st_gid == docker_group_source.st_gid:
+        fail_infra("cgprofile observer must use its dedicated group, not the "
+                   "host docker group")
+    return [
+        "--mount",
+        f"type=bind,source={directory_path},target="
+        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly",
+        "--group-add", str(observed.st_gid),
+        "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}="
+        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET}",
+    ]
+
+
+def resource_observer_version_preflight(docker: str, daemon: str) -> None:
+    """Require a live cgprofile daemon that advertises observer contract 2.
+
+    The host socket's presence alone cannot distinguish a current observer
+    from an old daemon or a listener that failed to bind. Query the daemon's
+    control version before launching the judged lane, and refuse any response
+    that cannot establish the exact read-only observer capability Run-Gate
+    will mount.
+    """
+    version, reason = ProfilerClient(docker, daemon).version()
+    if version is None:
+        fail_infra(f"cgprofile resource-observer preflight failed: {reason}")
+    observer = version.get("resource_observer")
+    if not isinstance(observer, dict):
+        fail_infra("cgprofile daemon does not advertise a resource observer")
+    contract = observer.get("contract")
+    if type(contract) is not int or contract != 2:
+        fail_infra("cgprofile resource observer contract must be 2 "
+                   f"(got {contract!r})")
+    if observer.get("path") != CGPROFILE_RESOURCE_OBSERVER_SOURCE:
+        fail_infra("cgprofile resource observer advertises an unexpected "
+                   f"socket path: {observer.get('path')!r}")
+    if observer.get("listening") is not True:
+        fail_infra("cgprofile resource observer is not listening")
+
+
+def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
+                         worktree: Path, env_source: str, slice_name: str,
+                         script: str,
+                         resolved_container_name: str | None = None
+                         ) -> list[str]:
+    """The ONE way run-gate runs a short, synchronous, read-only command
+    INSIDE a lane's environment (RG-25's `assay lanes --json` inventory and
+    its `command -v` fitness checks; RG-26's base_source query).
+
+    It reuses the SAME reach-an-environment machinery the lane runners use —
+    `resolve_container_name()` for exec mode, `physical_path()` +
+    `dual_mount_flags()` for ephemeral — so there is exactly one place in the
+    tool that knows how to get inside an environment. It deliberately is NOT
+    the lane RUN form: a probe is attached and captured, where a judged lane
+    is detached (`-d` → `wait` → `logs`) precisely so its status cannot be
+    forged over a lying transport. That difference is safe here and only
+    here, because a probe's result is never a verdict — it becomes an
+    `[OK]`/`[FAIL]`/`[SKIP]` line in a preflight report, never a lane's
+    pass/fail. Ephemeral probes still pass `--cgroup-parent`: a container
+    THIS tool starts is placed on the host, never left at Docker's unconfined
+    default next to production work (AGENTS "Host cgroup placement"). Their
+    bind mounts and user also match the full ephemeral lane.
+    """
+    if not env:
+        # The built-in 'bare-host' environment IS this machine: there is no
+        # container to enter, and the same script answers the same question.
+        return ["bash", "-c", script]
+    if env.get("mode") == "exec":
+        name = resolved_container_name
+        if name is None:
+            name, _src, _remedy = resolve_container_name(env_name, env, repo,
+                                                         worktree, env_source)
+        return [docker, "exec", "--workdir", str(repo), name, "bash", "-c", script]
+    argv = [docker, "run", "--rm", "--init", "--cgroup-parent", slice_name,
+            *container_mount_flags(repo, worktree, env, with_state=True),
+            *extra_mount_flags()]
+    if env.get("user"):
+        # A path probe must run as the same user as the real lane: image root
+        # can write a root-owned synthetic parent that the app user cannot.
+        argv += ["--user", env["user"]]
+    argv += [env["image"], "bash", "-c", script]
+    return argv
+
+
+def _probe_slice(env: dict, env_source: str) -> str:
+    """Host and exec probes need no slice (this machine's placement is not
+    ours to set; docker exec can neither place nor cap). Ephemeral probes
+    resolve it through the SAME policy as a lane (R-10)."""
+    if not env or env.get("mode") == "exec":
+        return ""
+    return resolve_slice(env, env_source)[0]
+
+
+def assay_inventory(docker: str, lane: dict, env: dict, env_name: str,
+                    repo: Path, worktree: Path, env_source: str,
+                    project_dir: Path) -> tuple[dict | None, str | None]:
+    """(inventory document, None) or (None, why it could not be obtained).
+
+    RG-25: run-gate never parses `assay.toml` — it ASKS the judge, the same
+    way it already asks `--version`. "Could not ask" must never collapse into
+    "nothing is declared" (AGENTS "absence for emptiness"), so every failure
+    path returns a reason a report can print verbatim.
+    """
+    command = assay_command_text(lane)
+    setup = assay_source_setup(lane, worktree, project_dir)
+    probe = " && ".join([
+        f"cd {shlex.quote(str(project_dir))}", *setup,
+        f"{command} lanes --json --file assay.toml",
+    ])
+    argv = build_env_probe_argv(
+        docker, env, env_name, repo, worktree, env_source,
+        _probe_slice(env, env_source),
+        probe)
+    out = subprocess.run(argv, capture_output=True, text=True)
+    if out.returncode != 0:
+        tail = (out.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+        return None, (f"`assay lanes --json` did not run in environment "
+                      f"{env_name!r} (exit {out.returncode}: {tail}) — an assay "
+                      f"older than 3.2.0 has no inventory (B044), or the "
+                      f"source-backed assay could not be installed. run-gate "
+                      f"does not guess at a document it could not obtain")
+    try:
+        doc = json.loads(out.stdout)
+    except json.JSONDecodeError as exc:
+        return None, (f"`assay lanes --json` produced no usable JSON in "
+                      f"environment {env_name!r}: {exc}")
+    schema = doc.get("inventory_schema")
+    if schema != 1:
+        return None, (f"assay inventory_schema is {schema!r}, not 1 — this "
+                      f"run-gate reads schema 1 only; upgrade run-gate rather "
+                      f"than guessing at a document it does not understand")
+    return doc, None
+
+
+def discover_imported_assay_lanes(settings: dict, cfg: dict, central: dict,
+                                 cfg_path: Path, central_path: Path | None,
+                                 repo: Path, worktree: Path,
+                                 project_dir: Path) -> dict:
+    """RG-76: derive configured assay lanes from the judge's inventory.
+
+    The inventory is authoritative for lane names. This function does not
+    parse assay.toml and does not turn a failed probe into an empty list.
+    Explicit run-gate lanes are merged later and take precedence by name.
+    """
+    import_spec = settings.get("import")
+    if import_spec is None:
+        return {}
+    env_name = import_spec["environment"]
+    imported = import_spec["lanes"]
+    probe_lane = {
+        "kind": "assay", "environment": env_name,
+        "assay_lane": "__run_gate_inventory_probe__",
+        "assay_command": list(settings["command"]),
+        "pins": copy.deepcopy(settings["pins"]),
+    }
+    env, env_source = resolve_environment(probe_lane,
+                                         "__assay_import__", cfg, central,
+                                         cfg_path, central_path)
+    docker = shutil.which("docker")
+    if env and not docker:
+        fail_infra("assay lane import needs docker to ask the declared "
+                   "environment for `assay lanes --json`")
+    document, why = assay_inventory(docker, probe_lane, env, env_name,
+                                    repo, worktree, env_source, project_dir)
+    if document is None:
+        fail(f"[assay] import could not read the judge inventory: {why}")
+    entries = document.get("lanes")
+    if not isinstance(entries, list):
+        fail("[assay] import: assay inventory 'lanes' must be a list")
+    available: dict[str, dict] = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
+            fail("[assay] import: assay inventory contains a lane without a "
+                 "string name")
+        name = entry["name"]
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+            fail(f"[assay] import: assay lane name {name!r} cannot be used as "
+                 "a run-gate lane name")
+        if name in available:
+            fail(f"[assay] import: assay inventory repeats lane {name!r}")
+        available[name] = entry
+    wanted = sorted(available) if imported == "all" else list(imported)
+    missing = [name for name in wanted if name not in available]
+    if missing:
+        fail(f"[assay] import names lane(s) not present in assay inventory: "
+             f"{', '.join(missing)}")
+    return {
+        name: {"kind": "assay", "environment": env_name,
+               "assay_lane": name}
+        for name in wanted
+    }
+
+
+def assay_lane_toolchain(entry: dict) -> tuple[list[str], str | None]:
+    """(tools that must be on PATH, caveat or None) for one inventory entry.
+
+    READ from the inventory: `external_tools` and `argv0`. MAPPED from
+    `language` only through `ASSAY_LANGUAGE_TOOLCHAIN` (see its comment for
+    why that table has to exist at all). An unmapped language yields a
+    caveat, so the line never claims more than it checked.
+    """
+    language = entry.get("language") or ""
+    argv0 = entry.get("argv0")
+    tools = list(dict.fromkeys([
+        *ASSAY_LANGUAGE_TOOLCHAIN.get(language, ()),
+        *(entry.get("external_tools") or []),
+        *([argv0] if argv0 else []),
+    ]))
+    caveat = None
+    if language and language not in ASSAY_LANGUAGE_TOOLCHAIN:
+        caveat = (f"language {language!r} has no toolchain fact run-gate "
+                  f"knows — only argv0/external_tools were verified")
+    return tools, caveat
+
+
+def probe_missing_tools(docker: str, tools: list[str], env: dict,
+                        env_name: str, repo: Path, worktree: Path,
+                        env_source: str) -> tuple[list[str] | None, str | None]:
+    """(tools NOT on PATH inside the environment, None) or (None, why the
+    probe itself failed). The script always exits 0 and reports absence on
+    stdout, so a non-zero status means the PROBE broke — never 'everything is
+    present'."""
+    script = "; ".join(
+        f"command -v {shlex.quote(tool)} >/dev/null 2>&1 || echo {shlex.quote(tool)}"
+        for tool in tools)
+    argv = build_env_probe_argv(docker, env, env_name, repo, worktree,
+                                env_source, _probe_slice(env, env_source),
+                                script)
+    out = subprocess.run(argv, capture_output=True, text=True)
+    if out.returncode != 0:
+        tail = (out.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+        return None, (f"could not run `command -v` in environment "
+                      f"{env_name!r} (exit {out.returncode}: {tail})")
+    return out.stdout.split(), None
+
+
+def assay_toolchain_findings(lanes: dict, project_dir: Path, cfg: dict,
+                             central: dict, cfg_path: Path,
+                             central_path: Path | None,
+                             worktree_override: str | None = None
+                             ) -> list[tuple[str, str, str]]:
+    """RG-25: one (status, topic, detail) per `kind = "assay"` lane.
+
+    Statuses are doctor's own vocabulary. FAIL is reserved for a fact the
+    inventory actually established — a named tool absent from the
+    environment, or an `assay_lane` the judge does not declare. Everything
+    that means "I could not determine this" is SKIP with the reason, which is
+    also why an assay older than B044 can never turn a healthy project red.
+
+    RG-30: `worktree_override` (`doctor`/`--check-env`'s `--worktree`,
+    threaded through by their callers) resolves `repo`/`worktree` for THAT
+    tree — not the invoking checkout's — and relocates the probe's `cd`
+    target the same way RG-15 relocates a lane's own run: a probe that
+    mounted tree B's repo but `cd`ed into tree A's absolute path would not be
+    a probe of B, it would be a probe of nothing (or, coincidentally, of the
+    wrong directory).
+
+    RG-31: that resolution now goes through `resolve_worktree_scope` (the
+    same validated resolver `doctor` check 3 and `--check-env` already use),
+    not the run-path's lenient `resolve_repo_and_worktree` — an override
+    naming no real git worktree used to relocate the probe silently instead
+    of refusing, so the resulting SKIP blamed "assay older than 3.2.0"
+    instead of the real, already-known-elsewhere cause.
+    """
+    plan: list[dict] = []
+    assay_lanes = {n: l for n, l in sorted(lanes.items()) if l["kind"] == "assay"}
+    if not assay_lanes:
+        return []
+    docker = shutil.which("docker")
+    inventories: dict[tuple, tuple[dict | None, str | None]] = {}
+    probe_ctx: dict[str, tuple] = {}
+    # Pass 1 — ask the JUDGE. One inventory probe per (environment,
+    # assay command identity): lanes sharing an environment and source-backed
+    # judge ask once; different explicit external commands remain separate
+    # identities so their inventories cannot be confused.
+    for name, lane in assay_lanes.items():
+        topic = f"lane {name!r} toolchain"
+        env_name = lane_environment_name(lane)
+        try:
+            env, env_source = resolve_environment(lane, name, cfg, central,
+                                                  cfg_path, central_path)
+            if not env:
+                plan.append({"finding": (
+                    "SKIP", topic, "environment is the built-in 'bare-host' "
+                    "— its PATH is this machine's, and the lane's own run "
+                    "reports what is missing")})
+                continue
+            if not docker:
+                plan.append({"finding": (
+                    "SKIP", topic,
+                    "docker not on PATH — the environment cannot be probed")})
+                continue
+            # RG-31: route the override through the SAME validated
+            # resolver `doctor`/`--check-env` already use (RG-30's
+            # `resolve_worktree_scope`), not the run-path's lenient
+            # `resolve_repo_and_worktree` (no upfront validation — it trusts
+            # a downstream `git`/mount failure to catch a bad tree). Here
+            # there is no such natural failure: a nonexistent or non-git
+            # `--worktree` silently produced a `probe_dir` nothing mounted,
+            # and the resulting SKIP blamed "assay older than 3.2.0" instead
+            # of the real cause. A bad override now raises the same
+            # `GateError` `doctor` check 3 already reports, caught below with
+            # a SKIP that names the tree, not a guess about assay's version.
+            repo, worktree, probe_dir, _ = resolve_worktree_scope(
+                project_dir, worktree_override, "assay-lane toolchain fitness")
+            key = (env_name, assay_command_identity(lane))
+            if key not in inventories:
+                inventories[key] = assay_inventory(
+                    docker, lane, env, env_name, repo, worktree, env_source,
+                    probe_dir)
+            doc, why = inventories[key]
+            if doc is None:
+                plan.append({"finding": ("SKIP", topic, why)})
+                continue
+            entry = next((e for e in doc.get("lanes", [])
+                          if e.get("name") == lane["assay_lane"]), None)
+            if entry is None:
+                declared = ", ".join(sorted(e.get("name", "?")
+                                            for e in doc.get("lanes", []))) or "(none)"
+                plan.append({"finding": (
+                    "FAIL", topic,
+                    f"assay lane {lane['assay_lane']!r} is not declared in "
+                    f"assay.toml (declared: {declared}) — this lane can only "
+                    f"ERROR at run time")})
+                continue
+            tools, caveat = assay_lane_toolchain(entry)
+            if not tools:
+                plan.append({"finding": (
+                    "OK", topic,
+                    "assay declares no toolchain requirement for this lane")})
+                continue
+            probe_ctx[env_name] = (docker, env, repo, worktree, env_source)
+            plan.append({"topic": topic, "env": env_name, "tools": tools,
+                         "caveat": caveat, "source": env_source})
+        except GateError as exc:
+            plan.append({"finding": ("SKIP", topic, str(exc))})
+    # Pass 2 — ONE `command -v` probe per ENVIRONMENT, over the UNION of every
+    # lane's tools. Probing per lane cost a container per lane on a shared
+    # environment (measured: 4 containers for 3 lanes on one environment) and
+    # made R-30's own cost claim false; the answer is a property of the
+    # environment's PATH, not of the lane asking.
+    absent: dict[str, tuple[set[str] | None, str | None]] = {}
+    for env_name, (docker_bin, env, repo, worktree, env_source) in probe_ctx.items():
+        union = sorted({tool for step in plan
+                        if step.get("env") == env_name for tool in step["tools"]})
+        # No GateError guard here on purpose: an environment only reaches
+        # probe_ctx after pass 1 already built a probe argv for it through the
+        # same `_probe_slice`/`dual_mount_flags` path with the same inputs, so
+        # a refusal would have been caught (and reported) there. A defensive
+        # except would be a branch no test could ever redden.
+        missing, why = probe_missing_tools(docker_bin, union, env, env_name,
+                                           repo, worktree, env_source)
+        absent[env_name] = (None if missing is None else set(missing), why)
+    findings: list[tuple[str, str, str]] = []
+    for step in plan:
+        if "finding" in step:
+            findings.append(step["finding"])
+            continue
+        gone, why = absent[step["env"]]
+        if gone is None:
+            findings.append(("SKIP", step["topic"], why))
+            continue
+        missing = [tool for tool in step["tools"] if tool in gone]
+        if missing:
+            findings.append(("FAIL", step["topic"],
+                             f"needs {', '.join(missing)} in environment "
+                             f"{step['env']!r} ({step['source']}) — assay would "
+                             f"reach MISSING_EXTERNAL_TOOL/NO_MEASUREMENT "
+                             f"mid-run instead"))
+        else:
+            caveat = step["caveat"]
+            findings.append(("OK", step["topic"],
+                             f"{', '.join(step['tools'])}"
+                             f"{f' ({caveat})' if caveat else ''}"))
+    return findings
+
+
+BASE_TOKEN = "{base}"
+ASSAY_INVENTORY_FLOOR = "3.2.0"  # the assay that first ships `lanes --json` (B044)
+
+# Internal vbpub consumers deliberately do not carry a versioned assay
+# artifact. A missing `assay_command` means: install the assay package from
+# the SELECTED worktree and invoke it through that same Python interpreter.
+# The explicit-command branch remains for external/copy-of-run-gate consumers,
+# where an immutable artifact is the correct boundary.
+ASSAY_SOURCE_PYTHON = "/opt/tester-venv/bin/python"
+
+
+def assay_command_text(lane: dict) -> str:
+    """Return the shell command for the lane's assay judge.
+
+    Internal lanes omit `assay_command`; their command is bound by
+    `assay_source_setup`, not by a versioned filename in run-gate.toml.
+    Explicit commands are retained for consumers outside vbpub's shared
+    source tree, which may need an immutable wheel/zipapp boundary.
+    """
+    if lane.get("assay_command") is not None:
+        return shlex.join(lane["assay_command"])
+    return '"$ASSAY_PYTHON" -I -m assay.cli'
+
+
+def assay_identity_mode(lane: dict) -> str | None:
+    """Name the evidence contract selected for an Assay lane."""
+    if lane.get("kind") != "assay":
+        return None
+    return "source" if lane.get("assay_command") is None else "artifact"
+
+
+def assay_source_setup(lane: dict, worktree: Path,
+                       project_dir: Path) -> list[str]:
+    """Shell setup for the source-backed internal assay command.
+
+    The setup runs inside the actual lane environment, after the selected
+    worktree has been mounted.  It uses the tester-unified venv when present;
+    the python3 fallback keeps bare-host run-gate invocations honest.  No
+    network or dependency resolution is allowed: assay's runtime closure is
+    stdlib-only and the editable install is from the mounted worktree. The
+    installer runs in isolated mode from `/` so a project-local `pip.py` or
+    `PYTHONPATH` cannot replace pip; Assay's import identity is checked without
+    importing package code, after returning to the consumer directory.
+    """
+    if lane.get("assay_command") is not None:
+        return []
+    source = shlex.quote(str(worktree / "assay"))
+    source_root = shlex.quote(str(worktree))
+    consumer = shlex.quote(str(project_dir))
+    source_python = shlex.quote(ASSAY_SOURCE_PYTHON)
+    verify_import = shlex.quote(
+        "import importlib.machinery,importlib.util,pathlib,sys; "
+        "consumer=pathlib.Path(sys.argv[1]).resolve(); "
+        "source_root=pathlib.Path(sys.argv[2]).resolve(); "
+        "shadow=importlib.machinery.PathFinder.find_spec("
+        "'assay',[str(consumer)]); "
+        "spec=importlib.util.find_spec('assay'); "
+        "expected=source_root/'assay/src/assay/__init__.py'; "
+        "actual=(pathlib.Path(spec.origin).resolve() "
+        "if spec is not None and spec.origin else None); "
+        "namespace=(shadow is not None and shadow.origin is None and "
+        "shadow.loader is None and shadow.submodule_search_locations is not None); "
+        "raise SystemExit((shadow is not None and not namespace) or "
+        "actual != expected)")
+    return [
+        f'if [ -x {source_python} ]; then '
+        f'ASSAY_PYTHON={source_python}; '
+        'elif command -v python3 >/dev/null 2>&1; then '
+        'ASSAY_PYTHON=$(command -v python3); '
+        'else echo "run-gate: source-backed assay needs python3 or '
+        '/opt/tester-venv/bin/python" >&2; exit 2; fi',
+        f'test -f {source}/pyproject.toml || '
+        f'{{ echo "run-gate: selected worktree has no assay/pyproject.toml" '
+        f'>&2; exit 2; }}',
+        'echo "run-gate: installing assay from the selected worktree source" >&2',
+        f'if ! (cd / && "$ASSAY_PYTHON" -I -m pip install --quiet '
+        f'--disable-pip-version-check --no-input --no-deps '
+        f'--no-build-isolation --editable {source}); then '
+        'echo "run-gate: editable assay install failed" >&2; exit 2; fi',
+        f'cd {consumer}',
+        f'if ! "$ASSAY_PYTHON" -I -c {verify_import} '
+        f'{consumer} {source_root}; then '
+        'echo "run-gate: imported assay package is not from the selected '
+        'worktree source" >&2; exit 2; fi',
+    ]
+
+
+def assay_command_identity(lane: dict) -> tuple[str, ...]:
+    """Identity used only for batching read-only inventory probes."""
+    if lane.get("assay_command") is None:
+        return ("worktree-source",)
+    return tuple(lane["assay_command"])
+# RG-51: the well-known filename `ciu worktree create|add|adopt` writes at the
+# CIU root of every worktree it manages. Consumed here as a FILE FORMAT, never
+# as a Python import: run-gate-project and ciu are separate projects, so this
+# boundary must not depend on the ciu package. The supported Run-Gate CLI is
+# installed from its wheel. Absent/unreadable/any-other-shape is an
+# ordinary state, not an error (see `recorded_worktree_base`).
+WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
+# RG-52: the gate-safe charset for a COMPARISON BASE, whatever supplies it —
+# deliberately NOT git's own ref grammar, which permits `;`, backticks, `$`,
+# `|`, `&` and quotes. A resolved base is substituted into a conjunction
+# lane's inner `bash -c` through `{base}` (R-25), where `shlex.join` quotes
+# the OUTER element but that element IS the script the inner shell re-parses,
+# so `git branch 'main;touch$IFS/tmp/PWNED'` — a legal branch name — executes.
+# The leading character excludes `-` on POSITION grounds (an option prefix to
+# the sub-invoked `run-gate --base ...`), exactly as GATE_SAFE_PATH_RE does
+# for `{worktree}` under RG-5.
+GATE_SAFE_BASE_RE = re.compile(r"\A[A-Za-z0-9._/+@][A-Za-z0-9._/+@-]*\Z")
+#: The only shape ciu's `fork_point_sha` (CIU-106) may take. Always inside
+#: GATE_SAFE_BASE_RE, so handing it downstream needs no separate guard.
+FULL_SHA_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+
+
+def read_instance_record(record: Path) -> dict | None:
+    """The JSON **object** in `record`, or None when it is not one.
+
+    Never raises, for any file content or filesystem state. The `is_file()`
+    guard is load-bearing rather than a shortcut for "exists": a FIFO at this
+    path would make `read_text` BLOCK FOREVER before the gate discloses
+    anything (worse than a traceback — there is nothing to diagnose from), and
+    a character device like `/dev/zero` would read until MemoryError.
+    `RecursionError` is in the except tuple because deeply nested JSON raises
+    it and it is a `RuntimeError`, NOT a `ValueError` — the one escape route a
+    plain `(OSError, ValueError)` leaves open.
+    """
+    if not record.is_file():
+        return None
+    try:
+        doc = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError):
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def local_branch_ref_name(worktree: Path, ref: str) -> str | None:
+    """The full `refs/heads/…` name `ref` resolves to in `worktree`, or None
+    when it does not name a LOCAL branch there.
+
+    A raw commit id resolves with exit 0 and EMPTY output under
+    `--symbolic-full-name`, so the returncode alone is not the test — the
+    output has to actually be a branch ref. `refs/tags/…` and
+    `refs/remotes/…` are rejected along with everything else outside
+    `refs/heads/`: a tag is frozen like a commit id, and a remote-tracking
+    ref is the very thing RG-51 exists to stop defaulting to — accepting one
+    here and announcing it as an improvement over `@{upstream}` would be the
+    same stale ref wearing a better disclosure line. `--end-of-options` stops
+    a `--`-leading `base_ref` from being read as an option. The whole call is
+    wrapped because a string carrying a NUL byte or a lone surrogate raises
+    out of `subprocess` itself, and this function may never raise.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--symbolic-full-name", "--verify",
+             "--quiet", "--end-of-options", ref],
+            cwd=str(worktree), capture_output=True, text=True)
+    except (OSError, ValueError):
+        return None
+    full = proc.stdout.strip()
+    if proc.returncode != 0 or not full.startswith("refs/heads/"):
+        return None
+    return full
+
+
+def judged_diff_is_empty(worktree: Path, base: str) -> bool:
+    """True when `base` and HEAD have the SAME TREE — the judged diff would
+    be empty even though they are different commits.
+
+    The containment check below answers a question about the commit GRAPH
+    ("is HEAD an ancestor of the base"), which is not the same question as
+    "is there anything to judge". A branch that committed work and then
+    REVERTED it has a real fork point, a merge-base that has not moved, and
+    an ancestry relation in neither direction — every graph clause passes —
+    yet `git diff base..HEAD` is empty, and `tools/coverage_gate.py` scores
+    zero changed executable lines as `0/0 = 100%`: a PASS on a lane that
+    examined nothing. Nothing ESCAPES the judge there (there is no work), so
+    this is not the false-green class the clauses above exist for, but it is
+    another way into RG-53, and refusing costs only a fall back to the wider
+    `@{upstream}` base — which has something to judge.
+
+    FAIL-CLOSED: any git error (returncode not 0 or 1, or an exception)
+    reads as "empty", i.e. refuses the record. A base this function cannot
+    speak about is not a base this reader should hand a judge.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "diff", "--quiet", "--end-of-options", base, "HEAD"],
+            cwd=str(worktree), capture_output=True, text=True)
+    except (OSError, ValueError):
+        return True
+    if proc.returncode == 1:          # differences exist — there IS work
+        return False
+    return True                       # 0 == identical, anything else == error
+
+
+def base_already_contains_head(worktree: Path, ref: str) -> bool:
+    """True when HEAD is already an ANCESTOR of `ref` (or is `ref`) — i.e.
+    `merge-base(ref, HEAD)` is HEAD itself and this tree has committed
+    nothing of its own.
+
+    Note what this tests and what it does not: it is a question about the
+    commit GRAPH, so it is exact for "no commits of my own" and says nothing
+    about whether those commits CHANGED anything (see `judged_diff_is_empty`,
+    which runs after it and logically subsumes it — containment implies
+    identical trees, never the converse, verified against the real functions
+    rather than derived). It is kept, and kept FIRST, because it names a
+    different and far more common cause, and answers from the graph without
+    diffing two trees.
+
+    Being a live branch is NECESSARY for a recorded base but not sufficient:
+    a merged-but-not-torn-down worktree has a perfectly real `base_ref =
+    "main"` that local `main` has since incorporated, and 4 of the 7 real ciu
+    worktrees in this estate were in exactly that state when this check was
+    written. An assay lane would then reach assay's own `BASE_IS_HEAD`
+    refusal three layers down, naming neither the record nor the remedy; a
+    `kind = "command"` lane has no such guard at all and its diff-coverage
+    judge scores zero changed lines as `0/0 = 100%` — a SILENT FALSE GREEN.
+    dstdns's `scripts/gate-base.sh` (case 3) is the estate's prior art for
+    exactly this refusal.
+
+    FAIL-CLOSED: any error answers True (reject the record). A base that
+    cannot be shown to leave something to judge must not displace
+    `@{upstream}`, and falling back is always the pre-RG-51 behaviour.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", "HEAD", "--", ref],
+            cwd=str(worktree), capture_output=True, text=True)
+    except (OSError, ValueError):
+        return True
+    if proc.returncode == 0:
+        return True                      # HEAD is contained in ref
+    if proc.returncode == 1:
+        return False                     # genuinely divergent — usable
+    return True                          # 128 &c: could not tell, so refuse
+
+
+def merge_base_of(worktree: Path, ref: str) -> str | None:
+    """`git merge-base <ref> HEAD` in `worktree`, or None when there is no
+    common history (exit 1) or git could not answer. Never raises."""
+    try:
+        proc = subprocess.run(
+            ["git", "merge-base", "--end-of-options", ref, "HEAD"],
+            cwd=str(worktree), capture_output=True, text=True,
+            env=host_git_environment())
+    except (OSError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def current_branch_ref(worktree: Path) -> str | None:
+    """`worktree`'s checked-out branch as a full `refs/heads/…` name, or None
+    on a detached HEAD. Deliberately NOT `git_out`: a detached HEAD is an
+    ordinary state to report, not an infrastructure failure to abort on — and
+    like every other reader on this path it may never raise, so a branch name
+    that is not valid UTF-8 (git permits one) or a missing `git` answers None
+    rather than aborting the run with a traceback."""
+    try:
+        proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
+                              cwd=str(worktree), capture_output=True,
+                              text=True, env=host_git_environment())
+    except (OSError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def usable_recorded_base(worktree: Path, doc: dict) -> tuple[str | None, str]:
+    """(the `base_ref` this record can supply for `worktree`, else why not).
+
+    Every rejection below closes a way the recorded ref would be WORSE than
+    the `@{upstream}` fallback it is being preferred over. All of them
+    DEGRADE (the caller falls back and says so); none raises:
+
+    1. **Not a usable string.** Missing, blank, or not a `str` at all.
+    2. **Not gate-safe ref text** (`GATE_SAFE_BASE_RE`, shared with RG-52's
+       `check_base_charset` — this path DEGRADES where the flag REFUSES,
+       because a file must never abort a gate run). Git ref names legally
+       permit `;`, backtick, `$`, `|`, `&`, quotes and more. RG-52 closes the
+       inner-shell hole itself, on the `--base`/`{base}` path, and since
+       round 3 this function hands back the fork COMMIT rather than the
+       recorded ref — so a recorded string can no longer reach shell text at
+       all. What this clause still buys is therefore defence in depth plus
+       two live concerns of its own: keeping NUL bytes and lone surrogates
+       (which raise out of `subprocess` itself) away from git, and keeping a
+       leading `-` from being read by git as an option. It also keeps RG-51
+       from being the reason a future refactor re-widens that hole from "an
+       operator's own command line" to "a git-excluded JSON file `git status`
+       never shows". Every real ref shape (`main`, `feature/x`,
+       `release-1.2`) still passes.
+    3. **The record no longer describes this tree.** ciu's own reader refuses
+       a record whose `branch` disagrees with git's registration; so does
+       this one. An operator who reuses a ciu worktree for a second task
+       (`git checkout -B other origin/release-1`) leaves a record still
+       naming the FIRST task's base, which would widen the judged diff to
+       everything since that release branch diverged. `git_worktree_path` is
+       deliberately NOT compared — path identity is unreliable across bind
+       mounts and symlinks, while `branch` is the field that actually decides
+       the diff. A record with NO usable `branch` (absent, blank, not a
+       string — shapes ciu itself never writes) SKIPS this clause rather
+       than failing it: the omission cannot make the base narrower, and
+       every clause below still has to pass.
+    4. **`base_ref` does not name a LOCAL branch in this tree.** `ciu
+       worktree adopt` records the adopted checkout's HEAD — a FROZEN COMMIT
+       ID — and a tag, a deleted or renamed ref and a remote-tracking ref are
+       all unusable for their own reasons (see `local_branch_ref_name`).
+    5. **`merge-base(base_ref, HEAD)` no longer equals the recorded
+       `fork_point_sha`** (ciu CIU-106) — or there is no fork point recorded
+       at all, or no common history. This is the clause round 3 showed the
+       others cannot supply: once the base has absorbed this branch,
+       `merge-base` moves to the pre-merge branch tip, and in the
+       fast-forward variant nothing derivable from `base_ref` distinguishes
+       that from a healthy fork. EQUALITY rather than an ordering test,
+       because a base gaining UNRELATED commits leaves `merge-base` unmoved
+       and so already passes. FAIL CLOSED on absence: `adopt` never records
+       one, nor did any ciu before CIU-106, so those worktrees keep their
+       previous `@{upstream}` behaviour and the caller says so.
+    6. **The base already contains HEAD.** Being a live branch is NECESSARY
+       but NOT SUFFICIENT: a merged-but-not-torn-down worktree has a real
+       `base_ref = "main"` that local `main` has since absorbed, so
+       `merge-base` is HEAD and this tree has committed nothing of its own.
+       See `base_already_contains_head` — this is the FALSE-GREEN direction.
+       It also covers the tree's own branch and the literal `HEAD`, but NOT
+       the adopt SHA (clause 4 catches that: such a SHA is an ANCESTOR of
+       HEAD once any commit follows the adopt, so this clause waves it
+       through), and NOT a base that absorbed this branch before the branch
+       moved on again — clause 5 is what catches that. Clauses 5 and 6 do not
+       subsume each other: a worktree that has committed nothing of its own
+       has `fork == merge-base == HEAD`, passes clause 5, and is caught only
+       here. Verified against the real function, not derived.
+    7. **The fork point and HEAD have the same TREE.** Clause 6 asks the
+       commit GRAPH a question; this one asks whether there is anything to
+       JUDGE, which is not the same question — a branch that committed work
+       and then reverted it passes every clause above and still produces an
+       empty diff, which `tools/coverage_gate.py` scores as `0/0 = 100%`.
+       Nothing ESCAPES the judge there (there is no work), so this is not the
+       false-green class the clauses above exist for; it is another inlet
+       into RG-53, and refusing costs only a fall back to a base that HAS
+       something to judge. This one DOES logically subsume clause 6
+       (containment implies identical trees, never the converse — verified
+       against the real functions); clause 6 is kept, and kept first, because
+       it names a different and far more common cause and answers from the
+       graph without diffing two trees.
+    """
+    base = doc.get("base_ref")
+    if not isinstance(base, str) or not base.strip():
+        return None, "its 'base_ref' is missing, blank, or not a string"
+    base = base.strip()
+    if not GATE_SAFE_BASE_RE.match(base):
+        return None, (f"its base_ref {base!r} is not gate-safe ref text — a "
+                      f"ref carrying shell metacharacters, or a leading '-', "
+                      f"is substituted verbatim into a conjunction lane's "
+                      f"inner shell (RG-52)")
+    recorded_branch = doc.get("branch")
+    current = current_branch_ref(worktree)
+    if isinstance(recorded_branch, str) and recorded_branch.strip():
+        expected = f"refs/heads/{recorded_branch.strip()}"
+        if expected != current:
+            return None, (f"it describes branch {recorded_branch.strip()!r}, "
+                          f"but this tree is on {current or 'a detached HEAD'}"
+                          f" — the record no longer describes it")
+    full = local_branch_ref_name(worktree, base)
+    if full is None:
+        return None, (f"its base_ref {base!r} does not name a local branch in "
+                      f"this tree — a frozen commit id (what `ciu worktree "
+                      f"adopt` records), a tag, a remote-tracking ref, or a "
+                      f"deleted/renamed one; only a local branch both "
+                      f"self-updates through merge-base and escapes the "
+                      f"remote-tracking staleness RG-51 is about")
+    fork = doc.get("fork_point_sha")
+    if not isinstance(fork, str) or not FULL_SHA_RE.fullmatch(fork):
+        return None, (f"it records no usable 'fork_point_sha' (ciu CIU-106); "
+                      f"without the commit {base!r} pointed at when this tree "
+                      f"was forked, a moved base cannot be told from a live "
+                      f"one — `ciu worktree create` records it since "
+                      f"CIU-106, `adopt` never does")
+    seen = merge_base_of(worktree, base)
+    if seen is None:
+        return None, (f"merge-base of {base!r} with HEAD could not be "
+                      f"computed in this tree (no common history, or git "
+                      f"could not answer)")
+    if seen != fork:
+        return None, (f"the shared history of {base!r} and this tree has "
+                      f"MOVED since the record was written: merge-base is "
+                      f"now {seen[:12]}, the recorded fork point is "
+                      f"{fork[:12]}. Whichever way it moved — {base!r} "
+                      f"absorbed this branch (a merge or a fast-forward), or "
+                      f"this branch took {base!r} in (a merge or a rebase), "
+                      f"or the record describes a different tree — judging "
+                      f"against the new merge-base could silently drop work "
+                      f"this branch really did, so the record is spent")
+    if base_already_contains_head(worktree, base):
+        return None, (f"its base_ref {base!r} ({full}) already contains this "
+                      f"tree's HEAD, so merge-base would be HEAD and the lane "
+                      f"would judge NOTHING — this tree has committed nothing "
+                      f"of its own since it was forked")
+    if judged_diff_is_empty(worktree, fork):
+        return None, (f"this tree's HEAD and its fork point {fork[:12]} have "
+                      f"the SAME CONTENT, so the lane would judge an EMPTY "
+                      f"diff and a changed-line floor would pass on nothing "
+                      f"(0/0) — a branch whose work has been reverted, or "
+                      f"one whose commits changed no file")
+    # The verified FORK COMMIT, not the branch name: `seen == fork` has just
+    # been established, so this is the same base either spelling resolves to
+    # RIGHT NOW — but an OID cannot be moved by another session between here
+    # and the judge's own `merge-base` minutes later (container start, pin
+    # verification, suite run). Every other source on this path already hands
+    # down an immutable commit; this one now does too.
+    return fork, ""
+
+
+def recorded_worktree_base(worktree: Path, *candidates: Path
+                           ) -> tuple[str | None, Path | None, str]:
+    """RG-51: (usable `base_ref`, the record it came from, why it was
+    rejected) for the judged tree `worktree`.
+
+    `ciu` records the EXACT `--base` ref a managed worktree was forked from
+    (`ciu worktree create|add --base <ref>`, default `main`) in a JSON file at
+    the worktree's CIU root — "what this tree actually forked from", which is
+    the fact a changed-line judgment on a feature branch wants and which
+    `@{upstream}` only approximates while origin stays in sync with local
+    work.
+
+    `candidates` are directories, searched IN ORDER, because ciu writes the
+    record "at the target CIU root, which can be below the Git worktree root
+    in a monorepo": callers pass the judged worktree root first, then the
+    effective project dir inside it. An unusable record does not stop the
+    search — a later candidate may hold a good one — but the FIRST rejection
+    is carried out so the caller can say so.
+
+    Three outcomes: `(ref, record, "")` usable; `(None, record, why)` a record
+    exists but cannot be used, which the caller DISCLOSES (RG-51's other half
+    was that staleness must be visible, and a silently-ignored record is the
+    same silence in a new place); `(None, None, "")` no record at all — the
+    ordinary case for a plain checkout (`ciu worktree adopt` structurally
+    refuses the primary worktree, and the file is git-excluded, so it can
+    never arrive there by checkout) and for any worktree ciu does not manage.
+
+    Nothing here raises. This is a better DEFAULT, never a requirement: a
+    malformed record must not be able to abort a gate run.
+    """
+    rejected: tuple[Path, str] | None = None
+    seen: set[Path] = set()
+    for directory in candidates:
+        record = directory / WORKTREE_INSTANCE_RECORD
+        # The two candidates COINCIDE whenever the project is the repo root;
+        # probing the same path twice would double every git call below for
+        # nothing.
+        if record in seen:
+            continue
+        seen.add(record)
+        # "Is there a record here at all" is decided ONCE, up front: absent is
+        # the overwhelmingly common case and says nothing worth printing,
+        # while a file that EXISTS and cannot be used has to be reported.
+        if not record.is_file():
+            continue
+        doc = read_instance_record(record)
+        if doc is None:
+            why = "it is not readable as a JSON object"
+        else:
+            base, why = usable_recorded_base(worktree, doc)
+            if base is not None:
+                return base, record, ""
+        if rejected is None:
+            rejected = (record, why)
+    if rejected is None:
+        return None, None, ""
+    return None, rejected[0], rejected[1]
+
+
+def derive_upstream_base(worktree: Path) -> str | None:
+    """`git merge-base HEAD @{upstream}` in the judged tree, or None when the
+    tree has no upstream. Deliberately NOT `git_out` — a missing upstream is
+    an ordinary state this function must report, not an infrastructure
+    failure it should abort on."""
+    proc = subprocess.run(["git", "merge-base", "HEAD", "@{upstream}"],
+                          cwd=str(worktree), capture_output=True, text=True,
+                          env=host_git_environment())
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def check_base_charset(base: str) -> None:
+    """RG-52: refuse a comparison base that is not gate-safe, BEFORE it can
+    reach `{base}` substitution and an inner `bash -c`.
+
+    The exact counterpart of `check_worktree_charset` (RG-5) for the other
+    value consumer pointers embed into shell strings, and refused for the
+    same reason: `shlex.join` quotes the argv ELEMENT, but a conjunction
+    lane's element is itself a script the inner shell re-parses, so
+    `--base 'main;touch /tmp/PWNED'` runs `touch` — on a `bare-host` lane,
+    on the real host. Demonstrated against the real substitution functions
+    during RG-51's round-2 review.
+
+    A REFUSAL here, not a silent fallback: `--base` is an operator's explicit
+    argument, and the estate's rule for an explicit argument that cannot be
+    honoured safely is to say so (the recorded-record path degrades instead,
+    because a file must never be able to abort a gate run — see
+    `usable_recorded_base`). Both share `GATE_SAFE_BASE_RE`.
+    """
+    if GATE_SAFE_BASE_RE.match(base):
+        return
+    if base.startswith("-"):
+        # As in RG-5: '-' is legal LATER in a ref, so naming it an
+        # "offending character" would misdescribe a POSITION problem.
+        fail(f"comparison base {base!r} is not gate-safe: it starts with "
+             f"'-', which a sub-invoked `run-gate --base ...` would parse "
+             f"as an option prefix, not a ref — use the full ref name")
+    bad = sorted({c for c in base
+                  if not re.fullmatch(r"[A-Za-z0-9._/+@-]", c)})
+    fail(f"comparison base {base!r} is not gate-safe (offending "
+         f"character(s): {' '.join(repr(c) for c in bad)}): a conjunction "
+         f"lane substitutes {BASE_TOKEN} into a shell string, so a base with "
+         f"whitespace or shell metacharacters is refused (RG-52) — git "
+         f"permits such ref names, this gate does not")
+
+
+def resolve_comparison_base(lane_name: str, base_flag: str | None,
+                            worktree: Path, project_dir: Path,
+                            trunk: str | None = None
+                            ) -> tuple[str, str]:
+    """(ref, where it came from) for a lane that NEEDS a base. `--base` wins;
+    otherwise the ref a ciu-managed worktree RECORDED as its own fork point
+    (RG-51); otherwise the judged tree's own merge-base with its upstream. No
+    fallback to HEAD or to a default branch name: a changed-line judgment
+    whose base was guessed is not a changed-line judgment (assay's own rule,
+    B019/A-328), so absence refuses.
+
+    RG-51 inserted the middle step and changed NOTHING else. `--base` still
+    wins outright, and a tree with no worktree record still reaches the exact
+    `@{upstream}` behaviour (and the exact refusal) it always had — the
+    primary checkout included. The reason the recorded ref goes FIRST: under a
+    "batch commits locally, push later" policy `@{upstream}` is a
+    remote-tracking ref that drifts behind local work without anyone touching
+    config (measured at 85 and 88 commits behind in two projects the same
+    week), so the DEFAULT path silently reproduced the stale-base hazard that
+    `base_source = "request"` exists to escape (assay README, "Pitfall: a
+    `judge.base` literal pointing at a remote-tracking ref rots silently").
+    The recorded `base_ref` is typically a LOCAL branch (`main`); what is
+    handed down, though, is the verified fork COMMIT, so nothing can move it
+    between the check here and the judge's own resolution minutes later. This
+    picks a better VALUE and leaves the resolution mechanism it feeds
+    untouched — which also bounds what it can promise: assay's `resolve_base`
+    does NOT always compute `merge-base(base, HEAD)`. When HEAD is a merge
+    commit it returns HEAD's FIRST PARENT and discards the supplied base
+    entirely (assay B008). That predates this function, is unaffected by it,
+    and happens identically under `--base`; see RG-54.
+    """
+    if base_flag:
+        check_base_charset(base_flag)
+        return base_flag, "--base"
+    if trunk and current_branch_ref(worktree) == f"refs/heads/{trunk}":
+        try:
+            graph = git_out("rev-list", "--parents", "-n", "1", "HEAD",
+                            cwd=worktree).split()
+        except GateError as exc:
+            fail_infra(f"cannot inspect HEAD on declared trunk {trunk!r}: {exc}")
+        if len(graph) < 3:
+            raise GateNotRunError(
+                "no-base",
+                f"lane {lane_name!r} delegates its comparison base, but HEAD "
+                f"on declared trunk {trunk!r} is not a merge commit — run the "
+                "gate on the trunk merge commit or pass --base REF")
+        return graph[1], "trunk-merge-first-parent"
+    recorded, record, why = recorded_worktree_base(worktree, worktree,
+                                                   project_dir)
+    if recorded is not None:
+        # R-05: a default that can differ by tree says which tree and from
+        # what, before anything runs. The ref that was NOT taken is named too
+        # — seeing both is how an operator notices origin has drifted, which
+        # is the whole reason this default moved.
+        upstream = derive_upstream_base(worktree)
+        instead = (f"instead of merge-base HEAD @{{upstream}} ({upstream})"
+                   if upstream else "(merge-base HEAD @{upstream} yields "
+                                    "nothing here — no upstream, or no common "
+                                    "history with it)")
+        print(f"run-gate: {record} pins this tree's fork point at "
+              f"{recorded} (its base_ref still resolves there) — using that "
+              f"COMMIT {instead}", flush=True)
+        return recorded, f"{WORKTREE_INSTANCE_RECORD} fork point"
+    if record is not None:
+        # A record that exists and is NOT used is exactly the silence RG-51
+        # objects to; say so rather than quietly rotting back to @{upstream}.
+        print(f"run-gate: ignoring {record}: {why}", flush=True)
+    ref = derive_upstream_base(worktree)
+    if ref is None:
+        detail = (f"; {record} was found but ignored: {why}"
+                  if record is not None else "")
+        raise GateNotRunError(
+            "no-base",
+            f"lane {lane_name!r} delegates its comparison base; pass "
+            f"--base REF (worktree has no upstream){detail}")
+    return ref, "merge-base HEAD @{upstream}"
+
+
+def assay_inventory_entry(lane: dict, env: dict, env_name: str, repo: Path,
+                          worktree: Path, env_source: str, project_dir: Path
+                          ) -> tuple[dict | None, str | None, str | None]:
+    """One lane's entry, judge version, and a reason when unavailable."""
+    docker = shutil.which("docker")
+    if env and not docker:
+        return None, None, "docker is not on PATH, so the environment cannot be asked"
+    doc, why = assay_inventory(docker, lane, env, env_name, repo, worktree,
+                               env_source, project_dir)
+    if doc is None:
+        return None, None, why
+    entry = next((e for e in doc.get("lanes", [])
+                  if e.get("name") == lane["assay_lane"]), None)
+    if entry is None:
+        return None, doc.get("assay_version"), (
+            f"assay lane {lane['assay_lane']!r} is not declared in assay.toml")
+    return entry, doc.get("assay_version"), None
+
+
+def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
+                         env: dict, env_name: str, repo: Path, worktree: Path,
+                         env_source: str, project_dir: Path,
+                         trunk: str | None = None
+                         ) -> tuple[str | None, str]:
+    """RG-26: (ref to hand this lane, where it came from) or (None, "").
+
+    assay 3.0.0 shipped `judge.base_source = "request"` (B019): a
+    changed-line lane that omits `judge.base` and takes the comparison base
+    from the gate. Such a lane invoked WITHOUT `--request-base` refuses by
+    design, so the feature was unusable from run-gate at all.
+
+    The delegation fact is **DERIVED** from `assay lanes --json` (RG-25's
+    shared probe), never restated as a `run-gate.toml` key: `assay.toml`
+    already owns it, and a second spelling of an owned fact is the drift
+    machine this project exists to avoid.
+
+    A conjunction (command) lane declares propagation the way RG-1 made it
+    declare `--worktree`: a `{base}` token in its argv, substituted into
+    every sub-invocation. Every refusal below is exit 2 and names the lane.
+    """
+    if lane["kind"] == "command":
+        if any(BASE_TOKEN in element for element in lane["argv"]):
+            return resolve_comparison_base(lane_name, base_flag, worktree,
+                                           project_dir, trunk)
+        if base_flag:
+            fail(f"--base {base_flag!r} was given but lane {lane_name!r} does "
+                 f"not delegate a comparison base: it is a command lane whose "
+                 f"argv carries no {BASE_TOKEN} token, so the ref could only "
+                 f"be silently dropped. Write '--base {BASE_TOKEN}' into a "
+                 f"conjunction lane's sub-invocations, or drop the flag")
+        return None, ""
+    entry, assay_version, why = assay_inventory_entry(
+        lane, env, env_name, repo, worktree, env_source, project_dir)
+    if entry is None:
+        if lane.get("_selective_assay"):
+            fail(f"selective assay flags for lane {lane_name!r} require an "
+                 f"inventory proving that it declares R2: {why}")
+        if base_flag:
+            fail(f"--base {base_flag!r} was given but run-gate cannot tell "
+                 f"whether lane {lane_name!r} delegates its comparison base: "
+                 f"{why}. The lane inventory arrived in assay "
+                 f"{ASSAY_INVENTORY_FLOOR} (B044) — use a source or external "
+                 f"judge that supports inventory, or drop --base")
+        # Without --base nothing changes: an older judge keeps working exactly
+        # as it did, and assay refuses at run time if the lane needed one.
+        return None, ""
+    lane["_assay_inventory"] = {"entry": entry,
+                                "assay_version": assay_version}
+    if lane.get("_selective_assay"):
+        selective = lane["_selective_assay"]
+        rigor = entry.get("rigor")
+        if not isinstance(rigor, list) or "R2" not in rigor:
+            fail(f"selective assay flags require an R2 lane; assay lane "
+                 f"{lane['assay_lane']!r} declares rigor {rigor!r}")
+        version = declared_version_tuple(assay_version) \
+            if isinstance(assay_version, str) else None
+        required = (7, 1, 0) if selective.get("reuse_from") else (5, 2, 0)
+        if version is None or version < required:
+            floor = ".".join(str(part) for part in required)
+            flag = "--reuse-from" if selective.get("reuse_from") else "--rejudge"
+            raise GateNotRunError(
+                "judge-floor",
+                f"assay lane {lane['assay_lane']!r} has version "
+                f"{assay_version!r}, which cannot be shown to support "
+                f"{flag}; requires assay >= {floor}")
+    if entry.get("base_source") != "request":
+        if base_flag:
+            fail(f"--base {base_flag!r} was given but assay lane "
+                 f"{lane['assay_lane']!r} (run-gate lane {lane_name!r}) does "
+                 f"not delegate its comparison base: it declares base_source "
+                 f"{entry.get('base_source')!r}, so assay would refuse "
+                 f"--request-base. Set judge.base_source = \"request\" in "
+                 f"assay.toml, or drop --base")
+        return None, ""
+    return resolve_comparison_base(lane_name, base_flag, worktree, project_dir,
+                                   trunk)
+
+
+def linked_worktree_gitdir(worktree: Path) -> Path | None:
+    """RG-21: the absolute gitdir a LINKED worktree's `.git` FILE points at,
+    when that gitdir lies OUTSIDE the worktree. None otherwise.
+
+    None covers both benign shapes deliberately — a plain checkout (`.git` is
+    a directory) and a gitfile whose target is inside the tree — because the
+    condition this feeds is a warning about git plumbing failing inside a
+    container that mounted only the judged tree, and neither of those two can
+    produce it. Folding "unreadable gitfile" into None is the one lossy case:
+    a `.git` we cannot read is a bigger problem that the git calls
+    surrounding this will report first, loudly.
+    """
+    gitfile = worktree / ".git"
+    if not gitfile.is_file():
+        return None
+    try:
+        text = gitfile.read_text()
+    except OSError:  # pragma: no cover - is_file() just succeeded
+        return None
+    for line in text.splitlines():
+        if not line.startswith("gitdir:"):
+            continue
+        gitdir = Path(line.split(":", 1)[1].strip())
+        if not gitdir.is_absolute():
+            gitdir = (worktree / gitdir).resolve()
+        return None if gitdir.is_relative_to(worktree) else gitdir
+    return None
+
+
+def cmd_status(project_dir: Path, cfg: dict, cfg_path: Path,
+               json_mode: bool = False,
+               worktree_override: str | None = None) -> int:
+    """Read the selected project's inflight records and host-wide queues."""
+    proc_root = Path(os.environ.get(PROC_ROOT_ENV_VAR, "/proc"))
+    lock_dir = _lock_dir()
+    exec_locks, errors = _read_exec_lock_status(lock_dir, proc_root)
+    inflight, inflight_errors = _read_inflight_status(project_dir, proc_root)
+    errors.extend(inflight_errors)
+
+    for lock in exec_locks:
+        for role in ("holders", "waiters"):
+            for participant in lock[role]:
+                pid = participant.get("pid")
+                match = next((record for record in inflight
+                              if record.get("runner") == "exec"
+                              and record.get("container") == lock["runner"]
+                              and record.get("owner_pid") == pid
+                              and isinstance(pid, int)), None)
+                participant["lane"] = (match.get("lane") if match else
+                                       _status_command_lane(pid, proc_root)
+                                       if isinstance(pid, int) else None)
+                participant["inflight_record"] = (
+                    match.get("path") if match else None)
+
+    docker = shutil.which("docker")
+    admission = {"enabled_here": bool(cfg.get("admission", {}).get("enabled")),
+                 "published": None, "visible_admission_objects": [],
+                 "tickets": []}
+    endpoint = "unavailable"
+    if not docker:
+        errors.append("Docker CLI not found on PATH; admission state is unknown")
+    else:
+        local, reason = local_docker_endpoint()
+        endpoint = "local Docker Unix endpoint" if local else reason
+        if not local:
+            errors.append("cannot inspect RG-80 state safely: " + reason)
+        else:
+            try:
+                manager = DockerAdmission(docker=docker, proc_root=proc_root)
+                admission.update(manager.status_snapshot())
+            except AdmissionDockerUnavailable as exc:
+                errors.append(f"Docker admission state unavailable: {exc}")
+            except AdmissionError as exc:
+                errors.append(f"Docker admission state unreadable: {exc}")
+
+    worktree = (str(Path(worktree_override).resolve()) if worktree_override
+                else str(_git_toplevel_if_available(project_dir)
+                         or project_dir.resolve()))
+    code = 2 if errors else 0
+    result = {
+        "verdict": "ERROR" if code else "PASS",
+        "exit_code": code,
+        "scope": {"config": str(cfg_path), "project": str(project_dir),
+                  "worktree": worktree, "exec_lock_directory": str(lock_dir),
+                  "proc_root": str(proc_root), "docker_endpoint": endpoint},
+        "exec_locks": exec_locks,
+        "inflight": inflight,
+        "admission": admission,
+        "errors": errors,
+    }
+    if json_mode:
+        print(json.dumps(result, sort_keys=True))
+        return code
+
+    print(f"run-gate status: {result['verdict']} exit_code={code}")
+    print(f"  config: {cfg_path}")
+    print(f"  project: {project_dir}; worktree: {worktree}")
+    print(f"  host locks: {lock_dir}; Docker: {endpoint}")
+    active_locks = [lock for lock in exec_locks
+                    if lock["holders"] or lock["waiters"]]
+    print("exec runners:")
+    if not active_locks:
+        print("  none held or queued")
+    for lock in active_locks:
+        for participant in lock["holders"]:
+            print(f"  {lock['runner']}: running pid={participant['pid']} "
+                  f"liveness={participant['liveness']} "
+                  f"lane={participant.get('lane') or '(unknown)'}")
+        for participant in lock["waiters"]:
+            print(f"  {lock['runner']}: queued pid={participant['pid']} "
+                  f"liveness={participant['liveness']} "
+                  f"lane={participant.get('lane') or '(unknown)'}")
+    idle_n = sum(1 for lock in exec_locks if lock["state"] == "idle")
+    if idle_n:
+        print(f"  {idle_n} idle lock file(s)")
+    print("inflight records:")
+    if not inflight:
+        print("  none")
+    for record in inflight:
+        if record.get("lane"):
+            print(f"  {record['lane']}: {record['runner']} runner="
+                  f"{record['container']} owner_pid={record.get('owner_pid')} "
+                  f"owner_liveness={record['owner_liveness']} "
+                  f"({record['path']})")
+        else:
+            print(f"  {record.get('state')}: {record['path']}")
+    published = admission.get("published")
+    if published:
+        print(f"admission: enabled_here="
+              f"{str(admission['enabled_here']).lower()} published="
+              f"{published['name']} cap={published['max_concurrent']} "
+              f"cap_readable={str(published['max_concurrent_readable']).lower()}")
+    else:
+        print(f"admission: enabled_here="
+              f"{str(admission['enabled_here']).lower()} no readable "
+              "published object")
+    for item in admission.get("visible_admission_objects", []):
+        if not item.get("identity_readable"):
+            print(f"  unreadable admission object: {item['name']} "
+                  f"generation={item.get('generation')} "
+                  f"docker_status={item.get('docker_status')} "
+                  f"cap_readable={str(item.get('max_concurrent_readable', False)).lower()}")
+    if admission["tickets"]:
+        for ticket in admission["tickets"]:
+            owner = ticket.get("owner")
+            if not isinstance(owner, dict):
+                owner = {}
+            print(f"  {ticket['name']}: {ticket['state']} "
+                  f"lane={owner.get('lane', '(unreadable)')} "
+                  f"pid={owner.get('pid', '(unreadable)')} "
+                  f"owner={ticket['owner_liveness']} "
+                  f"deadline={ticket.get('deadline')}")
+    else:
+        print("  no visible admission tickets or tombstones")
+    for error in errors:
+        print(f"run-gate status: ERROR: {error}", file=sys.stderr)
+    return code
+
+
+def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
+               cfg_path: Path, central_path: Path | None,
+               worktree_override: str | None = None) -> int:
+    """RG-9: recompose the implemented preflights into one first-contact
+    command, run BEFORE a newcomer's first lane does.
+
+    Mostly recomposition — checks 1-4 read the world and change nothing. The
+    exception, and it is deliberate (RG-25, `R-30`/`R-34`): check 5 STARTS
+    CONTAINERS. Toolchain fitness cannot be read, only observed, so doctor
+    asks the judge for its lane inventory and runs `command -v` inside the
+    lane's own environment — at most one inventory probe per (environment,
+    assay_command) plus one batched tool probe per environment. RG-49 adds
+    one state-root probe per assay environment. All probes are read-only and
+    short-lived. Nothing is judged and nothing in the tree is written.
+    Say so out loud rather than letting "doctor runs nothing" quietly become
+    false.
+
+    RG-30: `--worktree` redirects doctor's per-tree checks (git identity,
+    the RG-21 host-lane git view, mountinfo, and the assay-lane toolchain
+    probe) at THAT tree instead of the invoking checkout — the read-scope
+    hazard `history`'s own `--worktree` fix (RG-27 B1) closed for that verb,
+    closed here for the last remaining instance. The report NAMES the tree
+    (R-05) instead of leaving the substitution to be inferred. Check 3
+    resolves it (`resolve_worktree_scope`, which validates a given override
+    is a real git worktree before anything reads it) INSIDE its own existing
+    try/except: a bad `--worktree` becomes a `[FAIL] git` record, same as
+    every other broken-host case doctor already survives, rather than a
+    silent [OK] on the RG-21 check that follows it — the exact false
+    certification a garbage path pointed at `linked_worktree_gitdir()` would
+    otherwise produce (no gitdir file at a path that doesn't exist reads as
+    "plain checkout, nothing to warn about")."""
+    results: list[tuple[str, str, str]] = []
+
+    def record(status: str, topic: str, detail: str) -> None:
+        results.append((status, topic, detail))
+        print(f"run-gate: doctor: [{status}] {topic}: {detail}", flush=True)
+
+    if worktree_override:
+        print(f"run-gate: doctor: --worktree {worktree_override} — this "
+              f"report describes THAT tree, not the invoking checkout",
+              flush=True)
+
+    # 1. docker present
+    docker = shutil.which("docker")
+    if docker:
+        record("OK", "docker", docker)
+    else:
+        record("FAIL", "docker", "not found on PATH — container/exec lanes need it")
+
+    admission_cfg = cfg.get("admission", {})
+    if admission_cfg.get("enabled") is True:
+        ticket_image = admission_cfg.get("ticket_image")
+        if not docker:
+            record("FAIL", "admission Docker",
+                   "[admission] enabled = true, but Docker is unavailable — "
+                   "install the Docker CLI and start the local Docker daemon")
+            record("SKIP", "admission ticket image",
+                   "could not inspect the configured local image without Docker")
+            record("SKIP", "admission published count",
+                   "could not read the published object or max-concurrent without Docker")
+        else:
+            local_endpoint, endpoint_reason = local_docker_endpoint()
+            if not local_endpoint:
+                remedy = ("select a Docker context backed by a local Unix socket; "
+                          "unset remote DOCKER_HOST/DOCKER_CONTEXT overrides if set")
+                record("FAIL", "admission Docker endpoint",
+                       f"[admission] enabled = true requires the daemon shared "
+                       f"by local gates; {endpoint_reason} — {remedy}")
+                record("SKIP", "admission ticket image",
+                       "cannot verify local image presence until a local endpoint is selected")
+                record("SKIP", "admission published count",
+                       "cannot verify the shared object or max-concurrent until a local endpoint is selected")
+            else:
+                admission_manager = DockerAdmission(docker=docker)
+                if not isinstance(ticket_image, str) or not ticket_image.strip():
+                    record("FAIL", "admission ticket image",
+                           f"[admission] enabled = true in {cfg_path} requires "
+                           "ticket_image; name an image present on the local daemon")
+                else:
+                    try:
+                        present = admission_manager.image_present(ticket_image)
+                    except AdmissionDockerUnavailable as exc:
+                        present = None
+                        record("FAIL", "admission ticket image",
+                               f"could not inspect {ticket_image!r}: {exc} — "
+                               "restore access to the local Docker daemon and rerun doctor")
+                    except AdmissionError as exc:
+                        present = None
+                        record("FAIL", "admission ticket image",
+                               f"could not verify {ticket_image!r}: {exc} — "
+                               "correct [admission].ticket_image if its "
+                               "reference is invalid; otherwise resolve the "
+                               "reported Docker error and rerun doctor")
+                    if present is False:
+                        record("FAIL", "admission ticket image",
+                               f"{ticket_image!r} is not present locally — build/load it "
+                               "or set [admission].ticket_image to an image already "
+                               "present on this Docker daemon")
+                    elif present is True:
+                        record("OK", "admission ticket image",
+                               f"{ticket_image!r} is present locally")
+                try:
+                    admission_state = admission_manager.admission_snapshot()
+                except AdmissionDockerUnavailable as exc:
+                    record("FAIL", "admission published count",
+                           f"Docker could not read the published count: {exc} — "
+                           "restore access to the local Docker daemon")
+                except AdmissionError as exc:
+                    record("FAIL", "admission published count",
+                           f"published admission state is unreadable: {exc} — "
+                           "repair Docker access, then republish the cap")
+                else:
+                    visible = admission_state["visible_admission_objects"]
+                    unreadable = [item for item in visible
+                                  if not item["identity_readable"]]
+                    published = admission_state["published"]
+                    if unreadable:
+                        names = ", ".join(repr(item["name"])
+                                           for item in unreadable)
+                        record("FAIL", "admission published object",
+                               f"visible object(s) {names} have unreadable "
+                               "identity labels; run-gate refuses to replace "
+                               "them, so `run-gate admission set` is not a "
+                               "repair. Resolve the named object with the "
+                               "Docker-daemon owner before publishing a cap")
+                    elif published is None:
+                        record("FAIL", "admission published count",
+                               "no valid ciu-admission object is published — run "
+                               "'run-gate admission set --max-concurrent <desired-N>'")
+                    elif not published["max_concurrent_readable"]:
+                        record("FAIL", "admission max-concurrent",
+                               f"{published['name']} generation "
+                               f"{published['generation']} has no "
+                               "readable positive max-concurrent — republish with "
+                               "'run-gate admission set --max-concurrent "
+                               "<desired-N> --replace'")
+                    else:
+                        record("OK", "admission published count",
+                               f"{published['name']} generation "
+                               f"{published['generation']}; max-concurrent="
+                               f"{published['max_concurrent']} is readable")
+
+    # 2. per-environment facts: resolution + slice LoadState
+    env_cache: dict[str, tuple[dict, str]] = {}
+    for name in sorted(lanes):
+        try:
+            env, env_source = resolve_environment(lanes[name], name, cfg,
+                                                 central, cfg_path, central_path)
+        except GateError as exc:
+            record("FAIL", f"lane {name!r} environment", str(exc))
+            continue
+        env_name = lane_environment_name(lanes[name])
+        if env.get("mode") == "host" or not env:
+            env_cache.setdefault(f"<host:{env_name}>", (env, env_source))
+            continue
+        if env_name in env_cache:
+            continue
+        env_cache[env_name] = (env, env_source)
+        if env.get("mode") == "exec":
+            # Review fix (R-30): exec lanes need NO slice — docker exec can
+            # neither place nor cap work. Disclose what governs the runner,
+            # demand nothing; the old unconditional resolve_slice here made
+            # doctor report a bogus [FAIL] for a healthy exec project.
+            declared = env.get("cgroup_slice")
+            declared_env = env.get("cgroup_slice_env")
+            ambient = os.environ.get(declared_env or CGROUP_ENV_VAR)
+            if declared or ambient:
+                if declared:
+                    src = f"declared {env_source}, naming-only"
+                elif declared_env:
+                    src = f"${declared_env} (declared {env_source}), naming-only"
+                else:
+                    src = f"${CGROUP_ENV_VAR}, naming-only"
+                record("OK", f"slice for env {env_name} (exec)",
+                       f"{declared or ambient} ({src})")
+            else:
+                source = f"${declared_env} declared by {env_source}" \
+                    if declared_env else f"${CGROUP_ENV_VAR}"
+                record("WARN", f"slice for env {env_name} (exec)",
+                       f"none derivable from {source} — fine: docker exec cannot place or "
+                       "cap work; the runner is governed by how it was started")
+            continue
+        try:
+            slice_name, slice_src = resolve_slice(env, env_source)
+            record("OK", f"slice for env {env_name}",
+                   f"{slice_name} ({slice_src})")
+            verify_slice_loaded(slice_name)  # no-op where systemd unreachable
+            record("OK", f"slice unit {slice_name}",
+                   "configured (or systemd unreachable — skipped)")
+        except GateError as exc:
+            record("FAIL", f"slice for env {env_name}", str(exc))
+
+    # 2b. RG-34 (R-30b): a container command lane whose argv[0] is a
+    # RELATIVE path is resolved against the container's --workdir, not
+    # against the judged tree. Reading only the DECLARATION, so it answers
+    # even for a lane whose environment failed to resolve above.
+    argv_lanes = []
+    for n in sorted(lanes):
+        if lanes[n]["kind"] != "command":
+            continue
+        try:
+            resolved_env, _ = resolve_environment(lanes[n], n, cfg, central,
+                                                  cfg_path, central_path)
+        except GateError:
+            continue
+        if resolved_env and resolved_env.get("mode") != "host":
+            argv_lanes.append(n)
+    flagged = []
+    for name in argv_lanes:
+        argv0 = lanes[name]["argv"][0]
+        if argv0.startswith("{worktree}") or argv0.startswith("/") \
+                or "/" not in argv0:
+            continue  # {worktree}-anchored, absolute, or a bare command name
+        flagged.append(name)
+        record("WARN", f"lane {name!r} argv[0] (RG-34)",
+               f"{argv0!r} is a RELATIVE path, resolved against the "
+               f"container's --workdir instead of the judged tree — declare "
+               f"it '{{worktree}}/{argv0}'. A container that mounts ONLY the "
+               f"judged worktree (a Mode-B instance's own runner, not the "
+               f"shared one) has nothing at the bare repo root --workdir "
+               f"names, so this argv dies there with 'No such file or "
+               f"directory' while working under a full-repo mount. A warning, "
+               f"not a refusal: which mount the lane gets is not visible to "
+               f"run-gate statically")
+    if argv_lanes and not flagged:
+        record("OK", "lane argv[0] (RG-34)",
+               f"{len(argv_lanes)} container command lane(s): every argv[0] "
+               f"is {{worktree}}-anchored, absolute, or a bare command name")
+
+    # 2c. RG-48/R-29: a container lane whose argv spawns workers BY NAME
+    # ('-n auto'/'--workers auto', pytest-xdist's own flags) picks its
+    # worker count from whatever `nproc` reads INSIDE the container — and
+    # 'resources.cpus' (lane, or its environment as a fallback) is the only
+    # thing that actually caps what `nproc` sees there. Undeclared, the
+    # worker count and the real CPU budget are decided in two places that
+    # can silently disagree (RG-48's own motivating case: an environment
+    # with no default cap, a lane whose argv assumes one exists). Scoped to
+    # EPHEMERAL container lanes only — exec lanes get no `--cpus` at all
+    # (naming-only, R-29's rule), so the same undeclared state there is not
+    # a defect this check can name a fix for.
+    worker_flag_re = re.compile(r"(?:^|\s)(-n auto|--workers auto)(?:\s|$)")
+    checked, cpu_flagged = [], []
+    for name in argv_lanes:
+        lane = lanes[name]
+        env, _env_src = env_cache.get(lane_environment_name(lane), (None, None))
+        if not env or env.get("mode") == "exec":
+            continue  # exec/bare-host: no --cpus to declare (naming-only)
+        if not worker_flag_re.search(" ".join(lane["argv"])):
+            continue
+        checked.append(name)
+        cpus = lane.get("resources", {}).get("cpus") \
+            or env.get("resources", {}).get("cpus")
+        if cpus:
+            continue
+        cpu_flagged.append(name)
+        record("WARN", f"lane {name!r} worker count vs CPU cap (RG-48)",
+               f"argv spawns workers by '-n auto'/'--workers auto' but "
+               f"neither the lane's own 'resources.cpus' nor its "
+               f"environment's declares a CPU cap — the worker count and "
+               f"the container's real CPU budget are decided in two places "
+               f"that can silently disagree; declare 'resources.cpus' on "
+               f"the lane or on '[environments.{lane_environment_name(lane)}]'")
+    if checked and not cpu_flagged:
+        record("OK", "lane worker count vs CPU cap (RG-48)",
+               f"{len(checked)} lane(s) spawning workers by name: every one "
+               f"declares 'resources.cpus' (lane or environment)")
+
+    # 2d. RG-58 (RW-27a): a bare-host lane declaring `stall_timeout` — no
+    # watch, no timer on that runner — gets a matching doctor WARN alongside
+    # the load-time one `_validate_lane` already prints; SAME shared reason
+    # function, so the two can never drift apart.
+    stall_bare_host = []
+    for n in sorted(lanes):
+        if not lanes[n].get("stall_timeout"):
+            continue
+        try:
+            resolved_env, _ = resolve_environment(lanes[n], n, cfg, central,
+                                                  cfg_path, central_path)
+        except GateError:
+            continue
+        if not resolved_env or resolved_env.get("mode") == "host":
+            stall_bare_host.append(n)
+    for name in stall_bare_host:
+        record("WARN", f"lane {name!r} stall_timeout (RG-58)",
+               host_mode_stall_timeout_inert_reason(name))
+
+    # 3. physical-path derivability + git health
+    doctor_repo: Path | None = None
+    doctor_worktree: Path | None = None
+    doctor_project_dir: Path | None = None
+    try:
+        repo, worktree, effective_project_dir, worktree_scope = resolve_worktree_scope(
+            project_dir, worktree_override, "doctor")
+        doctor_repo, doctor_worktree = repo, worktree
+        doctor_project_dir = effective_project_dir
+        record("OK", "git", f"worktree {worktree}"
+               + (f"  (named by --worktree {worktree_scope!r})"
+                  if worktree_scope else ""))
+        # RG-21: a LINKED worktree's `.git` is a FILE naming an absolute
+        # gitdir under the MAIN checkout. run-gate's own container lanes are
+        # unaffected — R-23 dual-mounts the REPO root, so that gitdir is
+        # inside the mount; since rev 36 (RG-43) that includes 'host', which
+        # is now a container lane too. The breakage is one layer down: a
+        # BARE-HOST lane whose argv delegates to a harness that bind-mounts
+        # only its own $repo_root (= the worktree) by host path, where every
+        # in-container git plumbing call then dies with `not a git
+        # repository: <gitdir>` (srdm's covergate, the evidence case). Only
+        # bare-host lanes can reach that harness, so the check is scoped to
+        # projects that declare one — a warning that fires where it cannot
+        # bite gets switched off.
+        if f"<host:{BARE_HOST_ENV}>" in env_cache:
+            gitdir = linked_worktree_gitdir(worktree)
+            if gitdir is None:
+                record("OK", "host-lane git view (RG-21)",
+                       f"{worktree} resolves git in-tree — a harness that "
+                       f"bind-mounts only the judged tree still sees a "
+                       f"complete .git")
+            else:
+                record("WARN", "host-lane git view (RG-21)",
+                       f"{worktree} is a LINKED worktree; its gitdir is "
+                       f"{gitdir}, OUTSIDE the tree. run-gate's own container "
+                       f"lanes are fine (they dual-mount the worktree and "
+                       f"the git common dir), but a "
+                       f"host lane delegating to a harness that bind-mounts "
+                       f"only the judged tree by host path will fail with "
+                       f"'not a git repository: {gitdir}'. Mount the common "
+                       f"gitdir into that container too, or pass it as "
+                       f"GIT_DIR, or run the lane from the main checkout")
+        try:
+            phys = physical_path(repo)
+            if phys != repo:
+                record("OK", "mountinfo", f"namespace alias derivable: {phys}")
+            else:
+                record("WARN", "mountinfo",
+                       "physical path equals namespace path (bare-host view) — "
+                       f"container lanes need ${MOUNT_ALIAS_ENV_VAR}")
+        except GateError as exc:
+            record("FAIL", "mountinfo", str(exc))
+    except GateError as exc:
+        record("FAIL", "git", str(exc))
+    except OSError as exc:
+        # A preflight that tracebacks on a broken host defeats its purpose.
+        record("FAIL", "git", f"git not runnable: {exc}")
+
+    # RG-49: assay resume state has to live on a durable mount owned by the
+    # environment. Probe once per assay environment as that lane's user. A
+    # An absent default root is pending live creation, an invalid or
+    # unwritable root is a confirmed failure, and a failed Docker probe is
+    # SKIP, never an [OK] inferred from not seeing an error.
+    assay_environments: dict[str, tuple[dict, str]] = {}
+    for lane_name, lane in sorted(lanes.items()):
+        if lane.get("kind") != "assay":
+            continue
+        env_name = lane_environment_name(lane)
+        try:
+            env, env_source = resolve_environment(lane, lane_name, cfg,
+                                                 central, cfg_path, central_path)
+        except GateError:
+            continue  # the lane's environment error is already recorded above
+        assay_environments.setdefault(env_name, (env, env_source))
+    for env_name, (env, env_source) in sorted(assay_environments.items()):
+        topic = f"Assay state root for env {env_name} (RG-49)"
+        if (doctor_repo is None or doctor_worktree is None
+                or doctor_project_dir is None):
+            record("SKIP", topic,
+                   "cannot resolve the selected git worktree to probe its "
+                   "environment paths")
+            continue
+        root = assay_state_root(doctor_repo, env)
+        state_dir = assay_state_dir(doctor_repo, doctor_project_dir,
+                                    env.get("state_root"))
+        if env.get("state_root") is None and env.get("mode") in (
+                None, "host", "ephemeral"):
+            root_status, root_reason = default_assay_state_root_status(root)
+            if root_status == "creatable":
+                record("SKIP", topic,
+                       f"{root} is absent; a live Assay lane will create it "
+                       "before mounting and probing it, so lane-user "
+                       "writability is not yet determined")
+                continue
+            if root_status == "invalid":
+                record("FAIL", topic, root_reason or
+                       f"default Assay state root {root} is invalid")
+                continue
+            if root_status == "unknown":
+                record("SKIP", topic, root_reason or
+                       f"cannot inspect default Assay state root {root}")
+                continue
+        try:
+            probe_slice = _probe_slice(env, env_source)
+            writable, why = probe_assay_state_root(
+                docker, env, env_name, doctor_repo, doctor_worktree,
+                env_source, probe_slice, root, state_dir)
+        except (GateError, OSError) as exc:
+            writable, why = None, str(exc)
+        if writable is True:
+            record("OK", topic,
+                   f"{root} and the nearest existing directory for "
+                   f"{state_dir} are writable by the lane user")
+        elif writable is False:
+            record("FAIL", topic,
+                   f"{root} or the nearest existing directory for {state_dir} "
+                   f"is missing, not a directory, or not writable by the "
+                   f"lane user — {assay_state_root_remedy(root, env_name, env)}")
+        else:
+            record("SKIP", topic,
+                   f"could not determine whether the state root {root} and "
+                   f"state path {state_dir} are writable: {why}")
+    if os.access("/tmp", os.W_OK):
+        record("OK", "git-config", "/tmp writable for GIT_CONFIG_GLOBAL "
+                                   "(safe.directory isolation)")
+    else:
+        record("WARN", "git-config", "/tmp NOT writable — safe.directory "
+                                     "isolation via GIT_CONFIG_GLOBAL will fail")
+
+    # 4. referenced images exist locally (advisory — a missing image may pull)
+    if docker:
+        for env_name, (env, _src) in sorted(env_cache.items()):
+            image = env.get("image")
+            if not image:
+                continue
+            probe = subprocess.run([docker, "image", "inspect", image],
+                                   capture_output=True, text=True)
+            if probe.returncode == 0:
+                record("OK", f"image {env_name}", f"{image} present locally")
+            else:
+                record("WARN", f"image {env_name}",
+                       f"{image} not local — it must pull or exist before the "
+                       f"lane runs")
+
+    # 5. assay-lane toolchain fitness (RG-25) — ask the judge what each lane
+    # needs from its environment, then check the environment for it. Runs at
+    # most one short read-only probe per environment; nothing is judged.
+    for status, topic, detail in assay_toolchain_findings(
+            lanes, project_dir, cfg, central, cfg_path, central_path,
+            worktree_override):
+        record(status, topic, detail)
+
+    # 6. RG-55/R-44: footprint manifest freshness — staleness AND drift
+    # against the LIVE history, so an operator learns the committed numbers
+    # have gone stale before trusting them (RG-56's own prerequisite: a
+    # scheduler cannot act on a footprint nobody re-measured). Reads the
+    # SAME `project_dir` every other check here reads (not relocated by
+    # --worktree, matching this function's existing per-check scope).
+    manifest = load_footprint_manifest(project_dir)
+    if manifest is None:
+        record("INFO", "footprint manifest",
+               f"none written yet — once a profiled lane has a completed "
+               f"run in its history, run '{PROG} footprint --write'")
+    else:
+        tol_pct, max_age_days, _src = resolve_footprint_policy(
+            cfg, cfg_path, central, central_path)
+        fp_store = load_history_store(history_store_path(project_dir))
+        drifted = []
+        for name in sorted(manifest.get("lanes", {})):
+            man_lane = manifest["lanes"][name]
+            man_median = (man_lane.get("memory_peak_bytes") or {}).get("median")
+            if not isinstance(man_median, (int, float)) or man_median <= 0:
+                continue
+            live_median = lane_history_report(fp_store, name)["stats"][
+                "passes"]["memory_peak_bytes"]["median"]
+            if not isinstance(live_median, (int, float)):
+                continue
+            drift_pct = abs(live_median - man_median) / man_median * 100
+            if drift_pct > tol_pct:
+                drifted.append(name)
+                record("WARN", f"footprint drift {name!r}",
+                       f"live history median peak {_fmt_mib(live_median)} "
+                       f"vs manifest {_fmt_mib(man_median)} "
+                       f"({drift_pct:.0f}% > {tol_pct}% tolerance) — re-run "
+                       f"'{PROG} footprint --write'")
+        if manifest.get("lanes") and not drifted:
+            record("OK", "footprint drift",
+                   f"{len(manifest['lanes'])} lane(s) within {tol_pct}% of "
+                   f"their live history median peak")
+        # RG-57/C4: one consolidated caveat for every lane whose manifest
+        # entry was distilled from the rusage-maxrss path (bare-host,
+        # daemon absent) — the drift/staleness numbers above are still
+        # meaningful (they compare the SAME method against itself over
+        # time), but the PEAK figure itself is that lane's own child's peak
+        # RSS (`os.wait4()` on the lane's own pid, RW-43/B1), never a
+        # cgroup-measured or summed number, and doctor is where an operator
+        # learns that before trusting it.
+        rusage_lanes = [name for name in sorted(manifest.get("lanes", {}))
+                        if manifest["lanes"][name].get("source") == "rusage-maxrss"]
+        if rusage_lanes:
+            record("INFO", "footprint source",
+                   f"{', '.join(rusage_lanes)}: memory peak is rusage-maxrss "
+                   f"(RG-57 bare-host daemon-absent path) — that lane's own "
+                   f"child's peak RSS (os.wait4), not a cgroup read and not "
+                   f"a sum across children")
+        # RW-46b: a further caveat, ORTHOGONAL to the one above -- a lane
+        # can be rusage-sourced without being floor-bound (its own child
+        # genuinely pushed the high-water mark past run-gate's own RSS).
+        floor_lanes = [name for name in sorted(manifest.get("lanes", {}))
+                       if manifest["lanes"][name].get("peak_at_floor")]
+        if floor_lanes:
+            record("INFO", "footprint peak-at-floor",
+                   f"{', '.join(floor_lanes)}: most recent profiled peak <= "
+                   f"run-gate's own RSS at spawn (memory.floor_bytes) — "
+                   f"unmeasurable beyond that floor, not necessarily this "
+                   f"lane's true peak")
+        distilled_at = manifest.get("distilled_at")
+        age_days = None
+        if isinstance(distilled_at, str):
+            try:
+                age_days = (time.time() - _parse_iso_utc(distilled_at)) / 86400
+            except ValueError:
+                age_days = None
+        if age_days is not None and age_days > max_age_days:
+            record("WARN", "footprint staleness",
+                   f"distilled {age_days:.0f} day(s) ago (> {max_age_days} "
+                   f"day threshold, {_src}) — re-run '{PROG} footprint "
+                   f"--write'")
+        elif age_days is not None:
+            record("OK", "footprint staleness",
+                   f"distilled {age_days:.0f} day(s) ago (<= {max_age_days} "
+                   f"day threshold)")
+
+    # 7. RG-55/R-43 (C7): the profiler daemon — OPTIONAL infrastructure (a
+    # lane without it still gets a "basic" in-lane profile, contract Sec
+    # 4 obligation 3), so every finding here is INFO/WARN/OK, never FAIL —
+    # doctor never blocks a project on profiling being unavailable. Uses a
+    # SYNTHETIC empty lane (`{}`) to resolve `[profile]` at the PROJECT
+    # level (no lane-specific `profile =`/`[lanes.<n>.profile]` override) —
+    # the "effective settings" a project-wide preflight is asking about.
+    profile_settings = resolve_profile_settings({}, cfg, cfg_path, central,
+                                                central_path)
+    ambient_profile = os.environ.get(PROFILE_AMBIENT_ENV_VAR)
+    ambient_note = (f"; ${PROFILE_AMBIENT_ENV_VAR}={ambient_profile!r} "
+                    f"override active" if ambient_profile else "")
+    record("OK" if profile_settings["enabled"] else "WARN", "profile config",
+           f"enabled={profile_settings['enabled']} "
+           f"daemon={profile_settings['daemon']!r} "
+           f"interval={profile_settings['interval']} "
+           f"damon={profile_settings['damon']} "
+           f"(source: {profile_settings['source']}){ambient_note}")
+    if not profile_settings["enabled"]:
+        record("WARN", "profiler daemon",
+               "profiling disabled — no lane will be profiled; see "
+               "'profile config' above for why")
+    elif not docker:
+        record("SKIP", "profiler daemon",
+               "docker not found on PATH — cannot check")
+    else:
+        daemon_name = profile_settings["daemon"]
+        try:
+            ps = subprocess.run(
+                [docker, "ps", "--filter", f"name=^{daemon_name}$",
+                 "--format", "{{.Names}}"], capture_output=True, text=True,
+                errors="replace")
+        except Exception as exc:
+            ps = None
+            record("WARN", "profiler daemon",
+                   f"state could not be determined: docker ps failed: {exc}")
+        if ps is not None and ps.returncode != 0:
+            tail = (ps.stderr.strip().splitlines() or ["(no stderr)"])[-1]
+            record("WARN", "profiler daemon",
+                   f"state could not be determined: docker ps failed "
+                   f"(exit {ps.returncode}): {tail}")
+        elif ps is not None and daemon_name not in ps.stdout.split():
+            # RG-59: the SAME wording ProfilerClient._ctl's live-run warning
+            # now uses (daemon_not_running_reason) -- one function, so this
+            # site and that one can never drift apart again. B4 (round-1
+            # review, RW-43): RG-57 gave bare-host lanes a SECOND fallback
+            # (coarse rusage accounting, never a BasicSampler, RW-27b) --
+            # this project's own five lanes are all bare-host, so the old
+            # "every lane falls back to basic (in-lane) sampling" wording
+            # told the operator, on THIS project, the one thing guaranteed
+            # NOT to happen.
+            record("WARN", "profiler daemon",
+                   f"{daemon_not_running_reason(daemon_name)} — container/"
+                   f"exec lanes fall back to basic (in-lane) sampling, "
+                   f"bare-host lanes to coarse rusage accounting (R-43i)")
+        elif ps is not None:
+            client = ProfilerClient(docker, daemon_name)
+            version_doc, reason = client.version()
+            if version_doc is None:
+                record("WARN", "profiler daemon",
+                       f"{daemon_name!r} is running but unreachable: {reason}")
+            else:
+                cgprofile_ver = version_doc.get("cgprofile", "?")
+                damon_state = (version_doc.get("daemon") or {}).get(
+                    "damon", "unavailable")
+                record("OK", "profiler daemon",
+                       f"{daemon_name!r} reachable: cgprofile {cgprofile_ver}, "
+                       f"contract {version_doc.get('contract')}, damon "
+                       f"{damon_state}")
+                # RG-55/C7: host + slice pressure via `ctl host` — the
+                # WORKAROUND the amended R-29 WARN above now points to:
+                # host-side slice truth this process cannot read directly
+                # from inside a private cgroup namespace (cgroup_namespace_
+                # is_private) IS reachable through the daemon, which does
+                # not run inside that namespace.
+                host_doc, host_reason = client.host()
+                if host_doc is None:
+                    record("WARN", "profiler host/slice pressure",
+                           f"ctl host unreachable: {host_reason}")
+                else:
+                    host_snap = host_doc.get("host") or {}
+                    mem_p = (host_snap.get("pressure") or {}).get(
+                        "memory") or {}
+                    record("OK", "profiler host pressure",
+                           f"memory PSI full avg10={mem_p.get('full_avg10')}% "
+                           f"avg60={mem_p.get('full_avg60')}%")
+                    for slice_name in sorted(host_snap.get("slices") or {}):
+                        s = host_snap["slices"][slice_name]
+                        s_mem_p = (s.get("pressure") or {}).get(
+                            "memory") or {}
+                        record("OK", f"profiler slice {slice_name}",
+                               f"current {_fmt_mib(s.get('memory_current_bytes'))}"
+                               f", memory PSI full avg10="
+                               f"{s_mem_p.get('full_avg10')}%")
+
+    # 8. RG-55/RW-46a: stale RG-20 (`R-29`)/R-41 coordination-lock entries
+    # under the (possibly namespaced) lock dir — report only, doctor never
+    # deletes. A DIRECTORY at one of these paths is never legitimate
+    # (`_open_lockfile` only ever `os.open()`s a plain FILE) — 493 such
+    # directories, dated back to Sep 3, were found accumulated under
+    # production /tmp, traced to a test that `mkdir()`ed one with no
+    # cleanup (RW-46a, fixed at the two call sites + a suite-wide teardown
+    # guard). A stale plain FILE is not itself a defect (a lock file is
+    # never unlinked, only un-flocked — R-29/R-41's own design), but a
+    # large or growing count is worth an operator's attention on a
+    # long-lived shared host.
+    lock_root = _lock_dir()
+    stale_cutoff = time.time() - 86400
+    stale_total = 0
+    stale_dirs = 0
+    if lock_root.is_dir():
+        for pattern in ("run-gate-exec-*.lock", "run-gate-shared-*.lock"):
+            for entry in lock_root.glob(pattern):
+                try:
+                    mtime = entry.lstat().st_mtime
+                except OSError:
+                    continue
+                if mtime < stale_cutoff:
+                    stale_total += 1
+                    if entry.is_dir():
+                        stale_dirs += 1
+    if stale_total:
+        dir_note = (f", {stale_dirs} as a DIRECTORY (never legitimate — "
+                    f"corruption, see above)" if stale_dirs else "")
+        record("INFO", "stale coordination locks",
+               f"{stale_total} entr{'y' if stale_total == 1 else 'ies'} "
+               f"older than 1 day under {lock_root}{dir_note} — report "
+               f"only, doctor never deletes")
+    else:
+        record("OK", "stale coordination locks",
+               f"none older than 1 day under {lock_root}")
+
+    ok_n = sum(1 for s, *_ in results if s == "OK")
+    warn_n = sum(1 for s, *_ in results if s == "WARN")
+    fail_n = sum(1 for s, *_ in results if s == "FAIL")
+    skip_n = sum(1 for s, *_ in results if s == "SKIP")
+    # RG-55/R-44: INFO is a NEW status class alongside OK/WARN/FAIL/SKIP —
+    # advisory-only, never a warning (it names a NEXT STEP, not a defect:
+    # "no footprint manifest yet" is the expected state of a project that
+    # has never run a profiled lane). Counted separately so the printed
+    # total still equals len(results).
+    info_n = sum(1 for s, *_ in results if s == "INFO")
+    print(f"run-gate: doctor: {len(results)} check(s): {ok_n} OK, "
+          f"{warn_n} warning(s), {fail_n} failure(s), {skip_n} skipped "
+          f"(could not determine), {info_n} info", flush=True)
+    return 2 if fail_n else 0
+
+
+def cmd_validate_pointers(file_path: Path, root_override: str | None) -> int:
+    """RG-2: certify every run-gate pointer in a consumer document (a trove
+    nyxloom.toml [gates.*], cmru.toml steps, anything TOML) against the SSOT
+    lane table it must name. Renaming a lane while pointers still use the old
+    name goes RED HERE — at test time, never at daemon dispatch time."""
+    if not file_path.is_file():
+        fail(f"validate-pointers: no such file: {file_path}")
+    doc = _read_toml(file_path)
+    if root_override:
+        root = Path(root_override)
+        if not root.is_dir():
+            fail(f"validate-pointers: --root {root_override} is not a directory")
+    else:
+        # {worktree} stands for the judged worktree root; for a committed
+        # pointer that is this checkout's git toplevel.
+        root = Path(git_out("rev-parse", "--show-toplevel",
+                            cwd=file_path.parent).strip())
+    pointers = _collect_pointers(doc, "")
+    if not pointers:
+        print(f"run-gate: validate-pointers: {file_path}: no run-gate pointers "
+              f"(nothing to certify)")
+        return 0
+    cache: dict = {}
+    defects: list[str] = []
+    total = 0
+    for where, text in pointers:
+        d, n = _pointer_defects(text, file_path, root, where, cache)
+        defects += d
+        total += n
+    if defects:
+        for d in defects:
+            print(f"run-gate: DEFECT {d}")
+        print(f"run-gate: validate-pointers FAILED: {len(defects)} defect(s) "
+              f"across {total} invocation(s) in {file_path}")
+        return 2
+    print(f"run-gate: validate-pointers OK: {total} invocation(s) in "
+          f"{file_path} certified against their lanes")
+    return 0
+
+
+# RG-5: consumer pointers embed {worktree} into bash -c STRINGS unquoted
+# (`cd {worktree}/proj && exec run-gate --worktree {worktree} <lane>`),
+# so any path the tool substitutes must survive that embedding verbatim.
+# Gate-safe charset: letters/digits/_ . / -, no leading '-' (flag look-alike);
+# whitespace and shell metacharacters word-split or execute downstream, so a
+# tree living at such a path is refused instead of half-working.
+GATE_SAFE_PATH_RE = re.compile(r"^[A-Za-z0-9_./][A-Za-z0-9_./-]*$")
+
+
+def check_worktree_charset(worktree: Path) -> None:
+    text = str(worktree)
+    if GATE_SAFE_PATH_RE.fullmatch(text):
+        return
+    if text.startswith("-"):
+        # Review fix: '-' IS in the charset for later positions; listing it
+        # as an "offending character" would misdescribe a POSITION problem —
+        # a leading dash gets parsed as an option, not a path.
+        fail(f"worktree path {text!r} is not gate-safe: it starts with '-', "
+             f"which consumer shells would parse as an option prefix, not a "
+             f"path — relocate or rename the tree")
+    bad = sorted({c for c in text if not re.fullmatch(r"[A-Za-z0-9_./-]", c)})
+    fail(f"worktree path {text!r} is not gate-safe (offending character(s): "
+         f"{' '.join(repr(c) for c in bad)}): consumer pointers embed "
+         f"{{worktree}} into shell strings, so paths with whitespace or shell "
+         f"metacharacters are refused — relocate or rename the tree")
+
+
+#: R-38 / RG-33 / RG-38: the first assay release that knows every flag
+#: EVERY assay lane now unconditionally receives -- `--resume` shipped in
+#: 2.4.0, `--progress` in 2.4.1, `--state-dir` in 5.2.0 (B066). The floor is
+#: the HIGHEST of these, not the oldest: a judge pinned between 2.4.1 and
+#: 5.1.x would clear a stale (2, 4, 1) floor here, then fail inside the
+#: already-started container on assay's own "unrecognized arguments" for
+#: `--state-dir` -- the construction-time refusal this floor exists to
+#: provide instead of, silently not covering the newest flag.
+ASSAY_FLAG_FLOOR = (5, 2, 0)
+
+
+def declared_version_tuple(declared: str) -> tuple[int, ...] | None:
+    """`2.4.1` / `v2.4.1` -> ``(2, 4, 1)``. Anything that is not purely
+    dotted integers after one optional leading ``v`` -> ``None``: there is
+    no comparable claim, so nothing is held to the floor (the in-lane
+    ``--version`` probe still verifies the literal, RG-4)."""
+    text = declared.strip()
+    if text[:1] == "v":
+        text = text[1:]
+    parts = text.split(".")
+    if not parts or not all(part.isdigit() for part in parts):
+        return None
+    return tuple(int(part) for part in parts)
+
+
+def assay_verdict_rel(assay_lane: str) -> str:
+    return f".assay/verdict-{assay_lane}.json"
+
+
+def _read_sha256_manifest(path: Path) -> list[tuple[str, str]]:
+    """Parse sha256sum's manifest format without treating unreadable bytes
+    as a digest mismatch. A malformed declaration is ERROR; a missing named
+    artifact is NOT_RUN/external-missing; a real hash mismatch is
+    NOT_RUN/judge-digest.
+    """
+    try:
+        raw = path.read_bytes()
+        text = raw.decode("ascii")
+    except (OSError, UnicodeError) as exc:
+        fail_infra(f"cannot read pinned judge checksum file {path}: {exc}")
+    entries: list[tuple[str, str]] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        escaped = line.startswith("\\")
+        body = line[1:] if escaped else line
+        match = re.fullmatch(r"([0-9A-Fa-f]{64})(?:  | \*)(.+)", body)
+        if not match:
+            fail(f"{path}:{number}: malformed sha256sum entry")
+        filename = match.group(2)
+        if escaped:
+            filename = filename.replace(r"\\", "\\").replace(r"\n", "\n") \
+                .replace(r"\r", "\r")
+        entries.append((match.group(1).lower(), filename))
+    if not entries:
+        fail(f"{path}: checksum file contains no entries")
+    return entries
+
+
+def preflight_assay_pins(lane: dict, lane_name: str,
+                         project_dir: Path) -> None:
+    """Verify external judge floor and bytes before admission or execution.
+
+    `sha256sum -c` remains in the in-environment command as a second check;
+    this host-side read gives the lane a closed NOT_RUN result before a
+    runner/container starts and classifies floor and digest failures by the
+    v8 result vocabulary.
+    """
+    if lane["kind"] != "assay":
+        return
+    for pin_name, pin in lane.get("pins", {}).items():
+        version = pin.get("version")
+        if version:
+            claimed = declared_version_tuple(version)
+            if claimed is not None and claimed < ASSAY_FLAG_FLOOR:
+                floor = ".".join(str(part) for part in ASSAY_FLAG_FLOOR)
+                raise GateNotRunError(
+                    "judge-floor",
+                    f"lane {lane_name!r}: pinned judge {pin_name!r} declares "
+                    f"version {version}, below required floor {floor} — "
+                    f"repin the judge to >= {floor}")
+        manifest = project_dir / pin["sha256"]
+        entries = _read_sha256_manifest(manifest)
+        for expected, filename in entries:
+            artifact = Path(filename)
+            if not artifact.is_absolute():
+                artifact = manifest.parent / artifact
+            try:
+                digest = hashlib.sha256()
+                with artifact.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+            except FileNotFoundError:
+                raise GateNotRunError(
+                    "external-missing",
+                    f"lane {lane_name!r}: pinned judge artifact "
+                    f"{artifact} is missing — restore the pinned file")
+            except OSError as exc:
+                fail_infra(f"cannot read pinned judge artifact {artifact}: {exc}")
+            actual = digest.hexdigest()
+            if actual != expected:
+                raise GateNotRunError(
+                    "judge-digest",
+                    f"lane {lane_name!r}: pinned judge artifact {artifact} "
+                    f"does not match {manifest} — restore the pinned bytes "
+                    f"or update the pin deliberately")
+
+
+def assay_progress_rel(assay_lane: str) -> str:
+    return f".assay/progress-{assay_lane}.jsonl"
+
+
+def _assay_failure_summary(log_path: str | None,
+                           progress_path: Path) -> tuple[list[tuple[str, str]],
+                                                         str | None]:
+    """Return a bounded (node id, exception class) list and pytest summary.
+
+    Assay's progress stream owns test outcomes and node ids. Pytest's normal
+    terminal summary owns exception classes, so join the two by node id when
+    available and retain "unknown" when the stream has no class fact.
+    """
+    nodes: list[str] = []
+    classes: dict[str, str] = {}
+    try:
+        with progress_path.open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(event, dict) or event.get("event") != "test":
+                    continue
+                if event.get("when", "call") not in ("call", None):
+                    continue
+                outcome = str(event.get("outcome", "")).lower()
+                if outcome not in ("failed", "error"):
+                    continue
+                nodeid = event.get("nodeid")
+                if not isinstance(nodeid, str) or not nodeid:
+                    continue
+                if nodeid not in nodes:
+                    nodes.append(nodeid)
+                exc_name = event.get("exception_class") or event.get("exception_type")
+                if isinstance(exc_name, str) and exc_name:
+                    classes[nodeid] = exc_name.rsplit(".", 1)[-1]
+    except OSError:
+        pass
+
+    try:
+        log_text = Path(log_path).read_text(encoding="utf-8", errors="replace") \
+            if log_path else ""
+    except OSError:
+        log_text = ""
+    summary_lines = [line.strip() for line in log_text.splitlines()
+                     if line.strip().startswith("=")
+                     and re.search(r"\b(?:failed|error)\b", line, re.I)]
+    summary = summary_lines[-1] if summary_lines else None
+    short_rows: list[tuple[str, str]] = []
+    row_re = re.compile(
+        r"^\s*(?:FAILED|ERROR)\s+(\S+)(?:\s+-\s+([A-Za-z_][\w.]*(?:Error|Exception)))?(?::.*)?\s*$")
+    for line in log_text.splitlines():
+        match = row_re.match(line)
+        if match:
+            short_rows.append((match.group(1),
+                               match.group(2).rsplit(".", 1)[-1]
+                               if match.group(2) else "unknown"))
+    row_classes = dict(short_rows)
+    for nodeid, exc_name in short_rows:
+        if nodeid not in nodes:
+            nodes.append(nodeid)
+        classes[nodeid] = exc_name
+    return [(nodeid, classes.get(nodeid, row_classes.get(nodeid, "unknown")))
+            for nodeid in nodes[:FAILED_NODE_LIMIT]], summary
+
+
+def archive_failed_assay(lane_name: str, record: dict | None,
+                         project_dir: Path, repo: Path, lane: dict,
+                         verdict: str) -> str | None:
+    """Preserve the current assay artifacts before the next invocation.
+
+    Archives are under the checkout owning the shared Git directory, so a
+    short-lived linked worktree can be removed without deleting its failure
+    evidence. The run id is globally random and keeps equal lane names from
+    colliding across projects.
+    """
+    verdict_source = (Path(record["_verdict_path"])
+                      if record and isinstance(record.get("_verdict_path"), str)
+                      else project_dir / assay_verdict_rel(lane["assay_lane"]))
+    progress_source = (Path(record["_progress_path"])
+                       if record and isinstance(record.get("_progress_path"), str)
+                       else project_dir / assay_progress_rel(lane["assay_lane"]))
+    run_id = record.get("run_id") if record else None
+    if not isinstance(run_id, str) or not run_id:
+        return None
+    root = repo / ".run-gate" / "failed"
+    destination = root / lane_name / run_id
+    sources = [("verdict.json", verdict_source),
+               ("progress.jsonl", progress_source)]
+    present = [(name, source) for name, source in sources
+               if source.is_file() and not source.is_symlink()]
+    if not present:
+        return None
+    ignored_targets = [destination / name for name, _source in present]
+    if paths_are_git_ignored(repo, ignored_targets) is not True:
+        print(f"{PROG}: WARNING: failed assay evidence was not archived: "
+              f"{root} must be git-ignored", file=sys.stderr, flush=True)
+        return None
+    try:
+        for protected in (root, root / lane_name):
+            protected.mkdir(mode=0o700, parents=True, exist_ok=True)
+            protected.chmod(0o700)
+        destination.mkdir(mode=0o700)
+        for name, source in present:
+            target = destination / name
+            with source.open("rb") as src, target.open("xb") as dst:
+                shutil.copyfileobj(src, dst)
+            target.chmod(0o600)
+        record["failed_evidence_path"] = str(destination)
+        record["failed_evidence_verdict"] = verdict
+        lane_root = root / lane_name
+        archived = sorted(
+            (path for path in lane_root.iterdir()
+             if path.is_dir() and not path.is_symlink()),
+            key=lambda path: path.stat().st_mtime_ns, reverse=True)
+        for stale in archived[FAILED_EVIDENCE_KEEP:]:
+            shutil.rmtree(stale)
+        return str(destination)
+    except OSError as exc:
+        shutil.rmtree(destination, ignore_errors=True)
+        print(f"{PROG}: WARNING: failed assay evidence could not be archived: "
+              f"{exc}", file=sys.stderr, flush=True)
+        return None
+
+
+def _report_failed_assay(lane_name: str, record: dict | None,
+                         project_dir: Path, repo: Path, lane: dict,
+                         verdict: str) -> None:
+    recorded_progress = record.get("_progress_path") if record else None
+    progress_path = (Path(recorded_progress)
+                     if isinstance(recorded_progress, str)
+                     else project_dir / assay_progress_rel(lane["assay_lane"]))
+    print_assay_failure_digest(
+        verdict, record.get("log_path") if record else None, progress_path)
+    archive_failed_assay(lane_name, record, project_dir, repo, lane, verdict)
+
+
+def print_assay_failure_digest(verdict: str, log_path: str | None,
+                               progress_path: Path) -> None:
+    failures, summary = _assay_failure_summary(log_path, progress_path)
+    details = ", ".join(f"{nodeid} ({exc})" for nodeid, exc in failures)
+    line = f"{PROG}: assay failure digest: verdict={verdict}"
+    if details:
+        line += f"; failures: {details}"
+    if summary:
+        line += f"; pytest: {summary}"
+    print(line, flush=True)
+
+
+def resolve_assay_reuse_path(value: str, project_dir: Path,
+                             worktree: Path) -> str:
+    """Map an operator path to the same absolute path inside the lane mount.
+
+    Assay runs with cwd at project_dir, and run-gate mounts the judged tree
+    at its existing absolute path. Refuse paths outside that mounted tree;
+    do not stat the translated path, since the container namespace is not the
+    host filesystem.
+    """
+    if not value.strip():
+        fail("--reuse-from requires a non-empty verdict path")
+    requested = Path(value)
+    candidate = requested if requested.is_absolute() else project_dir / requested
+    target = Path(os.path.abspath(os.path.normpath(str(candidate))))
+    root = Path(os.path.abspath(os.path.normpath(str(worktree))))
+    try:
+        target.relative_to(root)
+    except ValueError:
+        fail(f"--reuse-from {value!r} resolves outside the judged worktree "
+             f"{worktree}, which is the path mounted into the lane")
+    return str(target)
+
+
+def assay_state_root(repo: Path, env: dict | None = None) -> Path:
+    """The lane-visible mount root for durable Assay state.
+
+    A container environment may name a different root when its runner mounts
+    durable state somewhere other than `<repo>/.run-gate`. Paths are interpreted
+    inside that environment; callers must not stat a container path locally.
+    """
+    configured = (env or {}).get("state_root")
+    return Path(configured) if configured is not None else repo / ".run-gate"
+
+
+def ensure_default_assay_state_root(path: Path) -> None:
+    """Create and validate Run-Gate's default, repo-owned state mount.
+
+    Container lanes mount this directory before launch; a bare-host Assay
+    lane has no mount builder, so its first run must establish the same
+    durable root itself. Do not accept a symlink or another existing object
+    as that root: it is also the in-container pytest temporary root.
+    """
+    try:
+        path.mkdir(exist_ok=True)
+        info = path.lstat()
+    except OSError as exc:
+        raise GateError(f"cannot create or inspect default Assay state root "
+                        f"{path}: {exc}") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        fail(f"default Assay state root {path} is not a real directory")
+
+
+def default_assay_state_root_status(path: Path) -> tuple[str, str | None]:
+    """Classify the default root without creating it for doctor/dry-run."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        parent_status, reason = host_state_directory_status(path.parent)
+        if parent_status == "ready":
+            return "creatable", None
+        if parent_status == "unknown":
+            return "unknown", reason
+        return "invalid", f"parent {path.parent} is not a writable directory"
+    except NotADirectoryError:
+        return "invalid", f"parent {path.parent} is not a directory"
+    except OSError as exc:
+        return "unknown", f"cannot inspect {path}: {exc}"
+    if not stat.S_ISDIR(info.st_mode):
+        return "invalid", f"{path} is not a real directory"
+    return "ready", None
+
+
+def assay_state_root_remedy(state_root: Path, env_name: str,
+                            env: dict | None) -> str:
+    """Name a repair that matches whether the mount path is configurable."""
+    if not env or env.get("mode") == "host":
+        if not env or env.get("state_root") is None:
+            return (f"ensure the checkout parent permits Run-Gate to create "
+                    f"'{state_root}' as a real directory, and make that root "
+                    "and any existing state directories writable by the "
+                    "lane user on this host")
+        return (f"ensure configured state root '{state_root}' exists and is "
+                "writable by the lane user on this host, including any "
+                "existing state directories")
+    if env.get("state_root") is not None:
+        return (f"mount the durable host directory read-write at '{state_root}' "
+                f"in environment '{env_name}' and ensure existing state "
+                "directories are writable by the lane user")
+    return (f"mount '{state_root}' read-write into this environment, or "
+            f"declare state_root on [environments.{env_name}] if the durable "
+            "mount uses another in-container path; ensure existing state "
+            "directories are writable by the lane user")
+
+
+def assay_state_dir(repo: Path, project_dir: Path,
+                    state_root: str | Path | None = None) -> Path:
+    """RG-38/RG-49: the durable, per-project mutation-resume-state root,
+    OUTSIDE the judged worktree (which may be ephemeral) -- rooted by default
+    at `repo` (the checkout owning the shared .git, durable by construction
+    even when the judged worktree is not), or at the environment's declared
+    durable mount. Keyed by `project_dir`'s path RELATIVE to
+    `repo` when it is under `repo` (the common case, no --worktree
+    override): a bare basename key would let two projects that happen to
+    share a directory NAME (e.g. two nested `backend/` projects) collide.
+    A --worktree override can relocate `project_dir` outside `repo`
+    entirely; that rarer case uses a separate namespace keyed by the SHA-256
+    digest of the full resolved path. This avoids collisions between distinct
+    external paths and keeps their keys separate from in-repo relative
+    paths. `build_assay_inner` and `assay_artifact_paths` both call this —
+    one construction, so the two can never drift apart (R-38's own rule for
+    verdict/progress, extended here)."""
+    root = Path(state_root) if state_root is not None else repo / ".run-gate"
+    resolved_repo = repo.resolve()
+    resolved_project = project_dir.resolve()
+    try:
+        relative = resolved_project.relative_to(resolved_repo)
+    except ValueError:
+        key = hashlib.sha256(os.fsencode(str(resolved_project))).hexdigest()
+        return root / "assay-state-external" / key
+    return root / "assay-state" / relative.as_posix()
+
+
+ASSAY_STATE_READY = "RUN_GATE_STATE_ROOT_READY"
+ASSAY_STATE_UNAVAILABLE = "RUN_GATE_STATE_ROOT_UNAVAILABLE"
+
+
+def assay_state_ancestor_candidates(state_root: Path,
+                                    state_dir: Path) -> list[Path]:
+    """Return the target and its descendants' ancestors, deepest first."""
+    try:
+        state_dir.relative_to(state_root)
+    except ValueError:
+        fail(f"Assay state directory {state_dir} is outside its state root "
+             f"{state_root}")
+    candidates = []
+    candidate = state_dir
+    while candidate != state_root:
+        candidates.append(candidate)
+        candidate = candidate.parent
+    return candidates
+
+
+def assay_state_probe_script(state_root: Path, state_dir: Path) -> str:
+    """Read only: check the root and the deepest existing state ancestor."""
+    quoted_root = shlex.quote(str(state_root))
+    branches = [
+        f"if [ ! -d {quoted_root} ] || [ ! -w {quoted_root} ] || "
+        f"[ ! -x {quoted_root} ]; then "
+        f"printf '%s\\n' {ASSAY_STATE_UNAVAILABLE}"
+    ]
+    for candidate in assay_state_ancestor_candidates(state_root, state_dir):
+        quoted = shlex.quote(str(candidate))
+        branches.append(
+            f"elif [ -e {quoted} ] || [ -L {quoted} ]; then "
+            f"if [ -d {quoted} ] && [ -w {quoted} ] && [ -x {quoted} ]; then "
+            f"printf '%s\\n' {ASSAY_STATE_READY}; "
+            f"else printf '%s\\n' {ASSAY_STATE_UNAVAILABLE}; fi")
+    branches.append(f"else printf '%s\\n' {ASSAY_STATE_READY}; fi")
+    return "; ".join(branches)
+
+
+def host_state_directory_status(path: Path) -> tuple[str, str | None]:
+    """Classify one host directory without folding unreadable into absent."""
+    try:
+        info = path.stat()
+    except FileNotFoundError:
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            return "missing", None
+        except OSError as exc:
+            return "unknown", f"cannot inspect {path}: {exc}"
+        # A dangling symlink blocks creation of this directory path.
+        return "unavailable", None
+    except NotADirectoryError:
+        return "unavailable", None
+    except OSError as exc:
+        return "unknown", f"cannot inspect {path}: {exc}"
+    if (not stat.S_ISDIR(info.st_mode)
+            or not os.access(path, os.W_OK | os.X_OK)):
+        return "unavailable", None
+    return "ready", None
+
+
+def probe_assay_state_root(docker: str | None, env: dict, env_name: str,
+                           repo: Path, worktree: Path, env_source: str,
+                           slice_name: str, state_root: Path,
+                           state_dir: Path,
+                           resolved_container_name: str | None = None
+                           ) -> tuple[bool | None, str | None]:
+    """Return (writable, reason); None means the probe itself was unknown."""
+    if not env or env.get("mode") == "host":
+        root_status, reason = host_state_directory_status(state_root)
+        if root_status == "unknown":
+            return None, reason
+        if root_status != "ready":
+            return False, None
+        for candidate in assay_state_ancestor_candidates(state_root, state_dir):
+            status, reason = host_state_directory_status(candidate)
+            if status == "missing":
+                continue
+            if status == "unknown":
+                return None, reason
+            return status == "ready", None
+        return True, None
+    if not docker:
+        return None, "docker not found on PATH"
+    argv = build_env_probe_argv(
+        docker, env, env_name, repo, worktree, env_source, slice_name,
+        assay_state_probe_script(state_root, state_dir),
+        resolved_container_name=resolved_container_name)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as exc:
+        return None, f"probe could not start: {exc}"
+    if result.returncode != 0:
+        tail = (result.stderr.strip().splitlines() or
+                [f"exit {result.returncode}"])[-1]
+        return None, f"probe failed (exit {result.returncode}): {tail}"
+    answer = result.stdout.strip()
+    if answer == ASSAY_STATE_READY:
+        return True, None
+    if answer == ASSAY_STATE_UNAVAILABLE:
+        return False, None
+    return None, f"probe returned an unexpected response: {answer!r}"
+
+
+def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
+                            env_name: str, env_source: str, repo: Path,
+                            project_dir: Path, worktree: Path,
+                            slice_name: str,
+                            resolved_container_name: str | None = None,
+                            dry_run: bool = False) -> None:
+    """Refuse assay execution unless its durable state mount is writable."""
+    if lane.get("kind") != "assay":
+        return
+    state_root = assay_state_root(repo, env)
+    state_dir = assay_state_dir(repo, project_dir, env.get("state_root"))
+    if not env or env.get("mode") == "host":
+        if dry_run:
+            action = "would check"
+            if (env or {}).get("state_root") is None:
+                status, reason = default_assay_state_root_status(state_root)
+                if status == "invalid":
+                    fail(reason or f"default Assay state root {state_root} is invalid")
+                if status == "unknown":
+                    fail_infra(reason or f"cannot inspect {state_root}")
+                if status == "creatable":
+                    action = "would create and check"
+            print(f"run-gate: assay state root preflight: {action} "
+                  f"{state_root} and the nearest existing directory for "
+                  f"{state_dir} are writable on this host", flush=True)
+            return
+        if (env or {}).get("state_root") is None:
+            ensure_default_assay_state_root(state_root)
+    else:
+        probe_argv = build_env_probe_argv(
+            docker or "docker", env, env_name, repo, worktree, env_source,
+            slice_name, assay_state_probe_script(state_root, state_dir),
+            resolved_container_name=resolved_container_name)
+        if dry_run:
+            print(f"run-gate: assay state root preflight: "
+                  f"{shlex.join(probe_argv)}", flush=True)
+            return
+    ready, why = probe_assay_state_root(
+        docker, env, env_name, repo, worktree, env_source, slice_name,
+        state_root, state_dir, resolved_container_name=resolved_container_name)
+    if ready is None:
+        fail_infra(f"could not determine whether Assay state root "
+                   f"'{state_root}' and state path '{state_dir}' are usable "
+                   f"in environment '{env_name}': {why}")
+    if not ready:
+        if resolved_container_name:
+            runner = f"container '{resolved_container_name}'"
+        elif env and env.get("mode") != "host":
+            runner = f"image '{env.get('image', '<unknown>')}'"
+        else:
+            runner = "bare host process"
+        remedy = assay_state_root_remedy(state_root, env_name, env)
+        raise GateNotRunError(
+            "state-mount",
+            f"lane '{lane.get('assay_lane', '?')}' not run: Assay state root "
+            f"'{state_root}' or the nearest existing directory for state "
+            f"path '{state_dir}' is missing, not a directory, or not "
+            f"writable by the lane user in {runner} for environment "
+            f"'{env_name}'; "
+            f"{remedy}")
+    print(f"run-gate: assay state root: {state_root} and the nearest "
+          f"existing directory for {state_dir} are writable in "
+          f"environment '{env_name}'", flush=True)
+
+
+def assay_artifact_paths(lane: dict, project_dir: Path, repo: Path,
+                         state_root: str | Path | None = None
+                         ) -> tuple[str | None, str | None, str | None]:
+    """(verdict, progress, state_dir) as ABSOLUTE strings for an assay lane,
+    (None, None, None) for a command lane. R-38 constructs verdict/progress
+    relative to the effective project dir; the inflight record (R-39) and
+    the progress watch (R-40) need the same two answers, so all three
+    derive them from one place — a second construction of the same path is
+    how the two drift apart. `state_dir` (RG-38) is included for the same
+    reason RG-10 exists: a caller that discloses a lane's artifacts must
+    never construct a competing answer for one this function already owns."""
+    if lane["kind"] != "assay":
+        return None, None, None
+    return (str(project_dir / assay_verdict_rel(lane["assay_lane"])),
+            str(project_dir / assay_progress_rel(lane["assay_lane"])),
+            str(assay_state_dir(repo, project_dir, state_root)))
+
+
+def inflight_recovery_action(pending: dict, lane_name: str,
+                             project_dir: Path,
+                             fresh_supported: bool) -> str:
+    record_path = inflight_path(project_dir, lane_name)
+    container = pending.get("container")
+    if fresh_supported:
+        return (f"after verifying container {container!r} is no longer live, "
+                f"re-run with --fresh")
+    return (f"the current lane environment cannot use --fresh; keep this "
+            f"record until container {container!r} is confirmed stopped by "
+            f"its lifecycle owner, then remove {record_path} and retry")
+
+
+def validate_inflight_assay_contract(pending: dict, lane_name: str,
+                                     project_dir: Path,
+                                     lane: dict,
+                                     fresh_supported: bool = True) -> None:
+    """Refuse malformed schema-2 Assay identity fields before they can
+    trigger an inventory/Docker probe or be read as a lane verdict.
+
+    Imported lane names are resolved from the configured import declaration
+    before inventory runs, so every call can bind artifact paths to the exact
+    current lane.
+    """
+    record_path = inflight_path(project_dir, lane_name)
+    recovery = inflight_recovery_action(
+        pending, lane_name, project_dir, fresh_supported)
+    if "assay_identity_mode" not in pending:
+        fail(f"the inflight record for lane {lane_name!r} does not contain a "
+             f"valid assay_identity_mode field (schema 2 requires the key); "
+             f"refusing to infer its run contract; {recovery}. The record is "
+             f"at {record_path}")
+
+    identity_mode = pending.get("assay_identity_mode")
+    lane_kind = lane.get("kind")
+    if identity_mode is None:
+        if lane_kind == "assay":
+            fail(f"the inflight Assay record for lane {lane_name!r} does not "
+                 f"contain a valid assay_identity_mode; refusing to interpret "
+                 f"its verdict under the current config; {recovery}. The record is at "
+                 f"{record_path}")
+        for artifact in ("verdict", "progress"):
+            if pending.get(artifact) is not None:
+                fail(f"the inflight record for non-Assay lane {lane_name!r} "
+                     f"contains an Assay {artifact} path; refusing to "
+                     f"reinterpret it as a command result; {recovery}. The "
+                     f"record is at "
+                     f"{record_path}")
+        return
+
+    if not isinstance(identity_mode, str) \
+            or identity_mode not in ASSAY_IDENTITY_MODES:
+        fail(f"the inflight Assay record for lane {lane_name!r} does not "
+             f"contain a valid assay_identity_mode; refusing to interpret its "
+             f"verdict; {recovery}. The record is at {record_path}")
+    if lane_kind != "assay":
+        fail(f"the inflight record for lane {lane_name!r} describes an Assay "
+             f"run ({identity_mode!r}), but the current lane kind is "
+             f"{lane_kind!r}; refusing to interpret its result under the "
+             f"changed lane config; {recovery}. The record is at "
+             f"{record_path}")
+
+    assay_lane = lane.get("assay_lane")
+    if not isinstance(assay_lane, str) \
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+", assay_lane):
+        fail(f"the current Assay lane {lane_name!r} has no safe assay_lane "
+             f"identity for its inflight artifacts")
+    expected_paths = {
+        "verdict": str(project_dir / assay_verdict_rel(assay_lane)),
+        "progress": str(project_dir / assay_progress_rel(assay_lane)),
+    }
+    for artifact in ("verdict", "progress"):
+        value = pending.get(artifact)
+        if not isinstance(value, str) or not value.strip() or "\0" in value:
+            fail(f"the inflight Assay record for lane {lane_name!r} does not "
+                 f"contain a valid {artifact} path; refusing to interpret its "
+                 f"result; {recovery}. The record is at {record_path}")
+        if value != expected_paths[artifact]:
+            fail(f"the inflight Assay record for lane {lane_name!r} names "
+                 f"{artifact} path {value!r}, not the path for the recorded "
+                 f"Assay lane {lane.get('assay_lane')!r} "
+                 f"({expected_paths[artifact]}); refusing to read unrelated "
+                 f"evidence; {recovery}. The record is at {record_path}")
+
+
+def lane_supports_fresh(lane: dict, cfg: dict, central: dict,
+                        assay_settings: dict) -> bool:
+    """Whether this configured leaf can use run-gate's container --fresh."""
+    environment = lane.get("environment")
+    if environment is None and lane.get("kind") == "assay":
+        environment = assay_settings.get("environment")
+    if not isinstance(environment, str):
+        return False
+    resolved = cfg.get("environments", {}).get(environment)
+    if resolved is None:
+        resolved = central.get("environments", {}).get(environment)
+    return isinstance(resolved, dict) and resolved.get("mode") == "ephemeral"
+
+
+def preflight_inflight_assay_contract(args: argparse.Namespace,
+                                      cfg: dict, central: dict,
+                                      assay_settings: dict,
+                                      project_dir: Path) -> None:
+    """Validate requested recovery records before inventory/admission.
+
+    Imported Assay lane inventory and sequence admission can both contact
+    Docker before a lane is dispatched. Resolve local, inherited and imported
+    lane policy here and walk a requested sequence, checking its own record
+    and every member record before either operation.
+    """
+    lane_name = args.lane
+    if (args.help or args.list or args.check_env
+            or lane_name in (None, "admission", "doctor", "history",
+                             "footprint", "validate-pointers",
+                             "migrate-modes")
+            or not isinstance(lane_name, str)
+            or not re.fullmatch(r"[A-Za-z0-9_.-]+", lane_name)):
+        return
+
+    project_lanes = cfg.get("lanes", {})
+    central_lanes = central.get("lanes", {})
+    import_spec = assay_settings.get("import")
+    imported = import_spec.get("lanes") if isinstance(import_spec, dict) else None
+
+    def declared_lane(name: str) -> dict | None:
+        lane = project_lanes.get(name)
+        if lane is None:
+            lane = central_lanes.get(name)
+        if lane is not None:
+            return lane
+        if imported == "all" or (isinstance(imported, list)
+                                  and name in imported):
+            import_environment = (import_spec.get("environment")
+                                  if isinstance(import_spec, dict) else None)
+            return {"kind": "assay", "assay_lane": name,
+                    "environment": import_environment}
+        return None
+
+    requested_lane = declared_lane(lane_name)
+    sequence_request = (isinstance(requested_lane, dict)
+                        and requested_lane.get("kind") == "sequence")
+    checked: dict[str, bool] = {}
+
+    def refuse_foreign_record(name: str, pending: dict) -> None:
+        runner = pending.get("runner")
+        if runner is None or runner == "container":
+            return
+        fail(f"the inflight record for lane {name!r} names container "
+             f"{pending.get('container')!r}, written by runner {runner!r} — "
+             f"foreign record — refusing to continue to Assay inventory, "
+             f"sequence admission, or lane execution; --fresh cannot remove "
+             f"it. Ask that runner's lifecycle owner to confirm the run has "
+             f"ended, then remove {inflight_path(project_dir, name)}")
+
+    def visit(name: str, ancestors: frozenset[str]) -> bool:
+        if name in ancestors:
+            return False
+        if name in checked:
+            return checked[name]
+        lane = declared_lane(name)
+        if not isinstance(lane, dict):
+            checked[name] = False
+            return False
+        if lane.get("kind") == "sequence":
+            pending = load_inflight_record(
+                inflight_path(project_dir, name), fresh_supported=False)
+            if pending is not None:
+                refuse_foreign_record(name, pending)
+                identity_mode = pending.get("assay_identity_mode")
+                if identity_mode is None:
+                    prior = "belongs to a previous container lane"
+                elif (isinstance(identity_mode, str)
+                      and identity_mode in ASSAY_IDENTITY_MODES):
+                    prior = f"describes an Assay run in {identity_mode!r} mode"
+                else:
+                    fail(f"the inflight record for sequence lane {name!r} has "
+                         f"an invalid assay_identity_mode; refusing to "
+                         f"interpret its result or start its members. Ask the "
+                         f"prior runner's lifecycle owner to confirm the run "
+                         f"has ended, then remove "
+                         f"{inflight_path(project_dir, name)}")
+                fail(f"the inflight record for lane {name!r} names container "
+                     f"{pending['container']!r} and {prior}, but the current "
+                     f"lane kind is 'sequence'; refusing to interpret its "
+                     f"result under the changed lane config or start its "
+                     f"members. Ask the prior runner's lifecycle owner to "
+                     f"confirm the run has ended, then remove "
+                     f"{inflight_path(project_dir, name)}")
+            members = lane.get("lanes", [])
+            has_ephemeral_member = False
+            if isinstance(members, list):
+                next_ancestors = ancestors | {name}
+                for member in members:
+                    if isinstance(member, str):
+                        has_ephemeral_member = (
+                            visit(member, next_ancestors)
+                            or has_ephemeral_member)
+            checked[name] = has_ephemeral_member
+            return has_ephemeral_member
+        if lane.get("kind") not in ("assay", "command"):
+            checked[name] = False
+            return False
+        fresh_supported = lane_supports_fresh(
+            lane, cfg, central, assay_settings)
+        if args.fresh and not sequence_request and not fresh_supported:
+            fail(f"--fresh applies only to an ephemeral-container lane; "
+                 f"lane {name!r} does not use one")
+        fresh_for_lane = args.fresh and fresh_supported
+        pending = load_inflight_record(
+            inflight_path(project_dir, name),
+            fresh=fresh_for_lane, fresh_supported=fresh_supported)
+        if pending is None:
+            checked[name] = fresh_supported
+            return fresh_supported
+        refuse_foreign_record(name, pending)
+        # `--fresh` discards only an owned ephemeral container record. Every
+        # other path validates its saved contract before inventory/admission.
+        if not fresh_supported and pending.get("runner") in (None, "container"):
+            fail(f"the inflight record for lane {name!r} names container "
+                 f"{pending.get('container')!r}, written by the container "
+                 f"runner, but the current lane environment is not "
+                 f"ephemeral-container mode; "
+                 f"run-gate cannot re-attach to it or replace it here. Ask "
+                 f"the prior container's lifecycle owner to confirm the run "
+                 f"has ended, then remove {inflight_path(project_dir, name)} "
+                 f"and retry. --fresh applies only to ephemeral-container lanes")
+        if not fresh_for_lane:
+            validate_inflight_assay_contract(
+                pending, name, project_dir, lane,
+                fresh_supported=fresh_supported)
+        checked[name] = fresh_supported
+        return fresh_supported
+
+    has_ephemeral_member = visit(lane_name, frozenset())
+    if args.fresh and sequence_request and not has_ephemeral_member:
+        fail(f"--fresh on sequence {lane_name!r} has no ephemeral member "
+             f"container to replace")
+
+
+def clear_previous_assay_verdict(lane: dict, project_dir: Path, repo: Path,
+                                 run_record: dict | None = None) -> None:
+    """Remove old output only for a fresh Assay attempt, before setup starts."""
+    if lane.get("kind") != "assay":
+        return
+    recorded = (run_record.get("_verdict_path")
+                if run_record and isinstance(run_record.get("_verdict_path"), str)
+                else None)
+    paths = assay_artifact_paths(lane, project_dir, repo)
+    verdict_path = Path(recorded or paths[0])
+    try:
+        verdict_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise GateError(f"cannot remove previous assay verdict at "
+                        f"{verdict_path}: {exc}") from exc
+
+
+def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
+                      request_base: str | None = None,
+                      worktree: Path | None = None,
+                      state_root: str | Path | None = None) -> str:
+    verdict = assay_verdict_rel(lane["assay_lane"])
+    selected_worktree = worktree or repo
+    command = assay_command_text(lane)
+    for pin_name, pin in lane.get("pins", {}).items():
+        # R-38: a judge too old for the flags below refuses HERE, by name,
+        # not inside the container under assay's own `unrecognized
+        # arguments` line. Only a declared version is a claim to hold.
+        if pin.get("version"):
+            claimed = declared_version_tuple(pin["version"])
+            if claimed is not None and claimed < ASSAY_FLAG_FLOOR:
+                floor = ".".join(str(part) for part in ASSAY_FLAG_FLOOR)
+                raise GateNotRunError(
+                    "judge-floor",
+                    f"lane '{lane['assay_lane']}': pin '{pin_name}' declares "
+                    f"assay {pin['version']}, below {floor} -- the first "
+                    f"release that knows `--resume` (2.4.0), `--progress` "
+                    f"(2.4.1) AND `--state-dir` (5.2.0, B066), all three of "
+                    f"which every assay lane receives unconditionally "
+                    f"(R-38, RG-33, RG-38); re-pin the judge to >= {floor}, "
+                    f"or the lane would fail inside the container with "
+                    f"assay's own 'unrecognized arguments' line")
+    parts = ["set -euo pipefail",
+             f"cd {shlex.quote(str(project_dir))}",
+             "mkdir -p .assay",
+             f"rm -f -- {shlex.quote(verdict)}",
+             "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
+             shlex.join(["git", "config", "--global", "--replace-all",
+                        "safe.directory", "*"]),
+             *assay_source_setup(lane, selected_worktree, project_dir)]
+    for pin_name, pin in lane.get("pins", {}).items():
+        sha = Path(pin["sha256"])
+        # verify FROM the pin file's own directory (bare-filename resolution trap)
+        parts.append(f"(cd {shlex.quote(str(Path(project_dir / sha.parent)))} && "
+                     f"sha256sum -c {shlex.quote(sha.name)})")
+        if pin.get("version"):
+            # RG-4: a declared version is a CLAIM the artifact must satisfy,
+            # checked in-lane right after byte verification — provenance, not
+            # decoration. Declaring version asserts the command honors the
+            # `--version` convention (documented in SPEC R-08/CONSUMERS).
+            # Review fix: WHOLE-TOKEN equality — edge punctuation stripped,
+            # one decorative leading 'v' tolerated ('v2.1.0' == '2.1.0').
+            # The old substring glob let declared '2.1' pass for reported
+            # '2.11.0', a claim the artifact never made.
+            declared = shlex.quote(pin["version"])
+            probe = f"{command} --version"
+            parts.append(
+                f"{{ reported=$({probe}) || "
+                f"{{ echo \"run-gate: pin '{pin_name}': version probe failed: {probe}\" "
+                f">&2; exit 2; }}; "
+                f"hit=0; for tok in $reported; do "
+                f"tok=${{tok#\"${{tok%%[![:punct:]]*}}\"}}; "
+                f"tok=${{tok%\"${{tok##*[![:punct:]]}}\"}}; "
+                f"case \"$tok\" in v[0-9]*) tok=${{tok#v}} ;; esac; "
+                f"if [ \"$tok\" = {declared} ]; then hit=1; fi; done; "
+                f"if [ \"$hit\" != 1 ]; then "
+                f"echo \"run-gate: pin '{pin_name}' version mismatch: declared "
+                f"{declared}, artifact reports: $reported — fix pins.{pin_name}.version "
+                f"or republish the artifact\" >&2; exit 2; fi; }}")
+    # RG-33 (R-38): EVERY assay-kind lane runs with `--resume` and
+    # `--progress`, unconditionally. Both are no-ops on a lane that declares
+    # no R2 (assay's own `--progress` help: "Ignored by a lane that declares
+    # no R2"; resume state is only ever read or written by the mutation
+    # sweep). On an R2 lane they are the difference between a budget-capped
+    # retry that picks up where the previous attempt stopped and one that
+    # re-tests every mutant from #1 -- dstdns's `sql-mutation`, 2026-09-02:
+    # three retries, each spending its whole 120-minute budget on the first
+    # of four target files, `.assay/mutation-state/` never written. Resume
+    # never masks a source change: a candidate's id folds in the file's exact
+    # bytes, so an edited file re-executes every candidate touching it. Both
+    # artifacts live under `.assay/` beside the verdict -- the directory this
+    # inner just created and every adopter git-ignores (R-32) -- so the
+    # progress file can never dirty the judged tree (assay refuses
+    # NO_MEASUREMENT/DIRTY_TREE on the NEXT run of a lane whose progress
+    # file landed in the work tree). Gating the flags on the inventory's
+    # declared rigor was rejected: a second reading of an assay-owned fact
+    # for no behavioural gain.
+    #
+    # RG-38: resume STATE (as opposed to the progress file above) is
+    # additionally pointed at a directory outside the judged tree entirely,
+    # via assay B066's `--state-dir`. `.assay/mutation-state/` under
+    # `project_dir` does not survive an ephemeral worktree (a cmru release
+    # transaction, a Mode-B instance) -- a retried lane there starts from
+    # mutant #1 despite `--resume`, having spent its whole budget on the
+    # first target file (dstdns `sql-mutation`, three retries, state never
+    # written). `repo` -- the checkout owning the shared .git, resolved by
+    # `resolve_repo_and_worktree` -- is durable BY CONSTRUCTION even when
+    # the JUDGED worktree is ephemeral: worktrees live under it and it
+    # outlives every one of them. `.run-gate/` is git-ignored estate-wide,
+    # so a shared store there can never dirty the judged tree either.
+    # Candidate ids already fold in the file's exact bytes/span/replacement/
+    # operator, so sharing this store across worktrees and commits is safe
+    # by construction -- a record either matches the candidate exactly or is
+    # ignored, never masking a source edit. assay_state_dir() is the single
+    # construction (RG-10's own rule, extended) -- print_lane_artifacts()
+    # discloses the SAME path this inner script actually creates and uses.
+    state_dir = assay_state_dir(repo, project_dir, state_root)
+    state_root_path = (Path(state_root) if state_root is not None
+                       else repo / ".run-gate")
+    state_descendants = state_dir.relative_to(state_root_path).parts
+    quoted_root = shlex.quote(str(state_root_path))
+    unavailable = shlex.quote(
+        f"Assay state root '{state_root_path}' became unavailable after preflight")
+    parts.append(
+        f"if [ ! -d {quoted_root} ] || [ ! -w {quoted_root} ] || "
+        f"[ ! -x {quoted_root} ]; then "
+        f"printf '%s\\n' {unavailable} >&2; exit 1; fi")
+    # Create each descendant directly beneath its already-mounted parent.
+    # `mkdir -p <state_dir>` would recreate a missing `<state_root>` in the
+    # runner's writable layer if the mount disappeared after preflight.
+    current = state_root_path
+    for component in state_descendants:
+        current = current / component
+        quoted = shlex.quote(str(current))
+        parts.append(f"if [ ! -d {quoted} ]; then "
+                     f"mkdir {quoted} 2>/dev/null || [ -d {quoted} ]; fi")
+    progress = assay_progress_rel(lane["assay_lane"])
+    run_argv = ["run", lane["assay_lane"], "--file", "assay.toml",
+                "--verdict-json", verdict, "--resume", "--progress",
+                progress, "--state-dir", str(state_dir)]
+    if request_base:
+        # RG-26: only ever appended for a lane the INVENTORY says delegates
+        # its base (base_source == "request"); assay refuses it on any other.
+        run_argv += ["--request-base", request_base]
+    selective = lane.get("_selective_assay") or {}
+    if selective.get("reuse_from"):
+        run_argv += ["--reuse-from", selective["reuse_from"]]
+    rejudge = selective.get("rejudge") or []
+    if rejudge:
+        run_argv += ["--rejudge", ",".join(rejudge)]
+    if selective.get("rejudge_outcome"):
+        run_argv += ["--rejudge-outcome", selective["rejudge_outcome"]]
+    # RG-85: the test command needs a real, writable path inside the selected
+    # checkout mount. A literal such as `/worktree/.run-gate` is not a
+    # namespace fact: tester-unified runs at the mounted checkout's actual
+    # path, which varies by host and worktree. Derive both values from the
+    # state mount already verified above; the consumer assay.toml forwards
+    # these names through its explicit env_passthrough list.
+    quoted_temp_root = shlex.quote(str(state_root_path))
+    parts.append(f"TMPDIR={quoted_temp_root} "
+                 f"GIT_CEILING_DIRECTORIES={quoted_temp_root} "
+                 f"{command} {shlex.join(run_argv)}")
+    return " && ".join(parts)
+
+
+def build_command_inner(lane: dict, worktree: Path,
+                        base: str | None = None) -> str:
+    return " && ".join(["set -euo pipefail",
+                        "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
+                        shlex.join(["git", "config", "--global", "--replace-all",
+                                    "safe.directory", "*"]),
+                        shlex.join(lane_command_argv(lane, worktree, base))])
+
+
+def dual_mount_flags(repo: Path, phys: Path,
+                     alias_root: Path | None = None) -> list[str]:
+    """RG-3: the repo is dual-mounted (physical AND namespace paths) so
+    worktree gitfiles recorded under EITHER namespace resolve (AGENTS trap
+    #2). Inside the devcontainer the second view comes from mountinfo; on a
+    bare host there is no alias to derive and phys == repo — letting both -v
+    flags collapse would be a silent single mount diverging from the
+    documented recipe, so the alias must be declared explicitly instead.
+    """
+    if phys != repo:
+        return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{repo}"]
+    raw = os.environ.get(MOUNT_ALIAS_ENV_VAR, "").strip()
+    if not raw:
+        fail(f"cannot dual-mount {repo}: the derived physical path EQUALS the "
+             f"namespace path, so both -v flags would collapse into one silent "
+             f"mount (container lanes assume the devcontainer namespace alias "
+             f"and none is derivable outside a container). Declare it: export "
+             f"{MOUNT_ALIAS_ENV_VAR}='{repo}=<namespace-path-git-was-recording>'")
+    if raw.count("=") != 1:
+        fail(f"invalid ${MOUNT_ALIAS_ENV_VAR} entry {raw!r}: expected "
+             f"'host-path=namespace-path'")
+    host, namespace = (part.strip() for part in raw.split("=", 1))
+    if not host or not namespace:
+        fail(f"invalid ${MOUNT_ALIAS_ENV_VAR} entry {raw!r}: empty path")
+    root = alias_root if alias_root is not None else repo
+    if Path(host) != root:
+        fail(f"${MOUNT_ALIAS_ENV_VAR} declares host path {host!r} but this gate's "
+             f"repo root is {root} — the alias names THIS repo's namespace view")
+    if root == repo:
+        return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{namespace}"]
+    # RG-NARROW: a sub-path of the aliased root (the judged worktree, the git
+    # directory) takes the same namespace prefix; anything outside the root has
+    # no declared namespace view.
+    try:
+        relative = repo.relative_to(root)
+    except ValueError:
+        fail(f"cannot dual-mount {repo}: it is outside the aliased root {root} "
+             f"(${MOUNT_ALIAS_ENV_VAR}), so no namespace view is declared "
+             f"for it")
+    return ["-v", f"{phys}:{phys}", "-v", f"{phys}:{Path(namespace) / relative}"]
+
+
+# ---------------------------------------------------------------------------
+# RG-NARROW: a container lane sees ONLY the judged worktree plus the git
+# metadata it needs, and never git credentials. Isolation comes from mounting
+# less, never from masking named files: run-gate has no knowledge of any
+# project's secret files.
+# ---------------------------------------------------------------------------
+
+_URL_USERINFO_RE = re.compile(
+    # No '.' in the scheme: a config KEY such as `url.https://tok@host/.insteadof`
+    # must not be read as the scheme "url.https".
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+\-]*://)(?P<userinfo>[^/\s]*)@")
+_WEB_URL_SCHEMES = frozenset({"http", "https", "ftp", "ftps"})
+_DROP_GIT_CONFIG_KEY_RE = re.compile(
+    # whole mail/IMAP sections carry credentials under many names
+    r"^(credential\.|include\.|includeif\.|sendemail\.|imap\.)"
+    r"|\.extraheader$"
+    r"|\.cookiefile$"
+    r"|^core\.(askpass|sshcommand)$"
+    # a credential word as the SUFFIX of the last key segment (smtppass,
+    # oauth-token, access_token, ...); a key is never dotted after its name
+    r"|(pass|passwd|password|token|secret|apikey|api-key|api_key)$",
+    re.IGNORECASE)
+_URL_REWRITE_KEY_RE = re.compile(r"^url\..*\.(push)?insteadof$", re.IGNORECASE)
+
+
+def strip_url_userinfo(text: str) -> str:
+    """Remove embedded credentials from every URL inside `text`.
+
+    http(s)/ftp userinfo is always a credential (a bare token is common);
+    for other schemes only `user:password@` is, so `ssh://git@host` survives.
+    """
+    def repl(match: re.Match) -> str:
+        # `git+https://`, `svn+http://`: any `<x>+http(s)` is a web scheme
+        scheme = match.group("scheme")[:-3].lower().rsplit("+", 1)[-1]
+        if scheme in _WEB_URL_SCHEMES or ":" in match.group("userinfo"):
+            return match.group("scheme")
+        return match.group(0)
+    return _URL_USERINFO_RE.sub(repl, text)
+
+
+def sanitize_git_config_entries(
+        entries: list[tuple[str, str | None]]) -> list[tuple[str, str | None]]:
+    """Generic git hygiene, no project knowledge: the same config minus
+    credentials. Strips userinfo from every URL, drops credential helpers,
+    `http.*.extraheader`, password/token-like keys, and `url.*.insteadOf`
+    rewrites whose base or value embeds credentials. `include`s are dropped:
+    they name host files that do not exist in the container."""
+    kept: list[tuple[str, str | None]] = []
+    for key, value in entries:
+        if _DROP_GIT_CONFIG_KEY_RE.search(key):
+            continue
+        clean_key = strip_url_userinfo(key)
+        clean_value = None if value is None else strip_url_userinfo(value)
+        if _URL_REWRITE_KEY_RE.match(key) and (
+                clean_key != key or clean_value != value):
+            continue
+        kept.append((clean_key, clean_value))
+    return kept
+
+
+def _git_config_quote(text: str) -> str:
+    return (text.replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\n", "\\n").replace("\t", "\\t"))
+
+
+def render_git_config(entries: list[tuple[str, str | None]]) -> str:
+    """Render `git config --list -z` style entries as a config file."""
+    lines: list[str] = []
+    current = None
+    for key, value in entries:
+        section, rest = key.split(".", 1)
+        if "." in rest:
+            subsection, name = rest.rsplit(".", 1)
+        else:
+            subsection, name = None, rest
+        if (section, subsection) != current:
+            current = (section, subsection)
+            lines.append(f"[{section}]" if subsection is None
+                         else f'[{section} "{_git_config_quote(subsection)}"]')
+        lines.append(f"\t{name}" if value is None
+                     else f'\t{name} = "{_git_config_quote(value)}"')
+    return "\n".join(lines) + "\n"
+
+
+def read_git_config_entries(path: Path) -> list[tuple[str, str | None]]:
+    proc = subprocess.run(["git", "config", "--file", str(path), "--list", "-z"],
+                          capture_output=True, text=True,
+                          env=host_git_environment())
+    if proc.returncode != 0:
+        fail_infra(f"cannot read git config {path} to sanitize it: "
+                   f"{(proc.stderr.strip().splitlines() or ['git failed'])[-1]}")
+    entries: list[tuple[str, str | None]] = []
+    for item in proc.stdout.split("\0"):
+        if not item:
+            continue
+        key, sep, value = item.partition("\n")
+        entries.append((key, value if sep else None))
+    return entries
+
+
+def sanitized_git_config_text(path: Path) -> str:
+    return render_git_config(
+        sanitize_git_config_entries(read_git_config_entries(path)))
+
+
+def _make_private_dir(repo: Path) -> tuple[Path, Path]:
+    """A private (0700) per-run dir whose host path Docker can bind. System
+    temp first (outside every mount); `<repo>/.run-gate` only when the temp
+    area is not host-visible (a nested devcontainer). Returns (dir, physical)."""
+    last = "no candidate directory"
+    for fallback, base in ((False, Path(tempfile.gettempdir())),
+                           (True, repo / ".run-gate")):
+        try:
+            if fallback:
+                # A fresh checkout has no `.run-gate` yet (RG-85); the fallback
+                # must create it rather than fail the lane.
+                base.mkdir(parents=True, exist_ok=True)
+            made = Path(tempfile.mkdtemp(prefix="run-gate-gitcfg-", dir=base))
+        except OSError as exc:
+            last = str(exc)
+            continue
+        atexit.register(shutil.rmtree, made, ignore_errors=True)
+        try:
+            return made, physical_path(made)
+        except GateError as exc:
+            last = str(exc)
+            shutil.rmtree(made, ignore_errors=True)
+    fail_infra(f"no host-visible private directory for the sanitized git "
+               f"config: {last}")
+
+
+def git_mount_plan(worktree: Path, repo: Path) -> dict:
+    """Which git metadata a lane on `worktree` needs: a plain checkout owns
+    its `.git`; a linked worktree has a private admin dir inside the shared
+    common dir."""
+    dot_git = worktree / ".git"
+    if dot_git.is_dir():
+        return {"kind": "plain", "common": dot_git, "admin": None}
+    if not dot_git.is_file():
+        fail_infra(f"{worktree} is not a git checkout (no .git); run-gate "
+                   f"cannot decide which git metadata a container needs")
+    match = re.match(r"gitdir:\s*(.+)", dot_git.read_text(
+        encoding="utf-8", errors="replace").strip())
+    if not match:
+        fail_infra(f"{dot_git} is not a valid gitfile")
+    recorded = Path(match.group(1).strip())
+    if not recorded.is_absolute():
+        recorded = (worktree / recorded).resolve()
+    for admin in (recorded, repo / ".git" / "worktrees" / recorded.name):
+        if admin.is_dir():
+            common_file = admin / "commondir"
+            common = ((admin / common_file.read_text().strip()).resolve()
+                      if common_file.is_file() else admin.parent.parent)
+            return {"kind": "linked", "common": common, "admin": admin}
+    fail_infra(f"gitfile {dot_git} points at {recorded}, which is not "
+               f"reachable here, and {repo}/.git/worktrees/{recorded.name} "
+               f"does not exist")
+
+
+def _dual(path: Path, repo: Path) -> list[str]:
+    return dual_mount_flags(path, physical_path(path), repo)
+
+
+_MAX_GIT_OVERLAYS = 256  # bound on sibling admin dirs / submodule configs
+
+
+def git_config_overlay_flags(plan: dict, repo: Path) -> list[str]:
+    """Every git config file the container could read a credential from is
+    overlaid read-only with a per-run sanitized copy: `<common>/config`,
+    `config.worktree`, the judged admin dir's `config.worktree`, every
+    `config`/`config.worktree` at ANY depth under `<common>/modules` (nested
+    submodules), and any sibling `worktrees/*/config.worktree`. At most
+    `_MAX_GIT_OVERLAYS` of the module/sibling files."""
+    common, admin = plan["common"], plan["admin"]
+    targets = [common / "config", common / "config.worktree"]
+    if admin is not None:
+        targets.append(admin / "config.worktree")
+    if not targets[0].is_file():
+        fail_infra(f"git config {targets[0]} is missing; cannot build the "
+                   f"credential-free overlay")
+    extra = _nested_git_config_files(common / "modules")
+    # sibling per-worktree configs (usually absent): sanitized overlays on top
+    # of the read-only `worktrees/` mount; the judged one is already a target
+    extra += [path for path in sorted(
+        (common / "worktrees").glob("*/config.worktree"))
+        if path not in targets]
+    if len(extra) > _MAX_GIT_OVERLAYS:
+        fail_infra(f"{common} holds {len(extra)} submodule/sibling git "
+                   f"config files; more than {_MAX_GIT_OVERLAYS} cannot be "
+                   f"sanitized safely")
+    private, _phys = _make_private_dir(repo)
+    flags: list[str] = []
+    for index, target in enumerate([t for t in targets if t.is_file()] + extra):
+        copy_path = private / f"{index}.config"
+        copy_path.write_text(sanitized_git_config_text(target), encoding="utf-8")
+        copy_path.chmod(0o644)
+        source = physical_path(copy_path)
+        for destination in _dual(target, repo)[1::2]:
+            flags += ["-v", f"{source}:{destination.split(':', 1)[1]}:ro"]
+    return flags
+
+
+_GIT_DIR_BULK = frozenset({"objects", "refs", "logs", "hooks", "info"})
+
+
+def _nested_git_config_files(modules: Path) -> list[Path]:
+    """Every `config` / `config.worktree` file anywhere under `<common>/modules`
+    (git names a submodule's dir by its PATH, so `modules/libs/a/config` and
+    `modules/libs/a/modules/b/config` exist; round-3 `*/config` missed them).
+    The bulk dirs of a git dir (objects, refs, ...) are not descended into."""
+    found: list[Path] = []
+    for root, dirs, files in os.walk(modules):
+        if "HEAD" in files:
+            dirs[:] = [d for d in dirs if d not in _GIT_DIR_BULK]
+        dirs.sort()
+        found += [Path(root) / name for name in sorted(files)
+                  if name in ("config", "config.worktree")]
+    return found
+
+
+def git_worktrees_mount_flags(plan: dict, repo: Path) -> list[str]:
+    """RG-86 round 4: `<common>/worktrees` is mounted READ-ONLY with its REAL
+    contents (so `git gc` sees every sibling's HEAD and index and keeps their
+    objects, `git branch -D` of a branch checked out elsewhere is refused, and
+    `git worktree prune` hits EROFS), and the judged worktree's OWN admin dir
+    is mounted read-write on top (a nested bind mount). Two mounts regardless
+    of the number of siblings. Hiding the siblings behind an empty directory
+    (round 3) let `gc --prune=now` delete objects only they referenced."""
+    directory = plan["common"] / "worktrees"
+    if not directory.is_dir():
+        return []
+    flags = [item for value in _dual(directory, repo)[1::2]
+             for item in ("-v", f"{value}:ro")]
+    if plan["admin"] is not None:
+        flags += _dual(plan["admin"], repo)
+    return flags
+
+
+def git_hook_info_mount_flags(plan: dict, repo: Path) -> list[str]:
+    """Keep tester containers from planting host Git hooks or editing info.
+
+    The common Git directory itself stays read-write because lanes need object
+    writes and in-container commits. Its hooks directory is overlaid with one
+    private, empty, read-only directory, and its info directory is mounted
+    read-only with its real contents. Both paths are dual-mounted wherever the
+    common directory is dual-mounted.
+    """
+    common = plan["common"]
+    hooks = common / "hooks"
+    info = common / "info"
+    for path in (hooks, info):
+        if path.is_symlink() or not path.is_dir():
+            fail_infra(f"shared Git {path.name} directory is missing or unsafe: {path}")
+
+    private, _physical = _make_private_dir(repo)
+    empty_hooks = private / "hooks-empty"
+    empty_hooks.mkdir(mode=0o755)
+    empty_hooks.chmod(0o755)
+    empty_source = physical_path(empty_hooks)
+
+    flags: list[str] = []
+    for destination in _dual(hooks, repo)[1::2]:
+        flags += ["-v", f"{empty_source}:{destination.split(':', 1)[1]}:ro"]
+    for destination in _dual(info, repo)[1::2]:
+        flags += ["-v", f"{physical_path(info)}:{destination.split(':', 1)[1]}:ro"]
+    return flags
+
+
+def git_worktree_pointer_mount_flags(
+        plan: dict, worktree: Path, repo: Path) -> list[str]:
+    """Protect the linked worktree pointers that host Git must later follow.
+
+    The worktree marker and admin ``gitdir``/``commondir`` files identify the
+    host-side Git directory. A tester may update the judged branch and index,
+    but it must not redirect the checkout to a Git directory it controls.
+    ``config.worktree`` is already mounted as a sanitized read-only config
+    overlay when it exists; host Git readers also disable fsmonitor and hooks.
+    """
+    if plan["kind"] != "linked":
+        return []
+    files = (worktree / ".git", plan["admin"] / "gitdir",
+             plan["admin"] / "commondir")
+    flags: list[str] = []
+    for path in files:
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            fail_infra(f"cannot inspect Git worktree pointer {path}: {exc}")
+        if not stat.S_ISREG(metadata.st_mode):
+            fail_infra(f"Git worktree pointer is not a regular file: {path}")
+        for destination in _dual(path, repo)[1::2]:
+            flags += ["-v", f"{physical_path(path)}:{destination.split(':', 1)[1]}:ro"]
+    return flags
+
+
+_MAIN_CHECKOUT_WARNED: set[str] = set()
+
+
+def main_checkout_opted_in() -> bool:
+    return os.environ.get(ALLOW_MAIN_CHECKOUT_ENV_VAR, "").strip().lower() in (
+        "1", "true", "yes")
+
+
+def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
+                          *, with_state: bool = False,
+                          create_state: bool = False,
+                          plan_missing_state: bool = False) -> list[str]:
+    """The ONE mount set for an ephemeral container lane or probe.
+
+    linked worktree: the judged worktree (dual, phys + namespace) + the shared
+      git dir (dual, READ-WRITE per ciu v8 SPEC S16.4.9, so in-lane commits and
+      object writes work; `worktrees/` itself is read-only, so an in-lane
+      `git worktree add` fails; assay's snapshot uses its own object seed and
+      never runs it) + a sanitized `<common>/config` overlay. The rest of
+      the main checkout and every other worktree are NOT mounted; the judged
+      worktree keeps ALL its own files, git-ignored ones included.
+    plain checkout: refused unless opted in (flag/env); then the whole
+      checkout is mounted as before, with a WARN, and the config overlay.
+    `with_state` adds `<repo>/.run-gate` (durable assay state) unless the
+    environment declares its own state_root."""
+    plan = git_mount_plan(worktree, repo)
+    if plan["kind"] == "plain":
+        if not main_checkout_opted_in():
+            fail(f"container lanes on the plain (main) checkout {worktree} are "
+                 f"refused: every git-ignored file in it (local configs, "
+                 f"secrets) would be visible inside the container. Run from a "
+                 f"linked worktree (`git worktree add`, then --worktree PATH), "
+                 f"or explicitly opt in with --allow-main-checkout / "
+                 f"{ALLOW_MAIN_CHECKOUT_ENV_VAR}=1")
+        if str(worktree) not in _MAIN_CHECKOUT_WARNED:
+            _MAIN_CHECKOUT_WARNED.add(str(worktree))
+            print(f"{PROG}: WARN: main-checkout opt-in — every git-ignored "
+                  f"file under {worktree} is visible inside the container "
+                  f"(git credentials are still sanitized)",
+                  file=sys.stderr, flush=True)
+        mounts = _dual(worktree, repo)
+    else:
+        # ciu v8 SPEC S16.4.9: checkout + git common dir, READ-WRITE (in-lane
+        # commits and object writes). `worktrees/` is then re-mounted
+        # read-only below, with the judged worktree's own admin dir rw on top.
+        mounts = [*_dual(worktree, repo), *_dual(plan["common"], repo)]
+    # `<common>/worktrees` read-only with its real contents, own admin dir rw
+    mounts += git_worktrees_mount_flags(plan, repo)
+    mounts += git_config_overlay_flags(plan, repo)
+    mounts += git_hook_info_mount_flags(plan, repo)
+    mounts += git_worktree_pointer_mount_flags(plan, worktree, repo)
+    if with_state and (env or {}).get("state_root") is None:
+        state = repo / ".run-gate"
+        if create_state:
+            ensure_default_assay_state_root(state)
+            state_status = "ready"
+        else:
+            status, reason = default_assay_state_root_status(state)
+            if status == "invalid":
+                fail(reason or f"default Assay state root {state} is invalid")
+            if status == "unknown":
+                fail_infra(reason or f"cannot inspect {state}")
+            state_status = status
+        if (state_status == "ready" or plan_missing_state) \
+                and plan["kind"] != "plain":
+            mounts += _dual(state, repo)
+    return mounts
+
+
+def _seed_from_wall_clock(now: float, wall_ts: float) -> float:
+    """The ONE mechanism `ProgressWatch` (a file's mtime, RW-27) and
+    `LogStreamWatch` (a container's own per-line `--timestamps` stamp,
+    RG-41 round-2) both use to translate a WALL-CLOCK-stamped signal into a
+    watch's own clock domain — real, monotonic, or a test's driven
+    `FakeClock`. Extracted so a future correction to this formula (a
+    different clamp, a different reference clock) cannot silently apply to
+    only ONE of the two watchers whose whole re-attach correctness depends
+    on it being the exact same arithmetic (round-2 review: two docstrings
+    asserting "identical arithmetic" is not the same as one function
+    enforcing it)."""
+    return now - max(0.0, time.time() - wall_ts)
+
+
+class ProgressWatch:
+    """RG-36 / R-40 — liveness judged from the lane's progress file, never
+    from a guessed total.
+
+    `budget` is now run-gate's hard total-time bound, starting after
+    admission and runner-lock waits. This watcher measures a separate
+    condition: progress-file silence, with rate and ETA disclosure. Before
+    that total bound existed, the only way to bound a long mutation lane
+    was to guess a TOTAL: dstdns raised `sql-mutation` from 90m to 120m and
+    it still could not finish a window. Since rev 33 every assay lane writes
+    `.assay/progress-<lane>.jsonl` with a `candidate_index`/`candidate_total`
+    per candidate, so rate, ETA and — the load-bearing one — SILENCE can be
+    read off the file instead.
+
+    Assay's events carry `elapsed_s` (B065), so it is preferred for rate
+    estimates. The stream is append-only across Assay runs: rates count
+    candidate events after the latest `run` header, not the campaign-wide
+    candidate index, because resume preserves indexes while each invocation
+    restarts its elapsed clock. Older streams fall back to Run-Gate's clock;
+    the file's mtime remains the silence signal for either format.
+    """
+
+    def __init__(self, path: Path, lane_name: str,
+                 stall_seconds: int | None, clock=time.monotonic,
+                 *, auto_bound: bool = False,
+                 pressure_reader=None):
+        self.path = path
+        self.lane = lane_name
+        self.stall_seconds = stall_seconds
+        self.clock = clock
+        self.auto_bound = auto_bound
+        self.pressure_reader = pressure_reader or (lambda: False)
+        self._announced_silent = False
+        self._announced_vanished = False
+        self._first: tuple[int, float, object] | None = None
+        self._token: tuple | None = None
+        self._cadence_hint: float | None = None
+        self._plan_seen = False
+        self._last_signal_kind: str | None = None
+        self._paused_total = 0.0
+        self._pause_started: float | None = None
+        # N4: the last (index, total) actually observed. It is what tells
+        # "never saw an event" (not an R2 lane) apart from "had one, and the
+        # file is unreadable now" (silence that must keep counting), and it
+        # is what the stall message names once the file itself is gone.
+        self._last_seen: tuple[int, object] | None = None
+        # Assay's progress stream is append-only across --resume invocations.
+        # A new `run` record fences off prior candidate events; remembering its
+        # line position also lets a reattached watcher reset its baseline if a
+        # later invocation begins while it is watching the same file.
+        self._run_boundary_seen = False
+        self._run_boundary: int | None = None
+        # A placeholder only: the first observation re-seeds this from the
+        # FILE's mtime (RW-27). Until then nothing can stall — `poll()`
+        # returns None while no event has ever been read — so this value is
+        # never the one a stall is measured against.
+        self._token_at = clock()
+
+    def _newest(self) -> tuple[
+            dict | None, float | None, int | None, int, int | None, bool]:
+        """The newest candidate event in the latest Assay run, its mtime,
+        that run header's line position, completed-candidate count,
+        pending-total declaration, and whether that declaration was present.
+        Older streams without a `run` header retain their historical
+        whole-file behavior. A missing, unreadable or half-written file is
+        not an event and never a fault: the judge owns this file and may be
+        mid-append."""
+        try:
+            mtime = self.path.stat().st_mtime
+            text = self.path.read_text()
+        except OSError:
+            return None, None, None, 0, None, False
+        newest = None
+        run_boundary = None
+        completed = 0
+        pending_total = None
+        pending_total_seen = False
+        plan_seen = False
+        for line_number, line in enumerate(text.splitlines()):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue  # a blank line or a torn last write
+            if isinstance(event, dict) and event.get("event") == "run":
+                # Assay deliberately appends a run header before each new
+                # invocation. Do not attribute candidates from an earlier
+                # invocation to this one (especially on --resume).
+                run_boundary = line_number
+                newest = None
+                completed = 0
+                pending_total = None
+                pending_total_seen = False
+                plan_seen = False
+                self._cadence_hint = None
+                continue
+            if isinstance(event, dict) and event.get("event") == "candidates":
+                pending_total_seen = "pending_total" in event
+                value = event.get("pending_total")
+                pending_total = None
+                if isinstance(value, int) and not isinstance(value, bool) \
+                        and value >= 0:
+                    pending_total = value
+            if isinstance(event, dict) \
+                    and isinstance(event.get("candidate_index"), int) \
+                    and not isinstance(event.get("candidate_index"), bool):
+                newest = event
+                if event["candidate_index"] >= 0:
+                    completed += 1
+            if isinstance(event, dict) and event.get("event") == "plan":
+                plan_seen = True
+                hint = event.get("expect_next_event_within_s")
+                if isinstance(hint, (int, float)) \
+                        and not isinstance(hint, bool) \
+                        and math.isfinite(hint) and hint > 0:
+                    self._cadence_hint = float(hint)
+        self._plan_seen = plan_seen
+        return (newest, mtime, run_boundary, completed, pending_total,
+                pending_total_seen)
+
+    def _idle_bound(self) -> float | None:
+        if self.stall_seconds is not None:
+            return float(self.stall_seconds)
+        if not self.auto_bound:
+            return None
+        # D-22: the producer's calibrated cadence is authoritative.  A
+        # missing/torn plan event is genuinely unknown, so the mechanical
+        # minimum is the only policy fact we can safely apply.
+        return max(300.0, 3.0 * (self._cadence_hint or 0.0))
+
+    def _pressure_high(self) -> bool:
+        try:
+            value = self.pressure_reader()
+        except Exception:
+            return False
+        return isinstance(value, (int, float)) and not isinstance(value, bool) \
+            and value > 5
+
+    def _active_age(self, now: float) -> float:
+        paused = self._paused_total
+        if self._pause_started is not None:
+            paused += max(0.0, now - self._pause_started)
+        return max(0.0, now - self._token_at - paused)
+
+    def _update_pressure_pause(self, now: float) -> None:
+        if not self.auto_bound:
+            return
+        if self._pressure_high():
+            if self._pause_started is None:
+                self._pause_started = now
+            return
+        if self._pause_started is not None:
+            self._paused_total += max(0.0, now - self._pause_started)
+            self._pause_started = None
+
+    def _rate_per_min(self, completed: int, elapsed: object,
+                      now: float) -> float | None:
+        if self._first is None:
+            # On re-attach, all current-run events are already in the file.
+            # The first event is a baseline, so N events span N-1 intervals.
+            if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) \
+                    and elapsed > 0 and completed > 1:
+                return (completed - 1) / elapsed * 60.0
+            return None
+        base_completed, base_time, base_elapsed = self._first
+        if completed <= base_completed:
+            return None
+        if isinstance(elapsed, (int, float)) and not isinstance(elapsed, bool) \
+                and isinstance(base_elapsed, (int, float)) \
+                and not isinstance(base_elapsed, bool) \
+                and elapsed > base_elapsed:
+            return ((completed - base_completed)
+                    / (elapsed - base_elapsed) * 60.0)
+        # Legacy streams have no run-relative clock. Count newly observed
+        # candidate events rather than subtracting campaign-wide indexes,
+        # which may jump over records already resumed from state.
+        span = now - base_time
+        if span > 0:
+            return (completed - base_completed) / span * 60.0
+        return None
+
+    def _report(self, index: int, total: object, elapsed: object,
+                now: float, completed: int,
+                pending_total: int | None,
+                pending_total_seen: bool,
+                has_run_header: bool) -> None:
+        rate = self._rate_per_min(completed, elapsed, now)
+        if self._first is None and completed > 0:
+            self._first = (completed, now, elapsed)
+        remaining = None
+        if pending_total_seen:
+            if pending_total is not None and pending_total >= completed:
+                remaining = pending_total - completed
+        elif not has_run_header \
+                and isinstance(total, int) and not isinstance(total, bool) \
+                and total > index:
+            # Only pre-header legacy streams may use campaign indexes as a
+            # remaining-work proxy. A current run with a missing or invalid
+            # pending_total has no trustworthy ETA declaration.
+            remaining = total - index
+        head = f"run-gate: progress {self.lane}: candidate {index}"
+        if isinstance(total, int) and not isinstance(total, bool):
+            head += f"/{total}"
+        if rate is None or remaining is None or remaining <= 0:
+            # Without both a usable rate and trustworthy remaining-work
+            # count, disclose the candidate but do not invent an ETA.
+            print(head, flush=True)
+            return
+        print(f"{head}, {rate:.1f}/min, ETA {remaining / rate:.0f}m",
+              flush=True)
+
+    def _last_event_phrase(self) -> str:
+        if self._last_signal_kind == "plan" and self._last_seen is None:
+            return "the plan event"
+        index, total = self._last_seen        # only called after one was seen
+        return (f"candidate {index}"
+                + (f"/{total}" if isinstance(total, int)
+                   and not isinstance(total, bool) else ""))
+
+    def _stall(self, age: float) -> str:
+        bound = self._idle_bound()
+        label = (f"stall_timeout {int(bound)}s" if self.stall_seconds is not None
+                 else f"idle_bound auto {int(bound)}s")
+        return (f"the container is still RUNNING but "
+                f"{self.path.name} has not advanced for {int(age)}s "
+                f"({label}); last event seen: "
+                f"{self._last_event_phrase()}")
+
+    def poll(self) -> str | None:
+        """One look at the file. Prints at most one line, and only when
+        something changed. Returns a STALL description, or None."""
+        (newest, mtime, run_boundary, completed, pending_total,
+         pending_total_seen) = self._newest()
+        now = self.clock()
+        if mtime is not None:
+            if not self._run_boundary_seen:
+                self._run_boundary_seen = True
+                self._run_boundary = run_boundary
+            elif run_boundary is not None \
+                    and run_boundary != self._run_boundary:
+                # A newer run header starts a new progress/liveness window.
+                # Old candidates must neither be printed nor keep the new
+                # invocation's stall clock alive while its baseline starts.
+                self._run_boundary = run_boundary
+                self._first = None
+                self._token = None
+                self._last_seen = None
+                self._token_at = now
+                self._announced_silent = False
+                self._announced_vanished = False
+                self._paused_total = 0.0
+                self._pause_started = None
+        self._update_pressure_pause(now)
+        if newest is None:
+            if self.auto_bound and self._plan_seen and mtime is not None:
+                token = (mtime, "plan", self._cadence_hint)
+                if token != self._token:
+                    first_observation = self._token is None
+                    self._token = token
+                    self._last_signal_kind = "plan"
+                    if first_observation:
+                        self._token_at = _seed_from_wall_clock(now, mtime)
+                    else:
+                        self._token_at = now
+                bound = self._idle_bound()
+                age = self._active_age(now)
+                return None if age < bound else self._stall(age)
+            if self._last_seen is None:
+                # Never an event here: not an R2 lane, or the judge has not
+                # written one yet.
+                if not self._announced_silent:
+                    self._announced_silent = True
+                    print(f"run-gate: progress {self.lane}: no candidate "
+                          f"events (not an R2 lane, or the judge writes "
+                          f"none)", flush=True)
+                # RW-5: a lane without a progress file cannot stall by this
+                # rule. Treating silence-with-no-file as a stall would kill
+                # every R0/R1 container that declared the key.
+                return None
+            # N4 (review round 1): the file WAS readable and is not any
+            # more — deleted, truncated to nothing, or replaced mid-run.
+            # That is a different fact from "no candidate events", which is
+            # what it used to print, and it is SILENCE: the stall clock must
+            # keep running, or a lane that loses its progress file becomes
+            # permanently unstoppable at the exact moment it most needs
+            # bounding. `_token_at` is deliberately not touched — silence is
+            # measured from the last real movement, not from the vanishing.
+            if not self._announced_vanished:
+                self._announced_vanished = True
+                print(f"run-gate: progress {self.lane}: {self.path.name} is "
+                      f"no longer readable — it was, at "
+                      f"{self._last_event_phrase()}. A file that disappears "
+                      f"mid-run is SILENCE, not 'no events': the stall clock "
+                      f"keeps running from the last event seen", flush=True)
+            bound = self._idle_bound()
+            if bound is None:
+                return None          # no stall_timeout: disclosure only
+            age = self._active_age(now)
+            return None if age < bound else self._stall(age)
+        index = newest["candidate_index"]
+        elapsed = newest.get("elapsed_s")
+        token = (mtime, index, elapsed, completed, pending_total,
+                 pending_total_seen)
+        if token != self._token:
+            first_observation = self._token is None
+            self._token = token
+            self._last_seen = (index, newest.get("candidate_total"))
+            self._last_signal_kind = "candidate"
+            self._announced_vanished = False   # a file that came back
+            if first_observation:
+                # RW-27 (review round 2, G1). Silence is measured from the
+                # last time the FILE moved — which, for a re-attach, is
+                # before this client existed. Seeding from the watch's
+                # CONSTRUCTION instead bought the re-attach case (a container
+                # already frozen when a client arrives must not get a fresh
+                # full window) at the price of the case RG-36 exists for: a
+                # lane whose first candidate arrives later than
+                # `stall_timeout` — provision, baseline suite, mutant
+                # generation, all before candidate #1 — was announced and
+                # killed by the same `poll()`.
+                #
+                # The mtime answers both exactly, and `_newest()` already
+                # read it: a frozen re-attached file is as old as its
+                # silence and stalls at once; a fresh lane's first event was
+                # written seconds ago and gets its full window. The wall
+                # clock is the only one comparable with an mtime taken in
+                # another process; `now` is this watch's own (possibly
+                # monotonic) clock, so the age is translated into it.
+                self._token_at = _seed_from_wall_clock(now, mtime)
+            else:
+                # Real MOVEMENT restarts the silence clock.
+                self._token_at = now
+            self._report(index, newest.get("candidate_total"), elapsed, now,
+                         completed, pending_total, pending_total_seen,
+                         has_run_header=run_boundary is not None)
+        bound = self._idle_bound()
+        if bound is None:
+            return None              # no stall_timeout: disclosure only
+        age = self._active_age(now)
+        if age < bound:
+            return None
+        return self._stall(age)
+
+
+class LogStreamWatch:
+    """RG-41 — liveness for a `kind = "command"` container lane, judged from
+    the ARRIVAL TIME of its own log lines: the only bound available where no
+    progress file exists (RG-32/RG-36's own precedent, one signal over).
+    "Silence, never total elapsed" is the SAME rule `ProgressWatch`/R-40c
+    already gives an assay lane's progress-file mtime — `await_container`
+    already tails `docker logs -f` for the whole run; the only change is
+    WHERE the timestamp comes from.
+
+    A background thread reads the container's stdout line by line, re-prints
+    each line to run-gate's own stdout AS IT ARRIVES (the pass-through must
+    stay live and in order, never captured-then-replayed — the real cost
+    RW-9 named), and records the arrival time of the last line.
+
+    RW-27's own re-attach fix, one signal over: `docker logs -f` REPLAYS a
+    hung container's ENTIRE backlog in a burst on re-attach (RW-15), so
+    timing each replayed line by THIS watch's own clock (the naive choice —
+    every line arrives "now", from this thread's point of view) would
+    silently hand a lane that has already been silent for hours a brand-new
+    full stall window, undoing the exact thing `stall_timeout` exists to
+    catch. `await_container` invokes `docker logs -f --timestamps` for a
+    watched command lane, and `_pump` reads each line's OWN RFC3339Nano
+    stamp (docker's `--timestamps` prefix, parsed by the same
+    `parse_docker_timestamp` RW-17 already trusts for `docker inspect`'s
+    stamps) and TRANSLATES it into this watch's own clock domain via
+    `_translate` — the identical arithmetic `ProgressWatch` already uses to
+    translate a file's wall-clock mtime (RW-27, review round 2 G1). The
+    timestamp prefix is stripped before the line is re-printed, so the
+    pass-through stays byte-identical to a lane declaring no `stall_timeout`
+    at all.
+
+    The main thread's `proc.wait(timeout=PROGRESS_POLL_SECONDS)` loop in
+    `await_container` is unaffected; it only asks this watch, once a
+    timeout, whether the SILENCE (not the process) has run long enough.
+
+    Unlike `ProgressWatch`, there is no vanished-file case to track: a pipe
+    either has more lines coming or is closed (the process exited, which
+    `proc.wait()` — not this class — detects), so the two states this class
+    tracks are simply "has printed at least one line" and "how long since
+    the last one"."""
+
+    def __init__(self, proc: subprocess.Popen, stall_seconds: int | None,
+                 lane_name: str, clock=time.monotonic):
+        self.stall_seconds = stall_seconds
+        self.lane = lane_name
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._last_line_at = clock()
+        self._last_line: str | None = None
+        # daemon=True: a thread blocked on a read that never completes (the
+        # process wedged with its pipe held open past every cleanup this
+        # function already does) must never keep the interpreter alive on
+        # its own — `finally`'s `proc.terminate()`/`rm -f` own the shutdown.
+        self._thread = threading.Thread(target=self._pump, args=(proc,),
+                                        daemon=True)
+        self._thread.start()
+
+    @staticmethod
+    def _split(raw: str) -> tuple[float | None, str]:
+        """`docker logs --timestamps` prefixes every line with its own
+        RFC3339Nano stamp and a single separating space (this is true even
+        of an otherwise-empty line — the prefix is a plain concatenation,
+        never conditional) — split it off so it never reaches the operator's
+        terminal. A missing or unparsable prefix (a docker version, or a
+        line, this does not expect) degrades to the raw text and a `None`
+        stamp rather than raising: the stream is not this thread's to
+        police, only to time as best it can."""
+        head, sep, rest = raw.partition(" ")
+        if not sep:
+            return None, raw
+        stamp = parse_docker_timestamp(head)
+        return (stamp, rest) if stamp is not None else (None, raw)
+
+    def _translate(self, wall_ts: float | None) -> float:
+        """`wall_ts` is docker's OWN record of when this line was really
+        written — the only clock comparable across a re-attach, where this
+        watch's own construction happened long after the container did.
+        Translated into THIS watch's clock domain via `_seed_from_wall_clock`
+        — the SAME function `ProgressWatch` uses to seed from a file's mtime
+        (RW-27) — so every later `age = self.clock() - self._last_line_at`
+        in `poll()` stays internally consistent whether `self.clock` is
+        real, monotonic, or a test's driven `FakeClock`; a raw
+        `self.clock() - wall_ts` would mix two unrelated clock domains and
+        mean nothing. No stamp (a malformed line, or a docker without
+        `--timestamps` support) has no better answer than "just now", the
+        ORIGINAL behavior for every line.
+
+        Unlike `ProgressWatch` (which seeds ONCE, at first observation, and
+        trusts its OWN clock for every real movement after that — a choice
+        driven by its rate/ETA arithmetic needing a STABLE baseline point),
+        this re-translates on EVERY line, deliberately: `LogStreamWatch` has
+        no baseline to keep stable, and re-deriving "how far ahead is my
+        wall clock from docker's, right now" on each fresh line is SELF-
+        CORRECTING against a wall-clock step (NTP, a VM pause/resume)
+        between two lines — a translate-once design would instead freeze
+        whatever skew existed at the moment it last ran."""
+        now = self.clock()
+        if wall_ts is None:
+            return now
+        return _seed_from_wall_clock(now, wall_ts)
+
+    def _pump(self, proc: subprocess.Popen) -> None:
+        assert proc.stdout is not None
+        try:
+            for raw in proc.stdout:
+                stamp, line = self._split(raw)
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                with self._lock:
+                    self._last_line_at = self._translate(stamp)
+                    self._last_line = line.rstrip("\n")
+        except (OSError, ValueError):
+            # The pipe end went away from under this thread (the process was
+            # torn down while a read was in flight) — not this thread's
+            # decision to raise into a caller that is not expecting it from
+            # a background thread; the stall/exit-code logic in
+            # `await_container` is what actually ends the lane.
+            pass
+
+    def join(self, timeout: float = 2.0) -> bool:
+        """Drain any output still in flight before the caller prints its
+        OWN status lines — without this, "lane X exit 0" can print before
+        the container's own last few lines, an ordering regression the
+        plain-inherited-stdout version never had. Returns whether the drain
+        actually finished within `timeout`, so a caller under real
+        contention can disclose an incomplete drain instead of silently
+        proceeding as if nothing was left unprinted.
+
+        CALLER PRECONDITION (round-3 review, named here for the next
+        caller — `follow_container`/RG-46's own future follower stall
+        detection is a concrete one): this BLOCKS until the underlying
+        pipe either produces a line or closes. It is only bounded to
+        `timeout` in the sense of returning a False verdict — the
+        background thread itself keeps running (daemon=True) until the
+        pipe genuinely closes. Call this ONLY once the process feeding the
+        pipe is confirmed no longer producing output (it exited on its
+        own, or something has already terminated it) — calling it while
+        the process is still legitimately silent-but-alive (mid-stall) is
+        guaranteed to time out and return False on every call, not just
+        under real contention (`await_container`'s own round-2 bug,
+        exactly)."""
+        self._thread.join(timeout)
+        return not self._thread.is_alive()
+
+    def poll(self) -> str | None:
+        if self.stall_seconds is None:
+            return None               # no stall_timeout: nothing to check
+        with self._lock:
+            age = self.clock() - self._last_line_at
+            last_line = self._last_line
+        if age < self.stall_seconds:
+            return None
+        seen = f"{last_line!r}" if last_line is not None else "(no output yet)"
+        return (f"the container is still RUNNING but has printed nothing "
+                f"for {int(age)}s (stall_timeout {self.stall_seconds}s); "
+                f"last line seen: {seen}")
+
+
+def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
+    """RW-18 (review S6): the two numbers that can END this lane, disclosed
+    before it is watched — on the fresh path, the RE-ATTACH path and the
+    FOLLOW path alike.
+
+    They lived on the fresh path only, so a re-attached lane was killed
+    against a `stall_timeout` its own invocation had never mentioned. Unlike
+    the `rev | lane | env | slice` header, which makes claims about mounts
+    and a slice this client did not choose, these two are facts about the
+    LANE: whoever is watching it is entitled to them (`R-05`).
+
+    `owner_pid` names the client that will act on the stall when this one is
+    only a follower — the same fact, without the false implication that this
+    invocation would be the one to stop the container."""
+    if lane.get("budget"):
+        print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
+              f"after admission and lock waits)", flush=True)
+    if lane.get("stall_timeout"):
+        # R-40: what this bounds is SILENCE, not elapsed time. Saying so on
+        # the line next to the hard budget is the whole point — the two
+        # numbers mean opposite things and used to be confused for each
+        # other (RG-32's lesson, one lane key over).
+        #
+        # RG-41: the source is DISCLOSED, never inferred — an assay lane's
+        # progress file and a command lane's log stream differ in what they
+        # can miss (a single silent compile is the log stream's known blind
+        # spot), so which one is judging THIS lane is a fact the operator is
+        # entitled to, same as the number itself.
+        signal = ("its progress file" if lane["kind"] == "assay"
+                  else "its own log output")
+        source = "progress file" if lane["kind"] == "assay" else "log stream"
+        enforcer = (f" — enforced by the owning client, pid {owner_pid}; "
+                    f"this one only watches" if owner_pid is not None else "")
+        print(f"run-gate: stall_timeout {lane['stall_timeout']} (source: "
+              f"{source}) — the lane is stopped only if {signal} goes "
+              f"silent that long, never on total elapsed time{enforcer}",
+              flush=True)
+
+
+def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
+                        recorded: dict | None = None,
+                        *, auto_bound: bool = False) -> "ProgressWatch | None":
+    """A watch for an assay lane (the only kind that writes the file R-38
+    constructs), else None — a command lane has nothing to read.
+
+    `recorded` is the inflight record of a run this client re-attached to.
+    Where it names a `progress` path, that is the file to watch: it is the
+    one THAT run was told to write, and recomputing it from the live config
+    would watch a file nothing is appending to if the lane was retargeted
+    between the two invocations (N3). A record that names no path there —
+    absent key, or the `null` a COMMAND lane's record writes — falls back to
+    the config (review round 2, N-a: presence of the key used to decide, so a
+    `null` silently disabled the stall watch on every re-attach and follow.
+    A command lane's record always names `null` here by construction — its
+    liveness, since RG-41, is `LogStreamWatch`, constructed separately
+    inside `await_container` from the live container's own log stream, not
+    from anything this function or the record could name a path for)."""
+    if recorded is not None and recorded.get("progress") is not None:
+        progress = recorded["progress"]
+    elif lane["kind"] == "assay":
+        # Only progress is needed here -- no `repo` to construct verdict/
+        # state_dir through assay_artifact_paths for a value this function
+        # would discard anyway.
+        progress = str(project_dir / assay_progress_rel(lane["assay_lane"]))
+    else:
+        progress = None
+    if progress is None:
+        return None
+    stall = lane.get("stall_timeout")
+    pressure_reader = None
+    if auto_bound:
+        def pressure_reader():
+            snapshot = read_host_pressure_snapshot() or {}
+            return snapshot.get("full_avg10")
+    return ProgressWatch(Path(progress), lane_name,
+                         budget_seconds(stall) if stall else None,
+                         auto_bound=auto_bound,
+                         pressure_reader=pressure_reader)
+
+
+def consume_profiler_watch(stream: ProfilerWatch, profiler: dict,
+                           lane_name: str, project_dir: Path,
+                           worktree: Path, run_record: dict | None
+                           ) -> str | None:
+    """Drain the daemon reader queue at the existing wait-loop tick."""
+    stalled = None
+    for kind, payload in stream.drain():
+        if kind == "error":
+            profiler["warning"] = profiler.get("warning") or \
+                f"daemon watch failed: {payload}"
+            continue
+        if kind != "event" or not isinstance(payload, dict):
+            continue
+        event = payload.get("event")
+        if event in ("reading", "verdict") and run_record is not None:
+            run_record["watch"] = payload
+            inflight = run_record.get("_inflight")
+            if isinstance(inflight, dict):
+                inflight["watch"] = payload
+                try:
+                    write_inflight_record(project_dir, worktree, lane_name,
+                                          inflight)
+                except Exception as exc:
+                    profiler["warning"] = profiler.get("warning") or \
+                        f"watch record update failed: {exc}"
+        if event != "verdict":
+            continue
+        decision = payload.get("watch")
+        if not isinstance(decision, dict):
+            continue
+        verdict = decision.get("verdict")
+        reason = decision.get("reason") or "daemon watch verdict"
+        if verdict == "killed":
+            stalled = reason
+        elif verdict == "reported" and not profiler.get("_watch_reported"):
+            profiler["_watch_reported"] = True
+            print(f"run-gate: WARNING profiling: daemon watch reported "
+                  f"lane {lane_name!r} stalled: {reason}",
+                  file=sys.stderr, flush=True)
+    return stalled
+
+
+def terminal_daemon_kill(resources: object) -> str | None:
+    """Reconcile a kill that ended the lane before the stream was drained.
+
+    The stopped session summary is the daemon's durable verdict record. A
+    profile that is absent, partial, or merely `reported` cannot change the
+    lane outcome.
+    """
+    if not isinstance(resources, dict) or resources.get("method") != "daemon":
+        return None
+    watch = resources.get("watch")
+    if not isinstance(watch, dict) or watch.get("verdict") != "killed":
+        return None
+    reason = watch.get("reason")
+    return reason if isinstance(reason, str) and reason else "daemon killed lane"
+
+
+def await_container(docker: str, name: str, lane: dict, lane_name: str,
+                    project_dir: Path, repo: Path, worktree: Path,
+                    watch: "ProgressWatch | None" = None,
+                    recorded: dict | None = None,
+                    profiler: dict | None = None,
+                    run_record: dict | None = None,
+                    clock=time.monotonic,
+                    budget_deadline: float | None = None,
+                    state_root: str | Path | None = None) -> int:
+    """Stream a running container's logs, wait for its status, preserve
+    evidence on failure, remove it, clear its inflight record, disclose its
+    artifacts. ONE path for all three arrivals (a fresh `docker run -d`, a
+    re-attach, a collect of an already-exited container), because RW-1's
+    "finish exactly as an attached run would" is a promise about the finish,
+    and two code paths would eventually make it false.
+
+    `profiler` (RG-55/RW-12): a `start_lane_profiling()` state dict, or None
+    when the caller resolved no profiling for this invocation (disabled, or
+    an environment this function does not profile). `clock` is injectable
+    for tests, mirroring every other clock in this function's own review
+    history."""
+    # PLAIN `docker logs -f`: it already replays the container's whole log
+    # from the FIRST line and then follows, so a re-attaching client sees the
+    # run from its beginning without asking for anything. Review round 1 (S1)
+    # found the `--since <started_at>` rev 34 first shipped could only ever
+    # SUBTRACT lines: `started_at` is this tool's own `time.strftime` taken
+    # AFTER `docker run -d` returned and truncated to whole seconds, so every
+    # line the container emitted inside that second was dropped from every
+    # future re-attach — a lossy filter defended by a rationale that plain
+    # `logs -f` already satisfied (RW-15). Started BEFORE the try so the
+    # cleanup in `finally` can never reference an unbound process.
+    # RG-41: a `kind = "command"` lane declaring `stall_timeout` has no
+    # progress file to watch (that is `watch`/`ProgressWatch`'s case, assay
+    # only) — its only liveness signal is this SAME log stream, timed by
+    # arrival instead of read passively. Captured (PIPE) rather than
+    # inherited only when that watch is actually needed; every other lane
+    # keeps the zero-overhead inherited-stdout path unchanged.
+    log_watch: "LogStreamWatch | None" = None
+    if lane["kind"] == "command" and lane.get("stall_timeout"):
+        # `--timestamps`: `LogStreamWatch._translate` needs docker's OWN
+        # per-line stamp to answer "how old is this line, really" across a
+        # re-attach's instant backlog replay — see its docstring. Stripped
+        # before any line is re-printed, so the operator sees the same text
+        # as a lane declaring no `stall_timeout` at all.
+        # errors="replace" (round-3 review): `text=True`'s STRICT decoding
+        # means a single non-UTF-8 byte anywhere in the container's own
+        # output — binary test fixtures, a stray byte from a subprocess IT
+        # launches — raises UnicodeDecodeError out of `for raw in
+        # proc.stdout`, caught by `_pump`'s broad `except (OSError,
+        # ValueError)` (a `UnicodeDecodeError` IS a `ValueError`) and ending
+        # the pump SILENTLY: a perfectly healthy, still-producing lane then
+        # reads as stalled once the frozen `_last_line_at` ages past
+        # `stall_timeout`, with nothing distinguishing that from a real
+        # stall. Replacing the byte (U+FFFD) instead of raising is the same
+        # "never fatal on something the container did" discipline
+        # `ProgressWatch`'s torn-line handling already uses one signal over.
+        proc = subprocess.Popen([docker, "logs", "-f", "--timestamps", name],
+                                stdout=subprocess.PIPE, text=True, bufsize=1,
+                                errors="replace")
+        log_watch = LogStreamWatch(proc, budget_seconds(lane["stall_timeout"]),
+                                   lane_name)
+    else:
+        proc = subprocess.Popen([docker, "logs", "-f", name])
+    saved_log: Path | None = None
+    stalled: str | None = None
+    code: int | None = None
+    logs_code: int | None = None
+    # RG-55/RW-12: while a BASIC-path sampler is active, the wait loop's own
+    # tick shrinks to PROFILE_SAMPLE_SECONDS so a sample is taken on every
+    # timeout (reaching the timeout branch structurally proves the container
+    # is still running — RW-5's own precondition for a stall, one signal
+    # over). The daemon path consumes its streaming watch at the ordinary
+    # progress-poll cadence; profiling-off keeps that cadence for any
+    # explicitly configured lane watch. The stall/log-watch poll itself runs
+    # only once at least PROGRESS_POLL_SECONDS has REALLY elapsed (a
+    # monotonic gate, not a second timer) — RG-36/RG-41 stall semantics are
+    # therefore unchanged either way.
+    basic_active = profiler is not None and profiler.get("mode") == "basic"
+    tick = PROFILE_SAMPLE_SECONDS if basic_active else PROGRESS_POLL_SECONDS
+    last_poll_at = clock()
+    if budget_deadline is None and recorded is not None and lane.get("budget"):
+        # A client restart must inherit the original admission clock rather
+        # than buying a fresh budget. Older inflight records lack the
+        # admission stamp, so their container start is the conservative
+        # bound available to this reader.
+        started_epoch = recorded.get("budget_started_epoch",
+                                     recorded.get("started_epoch"))
+        if isinstance(started_epoch, (int, float)):
+            remaining = budget_seconds(lane["budget"]) - max(
+                0.0, time.time() - started_epoch)
+            budget_deadline = clock() + max(0.0, remaining)
+    budget_expired = False
+    daemon_watch: ProfilerWatch | None = None
+    fallback_watch = watch
+    fallback_announced = False
+    watch_restarts = 0
+    if profiler is not None and profiler.get("mode") == "daemon":
+        client = profiler.get("client")
+        session = profiler.get("session")
+        try:
+            if client is None or not session:
+                raise RuntimeError("profile session is unavailable")
+            daemon_watch = client.watch(session)
+        except Exception as exc:
+            profiler["warning"] = profiler.get("warning") or \
+                f"daemon watch could not start: {exc}"
+    if daemon_watch is None and profiler is not None \
+            and profiler.get("mode") != "disabled":
+        if fallback_watch is None:
+            fallback_watch = make_progress_watch(
+                lane, lane_name, project_dir, recorded=recorded,
+                auto_bound=True)
+        if fallback_watch is not None:
+            fallback_announced = True
+            print(f"run-gate: in-process watch — daemon unavailable for lane "
+                  f"{lane_name!r}", flush=True)
+    try:
+        while True:
+            try:
+                wait_for = tick
+                if budget_deadline is not None:
+                    remaining = max(0.0, budget_deadline - clock())
+                    wait_for = min(wait_for, remaining)
+                    if remaining == 0:
+                        budget_expired = True
+                        subprocess.run([docker, "kill", name],
+                                       capture_output=True, text=True)
+                        # `docker logs -f` terminates when the container does;
+                        # wait below reads the container's actual raw status.
+                        wait_for = tick
+                logs_code = proc.wait(timeout=wait_for)
+                break
+            except subprocess.TimeoutExpired:
+                if budget_deadline is not None and clock() >= budget_deadline:
+                    budget_expired = True
+                    subprocess.run([docker, "kill", name],
+                                   capture_output=True, text=True)
+                    continue
+                if daemon_watch is not None:
+                    watch_stall = consume_profiler_watch(
+                        daemon_watch, profiler, lane_name, project_dir,
+                        worktree, run_record)
+                    if watch_stall is not None:
+                        stalled = watch_stall
+                        break
+                    watch_ended = daemon_watch.ended()
+                    if watch_ended or daemon_watch.idle():
+                        daemon_watch.close()
+                        if watch_restarts == 0:
+                            watch_restarts += 1
+                            state = "ended" if watch_ended else "went idle"
+                            print(f"run-gate: WARNING profiling: daemon watch "
+                                  f"for lane {lane_name!r} {state}; "
+                                  "reattaching once", file=sys.stderr,
+                                  flush=True)
+                            daemon_watch = profiler["client"].watch(
+                                profiler["session"])
+                        else:
+                            daemon_watch = None
+                            profiler["warning"] = profiler.get("warning") or \
+                                "daemon watch remained idle after one reattach"
+                            if fallback_watch is None:
+                                fallback_watch = make_progress_watch(
+                                    lane, lane_name, project_dir,
+                                    recorded=recorded, auto_bound=True)
+                            if fallback_watch is not None and not fallback_announced:
+                                fallback_announced = True
+                                print(f"run-gate: in-process watch — daemon "
+                                      f"unavailable for lane {lane_name!r}",
+                                      flush=True)
+                            else:
+                                print(f"run-gate: WARNING profiling: daemon watch "
+                                      f"for lane {lane_name!r} unavailable; "
+                                      "continuing without daemon liveness",
+                                      file=sys.stderr, flush=True)
+                if basic_active:
+                    try:
+                        tick_lane_profiling(profiler)
+                    except Exception as exc:
+                        # B1d (round-1 review): a tick must never break the
+                        # wait loop -- swallow, record once, keep waiting.
+                        profiler["warning"] = profiler.get("warning") or \
+                            f"profiling tick failed unexpectedly: {exc}"
+                now = clock()
+                if now - last_poll_at < PROGRESS_POLL_SECONDS:
+                    continue
+                last_poll_at = now
+                # RG-36/RG-41: the one place a long lane is observed. Reaching
+                # here means `docker logs -f` has NOT returned, i.e. the
+                # container is still running — RW-5's precondition for a
+                # stall, checked by construction rather than asserted.
+                # `log_watch` (live config) takes priority over `watch` (a
+                # re-attach can carry a STALE `ProgressWatch` seeded from an
+                # OLD record's `progress` path when the lane's `kind` changed
+                # to "command" between two invocations, N-a's own edge case
+                # one level over — harmless here since it is never polled,
+                # but the two are not disjoint by construction, only by this
+                # priority).
+                # The daemon owns liveness while its stream is healthy. Its
+                # pressure-aware clock may be paused when a local silence
+                # timer is not; running both would turn host contention into
+                # a false lane verdict.
+                if daemon_watch is None:
+                    stalled = (log_watch.poll() if log_watch is not None
+                              else fallback_watch.poll()
+                              if fallback_watch is not None else None)
+                if stalled is not None:
+                    break
+        if daemon_watch is not None and stalled is None:
+            stalled = consume_profiler_watch(
+                daemon_watch, profiler, lane_name, project_dir, worktree,
+                run_record)
+        if stalled is not None:
+            # NOT drained here (round-2 review, confirmed by direct
+            # reproduction): a stalled container's pump thread is, BY
+            # DEFINITION, still blocked reading a pipe with nothing more
+            # coming — nothing terminates that read until `finally`'s
+            # `proc.terminate()` runs, below. Joining here would therefore
+            # time out on EVERY stall, not just under real contention, and
+            # the STALLED message below prints to stderr, never racing the
+            # pump's own stdout lines the way the non-stalled branch's exit
+            # line can — there is no ordering concern here to protect.
+            saved_log = save_container_logs(docker, name)
+        else:
+            # Drain whatever is still in flight BEFORE this function's own
+            # status lines print — without this, "lane X exit 0" can print
+            # ahead of the container's own last few lines, an ordering
+            # regression the plain-inherited-stdout path never had.
+            # Meaningful ONLY here: the container has already exited on its
+            # own (`proc.wait()` above returned), so the pump thread's read
+            # is unblocked by EOF, not by a forced termination — under real
+            # host contention the drain can still outlast its own bounded
+            # wait; disclosed rather than silently risking the regression
+            # this join exists to prevent.
+            if log_watch is not None and not log_watch.join():
+                print(f"run-gate: WARNING: lane {lane_name!r} — its log "
+                      f"pump did not finish draining before this status "
+                      f"line; a trailing line or two may still be in "
+                      f"flight", file=sys.stderr, flush=True)
+            waited = subprocess.run([docker, "wait", name],
+                                    capture_output=True, text=True)
+            out = waited.stdout.strip()
+            code = int(out) if waited.returncode == 0 \
+                and re.fullmatch(r"-?\d+", out) else None
+            # Review fix (R-26): evidence is for FAILING containers — a green
+            # lane leaves nothing in the evidence dir. Captured here, BEFORE
+            # the finally removes the container (an unreadable exit status
+            # counts as failing: infra diagnosis needs the logs too).
+            if code is None or code != 0:
+                saved_log = save_container_logs(docker, name)
+        if run_record is not None and run_record.get("log_path"):
+            path = save_container_logs(
+                docker, name, Path(run_record["log_path"]))
+            if path is not None:
+                run_record["log_path"] = str(path)
+    finally:
+        if daemon_watch is not None:
+            daemon_watch.close()
+        # RG-55/contract Sec 4 obligation 2: `stop` (or the basic sampler's
+        # final sample) runs BEFORE `docker rm -f`, on every exit of the try
+        # above — stalled, failed or clean — because this `finally` is the
+        # ONE place all three arrivals converge (RW-1's own reason for this
+        # being one function at all) and it runs exactly once, which is what
+        # makes this "at most once" without any extra bookkeeping (R-36h's
+        # staked-claim pattern reduces here to the same guarantee `finally`
+        # already gives every other cleanup step in this function).
+        if profiler is not None:
+            try:
+                profile_result = finish_lane_profiling(profiler)
+                if stalled is None:
+                    stalled = terminal_daemon_kill(profile_result["resources"])
+                print_profile_warning(profiler)
+                print_footprint_line(lane_name, project_dir,
+                                     profile_result["resources"])
+                if run_record is not None:
+                    run_record["resources"] = profile_result["resources"]
+                    run_record["profile_error"] = profile_result["profile_error"]
+                    run_record["profile_ref"] = profile_result["profile_ref"]
+            except Exception as exc:
+                # B1d (round-1 review): profiling must NEVER pre-empt
+                # cleanup -- `docker rm -f` / `clear_inflight_record` below
+                # are structurally unreachable-by-exception now, whatever
+                # went wrong above is swallowed here, once, and the lane's
+                # own exit code (read further down, from `code`/`stalled`,
+                # never touched by this block) is unaffected.
+                print(f"run-gate: WARNING profiling: cleanup crashed "
+                      f"unexpectedly: {exc} — no profile recorded",
+                      file=sys.stderr, flush=True)
+                if run_record is not None:
+                    run_record.setdefault("resources", None)
+                    run_record["profile_error"] = \
+                        f"profiling cleanup crashed unexpectedly: {exc}"
+                    run_record.setdefault("profile_ref", None)
+        subprocess.run([docker, "rm", "-f", name], capture_output=True)
+        proc.terminate()   # no-op once it has exited; ends a stalled stream
+        proc.wait()
+        if log_watch is not None:
+            # Round-3 review: reached from EVERY exit of the try above,
+            # stalled or not — by now `proc.terminate()` + `proc.wait()`
+            # have genuinely unblocked the pump's pipe read (unlike the
+            # non-stalled branch's OWN join above, which runs BEFORE any
+            # termination and exists for output ORDERING, this one is pure
+            # thread-lifecycle hygiene: no disclosure needed, since the
+            # process really is gone by now). Matters most for IN-PROCESS
+            # reuse — this project's own test suite calls `main()`
+            # repeatedly in one interpreter — where a daemon thread still
+            # writing after this call returns can land a stray line in the
+            # NEXT test's captured output, or hit its own swallowed
+            # exception on a stream that has since been swapped out.
+            log_watch.join()
+        # RW-1: the record is cleared in the SAME finally that removes the
+        # container — the two facts it asserts (this container exists, it
+        # belongs to this lane) stop being true at the same instant.
+        clear_inflight_record(project_dir, lane_name)
+    if stalled is not None:
+        where = (f"; container logs preserved at {saved_log}" if saved_log
+                 else "; container logs could NOT be captured before removal")
+        fail_infra(f"lane {lane_name!r} STALLED: {stalled}. The container was "
+                   f"removed{where}")
+    if logs_code != 0:
+        print(f"run-gate: WARNING: docker logs exit {logs_code}", file=sys.stderr)
+    if code is None:
+        fail_infra("could not read the container's exit status (docker wait failed) — "
+                   "refusing to guess")
+    if budget_expired:
+        raise GateBudgetExceeded(code,
+                                 run_record.get("log_path") if run_record else None)
+    if code != 0:
+        where = (f"; full container logs preserved at {saved_log}"
+                 if saved_log else
+                 "; container logs could NOT be captured before removal")
+        print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
+              flush=True)
+    print_lane_artifacts(lane, lane_name, project_dir, repo, worktree,
+                         recorded, state_root)
+    return code
+
+
+def disown_run_record(run_record: dict | None) -> None:
+    """RW-14: a FOLLOWER records nothing. The run belongs to the client that
+    started it — that client writes the ONE history entry `R-39c` promises,
+    and a second entry from a terminal that merely watched would double-count
+    the lane in its own trend series. Claiming the flush sentinel here is how
+    main()'s three exits all become no-ops without any of them having to
+    branch on "am I the owner"."""
+    if run_record is not None:
+        run_record["_flushed"] = True
+
+
+def promote_follower(docker: str, name: str, lane_name: str,
+                     project_dir: Path, code: int,
+                     run_record: dict | None) -> tuple[bool, Path | None]:
+    """RW-28 (review round 2, G2). The follower's contract is that the OWNER
+    does all three duties — `rm -f`, clear the record, write the one history
+    entry. Nothing re-checked that the owner was still there when the run
+    ended, so a follower that outlived its owner reported the true exit code
+    and then left a finished container squatting the host's one gate slot, a
+    record still pointing at it, and NO history entry at all for a run that
+    completed. The lane self-heals on its NEXT invocation (the exited
+    container is collected and recorded), but that is the next run, and until
+    then `history` shows this one as never having happened.
+
+    So the duties are re-decided on a fresh read at the end: the owner is
+    asked again, and if it is gone THIS client finishes the cleanup —
+    disclosing by name, because a follower that suddenly removes a container
+    it promised not to touch owes the reason. The caller receives the run's
+    status and records the single final result after parsing any Assay verdict.
+    Returns (promoted, evidence path), the second for the caller's failure
+    disclosure: `rm -f` destroys
+    the logs and the client that would have saved them first is no longer
+    here, so a promotion that skipped `R-26` would be worse than the
+    self-heal it replaces."""
+    pending = load_inflight_record(inflight_path(project_dir, lane_name))
+    if pending is None or pending.get("container") != name:
+        return False, None      # the owner finished its own cleanup after all
+    if live_owner_pid(pending) is not None:
+        return False, None      # still there: none of this is ours to do
+    print(f"run-gate: the owning client (pid {pending.get('owner_pid')}) is "
+          f"gone; this client is finishing its cleanup — removing {name}, "
+          f"clearing its record and returning the completed run to its "
+          f"caller for result/history recording (exit {code})", flush=True)
+    saved_log = save_container_logs(docker, name) if code != 0 else None
+    # RG-55/contract Sec 4 obligation 2: the owner's OWN `finally` never ran
+    # (it is gone) — THIS client is now the one finishing the session, using
+    # the RECORDED id (no new `start`), same rule as a re-attach's adopt,
+    # BEFORE `docker rm -f` below. A basic-path session cannot be resumed
+    # here either (its samples died with the owner's process).
+    if run_record is not None:
+        session = pending.get("profile_session")
+        daemon_name = pending.get("profile_daemon")
+        if session and daemon_name:
+            stop_doc, reason = ProfilerClient(docker, daemon_name).stop(session)
+            if stop_doc is not None:
+                run_record["resources"] = stop_doc["summary"]
+                run_record["profile_error"] = None
+                run_record["profile_ref"] = {
+                    "daemon": daemon_name, "session": session,
+                    "session_dir": stop_doc.get("session_dir")}
+            else:
+                run_record["resources"] = None
+                run_record["profile_error"] = reason
+                run_record["profile_ref"] = None
+                print(f"run-gate: WARNING profiling: {reason} — no profile "
+                      f"recorded", file=sys.stderr, flush=True)
+        elif pending.get("profile_token"):
+            run_record["resources"] = None
+            run_record["profile_error"] = ("promoted: no profiler session was "
+                                           "recorded (basic-path sampling "
+                                           "does not survive the owning "
+                                           "client's death)")
+            run_record["profile_ref"] = None
+    subprocess.run([docker, "rm", "-f", name], capture_output=True)
+    clear_inflight_record(project_dir, lane_name)
+    if run_record is not None:
+        # RE-CLAIM the run record this client disowned when it began
+        # following. `finish(result)` writes its single history entry only
+        # after `_dispatch` has parsed the result (notably an Assay verdict).
+        # Keep the CONTAINER's start, never this invocation's (RW-3).
+        run_record.pop("_flushed", None)
+        adopt_inflight_start(run_record, pending)
+    return True, saved_log
+
+
+def follow_container(docker: str, name: str, lane: dict, lane_name: str,
+                     project_dir: Path, repo: Path, worktree: Path,
+                     recorded: dict | None = None,
+                     run_record: dict | None = None) -> int:
+    """RW-14: watch a run whose OWNER is still alive, and touch nothing else.
+
+    Streams the same logs and exits with the same code as the owner, but does
+    NOT remove the container, clear the inflight record or write history —
+    all three belong to the client that started the run and is still there to
+    do them. Removing them out from under a live owner is exactly the defect
+    this exists to end: the owner then got `docker wait` on a container that
+    no longer existed and reported exit 3 on a green lane."""
+    # `docker wait` is started FIRST, and concurrently, deliberately: the
+    # owner removes the container within milliseconds of its exit, and a
+    # `wait` issued AFTER that removal answers "No such container" — the
+    # follower would report exit 3 on a lane it just watched pass. A wait the
+    # daemon has already accepted returns the container's real status even
+    # when the container is removed while that wait is pending.
+    waiter = subprocess.Popen([docker, "wait", name], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, text=True)
+    logs = subprocess.Popen([docker, "logs", "-f", name])
+    logs.wait()
+    out = (waiter.communicate()[0] or "").strip()
+    code = int(out) if waiter.returncode == 0 and re.fullmatch(r"-?\d+", out) \
+        else None
+    if code is None:
+        fail_infra(f"followed container {name} but could not read its exit "
+                   f"status (docker wait failed) — the client that owns the "
+                   f"run reports its result; nothing was removed, cleared or "
+                   f"recorded here")
+    # RW-28: BEFORE the failure disclosure — "the owning client preserves the
+    # evidence" stops being true the moment this client becomes the owner.
+    promoted, saved_log = promote_follower(docker, name, lane_name,
+                                           project_dir, code, run_record)
+    if code != 0 and promoted:
+        where = (f"; full container logs preserved at {saved_log}"
+                 if saved_log else
+                 "; container logs could NOT be captured before removal")
+        print(f"run-gate: lane {lane_name!r} failed with exit {code}{where}",
+              flush=True)
+    elif code != 0:
+        print(f"run-gate: lane {lane_name!r} failed with exit {code} "
+              f"(followed — the owning client preserves the evidence)",
+              flush=True)
+    print_lane_artifacts(lane, lane_name, project_dir, repo, worktree, recorded)
+    return code
+
+
+def resolve_inflight(docker: str, lane: dict, lane_name: str,
+                     project_dir: Path, repo: Path, worktree: Path,
+                     fresh: bool, dry_run: bool,
+                     run_record: dict | None) -> int | None:
+    """RG-35 / R-39. Decide what to do about a container this lane left
+    behind, BEFORE anything is built or started. Returns the lane's exit code
+    when the existing container answered for this invocation (re-attach or
+    collect), else None — meaning "nothing to attach to, run fresh".
+
+    Every branch is disclosed by name (R-05): silence here is what turns a
+    surviving container into a duplicate."""
+    pending = load_inflight_record(inflight_path(project_dir, lane_name),
+                                   fresh=fresh)
+    if pending is None:
+        if fresh:
+            print(f"run-gate: --fresh: no inflight record for lane "
+                  f"{lane_name!r} — nothing to remove", flush=True)
+        return None
+    name = pending["container"]
+    started = pending.get("started_at")
+    # B3 (round-1 review, RW-43; CIU-104 class): checked BEFORE any of
+    # RW-14's own questions and before any `docker` call at all -- a
+    # record whose `runner` names something other than this path
+    # ("container") was written by a DIFFERENT lane kind (RG-60's exec
+    # path stamps "exec") and may name a persistent CIU runner this
+    # invocation never created. A lane's `environment` can flip from exec
+    # to an ephemeral-container one between a crashed run and the next
+    # (an ordinary estate config move -- RG-43's own host/bare-host swap
+    # is precedent), and re-attaching to (or `--fresh`-removing) a
+    # container this lane never started is exactly the loss `R-39` exists
+    # to prevent, one level worse: a SHARED runner, not merely a
+    # duplicate. A record with no `runner` key at all predates this field
+    # (every record this run-gate revision itself ever wrote carries it)
+    # and is treated as "container" for backward compatibility -- the
+    # container path is the only writer that existed before RG-60.
+    runner = pending.get("runner")
+    if runner is not None and runner != "container":
+        message = (f"the inflight record for lane {lane_name!r} names "
+                   f"container {name!r}, written by runner {runner!r} — "
+                   f"foreign record — refusing to attach, follow, collect, "
+                   f"or remove it; refusing to overwrite it or start a "
+                   f"replacement. If this "
+                   f"lane's environment changed since that record was "
+                   f"written, delete {inflight_path(project_dir, lane_name)} "
+                   f"once you know the run it describes is over")
+        if dry_run:
+            print(f"run-gate: DRY RUN: {message}; a live run would REFUSE "
+                  f"(exit 2)", flush=True)
+            return 0
+        fail(message)
+    # Schema 2 carries one closed artifact contract. Validate it before any
+    # Docker access so a damaged record cannot turn an Assay result into a
+    # command PASS or redirect verdict/progress reads to unrelated evidence.
+    # `--fresh` deliberately discards the old result and uses current config.
+    if not fresh:
+        validate_inflight_assay_contract(pending, lane_name, project_dir, lane)
+    # RW-14: the FIRST question, before any of RW-1's five, is whether the
+    # client that started this container is still alive. If it is, this
+    # invocation is a second terminal on someone else's run and may only
+    # watch it.
+    owner = live_owner_pid(pending)
+    if owner is not None and record_is_foreign_namespace(pending):
+        # RW-29 / R-05: an operator who expected an adoption and got a follow
+        # is owed the boundary that caused it — and "alive" here is an
+        # assumption, not a reading, which is a different claim and must not
+        # be printed as the same one.
+        print(f"run-gate: the inflight record for lane {lane_name!r} was "
+              f"written in a DIFFERENT PID namespace (record names "
+              f"{pending.get('pid_ns')}, this client is in "
+              f"{pid_ns_inode()}): pid {owner} cannot be looked up from "
+              f"here, so its liveness is UNKNOWN and this run is treated as "
+              f"LIVE — it will be followed, never removed, and --fresh will "
+              f"refuse. Reading it as dead is how two clients that "
+              f"bind-mount one worktree into two containers would each "
+              f"destroy the other's container", flush=True)
+    state = container_state(docker, name)
+    gone_because = (f"no such container exists — the daemon or the host lost "
+                    f"it")
+    recorded_id = pending.get("container_id")
+    if state is not None and recorded_id and state["id"] \
+            and recorded_id != state["id"]:
+        # S2: container NAMES are deterministic per (env, repo, lane), so a
+        # record that outlives its container can point at a DIFFERENT
+        # container that later took the same name. Inspecting by name alone
+        # would re-attach to it and `rm -f` it. The id costs nothing to read
+        # (same inspect call) and is the only thing that says "same
+        # container".
+        gone_because = (f"the container wearing that name now has id "
+                        f"{state['id']}, not the recorded {recorded_id} — a "
+                        f"different container now wears this name; run-gate "
+                        f"will not touch it")
+        state = None
+    status = state["status"] if state else None
+    exit_code = state["exit_code"] if state else None
+    finished = state["finished_at"] if state else ""
+    # RW-18 (review S5): HEAD is resolved BEFORE the dry-run branch, not
+    # forty lines below it. The dry run used to announce "a live run would
+    # re-attach to it or collect it" for a record whose commit does not match
+    # — where the live run refuses with exit 2. RW-1 asks the dry run to
+    # DISCLOSE the record; a disclosure that names the wrong outcome is worse
+    # than none, because it is the one an operator acts on.
+    head = head_commit(worktree)
+    commit_matches = head is not None and head == pending.get("commit")
+    if dry_run:
+        # RW-1: a dry run DISCLOSES the record and changes nothing — it does
+        # not attach, collect, clear, or remove. The branches below are in
+        # the SAME order the live decision takes them, which is the only way
+        # this stays true as that decision grows.
+        if status is None and owner is not None:
+            would = (f"re-read the record for about a second (pid {owner} "
+                     f"owns it and is alive, so its container is gone only "
+                     f"because that client is clearing up) and then either "
+                     f"run fresh or refuse (exit 2) naming pid {owner}")
+        elif status is None:
+            would = "report it lost, clear the record and start a new container"
+        elif fresh and owner is not None:
+            would = (f"REFUSE (exit 2): --fresh never removes a LIVE client's "
+                     f"container, and pid {owner} owns this one")
+        elif fresh:
+            would = f"remove {name} and run anew"
+        elif not commit_matches:
+            would = (f"REFUSE (exit 2): the record judges commit "
+                     f"{pending.get('commit')} and {worktree} is now at "
+                     f"{head} — run-gate will not attach that run to this "
+                     f"commit, nor start a second container for the same "
+                     f"lane; --fresh removes {name} first")
+        elif owner is not None:
+            would = (f"FOLLOW it — pid {owner} is alive and owns it, so a "
+                     f"live run would stream its logs and exit with its "
+                     f"code, removing nothing")
+        elif status == "running":
+            would = "re-attach to it"
+        else:
+            would = f"collect it (it exited {exit_code} at {finished})"
+        print(f"run-gate: DRY RUN: an inflight record names container {name} "
+              f"(started {started}, state {status or 'gone'}) — a live run "
+              f"would {would}", flush=True)
+        return None
+    if status is None:
+        if owner is not None:
+            # The owner is in its own `finally` right now (it removes the
+            # container, then clears the record). Recording an `aborted` run
+            # here would be a SECOND outcome for one run, written by the
+            # client that did not start it — but so would refusing outright
+            # (RW-20): the window between those two statements is
+            # microseconds, and a refusal taken inside it names a pid whose
+            # run has already finished. Re-read first, bounded.
+            pending, owner = repoll_owner_race(project_dir, lane_name, pending)
+            if pending is None:
+                print(f"run-gate: the inflight record for lane {lane_name!r} "
+                      f"named container {name}, whose live owner cleared the "
+                      f"record while this client was deciding — that run is "
+                      f"finished and reported by its own client; running "
+                      f"fresh", flush=True)
+                if fresh:
+                    print(f"run-gate: --fresh: no inflight record for lane "
+                          f"{lane_name!r} — nothing to remove", flush=True)
+                return None
+        if owner is not None:
+            fail(f"lane {lane_name!r} is owned by a live client (pid {owner}, "
+                 f"container {name} started {started}) whose container is "
+                 f"already gone — that client reports the lane's result and "
+                 f"clears the record. Wait for pid {owner}")
+        print(f"run-gate: inflight record names {name} (started {started}) "
+              f"but {gone_because}; recording that run as aborted, clearing "
+              f"the record and running fresh", flush=True)
+        record_lost_run(project_dir, worktree, repo, lane_name, pending,
+                        (run_record or {}).get("_keep") or HISTORY_KEEP_DEFAULT)
+        clear_inflight_record(project_dir, lane_name)
+        return None
+    if fresh:
+        if owner is not None:
+            # RW-14: run-gate never kills another client's run. `--fresh` is
+            # an escape from a container nobody is watching, not a way to
+            # take one away from a terminal that is.
+            fail(f"--fresh would remove {name}, but lane {lane_name!r} is "
+                 f"running under a LIVE client (pid {owner}, started "
+                 f"{started}) — run-gate never removes another client's "
+                 f"container. Wait for pid {owner} to finish (a second "
+                 f"invocation without --fresh FOLLOWS it), or re-run with "
+                 f"--fresh once it has")
+        print(f"run-gate: --fresh: removing inflight container {name} "
+              f"(started {started}, {status}) and running anew", flush=True)
+        subprocess.run([docker, "rm", "-f", name], capture_output=True)
+        clear_inflight_record(project_dir, lane_name)
+        return None
+    if not commit_matches:
+        # Neither attaching nor starting a second container is defensible
+        # here: one would credit this commit with another commit's run, the
+        # other would break the one-gate rule. Refuse and name the escape.
+        remedy = (f"Wait for pid {owner} to finish — --fresh will not remove "
+                  f"another live client's container" if owner is not None else
+                  f"Wait for it to finish, or re-run with --fresh (which "
+                  f"removes {name} first)")
+        fail(f"lane {lane_name!r} has an inflight container {name} (started "
+             f"{started}, {status}) judging commit {pending.get('commit')}, "
+             f"but {worktree} is now at {head} — run-gate will not attach "
+             f"that run to this commit, and will not start a second "
+             f"container for the same lane. {remedy}")
+    # A lost container or a `--fresh` discard starts under today's config and
+    # must keep the fresh run's mode. Arm the recorded identity only after
+    # this call has committed to following, re-attaching to, or collecting
+    # that exact container.
+    if lane.get("kind") == "assay" and not fresh and run_record is not None:
+        run_record["_assay_identity_mode"] = pending["assay_identity_mode"]
+    if run_record is not None and pending.get("log_path"):
+        run_record["log_path"] = pending["log_path"]
+    if owner is not None:
+        # RW-14: FOLLOW. Same logs, same exit code, no ownership: the client
+        # that started this container removes it, clears its record and
+        # writes its single history entry.
+        print(f"run-gate: following {name} (owner pid {owner}, started "
+              f"{started})", flush=True)
+        print(f"run-gate: {installed_version()} | lane {lane_name} | follow — no "
+              f"new container was started, and this client will not remove "
+              f"{name}, clear its record or record its history: pid {owner} "
+              f"owns all three", flush=True)
+        # RW-18: the lane's own bounds, on this path too — a follower that is
+        # never told the `stall_timeout` cannot make sense of the owner
+        # stopping the container out from under its log stream.
+        print_lane_bounds(lane, owner_pid=owner)
+        disown_run_record(run_record)
+        if run_record is not None:
+            for artifact in ("verdict", "progress"):
+                value = pending.get(artifact)
+                if isinstance(value, str) and value:
+                    run_record[f"_{artifact}_path"] = value
+        return follow_container(docker, name, lane, lane_name, project_dir,
+                                repo, worktree, recorded=pending,
+                                run_record=run_record)
+    if run_record is not None:
+        # The artifact paths belong to the container's invocation. Preserve
+        # them across re-attach so result parsing and RG-72 archival do not
+        # switch to paths from a newer live config.
+        for artifact in ("verdict", "progress"):
+            value = pending.get(artifact)
+            if isinstance(value, str) and value:
+                run_record[f"_{artifact}_path"] = value
+    adopt_inflight_start(run_record, pending)
+    profiler_state = None
+    if status == "running":
+        print(f"run-gate: re-attached to {name} (started {started}, running "
+              f"{_fmt_age(pending.get('started_epoch'))})", flush=True)
+        # RG-55/contract Sec 4 obligation 2: adopt the recorded session — NO
+        # new `start` — so `await_container`'s finally calls `stop` with
+        # THAT id. Only the daemon path can be resumed at all: a basic-path
+        # sampler's samples live in the DEAD client's memory and cannot be
+        # recovered here, so a record with no `profile_session` (disabled,
+        # or the original run degraded to basic) gets a named `profile_error`
+        # instead of a fabricated resume.
+        session = pending.get("profile_session")
+        daemon_name = pending.get("profile_daemon")
+        if session and daemon_name:
+            transport = pending.get("profile_transport",
+                                    PROFILE_TRANSPORT_DEFAULT)
+            socket_path = pending.get("profile_socket_path",
+                                      PROFILE_SOCKET_PATH_DEFAULT)
+            profiler_state = {"mode": "daemon",
+                              "client": ProfilerClient(
+                                  docker, daemon_name, transport=transport,
+                                  socket_path=socket_path),
+                              "daemon": daemon_name, "session": session,
+                              "session_line": None, "warning": None,
+                              "sampler": None, "profiler_status": None,
+                              "placement": pending.get("placement"),
+                              "admission": pending.get("admission")}
+        elif pending.get("profile_token"):
+            profiler_state = {"mode": None, "client": None, "daemon": None,
+                              "session": None, "session_line": None,
+                              "warning": ("re-attach: no profiler session was "
+                                         "recorded (basic-path sampling does "
+                                         "not survive a client restart)"),
+                              "sampler": None, "profiler_status": None}
+    else:
+        print(f"run-gate: collected {name} (exited {exit_code} at {finished})",
+              flush=True)
+        # RW-17: the container's own `FinishedAt - StartedAt`, so the idle
+        # time between its exit and this collect never joins the trend
+        # series. Falls back to the record's `started_at` when either stamp
+        # is missing or unparsable.
+        adopt_container_duration(run_record, state)
+        # RG-55: this client never watched the container while it was alive
+        # (basic-path or daemon-path alike) — nothing to retroactively
+        # sample or stop. Contract Sec 4 obligation 3's own rule for a
+        # container that exited before the first sample, one level over.
+        # `run_record` is never None here: `adopt_inflight_start` above (its
+        # own signature is `run_record: dict`, non-optional) already
+        # assumes the same thing this branch is reached only through.
+        run_record["resources"] = None
+        run_record["profile_error"] = "collected after exit"
+        run_record["profile_ref"] = None
+    # The usual `rev | lane | env | slice` header belongs to a run this
+    # client STARTED; this run was started by another one, and the header
+    # that identifies it would be a claim about mounts and a slice this
+    # invocation never chose. Disclose what it IS instead (R-05).
+    print(f"run-gate: {installed_version()} | lane {lane_name} | re-attach — no "
+          f"new container was started", flush=True)
+    # RW-18: the `budget` and `stall_timeout` this invocation is armed with.
+    # A re-attached lane used to be stopped against a `stall_timeout` its own
+    # output had never mentioned — the watch below is armed either way.
+    print_lane_bounds(lane)
+    # N3: the artifacts THAT run declared, not the ones this invocation's
+    # config would construct — a lane retargeted between the two invocations
+    # would otherwise watch a file nothing is appending to and point the
+    # operator at a verdict nothing wrote.
+    return await_container(docker, name, lane, lane_name, project_dir,
+                           repo, worktree, recorded=pending,
+                           profiler=profiler_state, run_record=run_record,
+                           watch=make_progress_watch(lane, lane_name,
+                                                     project_dir,
+                                                     recorded=pending))
+
+
+def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
+                       worktree: Path, env: dict, env_source: str,
+                       slice_name: str, slice_src: str,
+                       dry_run: bool = False,
+                       request_base: str | None = None,
+                       fresh: bool = False,
+                       run_record: dict | None = None,
+                       profile_plan: dict | None = None,
+                       budget_deadline: float | None = None,
+                       budget_started_epoch: float | None = None,
+                       admission_group: str | None = None) -> int:
+    # project_dir arrives already relocated into the judged worktree (RG-15):
+    # pin verification, assay config, and artifacts all resolve there.
+    docker = shutil.which("docker")
+    if not docker:
+        fail_infra("docker not found on PATH — container lanes need it")
+    # RG-35: before ANYTHING is built — the re-attach line is the first thing
+    # a returning client should see, and a lane that already has a container
+    # must not spend a mount derivation or a slice check on a run it is not
+    # going to start.
+    attached = resolve_inflight(docker, lane, lane_name, project_dir, repo,
+                                worktree, fresh, dry_run, run_record)
+    if attached is not None:
+        return attached
+    if not dry_run and lane.get("resource_observer") is not None:
+        resource_observer_version_preflight(
+            docker,
+            (profile_plan or {}).get("daemon", PROFILE_DAEMON_DEFAULT),
+        )
+    if not dry_run:
+        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
+    # RG-NARROW: only the judged worktree + the git metadata it needs (dual,
+    # RG-3), never the whole repo; the same set also reaches doctor and
+    # Assay-state probes through build_env_probe_argv().
+    mounts = [*container_mount_flags(
+        repo, worktree, env, with_state=lane["kind"] == "assay",
+        create_state=lane["kind"] == "assay" and not dry_run,
+        plan_missing_state=lane["kind"] == "assay" and dry_run),
+        *extra_mount_flags(),
+        *resource_observer_docker_flags(lane, env)]
+    verify_slice_loaded(slice_name)
+    inner = build_assay_inner(lane, project_dir, repo, request_base,
+                              worktree=worktree,
+                              state_root=env.get("state_root")) \
+        if lane["kind"] == "assay" \
+        else build_command_inner(lane, worktree, request_base)
+    name = f"run-gate-{repo.name}-{lane_name}-{os.getpid()}-{int(time.time())}"
+    argv = [docker, "run", "-d", "--name", name, "--init",
+            "--cgroup-parent", slice_name,
+            "-e", f"{CGROUP_ENV_VAR}={slice_name}",
+            *mounts]
+    if admission_group:
+        argv += ["--label", f"ciu.reservation.group={admission_group}"]
+    if env.get("user"):
+        # Additive, optional (default unset — every OTHER environment,
+        # tester-unified included, is unaffected): the 'host' default's own
+        # synthetic env sets this to the invoking process's real uid:gid
+        # (resolve_environment) — the sibling container's baked-in image
+        # user (e.g. vscode:1000) can otherwise mismatch THIS devcontainer's
+        # actual uid (e.g. vscode:1003, remapped by devcontainers CLI
+        # tooling a bare `docker run` never sees), leaving every file the
+        # container writes into a bind-mounted, already-host-owned path
+        # (__pycache__, coverage.json, ...) a permission-denied write.
+        argv += ["--user", env["user"]]
+    for key in env.get("forward_env", []):
+        value = os.environ.get(key)
+        if value:  # empty string counts as ABSENT — matches log_forwarded_env
+            argv += ["-e", f"{key}={value}"]
+    # RG-55/contract Sec 4.1: the token is appended in the SAME position as
+    # `forward_env` values, immediately after that loop — `enabled = false`
+    # (or the test-only kill switch) means no token at all, not an empty one.
+    profiling = bool(profile_plan and profile_plan["enabled"])
+    if profiling:
+        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
+    mem_cap = lane.get("resources", {}).get("memory") or lane.get("memory")
+    if mem_cap:
+        argv += ["--memory", mem_cap]
+    if lane.get("resources", {}).get("memory_swap"):
+        # cmru pattern (RG-20): tight RAM cap + ample swap absorbs bursts
+        # without OOM-killing the lane mid-campaign.
+        argv += ["--memory-swap", lane["resources"]["memory_swap"]]
+    pids_cap = lane.get("resources", {}).get("pids")
+    if pids_cap is not None:
+        argv += ["--pids-limit", str(pids_cap)]
+    # RG-48/R-29: lane wins over environment (the same precedence
+    # `resources.memory` already has over nothing — there is no
+    # environment-level memory fallback, only cpus has one, because a
+    # worker-count / CPU-cap contradiction is a fact about the ENVIRONMENT's
+    # own default toolchain invocation (RG-48's own motivating case: `-n
+    # auto` with no cap at all), not about one lane's RAM budget).
+    cpus = lane.get("resources", {}).get("cpus") \
+        or env.get("resources", {}).get("cpus")
+    if cpus:
+        argv += ["--cpus", cpus]
+    argv += [env["image"], "bash", "-c", inner]
+    print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source} | "
+          f"slice {slice_name} ({slice_src})", flush=True)
+    log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
+    print_lane_bounds(lane)
+    print(f"run-gate: docker argv: "
+          f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
+          flush=True)
+    if lane.get("kind") == "assay":
+        assure_assay_state_root(
+            docker, lane, env, lane_environment_name(lane), env_source,
+            repo, project_dir, worktree, slice_name, dry_run=dry_run)
+    if dry_run:
+        if profiling:
+            # R-45: read the daemon's current headroom once so a dry run can
+            # disclose `would-wait`; this preflight is read-only and never
+            # reserves capacity, starts a session, or sleeps.
+            prepare_profile_start(lane, lane_name, project_dir, worktree,
+                                  docker, profile_plan, "container",
+                                  dry_run=True)
+        # RG-8: the plan above IS what the live run executes — same assembly
+        # code path, only the `docker run` itself skipped. Unconditional
+        # (RW-17 finding): `print_profile_plan_dry_run` already branches on
+        # `plan["enabled"]` itself — gating the CALL on `profiling` too made
+        # the disabled-disclosure branch dead code, so a disabled lane's
+        # `--dry-run` never named WHY (e.g. `RUN_GATE_PROFILE=off`).
+        print_profile_plan_dry_run(profile_plan, "container")
+        print("run-gate: DRY RUN — no container was started", flush=True)
+        return 0
+    # RG-55/R-45: admission is a pre-start headroom check. The daemon host
+    # read and any wait therefore happen before Docker creates the lane,
+    # never after a supposedly admitted lane is already consuming capacity.
+    profile_preflight = (prepare_profile_start(
+        lane, lane_name, project_dir, worktree, docker, profile_plan,
+        "container") if profiling else None)
+    started = subprocess.run(argv, capture_output=True, text=True)
+    if started.returncode != 0:
+        # RG-12: a failed `docker run` may still have created the container
+        # (pull/entrypoint failures) — preserve its logs, then show a REAL
+        # tail of stderr instead of only the last line.
+        saved = save_container_logs(docker, name)
+        lines = started.stderr.strip().splitlines() or ["(no stderr)"]
+        tail = "\n".join(f"    {line}" for line in lines[-EVIDENCE_TAIL_LINES:])
+        subprocess.run([docker, "rm", "-f", name], capture_output=True)
+        where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
+        fail_infra(f"docker run failed (exit {started.returncode}); last "
+                   f"stderr line(s):\n{tail}{where}")
+    # RW-1: written on a SUCCESSFUL `docker run -d` and only then — a record
+    # naming a container that was never created would send the next
+    # invocation looking for a ghost.
+    verdict_path, progress_path, state_dir = assay_artifact_paths(
+        lane, project_dir, repo, env.get("state_root"))
+    inflight_payload = {
+        "schema": INFLIGHT_SCHEMA,
+        "lane": lane_name,
+        # B3 (round-1 review, RW-43): which lifecycle WROTE this record --
+        # `resolve_inflight` (the container path's own reconciliation)
+        # refuses to act on a record some OTHER runner wrote (CIU-104
+        # class: never `docker rm -f`/re-attach/follow/collect a container
+        # this invocation did not create).
+        "runner": "container",
+        "container": name,
+        "container_id": (started.stdout.strip().splitlines() or [""])[-1],
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        # The epoch is stored beside the ISO stamp deliberately: human output
+        # wants the stamp, elapsed time and RW-3's duration want a number,
+        # and parsing the stamp back would add a date library (and a parse
+        # failure) to a path that already knows the answer. Neither is a log
+        # filter any more — RW-15 dropped `--since`, and `started_at` is now
+        # display and duration only.
+        "started_epoch": time.time(),
+        "budget_started_epoch": budget_started_epoch or time.time(),
+        "log_path": run_record.get("log_path") if run_record else None,
+        # RW-14 — who owns this run. A later invocation asks whether THIS
+        # process is still alive before it touches anything: an alive owner
+        # is followed, a dead one is adopted (R-39b). The start time and the
+        # boot id are what make the pid safe to trust — a recycled pid has a
+        # different start time, and after a reboot the pid names nothing at
+        # all.
+        "owner_pid": os.getpid(),
+        "owner_start": process_start_ticks(os.getpid()),
+        "boot_id": boot_id(),
+        # RW-29 — the namespace that pid belongs to. `boot_id` is host-global
+        # and cannot tell two containers on one host apart; without this, a
+        # client in another namespace looks the pid up where it never
+        # existed, reads "dead", and hijacks a live client's container.
+        "pid_ns": pid_ns_inode(),
+        "commit": head_commit(worktree),
+        "worktree": str(worktree),
+        "project_dir": str(project_dir),
+        "verdict": verdict_path,
+        "progress": progress_path,
+        "state_dir": state_dir,
+        "assay_identity_mode": assay_identity_mode(lane),
+        "revision": __revision__,
+        # RG-55/contract Sec 4.1: recorded as soon as it is known — a client
+        # that dies between here and `start` still leaves enough for a
+        # re-attach to know profiling was AT LEAST attempted.
+        "profile_token": profile_plan["token"] if profiling else None,
+        "profile_daemon": profile_plan["daemon"] if profiling else None,
+        "admission": (run_record.get("admission")
+                      if run_record is not None else None),
+        "admission_deadline": (run_record.get("admission_deadline")
+                                if run_record is not None else None),
+        "profile_transport": (profile_plan.get("transport")
+                               if profiling else None),
+        "profile_socket_path": (profile_plan.get("socket_path")
+                                if profiling else None),
+        "watch": None,
+        "placement": None,
+    }
+    if run_record is not None:
+        run_record["_inflight"] = inflight_payload
+    write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
+    # RG-55/contract Sec 4 obligation 8: disabled means NO token (already
+    # true above), NO daemon call and NO sampler — so the disabled state is
+    # built directly, without `container_state()`'s extra `docker inspect`
+    # or `start_lane_profiling` ever running at all.
+    if not profiling:
+        profiler_state = {"mode": "disabled", "client": None, "daemon": None,
+                          "session": None, "session_line": None,
+                          "warning": None, "sampler": None,
+                          "profiler_status": None,
+                          "disabled_reason": profile_plan.get(
+                              "disabled_reason", "disabled")}
+    else:
+        # Contract Sec 4 obligation 2: `docker run -d` (above) -> `docker
+        # inspect` -> `ctl start`. `container_state()` already resolves the
+        # real id via the identical single inspect call `resolve_inflight`
+        # uses elsewhere in this file — a second, differently-shaped inspect
+        # call would duplicate that plumbing for no gain.
+        inspected = container_state(docker, name)
+        container_id = inspected["id"] if inspected else \
+            inflight_payload["container_id"]
+        # RW-23e (round-1 review, S4): this process cannot actually read its
+        # own private cgroup namespace (see `cgroup_namespace_is_private`'s
+        # own docstring) -- the systemd-cgroup-driver slice path is one
+        # level deeper than `f"/{slice_name}/docker-{id}.scope"` guesses
+        # (measured wrong on both live probes: real path carried a
+        # `dev.slice/` parent this guess omits). A confidently-wrong value
+        # is worse than the `null` contract Sec 1.7 prescribes for a fact
+        # this process cannot read; the daemon path gets the REAL cgroup
+        # from `ctl start`'s own response, which never uses this variable.
+        cgroup = None
+        try:
+            profiler_state = start_lane_profiling(
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                name, container_id, cgroup, "container",
+                preflight=profile_preflight)
+        except Exception as exc:
+            # B1d (round-1 review): the whole point of `start_lane_profiling`
+            # is to never raise -- this call-site wrap is defense in depth
+            # against anything unanticipated (a corrupt footprint manifest
+            # `profile_meta` reads, e.g.) reaching the verdict path at all.
+            msg = f"profiling crashed unexpectedly: {exc}"
+            profiler_state = {"mode": "disabled", "client": None,
+                              "daemon": None, "session": None,
+                              "session_line": None, "warning": msg,
+                              "sampler": None, "profiler_status": None,
+                              "disabled_reason": msg}
+        print_profile_warning(profiler_state)
+        print_host_pressure_line(profiler_state.get("profiler_status"))
+        print_profile_session_line(profiler_state)
+        if profiler_state["mode"] == "daemon":
+            # RW-14/RG-35's own pattern, one field over: the SECOND write
+            # adds the session id now that `start` succeeded (contract Sec
+            # 4.1's "and, after start, profile_session").
+            inflight_payload["profile_session"] = profiler_state["session"]
+            if profiler_state.get("placement") is not None:
+                inflight_payload["placement"] = profiler_state["placement"]
+                if run_record is not None:
+                    run_record["placement"] = profiler_state["placement"]
+            write_inflight_record(project_dir, worktree, lane_name,
+                                  inflight_payload)
+    return await_container(docker, name, lane, lane_name, project_dir,
+                           repo, worktree,
+                           profiler=profiler_state, run_record=run_record,
+                           budget_deadline=budget_deadline,
+                           state_root=env.get("state_root"),
+                           watch=make_progress_watch(lane, lane_name,
+                                                     project_dir))
+
+
+def resolve_container_name(env_name: str, env: dict, repo: Path,
+                           worktree: Path, env_source: str) -> tuple[str, str, str]:
+    """Resolve the persistent container name for an exec-mode environment.
+
+    Returns (name, human-readable source, START REMEDY). The remedy names the
+    authority that actually owns the resolved name — a declared container_name
+    points at the project's own deployment authority, a ciu-derived name at
+    the ciu lifecycle (RG-6: a dstdns-shaped project must never be told to
+    run a vbpub-specific ciu directory).
+
+    RG-24/RG-79 — the live deployed container is a fact about the JUDGED
+    TREE, not the checkout owning the shared `.git`. A linked worktree gets
+    its own rendered `ciu.global.toml` and runner. Falling back to the repo's
+    config when that file is absent silently targets the main landscape, so
+    derived names are read only from the judged worktree and absence refuses.
+    """
+    if env.get("container_name"):
+        return env["container_name"], f"declared container_name ({env_source})", \
+            "start it via YOUR project's deployment authority (whoever owns " \
+            "this container); run-gate refuses to guess or auto-start " \
+            "deployment-managed containers"
+    worktree_toml = worktree / "ciu.global.toml"
+    if not worktree_toml.is_file():
+        fail(f"exec-mode environment '{env_name}' needs a declared "
+             f"container_name or this worktree's rendered {worktree_toml} "
+             f"with [deploy]; start this worktree's own test-runner — run "
+             f"'ciu up --dir <test-runner stack> --deploy --healthcheck' "
+             f"from {worktree}")
+    global_toml = worktree_toml
+    try:
+        with open(global_toml, "rb") as fh:
+            deploy = tomllib.load(fh).get("deploy", {})
+    except tomllib.TOMLDecodeError as exc:
+        fail(f"{global_toml}: invalid TOML: {exc}")
+    ciu_remedy = (f"start this worktree's own test-runner — run 'ciu up "
+                  f"--dir <test-runner stack> --deploy --healthcheck' from "
+                  f"{worktree} (config: {global_toml})")
+    project = deploy.get("project_name") or ""
+    tag = deploy.get("environment_tag") or ""
+    if project and tag:
+        return f"{project}-{tag}-{env_name}", \
+            f"ciu.global.toml deploy.project_name+environment_tag " \
+            f"(judged worktree: {global_toml})", \
+            ciu_remedy
+    network = deploy.get("network_name") or ""
+    if network and network.endswith("-network"):
+        prefix = network[:-len("-network")]
+        return f"{prefix}-{env_name}", \
+            f"ciu.global.toml deploy.network_name stripped of '-network' " \
+            f"(judged worktree: {global_toml})", \
+            ciu_remedy
+    fail(f"cannot derive container name from {global_toml}: need "
+         f"[deploy] project_name+environment_tag OR network_name ending '-network'; "
+         f"or declare container_name on the environment")
+
+
+def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
+                  worktree: Path, env: dict, env_source: str,
+                  container_name: str, container_name_src: str,
+                  container_start_remedy: str,
+                  slice_name: str | None, slice_src: str,
+                  dry_run: bool = False,
+                  request_base: str | None = None,
+                  run_record: dict | None = None,
+                  profile_plan: dict | None = None,
+                  budget_deadline: float | None = None,
+                  budget_started_epoch: float | None = None) -> int:
+    """Exec into a PERSISTENT runner (started externally by CIU).
+
+    project_dir arrives already relocated into the judged worktree (RG-15).
+    Fail-fast: refuses to start the runner itself — that is CIU's job.
+    This keeps run-gate as pure gate orchestration without duplicating
+    lifecycle management that belongs to the deployment authority.
+
+    container_name/container_name_src/container_start_remedy arrive PRE-
+    RESOLVED (RG-39: main() calls resolve_container_name() once, before
+    this function even starts) rather than being re-derived here — the
+    exec-mode mutex lock main() takes has to be keyed on the EXACT identity
+    this function execs into, and the lock is acquired (and its release
+    scheduled) before this function is called at all. A second, independent
+    resolve_container_name() call in here could in principle read a
+    ciu.global.toml that changed between the two calls and exec into a
+    container the lock was never actually keyed on.
+    """
+    docker = shutil.which("docker")
+    if not docker:
+        fail_infra("docker not found on PATH — exec-mode lanes need it")
+    name, name_src, start_remedy = \
+        container_name, container_name_src, container_start_remedy
+    running = subprocess.run([docker, "ps", "--format", "{{.Names}}"],
+                             capture_output=True, text=True)
+    if running.returncode != 0:
+        detail = running.stderr.strip().splitlines()[-1:] or [f"exit {running.returncode}"]
+        fail_infra(f"docker ps failed for exec-mode preflight: {detail[0]}")
+    names = set(running.stdout.strip().splitlines())
+    if name not in names:
+        raise GateNotRunError(
+            "environment-down",
+            f"persistent runner '{name}' ({name_src}) is not running — "
+            f"{start_remedy}")
+    if not dry_run:
+        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
+    inner = build_assay_inner(lane, project_dir, repo, request_base,
+                              worktree=worktree,
+                              state_root=env.get("state_root")) \
+        if lane["kind"] == "assay" \
+        else build_command_inner(lane, worktree, request_base)
+    argv = [docker, "exec", "--workdir", str(repo)]
+    # Infrastructure variables are implicit; project data inputs must be
+    # declared on the environment so every consumer gets the same contract.
+    for key in (CGROUP_ENV_VAR, *env.get("forward_env", [])):
+        value = os.environ.get(key)
+        if value:
+            argv += ["-e", f"{key}={value}"]
+    # RG-55/contract Sec 4.1: same position, same rule as the ephemeral path.
+    profiling = bool(profile_plan and profile_plan["enabled"])
+    if profiling:
+        argv += ["-e", f"{PROFILE_TOKEN_ENV}={profile_plan['token']}"]
+    if lane.get("budget"):
+        # `docker exec` disconnecting does not reliably stop the in-container
+        # child, so the bound must be enforced inside the persistent runner.
+        # GNU coreutils timeout is present in supported runner images.
+        argv += [name, "timeout", "--preserve-status", "--signal=TERM",
+                 f"--kill-after={LANE_KILL_GRACE_SECONDS}s",
+                 f"{budget_seconds(lane['budget'])}s", "bash", "-c", inner]
+    else:
+        argv += [name, "bash", "-c", inner]
+    exec_command_index = len(argv) - (8 if lane.get("budget") else 3)
+    print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source} | "
+          f"container {name} ({name_src}) | "
+          f"slice {slice_name or '(none)'} ({slice_src})",
+          flush=True)
+    log_forwarded_env(env, "exec")  # names only, never values (RG-19)
+    if lane.get("budget"):
+        print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
+              f"after admission and lock waits)", flush=True)
+    # Review fix (R-05/R-28): exec lanes disclose the assembled plan exactly
+    # like ephemeral lanes do — live AND dry, forwarded VALUES redacted
+    # (RG-19). The slice name itself stays visible: it is mechanics, not a
+    # credential.
+    print(f"run-gate: docker argv: "
+          f"{shlex.join(redact_forwarded_values(argv, env.get('forward_env', [])))}",
+          flush=True)
+    if lane.get("kind") == "assay":
+        assure_assay_state_root(
+            docker, lane, env, lane_environment_name(lane), env_source,
+            repo, project_dir, worktree, slice_name or "",
+            resolved_container_name=name, dry_run=dry_run)
+    if dry_run:
+        if profiling:
+            # R-45 applies to persistent runners too; the read-only preflight
+            # must not wait or start a profiling session.
+            prepare_profile_start(lane, lane_name, project_dir, worktree,
+                                  docker, profile_plan, "container-shared",
+                                  dry_run=True)
+        # RG-8: name resolution + running-check above are rehearsed too —
+        # a dry-run against a stopped runner reports the real refusal.
+        # Unconditional (RW-17 finding, same as the ephemeral path):
+        # `print_profile_plan_dry_run` already branches on `plan["enabled"]`
+        # itself, so gating the CALL on `profiling` too made its
+        # disabled-disclosure branch unreachable in production.
+        print_profile_plan_dry_run(
+            profile_plan, "container-shared",
+            profile_placement_plan(lane, lane_name, project_dir, None)
+            if profiling else None)
+        print(f"run-gate: DRY RUN — the argv above is what a live run would "
+              f"exec into {name} ({name_src}); no command was run", flush=True)
+        return 0
+    profile_preflight = None
+    if profiling:
+        try:
+            profile_preflight = prepare_profile_start(
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                "container-shared")
+        except Exception as exc:
+            # R-36h: an unexpected optional preflight failure is disclosed by
+            # the normal fallback and never prevents the lane from running.
+            profile_preflight = {
+                "client": None, "version": None, "host": None,
+                "placement": {"place": False, "memory_high": None,
+                              "memory_max": None, "cpu_weight": None},
+                "admission": None,
+                "fatal_reason": f"profiling preflight failed unexpectedly: {exc}",
+                "reason": f"profiling preflight failed unexpectedly: {exc}"}
+    # Resolve the persistent runner before creating a blocked exec child. A
+    # Docker inspect refusal is a pre-launch infrastructure error; it must
+    # not strand a wrapper waiting for a placement decision that cannot be
+    # made.
+    if profiling:
+        inspected = container_state(docker, name)
+        container_id = inspected["id"] if inspected else ""
+    else:
+        container_id = ""
+    proc = None
+    barrier_nonce = None
+    placement_requested = bool(
+        (profile_preflight or {}).get("placement", {}).get("place"))
+    if placement_requested and not profile_plan.get("token"):
+        fail_infra(
+            f"lane {lane_name!r} requests placement but has no profile token; "
+            "lane body was not started")
+    # RG-55: disabled means no daemon call and no sampler — built directly,
+    # without the extra profiling attempt a real one needs. Unchanged from
+    # before RG-60: `container_state()` (a real `docker inspect`) is still
+    # called ONLY when profiling is enabled — the inflight record below
+    # degrades to an empty `container_id` rather than force every exec lane
+    # invocation, profiled or not, to depend on inspect answering (RG-60's
+    # record is a recovery AID, never a reason to fail a lane that was
+    # never going to be profiled in the first place).
+    if not profiling:
+        profiler_state = {"mode": "disabled", "client": None, "daemon": None,
+                          "session": None, "session_line": None,
+                          "warning": None, "sampler": None,
+                          "profiler_status": None,
+                          "disabled_reason": profile_plan.get(
+                              "disabled_reason", "disabled")}
+    else:
+        # RW-23e (round-1 review, S4) -- see the matching comment in
+        # run_container_lane: never fabricate a guessed cgroup path.
+        cgroup = None
+        if placement_requested:
+            barrier_nonce = secrets.token_hex(16)
+            barrier_argv = (
+                argv[:exec_command_index] +
+                placement_barrier_shell_argv(
+                    argv[exec_command_index:], barrier_nonce))
+            barrier_argv.insert(2, "-i")
+            proc = spawn_placement_barrier(barrier_argv, barrier_nonce)
+        try:
+            profiler_state = start_lane_profiling(
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                name, container_id, cgroup, "container-shared",
+                preflight=profile_preflight)
+        except Exception as exc:
+            # B1d: call-site defense in depth, matching run_container_lane.
+            msg = f"profiling crashed unexpectedly: {exc}"
+            profiler_state = {"mode": "disabled", "client": None,
+                              "daemon": None, "session": None,
+                              "session_line": None, "warning": msg,
+                              "sampler": None, "profiler_status": None,
+                              "disabled_reason": msg}
+        except BaseException:
+            abandon_placement_launch(proc, barrier_nonce)
+            raise
+        print_profile_warning(profiler_state)
+        print_host_pressure_line(profiler_state.get("profiler_status"))
+        print_profile_session_line(profiler_state)
+    # RG-60: the same inflight record `run_container_lane` writes on a
+    # successful `docker run -d` (R-39a), written here at the equivalent
+    # point in an exec lane's own lifecycle — after the profiling session
+    # (if any) is established, before the exec begins — so a client that
+    # dies mid-run leaves a recovery record naming the profiling session
+    # exactly as a container lane's client would. Unlike run_container_lane
+    # this is NOT wired into `resolve_inflight`/re-attach (RG-60's own
+    # scope: the record exists to be found, reconciliation is a separate
+    # follow-up); written unconditionally — whether or not profiling is
+    # enabled, a client can die mid-run either way (RW-1's own rule).
+    verdict_path, progress_path, state_dir = assay_artifact_paths(
+        lane, project_dir, repo, env.get("state_root"))
+    inflight_payload = {
+        "schema": INFLIGHT_SCHEMA,
+        "lane": lane_name,
+        # B3 (round-1 review, RW-43): `name` here is the PERSISTENT
+        # runner's own name, not a container this invocation created --
+        # stamping the writer lets the container path's `resolve_inflight`
+        # refuse to touch a record this lane kind wrote (CIU-104 class: a
+        # lane's `environment` can flip from exec to an ephemeral-
+        # container one between a crashed run and the next one, and the
+        # container an exec-written record names may be a live, shared
+        # CIU runner the container path never created).
+        "runner": "exec",
+        "container": name,
+        "container_id": container_id,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "started_epoch": time.time(),
+        "budget_started_epoch": budget_started_epoch or time.time(),
+        "log_path": run_record.get("log_path") if run_record else None,
+        "owner_pid": os.getpid(),
+        "owner_start": process_start_ticks(os.getpid()),
+        "boot_id": boot_id(),
+        "pid_ns": pid_ns_inode(),
+        "commit": head_commit(worktree),
+        "worktree": str(worktree),
+        "project_dir": str(project_dir),
+        "verdict": verdict_path,
+        "progress": progress_path,
+        "state_dir": state_dir,
+        "assay_identity_mode": assay_identity_mode(lane),
+        "revision": __revision__,
+        "profile_token": profile_plan["token"] if profiling else None,
+        "profile_daemon": profile_plan["daemon"] if profiling else None,
+        "profile_transport": (profiler_state["client"].carrier
+                               if profiler_state.get("mode") == "daemon"
+                               and profiler_state.get("client") is not None
+                               else None),
+        "profile_socket_path": (profiler_state["client"].socket_path
+                                if profiler_state.get("mode") == "daemon"
+                                and profiler_state.get("client") is not None
+                                else None),
+        "watch": None,
+        "placement": profiler_state.get("placement"),
+        # RW-14/RG-35's own pattern, one field over (matches
+        # run_container_lane): recorded directly here (a single write is
+        # enough — unlike run_container_lane, this write happens AFTER
+        # `start` already answered, so there is no "second write" step).
+        "profile_session": (profiler_state["session"]
+                           if profiler_state["mode"] == "daemon" else None),
+    }
+    if run_record is not None:
+        run_record["_inflight"] = inflight_payload
+        run_record["placement"] = profiler_state.get("placement")
+    try:
+        write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
+    except BaseException:
+        if barrier_nonce is not None:
+            abandon_placement_launch(proc, barrier_nonce, profiler_state)
+        clear_inflight_record(project_dir, lane_name)
+        raise
+    if barrier_nonce is not None and profiler_state.get("mode") == "daemon":
+        refusal = placement_refusal_reason(profiler_state,
+                                           placement_requested,
+                                           (profile_preflight or {}).get(
+                                               "placement"),
+                                           (profile_preflight or {}).get("host"),
+                                           profile_plan.get("token"))
+        if refusal is not None:
+            profile_result = abandon_placement_launch(
+                proc, barrier_nonce, profiler_state)
+            if run_record is not None and profile_result is not None:
+                run_record["resources"] = profile_result["resources"]
+                run_record["profile_error"] = profile_result["profile_error"]
+                run_record["profile_ref"] = profile_result["profile_ref"]
+            clear_inflight_record(project_dir, lane_name)
+            fail_infra(f"lane {lane_name!r} placement refused: {refusal}; "
+                       "lane body was not started")
+    # RG-55: use Popen + OutputTee so basic sampling and daemon/in-process
+    # liveness can be serviced while the persistent-container exec runs,
+    # without changing the merged stdout/stderr presented to the operator.
+    # The wait cadence is the sampler interval for basic mode, the progress
+    # poll interval while a daemon/fallback watch is active, or blocking when
+    # neither is needed. The captured child status remains subprocess.run's
+    # ordinary return code.
+    # RG-60: the cleanup boundary MUST include Popen itself. A synchronous
+    # spawn failure is a lane-execution failure, but the record written above
+    # still belongs to this invocation and must be cleared. If Popen succeeds
+    # and this client is killed externally, Python never reaches this finally
+    # and the record survives for reconciliation (the required client-death
+    # behavior).
+    daemon_watch = None
+    fallback_watch = (make_progress_watch(
+        lane, lane_name, project_dir, auto_bound=True) if profiling else None)
+    fallback_announced = False
+    watch_restarts = 0
+    stalled = None
+    if profiler_state.get("mode") == "daemon":
+        try:
+            daemon_watch = profiler_state["client"].watch(
+                profiler_state["session"])
+        except Exception as exc:
+            profiler_state["warning"] = profiler_state.get("warning") or \
+                f"daemon watch could not start: {exc}"
+    if daemon_watch is None and fallback_watch is not None:
+        fallback_announced = True
+        print(f"run-gate: in-process watch — daemon unavailable for lane "
+              f"{lane_name!r}", flush=True)
+    output_tee = None
+    stdin_forwarder = None
+    budget_expired = False
+    try:
+        basic_active = profiler_state["mode"] == "basic"
+        tick = (PROFILE_SAMPLE_SECONDS if basic_active else
+                PROGRESS_POLL_SECONDS if daemon_watch is not None or
+                fallback_watch is not None else None)
+        if proc is None:
+            proc = subprocess.Popen(argv, stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, bufsize=0)
+        else:
+            # This process exists only when the placement path already set
+            # its nonce and held the wrapper at the ready barrier.
+            signal_placement_barrier(
+                proc, barrier_nonce, release=True,
+                profile_active=profiler_state.get("mode") == "daemon")
+            stdin_forwarder = StdinForwarder(sys.stdin, proc.stdin)
+        output_tee = OutputTee(
+            proc, Path(run_record["log_path"])
+            if run_record is not None and run_record.get("log_path") else None)
+        while True:
+            try:
+                wait_for = tick
+                if budget_deadline is not None:
+                    remaining = max(0.0, budget_deadline - time.monotonic())
+                    wait_for = remaining if wait_for is None else min(
+                        wait_for, remaining)
+                code = proc.wait(timeout=wait_for)
+                break
+            except subprocess.TimeoutExpired:
+                if budget_deadline is not None \
+                        and time.monotonic() >= budget_deadline:
+                    # The in-container GNU timeout wrapper should now be
+                    # terminating the lane. Allow its TERM/KILL grace, then
+                    # fail as infrastructure if docker exec never returns.
+                    budget_expired = True
+                    try:
+                        code = proc.wait(timeout=LANE_KILL_GRACE_SECONDS + 2)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        code = proc.wait()
+                        raise GateInfraError(
+                            f"lane {lane_name!r} exceeded its budget but "
+                            f"docker exec stayed attached after the in-runner "
+                            f"timeout; confirm coreutils 'timeout' is installed")
+                    break
+                if daemon_watch is not None:
+                    stalled = consume_profiler_watch(
+                        daemon_watch, profiler_state, lane_name, project_dir,
+                        worktree, run_record)
+                    if stalled is not None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=LANE_KILL_GRACE_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        break
+                    watch_ended = daemon_watch.ended()
+                    if watch_ended or daemon_watch.idle():
+                        daemon_watch.close()
+                        if watch_restarts == 0:
+                            watch_restarts += 1
+                            state = "ended" if watch_ended else "went idle"
+                            print(f"run-gate: WARNING profiling: daemon watch "
+                                  f"for lane {lane_name!r} {state}; "
+                                  "reattaching once", file=sys.stderr,
+                                  flush=True)
+                            daemon_watch = profiler_state["client"].watch(
+                                profiler_state["session"])
+                        else:
+                            daemon_watch = None
+                            profiler_state["warning"] = \
+                                profiler_state.get("warning") or \
+                                "daemon watch remained idle after one reattach"
+                            if fallback_watch is not None and not fallback_announced:
+                                fallback_announced = True
+                                print(f"run-gate: in-process watch — daemon "
+                                      f"unavailable for lane {lane_name!r}",
+                                      flush=True)
+                            else:
+                                print(f"run-gate: WARNING profiling: daemon watch "
+                                      f"for lane {lane_name!r} unavailable; "
+                                      "continuing without daemon liveness",
+                                      file=sys.stderr, flush=True)
+                if daemon_watch is None and fallback_watch is not None:
+                    stalled = fallback_watch.poll()
+                    if stalled is not None:
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=LANE_KILL_GRACE_SECONDS)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                            proc.wait()
+                        break
+                try:
+                    tick_lane_profiling(profiler_state)
+                except Exception as exc:
+                    # B1d (round-1 review): a tick must never break an
+                    # in-flight exec -- swallow, record once, keep waiting.
+                    profiler_state["warning"] = profiler_state.get("warning") or \
+                        f"profiling tick failed unexpectedly: {exc}"
+        output_tee.join()
+    finally:
+        if stdin_forwarder is not None:
+            stdin_forwarder.close()
+        if daemon_watch is not None:
+            consume_profiler_watch(daemon_watch, profiler_state, lane_name,
+                                   project_dir, worktree, run_record)
+            daemon_watch.close()
+            consume_profiler_watch(daemon_watch, profiler_state, lane_name,
+                                   project_dir, worktree, run_record)
+        # Contract Sec 4 obligation 2: finished BEFORE this function returns
+        # — there is no container of run-gate's own to remove on an exec
+        # lane, so this IS the equivalent "same finally" moment.
+        try:
+            profile_result = finish_lane_profiling(profiler_state)
+            if stalled is None:
+                stalled = terminal_daemon_kill(profile_result["resources"])
+            print_profile_warning(profiler_state)
+            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            if run_record is not None:
+                run_record["resources"] = profile_result["resources"]
+                run_record["profile_error"] = profile_result["profile_error"]
+                run_record["profile_ref"] = profile_result["profile_ref"]
+                run_record["placement"] = profiler_state.get("placement")
+        except Exception as exc:
+            # B1d: profiling must NEVER pre-empt the lane's own exit code --
+            # `code` was already captured above (or this exec's process is
+            # already gone), so there is nothing left for this block to
+            # protect except itself; see the matching comment in
+            # await_container's finally.
+            print(f"run-gate: WARNING profiling: cleanup crashed "
+                  f"unexpectedly: {exc} — no profile recorded",
+                  file=sys.stderr, flush=True)
+            if run_record is not None:
+                run_record.setdefault("resources", None)
+                run_record["profile_error"] = \
+                    f"profiling cleanup crashed unexpectedly: {exc}"
+                run_record.setdefault("profile_ref", None)
+        try:
+            if proc is not None:
+                # S10 (round-1 review): Ctrl-C on an exec lane left the
+                # `docker exec` CLIENT process (this `proc`) running after
+                # the base's plain `subprocess.run(argv)` would have killed
+                # and reaped it on interrupt — the inner container process is
+                # unaffected either way. A no-op when `proc` already exited
+                # normally (`Popen.kill()`/`.wait()` on an already-reaped
+                # process are no-ops in stdlib).
+                proc.kill()
+                proc.wait()
+            if output_tee is not None:
+                output_tee.join()
+        finally:
+            # RG-60/RW-1: clear in the OUTERMOST finally, even when Popen
+            # raises synchronously or profiling cleanup itself fails. When a
+            # child exists and this client is killed externally, this finally
+            # is never entered, so the record remains for reconciliation.
+            clear_inflight_record(project_dir, lane_name)
+    print_lane_artifacts(lane, lane_name, project_dir, repo, worktree,
+                         state_root=env.get("state_root"))
+    if budget_deadline is not None \
+            and time.monotonic() >= budget_deadline:
+        raise GateBudgetExceeded(code,
+                                 run_record.get("log_path") if run_record else None)
+    if stalled is not None:
+        fail_infra(f"lane {lane_name!r} STALLED: {stalled}")
+    return code
+
+
+def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
+                  worktree: Path, dry_run: bool = False,
+                  request_base: str | None = None,
+                  run_record: dict | None = None,
+                  profile_plan: dict | None = None,
+                  budget_deadline: float | None = None,
+                  env_source: str = "host (mode host)") -> int:
+    # cwd is the project dir RELOCATED into the judged worktree (RG-15) — a
+    # bare-host lane must not quietly operate on the invocation checkout
+    # either.
+    # RG-28 (found while implementing RG-26): `kind = "assay"` with
+    # `environment = "bare-host"` (RG-43: was `"host"` before the
+    # host/bare-host role swap — RG-43 moved bare execution here) is a
+    # config the validator ACCEPTS, and this runner used to index
+    # lane["argv"] unconditionally — a KeyError traceback for a legal
+    # config, which R-04 calls a defect. The assay inner is built exactly
+    # as it is for the two container runners.
+    argv = (["bash", "-c", build_assay_inner(
+                lane, project_dir, repo, request_base, worktree=worktree)]
+            if lane["kind"] == "assay"
+            else lane_command_argv(lane, worktree, request_base))
+    print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source}",
+          flush=True)
+    if lane.get("kind") == "assay":
+        assure_assay_state_root(
+            None, lane, {}, lane_environment_name(lane), env_source,
+            repo, project_dir, worktree, "", dry_run=dry_run)
+    if lane.get("budget"):
+        print(f"run-gate: budget {lane['budget']} (hard limit; clock starts "
+              f"after admission and lock waits)", flush=True)
+    if dry_run:
+        if profile_plan and profile_plan["enabled"]:
+            # Match the live bare-host order: only a discoverable Docker
+            # target can be daemon-backed. The read-only host preflight then
+            # reports R-45 `would-wait` without starting a session or child.
+            dry_docker = shutil.which("docker")
+            if dry_docker:
+                target_id, _target_reason = resolve_self_container_id(
+                    dry_docker)
+                if target_id is not None:
+                    prepare_profile_start(
+                        lane, lane_name, project_dir, worktree, dry_docker,
+                        profile_plan, "container-shared", dry_run=True)
+        # RG-8/RW-17: the plan is REHEARSED, never attempted for real —
+        # `start_bare_host_profiling` is not even called on this branch,
+        # mirroring run_container_lane/run_exec_lane's own dry-run rule. The
+        # host-PSI line is still cheap disclosure while profiling is
+        # switched on at all (unchanged pre-C4 behavior, gated exactly like
+        # every other disclosure line here); `print_profile_plan_dry_run`
+        # already branches on `plan["enabled"]` itself, so its call is
+        # unconditional.
+        if profile_plan and profile_plan["enabled"]:
+            print_host_pressure_line()
+        print_profile_plan_dry_run(
+            profile_plan, "container-shared",
+            profile_placement_plan(lane, lane_name, project_dir, None)
+            if profile_plan and profile_plan["enabled"] else None)
+        print(f"run-gate: DRY RUN — would run in {project_dir}: "
+              f"{shlex.join(argv)}", flush=True)
+        return 0
+    clear_previous_assay_verdict(lane, project_dir, repo, run_record)
+    # RG-55/RG-57 (RW-27b): a bare-host lane IS profiled once profiling is
+    # enabled — there is no fresh container/cgroup of run-gate's own to
+    # sample, so the daemon path (when reachable) targets run-gate's OWN
+    # container and the daemon-absent fallback is coarse rusage accounting
+    # rather than a BasicSampler (RW-27b: no cgroup here is safely
+    # attributable to just this lane's own child).
+    profiling = bool(profile_plan and profile_plan["enabled"])
+    docker = shutil.which("docker") if profiling else None
+    profile_preflight = None
+    if profiling and docker:
+        try:
+            profile_preflight = prepare_profile_start(
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                "container-shared")
+        except Exception as exc:
+            profile_preflight = {
+                "client": None, "version": None, "host": None,
+                "placement": {"place": False, "memory_high": None,
+                              "memory_max": None, "cpu_weight": None},
+                "admission": None,
+                "fatal_reason": f"profiling preflight failed unexpectedly: {exc}",
+                "reason": f"profiling preflight failed unexpectedly: {exc}"}
+    placement_requested = bool(
+        (profile_preflight or {}).get("placement", {}).get("place"))
+    if placement_requested and not profile_plan.get("token"):
+        fail_infra(
+            f"lane {lane_name!r} requests placement but has no profile token; "
+            "lane body was not started")
+    proc = None
+    barrier_nonce = None
+    run_env = None
+    if not profiling:
+        # RG-55/contract Sec 4 obligation 8: disabled means NO token, NO
+        # daemon call and NO sampler -- same shape run_container_lane/
+        # run_exec_lane build directly for their own disabled case.
+        profiler_state = {"mode": "disabled", "client": None, "daemon": None,
+                          "session": None, "session_line": None,
+                          "warning": None, "sampler": None,
+                          "profiler_status": None,
+                          "disabled_reason": profile_plan.get(
+                              "disabled_reason", "disabled")}
+    else:
+        if placement_requested:
+            run_env = dict(os.environ)
+            run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
+            barrier_nonce = secrets.token_hex(16)
+            proc = spawn_bare_host_placement_barrier(
+                argv, barrier_nonce, cwd=str(project_dir), env=run_env,
+                start_new_session=True)
+        try:
+            profiler_state = start_bare_host_profiling(
+                lane, lane_name, project_dir, worktree, docker, profile_plan,
+                preflight=profile_preflight)
+        except Exception as exc:
+            # B1d (round-1 review precedent, same call-site defense in
+            # depth as run_container_lane/run_exec_lane): the whole point
+            # of start_bare_host_profiling is to never raise -- this guards
+            # against anything unanticipated reaching the lane's own run.
+            msg = f"profiling crashed unexpectedly: {exc}"
+            profiler_state = {"mode": "rusage", "client": None,
+                              "daemon": profile_plan.get("daemon"),
+                              "session": None, "session_line": None,
+                              "warning": msg, "sampler": None,
+                              "profiler_status": None,
+                              "disabled_reason": msg}
+        except BaseException:
+            abandon_placement_launch(proc, barrier_nonce)
+            raise
+        # Gated on `profiling` (matching run_container_lane/run_exec_lane:
+        # a DISABLED lane prints none of this) -- only reached inside this
+        # `else:` branch.
+        print_host_pressure_line(profiler_state.get("profiler_status"))
+        print_profile_session_line(profiler_state)
+        if profiler_state["mode"] == "daemon":
+            # RG-57: the devcontainer-wide caveat. `print_profile_session_
+            # line`'s own contract-exact shape (Sec 4.6) stays untouched
+            # for every OTHER lane kind, so this is a bare-host-only
+            # follow-up line.
+            print(f"run-gate: profile session {profiler_state['session']} is "
+                  f"DEVCONTAINER-WIDE (RG-57 bare-host daemon path): cgroup "
+                  f"numbers reflect the whole devcontainer, not lane "
+                  f"{lane_name!r} exclusively", flush=True)
+    if run_record is not None:
+        run_record["placement"] = profiler_state.get("placement")
+    if barrier_nonce is not None and profiler_state.get("mode") == "daemon":
+        refusal = placement_refusal_reason(profiler_state,
+                                           placement_requested,
+                                           (profile_preflight or {}).get(
+                                               "placement"),
+                                           (profile_preflight or {}).get("host"),
+                                           profile_plan.get("token"))
+        if refusal is not None:
+            profile_result = abandon_placement_launch(
+                proc, barrier_nonce, profiler_state)
+            if run_record is not None and profile_result is not None:
+                run_record["resources"] = profile_result["resources"]
+                run_record["profile_error"] = profile_result["profile_error"]
+                run_record["profile_ref"] = profile_result["profile_ref"]
+            fail_infra(f"lane {lane_name!r} placement refused: {refusal}; "
+                       "lane body was not started")
+    if run_record is not None:
+        run_record["placement"] = profiler_state.get("placement")
+    # RG-57/contract Sec 4.1: the SAME per-invocation token the container/
+    # exec paths inject via `-e RUN_GATE_PROFILE_SESSION=...` -- here it is
+    # the bare-host CHILD's own environment, and ONLY on the daemon path:
+    # the rusage path starts no session for the token to identify, and
+    # nothing would ever read it there.
+    if profiler_state["mode"] == "daemon":
+        if run_env is None:
+            run_env = dict(os.environ)
+            run_env[PROFILE_TOKEN_ENV] = profile_plan["token"]
+    # R-36h/RW-43 (round-1 review B1): the rusage path now launches its OWN
+    # child via `Popen` + `os.wait4(pid, 0)` rather than bracketing a
+    # historical rejected `getrusage(RUSAGE_CHILDREN)` snapshot around a
+    # plain `subprocess.run`
+    # -- `wait4` hands back the exact accounting of the ONE pid it waits
+    # on, so the recorded numbers are always this lane's own child, never a
+    # high-water mark borrowed from some other child run-gate happened to
+    # reap first (the bug the fix replaces). `Popen()` itself is NOT
+    # guarded here -- a bad argv[0]/permission error must propagate exactly
+    # as a plain `subprocess.run(argv)` raising would (a lane-execution
+    # failure, not a profiling one, out of R-36h's scope). Only the
+    # `wait4()` bracket AFTER the child is already running is guarded
+    # (R-36h's resource-accounting guard extends to wait4 now): an ordinary
+    # `Exception` there (unreachable in practice -- fixed, valid arguments
+    # -- but this promise is "never", not "almost never") degrades to `ru`
+    # staying `None`, which `finish_bare_host_profiling`'s own "attempted
+    # but never got going" fallback already handles, while the child is
+    # still reaped via a plain `wait()` so the lane's own exit code is
+    # unaffected and the argv is never launched a second time. A
+    # `KeyboardInterrupt`/`SystemExit` (or anything else that is not an
+    # ordinary `Exception`) instead mirrors `subprocess.run`'s own Ctrl-C
+    # handling -- kill the child, reap it, re-raise -- so an interrupt
+    # never leaves the lane's child running detached.
+    started_monotonic = time.monotonic()
+    started_at = _iso_utc(time.time())
+    ru = None
+    # RW-46b: run-gate's own resident memory, read as close to the fork as
+    # this process can get -- immediately before Popen(), rusage mode only
+    # (the daemon path measures via a real cgroup, no floor to disclose).
+    # See `_self_rss_bytes`'s own docstring for why this is a real floor on
+    # `ru_maxrss`, not an approximation.
+    floor_bytes = (_self_rss_bytes()
+                  if profiler_state["mode"] == "rusage" else None)
+    output_tee = None
+    budget_expired = False
+    daemon_watch = None
+    watch_restarts = 0
+    stalled = None
+    if profiler_state.get("mode") == "daemon":
+        try:
+            daemon_watch = profiler_state["client"].watch(
+                profiler_state["session"])
+        except Exception as exc:
+            profiler_state["warning"] = profiler_state.get("warning") or \
+                f"daemon watch could not start: {exc}"
+    try:
+        if proc is None:
+            proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env,
+                                    stdout=subprocess.PIPE,
+                                    stderr=subprocess.STDOUT, bufsize=0,
+                                    start_new_session=True)
+        else:
+            # This process exists only when the placement path already set
+            # its nonce and held the wrapper at the ready barrier.
+            signal_placement_barrier(
+                proc, barrier_nonce, release=True,
+                profile_active=profiler_state.get("mode") == "daemon")
+        output_tee = OutputTee(
+            proc, Path(run_record["log_path"])
+            if run_record is not None and run_record.get("log_path") else None)
+        if profiler_state["mode"] == "rusage":
+            kill_deadline = None
+            while True:
+                try:
+                    pid, status, child_ru = os.wait4(proc.pid, os.WNOHANG)
+                except Exception as exc:
+                    wait_reason = ("wait4 on the lane's own child failed "
+                                   f"unexpectedly: {exc}")
+                    prior_reason = profiler_state.get("warning")
+                    profiler_state["warning"] = (
+                        f"{prior_reason}; {wait_reason}"
+                        if prior_reason else wait_reason)
+                    profiler_state["mode"] = None
+                    code = proc.wait()
+                    ru = None
+                    break
+                if pid:
+                    code = os.waitstatus_to_exitcode(status)
+                    ru = child_ru
+                    proc.returncode = code
+                    break
+                now = time.monotonic()
+                if budget_deadline is not None and now >= budget_deadline:
+                    budget_expired = True
+                    if kill_deadline is None:
+                        kill_deadline = now + LANE_KILL_GRACE_SECONDS
+                        try:
+                            os.killpg(proc.pid, signal.SIGTERM)
+                        except ProcessLookupError:
+                            pass
+                    elif now >= kill_deadline:
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                        kill_deadline = float("inf")
+                time.sleep(0.05)
+        elif daemon_watch is not None:
+            while True:
+                try:
+                    wait_for = PROGRESS_POLL_SECONDS
+                    if budget_deadline is not None:
+                        remaining = max(0.0, budget_deadline - time.monotonic())
+                        wait_for = min(wait_for, remaining)
+                    code = proc.wait(timeout=wait_for)
+                    break
+                except subprocess.TimeoutExpired:
+                    if budget_deadline is not None \
+                            and time.monotonic() >= budget_deadline:
+                        budget_expired = True
+                        code = terminate_process_group(proc)
+                        break
+                    if daemon_watch is None:
+                        continue
+                    stalled = consume_profiler_watch(
+                        daemon_watch, profiler_state, lane_name, project_dir,
+                        worktree, run_record)
+                    if stalled is not None:
+                        code = terminate_process_group(proc)
+                        break
+                    watch_ended = daemon_watch.ended()
+                    if watch_ended or daemon_watch.idle():
+                        daemon_watch.close()
+                        if watch_restarts == 0:
+                            watch_restarts += 1
+                            state = "ended" if watch_ended else "went idle"
+                            print(f"run-gate: WARNING profiling: daemon watch "
+                                  f"for lane {lane_name!r} {state}; "
+                                  "reattaching once", file=sys.stderr,
+                                  flush=True)
+                            daemon_watch = profiler_state["client"].watch(
+                                profiler_state["session"])
+                        else:
+                            daemon_watch = None
+                            profiler_state["warning"] = \
+                                profiler_state.get("warning") or \
+                                "daemon watch remained idle after one reattach"
+                            print(f"run-gate: WARNING profiling: daemon watch "
+                                  f"for lane {lane_name!r} unavailable; "
+                                  "continuing without daemon liveness",
+                                  file=sys.stderr, flush=True)
+        else:
+            wait_for = (max(0.0, budget_deadline - time.monotonic())
+                        if budget_deadline is not None else None)
+            try:
+                code = proc.wait(timeout=wait_for)
+            except subprocess.TimeoutExpired:
+                budget_expired = True
+                code = terminate_process_group(proc)
+        if budget_deadline is not None and time.monotonic() >= budget_deadline:
+            budget_expired = True
+        output_tee.join()
+    finally:
+        if proc is not None and proc.poll() is None:
+            terminate_process_group(proc)
+        if output_tee is not None:
+            output_tee.join()
+        if daemon_watch is not None:
+            consume_profiler_watch(daemon_watch, profiler_state, lane_name,
+                                   project_dir, worktree, run_record)
+            daemon_watch.close()
+            consume_profiler_watch(daemon_watch, profiler_state, lane_name,
+                                   project_dir, worktree, run_record)
+        measured_duration_seconds = time.monotonic() - started_monotonic
+        ended_at = _iso_utc(time.time())
+        try:
+            profile_result = finish_bare_host_profiling(
+                profiler_state, ru, started_at, ended_at,
+                measured_duration_seconds, floor_bytes)
+            if stalled is None:
+                stalled = terminal_daemon_kill(profile_result["resources"])
+            print_profile_warning(profiler_state)
+            print_footprint_line(lane_name, project_dir, profile_result["resources"])
+            if run_record is not None:
+                run_record["resources"] = profile_result["resources"]
+                run_record["profile_error"] = profile_result["profile_error"]
+                run_record["profile_ref"] = profile_result["profile_ref"]
+        except Exception as exc:
+            # B1d: profiling must NEVER pre-empt the lane's own exit code --
+            # `code` was already captured above; see the matching comment in
+            # run_exec_lane's own finally.
+            print(f"run-gate: WARNING profiling: cleanup crashed "
+                  f"unexpectedly: {exc} — no profile recorded",
+                  file=sys.stderr, flush=True)
+            if run_record is not None:
+                run_record.setdefault("resources", None)
+                run_record["profile_error"] = \
+                    f"profiling cleanup crashed unexpectedly: {exc}"
+                run_record.setdefault("profile_ref", None)
+    print_lane_artifacts(lane, lane_name, project_dir, repo, worktree)
+    if budget_expired:
+        raise GateBudgetExceeded(code,
+                                 run_record.get("log_path") if run_record else None)
+    if stalled is not None:
+        fail_infra(f"lane {lane_name!r} STALLED: {stalled}")
+    return code
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def cmd_list(lanes: dict) -> int:
+    for name, lane in sorted(lanes.items()):
+        environment = lane.get("environment")
+        if lane.get("kind") == "sequence":
+            environment = ",".join(sequence_environment_names(name, lanes))
+        print(f"{name}\t{lane['kind']}\t{environment or '-'}")
+    imported = sorted(name for name, lane in lanes.items()
+                      if lane.get("_imported"))
+    if imported:
+        print("run-gate: imported assay lanes: " + ", ".join(imported),
+              file=sys.stderr, flush=True)
+    return 0
+
+
+def sequence_environment_names(name: str, lanes: dict) -> list[str]:
+    """Transitive, deduplicated environment names required by a sequence."""
+    environments: set[str] = set()
+    def visit(current: str) -> None:
+        lane = lanes[current]
+        if lane.get("kind") == "sequence":
+            for member in lane["lanes"]:
+                visit(member)
+        elif isinstance(lane.get("environment"), str):
+            environments.add(lane["environment"])
+    visit(name)
+    return sorted(environments)
+
+
+def usage(lanes: dict, inherited: set[str] | None = None) -> str:
+    inherited = inherited or set()
+    table = sorted(lanes.items())
+    lines = [
+        cli_headline(),
+        "",
+        "usage: run-gate <lane> [--worktree PATH] [--allow-dirty] [--base REF]"
+        " [--fresh]",
+        "       run-gate --list   (machine-readable: name<TAB>kind<TAB>environment)",
+        "       run-gate validate-pointers CONSUMER.toml [--root DIR]",
+        "         (RG-2: certify every run-gate pointer in a consumer document —",
+        "          trove gates, release steps — against the SSOT lanes they name)",
+        "       run-gate admission set --max-concurrent N [--replace]",
+        "          [--unreadable-policy unbudgeted|refuse]",
+        "       run-gate admission show",
+        "         (RG-80: publish or inspect the daemon-wide gates ticket cap;",
+        "          each project's [admission] switch is independent and off by default)",
+        "       run-gate status [--worktree PATH] [--json]",
+        "         (RG-64/RG-80: read this project's inflight records, host-wide",
+        "          exec-runner locks, and the daemon's admission tickets/tombstones)",
+        "       run-gate doctor [--worktree PATH]   (RG-9 preflight: docker,",
+        "          slices, mountinfo, git, images, the linked-worktree host-lane",
+        "          git view (RG-21), unprefixed relative script paths in container",
+        "          command lanes (RG-34), and each assay lane's toolchain fitness asked",
+        "          of the judge itself (RG-25). Judges nothing and writes nothing,",
+        "          but DOES start short read-only probe containers — fitness can",
+        "          only be observed, not read: one inventory probe per",
+        "          environment+judge, one batched `command -v` probe per",
+        "          environment, and one Assay state-root probe per assay",
+        "          environment. --worktree redirects every per-tree",
+        "          check at THAT tree instead of the invoking checkout, and the",
+        "          report names it (RG-30))",
+        "       run-gate history [LANE] [--worktree PATH] [--json]",
+        "         (RG-27: what each lane most recently did — ANY outcome, dirty or",
+        "          aborted runs included — and its bounded per-commit duration",
+        "          series. Reads the store, runs no lane, decides no policy.",
+        "          --worktree redirects the READ exactly as it redirects a run:",
+        "          the answer describes THAT tree\'s store, and says so)",
+        "       run-gate footprint [LANE] [--worktree PATH] [--json] [--write]",
+        "         (RG-55/R-44: the resource cost each lane's history has actually",
+        "          measured — peak memory, +baseline, hot-set p90, CPU cores,",
+        "          memory-full stall, duration — distilled from PASS +",
+        "          history-eligible runs into run-gate.footprint.json (TRACKED,",
+        "          committed; next to the effective project's run-gate.toml).",
+        "          --write performs that write and REFUSES (exit 2) when no lane",
+        "          has a completed, profiled run yet; without --write, prints the",
+        "          same numbers (table or --json) without touching disk. Positional",
+        "          LANE filters a report; repeatable --lane merges selected entries",
+        "          into an existing manifest. --include-failed adds completed,",
+        "          profiled FAIL measurements; budgets and aborted runs stay out.",
+        "          doctor reads the manifest for staleness/drift;",
+        "          the run path reads it to fill the profiler's `expected` hint",
+        "          and the footprint disclosure line's '| manifest …' tail)",
+        "",
+        "lanes (run-gate.toml; * = inherited from the nearest run-gate.root.toml):",
+    ]
+    if not table:
+        lines.append("  (none defined)")
+    for name, lane in table:
+        marker = "*" if name in inherited else ""
+        environment = (",".join(sequence_environment_names(name, lanes))
+                       if lane.get("kind") == "sequence"
+                       else lane.get("environment", "-"))
+        bits = [f"kind={lane['kind']}",
+                f"environment={environment}",
+                "clean_tree=true" if lane.get("clean_tree", True)
+                else "clean_tree=FALSE"]
+        if lane.get("_imported"):
+            bits.append("imported=assay")
+        if lane.get("budget"):
+            bits.append(f"budget={lane['budget']} (hard limit)")
+        if lane.get("stall_timeout"):
+            bits.append(f"stall_timeout={lane['stall_timeout']} (silence, "
+                        f"not elapsed)")
+        mem = lane.get("resources", {}).get("memory") or lane.get("memory")
+        if mem:
+            bits.append(f"memory={mem}")
+        res = lane.get("resources", {})
+        res_bits = []
+        if res.get("memory"):
+            res_bits.append(f"memory={res['memory']}")
+        if res.get("pids"):
+            res_bits.append(f"pids={res['pids']}")
+        if res.get("cpus"):
+            res_bits.append(f"cpus={res['cpus']}")
+        if res.get("memory_swap"):
+            res_bits.append(f"swap={res['memory_swap']}")
+        for key in ("cpu_weight", "io_weight"):
+            if res.get(key):
+                res_bits.append(f"{key}={res[key]} (advisory)")
+        if res.get("shared"):
+            res_bits.append(f"shared=[{','.join(res['shared'])}]")
+        lines.append(f"  {name:<24}{marker} " + "  ".join(bits))
+        if res_bits:
+            lines.append(f"  {'':<24}  resources: " + "  ".join(res_bits))
+        if lane.get("description"):
+            lines.append(f"  {'':<24}  {lane['description']}")
+    lines += [
+        "",
+        "flags:",
+        "  --worktree PATH   judge — and execute lanes IN — a different tree; the",
+        "                    invoking checkout is never judged by side effect",
+        "  --allow-dirty     bypass THIS tool's clean-tree refusal; assay lanes",
+        "                    still enforce assay's own clean-tree rule afterwards",
+        "                    (two independent layers — the flag lifts only this one)",
+        "  --base REF        comparison base for a lane that DELEGATES it —",
+        "                    an assay lane whose inventory reports base_source",
+        "                    = \"request\" (appended as --request-base), or a",
+        "                    conjunction lane carrying a {base} token. Omitted:",
+        "                    the base_ref a ciu worktree recorded as its fork",
+        "                    point (only while it still names a local branch",
+        "                    that has NOT absorbed this tree's HEAD),",
+        "                    else the judged tree's merge-base with its",
+        "                    upstream; neither refuses (a guessed base is not a",
+        "                    base). A lane that does NOT delegate refuses --base",
+        "  --admission-wait D  RG-80: wait for a daemon-wide gate slot (default 10m)",
+        "  --override-admission  RG-80: run past the published count cap, disclosed",
+        "  -- ARGS...        append literal argv values to an opted-in command lane",
+        "                    after the declared argv; selective runs are not gates",
+        "  --reuse-from PATH assay R2 only: reuse candidates from an earlier verdict",
+        "  --rejudge ID      assay R2 only; repeatable, joined for Assay",
+        "  --rejudge-outcome B assay R2 only: outcome buckets for --rejudge",
+        "  --dry-run         print the full execution plan (docker argv, mounts,",
+        "                    slice, inner command) and exit 0 — every preflight",
+        "                    is rehearsed and NO JUDGED lane is started. An",
+        "                    assay lane's read-only `assay lanes --json`",
+        "                    inventory probe IS a preflight, so it does run,",
+        "                    in a short container of its own (RG-26)",
+        "  --check-env       advisory drift sweep: env references in the project's",
+        "                    Python sources covered by neither forward_env nor a",
+        "                    lane's required_env (heuristic — warns, never refuses),",
+        "                    PLUS the assay-lane toolchain fitness check, whose",
+        "                    FAIL exits 2 (that half is the judge's own finding,",
+        "                    not a heuristic). --worktree redirects BOTH halves at",
+        "                    THAT tree, named in the report (RG-30); a --worktree",
+        "                    that names no real git worktree refuses outright",
+        "                    rather than scan/probe nothing under its name",
+        "  --fresh           RG-35: a container lane whose previous client died",
+        "                    RE-ATTACHES to the container that client left behind",
+        "                    (same lane, same worktree, same commit) instead of",
+        "                    starting a second one. --fresh removes that container",
+        "                    first — by name, disclosed — and runs anew. Refused",
+        "                    by name on host and exec lanes, which start no",
+        "                    container of run-gate's own",
+        "  --json            `history`/`footprint`/`status`: emit one JSON",
+        "                    document (history has latest + bounded history +",
+        "                    duration stats; footprint has the manifest shape;",
+        "                    status has its closed verdict/exit code and occupancy).",
+        "                    Every other verb REFUSES it by name rather than",
+        "                    silently printing its human form (--list is already",
+        "                    a machine table)",
+        "  --write           `footprint` ONLY: write run-gate.footprint.json.",
+        "                    Every other verb REFUSES it by name",
+        "",
+        "liveness (RG-36/RG-41) — judged from the lane's progress file (assay)",
+        "or its own log stream (command), never from a guessed total:",
+        f"  disclosure  while an assay lane's container runs, "
+        f"<project>/.assay/progress-",
+        f"              <assay_lane>.jsonl is read every "
+        f"{PROGRESS_POLL_SECONDS}s and, when it moved,",
+        "              `progress <lane>: candidate i/N, <rate>/min, ETA <m>m`",
+        "              is printed; a judge that writes no candidate events is",
+        "              disclosed ONCE and is never treated as a fault. A",
+        "              command lane has no progress file — its own stdout,",
+        "              already streamed live, is the signal instead: the",
+        "              arrival time of its last line",
+        "  stall_timeout  optional lane key (the `budget` grammar) — stops the",
+        "              lane ONLY while the container is still running AND its",
+        "              liveness signal (progress file or log stream) has been",
+        "              silent that long: exit 3, evidence saved, the last",
+        "              event/line named. NEVER on total elapsed time; `budget`",
+        "              is a hard elapsed-time bound. Legal on both assay and command",
+        "              lanes; only meaningful where a container is actually",
+        "              watched — accepted but inert on a host/exec lane,",
+        "              which runs inline and starts nothing to watch",
+        "  shape       mutation lane: a generous assay `budget` +",
+        "              judge.mutation.budget_per_candidate + this key. R0/R1:",
+        "              the command's own bound is all there is",
+        "",
+        "profiling (RG-55/P5) — optional resource telemetry, never judgment:",
+        "  [profile]   enabled, daemon, interval, damon, transport (auto|exec|socket),",
+        "              socket_path, and bounded admission_wait (default 10m);",
+        "              auto selects the socket only after a valid version probe",
+        "  watch       one daemon reader per session records readings/verdicts;",
+        "              killed follows the declared stall path, reported warns once;",
+        "              an ended/failed watch retries once, then falls back to the",
+        "              calibrated in-process assay watch with host-PSI idle pause",
+        "  placement   daemon-backed exec/bare-host lanes may use resources.memory",
+        "              or the committed footprint median plus resources.memory_max;",
+        "              ephemeral lanes use CGROUP_PARENT_DEV_GATES when configured",
+        "",
+        "lane history (RG-27) — measured and persisted, never acted on here:",
+        f"  store       <project>/{HISTORY_DIR_NAME}/{HISTORY_FILE_NAME} in the JUDGED",
+        "              worktree — per (worktree x project), so two worktrees' gates",
+        "              never contend; MUST be git-ignored (the tool refuses to write",
+        "              and says so rather than dirtying the tree for the next lane)",
+        "  read scope  the same one: `history --worktree B` reads B's store, never",
+        "              the invoking checkout's, and names the tree in its output",
+        f"  retention   [history] keep = <int>, default {HISTORY_KEEP_DEFAULT} commits per lane;",
+        "              project [history] shadows the central one (R-09's rule)",
+        "  eligibility  history keeps COMPLETED runs (passes AND fails) on a clean,",
+        "              committed tree; aborted, errored, dirty-tree and mid-rebase",
+        "              runs update `latest` only, with the exclusion reason recorded",
+        "",
+        "environment contract (DERIVE / READ / FAIL — no silent defaults):",
+        "  CGROUP_PARENT_DEV_GATES      container lanes take their cgroup slice",
+        "                                from cgroup_slice, then cgroup_slice_env,",
+        "                                then THIS variable; absent = hard error",
+        "  RUN_GATE_EXTRA_MOUNTS         colon-separated host=container pairs appended",
+        "                                to EPHEMERAL container lanes (e.g. docker.sock)",
+        "  RUN_GATE_MOUNT_ALIAS          'host=namespace' declaring the repo's second",
+        "                                mount view when none is derivable (bare host)",
+        "  RUN_GATE_ALLOW_MAIN_CHECKOUT  =1 (or --allow-main-checkout) permits container",
+        "                                lanes on the plain checkout; default REFUSED",
+        "                                (every git-ignored file would be visible)",
+        "                                (exec-mode lanes are never affected; container",
+        "                                git config is always a credential-free copy)",
+        "  RUN_GATE_EVIDENCE_DIR         where preserved container logs are written",
+        f"                                on failure (default {EVIDENCE_DIR_DEFAULT})",
+        f"  {CGROUPFS_ROOT_ENV_VAR}      cgroupfs root for slice-memory admission",
+        "                                (default /sys/fs/cgroup; override in namespaces",
+        "                                that hide the host cgroup or in tests)",
+        f"  {PROC_ROOT_ENV_VAR}                 /proc root for the host-PSI disclosure line",
+        "                                and the private-cgroup-namespace check (RG-55)",
+        "                                (default /proc; override in namespaces that hide",
+        "                                the host /proc or in tests)",
+        f"  {LOCK_DIR_ENV_VAR}                directory for the RG-20/R-41 coordination",
+        "                                locks (default /tmp, HOST-WIDE by design — two",
+        "                                gates on the same host serialize there on",
+        "                                purpose); override in namespaces that hide the",
+        "                                host /tmp or in tests (RW-46a)",
+        f"  {PROFILE_AMBIENT_ENV_VAR}                 ambient override for [profile] enabled",
+        "                                ('on'|'off', RG-55/SPEC R-43g); absent = config",
+        "                                decides. 'off' disables profiling for EVERY lane",
+        "                                regardless of [profile]/lane profile= (no token,",
+        "                                no daemon call, no sampler — e.g. a CI runner",
+        "                                with no docker exec rights to a profiler daemon",
+        "                                it will never have); 'on' force-enables even over",
+        "                                a lane's own profile = false. Any other value",
+        "                                refuses at load, by name",
+        "",
+        "Lane declarations: run-gate.toml in the current project directory; shared environment",
+        "facts may live in an enclosing run-gate.root.toml. Judgment policy",
+        "belongs to assay (assay.toml), never here. See run-gate-project/README.md.",
+        "",
+        "exit codes (closed): PASS=0, FAIL=1, ERROR=2, NOT_RUN=3,",
+        "            BUDGET_EXCEEDED=4. The lane's raw status is retained in",
+        "            the result; no lane status escapes this table.",
+    ]
+    return "\n".join(lines)
+
+
+def find_project_dir() -> Path | None:
+    """Find the consumer project from the caller's working directory.
+
+    An installed console script lives in the Python environment, so its
+    executable path carries no information about which project's lanes to
+    load. Consumers invoke Run-Gate from their project directory.
+    """
+    candidate = Path.cwd().resolve()
+    if (candidate / CONFIG_NAME).is_file():
+        return candidate
+    return None
+
+
+def sequence_leaf_names(name: str, lanes: dict) -> list[str]:
+    """Return a sequence's leaf members in declared execution order."""
+    lane = lanes[name]
+    if lane.get("kind") != "sequence":
+        return [name]
+    return [leaf for member in lane["lanes"]
+            for leaf in sequence_leaf_names(member, lanes)]
+
+
+def _sequence_delegates(name: str, lanes: dict, cfg: dict, central: dict,
+                        cfg_path: Path, central_path: Path | None,
+                        repo: Path, worktree: Path, project_dir: Path,
+                        worktree_override: str | None,
+                        base_requested: bool) -> set[str]:
+    """Discover which sequence leaves actually accept a request base."""
+    delegates: set[str] = set()
+    for member_name in sequence_leaf_names(name, lanes):
+        member = lanes[member_name]
+        if member["kind"] == "command":
+            if any(BASE_TOKEN in arg for arg in member["argv"]):
+                delegates.add(member_name)
+            continue
+        env, env_source = resolve_environment(member, member_name, cfg,
+                                              central, cfg_path, central_path)
+        entry, _version, why = assay_inventory_entry(
+            member, env, lane_environment_name(member), repo, worktree,
+            env_source, project_dir)
+        if entry is None:
+            if base_requested:
+                fail(f"sequence {name!r} cannot determine whether member "
+                     f"{member_name!r} delegates its comparison base: {why}")
+            continue
+        if entry.get("base_source") == "request":
+            delegates.add(member_name)
+    return delegates
+
+
+def _require_local_admission_endpoint(operation: str) -> None:
+    """Keep v7 count admission on the host Docker daemon shared with CIU."""
+    endpoint_local, endpoint_reason = local_docker_endpoint()
+    if not endpoint_local:
+        fail(f"run-gate admission {operation} needs the local Docker daemon: "
+             f"{endpoint_reason}")
+
+
+def _admission_manager(policy: dict, *, verify_image: bool = True
+                       ) -> tuple[DockerAdmission, str]:
+    """Build the RG-80 daemon client from explicit local policy facts."""
+    image = policy.get("ticket_image")
+    if not isinstance(image, str) or not image.strip():
+        fail("[admission] enabled requires an explicit local ticket_image")
+    # Tickets become containers when the highest number is released, so their
+    # saved Docker placement must be the host's gates tier. This resolver has
+    # no slice-name default and checks a reachable systemd unit before use.
+    slice_name, _source = resolve_slice(
+        {"cgroup_slice_env": CGROUP_ENV_VAR}, "run-gate admission")
+    verify_slice_loaded(slice_name)
+    manager = DockerAdmission(
+        cgroup_parent=slice_name,
+        notice=lambda message: print(message, file=sys.stderr, flush=True))
+    if verify_image:
+        try:
+            manager.verify_image(image)
+        except AdmissionDockerUnavailable as exc:
+            raise GateNotRunError(
+                "environment-down", f"run-gate admission needs Docker: {exc}") from exc
+        except AdmissionError as exc:
+            fail(str(exc))
+    return manager, image
+
+
+def _dispatch_admission(args: argparse.Namespace, cfg: dict,
+                        cfg_path: Path) -> LaneResult:
+    """The explicit host operator verbs; independent of the run switch."""
+    if args.target not in ("set", "show"):
+        fail("usage: run-gate admission set --max-concurrent N [--replace] "
+             "[--unreadable-policy unbudgeted|refuse] | run-gate admission show")
+    local = cfg.get("admission", {})
+    if args.target == "show":
+        if (args.max_concurrent is not None or args.replace
+                or args.unreadable_policy is not None):
+            fail("run-gate admission show does not accept set options")
+        _require_local_admission_endpoint("show")
+        manager = DockerAdmission(
+            notice=lambda message: print(message, file=sys.stderr, flush=True))
+        try:
+            published = manager.show()
+        except AdmissionDockerUnavailable as exc:
+            raise GateNotRunError(
+                "environment-down", f"run-gate admission show needs Docker: {exc}") from exc
+        except AdmissionError as exc:
+            fail(str(exc))
+        enabled = bool(local.get("enabled", False))
+        print(f"run-gate admission: enabled={str(enabled).lower()} "
+              f"(config: {cfg_path})")
+        if published is None:
+            print("run-gate admission: no published object")
+        else:
+            print(f"run-gate admission: {published['name']} generation="
+                  f"{published['generation']} max_concurrent="
+                  f"{published['max_concurrent']} unreadable_policy="
+                  f"{published['unreadable_policy']} state={published['state']}")
+        return LaneResult("PASS")
+
+    if args.max_concurrent is None:
+        fail("run-gate admission set requires --max-concurrent N")
+    if args.admission_wait is not None or args.override_admission:
+        fail("--admission-wait and --override-admission apply to lane runs, "
+             "not run-gate admission set")
+    _require_local_admission_endpoint("set")
+    manager, image = _admission_manager(local)
+    policy = args.unreadable_policy or local.get("unreadable_policy", "unbudgeted")
+    try:
+        published = manager.publish(
+            image, args.max_concurrent,
+            owner_version=f"run-gate-{installed_version()}",
+            unreadable_policy=policy, replace=args.replace)
+    except AdmissionDockerUnavailable as exc:
+        raise GateNotRunError(
+            "environment-down", f"run-gate admission set needs Docker: {exc}") from exc
+    except AdmissionError as exc:
+        fail(str(exc))
+    print(f"run-gate admission: published {published['name']} "
+          f"max_concurrent={published['max_concurrent']} "
+          f"unreadable_policy={published['unreadable_policy']}")
+    return LaneResult("PASS")
+
+
+def _admit_lane(lane_name: str, lane: dict, cfg: dict,
+                args: argparse.Namespace, record: dict | None, *,
+                run_budget_seconds: int | None = None,
+                existing_admission: dict | None = None,
+                existing_owner_live: bool = False
+                ) -> tuple[DockerAdmission | None, object | None,
+                           dict | None, float, float, bool]:
+    """Acquire one lane/composite ticket and start its budget clock."""
+    policy = cfg.get("admission", {})
+    if not policy.get("enabled", False):
+        requested = []
+        if args.admission_wait is not None:
+            requested.append("--admission-wait")
+        if args.override_admission:
+            requested.append("--override-admission")
+        if requested:
+            print("run-gate: admission is disabled; "
+                  + " and ".join(requested) + " ignored", flush=True)
+        return None, None, None, time.time(), time.monotonic(), False
+
+    _require_local_admission_endpoint("lane runs")
+    manager, image = _admission_manager(policy)
+    if args.dry_run:
+        print("run-gate: admission enabled; dry-run skips ticket acquisition",
+              flush=True)
+        return manager, None, None, time.time(), time.monotonic(), False
+    if existing_admission is not None:
+        try:
+            resumed = manager.resume(existing_admission)
+        except AdmissionDockerUnavailable as exc:
+            raise GateNotRunError(
+                "environment-down", f"run-gate admission needs Docker: {exc}") from exc
+        except AdmissionError as exc:
+            fail(str(exc))
+        if resumed is not None:
+            admission_result = resumed.result()
+            if record is not None:
+                record["admission"] = admission_result
+                record["admission_deadline"] = resumed.run_deadline
+            print(f"run-gate: reusing ticket {resumed.name} for the "
+                  "inflight lane", flush=True)
+            return (manager, resumed, admission_result, time.time(),
+                    time.monotonic(), not existing_owner_live)
+    wait_text = args.admission_wait or DEFAULT_ADMISSION_WAIT
+    try:
+        ticket = manager.acquire(
+            lane=lane_name,
+            run_id=(record or {}).get("run_id", secrets.token_hex(16)),
+            image=image,
+            wait_seconds=budget_seconds(wait_text),
+            unreadable_policy=policy.get("unreadable_policy", "unbudgeted"),
+            budget_seconds=(run_budget_seconds if run_budget_seconds is not None
+                            else budget_seconds(lane["budget"])
+                            if lane.get("budget") else None),
+            override=args.override_admission)
+    except AdmissionRefused as exc:
+        raise GateNotRunError("no-headroom", f"run-gate admission: {exc}") from exc
+    except AdmissionDockerUnavailable as exc:
+        raise GateNotRunError(
+            "environment-down", f"run-gate admission needs Docker: {exc}") from exc
+    except AdmissionError as exc:
+        fail(str(exc))
+    if ticket is None:
+        return manager, None, None, time.time(), time.monotonic(), False
+    admission_result = ticket.result()
+    if ticket.override:
+        print(f"run-gate: admission override; ticket {ticket.name} started "
+              "outside the published count cap", flush=True)
+    else:
+        print(f"run-gate: admitted ticket {ticket.name} after "
+              f"{ticket.waited_s:.1f}s", flush=True)
+    if record is not None:
+        record["admission"] = admission_result
+        record["admission_started_at"] = _iso_utc(ticket.admitted_at)
+        record["admission_deadline"] = ticket.run_deadline
+    return (manager, ticket, admission_result, ticket.admitted_at,
+            ticket.admitted_monotonic, True)
+
+
+def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
+                       lanes: dict, cfg: dict, cfg_path: Path,
+                       central: dict, central_path: Path | None,
+                       cfg_sha256: str, central_cfg_sha256: str | None,
+                       project_dir: Path, *, admission_ticket=None,
+                       admission_managed: bool = False) -> LaneResult:
+    """Run one native sequence in process and preserve each member result."""
+    repo, worktree, toplevel = resolve_repo_and_worktree(
+        project_dir, args.worktree)
+    effective_project = effective_project_dir(project_dir, toplevel, worktree)
+    trunk_policy = cfg.get("project", central.get("project", {}))
+    trunk = trunk_policy.get("trunk") if isinstance(trunk_policy, dict) else None
+    delegates = _sequence_delegates(
+        name, lanes, cfg, central, cfg_path, central_path, repo, worktree,
+        effective_project, args.worktree, bool(args.base))
+    request_base = None
+    base_source = None
+    if args.base and not delegates:
+        fail(f"--base {args.base!r} was given but sequence {name!r} has no "
+             "member that delegates a comparison base")
+    if delegates:
+        request_base, base_source = resolve_comparison_base(
+            name, args.base, worktree, effective_project, trunk)
+        print(f"run-gate: sequence {name!r} comparison base {request_base} "
+              f"(from {base_source}); members: "
+              f"{', '.join(sorted(delegates))}", flush=True)
+
+    if args.fresh:
+        ephemeral = False
+        for member_name in sequence_leaf_names(name, lanes):
+            member = lanes[member_name]
+            env, _source = resolve_environment(member, member_name, cfg,
+                                               central, cfg_path, central_path)
+            ephemeral |= bool(env and env.get("mode") == "ephemeral")
+        if not ephemeral:
+            fail(f"--fresh on sequence {name!r} has no ephemeral member "
+                 "container to replace")
+
+    record = None
+    if not args.dry_run:
+        record = start_run_record(
+            name, worktree, repo, config_path=cfg_path,
+            config_sha256=cfg_sha256,
+            central_config_path=central_path,
+            central_config_sha256=central_cfg_sha256)
+        record["_project_dir"] = effective_project
+        record["_keep"] = resolve_history_keep(
+            cfg, cfg_path, central, central_path)[0]
+        record["sequence"] = {"stop_on": lane.get("stop_on", "FAIL"),
+                              "request_base": request_base,
+                              "base_source": base_source}
+
+    member_results: list[dict] = []
+    first_nonpass: LaneResult | None = None
+    stop_on = lane.get("stop_on", "FAIL")
+    ticket_manager = None
+    ticket = admission_ticket
+    admission_result = ticket.result() if ticket is not None else None
+    owns_ticket = not admission_managed
+    release_ticket = False
+    release_error = None
+    try:
+        if owns_ticket:
+            leaves = sequence_leaf_names(name, lanes)
+            total_budget = sum(
+                budget_seconds(lanes[leaf]["budget"])
+                if lanes[leaf].get("budget") else DEFAULT_LANE_DEADLINE_SECONDS
+                for leaf in leaves)
+            (ticket_manager, ticket, admission_result,
+             _admission_epoch, _admission_monotonic,
+             release_ticket) = _admit_lane(
+                name, lane, cfg, args, record,
+                run_budget_seconds=total_budget)
+        if record is not None:
+            record["admission"] = admission_result
+            if ticket is not None:
+                record["admission_deadline"] = ticket.run_deadline
+        for member_name in lane["lanes"]:
+            member = lanes[member_name]
+            member_argv: list[str] = [member_name]
+            if args.worktree:
+                member_argv += ["--worktree", args.worktree]
+            if args.allow_dirty:
+                member_argv.append("--allow-dirty")
+            if args.dry_run:
+                member_argv.append("--dry-run")
+            if args.lock_wait is not None:
+                member_argv += ["--lock-wait", args.lock_wait]
+            if args.fresh:
+                if member.get("kind") == "sequence":
+                    has_ephemeral = any(
+                        resolve_environment(lanes[leaf], leaf, cfg, central,
+                                            cfg_path, central_path)[0].get("mode")
+                        == "ephemeral"
+                        for leaf in sequence_leaf_names(member_name, lanes))
+                else:
+                    member_env, _source = resolve_environment(
+                        member, member_name, cfg, central, cfg_path,
+                        central_path)
+                    has_ephemeral = bool(member_env and
+                                         member_env.get("mode") == "ephemeral")
+                if has_ephemeral:
+                    member_argv.append("--fresh")
+            member_leaves = (sequence_leaf_names(member_name, lanes)
+                             if member.get("kind") == "sequence"
+                             else [member_name])
+            if request_base and any(leaf in delegates for leaf in member_leaves):
+                member_argv += ["--base", request_base]
+            result = _dispatch(member_argv,
+                               _admission_ticket=ticket,
+                               _admission_managed=True)
+            # Persist each member's independent history result now; a later
+            # failure in the sequence must not discard earlier measurements.
+            finish(result)
+            entry = {"lane": member_name, "result": result.as_dict()}
+            member_results.append(entry)
+            if record is not None:
+                record["members"] = list(member_results)
+            if result.verdict != "PASS" and first_nonpass is None:
+                first_nonpass = result
+            if result.verdict != "PASS" and stop_on == "FAIL":
+                break
+    except BaseException as exc:
+        flush_run_record(record, error=exc)
+        raise
+    finally:
+        if (owns_ticket and release_ticket and ticket_manager is not None
+                and ticket is not None):
+            active_exception = sys.exc_info()[0] is not None
+            try:
+                ticket_manager.release(ticket)
+            except AdmissionError as exc:
+                if active_exception:
+                    print(f"run-gate: admission WARNING: ticket "
+                          f"{ticket.name!r} could not be released while "
+                          f"unwinding sequence: {exc}", file=sys.stderr,
+                          flush=True)
+                else:
+                    release_error = exc
+
+    verdict = first_nonpass.verdict if first_nonpass else "PASS"
+    reason = first_nonpass.reason if first_nonpass else None
+    if record is not None:
+        record["members"] = member_results
+    if release_error is not None:
+        print(f"run-gate: admission ticket release failed: {release_error}",
+              file=sys.stderr, flush=True)
+        return LaneResult("ERROR", reason=f"admission-ticket-release: "
+                          f"{release_error}", admission=admission_result,
+                          members=member_results, _record=record,
+                          _lane_name=name, _json=bool(args.json))
+    return LaneResult(verdict, reason=reason, members=member_results,
+                      admission=admission_result,
+                      _record=record, _lane_name=name,
+                      _json=bool(args.json))
+
+
+def _dispatch(argv: list[str] | None = None, *,
+              _admission_ticket=None,
+              _admission_managed: bool = False) -> LaneResult:
+    parser = RunGateArgumentParser(add_help=False, prog=PROG)
+    parser.add_argument("lane", nargs="?")
+    parser.add_argument("target", nargs="?")
+    # argparse's built-in version action raises SystemExit outside the
+    # closed result table, so --version is a normal parsed value here.
+    parser.add_argument("--version", action="store_true",
+                        help="print the installed Run-Gate version and exit")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--check-env", action="store_true",
+                        help="advisory drift sweep: env references not covered "
+                             "by forward_env/required_env")
+    parser.add_argument("--root", help="validate-pointers only: the worktree "
+                        "root {worktree} stands for (default: git toplevel of "
+                        "the pointer file)")
+    parser.add_argument("--worktree")
+    parser.add_argument("--base", help="RG-26: the comparison base for a lane "
+                        "that delegates it (assay judge.base_source = "
+                        "\"request\"), and for conjunction lanes carrying a "
+                        "{base} token")
+    parser.add_argument("--lock-wait", metavar="D", default=None,
+                        help="maximum time to wait for a lane lock (default: 10m)")
+    parser.add_argument("--admission-wait", metavar="D", default=None,
+                        help="RG-80: maximum time to wait for a daemon-wide gate slot (default: 10m)")
+    parser.add_argument("--override-admission", action="store_true",
+                        help="RG-80: run outside the published gate count cap, with a disclosed ticket")
+    parser.add_argument("--replace", action="store_true",
+                        help="admission set only: replace published generations")
+    parser.add_argument("--max-concurrent", type=int, default=None,
+                        metavar="N", help="admission set only: published gate count cap")
+    parser.add_argument("--unreadable-policy", choices=("unbudgeted", "refuse"),
+                        default=None, help="admission set only: behavior without a readable count")
+    parser.add_argument("--json", action="store_true",
+                        help="`history`, `footprint`, and `status` emit one "
+                             "machine-readable JSON document")
+    parser.add_argument("--write", action="store_true",
+                        help="RG-55/R-44: `footprint` only — write "
+                             "run-gate.footprint.json next to the effective "
+                             "project's run-gate.toml")
+    parser.add_argument("--include-failed", action="store_true",
+                        help="RG-68: include completed, profiled FAIL runs in "
+                             "footprint output and an explicit manifest write")
+    parser.add_argument("--lane", dest="footprint_lanes", action="append",
+                        default=[], metavar="LANE",
+                        help="RG-69: footprint --write only — merge this lane "
+                             "into the existing manifest; repeatable")
+    parser.add_argument("--reuse-from", metavar="PATH",
+                        help="RG-66: assay R2 only — reuse proven candidates "
+                             "from an earlier verdict")
+    parser.add_argument("--rejudge", action="append", default=[], metavar="ID",
+                        help="RG-66: assay R2 only — selectively rejudge an "
+                             "ID; repeatable")
+    parser.add_argument("--rejudge-outcome", metavar="BUCKET",
+                        help="RG-66: assay R2 only — constrain rejudge outcomes")
+    parser.add_argument("--allow-dirty", action="store_true")
+    parser.add_argument("--allow-main-checkout", action="store_true",
+                        help="RG-NARROW: permit container lanes on the plain "
+                             "(main) checkout, making every git-ignored file "
+                             "in it visible in the container (WARNs); also "
+                             f"${ALLOW_MAIN_CHECKOUT_ENV_VAR}=1")
+    parser.add_argument("--fresh", action="store_true",
+                        help="RG-35: remove the container an earlier client "
+                             "left running for this lane (disclosed by name) "
+                             "and start a new one, instead of re-attaching")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the full execution plan and exit 0 — every "
+                             "preflight is rehearsed and no JUDGED lane is "
+                             "started; an assay lane's read-only `assay lanes "
+                             "--json` inventory probe is a preflight and does "
+                             "run, in a short container of its own")
+    parser.add_argument("--help", "-h", action="store_true")
+    record = None  # RG-27: set once the lane resolves; see flush_run_record
+    args = None
+    try:
+        request_argv = list(sys.argv[1:] if argv is None else argv)
+        if "--" in request_argv:
+            separator = request_argv.index("--")
+            parse_argv = request_argv[:separator]
+            lane_args = request_argv[separator + 1:]
+        else:
+            parse_argv = request_argv
+            lane_args = []
+        args = parser.parse_args(parse_argv)
+        args.lane_args = lane_args
+        if args.allow_main_checkout:
+            # Env, not a parameter: sequence members, probes and re-attached
+            # lanes all reach container_mount_flags() and inherit it.
+            os.environ[ALLOW_MAIN_CHECKOUT_ENV_VAR] = "1"
+        lock_wait_text = args.lock_wait or DEFAULT_LOCK_WAIT
+        _validate_budget(lock_wait_text, "command line", "--lock-wait")
+        lock_wait_seconds = budget_seconds(lock_wait_text)
+        if args.version:
+            print(f"{PROG} {installed_version()}")
+            return LaneResult("PASS")
+        admission_wait_text = args.admission_wait or DEFAULT_ADMISSION_WAIT
+        _validate_budget(admission_wait_text, "command line", "--admission-wait")
+        set_only_options = (args.replace or args.max_concurrent is not None
+                            or args.unreadable_policy is not None)
+        if set_only_options and args.lane != "admission":
+            fail("--replace, --max-concurrent and --unreadable-policy apply "
+                 "only to `run-gate admission set`")
+        if (args.admission_wait is not None or args.override_admission) \
+                and (args.lane is None or args.lane in (
+                    "doctor", "history", "footprint", "validate-pointers",
+                    "migrate-modes", "admission", "status")):
+            fail("--admission-wait and --override-admission apply to a lane "
+                 "run only")
+        if args.lane == "migrate-modes":
+            if not args.target:
+                fail("migrate-modes requires the path to a run-gate.toml or "
+                     "run-gate.root.toml")
+            if (args.json or args.write or args.worktree or args.base
+                    or args.fresh or args.dry_run or args.allow_dirty
+                    or args.lock_wait is not None or lane_args):
+                fail("migrate-modes accepts only its config path")
+            path = Path(args.target).resolve()
+            if path.name not in (CONFIG_NAME, ROOT_CONFIG_NAME):
+                fail(f"migrate-modes accepts only {CONFIG_NAME} or "
+                     f"{ROOT_CONFIG_NAME} (got {path.name!r})")
+            known: set[str] = set()
+            if path.name == CONFIG_NAME:
+                for parent in path.parents:  # pragma: no cover - named config paths always have a parent
+                    central_path = parent / ROOT_CONFIG_NAME
+                    if central_path.is_file():
+                        try:
+                            central_doc = tomllib.loads(
+                                central_path.read_text(encoding="utf-8"))
+                        except (OSError, tomllib.TOMLDecodeError) as exc:
+                            fail(f"cannot read central environment declarations "
+                                 f"from {central_path}: {exc}")
+                        central_envs = central_doc.get("environments", {})
+                        if isinstance(central_envs, dict):
+                            known = set(central_envs)
+                        break
+            changed = migrate_environment_modes(path, known)
+            print(f"run-gate: {'migrated' if changed else 'already explicit'}: "
+                  f"{path}", flush=True)
+            return LaneResult("PASS")
+        # Review fix (S1): `--json` is honored by `history` alone, so every
+        # other invocation REFUSES it by name instead of accepting it and
+        # emitting the plain table anyway. Same rule as RG-1's --worktree and
+        # RG-26's --base: a flag the command cannot honor is a refusal, never
+        # a silent no-op — a consumer piping `--list --json` into a parser
+        # would otherwise get a TSV where it asked for JSON.
+        # Same rule for RG-35's flag: `--fresh` names an ephemeral container
+        # lane's inflight run, so every verb and every other runner refuses
+        # it by name rather than accepting it and doing nothing (R-25/R-35).
+        if args.fresh and args.lane in (None, "doctor", "history",
+                                        "footprint", "validate-pointers",
+                                        "status"):
+            fail("--fresh is honored on the run path only (run-gate <lane> "
+                 "--fresh) — it removes the container an earlier client left "
+                 "running for that lane; the query and preflight verbs start "
+                              "no container and have nothing to refresh")
+        if lane_args and (args.lane is None or args.lane in (
+                "doctor", "history", "footprint", "validate-pointers",
+                "status")):
+            fail("arguments after -- are supported only by an opted-in "
+                 "command lane")
+        assay_selective = (args.reuse_from is not None or bool(args.rejudge)
+                           or args.rejudge_outcome is not None)
+        if assay_selective and (args.lane is None or args.lane in (
+                "doctor", "history", "footprint", "validate-pointers",
+                "status")):
+            fail("--reuse-from, --rejudge and --rejudge-outcome apply only to "
+                 "an assay lane")
+        if args.include_failed and args.lane != "footprint":
+            fail("--include-failed applies to the footprint verb only")
+        if args.footprint_lanes and args.lane != "footprint":
+            fail("--lane applies to footprint --write only")
+        if args.footprint_lanes and not args.write:
+            fail("--lane requires footprint --write")
+        if args.footprint_lanes and args.target:
+            fail("use either the positional footprint query lane or repeatable "
+                 "--lane for a merged write, not both")
+        if args.rejudge_outcome and not args.rejudge:
+            fail("--rejudge-outcome requires at least one --rejudge ID")
+        if args.json and (args.lane is None or args.lane in (
+                "doctor", "validate-pointers", "history", "footprint",
+                "status")) \
+                and args.lane not in ("history", "footprint", "status"):
+            fail("--json is honored by the `history`/`footprint`/`status` verbs only "
+                 "and by a lane result (run-gate <lane> --json); `--list` "
+                 "is already a machine table (name<TAB>kind<TAB>environment)")
+        if args.write and args.lane != "footprint":
+            fail("--write is honored by the `footprint` verb only "
+                 "(run-gate footprint [LANE] --write) — every other verb "
+                 "either judges a lane or reports without writing")
+        if args.lock_wait is not None and args.lane in (
+                None, "doctor", "history", "footprint", "validate-pointers",
+                "status"):
+            fail("--lock-wait applies to a lane run only")
+        if args.lane == "validate-pointers" and not args.help:
+            # RG-2 linkage verb — certifies CONSUMER documents; needs no
+            # project config of its own.
+            if not args.target:
+                fail("validate-pointers requires the consumer file to certify "
+                     "(e.g. <proj>/nyxloom-trove/nyxloom.toml)")
+            return operation_result(cmd_validate_pointers(
+                Path(args.target), args.root), "pointer-validation-failed")
+        project_dir = find_project_dir()
+        if project_dir is None:
+            if args.help or (args.lane is None and not args.list
+                             and not args.check_env):
+                fail(f"no {CONFIG_NAME} found in the current project directory "
+                     f"(run-gate {installed_version()})")
+            fail(f"no {CONFIG_NAME} found in the current project directory "
+                 f"{Path.cwd()} — run-gate loads config from the current "
+                 f"working directory")
+        if args.worktree:
+            if args.lane == "history":
+                # Preserve history's established invalid-target diagnosis
+                # before the new worktree-config requirement can mask it.
+                if not Path(args.worktree).is_dir():
+                    fail(f"--worktree {args.worktree!r}: not a directory — "
+                         f"`history` reports THAT tree's store, so it must "
+                         f"name a real worktree")
+                git_out("rev-parse", "--show-toplevel",
+                        cwd=Path(args.worktree))
+            # RG-47/RG-65: select the target project directory BEFORE reading
+            # any project or ancestor config. In a monorepo the project path
+            # is preserved relative to the git toplevel; there is no fallback
+            # to the invoking checkout when the target config is absent.
+            _, selected_worktree, invoking_toplevel = resolve_repo_and_worktree(
+                project_dir, args.worktree)
+            project_dir = effective_project_dir(
+                project_dir, invoking_toplevel, selected_worktree)
+            target_config = project_dir / CONFIG_NAME
+            if not target_config.is_file():
+                fail(f"--worktree {args.worktree!r} selects {target_config}, "
+                     f"but that worktree has no {CONFIG_NAME}; refusing to use "
+                     f"the invoking checkout's config")
+        (cfg, cfg_path, central, central_path,
+         cfg_sha256, central_cfg_sha256) = load_config_snapshot(project_dir)
+        if args.lane == "status":
+            if (args.target is not None or args.list or args.check_env
+                    or args.root is not None or args.base is not None
+                    or args.lock_wait is not None or args.write
+                    or args.include_failed or args.footprint_lanes
+                    or args.reuse_from is not None or args.rejudge
+                    or args.rejudge_outcome is not None or args.replace
+                    or args.max_concurrent is not None
+                    or args.unreadable_policy is not None
+                    or args.allow_dirty or args.fresh or args.dry_run
+                    or lane_args):
+                fail("run-gate status accepts only [--worktree PATH] and "
+                     "[--json]")
+            return operation_result(cmd_status(
+                project_dir, cfg, cfg_path, args.json,
+                worktree_override=args.worktree), "status-query-failed")
+        assay_defaults = cfg.get("assay", central.get("assay", {}))
+        preflight_inflight_assay_contract(args, cfg, central, assay_defaults,
+                                          project_dir)
+        imported_lanes = {}
+        if "import" in assay_defaults:
+            import_repo, import_worktree, import_toplevel = \
+                resolve_repo_and_worktree(project_dir, args.worktree)
+            import_project = effective_project_dir(
+                project_dir, import_toplevel, import_worktree)
+            imported_lanes = discover_imported_assay_lanes(
+                assay_defaults, cfg, central, cfg_path, central_path,
+                import_repo, import_worktree, import_project)
+        # RG-16/RG-76: inherited and imported lanes form the one effective
+        # namespace before any CLI verb looks at a lane name.
+        lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,
+                            cfg_path, central_path, assay_defaults,
+                            imported_lanes)
+        if args.help or (args.lane is None and not args.list
+                         and not args.check_env):
+            print(usage(lanes, (set(central.get("lanes", {}))
+                                | {name for name, lane in lanes.items()
+                                   if lane.get("_imported")})
+                        - set(cfg.get("lanes", {}))))
+            return LaneResult("PASS")
+        if args.lane == "admission":
+            if (args.json or args.write or args.include_failed
+                    or args.footprint_lanes or args.worktree or args.base
+                    or args.allow_dirty or args.fresh or args.dry_run
+                    or args.lock_wait is not None or lane_args
+                    or args.reuse_from is not None or args.rejudge
+                    or args.rejudge_outcome is not None):
+                fail("run-gate admission set/show accepts only its documented "
+                     "operator options")
+            return _dispatch_admission(args, cfg, cfg_path)
+        # `lanes` is the effective set assembled above, including project
+        # shadows, root lanes, and inventory imports.
+        if args.lane == "doctor":
+            # RG-9 preflight — reads the world, runs nothing. RG-30:
+            # --worktree threads through so every per-tree check (git
+            # identity, RG-21, mountinfo, the assay toolchain probe) answers
+            # about the SELECTED tree, not this invocation's own checkout.
+            code = cmd_doctor(lanes, project_dir, cfg, central,
+                              cfg_path, central_path,
+                              worktree_override=args.worktree)
+            return operation_result(code, "doctor-reported-failure")
+        if args.lane == "history":
+            # RG-27 query verb — reads the store, runs nothing, decides
+            # nothing. Rigor/defer POLICY belongs to the controller reading
+            # this, never to the tool producing it.
+            #
+            # Review fix (B1): the READ scope follows `--worktree` exactly as
+            # the WRITE scope does (R-36f). The store is per (judged worktree
+            # × project), so reading the invoking checkout's store while the
+            # caller asked about tree B would answer with A's medians under
+            # B's name — silently, which is the one thing this feature exists
+            # to make impossible. Resolution happens ONLY when the flag is
+            # given: an unflagged `history` stays git-free and keeps
+            # answering in a checkout where git cannot.
+            hist_dir, hist_scope = project_dir, None
+            if args.worktree:
+                # …and B1's ERROR path closes the same way. On the run path
+                # an unresolvable --worktree dies downstream (git status in a
+                # tree that is not there); a READ has no downstream, so an
+                # unvalidated override would compute a store path under a
+                # nonexistent tree and answer "(not written yet)" — the
+                # invoking checkout's silence presented as tree B's answer.
+                # resolve_repo_and_worktree() takes the override verbatim by
+                # design (R-02), so the check belongs here.
+                _, hist_wt, hist_top = resolve_repo_and_worktree(
+                  project_dir, args.worktree)
+                hist_dir = effective_project_dir(project_dir, hist_top,
+                                                 hist_wt)
+                hist_scope = str(hist_wt)
+            code = cmd_history(lanes, hist_dir, cfg, cfg_path, central,
+                               central_path, args.target, args.json,
+                               hist_scope)
+            # history/footprint render their own human or JSON documents.
+            # Do not append the lane-result JSON object from finish().
+            return operation_result(code, "history-query-failed")
+        if args.lane == "footprint":
+            # RG-55/R-44: distills the SAME store `history` reads (no lock,
+            # a query) into the manifest shape contract Sec 4.5 defines.
+            # Unlike `history`, this verb's write side (`--write`) needs a
+            # real commit to stamp `from_commit` with, so the worktree is
+            # ALWAYS resolved (never `history`'s "stay git-free when
+            # unflagged" — a manifest is meaningless without knowing which
+            # commit it was distilled from). `resolve_worktree_scope`
+            # (RG-30's helper, shared with `doctor`) does exactly this:
+            # validates a given `--worktree` up front and returns the
+            # EFFECTIVE project dir a query/write must use instead of the
+            # invoking checkout's own.
+            _, fp_worktree, fp_dir, fp_scope = resolve_worktree_scope(
+                project_dir, args.worktree, "footprint")
+            code = cmd_footprint(lanes, fp_dir, cfg, cfg_path, central,
+                                 central_path, args.target, args.json,
+                                 args.write, head_commit(fp_worktree),
+                                 fp_scope, include_failed=args.include_failed,
+                                 merge_lanes=args.footprint_lanes)
+            return operation_result(code, "footprint-query-failed")
+        if args.list:
+            code = cmd_list(lanes)
+            return operation_result(code, "list-failed")
+        if args.check_env:
+            # RG-30: --worktree redirects both the env-drift scan and the
+            # toolchain-fitness probe at the SELECTED tree.
+            code = cmd_check_env(lanes, project_dir, cfg, central,
+                                 cfg_path, central_path,
+                                 worktree_override=args.worktree)
+            return operation_result(code, "environment-check-failed")
+        if args.lane not in lanes:
+            fail(f"unknown lane {args.lane!r} — known lanes: "
+                 f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
+                 f"{f'; shared: {central_path}' if central_path else ''})")
+        lane = lanes[args.lane]
+        if lane.get("kind") == "sequence":
+            if lane_args:
+                fail(f"sequence lane {args.lane!r} cannot accept selective "
+                     "arguments after --; pass arguments on an opted-in "
+                     "command member directly")
+            if assay_selective:
+                fail("--reuse-from, --rejudge and --rejudge-outcome apply to "
+                     "one assay member, not a sequence")
+            return _dispatch_sequence(
+                args.lane, lane, args, lanes, cfg, cfg_path, central,
+                central_path, cfg_sha256, central_cfg_sha256, project_dir,
+                admission_ticket=_admission_ticket,
+                admission_managed=_admission_managed)
+        if lane_args:
+            if lane["kind"] != "command":
+                fail(f"lane {args.lane!r} is an assay lane and does not accept "
+                     "selective command arguments")
+            if not lane.get("accepts_args", False):
+                fail(f"lane {args.lane!r} does not declare accepts_args = true")
+            lane = copy.deepcopy(lane)
+            lane["_request_args"] = list(lane_args)
+        if assay_selective:
+            if lane["kind"] != "assay":
+                fail(f"--reuse-from, --rejudge and --rejudge-outcome are "
+                     f"assay-only flags; lane {args.lane!r} is a command lane")
+            lane = copy.deepcopy(lane)
+            lane["_selective_assay"] = {
+                "reuse_from": args.reuse_from,
+                "rejudge": list(args.rejudge),
+                "rejudge_outcome": args.rejudge_outcome,
+            }
+        env, env_source = resolve_environment(lane, args.lane, cfg, central,
+                                              cfg_path, central_path)
+        if args.fresh and (not env or env.get("mode") == "exec"):
+            # RG-43 (rev 36): 'host' now resolves to a non-empty synthetic
+            # env and runs through run_container_lane() like any named
+            # environment -- `not env` is true ONLY for the built-in
+            # 'bare-host' environment now (this process runs the lane
+            # directly) -- this message named the WRONG one (the pre-RG-43
+            # meaning of `not env`) until this fix. An exec lane runs inside
+            # a runner run-gate did not start and will not remove: neither
+            # bare-host nor exec-mode leaves a container behind, so neither
+            # has an inflight record.
+            where = (f"host-mode environment {args.lane!r}" if not env
+                    else f"exec-mode environment {env_source}")
+            fail(f"--fresh names the container an ephemeral container lane "
+                 f"left running, but lane {args.lane!r} runs on "
+                 f"{where} "
+                 f"— run-gate starts no container of its own there, so there "
+                 f"is nothing to re-attach to or replace")
+        # RG-17/19: declared inputs verified BEFORE anything runs — presence
+        # in the invoking environment for every kind; for container lanes
+        # also that the names are on the forward_env allowlist at all.
+        preflight_required_env(lane, args.lane)
+        if env:
+            check_required_reaches_container(lane, args.lane, env,
+                                             lane_environment_name(lane),
+                                             env_source)
+        repo, worktree, toplevel = resolve_repo_and_worktree(
+            project_dir, args.worktree)
+        # RG-15: runners receive the project RELOCATED into the judged tree —
+        # their `project_dir` parameter is the effective one, never the
+        # invocation checkout when --worktree selects a different tree.
+        eff_proj = effective_project_dir(project_dir, toplevel, worktree)
+        # RG-5: every lane kind refuses a metachar worktree path — the daemon
+        # pointer recipe embeds {worktree} into bash strings regardless of
+        # what this particular lane does with it.
+        check_worktree_charset(worktree)
+        # RG-1: an override the lane cannot possibly honor is a silent
+        # false-PASS machine — a container command lane whose argv carries no
+        # {worktree} token would let sub-steps re-derive their own tree and
+        # judge something else. Assay lanes relocate automatically (R-21) and
+        # host lanes relocate via cwd, so both are exempt.
+        if args.worktree and lane["kind"] == "command" and env \
+                and not any("{worktree}" in element for element in lane["argv"]):
+            fail(f"--worktree '{args.worktree}' would be SILENTLY IGNORED by "
+                 f"container lane '{args.lane}': its argv contains no "
+                 f"{{worktree}} token, so sub-steps re-derive their own tree — "
+                 f"declare '--worktree {{worktree}}' inside the lane argv "
+                 f"(CONSUMERS 'Gate-conjunction lanes') or drop the flag")
+        # RG-78: floor and digest refusals are preconditions, not judge
+        # failures. Verify the selected tree's pinned judge before recording
+        # an invocation, taking locks or starting a runner/container.
+        preflight_assay_pins(lane, args.lane, eff_proj)
+        # RG-26: resolve the comparison base BEFORE any admission or lock —
+        # a refusal here is a configuration error, and making a caller wait
+        # on a shared-infra lock to receive one is the fast-fail mistake
+        # RG-20's review already corrected once.
+        request_base, base_src = plan_comparison_base(
+            lane, args.lane, args.base, env, lane_environment_name(lane),
+            repo, worktree, env_source, eff_proj,
+            (cfg.get("project", central.get("project", {})).get("trunk")
+             if isinstance(cfg.get("project", central.get("project", {})), dict)
+             else None))
+        if lane.get("_selective_assay"):
+            selected = lane["_selective_assay"]
+            if selected.get("reuse_from") is not None:
+                selected["reuse_from"] = resolve_assay_reuse_path(
+                    selected["reuse_from"], eff_proj, worktree)
+            if any(not item for item in selected.get("rejudge", [])):
+                fail("--rejudge requires a non-empty candidate ID")
+            if selected.get("rejudge_outcome") == "":
+                fail("--rejudge-outcome requires a non-empty bucket")
+        if request_base:
+            # R-05: mechanics are visible before execution, live AND dry.
+            target = ("--request-base" if lane["kind"] == "assay"
+                      else f"{BASE_TOKEN} in the lane argv")
+            print(f"run-gate: comparison base {request_base} (from {base_src}) "
+                  f"→ {target}", flush=True)
+        # RG-27: from HERE on this is an INVOCATION with a result — a
+        # clean-tree refusal, an admission refusal, a docker failure and a
+        # Ctrl-C all count, and all land in `latest`. Everything BEFORE this
+        # line is a configuration error that names no invocation to record
+        # against. `--dry-run` records nothing at all: no lane started, so
+        # nothing was measured and there is no result to be `latest`.
+        if not args.dry_run:
+            record = start_run_record(
+                args.lane, worktree, repo, config_path=cfg_path,
+                config_sha256=cfg_sha256,
+                central_config_path=central_path,
+                central_config_sha256=central_cfg_sha256)
+            record["_project_dir"] = eff_proj
+            if lane.get("kind") == "assay":
+                record["_assay_identity_mode"] = assay_identity_mode(lane)
+            if _admission_ticket is not None:
+                record["admission"] = _admission_ticket.result()
+                record["admission_deadline"] = _admission_ticket.run_deadline
+            if request_base:
+                record["request_base"] = request_base
+                record["base_source"] = base_src
+            if lane_args:
+                record["selective"] = True
+                record["requested_args"] = list(lane_args)
+            if assay_selective:
+                record["selective"] = True
+                selected = lane.get("_selective_assay", {})
+                record["assay_selective"] = {
+                    "reuse_from": selected.get("reuse_from"),
+                    "rejudge": selected.get("rejudge", []),
+                    "rejudge_outcome": selected.get("rejudge_outcome"),
+                }
+            record["_keep"] = resolve_history_keep(cfg, cfg_path, central,
+                                                   central_path)[0]
+            log_path = allocate_lane_log(args.lane, record["run_id"])
+            record["log_path"] = str(log_path) if log_path else None
+        if lane.get("clean_tree", True) and not args.allow_dirty:
+            check_clean_tree(worktree)
+        # RG-20 resource-aware admission: slice-memory accounting FIRST
+        # (fast-fail — review fix: a gate blocked on a held lock used to
+        # wait before receiving an admission refusal it could have been
+        # given instantly), THEN shared-infra serialization — the only
+        # potentially-blocking step, in sorted-name order, released in
+        # finally.
+        slice_name = slice_src = None
+        if env and env.get("mode") == "exec":
+            # Review fix (R-05): exec lanes DISCLOSE their slice but never
+            # memory-admit or cap: the persistent runner predates this
+            # invocation (its placement was decided when CIU started it) and
+            # `docker exec` can neither place nor cap work in a slice.
+            if env.get("cgroup_slice"):
+                print(f"run-gate: WARNING: cgroup_slice on exec environment "
+                      f"{env_source} is naming-only ({env['cgroup_slice']!r}) "
+                      f"— docker exec cannot enforce slice placement or caps; "
+                      f"the runner is governed by how it was started",
+                      flush=True)
+                slice_name = env["cgroup_slice"]
+                slice_src = f"declared {env_source}, naming-only"
+            elif env.get("cgroup_slice_env"):
+                slice_env_name = env["cgroup_slice_env"]
+                ambient = os.environ.get(slice_env_name)
+                if ambient:
+                    print(f"run-gate: WARNING: cgroup_slice_env on exec "
+                          f"environment {env_source} is naming-only "
+                          f"(${slice_env_name}={ambient!r}) — docker exec cannot "
+                          "enforce slice placement or caps; the runner is "
+                          "governed by how it was started", flush=True)
+                    slice_name = ambient
+                    slice_src = (f"${slice_env_name} (declared {env_source}), "
+                                 "naming-only")
+                else:
+                    slice_src = (f"${slice_env_name} declared by {env_source} "
+                                 "(unset)")
+            else:
+                ambient = os.environ.get(CGROUP_ENV_VAR)
+                if ambient:
+                    slice_name = ambient
+                    slice_src = f"${CGROUP_ENV_VAR}, naming-only"
+                else:
+                    slice_src = (f"no cgroup_slice declared and no "
+                                 f"${CGROUP_ENV_VAR}")
+            if lane.get("resources") or lane.get("memory") \
+                    or env.get("resources"):
+                # RG-48: naming-only, same rule as `cgroup_slice` above —
+                # `docker exec` can neither place nor cap work, so a
+                # declared `resources.cpus` (lane OR environment) is exactly
+                # as inert here as `resources.memory` already was.
+                print(f"run-gate: WARNING: lane {args.lane!r} declares "
+                      f"resources/memory but its environment is exec-mode — "
+                      f"resource admission and --memory/--cpus caps apply to "
+                      f"ephemeral container lanes only", flush=True)
+        elif env:
+            slice_name, slice_src = resolve_slice(env, env_source)
+            check_slice_memory_admission(lane, args.lane, slice_name,
+                                         slice_src)
+        # RG-55/contract Sec 4: resolved ONCE per invocation, like `env`
+        # above — `resolve_profile_settings` folds in the operator-facing
+        # ambient override (`PROFILE_AMBIENT_ENV_VAR` / `RUN_GATE_PROFILE`,
+        # RW-17) internally, so this is the one and only place a lane's
+        # profiling policy is decided. The token
+        # is generated regardless of `--dry-run` (RG-8: a dry run's argv IS
+        # what the live run would execute, token included) but is `None`
+        # when profiling is not enabled — contract Sec 4 obligation 8's "no
+        # token" — and this same plan is handed to `run_bare_host_lane` too
+        # (S4, round-1 review): a bare-host lane IS profiled since RG-57
+        # (RW-27b), including using this SAME token on its own daemon path
+        # (injected into the child's environment, not a docker `-e` argv —
+        # there is no `docker run`/`docker exec` for a bare-host lane to
+        # pass it through) — it is only the rusage (daemon-absent)
+        # sub-path that starts no session for the token to identify.
+        profile_plan = resolve_profile_settings(lane, cfg, cfg_path, central,
+                                                central_path)
+        profile_plan["token"] = (generate_profile_token()
+                                 if profile_plan["enabled"] else None)
+        lock_deadline = (None if args.dry_run else
+                         time.monotonic() + lock_wait_seconds)
+        locks = acquire_shared_locks(lane, args.lane, args.dry_run,
+                                     lock_deadline)
+        # RG-39: the exec-mode mutex fd, closed from the SAME finally as the
+        # shared-infra fds above — None until (and unless) the exec branch
+        # below actually resolves a container identity and takes it. Kept
+        # OUTSIDE the try's exec branch so a resolve_container_name() or
+        # acquire_exec_lock() failure still hits `finally` and releases
+        # `locks` (this variable simply stays None; nothing to close).
+        exec_lock_fd = None
+        admission_manager = None
+        admission_ticket = _admission_ticket
+        admission_value = (_admission_ticket.result()
+                           if _admission_ticket is not None else None)
+        release_admission_ticket = False
+
+        def admit_now() -> tuple[float, float]:
+            nonlocal admission_manager, admission_ticket, admission_value
+            nonlocal release_admission_ticket
+            if _admission_managed:
+                # A sequence owns one composite ticket; each member still
+                # starts its own budget after its own locks are held.
+                return time.time(), time.monotonic()
+            existing_admission = None
+            existing_owner_live = False
+            if env and env.get("mode") == "ephemeral" and not args.dry_run:
+                pending = load_inflight_record(
+                    inflight_path(eff_proj, args.lane), fresh=args.fresh)
+                if pending is not None:
+                    existing_admission = pending.get("admission")
+                    existing_owner_live = live_owner_pid(pending) is not None
+            (admission_manager, admission_ticket, admission_value,
+             epoch, monotonic, release_admission_ticket) = _admit_lane(
+                args.lane, lane, cfg, args, record,
+                existing_admission=existing_admission,
+                existing_owner_live=existing_owner_live)
+            if record is not None:
+                record["admission"] = admission_value
+            return epoch, monotonic
+
+        try:
+            # The runner-specific header is printed by its execution helper.
+            # Keep the config source beside it so a worktree's selected
+            # policy is visible before any lane command is started.
+            print(f"run-gate: config: {cfg_path}", flush=True)
+            if not env:  # built-in 'bare-host' — 'host' now resolves to a
+                         # non-empty synthetic env and falls through to
+                         # run_container_lane() below like any named env.
+                budget_started_epoch, budget_started_monotonic = admit_now()
+                budget_deadline = (budget_started_monotonic
+                                   + budget_seconds(lane["budget"])
+                                   if lane.get("budget") else None)
+                if record is not None:
+                    record["admission_started_at"] = _iso_utc(
+                        budget_started_epoch)
+                code = run_lane_with_cgroup_event_guard(
+                    args.lane,
+                    lambda: run_bare_host_lane(
+                        lane, args.lane, eff_proj, repo, worktree,
+                        dry_run=args.dry_run,
+                        request_base=request_base,
+                        run_record=record,
+                        profile_plan=profile_plan,
+                        budget_deadline=budget_deadline,
+                        env_source=f"{env_source} (mode host)"),
+                    enabled=not args.dry_run)
+            elif env.get("mode") == "exec":
+                # Resolved HERE, not inside run_exec_lane: the lock key and
+                # the eventual `docker exec` target must be the SAME
+                # identity, and the lock has to be held (ordering: strictly
+                # after the shared-infra locks above) before the exec ever
+                # starts.
+                container_name, container_name_src, container_start_remedy = \
+                    resolve_container_name(lane_environment_name(lane), env,
+                                           repo, worktree, env_source)
+                exec_lock_fd = acquire_exec_lock(container_name, args.lane,
+                                                 args.dry_run, lock_deadline)
+                budget_started_epoch, budget_started_monotonic = admit_now()
+                budget_deadline = (budget_started_monotonic
+                                   + budget_seconds(lane["budget"])
+                                   if lane.get("budget") else None)
+                if record is not None:
+                    record["admission_started_at"] = _iso_utc(
+                        budget_started_epoch)
+                code = run_lane_with_cgroup_event_guard(
+                    args.lane,
+                    lambda: run_exec_lane(
+                        lane, args.lane, eff_proj, repo, worktree,
+                        env, env_source,
+                        container_name, container_name_src,
+                        container_start_remedy,
+                        slice_name, slice_src,
+                        dry_run=args.dry_run,
+                        request_base=request_base,
+                        run_record=record,
+                        profile_plan=profile_plan,
+                        budget_deadline=budget_deadline,
+                        budget_started_epoch=budget_started_epoch),
+                    enabled=not args.dry_run)
+            else:
+                budget_started_epoch, budget_started_monotonic = admit_now()
+                budget_deadline = (budget_started_monotonic
+                                   + budget_seconds(lane["budget"])
+                                   if lane.get("budget") else None)
+                if record is not None:
+                    record["admission_started_at"] = _iso_utc(
+                        budget_started_epoch)
+                code = run_lane_with_cgroup_event_guard(
+                    args.lane,
+                    lambda: run_container_lane(
+                        lane, args.lane, eff_proj, repo,
+                        worktree, env, env_source,
+                        slice_name, slice_src,
+                        dry_run=args.dry_run,
+                        request_base=request_base,
+                        fresh=args.fresh,
+                        run_record=record,
+                        profile_plan=profile_plan,
+                        budget_deadline=budget_deadline,
+                        budget_started_epoch=budget_started_epoch,
+                        admission_group=(admission_ticket.name
+                                         if admission_ticket else None)),
+                    enabled=not args.dry_run)
+        finally:
+            active_exception = sys.exc_info()[0] is not None
+            admission_release_error = None
+            if (not _admission_managed and release_admission_ticket
+                    and admission_manager is not None
+                    and admission_ticket is not None):
+                try:
+                    admission_manager.release(admission_ticket)
+                except AdmissionError as exc:
+                    if active_exception:
+                        print(f"run-gate: admission WARNING: ticket "
+                              f"{admission_ticket.name!r} could not be "
+                              f"released while unwinding: {exc}",
+                              file=sys.stderr, flush=True)
+                    else:
+                        admission_release_error = exc
+            # RG-39: exec lock released before the shared-infra locks below
+            # (LIFO of acquisition order) — not load-bearing for correctness
+            # (different lock names never nest), but it keeps the release
+            # order legible against the acquisition order above.
+            if exec_lock_fd is not None:
+                os.close(exec_lock_fd)  # releases the exec-mode flock
+            for fd in locks:
+                os.close(fd)  # releases the flock
+            if admission_release_error is not None:
+                fail(f"admission ticket release failed: "
+                     f"{admission_release_error}")
+        # RG-27: outside the shared-infra lock — telemetry never extends a
+        # hold another gate is waiting on.
+        if lane["kind"] == "assay" and not args.dry_run:
+            recorded_verdict = record.get("_verdict_path") if record else None
+            verdict_path = (Path(recorded_verdict)
+                            if isinstance(recorded_verdict, str)
+                            else project_dir / assay_verdict_rel(
+                                lane["assay_lane"]))
+            try:
+                verdict_doc = json.loads(verdict_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                result = LaneResult("ERROR", code,
+                                    f"assay verdict unavailable at {verdict_path}: {exc}")
+            else:
+                if not isinstance(verdict_doc, dict):
+                    result = LaneResult("ERROR", code,
+                                        "assay verdict is not a JSON object")
+                else:
+                    identity_mode = (record.get("_assay_identity_mode")
+                                     if record else None)
+                    if not isinstance(identity_mode, str) \
+                            or identity_mode not in ASSAY_IDENTITY_MODES:
+                        result = LaneResult(
+                            "ERROR", code,
+                            "missing-or-invalid-assay-identity-mode")
+                    else:
+                        provenance = verdict_doc.get("judge_provenance")
+                        result = assay_lane_result(
+                            code, verdict_doc.get("outcome"),
+                            verdict_exit_code=verdict_doc.get("exit_code"),
+                            judge_provenance=provenance,
+                            source_mode=identity_mode == "source",
+                            source_version=verdict_doc.get("assay_version"),
+                            source_commit=verdict_doc.get("commit"),
+                            expected_source_commit=(record.get("commit")
+                                                    if record else None),
+                            reason=verdict_doc.get("reason_code"),
+                            claims=verdict_doc.get("claims"),
+                            evidence=verdict_doc.get("evidence"))
+        elif lane["kind"] == "assay":
+            result = LaneResult("PASS" if code == 0 else "FAIL", code)
+        else:
+            result = command_lane_result(code, lane)
+        if (lane["kind"] == "assay" and not args.dry_run
+                and result.verdict != "PASS"):
+            _report_failed_assay(args.lane, record, eff_proj, repo, lane,
+                                 result.verdict)
+        # A promoted follower retains the private identity mode through this
+        # parser. Remove it before returning; finish() records the parsed
+        # result and must never persist the launch-only mode.
+        if record is not None:
+            record.pop("_assay_identity_mode", None)
+        return LaneResult(result.verdict, result.exit_code, result.reason,
+                          result.log_path, result.assay_outcome,
+                          admission_value, record, args.lane, args.json)
+    except GateBudgetExceeded as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        result = LaneResult("BUDGET_EXCEEDED", exc.exit_code,
+                            log_path=(str(exc.log_path)
+                                      if exc.log_path is not None else None))
+        active_lane = locals().get("lane")
+        active_project = locals().get("eff_proj")
+        active_repo = locals().get("repo")
+        if (record is not None and isinstance(active_lane, dict)
+                and active_lane.get("kind") == "assay"
+                and isinstance(active_project, Path)
+                and isinstance(active_repo, Path)):
+            _report_failed_assay(getattr(args, "lane", ""), record,
+                                 active_project, active_repo, active_lane,
+                                 result.verdict)
+        return LaneResult(result.verdict, result.exit_code, result.reason,
+                          result.log_path, admission=locals().get(
+                              "admission_value"), _record=record,
+                          _lane_name=getattr(args, "lane", None),
+                          _json=bool(getattr(args, "json", False)))
+    except GateError as exc:
+        print(f"{PROG}: {exc}", file=sys.stderr)
+        if isinstance(exc, LaneCgroupEventError):
+            result = LaneResult("ERROR", exc.lane_exit_code, str(exc))
+            active_lane = locals().get("lane")
+            active_project = locals().get("eff_proj")
+            active_repo = locals().get("repo")
+            if (record is not None and isinstance(active_lane, dict)
+                    and active_lane.get("kind") == "assay"
+                    and isinstance(active_project, Path)
+                    and isinstance(active_repo, Path)):
+                _report_failed_assay(
+                    getattr(args, "lane", ""), record, active_project,
+                    active_repo, active_lane, result.verdict)
+        elif isinstance(exc, GateNotRunError):
+            result = LaneResult("NOT_RUN", reason=exc.reason)
+        else:
+            result = LaneResult("ERROR", reason=str(exc))
+        return LaneResult(result.verdict, result.exit_code, result.reason,
+                          result.log_path or (record.get("log_path")
+                                              if record else None),
+                          result.assay_outcome,
+                          locals().get("admission_value", result.admission), record,
+                          getattr(args, "lane", None),
+                          bool(getattr(args, "json", False)))
+    except BaseException as exc:
+        # Ctrl-C and friends (RG-27): `latest` records the abort, and the
+        # exception continues on its way completely untouched. This also
+        # catches SystemExit, deliberately harmless: flush_run_record is
+        # at-most-once and re-raises nothing, so a `sys.exit()` raised from
+        # anywhere under here still exits with its own code, having recorded
+        # that the invocation ended.
+        flush_run_record(record, error=exc)
+        raise
+
+
+def _sigterm_as_exit(signum, _frame) -> None:
+    # Let lane cleanup run (including the Docker ticket finally) before
+    # preserving the conventional shell status for SIGTERM.
+    raise SystemExit(128 + signum)
+
+
+def is_pid1_without_init() -> bool:
+    """PID 1 in a container has no init reaper in front of run-gate."""
+    return os.getpid() == 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    option_argv = (arguments[:arguments.index("--")]
+                   if "--" in arguments else arguments)
+    if is_pid1_without_init() and "--version" not in option_argv:
+        print(f"{PROG}: run-gate is PID 1 with no init: start the container "
+              "with `--init` (Docker) or `init: true` (Compose)",
+              file=sys.stderr, flush=True)
+        return finish(LaneResult(
+            "ERROR", reason="pid1-without-init",
+            _json="--json" in option_argv))
+    previous_sigterm = None
+    try:
+        previous_sigterm = signal.getsignal(signal.SIGTERM)
+        signal.signal(signal.SIGTERM, _sigterm_as_exit)
+    except ValueError:
+        # The console entrypoint may be embedded in a non-main thread; signal
+        # ownership belongs to that embedding process in that case.
+        previous_sigterm = None
+    try:
+        try:
+            if "--json" not in option_argv:
+                result = _dispatch(arguments)
+            else:
+                # Lane JSON is one machine-readable stdout document. Keep the
+                # ordinary run header and progress on stderr; history/footprint
+                # own their JSON output and are replayed unchanged.
+                captured = io.StringIO()
+                with contextlib.redirect_stdout(captured):
+                    result = _dispatch(arguments)
+                output = captured.getvalue()
+                if result._json:
+                    if output:
+                        sys.stderr.write(output)
+                elif output:
+                    sys.stdout.write(output)
+        except (SystemExit, KeyboardInterrupt):
+            # Dependencies and signal handlers do not get to leak Python's
+            # arbitrary process statuses around the closed result table. Keep
+            # finish outside this handler so a partial telemetry flush cannot
+            # trigger a second finalization attempt.
+            result = LaneResult(
+                "ERROR", reason="interrupted-before-a-closed-result")
+        return finish(result)
+    finally:
+        if previous_sigterm is not None:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

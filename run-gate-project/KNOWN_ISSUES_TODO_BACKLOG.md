@@ -111,6 +111,8 @@ SPEC §9.
 | RG-91 | Run-Gate's cgprofile control and watch clients pretty-print JSON to a newline-delimited socket, so the daemon reads only `{` and refuses the request | Major | FIXED in candidate rev 65; byte-at-a-time newline-framing regressions cover control and watch requests; exact gate and release pending |
 | RG-92 | cgroup observer unavailability maps Assay's pre-candidate `NO_MEASUREMENT` to a product FAIL; observer group validation reads the devcontainer's potentially unrelated `docker` name | Major | FIXED in the contract-2 candidate; reason-specific ERROR mapping and host numeric GID check are implemented, exact gate pending |
 | RG-93 | the shared Git directory stays read-write for tester commits, letting a container plant a common hook that a later host commit executes and alter host `info/exclude` | Major | FIXED IN CANDIDATE rev 67; focused mount tests pass; registered real-container test pending |
+| RG-94 | Run-Gate still presents its internal source revision as the consumer compatibility identity although supported consumers install the wheel | Major | IMPLEMENTED in the SemVer candidate; exact gates, independent review, and release pending |
+| RG-95 | Run-Gate can accept Assay PASS without checking the artifact exit code against the runner's raw status | Major | IMPLEMENTED in the integrated candidate; exact gates, live Assay acceptance, independent review, and release pending |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6093,3 +6095,81 @@ DESIGN-GUIDE, CONSUMERS and SPEC state the mapping; the exact registered
 **Fix.** For linked and opted-in plain-checkout ephemeral lanes, Run-Gate overlays the common `hooks/` directory with a private empty read-only directory and mounts the real common `info/` directory read-only at both physical and namespace paths. Missing, symlinked, or non-directory paths fail before launch. The common Git directory remains read-write for in-lane Git behavior. CMRU also disables local hooks around its host-side mutation-baseline Git calls.
 
 **Oracles.** Mount tests require both dual-path overlays and read-only flags. The registered real-container test plants a host `post-commit` hook, proves the in-container commit cannot run or replace it or edit `info/exclude`, then checks that a subsequent host commit still runs the original hook unchanged. The exact-tree Run-Gate gate and independent review remain release requirements.
+
+## RG-94 — public compatibility identity is an internal revision number
+
+**Status: IMPLEMENTED in the Run-Gate SemVer candidate; exact gates, independent review, and release pending.**
+
+**Observed.** Run-Gate's supported distribution is a wheel with a console
+entrypoint, but the public `--version` output, help banner, lane banners,
+consumer docs, and CMRU judge floor still use or describe `rev N`. The
+revision number originated as a drift marker for copied `run-gate.py` files.
+That copied-script contract is no longer supported, so it has no consumer
+compatibility value and cannot be compared consistently with SemVer-based
+tool releases.
+
+**Decision.** Public consumers use the installed Run-Gate wheel and its
+SemVer distribution version. The release that removes the source-script
+consumer contract is a major release. Internal revision fields may remain in
+historical records where they describe the record writer or stored schema;
+they must not be presented or checked as the installed-tool version or a
+consumer upgrade floor.
+
+**Fix.** Make the installed console CLI the supported entrypoint, read its
+version from installed distribution metadata, and fail clearly when the
+wheel metadata is absent or invalid. Migrate active consumer lane/release
+commands and docs from `./run-gate.py` to `run-gate`, remove estate consumer
+symlinks, install and assert the released wheel in tester-unified, and change
+consumer floors to SemVer. Keep schema/provenance revision fields only where
+their existing record compatibility contract needs them. Update the root
+agent instructions, Buildkite generator, pointer validation, and all three
+user docs (README, DESIGN-GUIDE, CONSUMERS) in the same change.
+
+**Oracles.** A fresh project with only `run-gate.toml` can invoke the
+installed CLI from its project directory; `run-gate --version`, help,
+argument errors, and lane banners identify the same installed SemVer. Missing
+or malformed distribution metadata fails closed. Active estate configs and
+release steps contain no script pointer; `validate-pointers` reports legacy
+script references. The tester image proves its installed Run-Gate artifact
+and version. Config examples parse, public CLI examples use the wheel, and
+docs cross-links resolve. The exact registered selftest, full gate, canary,
+and release workflow pass at the reviewed candidate commit.
+
+## RG-95 — Run-Gate can accept Assay PASS without checking the verdict exit code against the runner
+
+**Status: IMPLEMENTED in the integrated candidate; exact gates, live Assay acceptance, independent review, and release pending.**
+
+Severity: Major (a false PASS can certify a lane whose process failed). Type: bugfix. Filed 2026-10-13 from the B108 xhigh design review.
+
+**Observed.** `assay_lane_result()` mapped the Assay `outcome` to the gate verdict and retained the raw runner status, but ignored the verdict artifact's top-level `exit_code`. The regression test `test_assay_outcomes_follow_the_closed_table_and_retain_raw_outcome` passed raw status `1` together with outcome `PASS` and expected gate PASS. The artifact and process therefore could disagree while run-gate certified success.
+
+**Required contract.** Require a non-boolean integer Assay verdict `exit_code`; compare it with the raw status returned by the lane process; and require the code to match Assay's closed outcome table (PASS 0, FAIL 1, ERROR 2, NO_MEASUREMENT 3, BUDGET_EXCEEDED 4, INCONCLUSIVE 5). Missing or malformed runner/artifact status, raw/artifact mismatch, or outcome/code mismatch returns infrastructure ERROR. Preserve the raw runner code, Assay outcome and reason in the result. Keep the existing NO_MEASUREMENT observer-refusal rollup only after these integrity checks pass. Apply the rule to source-backed and artifact-backed Assay identity modes.
+
+**Oracles.** (1) Each closed outcome with its matching raw and artifact code preserves the current gate mapping. (2) PASS with runner code 1 and artifact code 0 returns ERROR and retains raw 1. (3) A raw/artifact match of 1 with outcome PASS returns ERROR because the outcome/code pair is invalid. (4) FAIL with runner code 0 and artifact code 1 returns ERROR. (5) Missing, boolean, or malformed artifact codes return ERROR. (6) Source and artifact identity checks and the observer-refusal rollup remain intact after valid exit agreement. A controlled regression that ignores the raw/artifact comparison must fail the existing false-PASS oracle.
+
+**Release evidence.** README, DESIGN-GUIDE, CONSUMERS and SPEC document the comparison. The registered Run-Gate selftest and a live Assay-lane acceptance on the exact release commit are required before marking fixed.
+
+## RG-96 — selftest diff coverage treats a symlink-to-module migration as a full-file addition
+
+**Status: FIXED IN CANDIDATE; registered coverage gate and independent reviews pending.**
+
+**Observed.** The selftest diff-coverage helper passed `--source run_gate.py`
+as a Git pathspec before Git performed rename detection. During the wheel-only
+migration, `run_gate.py` changed from a symlink to the old `run-gate.py` script
+into the full module, while the old script was retired. Git therefore could
+not match the deleted source to its replacement and counted the entire module
+as newly added. That made the 100% changed-line gate refuse the candidate even
+though the actual source delta was much smaller.
+
+**Fix.** Compare the project-relative working-tree diff with rewrite and
+rename detection enabled, then apply the existing source-prefix filter to the
+parsed file paths. Keep the dirty-tree line-number behavior: the diff must
+still describe the exact bytes measured by the same run's coverage report.
+
+**Oracles.** A temporary Git repository starts with a regular `run-gate.py`
+and a `run_gate.py` symlink, then replaces them with a mostly unchanged
+`run_gate.py` module plus an unrelated source edit. The helper reports only
+the new module lines and the unrelated file separately; `evaluate()` counts
+only the selected module. Existing dirty-tree line-number coverage remains.
+The registered selftest must show 100% coverage of changed executable lines
+and branches on the exact candidate tree.
