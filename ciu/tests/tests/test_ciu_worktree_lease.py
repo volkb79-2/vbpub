@@ -723,7 +723,7 @@ class TestApplyLease:
         assert record.lease.mode == "held"
         assert record.lease.expires_at_utc is not None
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
-        assert stored["schema_version"] == 2
+        assert stored["schema_version"] == 3
         assert stored["lease"]["holder"].startswith("ciu@dev-box:")
 
     def test_perpetual_sets_an_unbounded_lease(self, tmp_repo, fake_generate_env):
@@ -748,12 +748,12 @@ class TestApplyLease:
         assert record.lease is None
         assert json.loads(record.record_path.read_text("utf-8"))["lease"] is None
 
-    def test_release_is_unconditional_and_normalizes_a_v1_record(
+    def test_release_does_not_downgrade_the_overlay_record(
         self, tmp_repo, fake_generate_env
     ):
         worktree.create(tmp_repo, "one", base="main")
         record = worktree.apply_lease(tmp_repo, "one", release=True)
-        assert record.schema_version == 2
+        assert record.schema_version == 3
         assert record.lease is None
 
     def test_extend_renews_rather_than_restarting_the_claim(
@@ -850,7 +850,7 @@ class TestLeaseCli:
         assert code == 0
         doc = json.loads(out)
         assert doc["operation"] == "lease"
-        assert doc["instance"]["schema_version"] == 2
+        assert doc["instance"]["schema_version"] == 3
         assert doc["instance"]["lease"]["mode"] == "held"
 
     def test_unknown_instance_exits_two(self, tmp_repo, capsys):
@@ -899,7 +899,7 @@ class TestTeardownClearsTheLease:
         with pytest.raises(worktree.WorktreeError, match="locked"):
             worktree.remove(tmp_repo, "one")
         assert seen[0]["lease"] is None
-        assert seen[0]["schema_version"] == 2
+        assert seen[0]["schema_version"] == 3
 
     def test_a_failed_clean_leaves_the_lease_exactly_as_it_was(
         self, tmp_repo, fake_generate_env, monkeypatch

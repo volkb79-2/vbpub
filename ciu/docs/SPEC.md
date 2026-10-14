@@ -5153,6 +5153,14 @@ and `overlay_intent_known: true` before the overlay is published. Schema v3
 also carries the `lease` field introduced in S16.9. Schemas v1 and v2 remain
 readable; a v1/v2 record that still needs allocation recovery is refused
 because it cannot prove whether an initial overlay was requested.
+For a newly created worktree, CIU then checks out the requested base and
+persists the resulting fork point before publishing the overlay. If the process
+stops before publication, `ensure` resumes from that recorded checkout instead
+of resolving a moving base reference again. Adoption keeps its existing
+checkout and never resets it. If a process stops before the first checkout,
+`ensure` repeats that checkout only when the recorded allocation commit still
+matches and the worktree is clean or wholly unpopulated; local changes or an
+ambiguous checkout are preserved and refused.
 
 When `ensure` resumes an incomplete schema-v3 allocation, it restores a
 missing recorded overlay with a same-directory atomic no-clobber publish. If

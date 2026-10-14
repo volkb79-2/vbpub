@@ -4039,6 +4039,54 @@ def _allocated_commit_sha(
     return commit
 
 
+def _assert_allocation_checkout_reset_is_safe(
+    record: WorktreeInstanceRecord,
+) -> None:
+    """Refuse to repeat an uncheckpointed checkout over any local work.
+
+    `create_workspace()` deliberately adds a linked checkout with
+    `--no-checkout`. A process can stop after CIU's first record write and
+    before `_finish_allocation()` resets that checkout. On resume, repeating
+    the reset is safe only while the worktree is clean or every tracked path
+    is still absent from that no-checkout allocation. Mixed deletions,
+    modifications, staged changes, and untracked files are ambiguous and are
+    preserved for operator inspection.
+    """
+    checkout = record.git_worktree_path
+    status = _git(
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"], checkout
+    )
+    if status.returncode != 0:
+        raise WorktreeError(
+            f"[S16] cannot safely resume {record.logical_name!r}: could not inspect "
+            f"the incomplete checkout at {checkout}: "
+            f"{(status.stderr or status.stdout).strip()}"
+        )
+    entries = [entry for entry in status.stdout.split("\0") if entry]
+    if not entries:
+        return
+
+    tracked = _git(["ls-files", "-z"], checkout)
+    if tracked.returncode != 0:
+        raise WorktreeError(
+            f"[S16] cannot safely resume {record.logical_name!r}: could not inspect "
+            f"tracked checkout paths at {checkout}: "
+            f"{(tracked.stderr or tracked.stdout).strip()}"
+        )
+    tracked_paths = [path for path in tracked.stdout.split("\0") if path]
+    all_unchecked_out = (
+        bool(tracked_paths)
+        and len(entries) == len(tracked_paths)
+        and all(entry[:2] == " D" for entry in entries)
+    )
+    if not all_unchecked_out:
+        raise WorktreeError(
+            f"[S16] cannot safely resume {record.logical_name!r}: the incomplete "
+            f"checkout at {checkout} contains local changes; inspect it before "
+            "retrying `ciu worktree ensure`"
+        )
+
+
 
 def _committed_root_entries(
     repo_root: Path,
@@ -4200,6 +4248,7 @@ def _finish_allocation(
     checkout_required: bool,
     allow_existing_network: bool = False,
     workspace_context: object | None = None,
+    recover_initial_overlay: bool = False,
 ) -> WorktreeInstanceRecord:
     if workspace_context is None:
         _mark_recovery(record, "env-generation-failed")
@@ -4220,13 +4269,15 @@ def _finish_allocation(
         #
         # It is THIS `reset --hard <base_ref>` that decides the new branch's
         # tip — not `git worktree add` — and it re-resolves `base_ref` afresh,
-        # after the record and the overlay have already been written. Reading
+        # after the initial allocation intent record is durable. Reading
         # `base_ref` in repo_root before that left a window in which another
         # session committing to the shared `main` checkout (which this
         # estate's own workflow expects) produced a record that was born
         # SPENT: the consumer would refuse it forever and blame `main` for
         # absorbing work it never absorbed. `ensure()` resuming a partial
-        # allocation hit the same skew with no race at all.
+        # allocation hit the same skew with no race at all. The fork point is
+        # persisted before the recorded overlay is published, so an
+        # interruption there remains safely resumable too.
         #
         # Taken from the worktree's own HEAD, immediately after the reset, it
         # is the branch tip by construction — no window, and no question
@@ -4257,6 +4308,15 @@ def _finish_allocation(
     recovery_status = "env-generation-failed"
 
     try:
+        # CIU-135: the exact rendered overlay intent is checkpointed in the
+        # initial record before allocation mutates the checkout. Publish or
+        # verify that payload only after a new checkout has been reset and its
+        # fork point saved. An interruption before publication then leaves a
+        # checkout that `ensure` can safely resume; a ready checkout's local
+        # overlay remains operator-owned and is never rewritten here.
+        if recover_initial_overlay:
+            _ensure_initial_overlay(allocating)
+
         # A generic Git worktree can lack a root marker while still containing
         # committed nested CIU roots. Prepare all of them before publishing
         # this aggregate record as ready.
@@ -4534,14 +4594,10 @@ def create(
             schema_version=WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
         )
         _write_instance_record(record)
-        try:
-            _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
-        except WorktreeError:
-            _mark_recovery(record, "checkout-incomplete")
-            raise
         return _finish_allocation(
             repo_root, record, checkout_required=True,
             workspace_context=shared_context,
+            recover_initial_overlay=True,
         )
 
 
@@ -4595,9 +4651,10 @@ def ensure(
                     raise WorktreeError(
                         f"[S16] ensure mismatch for {field}: record has "
                         f"{actual!r}, caller requested {expected!r}"
-                    )
+            )
             workspace_context = _ensure_shared_record(repo_root, record)
             allocation_was_ready = record.state == "ready"
+            checkout_required = False
             if record.state == "ready":
                 if _ready_roots_are_complete(
                     repo_root, record, workspace_context
@@ -4630,18 +4687,24 @@ def ensure(
                 allow_existing_network = (
                     record.recovery_status == "env-generation-failed"
                 )
-            # The checkpoint describes only the initial allocation. Once the
-            # worktree has reached ready, its overlay is operator state, even
-            # if ensure later repairs incomplete root metadata.
-            if not allocation_was_ready:
-                _ensure_initial_overlay(record)
+                checkout_required = (
+                    record.fork_point_sha is None
+                    and (
+                        record.state == "allocating"
+                        or record.recovery_status == "checkout-incomplete"
+                    )
+                )
+                if checkout_required:
+                    _assert_allocation_checkout_reset_is_safe(record)
             # The allocation target was proven from its record or the neutral
-            # workspace record above. Re-resolving base_ref here could move a
-            # partially initialized checkout and discard operator commits.
+            # workspace record above. An uncheckpointed initial create repeats
+            # reset only after proving the checkout is still clean or
+            # completely unpopulated; all later recovery preserves its HEAD.
             return _finish_allocation(
-                repo_root, record, checkout_required=False,
+                repo_root, record, checkout_required=checkout_required,
                 allow_existing_network=allow_existing_network,
                 workspace_context=workspace_context,
+                recover_initial_overlay=not allocation_was_ready,
             )
     return create(repo_root, logical_name, **create_kwargs)
 
@@ -4718,14 +4781,10 @@ def adopt(
         # without a checkout; it never resets an adopted tree. Keeping the
         # marker through `_finish_allocation` also covers a hard interruption
         # after identity generation has started.
-        try:
-            _write_worktree_overlay(record.ciu_root, profile, shared_infra_intent)
-        except (WorktreeError, OSError):
-            _mark_recovery(record, "env-generation-failed")
-            raise
         return _finish_allocation(
             repo_root, record, checkout_required=False, allow_existing_network=True,
             workspace_context=workspace_context,
+            recover_initial_overlay=True,
         )
 
 

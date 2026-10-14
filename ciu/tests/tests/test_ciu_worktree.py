@@ -647,7 +647,7 @@ class TestManagedIdentityLifecycle:
             raise KeyboardInterrupt("simulated interruption")
 
         monkeypatch.setattr(
-            worktree, "_write_worktree_overlay", interrupt_before_overlay
+            worktree, "_write_rendered_worktree_overlay", interrupt_before_overlay
         )
         with pytest.raises(KeyboardInterrupt, match="simulated interruption"):
             worktree.create(tmp_repo, "overlay-resume", profile="core,db")
@@ -656,11 +656,42 @@ class TestManagedIdentityLifecycle:
         assert partial is not None and partial.state == "allocating"
         assert partial.overlay_intent_known is True
         assert partial.initial_overlay is not None
+        assert partial.fork_point_sha == _git(
+            ["rev-parse", "HEAD"], partial.git_worktree_path
+        ).stdout.strip()
         overlay = partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
         assert not overlay.exists()
 
         resumed = worktree.ensure(tmp_repo, "overlay-resume")
         assert resumed.state == "ready"
+        assert overlay.read_text(encoding="utf-8") == partial.initial_overlay
+
+    def test_create_resume_checks_out_a_recorded_but_unpopulated_workspace(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_finish = worktree._finish_allocation
+        monkeypatch.setattr(
+            worktree, "_finish_allocation",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                KeyboardInterrupt("simulated stop before checkout")
+            ),
+        )
+        with pytest.raises(KeyboardInterrupt, match="stop before checkout"):
+            worktree.create(tmp_repo, "overlay-before-checkout", profile="core")
+
+        partial = worktree.find_instance_record(tmp_repo, "overlay-before-checkout")
+        assert partial is not None and partial.state == "allocating"
+        assert partial.fork_point_sha is None
+        overlay = partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        assert not overlay.exists()
+
+        monkeypatch.setattr(worktree, "_finish_allocation", real_finish)
+        resumed = worktree.ensure(tmp_repo, "overlay-before-checkout")
+
+        assert resumed.state == "ready"
+        assert resumed.fork_point_sha == _git(
+            ["rev-parse", "HEAD"], resumed.git_worktree_path
+        ).stdout.strip()
         assert overlay.read_text(encoding="utf-8") == partial.initial_overlay
 
     def test_create_resume_refuses_to_replace_conflicting_overlay(
@@ -669,8 +700,10 @@ class TestManagedIdentityLifecycle:
         def interrupt_before_overlay(*_args, **_kwargs):
             raise KeyboardInterrupt("simulated interruption")
 
-        real_writer = worktree._write_worktree_overlay
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", interrupt_before_overlay)
+        real_writer = worktree._write_rendered_worktree_overlay
+        monkeypatch.setattr(
+            worktree, "_write_rendered_worktree_overlay", interrupt_before_overlay
+        )
         with pytest.raises(KeyboardInterrupt):
             worktree.create(tmp_repo, "overlay-conflict", profile="core")
         partial = worktree.find_instance_record(tmp_repo, "overlay-conflict")
@@ -678,7 +711,7 @@ class TestManagedIdentityLifecycle:
         overlay = partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
         overlay.write_text("operator-owned\n", encoding="utf-8")
 
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", real_writer)
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", real_writer)
         with pytest.raises(
             worktree.WorktreeError, match="differs from the recorded allocation intent"
         ):
@@ -728,13 +761,16 @@ class TestManagedIdentityLifecycle:
         monkeypatch.undo()
         monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
         monkeypatch.setattr(
-            worktree, "_write_worktree_overlay",
+            worktree, "_write_rendered_worktree_overlay",
             lambda *_a, **_kw: (_ for _ in ()).throw(worktree.WorktreeError("overlay failed")),
         )
         with pytest.raises(worktree.WorktreeError, match="overlay failed"):
             worktree.create(tmp_repo, "overlay-fails")
         record = worktree.find_instance_record(tmp_repo, "overlay-fails")
-        assert record is not None and record.recovery_status == "checkout-incomplete"
+        assert record is not None and record.recovery_status == "env-generation-failed"
+        assert record.fork_point_sha == _git(
+            ["rev-parse", "HEAD"], record.git_worktree_path
+        ).stdout.strip()
 
     def test_generated_advanced_override_must_retain_one_to_one_name(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -906,12 +942,16 @@ class TestForkPointProvenance:
                     tmp_repo).returncode == 0
         adopted_head = _git(["rev-parse", "HEAD"], wt_path).stdout.strip()
         monkeypatch.setattr(
-            worktree, "_write_worktree_overlay",
+            worktree, "_write_rendered_worktree_overlay",
             lambda *_a, **_kw: (_ for _ in ()).throw(OSError("overlay failed")),
         )
-        with pytest.raises(OSError):
-            worktree.adopt(tmp_repo, "adopted-same-head", str(wt_path))
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", lambda *_a, **_kw: None)
+        with pytest.raises(worktree.WorktreeError, match="multi-root preparation failed"):
+            worktree.adopt(
+                tmp_repo, "adopted-same-head", str(wt_path), profile="core"
+            )
+        monkeypatch.setattr(
+            worktree, "_write_rendered_worktree_overlay", lambda *_a, **_kw: None
+        )
 
         resumed = worktree.ensure(tmp_repo, "adopted-same-head")
         assert resumed.state == "ready"
@@ -937,9 +977,11 @@ class TestForkPointProvenance:
         def boom(*args, **kwargs):
             raise OSError("no space left on device")
 
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", boom)
-        with pytest.raises(OSError):
-            worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
+        real_writer = worktree._write_rendered_worktree_overlay
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", boom)
+        with pytest.raises(worktree.WorktreeError, match="multi-root preparation failed"):
+            worktree.adopt(tmp_repo, "adopted-one", str(wt_path), profile="core")
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", real_writer)
 
         partial = worktree.find_instance_record(tmp_repo, "adopted-one")
         assert partial is not None
@@ -1095,21 +1137,26 @@ class TestForkPointProvenance:
         window — which this estate's workflow explicitly expects — produced a
         record that was born SPENT: the consumer refused it forever and
         blamed `main` for absorbing work it never absorbed. Simulated by
-        moving `main` from inside the overlay write, i.e. exactly between the
-        old capture point and the checkout.
+        moving `main` after the initial record write but before
+        `_finish_allocation` resolves and checks out `base_ref`.
         """
         before = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
-        real_overlay = worktree._write_worktree_overlay
+        real_write_record = worktree._write_instance_record
+        raced = False
 
-        def racing_overlay(*args, **kwargs):
-            (tmp_repo / "raced.txt").write_text("another session\n", encoding="utf-8")
-            assert _git(["add", "-A"], tmp_repo).returncode == 0
-            assert _git(["commit", "-m", "raced commit"], tmp_repo).returncode == 0
-            return real_overlay(*args, **kwargs)
+        def racing_record(record):
+            nonlocal raced
+            real_write_record(record)
+            if not raced and record.state == "allocating" and record.fork_point_sha is None:
+                raced = True
+                (tmp_repo / "raced.txt").write_text("another session\n", encoding="utf-8")
+                assert _git(["add", "-A"], tmp_repo).returncode == 0
+                assert _git(["commit", "-m", "raced commit"], tmp_repo).returncode == 0
 
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", racing_overlay)
+        monkeypatch.setattr(worktree, "_write_instance_record", racing_record)
         record = worktree.create(tmp_repo, "logical-one", base="main")
         after = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
+        assert raced
         assert after != before                       # the race really happened
         head = _git(["rev-parse", "HEAD"], record.git_worktree_path).stdout.strip()
         # the recorded fork point is the tree that actually got checked out
@@ -3051,14 +3098,14 @@ def test_adopt_allows_an_existing_network_for_its_own_checkout(
     )
 
     if resume:
-        write_overlay = worktree._write_worktree_overlay
+        write_overlay = worktree._write_rendered_worktree_overlay
         monkeypatch.setattr(
-            worktree, "_write_worktree_overlay",
+            worktree, "_write_rendered_worktree_overlay",
             lambda *_a, **_kw: (_ for _ in ()).throw(OSError("interrupted overlay")),
         )
-        with pytest.raises(OSError, match="interrupted overlay"):
-            worktree.adopt(tmp_repo, target.name, str(target))
-        monkeypatch.setattr(worktree, "_write_worktree_overlay", write_overlay)
+        with pytest.raises(worktree.WorktreeError, match="interrupted overlay"):
+            worktree.adopt(tmp_repo, target.name, str(target), profile="core")
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", write_overlay)
         ready = worktree.ensure(tmp_repo, target.name)
     else:
         ready = worktree.adopt(tmp_repo, target.name, str(target))
