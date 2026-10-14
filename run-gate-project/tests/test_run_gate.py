@@ -30449,7 +30449,30 @@ class TestRunGateReleaseCoverageEdges:
         linked = {"kind": "linked", "admin": admin}
         assert run_gate.git_worktree_pointer_mount_flags(
             linked, wt, tmp_path)
+        outside = admin / "controlled-gitdir"
+        outside.write_text("redirected\n")
+        (admin / "gitdir").unlink()
+        (admin / "gitdir").symlink_to(outside)
+        with pytest.raises(run_gate.GateInfraError,
+                           match="pointer is not a regular file"):
+            run_gate.git_worktree_pointer_mount_flags(linked, wt, tmp_path)
         (admin / "gitdir").unlink()
         with pytest.raises(run_gate.GateInfraError,
                            match="cannot inspect Git worktree pointer"):
             run_gate.git_worktree_pointer_mount_flags(linked, wt, tmp_path)
+
+    def test_main_without_project_config_reports_both_invocation_shapes(
+            self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        assert run_gate.main(["--help"]) == 2
+        help_error = capsys.readouterr().err
+        assert "no run-gate.toml found in the current project directory" \
+               in help_error
+        assert "(run-gate " in help_error
+
+        assert run_gate.main(["suite"]) == 2
+        lane_error = capsys.readouterr().err
+        assert "no run-gate.toml found in the current project directory" \
+               in lane_error
+        assert str(tmp_path) in lane_error
+        assert "loads config from the current working directory" in lane_error
