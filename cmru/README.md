@@ -482,12 +482,14 @@ section of the project's changelog for the version being released**, verbatim. P
 `## [Unreleased]` entries, including migration notes, are folded into that dated section
 in the disposable release candidate before its gate and tag. The publisher reads the
 section from the exact tagged commit, so the tag and release body carry the same notes.
-The candidate reaches `main` only after a successful publish; gate, build, publish, and
-promotion failures leave the source branch's `[Unreleased]` unchanged. A dry run prints
+Every tagged release carries the notes in its changelog; `--no-build` and image-only
+publishers do not create a GitHub Release body. The candidate reaches `main` only after
+the transaction promotes it; gate, build, publish, and promotion failures leave the source
+branch's `[Unreleased]` unchanged. A dry run prints
 the complete body between `----- begin release body -----` and `----- end release body -----`
-and restores the changelog bytes. `--no-build` and push steps without
-a CMRU GitHub Release-body handler leave pending notes in `[Unreleased]` because no body
-is published. This works for every configured changelog path, and those paths remain
+and restores the changelog bytes. If no GitHub Release body will be published, the dry run
+prints the candidate's tagged changelog section instead. This works for every configured
+changelog path, and those paths remain
 excluded from change detection. A project that opted out (`changelog = false`) gets the
 generated body alone. A changelog without exactly one dated, non-empty section for that
 version **refuses before the gate, tag or upload** instead of publishing a body without
@@ -746,6 +748,11 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 The installed `run-gate` wheel is the canonical test entrypoint. From the
 `cmru/` directory, `run-gate --list` discovers the declared lanes and
 `run-gate gate` runs the aggregate; definitions live in `run-gate.toml`. The
+aggregate requires a stable released Run-Gate package at rev 68 or later; its
+preflight checks both `run-gate --version` and the installed wheel version, then
+records that judge identity in the gate manifest. See the
+[gate design](docs/DESIGN-GUIDE.md#aggregate-gate-binds-its-source-and-judge).
+The
 `assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage,
 and an import-break canary. The release `gate` adds R2 through a separate
 changed-source mutation campaign based on the highest-version published

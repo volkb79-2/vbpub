@@ -103,10 +103,6 @@ def fold_unreleased_notes(markdown: str, version: str) -> str | None:
     span = unreleased_span(markdown) if notes else None
     if span is None:
         return None
-    if _folded_notes_block(markdown) is not None:
-        raise ReleaseNotesError(
-            "the changelog has both pending [Unreleased] notes and an existing folded-note block"
-        )
     comments = "".join(
         f"{item}\n\n"
         for item in html_comments_outside_fenced_code(markdown[span[0]:span[1]])
@@ -125,6 +121,10 @@ def fold_unreleased_notes(markdown: str, version: str) -> str | None:
     later = [item.start for item in headings if item.start > target[0].start]
     end = min(later) if later else len(cleared)
     section = cleared[target[0].start:end].rstrip("\n")
+    if _folded_notes_block(section) is not None:
+        raise ReleaseNotesError(
+            "the target release section already has a folded-note block while [Unreleased] has notes"
+        )
     return (
         cleared[:target[0].start]
         + f"{section}\n\n{_render_folded_notes(notes)}\n"
@@ -422,6 +422,16 @@ def _comparable_lines(text: str) -> list[str]:
     return lines
 
 
+def _folded_notes_block_or_refuse(project: Any, path: Path, section: str):
+    """Turn malformed candidate metadata into the release refusal it is."""
+    try:
+        return _folded_notes_block(section)
+    except ReleaseNotesError as exc:
+        raise RefusedBeforeChange(
+            f"{project.name}: {path} has an invalid CMRU pending-note block: {exc}"
+        ) from exc
+
+
 def _dropped_hand_edits(
     repo_root: Path,
     project: Any,
@@ -454,7 +464,10 @@ def _dropped_hand_edits(
         return []
     produced = set(_comparable_lines(_render_section(heading, old_groups, source_end=cursor)))
     # The `## [x] - date` heading line is the section's own anchor, never content.
-    section_without_pending = _without_folded_notes(section)
+    folded = _folded_notes_block_or_refuse(project, changelog_path, section)
+    section_without_pending = (
+        section if folded is None else section[:folded[0]] + section[folded[1]:]
+    )
     body = section_without_pending.split("\n", 1)[1] if "\n" in section_without_pending else ""
     return [line for line in _comparable_lines(body) if line not in produced]
 
@@ -586,7 +599,7 @@ def generate_release_changelog(
                 "current is kept byte-identical)."
             )
         regenerated = _render_section(heading, groups, source_end=source_end)
-        folded = _folded_notes_block(section)
+        folded = _folded_notes_block_or_refuse(project, path, section)
         if folded is not None:
             regenerated = f"{regenerated.rstrip()}\n\n{_render_folded_notes(folded[2])}\n"
         new_content = (

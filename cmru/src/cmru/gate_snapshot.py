@@ -313,6 +313,73 @@ def _protected_refs_sha256(root: Path, patterns: tuple[str, ...]) -> str:
     return hashlib.sha256(refs).hexdigest()
 
 
+def _anchor_ref_values(root: Path) -> dict[str, str]:
+    """Capture pre-existing release tags and main for lane-time integrity checks.
+
+    New tags may be created by an unrelated release while a long gate runs, so
+    they are deliberately not part of the expected set. Existing tags are
+    immutable. ``main`` may advance normally, but must remain a fast-forward.
+    """
+    result = _git(
+        root, "for-each-ref", "--format=%(refname)%00%(objectname)",
+        "refs/heads/main", "refs/tags",
+    )
+    anchors: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        ref_raw, separator, oid_raw = line.partition(b"\0")
+        if not separator or not ref_raw or not oid_raw:
+            raise RuntimeError("Git returned a malformed main/tag ref record")
+        ref = ref_raw.decode("utf-8", "strict")
+        oid = oid_raw.decode("ascii", "strict")
+        if ref != "refs/heads/main" and not ref.startswith("refs/tags/"):
+            raise RuntimeError(f"Git returned an out-of-scope release anchor ref: {ref}")
+        if len(oid) not in (40, 64) or any(char not in "0123456789abcdef" for char in oid):
+            raise RuntimeError(f"Git returned an invalid object id for release anchor {ref}")
+        anchors[ref] = oid
+    return dict(sorted(anchors.items()))
+
+
+def _git_is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    admin, _common = _linked_git_context(root)
+    environment = os.environ.copy()
+    environment["GIT_DIR"] = str(admin)
+    environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
+    with _host_git_policy():
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+    raise RuntimeError(f"cannot verify main fast-forward ancestry: {detail}")
+
+
+def _verify_anchor_refs(root: Path, expected: dict[str, str]) -> dict[str, str]:
+    current = _anchor_ref_values(root)
+    for ref, oid in expected.items():
+        actual = current.get(ref)
+        if ref == "refs/heads/main":
+            if actual is None or not _git_is_ancestor(root, oid, actual):
+                raise RuntimeError(
+                    "a release gate lane deleted or moved refs/heads/main non-fast-forward"
+                )
+        elif actual != oid:
+            raise RuntimeError(
+                f"a release gate lane moved or deleted existing release tag {ref}"
+            )
+    # Make a fast-forward main tip the next checkpoint. Comparing every lane
+    # only with the initial tip would miss a lane that rewound main back to that
+    # old tip after an earlier lane had advanced it.
+    return current
+
+
 def _read_snapshot_manifest(source_root: Path) -> dict | None:
     path = source_root / _SNAPSHOT_MANIFEST
     try:
@@ -404,6 +471,8 @@ class GateSnapshot:
     lease_holder: str
     refs_sha256: str
     source_branch: str
+    anchor_refs: dict[str, str] = field(default_factory=dict)
+    run_gate_identity: dict[str, object] = field(default_factory=dict)
     lane_exit_codes: dict[str, int | None] = field(default_factory=dict)
     lane_evidence_sha256: dict[str, dict[str, str]] = field(default_factory=dict)
     source_canary: Path | None = None
@@ -419,6 +488,11 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
     api = _worktree_api()
     source_root = source_root.resolve(strict=True)
     common, head, source_branch = _verify_source(source_root)
+    if "refs/heads/main" not in _anchor_ref_values(source_root):
+        raise RuntimeError(
+            "CMRU release gate requires a local refs/heads/main anchor; "
+            "fetch or create the repository's main branch before starting"
+        )
     prior_manifest = _read_snapshot_manifest(source_root)
     manifest_refs = None
     if (
@@ -435,6 +509,40 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         f"{source_root}\0cmru-release-gate\0{head}".encode("utf-8")
     ).hexdigest()[:20]
     branch = f"cmru-gate-{identity}"
+    manifest_anchors = None
+    manifest_judge: dict[str, object] = {}
+    if (
+        prior_manifest
+        and prior_manifest.get("source_commit") == head
+        and prior_manifest.get("snapshot_branch") == branch
+    ):
+        candidate = prior_manifest.get("anchor_refs")
+        if isinstance(candidate, dict) and all(
+            isinstance(ref, str)
+            and (ref == "refs/heads/main" or ref.startswith("refs/tags/"))
+            and isinstance(oid, str)
+            and len(oid) in (40, 64)
+            and all(char in "0123456789abcdef" for char in oid)
+            for ref, oid in candidate.items()
+        ) and "refs/heads/main" in candidate:
+            manifest_anchors = dict(sorted(candidate.items()))
+        elif "anchor_refs" in prior_manifest:
+            raise RuntimeError("CMRU gate snapshot has invalid main/tag ref anchors")
+        candidate_judge = prior_manifest.get("run_gate_identity")
+        if (
+            isinstance(candidate_judge, dict)
+            and type(candidate_judge.get("revision")) is int
+            and candidate_judge["revision"] >= 0
+            and isinstance(candidate_judge.get("version"), str)
+            and bool(candidate_judge["version"].strip())
+        ):
+            manifest_judge = dict(candidate_judge)
+        else:
+            raise RuntimeError(
+                "existing CMRU gate snapshot has no trusted Run-Gate identity; "
+                "remove the retained snapshot with `cmru gate-snapshots --remove "
+                "--include-current` and start a fresh gate"
+            )
     patterns = protected_ref_patterns(branch, source_branch)
     target = (source_root.parent / branch).resolve()
     records = api.list_workspaces(common)
@@ -478,6 +586,12 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
     holder = _new_lease_holder()
     api.acquire_lease(context, holder=holder, ttl=_LEASE_TTL)
     try:
+        if not created and manifest_anchors is None:
+            raise RuntimeError(
+                "existing CMRU gate snapshot has no trusted main/tag ref baseline; "
+                "remove the retained snapshot with `cmru gate-snapshots --remove "
+                "--include-current` and start a fresh gate"
+            )
         refs_sha256 = (
             record.metadata.get("refs_sha256")
             if record.metadata.get("refs_scope") == _REFS_SCOPE else None
@@ -504,6 +618,12 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
             # checks used for retries.
             _git(target, "reset", "--hard", head)
             refs_sha256 = _protected_refs_sha256(target, patterns)
+            anchor_refs = _anchor_ref_values(target)
+            if "refs/heads/main" not in anchor_refs:
+                raise RuntimeError(
+                    "CMRU release gate requires a local refs/heads/main anchor; "
+                    "fetch or create the repository's main branch before starting"
+                )
         else:
             # Validate retained state before trusting or deleting anything
             # left by a prior lane. A crashed or tampered checkout must be
@@ -516,7 +636,9 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
             validate_lane_outputs(
                 target, head, protected_refs=patterns,
                 expected_refs_sha256=refs_sha256,
+                anchor_refs=manifest_anchors,
             )
+            anchor_refs = manifest_anchors
         # A failed prior lane may have died after writing permitted evidence.
         # Rescue only those named files before resetting its tree.
         copy_evidence_to_source(target, source_root)
@@ -540,7 +662,7 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         raise
     return GateSnapshot(
         source_root, target, head, branch, context, holder, refs_sha256,
-        source_branch,
+        source_branch, anchor_refs, manifest_judge,
     )
 
 
@@ -719,7 +841,8 @@ def _validate_run_gate_state(state: Path) -> None:
 def validate_lane_outputs(
         snapshot_root: Path, commit: str, *,
         protected_refs: tuple[str, ...],
-        expected_refs_sha256: str | None = None) -> None:
+        expected_refs_sha256: str | None = None,
+        anchor_refs: dict[str, str] | None = None) -> dict[str, str] | None:
     """Reject lane modifications and ignored outputs outside the state contract."""
     api = _worktree_api()
     _admin, common = _linked_git_context(snapshot_root)
@@ -735,6 +858,10 @@ def validate_lane_outputs(
             "a release gate lane changed protected Git refs "
             f"({', '.join(protected_refs)})"
         )
+    current_anchors = (
+        _verify_anchor_refs(snapshot_root, anchor_refs)
+        if anchor_refs is not None else None
+    )
     changed = _git(snapshot_root, "status", "--porcelain=v1", "--untracked-files=no")
     if changed.stdout:
         raise RuntimeError("a release gate lane changed tracked snapshot files or HEAD")
@@ -764,15 +891,19 @@ def validate_lane_outputs(
             "release gate lane left unapproved ignored/untracked files in its "
             f"snapshot: {', '.join(unexpected[:8])}"
         )
+    return current_anchors
 
 
 def prepare_lane(snapshot: GateSnapshot, lane: str) -> None:
     """Recover evidence, restore exact HEAD, clear lane residue, then reseed."""
-    validate_lane_outputs(
+    current_anchors = validate_lane_outputs(
         snapshot.worktree_path, snapshot.commit,
         protected_refs=snapshot.protected_refs,
         expected_refs_sha256=snapshot.refs_sha256,
+        anchor_refs=snapshot.anchor_refs,
     )
+    if current_anchors is not None:
+        snapshot.anchor_refs = current_anchors
     copy_evidence_to_source(snapshot.worktree_path, snapshot.source_root)
     _git(snapshot.worktree_path, "reset", "--hard", snapshot.commit)
     _git(snapshot.worktree_path, "clean", "-ffdx", *_CLEAN_KEEP)
@@ -782,11 +913,14 @@ def prepare_lane(snapshot: GateSnapshot, lane: str) -> None:
 
 def finish_lane(snapshot: GateSnapshot, lane: str) -> None:
     """Retain only Run-Gate state and named evidence between aggregate lanes."""
-    validate_lane_outputs(
+    current_anchors = validate_lane_outputs(
         snapshot.worktree_path, snapshot.commit,
         protected_refs=snapshot.protected_refs,
         expected_refs_sha256=snapshot.refs_sha256,
+        anchor_refs=snapshot.anchor_refs,
     )
+    if current_anchors is not None:
+        snapshot.anchor_refs = current_anchors
     copy_evidence_to_source(snapshot.worktree_path, snapshot.source_root)
     snapshot.lane_evidence_sha256[lane] = _existing_evidence_hashes(snapshot.worktree_path)
     _git(snapshot.worktree_path, "clean", "-ffdx", *_CLEAN_KEEP)
@@ -817,6 +951,7 @@ def verify_ref_probe_detected(snapshot: GateSnapshot) -> None:
             snapshot.worktree_path, snapshot.commit,
             protected_refs=snapshot.protected_refs,
             expected_refs_sha256=snapshot.refs_sha256,
+            anchor_refs=snapshot.anchor_refs,
         )
     except RuntimeError as exc:
         if "changed protected Git refs" not in str(exc):
@@ -836,7 +971,7 @@ def write_snapshot_manifest(snapshot: GateSnapshot, state: str) -> None:
     with contextlib.suppress(FileNotFoundError):
         _safe_regular_file(path)  # refuse to replace a non-regular or linked manifest
     record = {
-        "schema_version": 2,
+        "schema_version": 3,
         "refreshed_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source_commit": snapshot.commit,
         "snapshot_branch": snapshot.branch,
@@ -845,6 +980,8 @@ def write_snapshot_manifest(snapshot: GateSnapshot, state: str) -> None:
         "refs_scope": _REFS_SCOPE,
         "protected_refs": list(snapshot.protected_refs),
         "git_refs_sha256": snapshot.refs_sha256,
+        "anchor_refs": snapshot.anchor_refs,
+        "run_gate_identity": snapshot.run_gate_identity,
         "lane_exit_codes": snapshot.lane_exit_codes,
         "lane_evidence_sha256": snapshot.lane_evidence_sha256,
         "source_canary": (

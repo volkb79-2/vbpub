@@ -17,8 +17,8 @@ The author's pending ``## [Unreleased]`` entries (migration notes included) are
 folded into the dated version section in the disposable release candidate before
 the gate and tag. The publisher then reads that section from the exact tagged
 commit. A dry run restores its input, while a failed release never promotes the
-candidate; ``--no-build`` and image-only pushes leave pending notes untouched
-(KI-78).
+candidate. ``--no-build`` and image-only pushes still carry the notes in the
+tagged changelog, without publishing a GitHub Release body (KI-78).
 """
 from __future__ import annotations
 

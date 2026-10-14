@@ -70,7 +70,7 @@ def _probing(inner):
 def _fixture(tmp_path: Path, monkeypatch):
     primary = tmp_path / "primary"
     primary.mkdir()
-    _git(primary, "init", "--quiet")
+    _git(primary, "init", "--quiet", "--initial-branch=main")
     _git(primary, "config", "user.name", "CMRU Gate Test")
     _git(primary, "config", "user.email", "cmru-gate@example.invalid")
     (primary / "cmru").mkdir()
@@ -125,6 +125,10 @@ def _fixture(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_release_gate, "PROJECT_ROOT", project)
     monkeypatch.setattr(run_release_gate, "_load_components", load_components)
     monkeypatch.setattr(run_release_gate, "_preflight_assay_source", lambda _root: None)
+    monkeypatch.setattr(
+        run_release_gate, "_check_run_gate_identity",
+        lambda _root: {"revision": 68, "version": "23.11.0"},
+    )
     return repo, root_secret, project_secret, metadata, auth, calls
 
 
@@ -843,6 +847,69 @@ def test_registered_gate_entrypoint_uses_isolated_python_before_imports(tmp_path
     assert not marker.exists()
 
 
+def test_isolated_component_loader_imports_real_gate_helpers_from_tools():
+    runner = ROOT / "tools" / "run_release_gate.py"
+    code = (
+        "import importlib.util, pathlib, sys\n"
+        "runner_path = pathlib.Path(sys.argv[1])\n"
+        "spec = importlib.util.spec_from_file_location('isolated_gate_runner', runner_path)\n"
+        "runner = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(runner)\n"
+        "assay_git, baseline = runner._load_components()\n"
+        "assert pathlib.Path(assay_git.__file__).resolve().is_relative_to("
+        "pathlib.Path(runner.REPOSITORY_ROOT, 'assay', 'src').resolve())\n"
+        "assert pathlib.Path(baseline.__file__).resolve() == pathlib.Path("
+        "runner.PROJECT_ROOT, 'tools', 'prepare_assay_baseline.py').resolve()\n"
+        "print('CMRU_ISOLATED_COMPONENTS=loaded')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", "-c", code, str(runner)],
+        cwd=ROOT.parent,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "CMRU_ISOLATED_COMPONENTS=loaded" in result.stdout
+
+
+@pytest.mark.parametrize("revision, version, expected", [
+    (68, "23.11.0", {"revision": 68, "version": "23.11.0"}),
+    (67, "23.11.0", "requires Run-Gate rev 68 or later"),
+    (68, "23.11.0.dev4+g1234567", "stable released Run-Gate wheel"),
+])
+def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
+    tmp_path, monkeypatch, revision, version, expected,
+):
+    launcher = tmp_path / "run-gate"
+    launcher.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+
+    def fake_run(argv, **_kwargs):
+        if argv[0] == str(launcher):
+            return subprocess.CompletedProcess(
+                argv, 0, stdout=f"run-gate rev {revision}\n", stderr="",
+            )
+        assert argv[:3] == [sys.executable, "-I", "-B"]
+        return subprocess.CompletedProcess(argv, 0, stdout=f"{version}\n", stderr="")
+
+    monkeypatch.setattr(run_release_gate.shutil, "which", lambda name: str(launcher))
+    monkeypatch.setattr(run_release_gate.subprocess, "run", fake_run)
+
+    if isinstance(expected, str):
+        with pytest.raises(RuntimeError, match=expected):
+            run_release_gate._check_run_gate_identity(tmp_path)
+    else:
+        assert run_release_gate._check_run_gate_identity(tmp_path) == expected
+
+
+def test_release_gate_refuses_when_run_gate_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setattr(run_release_gate.shutil, "which", lambda _name: None)
+    with pytest.raises(RuntimeError, match="requires the installed run-gate CLI"):
+        run_release_gate._check_run_gate_identity(tmp_path)
+
+
 # --- C-2: only refs this gate owns are protected -----------------------------
 
 
@@ -885,6 +952,124 @@ def test_a_lane_writing_a_protected_ref_fails_the_gate(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="changed protected Git refs"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
     assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage"]
+
+
+@pytest.mark.parametrize("mutation", ["move", "delete"])
+def test_a_lane_cannot_move_or_delete_an_existing_release_tag(tmp_path, monkeypatch, mutation):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
+    tag = "cmru-v6.1.0"
+    _git(repo, "tag", tag)
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    def invoke(_root, lane, _environment, worktree):
+        calls.append(lane)
+        if lane == "coverage":
+            if mutation == "move":
+                tree = _git(worktree, "rev-parse", "HEAD^{tree}")
+                new_commit = _git(worktree, "commit-tree", tree, "-m", "replace tag target")
+                _git(worktree, "update-ref", f"refs/tags/{tag}", new_commit)
+            else:
+                _git(worktree, "update-ref", "-d", f"refs/tags/{tag}")
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
+    with pytest.raises(RuntimeError, match="moved or deleted existing release tag"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
+    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage"]
+
+
+def test_main_fast_forward_during_a_lane_is_allowed(tmp_path, monkeypatch):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
+    _git(repo, "checkout", "--quiet", "-b", "release-candidate")
+    main_before = _git(repo, "rev-parse", "refs/heads/main")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    def invoke(_root, lane, _environment, worktree):
+        calls.append(lane)
+        if lane == "coverage":
+            tree = _git(worktree, "rev-parse", "HEAD^{tree}")
+            advanced = _git(
+                worktree, "commit-tree", tree, "-p", main_before, "-m", "advance main",
+            )
+            _git(worktree, "update-ref", "refs/heads/main", advanced, main_before)
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
+    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage", "mutation", "canary"]
+
+
+def test_main_cannot_be_rewound_to_an_older_fast_forward_tip_between_lanes(
+    tmp_path, monkeypatch,
+):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
+    _git(repo, "checkout", "--quiet", "-b", "release-candidate")
+    main_before = _git(repo, "rev-parse", "refs/heads/main")
+    advanced_main = None
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    def invoke(_root, lane, _environment, worktree):
+        nonlocal advanced_main
+        calls.append(lane)
+        if lane == "coverage":
+            tree = _git(worktree, "rev-parse", "HEAD^{tree}")
+            advanced_main = _git(
+                worktree, "commit-tree", tree, "-p", main_before,
+                "-m", "advance main",
+            )
+            _git(worktree, "update-ref", "refs/heads/main", advanced_main, main_before)
+        elif lane == "mutation":
+            assert advanced_main is not None
+            _git(worktree, "update-ref", "refs/heads/main", main_before, advanced_main)
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
+    with pytest.raises(RuntimeError, match="moved refs/heads/main non-fast-forward"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
+    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage", "mutation"]
+
+
+def test_main_non_fast_forward_during_a_lane_fails_the_gate(tmp_path, monkeypatch):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
+    _git(repo, "commit", "--allow-empty", "--quiet", "-m", "advance main")
+    old_main = _git(repo, "rev-parse", "HEAD^")
+    new_main = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", "--quiet", "-b", "release-candidate")
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+
+    def invoke(_root, lane, _environment, worktree):
+        calls.append(lane)
+        if lane == "coverage":
+            tree = _git(worktree, "rev-parse", "HEAD^{tree}")
+            divergent = _git(
+                worktree, "commit-tree", tree, "-p", old_main, "-m", "rewrite main",
+            )
+            _git(worktree, "update-ref", "refs/heads/main", divergent, new_main)
+        return 0
+
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
+    with pytest.raises(RuntimeError, match="moved refs/heads/main non-fast-forward"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
+    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage"]
+
+
+def test_resuming_a_snapshot_under_a_different_run_gate_identity_refuses(tmp_path, monkeypatch):
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+    monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(lambda *_args: 0))
+    assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
+
+    monkeypatch.setattr(
+        run_release_gate, "_check_run_gate_identity",
+        lambda _root: {"revision": 69, "version": "23.12.0"},
+    )
+    with pytest.raises(RuntimeError, match="judged by a different Run-Gate identity"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
 
 
 def test_a_silent_ref_detector_fails_the_gate(tmp_path, monkeypatch):
@@ -1155,8 +1340,24 @@ def _closed_snapshot(source: Path):
     from cmru import gate_snapshot
 
     snapshot = gate_snapshot.open_gate_snapshot(source)
+    snapshot.run_gate_identity = {"revision": 68, "version": "23.11.0"}
+    gate_snapshot.write_snapshot_manifest(snapshot, "failed")
     gate_snapshot.close_gate_snapshot(snapshot)
     return snapshot
+
+
+def test_a_retained_snapshot_without_run_gate_identity_refuses_resume(tmp_path, monkeypatch):
+    from cmru import gate_snapshot
+
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = _closed_snapshot(repo)
+    manifest = repo / "cmru" / ".assay" / "release-gate-snapshot.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    del document["run_gate_identity"]
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="no trusted Run-Gate identity"):
+        gate_snapshot.open_gate_snapshot(repo)
 
 
 def _lease_snapshot(snapshot, holder: str, *, hours: int):
@@ -1401,6 +1602,7 @@ def test_stale_manifest_scope_is_upgraded_not_trusted(tmp_path, monkeypatch):
 
     repo, *_rest = _fixture(tmp_path, monkeypatch)
     snapshot = gs.open_gate_snapshot(repo)
+    snapshot.run_gate_identity = {"revision": 68, "version": "23.11.0"}
     gs.write_snapshot_manifest(snapshot, "running")
     manifest = repo / "cmru" / ".assay" / "release-gate-snapshot.json"
     document = json.loads(manifest.read_text(encoding="utf-8"))

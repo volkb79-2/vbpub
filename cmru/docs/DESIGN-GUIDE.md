@@ -653,6 +653,8 @@ following links and installed mode-0600 siblings in the worktree: a tester
 container can read a mode-0600 file owned by its mapped uid even when its
 environment allowlist does not forward the token, so the safest copy is none.)
 
+### Aggregate gate binds its source and judge
+
 The aggregate release gate requires a linked Git worktree with no tracked
 changes. It creates a stable, attached sidecar worktree at that exact commit
 through the shared worktree lifecycle, then runs each registered lane from the
@@ -685,7 +687,8 @@ lane. (The simpler alternative, executing the orchestrator from the snapshot
 itself, was considered; it needs a trusted bootstrap in the caller to start it,
 so this change keeps the host-side runner and binds it to HEAD instead.)
 
-The gate protects the Git refs it owns, not the whole shared ref store. A
+The gate protects its own refs and guards release anchors in the shared ref
+store. A
 digest of every ref (hundreds on a busy estate) made any other agent's commit,
 tag or fetch during a 14-hour gate a false failure that blamed the tester lane.
 The protected Git refs are the snapshot's branch, the source branch being judged,
@@ -696,8 +699,12 @@ than assumed, the aggregate gate first runs the `ref-probe` lane: from inside th
 real tester container it writes a ref in that namespace, and the gate must
 detect it (then removes it). A silent detector fails the gate. Limit, stated
 plainly: a tester that writes an unrelated shared ref is not distinguishable from
-another agent doing so; confining that is Run-Gate's mount hardening, not a
-host-side comparison.
+another agent doing so. CMRU separately records existing release tags and
+`refs/heads/main`: a lane cannot move or delete an existing tag, and `main` may
+advance only by fast-forward. New refs and unrelated branch refs are outside this
+check. Run-Gate keeps the common Git directory writable, so these checks detect
+the protected changes after a lane; the remaining shared-ref surface is tracked
+in [KI-77](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-gate-lacks-container-resource-event-evidence-on-non-mutation-lanes-and-cannot-confine-every-shared-git-ref).
 
 Snapshot leases are judged by evidence, never by a stat of an absent PID. A
 holder records its PID, process start ticks, and its PID-namespace and boot
@@ -739,7 +746,9 @@ disables host Git hooks while it prepares remote baseline facts. CMRU starts its
 host release-gate driver with isolated Python (`-I -B`) so an untracked module
 beside `run_release_gate.py` cannot run before the source integrity check. The
 driver starts lane processes through the installed `run-gate` CLI, not a script
-from the mutable checkout. Nested `run-gate` processes receive neither
+from the mutable checkout. Before any sub-lane starts, CMRU requires a stable
+released Run-Gate package at revision 68 or later and records that judge identity
+in the snapshot manifest. Nested `run-gate` processes receive neither
 publisher-token nor extra-mount variables (`RUN_GATE_EXTRA_MOUNTS`); origin
 facts passed to mutation contain tag names and commit IDs, not credentials.
 
@@ -774,19 +783,22 @@ The choices, and what was rejected:
   migration steps survive byte for byte. It follows the install block because that
   is what a reader needs first. Other versions are never read, and `[Unreleased]` is
   never a *substitute* for the section (see the next item for what it is).
-- **Fold `[Unreleased]` into the candidate before the gate (KI-78).** The original
+- **Fold `[Unreleased]` into every tagged candidate before the gate (KI-78).** The original
   KI-30 refusal left migration guidance outside the release record. CMRU now moves
   pending notes into the dated version section in the disposable candidate, before
-  the gate and tag. The release body is generated block plus that exact section from
-  the tag. The tag and body therefore share one immutable notes source, and there is
-  no post-publish changelog commit that can fail after a release is already public.
+  the gate and tag. A CMRU GitHub Release-body handler appends that exact tagged section
+  to its generated body, so the tag and body share one immutable notes source. A
+  `--no-build` or image-only release still carries the notes in the tagged changelog,
+  but has no GitHub Release body. There is no post-publish changelog commit that can fail
+  after a release is already public.
   A failed gate or build leaves the candidate's staged section on its retained branch;
   the source branch remains unchanged. A failed publish also leaves source `[Unreleased]`
   unchanged, while the tagged candidate retains the exact notes sent to the publisher.
-  Promotion carries the staged changelog to `main` only after a successful publish. A dry
-  run stages the same section temporarily and restores the original bytes. `--no-build`
-  and push steps without a CMRU GitHub Release-body handler do not fold notes, because
-  neither publishes a body. Rejected: a post-publish changelog commit, which could block
+  Promotion carries the staged changelog to `main` only after the tagged transaction
+  succeeds (including publication when enabled). A dry
+  run stages the same section temporarily and restores the original bytes; when no body
+  will be published, it previews the tagged changelog section. Rejected: a post-publish
+  changelog commit, which could block
   promotion after the body and assets were already public; a second changelog file,
   which would give authors another place to forget migration notes. Changelog paths
   remain excluded from project change detection, including custom names.

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import json
 import os
 import shutil
 from pathlib import Path
@@ -234,6 +235,27 @@ def test_a_snapshot_recorded_under_another_digest_scope_is_upgraded(tmp_path, mo
     upgraded = worktree.read_record(snapshot.context.record_path).metadata
     assert upgraded["refs_scope"] == "protected-refs/1"
     assert upgraded["refs_sha256"] == snapshot.refs_sha256
+
+
+def test_an_existing_snapshot_without_main_and_tag_anchors_refuses_resume(tmp_path, monkeypatch):
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = _closed_snapshot(repo)
+    manifest = repo / "cmru" / ".assay" / "release-gate-snapshot.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    del document["anchor_refs"]
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="no trusted main/tag ref baseline"):
+        gs.open_gate_snapshot(repo)
+
+
+def test_a_new_snapshot_requires_local_main_anchor(tmp_path, monkeypatch):
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    _git(repo, "update-ref", "-d", "refs/heads/main")
+
+    with pytest.raises(RuntimeError, match="requires a local refs/heads/main anchor"):
+        gs.open_gate_snapshot(repo)
+    assert not _expected_target(repo).exists()
 
 
 def test_a_moved_snapshot_or_source_is_detected_during_the_run(tmp_path, monkeypatch):

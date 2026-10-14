@@ -685,6 +685,12 @@ run-gate --list
 run-gate gate
 ```
 
+The CMRU aggregate requires a stable released Run-Gate package at revision 68 or
+later. `run-gate --version` prints the revision; the CMRU gate also checks the
+installed package metadata and refuses development or local builds before any
+CMRU sub-lane starts. It records the judge revision and package version in the
+snapshot manifest, and a resumed snapshot refuses if that identity changed.
+
 The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0
 (full tests), R1 (100% line and branch coverage), and R3 (import-break
@@ -787,7 +793,10 @@ untracked or ignored helper, a symlink, or a tracked helper edited since HEAD
 under the directories it imports from, before any lane starts. Run `git status`
 and commit your change first; a refusal names the files. It watches the protected
 Git refs it owns, and its `ref-probe` lane proves that detector from inside the
-real container; other agents' commits, tags and fetches never fail it.
+real container. New refs and fast-forward moves of `main` are allowed; moving or
+deleting an existing release tag, or rewriting `main` non-fast-forward, fails the
+gate. Unrelated existing branch refs are not checked because the common Git
+directory remains writable.
 
 CMRU refuses a tracked `cmru.secret.toml` and any configured Git filter before
 creating the snapshot. It validates lane output, retains only Run-Gate state
@@ -801,7 +810,10 @@ extra-mount variables removed. See the
 Running an individual tester component lane bypasses this boundary and should
 use a secret-free checkout. `run-gate installed-wheel` stays runnable that
 way; `installed-wheel-live` is the aggregate gate's own variant and refuses unless
-it runs inside that gate's fresh snapshot manifest.
+it runs inside that gate's fresh snapshot manifest. During each lane CMRU also
+refuses changes to existing release tags or a non-fast-forward change to `main`;
+new refs and unrelated branch refs are not checked because Run-Gate keeps the
+common Git directory writable.
 
 ### Retained gate snapshots
 
@@ -864,7 +876,7 @@ accepts (`changelog:<project-relative path>` or `none`).
 **Pending notes and migration guidance: write them under `## [Unreleased]` (KI-78).**
 Whatever is under `## [Unreleased]` in the project's configured changelog (`CHANGES.md` by
 default; any `release.changelog` path works) is folded into the generated dated version
-section in the disposable release candidate before the gate and tag:
+section in every tagged release candidate before the gate and tag:
 
 ```markdown
 ## [Unreleased]
@@ -873,13 +885,13 @@ section in the disposable release candidate before the gate and tag:
 1. Run `tool migrate --yes` before upgrading; it rewrites `tool.toml`.
 ```
 
-`cmru release <name> --dry-run` prints the body with those notes inside the dated section
-and leaves the file bytes untouched. During a real release, the candidate changelog is
-committed before the gate; its release tag and GitHub body use that same version section.
-Promotion carries the candidate to `main` only after a successful publish. A failed gate, build,
-publish or promotion leaves the source branch's notes under `[Unreleased]`. `--no-build`
-and push steps without a CMRU GitHub Release-body handler leave the notes pending because
-they do not publish a body. This removes the need to park notes outside the changelog
+`cmru release <name> --dry-run` previews the body with those notes inside the dated section
+when a CMRU GitHub Release-body handler will publish it. For `--no-build` and image-only
+publishers, it previews the tagged changelog section instead; no GitHub Release body is
+published. In every case the release candidate commits the folded section before the gate,
+and its tag carries those notes. Promotion carries the candidate to `main` after the tagged
+transaction completes. A failed gate, build, publish or promotion leaves the source branch's
+notes under `[Unreleased]`. This removes the need to park notes outside the changelog
 (KI-58). CMRU also reads direct `cmru publish --from-checkout` release notes from the
 matching local release tag, never from later mutable changelog edits.
 
@@ -892,8 +904,8 @@ parked entries under their `### Added/Changed/Fixed/Documentation` groups; leave
 `[Unreleased]` empty. Pin the version with `--set-version X.Y.Z` if the planner could
 choose another. Then run `cmru release <name> --dry-run` from the pushed `main` and check
 that the body ends with exactly those entries and that nothing refuses. A project whose
-publish step is an image push (no CMRU handler) has no GitHub Release body; its notes
-stay in the changelog.
+publish step is an image push (no CMRU handler) has no GitHub Release body; its notes are
+still present in the tagged changelog.
 
 ---
 
@@ -1199,10 +1211,11 @@ valid for another publish. `--dry-run` checks local evidence and renders the
 step but does not query remote tag availability. Use `cmru release` for the
 source-first tag/build/publish/promote workflow.
 
-A non-empty plain `## [Unreleased]` section is folded into the tagged version section before
-the gate when a CMRU GitHub Release-body handler will publish it (KI-78; this replaced the
-KI-30 refusal). Other release publishers leave it pending. A stale generated history section
-that holds hand edits is refused rather than regenerated
+A non-empty plain `## [Unreleased]` section is folded into every tagged version section before
+the gate (KI-78; this replaced the KI-30 refusal). A CMRU GitHub Release-body handler also
+publishes it in the body; `--no-build` and other release publishers keep it in the tagged
+changelog without a GitHub Release body. A stale generated history section that holds hand
+edits is refused rather than regenerated
 over them (KI-68); see
 [release history behaviour changes](RELEASE-TRANSACTIONS.md#release-history-behaviour-changes-rel-02-rel-10).
 To hand-curate a pending generated section, advance its `source-end` marker in the same final

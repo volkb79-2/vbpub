@@ -165,6 +165,30 @@ def test_folding_moves_notes_into_the_candidate_version_and_clears_unreleased():
     assert changelog.fold_unreleased_notes(updated, "2.0.0") is None
 
 
+def test_a_second_release_can_fold_notes_when_the_prior_version_has_fold_markers():
+    first_release = changelog.fold_unreleased_notes(DOCUMENT, "2.0.0")
+    assert first_release is not None
+    second_source = first_release.replace(
+        "<!-- cmru: release history -->\n\n## [2.0.0] - 2026-10-13",
+        "<!-- cmru: release history -->\n\n"
+        "## [2.1.0] - 2026-10-14\n### Fixed\n- The next repair.\n\n"
+        "## [2.0.0] - 2026-10-13",
+    ).replace(
+        "## [Unreleased]\n<!-- keep this comment -->",
+        "## [Unreleased]\n<!-- keep this comment -->\n\n- notes for 2.1.0",
+    )
+
+    second_release = changelog.fold_unreleased_notes(second_source, "2.1.0")
+
+    assert second_release is not None
+    assert "notes for 2.1.0" in release_notes.extract_release_section(
+        second_release, "2.1.0", source="CHANGES.md",
+    ).text
+    assert "migrate --yes" in release_notes.extract_release_section(
+        second_release, "2.0.0", source="CHANGES.md",
+    ).text
+
+
 @pytest.mark.real_release_notes_preflight
 def test_regenerating_a_stale_section_preserves_its_folded_pending_notes(tmp_path):
     repo = _release_repo(tmp_path)
@@ -195,6 +219,41 @@ def test_regenerating_a_stale_section_preserves_its_folded_pending_notes(tmp_pat
 
 
 @pytest.mark.real_release_notes_preflight
+def test_regenerating_a_stale_section_with_malformed_folded_notes_refuses_before_change(tmp_path):
+    repo = _release_repo(tmp_path)
+    project = _project()
+    changes = repo / "demo" / "CHANGES.md"
+    changes.write_text(
+        "# Changelog\n\n## [Unreleased]\n- migrate before upgrading\n\n"
+        "<!-- cmru: release history -->\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "demo/CHANGES.md")
+    _git(repo, "commit", "-q", "-m", "docs: pending migration note")
+    assert changelog.generate_release_changelog(repo, project) is True
+    notes = changelog.pending_release_notes(repo, project)
+    folded = changelog.fold_unreleased_notes(changes.read_text(encoding="utf-8"), notes.version)
+    assert folded is not None
+    changes.write_text(folded, encoding="utf-8")
+    _git(repo, "add", "demo/CHANGES.md")
+    _git(repo, "commit", "-q", "-m", "chore(release): record pending notes")
+
+    (repo / "demo" / "core.py").write_text("A = 3\n", encoding="utf-8")
+    _git(repo, "add", "demo/core.py")
+    _git(repo, "commit", "-q", "-m", "fix(demo): second repair")
+    malformed = changes.read_text(encoding="utf-8").replace(
+        f"{PENDING_NOTES_END}\n", "<!-- broken pending-note end -->\n",
+    )
+    changes.write_text(malformed, encoding="utf-8")
+    before = changes.read_bytes()
+
+    with pytest.raises(RefusedBeforeChange, match="invalid CMRU pending-note block"):
+        changelog.generate_release_changelog(repo, project)
+
+    assert changes.read_bytes() == before
+
+
+@pytest.mark.real_release_notes_preflight
 def test_release_prepare_folds_notes_before_the_candidate_commit(tmp_path):
     repo = _release_repo(tmp_path)
     project = _project()
@@ -220,14 +279,10 @@ def test_release_prepare_folds_notes_before_the_candidate_commit(tmp_path):
 
 
 @pytest.mark.real_release_notes_preflight
-@pytest.mark.parametrize("include_pending_notes", [False, True])
-def test_non_body_publishers_and_no_build_leave_pending_notes_unfolded(
-    tmp_path, include_pending_notes,
-):
+def test_non_body_publishers_still_fold_pending_notes_into_the_tagged_changelog(tmp_path):
     repo = _release_repo(tmp_path)
     project = _project()
-    if include_pending_notes:
-        project.runner_steps = {}
+    project.runner_steps = {}
     changes = repo / "demo" / "CHANGES.md"
     changes.write_text(
         "# Changelog\n\n## [Unreleased]\n- keep pending\n\n"
@@ -237,12 +292,13 @@ def test_non_body_publishers_and_no_build_leave_pending_notes_unfolded(
     _git(repo, "add", "demo/CHANGES.md")
     _git(repo, "commit", "-q", "-m", "docs: pending migration note")
 
-    cli._prepare_release_projects(
-        repo, {"demo": project}, ["demo"], include_pending_notes=include_pending_notes,
-    )
+    cli._prepare_release_projects(repo, {"demo": project}, ["demo"])
 
-    assert release_notes.unreleased_body(changes.read_text(encoding="utf-8")) == "- keep pending"
-    assert PENDING_NOTES_BEGIN not in changes.read_text(encoding="utf-8")
+    updated = changes.read_text(encoding="utf-8")
+    assert release_notes.unreleased_body(updated) == ""
+    section = release_notes.extract_release_section(updated, "1.0.1", source="CHANGES.md")
+    assert "keep pending" in section.text
+    assert PENDING_NOTES_BEGIN in section.text
 
 
 def test_folding_into_the_last_section_and_with_no_comment_to_keep():
@@ -270,7 +326,7 @@ def test_folding_refuses_when_unreleased_notes_and_a_folded_block_both_exist():
         f"## [1.0.0] - 2026-01-01\n- released\n\n"
         f"{PENDING_NOTES_BEGIN}\n- already folded\n{PENDING_NOTES_END}\n"
     )
-    with pytest.raises(ReleaseNotesError, match="both pending \\[Unreleased\\] notes"):
+    with pytest.raises(ReleaseNotesError, match="target release section already has a folded-note block"):
         changelog.fold_unreleased_notes(document, "1.0.0")
 
 
@@ -364,19 +420,31 @@ def test_the_dry_run_shows_the_unreleased_notes_and_keeps_them_in_the_file(tmp_p
 
 
 @pytest.mark.real_release_notes_preflight
-def test_dry_run_does_not_claim_a_body_for_an_image_only_or_no_build_publisher(tmp_path, capsys):
+def test_dry_run_previews_tag_notes_without_claiming_a_github_body(tmp_path, capsys):
     repo = _release_repo(tmp_path)
     project = _project()
+    changes = repo / "demo" / "CHANGES.md"
+    changes.write_text(
+        "# Changelog\n\n## [Unreleased]\n- keep migration notes\n\n"
+        "<!-- cmru: release history -->\n", encoding="utf-8",
+    )
+    _git(repo, "add", "demo/CHANGES.md")
+    _git(repo, "commit", "-q", "-m", "docs: pending notes")
+    before = changes.read_bytes()
     project.runner_steps = {}
     cli._preview_release_bodies(repo, {"demo": project}, ["demo"])
     output = capsys.readouterr().out
-    assert "does not use a CMRU GitHub Release-body handler" in output
+    assert "no CMRU GitHub Release-body handler" in output
+    assert "keep migration notes" in output
     assert "begin release body" not in output
+    assert changes.read_bytes() == before
 
     cli._preview_release_bodies(repo, {"demo": _project()}, ["demo"], no_build=True)
     output = capsys.readouterr().out
     assert "--no-build skips publication" in output
+    assert "keep migration notes" in output
     assert "begin release body" not in output
+    assert changes.read_bytes() == before
 
 
 def _sequence_project() -> SimpleNamespace:

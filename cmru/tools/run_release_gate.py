@@ -6,7 +6,10 @@ import argparse
 import fcntl
 import json
 import os
+import re
+import shlex
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -25,6 +28,7 @@ SECRET_ENV_KEYS = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN")
 FACTS_ENV_KEY = "CMRU_ASSAY_BASELINE_FACTS"
 EXTRA_MOUNTS_ENV_KEY = "RUN_GATE_EXTRA_MOUNTS"
 REF_PROBE_LANE = "ref-probe"
+RUN_GATE_MIN_REVISION = 68  # Required for the released hook/info mount protections.
 # The gate-only variant of installed-wheel: it refuses to run unless it is
 # inside this gate's fresh, snapshot-bound manifest. The plain `installed-wheel`
 # lane stays runnable directly (it bypasses the secret boundary, as documented).
@@ -74,6 +78,7 @@ def _load_components():
     """Load the selected worktree's CMRU, Assay and baseline helper sources."""
     for source in (
         PROJECT_ROOT / "src",
+        PROJECT_ROOT / "tools",
         REPOSITORY_ROOT / "assay" / "src",
         # cli_extended is the INSTALLED released wheel (CX-D1), never a source root.
         REPOSITORY_ROOT / "libraries" / "worktree" / "src",
@@ -83,6 +88,89 @@ def _load_components():
     import prepare_assay_baseline
 
     return assay_git, prepare_assay_baseline
+
+
+def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
+    """Require and identify the stable Run-Gate judge used by this gate."""
+    executable = shutil.which("run-gate")
+    if executable is None:
+        raise RuntimeError("the registered CMRU gate requires the installed run-gate CLI")
+    command = Path(executable)
+    try:
+        with command.open(encoding="utf-8") as stream:
+            first_line = stream.readline().strip()
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"cannot read the installed run-gate launcher: {command}: {exc}") from exc
+    if not first_line.startswith("#!"):
+        raise RuntimeError(f"installed run-gate launcher has no Python shebang: {command}")
+    interpreter = shlex.split(first_line[2:])
+    if not interpreter:
+        raise RuntimeError(f"installed run-gate launcher has an empty Python shebang: {command}")
+    if interpreter[0] == "/usr/bin/env":
+        if len(interpreter) < 2 or interpreter[1].startswith("-"):
+            raise RuntimeError(f"installed run-gate launcher has an unsupported env shebang: {command}")
+        resolved = shutil.which(interpreter[1])
+        if resolved is None:
+            raise RuntimeError(
+                f"cannot resolve the Python interpreter named by run-gate: {interpreter[1]}"
+            )
+        interpreter = [resolved, *interpreter[2:]]
+    elif not Path(interpreter[0]).is_absolute():
+        raise RuntimeError(f"installed run-gate launcher has a non-absolute interpreter: {command}")
+
+    try:
+        revision_result = subprocess.run(
+            [executable, "--version"],
+            cwd=repo_root / "cmru",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not run installed Run-Gate `--version`: {exc}") from exc
+    if revision_result.returncode != 0:
+        detail = revision_result.stderr.strip() or revision_result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot read installed Run-Gate revision: {detail}")
+    revision_lines = revision_result.stdout.strip().splitlines()
+    match = re.fullmatch(r"run-gate rev ([0-9]+)", revision_lines[0]) if len(revision_lines) == 1 else None
+    if match is None:
+        raise RuntimeError(
+            "installed run-gate --version returned an unrecognized identity: "
+            f"{revision_result.stdout.strip()!r}"
+        )
+    revision = int(match.group(1))
+    if revision < RUN_GATE_MIN_REVISION:
+        raise RuntimeError(
+            f"CMRU's release gate requires Run-Gate rev {RUN_GATE_MIN_REVISION} or later "
+            f"for read-only host hook/info mounts; installed rev {revision} is too old"
+        )
+
+    version_code = (
+        "from importlib.metadata import version; "
+        "print(version('run-gate'))"
+    )
+    try:
+        version_result = subprocess.run(
+            [*interpreter, "-I", "-B", "-c", version_code],
+            cwd=repo_root / "cmru",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not inspect the installed Run-Gate package version: {exc}") from exc
+    if version_result.returncode != 0:
+        detail = version_result.stderr.strip() or version_result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot read installed Run-Gate package version: {detail}")
+    package_version = version_result.stdout.strip()
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", package_version) is None:
+        raise RuntimeError(
+            "CMRU's release gate requires a stable released Run-Gate wheel; "
+            f"installed package version is {package_version!r}"
+        )
+    return {"revision": revision, "version": package_version}
 
 
 def _preflight_assay_source(repo_root: Path) -> None:
@@ -424,6 +512,7 @@ def _run_release_gate_with_private_cache(
         )
     _assert_no_untracked_gate_code(repo_root)
     _preflight_assay_source(repo_root)
+    run_gate_identity = _check_run_gate_identity(repo_root)
     assay_git, baseline = _load_components()
     if assay_git.repo_top(project_root).resolve() != repo_root:
         raise RuntimeError("selected CMRU project does not belong to the requested worktree")
@@ -437,6 +526,12 @@ def _run_release_gate_with_private_cache(
         snapshot = gate_snapshot.open_gate_snapshot(repo_root)
         state = "incomplete"
         try:
+            if snapshot.run_gate_identity and snapshot.run_gate_identity != run_gate_identity:
+                raise RuntimeError(
+                    "resumed CMRU gate snapshot was judged by a different Run-Gate identity; "
+                    "remove the finished snapshot and start a fresh gate"
+                )
+            snapshot.run_gate_identity = run_gate_identity
             gate_snapshot.plant_source_canary(snapshot)
             gate_snapshot.write_snapshot_manifest(snapshot, "running")
             try:

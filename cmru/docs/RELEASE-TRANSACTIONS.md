@@ -255,14 +255,14 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
 
 ### Release history behaviour changes (REL-02, REL-10)
 
-- **A non-empty plain `## [Unreleased]` section is folded into the candidate before the gate
-  and tag (KI-78).** For a CMRU GitHub Release-body handler, the text is appended verbatim
-  inside the generated dated version section, then the exact tagged section is used in the
-  GitHub Release body (`--dry-run` prints that same body). The release tag and body therefore
-  describe the same notes. The candidate reaches `main` only after a successful publish;
-  failed gates, builds, publishes, and promotions leave source `main`'s `[Unreleased]`
-  unchanged. `--no-build` and push steps without a CMRU GitHub Release-body handler leave
-  notes pending. No post-publish changelog commit is needed. The project's configured
+- **A non-empty plain `## [Unreleased]` section is folded into every tagged candidate before
+  the gate and tag (KI-78).** For a CMRU GitHub Release-body handler, the text is appended
+  verbatim inside the generated dated version section, then the exact tagged section is used
+  in the GitHub Release body (`--dry-run` prints that same body). The release tag and body
+  therefore describe the same notes. `--no-build` and image-only publishers still carry the
+  notes in the tagged changelog, but do not publish a GitHub Release body. Failed gates,
+  builds, publishes, and promotions leave source `main`'s `[Unreleased]` unchanged. No
+  post-publish changelog commit is needed. The project's configured
   changelog path remains excluded from change detection. This replaces the KI-30 refusal;
   a comment-only body is still just an empty section.
 - **Regenerating a stale generated section overwrites hand edits inside it.** When project
