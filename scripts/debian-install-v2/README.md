@@ -578,9 +578,9 @@ scope, not ongoing config management, so it plausibly still belongs here.
 
 ## Testing
 
-`testing/` — a privileged systemd container for `inuse_partition_editor.py`'s
-real `--commit`/loop-device partition tests (never run real `swapon` there —
-see `testing/README.md`). `testing/vm/` — a genuinely unprivileged QEMU/TCG
-VM harness for anything that needs a real, separate guest kernel (real swap
-activation, eventually the full installer run end-to-end); see
-`testing/vm/README.md` and `testing/vm/DESIGN.md`.
+`testing/` documents the isolation boundary and ordinary mocked tests.
+`testing/vm/` is a genuinely unprivileged QEMU/TCG VM harness for anything
+that needs a real, separate guest kernel (real swap activation and full
+installer acceptance); see the [harness reference](testing/vm/README.md),
+[usage/testing guide](testing/vm/USAGE-TESTING.md), and
+[design rationale](testing/vm/DESIGN.md).

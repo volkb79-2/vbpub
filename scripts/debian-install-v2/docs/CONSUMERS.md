@@ -235,6 +235,8 @@ After first boot and installation, detach the seed ISO so a later cloud-init
 clean/reboot cannot consume the same credentials again. Review
 [the design note](DESIGN-GUIDE.md#private-vm-seed-iso-and-moving-profiles) for
 the moving-profile contract and the documented bootstrap handoff race.
+For a local QEMU first-boot acceptance test and non-secret guest checks, see
+the [VM usage/testing guide](../testing/vm/USAGE-TESTING.md).
 
 To inspect a real target host’s partition plan, run `plan` on that host. It
 reads the host’s root disk and does not write to it:

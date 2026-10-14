@@ -271,6 +271,17 @@ of letting the tests skip quietly; the QEMU VM lane `r1-vm-real-commit` is where
 and runs the marked tests with `VBPUB_REQUIRE_OS_INTEGRATION=1`, so a skip there fails. Docker-driving
 tests are not marked: the TCG VM cannot carry CPU-heavy work.
 
+## QEMU validation and host cgroup visibility
+
+The Debian guest runs a separate kernel, so guest cloud-init or installer
+commands cannot change the host's cgroup2 mount. Host diagnostics are a
+separate boundary: `host-escape` invokes a privileged Docker helper to enter
+host namespaces, then runs an `mdt doctor` postflight that repairs missing
+cgroup2 mount flags. That repair makes the host safe again but means the
+postflight warning is an observation, not attribution of the remounting
+process. For the operational QEMU workflow and the 2026-10-14 incident
+evidence, see the [VM usage/testing guide](../testing/vm/USAGE-TESTING.md#host-checks-when-cgroup2-flags-disappear).
+
 ## Prompt library boundary
 
 The prompt package is an optional dependency and is imported only by the
