@@ -26390,6 +26390,8 @@ class TestRG78AndRG76DirectOracles:
         central_path = Path("run-gate.root.toml")
         central = {"environments": {
             "shared": {"mode": "exec", "image": "runner:v1"},
+            "candidate": {"mode": "ephemeral", "image": "tester:local",
+                          "image_env": "TESTER_IMAGE"},
             "host": {"mode": "ephemeral", "image": "default:v1"},
         }}
         resolved, source = run_gate.resolve_environment(
@@ -26397,12 +26399,37 @@ class TestRG78AndRG76DirectOracles:
             Path("run-gate.toml"), central_path)
         assert resolved["image"] == "runner:v1"
         assert "central run-gate.root.toml" in source
+        monkeypatch.setenv("TESTER_IMAGE", "tester:candidate")
+        resolved, _ = run_gate.resolve_environment(
+            {"environment": "candidate"}, "unit", {}, central,
+            Path("run-gate.toml"), central_path)
+        assert resolved["image"] == "tester:candidate"
+        assert "image_env" not in resolved
+        monkeypatch.setenv("TESTER_IMAGE", "")
+        with pytest.raises(run_gate.GateError, match="selected image override \\$TESTER_IMAGE is empty"):
+            run_gate.resolve_environment(
+                {"environment": "candidate"}, "unit", {}, central,
+                Path("run-gate.toml"), central_path)
         monkeypatch.setenv(run_gate.HOST_IMAGE_ENV_VAR, "operator:v2")
         resolved, _ = run_gate.resolve_environment(
             {"environment": "host"}, "unit", {}, central,
             Path("run-gate.toml"), central_path)
         assert resolved["image"] == "operator:v2"
         assert resolved["user"] == f"{os.getuid()}:{os.getgid()}"
+
+    def test_environment_image_override_requires_valid_name_and_container_mode(self):
+        for value in ("", "1IMAGE", "IMAGE-NAME"):
+            with pytest.raises(run_gate.GateError, match="valid environment-variable name"):
+                run_gate._validate_environment(
+                    "candidate",
+                    {"mode": "ephemeral", "image": "tester:local", "image_env": value},
+                    "run-gate.root.toml",
+                )
+        with pytest.raises(run_gate.GateError, match="requires a container mode"):
+            run_gate._validate_environment(
+                "local", {"mode": "host", "image_env": "TESTER_IMAGE"},
+                "run-gate.toml",
+            )
 
     def test_config_snapshot_inherits_nearest_root_config(self, tmp_path):
         repo = make_repo(tmp_path)

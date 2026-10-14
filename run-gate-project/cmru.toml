@@ -84,7 +84,7 @@ evidence_paths = ["coverage.json"]
 quiet = true
 commands = [
   { label = "run-gate: build and receipt exact release wheel/image", argv = ["python", "tools/release_candidate.py", "prepare"], cwd = "." },
-  { label = "run-gate: selftest in tester-unified", argv = ["env", "RUN_GATE_RELEASE_WHEEL_RECEIPT=.assay/run-gate-release-wheel.json", "run-gate", "selftest"], cwd = "." },
+  { label = "run-gate: selftest in the receipt-specific tester image", argv = ["python", "tools/release_candidate.py", "run-selftest"], cwd = "." },
 ]
 
 [steps.build]

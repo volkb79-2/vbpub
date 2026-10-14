@@ -19,7 +19,7 @@
         "complete_blockers": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"enum": ["no_verdict", "command_exit_not_observed", "inventory_not_exhausted", "terminal_disagrees", "coverage_not_reverified", "state_unreconciled", "unverified_hung_records", "lane_timeout_or_unstarted"]}
+          "items": {"enum": ["no_verdict", "command_exit_not_observed", "inventory_not_exhausted", "terminal_disagrees", "coverage_not_reverified", "state_unreconciled", "unverified_hung_records", "lane_timeout_or_unstarted", "shard_not_merged"]}
         },
         "expected_commit": {"$ref": "#/$defs/objectId"},
         "tree": {"$ref": "#/$defs/objectId"},

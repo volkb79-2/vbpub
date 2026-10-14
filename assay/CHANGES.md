@@ -17,6 +17,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   observations from cgprofile.
 
 ### Fixed
+- Treat `memory.events:max` as resource telemetry rather than candidate
+  failure evidence; only failed-fork or OOM-related counters invalidate an R2
+  result. Successful reclaim at `memory.max` no longer marks a mutant crashed.
 - Redact passed-through secrets from subprocess output before clipping verdict
   tails, including secrets that cross the tail boundary.
 - Emit schema-valid non-qualifying campaign summaries for sharded analyses.

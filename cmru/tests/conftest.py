@@ -45,6 +45,29 @@ def pytest_configure(config):
         "real_release_notes_preflight: run the real KI-75 release-notes preflight "
         "instead of the neutral stub unrelated prepare-phase tests get",
     )
+    config.addinivalue_line(
+        "markers",
+        "release_controller_provenance: exercise the installed-wheel release-controller boundary",
+    )
+
+
+@pytest.fixture(autouse=True)
+def _neutral_release_controller_provenance(request, monkeypatch):
+    """Keep release-transaction unit tests independent of the test image's CMRU install."""
+    if request.node.get_closest_marker("release_controller_provenance"):
+        yield
+        return
+    from cmru import cli
+
+    monkeypatch.setattr(
+        cli, "_record_release_controller_identity",
+        lambda _phase: {
+            "version": "6.2.0",
+            "wheel_sha256": "a" * 64,
+            "distribution_sha256": "b" * 64,
+            "module_path": "/site-packages/cmru/cli.py",
+        },
+    )
 
 
 @pytest.fixture(autouse=True)

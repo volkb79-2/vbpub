@@ -39,11 +39,14 @@ and [consumer adoption note](../CONSUMERS.md#release-coverage-baseline).
 
 ## The release gate tests the published wheel
 
-The CMRU `run-tests` step reads the version section prepared in `CHANGES.md`,
-builds that wheel through CMRU's wheel builder, and builds `tester-unified`
-from those exact wheel bytes. The builder checks and labels the version and
-SHA-256; the running selftest compares those baked facts with the candidate
-receipt before it starts pytest. After tagging, CMRU rebuilds the wheel from
+The CMRU `run-tests` step reads the new dated version section prepared in
+`CHANGES.md` and refuses a section at or behind the newest release tag. It
+builds that wheel through CMRU's wheel builder and builds a uniquely tagged
+`tester-unified` image from those exact wheel bytes. The selftest selects that
+tag through `image_env`, leaving the shared `:local` tag alone. Before pytest,
+the running gate checks the image labels, installed module paths and bytes,
+distribution version, and the installed CLI's `--version` result against the
+candidate receipt. After tagging, CMRU rebuilds the wheel from
 the same candidate commit and refuses to publish if its version, filename,
 digest, or tester image identity differs. This connects the bytes that ran in
 the gate to the bytes attached to the release rather than treating matching
@@ -138,6 +141,17 @@ inserts the old implicit choice as literal config text, preserving comments
 and requiring the operator to review the resulting diff. It migrates one
 file per call so a project config and an ancestor `run-gate.root.toml` can be
 checked independently.
+
+## Per-invocation image identity
+
+Release gates must not replace a shared mutable image tag while proving which
+wheel they tested. `image_env` lets a container environment keep its normal
+declared `image` while one invocation selects a receipt-specific tag through a
+named host environment variable. An unset variable preserves ordinary
+behavior; a present but empty value refuses. Run-Gate consumes the value
+before launching the container and does not pass it through to the test
+process. This keeps an exact candidate image attached to its receipt without
+changing the image selected by unrelated lanes.
 
 ## PID 1 and cgroup resource events
 

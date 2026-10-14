@@ -131,7 +131,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   ancestor `run-gate.toml` is always a project-local file and is ignored by
   this lookup.
 - **environment** — a named container/host execution fact set: `image`
-  (required), `cgroup_slice` or `cgroup_slice_env` (at most one, optional), `mode` (optional, `"ephemeral"`
+  (required for container modes), `image_env` (optional valid environment
+  variable name selecting an invocation-specific image), `cgroup_slice` or
+  `cgroup_slice_env` (at most one, optional), `mode` (required, `"ephemeral"`
   or `"exec"`, default `"ephemeral"`), `forward_env` (optional list of
   environment-variable names). `host` and `bare-host` are both built-in
   names (never definable), and swapped roles in the host/bare-host flip
@@ -286,7 +288,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   environment named `host` is a container only when it explicitly declares
   `mode = "ephemeral"`; `bare-host` is an ordinary name, not a built-in.
   `run-gate migrate-modes PATH` mechanically inserts missing modes in one
-  config while preserving comments. `cgroup_slice` (optional non-empty
+  config while preserving comments. `image_env` (optional valid
+  environment-variable name for a container mode; when present in the process
+  environment, its non-empty value overrides `image` for this invocation; an
+  unset variable uses the declared image; the variable is not forwarded into
+  the container), `cgroup_slice` (optional non-empty
   string) or `cgroup_slice_env` (optional valid environment-variable name;
   the two are mutually exclusive), `container_name` (optional non-empty string — an
   exec-mode environment's persistent runner, when it is not derivable from
@@ -436,7 +442,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
 - `R-09` Environment resolution: project `[environments.<name>]` shadows the
   central one entirely (same name = project wins, no field merging); an
   undefined name → error naming the lane and BOTH candidate files. The
-  environment's origin (project vs central + path) is printed (R-05).
+  environment's origin (project vs central + path) is printed (R-05). If the
+  selected environment declares `image_env` and that variable is present but
+  empty, refuse instead of silently falling back; otherwise a non-empty
+  override selects the invocation's image and the declared `image` remains the
+  fallback only when the variable is absent.
 
 - `R-22` **Shared central lanes (RG-16):** a central config may define
   `[lanes.*]`, schema-validated wherever it lives. The EFFECTIVE lane set of

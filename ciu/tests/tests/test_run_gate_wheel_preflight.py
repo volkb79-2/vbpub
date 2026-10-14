@@ -45,7 +45,7 @@ def test_byte_mismatch_is_rejected_with_module_name(tmp_path):
             "run_gate", installed, source, venv
         )
     assert "tester-unified/README.md" in str(exc.value)
-    assert "RUN_GATE_TESTER_VERSION" in str(exc.value)
+    assert "exact Run-Gate wheel" in str(exc.value)
 
 
 def test_module_outside_installed_venv_is_rejected(tmp_path):

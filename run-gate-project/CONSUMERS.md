@@ -144,8 +144,8 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
 ## Central defaults (vbpub monorepo)
 
 `run-gate.root.toml` at the REPO ROOT holds environment facts once for all
-internal projects (`[environments.<name>]`: `image`, optional `cgroup_slice`
-or `cgroup_slice_env`) and, since RG-16, SHARED LANES too: every package can use
+internal projects (`[environments.<name>]`: `image`, optional `image_env`,
+`cgroup_slice` or `cgroup_slice_env`) and, since RG-16, SHARED LANES too: every package can use
 the identical lane without copying definitions. Discovery: nearest STRICT
 ancestor of the project dir; project entries shadow a central name entirely
 (whole table, no field merging — same rule for environments and lanes).
@@ -183,6 +183,7 @@ schema_version = 1
 [environments.tester-unified]
 mode = "ephemeral"
 image = "tester-unified:local"
+image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE" # optional per-invocation image override
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 forward_env = ["SCHEMA_GATE_PW", "CGROUP_PARENT_DEV_BACKGROUND"]
 
@@ -229,6 +230,12 @@ clean_tree = true
 memory = "2g"                       # required local ceiling for memory.events attribution
 pids = 8192                          # required local ceiling for pids.events attribution
 ```
+
+Use `image_env` when a workflow must select an image by immutable or
+receipt-specific tag. Run-Gate reads the named environment variable before
+starting the container; an unset variable uses the declared `image`, while a
+set but empty variable is an error. The value is consumed by the host-side
+Run-Gate process and is not forwarded into the test container.
 
 The `native-r2` lane demonstrates the opt-in observer-only socket integration:
 it exposes only the read-only resource-observer socket to the Assay process in

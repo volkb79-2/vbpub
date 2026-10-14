@@ -508,6 +508,11 @@ and the [adoption recipe](docs/CONSUMERS.md#release-bodies-and-curated-notes).
 ## Isolated release transactions
 
 Run `cmru release` from your ordinary checkout—even if unrelated work is in progress.
+An actual release must be launched from CMRU's installed non-editable wheel. CMRU
+refuses a source-tree or editable controller and records the wheel and installed-file
+digests in the release log; see the
+[controller design](docs/DESIGN-GUIDE.md#release-uses-a-wheel-bound-controller) and
+[bootstrap instructions](docs/RELEASE-TRANSACTIONS.md#bootstrap-when-the-release-engine-changes-in-the-same-wave).
 cmru fetches `origin/main`, rejects local-only `main` commits that the snapshot would omit,
 and creates a temporary `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree at that exact
 commit — chronologically sortable, and flat, so the `.worktrees/` directory name is
@@ -755,7 +760,12 @@ The installed `run-gate` wheel is the canonical test entrypoint. From the
 aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later;
 development and local build suffixes are rejected. Its preflight
 checks that `run-gate --version` agrees with the installed wheel's SemVer,
-enforces that version floor, and records the version in the gate manifest. See the
+requires a non-editable wheel installation, resolves and hashes the published
+Run-Gate wheel for that installed version, and verifies that both the installed
+wheel's executable module bytes and the configured `tester-unified` image
+labels match that exact artifact. It checks the image ID and wheel labels again
+around each lane, then pins each lane to
+that inspected image ID. The manifest records those identities. See the
 [gate design](docs/DESIGN-GUIDE.md#aggregate-gate-binds-its-source-and-judge).
 The
 `assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage,

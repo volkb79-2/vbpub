@@ -135,6 +135,13 @@ The tool refuses a missing mode. Review the diff, then migrate wrapper
 assumptions separately. See the [mode rationale](docs/DESIGN-GUIDE.md#runner-modes-name-the-runtime-contract) and the
 [consumer migration steps](CONSUMERS.md#closed-results-and-runner-mode-migration).
 
+Container environments may also declare `image_env = "NAME"`. If that
+environment variable is set, its non-empty value selects the image for that
+invocation; if unset, the declared `image` remains in effect. This lets a
+release gate use a receipt-specific image tag without replacing a shared tag
+such as `tester-unified:local`. The override is read by the Run-Gate process
+that starts the container and is not forwarded into it.
+
 ### PID 1 and cgroup resource failures
 
 run-gate refuses to start as container PID 1, where orphaned lane processes

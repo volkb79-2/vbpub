@@ -39,6 +39,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - Fix: build and receipt the exact candidate wheel before the release gate,
   verify the running tester image contains those bytes, and refuse publication
   if CMRU's post-tag wheel build differs.
+- Fix: refuse a release gate when its dated changelog version is not newer than
+  the latest Run-Gate release tag, so a prior release cannot be rebuilt under
+  its old version outside the release transaction.
+- Add: allow container environments to select a per-invocation image through
+  `image_env`; the Run-Gate release test uses a candidate-specific image tag
+  and checks that the installed wheel modules and CLI match the candidate.
 - Fix: give the R1 and R3 tester containers explicit memory and swap ceilings,
   so gate admission accounts for their use and Docker applies per-container bounds.
 

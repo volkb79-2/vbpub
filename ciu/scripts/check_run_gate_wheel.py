@@ -22,6 +22,16 @@ def verify_module_file(
             f"Run-Gate {module_name} resolved outside tester-unified's installed "
             f"venv: {installed_path}; use the installed Run-Gate wheel"
         )
+    if not source_path.is_file():
+        raise SystemExit(f"Run-Gate checkout source is missing: {source_path}")
+    if installed_path.read_bytes() != source_path.read_bytes():
+        raise SystemExit(
+            "tester-unified's installed Run-Gate wheel does not match the "
+            f"selected checkout ({module_name}); rebuild it from the selected "
+            "checkout using the supported procedure in "
+            "`tester-unified/README.md` (build the image from the exact Run-Gate "
+            "wheel for that checkout), then rerun the registered CIU gate"
+        )
 
 
 def verify_console_scripts(installed_distribution, source_scripts: dict[str, str]) -> None:
@@ -54,16 +64,6 @@ def _source_console_scripts(pyproject_path: Path) -> dict[str, str]:
             f"Run-Gate checkout metadata has no valid [project.scripts] table: {pyproject_path}"
         )
     return scripts
-    if not source_path.is_file():
-        raise SystemExit(f"Run-Gate checkout source is missing: {source_path}")
-    if installed_path.read_bytes() != source_path.read_bytes():
-        raise SystemExit(
-            "tester-unified's installed Run-Gate wheel does not match the "
-            f"selected checkout ({module_name}); rebuild it from the selected "
-            "checkout using the supported procedure in "
-            "`tester-unified/README.md` (build the image from the exact Run-Gate "
-            "wheel for that checkout), then rerun the registered CIU gate"
-        )
 
 
 def main() -> int:

@@ -277,8 +277,9 @@ assay exists to close that gap mechanically, not by policy:
   These counters are an execution-validity guard, not a CPU or memory usage
   profile: R2 still measures whether tests detect code mutations. Assay checks
   ancestors because their limits can affect a container whose own limits say
-  `max`. A positive `memory.events:max` remains a conservative infrastructure
-  refusal even when reclaim prevented OOM and the command exited normally. For
+  `max`. A positive `memory.events:max` is recorded as telemetry; reclaim can
+  succeed without invalidating the result. `pids.events:max` and OOM-related
+  counters remain infrastructure failures. For
   each active controller, native R2 requires a local event file or a verified
   mount option that makes the regular event file local. Availability is
   capability-based: Assay probes the files and mount options instead of

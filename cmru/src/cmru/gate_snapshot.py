@@ -631,15 +631,34 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         )
         complete_identity = (
             candidate_keys == {
-                "version", "executable", "launcher_sha256", "distribution_sha256"
+                "version", "executable", "launcher_sha256", "distribution_sha256",
+                "installed_wheel_sha256", "published_wheel_sha256", "tester_image",
+                "tester_image_id", "tester_image_wheel_sha256",
+                "installed_payload_sha256", "published_payload_sha256",
             }
             and isinstance(candidate_judge.get("executable"), str)
             and Path(candidate_judge["executable"]).is_absolute()
             and all(
                 isinstance(candidate_judge.get(key), str)
                 and re.fullmatch(r"[0-9a-f]{64}", candidate_judge[key]) is not None
-                for key in ("launcher_sha256", "distribution_sha256")
+                for key in (
+                    "launcher_sha256", "distribution_sha256", "installed_wheel_sha256",
+                    "published_wheel_sha256", "tester_image_wheel_sha256",
+                    "installed_payload_sha256", "published_payload_sha256",
+                )
             )
+            and isinstance(candidate_judge.get("tester_image"), str)
+            and bool(candidate_judge["tester_image"])
+            and isinstance(candidate_judge.get("tester_image_id"), str)
+            and re.fullmatch(
+                r"sha256:[0-9a-f]{64}", candidate_judge["tester_image_id"]
+            ) is not None
+            and candidate_judge.get("installed_wheel_sha256")
+            == candidate_judge.get("published_wheel_sha256")
+            and candidate_judge.get("tester_image_wheel_sha256")
+            == candidate_judge.get("published_wheel_sha256")
+            and candidate_judge.get("installed_payload_sha256")
+            == candidate_judge.get("published_payload_sha256")
         )
         if stable_version and complete_identity:
             manifest_judge = dict(candidate_judge)

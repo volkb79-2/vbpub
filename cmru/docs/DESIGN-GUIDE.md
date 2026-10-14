@@ -771,8 +771,19 @@ beside `run_release_gate.py` cannot run before the source integrity check. The
 driver starts lane processes through the installed `run-gate` CLI, not a script
 from the mutable checkout. Before any sub-lane starts, CMRU requires a stable Run-Gate wheel at SemVer
 `24.0.0` or later. It rejects development and local suffixes, verifies the
-CLI's reported SemVer against wheel metadata, and records that version in the
-snapshot manifest.
+CLI's reported SemVer against wheel metadata, and requires a non-editable wheel
+install. It resolves the release for the installed version, downloads and
+hashes that exact published Run-Gate wheel, compares the digest with the
+installed wheel's `direct_url.json` archive digest, and compares both installed
+executable modules with the copies inside that wheel. It checks the configured
+`tester-unified` image's Run-Gate version and wheel-SHA labels against those
+published bytes. This permits an older but still supported stable release when
+it is the wheel actually installed. The image ID and labels are rechecked
+around every lane, and every lane is pinned to the inspected image ID. The
+snapshot records the launcher, installed distribution,
+published wheel, and tester image identities; a resumed run refuses if any
+changed. This closes the gap where a stable-looking local wheel or a stale
+`tester-unified:local` image could pass a version-only check.
 Nested `run-gate` processes receive neither
 publisher-token nor extra-mount variables (`RUN_GATE_EXTRA_MOUNTS`); origin
 facts passed to mutation contain tag names and commit IDs, not credentials.
@@ -945,3 +956,15 @@ used to build the artifact; it merges `origin/main` into the candidate (bounded,
 when the new commits leave the project's own paths untouched, otherwise it stops (REL-04). The candidate branch and worktree remain available for inspection;
 success deletes the now-redundant branch. A version strategy that creates a mechanical version
 commit receives a second gate on that exact commit before publication.
+
+## Release uses a wheel-bound controller
+
+`cmru release` re-executes the controller inside its isolated candidate worktree. If the caller
+starts from an editable checkout, a later process could import different CMRU bytes from the ones
+that began the transaction. A real release therefore requires CMRU's active CLI module to match
+its installed distribution, requires non-editable wheel provenance, and hashes the installed
+distribution files before starting the transaction and again inside the child. Both logs record
+the controller version, original wheel digest, and installed-file digest. This keeps the release
+mechanism itself reviewable and identifies the exact controller if a transaction must be resumed.
+`cmru release --dry-run` remains available from a source checkout because it cannot publish or
+promote anything.

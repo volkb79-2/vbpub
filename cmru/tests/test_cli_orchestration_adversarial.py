@@ -90,9 +90,22 @@ def test_release_gate_refuses_missing_run_tests_before_runner(monkeypatch, tmp_p
 def test_release_gate_refuses_when_candidate_head_moves_during_gate(monkeypatch, tmp_path):
     heads = iter(("a" * 40, "b" * 40))
     monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: next(heads))
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli, "_run_release_gates", lambda *_args: None)
     with pytest.raises(RuntimeError, match="gate changed the candidate commit"):
         cli._run_release_gates_on_exact_head(tmp_path, {}, ["demo"])
+
+
+@pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+def test_release_gate_source_check_rejects_hidden_tracked_byte_change(tmp_path, index_flag):
+    root = _repo(tmp_path)
+    expected_sha = _git(root, "rev-parse", "HEAD")
+    _git(root, "update-index", index_flag, "demo/x")
+    (root / "demo" / "x").write_text("changed behind index flag\n")
+    assert cli._worktree_changed_paths(root) == []
+
+    with pytest.raises(RuntimeError, match="assume-unchanged or skip-worktree"):
+        cli._assert_release_gate_source_matches_commit(root, expected_sha, phase="after")
 
 
 def test_child_release_args_removes_resume_but_rejects_no_obsolete_destructive_option(tmp_path):

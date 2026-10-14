@@ -12,6 +12,9 @@ schema_version = 1
 [environments.tester-unified]
 mode = "ephemeral"
 image = "tester-unified:local"
+# Release gates can bind one exact candidate image without mutating the shared
+# `:local` tag. Ordinary callers leave this unset and use the declared image.
+image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"
 # The repository-wide gate policy binds to the host-injected value once here;
 # every project inheriting this environment uses the same gates tier. The
 # value itself remains host-owned so host setup can verify the installed unit;

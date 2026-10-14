@@ -918,7 +918,7 @@ def _check_keys(table: dict, allowed: set, where: str) -> None:
 
 
 def _validate_environment(name: str, table: dict, where: str) -> None:
-    _check_keys(table, {"image", "cgroup_slice", "cgroup_slice_env", "mode", "container_name",
+    _check_keys(table, {"image", "image_env", "cgroup_slice", "cgroup_slice_env", "mode", "container_name",
                         "forward_env", "resources", "state_root"},
                 f"{where} [environments.{name}]")
     image = table.get("image")
@@ -935,6 +935,14 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
                  "host subprocess and cannot declare 'image'")
     elif not isinstance(image, str) or not image.strip():
         fail(f"{where} [environments.{name}]: 'image' must be a non-empty string")
+    image_env = table.get("image_env")
+    if image_env is not None:
+        if mode == "host":
+            fail(f"{where} [environments.{name}]: 'image_env' requires a container mode")
+        if not isinstance(image_env, str) or not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*", image_env):
+            fail(f"{where} [environments.{name}]: 'image_env' must be a valid "
+                 "environment-variable name")
     state_root = table.get("state_root")
     if state_root is not None:
         if mode == "host":
@@ -1998,6 +2006,12 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
     if resolved is not None:
         if resolved["mode"] == "host":
             return {}, source
+        image_env = resolved.pop("image_env", None)
+        if image_env is not None and image_env in os.environ:
+            image_override = os.environ[image_env]
+            if not image_override.strip():
+                fail(f"{source}: selected image override ${image_env} is empty")
+            resolved["image"] = image_override
         # Preserve the repository's existing override for its explicitly
         # declared `host` container environment. The name alone selects no
         # behavior; its required `mode` does.

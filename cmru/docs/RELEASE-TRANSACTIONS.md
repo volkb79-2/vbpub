@@ -49,12 +49,19 @@ a non-editable package in the estate venv, and record the source commit and
 wheel SHA-256 in the release log. Verify the active `cmru` launcher and its
 distribution both resolve from the estate venv before starting releases. This
 bootstrap wheel is a local release controller, not a published CMRU release.
+An actual `cmru release` now refuses a source-tree or editable controller and
+records the wheel and installed-file digests in both the launcher and
+transaction logs.
 
 Use the bootstrapped controller for dependent releases such as CGProfile and
 Run-Gate. After Run-Gate is published, rebuild `tester-unified` from the exact
 published Run-Gate wheel and run the CMRU release gate with that image before
 releasing CMRU itself. This keeps the dependency order usable while ensuring
-the CMRU release is judged with the public Run-Gate artifact. Never run the
+the CMRU release is judged with the public Run-Gate artifact. The gate hashes
+the published wheel bytes, checks the installed wheel's recorded source digest,
+and verifies the selected image's version and wheel-digest labels before each
+lane. It pins the lane to the inspected image ID so a mutable tag cannot select
+a different image. Never run the
 bootstrap through an editable checkout: uncommitted files and whichever source
 tree happens to be mounted are not release evidence.
 

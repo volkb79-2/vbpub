@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib
+import importlib.metadata
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -69,13 +73,47 @@ def prepared_release_version(changes_path: Path) -> str:
         markdown = changes_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ReleaseCandidateError(f"cannot read prepared changelog {changes_path}: {exc}") from exc
+    prepared_version = None
     for heading in release_notes.markdown_h2_headings(markdown):
         match = re.fullmatch(r"## \[([^]]+)\] - \d{4}-\d{2}-\d{2}", heading.text)
         if match and STABLE_SEMVER.fullmatch(match.group(1)):
-            return match.group(1)
-    raise ReleaseCandidateError(
-        f"{changes_path} has no dated stable release section prepared by CMRU"
-    )
+            prepared_version = match.group(1)
+            break
+    if prepared_version is None:
+        raise ReleaseCandidateError(
+            f"{changes_path} has no dated stable release section prepared by CMRU"
+        )
+    latest = _latest_release_tag()
+    if _semver_key(prepared_version) <= _semver_key(latest[1]):
+        raise ReleaseCandidateError(
+            f"prepared Run-Gate version {prepared_version} is not newer than "
+            f"the latest release tag {latest[0]}; run this gate inside `cmru release` "
+            "after CMRU prepares the next dated changelog section"
+        )
+    return prepared_version
+
+
+def _semver_key(version: str) -> tuple[int, int, int]:
+    if not STABLE_SEMVER.fullmatch(version):
+        raise ReleaseCandidateError(f"invalid stable Run-Gate version {version!r}")
+    return tuple(int(part) for part in version.split("."))
+
+
+def _latest_release_tag() -> tuple[str, str]:
+    tags = _git("tag", "--list", "run-gate-v*").splitlines()
+    stable: list[tuple[tuple[int, int, int], str, str]] = []
+    for tag in tags:
+        match = re.fullmatch(r"run-gate-v([0-9]+\.[0-9]+\.[0-9]+)", tag)
+        if match and STABLE_SEMVER.fullmatch(match.group(1)):
+            version = match.group(1)
+            stable.append((_semver_key(version), tag, version))
+    if not stable:
+        raise ReleaseCandidateError(
+            "cannot prove the prepared Run-Gate version is new: no stable "
+            "run-gate-vX.Y.Z release tag is available in this checkout"
+        )
+    _key, tag, version = max(stable)
+    return tag, version
 
 
 def _wheel_identity() -> dict[str, str]:
@@ -181,9 +219,90 @@ def _write_receipt(record: dict[str, str], path: Path) -> None:
     os.replace(temporary, path)
 
 
-def prepare(image_tag: str = "tester-unified:local") -> dict[str, str]:
+def _candidate_wheel_path(receipt: dict[str, str]) -> Path:
+    """Resolve and verify the exact wheel named by a prepared receipt."""
+    try:
+        wheel_dir = (PROJECT_ROOT / "dist").resolve(strict=True)
+        wheel = wheel_dir / receipt["filename"]
+        resolved = wheel.resolve(strict=True)
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    except (OSError, RuntimeError) as exc:
+        raise ReleaseCandidateError(
+            f"cannot read receipted Run-Gate wheel under {PROJECT_ROOT / 'dist'}: {exc}"
+        ) from exc
+    if not resolved.is_relative_to(wheel_dir) or not resolved.is_file():
+        raise ReleaseCandidateError(
+            f"receipted Run-Gate wheel is not a regular file under {wheel_dir}"
+        )
+    if digest != receipt["sha256"]:
+        raise ReleaseCandidateError(
+            f"receipted Run-Gate wheel SHA-256 changed: expected {receipt['sha256']}, "
+            f"observed {digest}"
+        )
+    return resolved
+
+
+def _candidate_cli(wheel: Path, temp_root: Path) -> Path:
+    """Install the candidate wheel offline and return its console script."""
+    environment = temp_root / "candidate-venv"
+    create = subprocess.run(
+        [sys.executable, "-m", "venv", str(environment)],
+        cwd=temp_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if create.returncode:
+        raise ReleaseCandidateError(
+            "cannot create an isolated Run-Gate candidate environment: "
+            f"{create.stderr.strip()[:500]}"
+        )
+    python = environment / "bin" / "python"
+    install = subprocess.run(
+        [
+            str(python), "-m", "pip", "install", "--no-deps", "--no-index",
+            "--disable-pip-version-check", str(wheel),
+        ],
+        cwd=temp_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if install.returncode:
+        raise ReleaseCandidateError(
+            "cannot install the receipted Run-Gate wheel into its isolated "
+            f"candidate environment: {install.stderr.strip()[:500]}"
+        )
+    executable = environment / "bin" / "run-gate"
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise ReleaseCandidateError(
+            f"the receipted Run-Gate wheel did not install its console script at {executable}"
+        )
+    return executable
+
+
+def _verify_receipt_image(receipt: dict[str, str]) -> None:
+    """Refuse if the candidate tag no longer names the receipted image."""
+    _require_same_wheel(_image_identity(receipt["image_tag"]), receipt, "tester image")
+    result = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{.Id}}", receipt["image_tag"]],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    observed = result.stdout.strip()
+    if result.returncode or observed != receipt["image_id"]:
+        detail = result.stderr.strip() if result.returncode else observed
+        raise ReleaseCandidateError(
+            f"tester image {receipt['image_tag']!r} changed after preparation: "
+            f"expected {receipt['image_id']}, observed {detail}"
+        )
+
+
+def prepare(image_tag: str | None = None) -> dict[str, str]:
     version = prepared_release_version(PROJECT_ROOT / "CHANGES.md")
     commit = _git("rev-parse", "HEAD")
+    image_tag = image_tag or f"tester-unified:run-gate-candidate-{commit[:12]}"
     epoch = _git("log", "-1", "--format=%ct")
     env = os.environ.copy()
     env["SOURCE_DATE_EPOCH"] = epoch
@@ -288,25 +407,123 @@ def verify_running_image(receipt_path: Path) -> None:
     if not isinstance(identity, dict):
         raise ReleaseCandidateError("tester image Run-Gate wheel identity is malformed")
     _require_same_wheel(identity, receipt, "running tester image")
+    _verify_installed_candidate_wheel(receipt)
     print(f"running tester image contains the gated Run-Gate wheel {receipt['sha256']}")
+
+
+def _verify_installed_candidate_wheel(receipt: dict[str, str]) -> None:
+    """Prove the installed wheel code and CLI are the candidate under test."""
+    try:
+        version = importlib.metadata.version("run-gate")
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise ReleaseCandidateError("tester image has no installed Run-Gate distribution") from exc
+    if version != receipt["version"]:
+        raise ReleaseCandidateError(
+            f"installed Run-Gate distribution version {version!r} does not match "
+            f"candidate {receipt['version']!r}"
+        )
+    venv_root = Path(sys.prefix).resolve()
+    for module_name in ("run_gate", "run_gate_admission"):
+        try:
+            module = importlib.import_module(module_name)
+            installed_path = Path(module.__file__).resolve(strict=True)
+        except (ImportError, OSError, TypeError) as exc:
+            raise ReleaseCandidateError(
+                f"cannot import installed Run-Gate module {module_name}: {exc}"
+            ) from exc
+        if not installed_path.is_relative_to(venv_root):
+            raise ReleaseCandidateError(
+                f"installed Run-Gate module {module_name} resolved outside tester venv: "
+                f"{installed_path}"
+            )
+        source_path = PROJECT_ROOT / f"{module_name}.py"
+        try:
+            source_bytes = source_path.read_bytes()
+            installed_bytes = installed_path.read_bytes()
+        except OSError as exc:
+            raise ReleaseCandidateError(
+                f"cannot compare installed Run-Gate module {module_name}: {exc}"
+            ) from exc
+        if installed_bytes != source_bytes:
+            raise ReleaseCandidateError(
+                f"installed Run-Gate module {module_name} differs from the selected "
+                "release checkout"
+            )
+    executable = venv_root / "bin" / "run-gate"
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise ReleaseCandidateError(f"tester image has no executable installed CLI at {executable}")
+    result = subprocess.run(
+        [str(executable), "--version"],
+        cwd=Path(tempfile.gettempdir()),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    expected = f"run-gate {receipt['version']}"
+    if result.returncode or result.stdout.strip() != expected:
+        raise ReleaseCandidateError(
+            f"installed Run-Gate CLI smoke expected {expected!r}, observed "
+            f"{result.stdout.strip()!r} (exit {result.returncode}): "
+            f"{result.stderr.strip()[:300]}"
+        )
+
+
+def run_selftest(receipt_path: Path = RECEIPT_PATH) -> int:
+    """Run selftest through the console script installed from the receipted wheel."""
+    if not receipt_path.is_absolute():
+        receipt_path = PROJECT_ROOT / receipt_path
+    receipt = _read_receipt(receipt_path)
+    commit = _git("rev-parse", "HEAD")
+    if receipt["candidate_commit"] != commit:
+        raise ReleaseCandidateError(
+            f"wheel receipt is for {receipt['candidate_commit']}, current candidate is {commit}"
+        )
+    wheel = _candidate_wheel_path(receipt)
+    _verify_receipt_image(receipt)
+    try:
+        container_receipt = receipt_path.resolve().relative_to(
+            PROJECT_ROOT.resolve()
+        ).as_posix()
+    except ValueError as exc:
+        raise ReleaseCandidateError(
+            "Run-Gate selftest receipt must be inside the selected project checkout"
+        ) from exc
+    env = os.environ.copy()
+    env["RUN_GATE_RELEASE_WHEEL_RECEIPT"] = container_receipt
+    env["RUN_GATE_TESTER_UNIFIED_IMAGE"] = receipt["image_tag"]
+    with tempfile.TemporaryDirectory(prefix="run-gate-candidate-driver-") as directory:
+        executable = _candidate_cli(wheel, Path(directory))
+        try:
+            result = subprocess.run(
+                [str(executable), "selftest"], cwd=PROJECT_ROOT, env=env, check=False,
+            )
+        except OSError as exc:
+            raise ReleaseCandidateError(
+                f"cannot start the receipted Run-Gate selftest: {exc}"
+            ) from exc
+        return result.returncode
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     prepare_parser = commands.add_parser("prepare", help="build and receipt the candidate wheel/image")
-    prepare_parser.add_argument("--image", default="tester-unified:local")
+    prepare_parser.add_argument("--image")
     verify_parser = commands.add_parser("verify", help="compare release build bytes with the gated wheel")
     verify_parser.add_argument("--image")
     verify_parser.add_argument("--receipt", type=Path, default=RECEIPT_PATH)
     running_parser = commands.add_parser("verify-running", help="verify this gate container's baked wheel")
     running_parser.add_argument("--receipt", type=Path, required=True)
+    selftest_parser = commands.add_parser("run-selftest", help="run selftest with its receipt-specific image")
+    selftest_parser.add_argument("--receipt", type=Path, default=RECEIPT_PATH)
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
             prepare(args.image)
         elif args.command == "verify":
             verify_built(args.image, args.receipt)
+        elif args.command == "run-selftest":
+            return run_selftest(args.receipt)
         else:
             verify_running_image(args.receipt)
     except (ReleaseCandidateError, OSError, subprocess.SubprocessError) as exc:

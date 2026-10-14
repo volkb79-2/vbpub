@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tomllib
+import zipfile
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,13 +56,65 @@ LANES = [
 ]
 
 
-def _gate_identity(version: str = "24.0.0") -> dict[str, str]:
+def _sample_run_gate_wheel() -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("run_gate.py", b"wheel run gate module\n")
+        archive.writestr("run_gate_admission.py", b"wheel admission module\n")
+    return output.getvalue()
+
+
+def _sample_payload_sha256() -> str:
+    digest = hashlib.sha256()
+    for name, content in (
+        ("run_gate.py", b"wheel run gate module\n"),
+        ("run_gate_admission.py", b"wheel admission module\n"),
+    ):
+        digest.update(name.encode("utf-8", "surrogateescape"))
+        digest.update(b"\0")
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def _sample_wheel_sha256() -> str:
+    return hashlib.sha256(_sample_run_gate_wheel()).hexdigest()
+
+
+def _base_run_gate_identity(version: str = "24.0.0") -> dict[str, str]:
     return {
         "version": version,
         "executable": "/usr/bin/run-gate",
         "launcher_sha256": "a" * 64,
         "distribution_sha256": "b" * 64,
+        "installed_wheel_sha256": _sample_wheel_sha256(),
+        "installed_payload_sha256": _sample_payload_sha256(),
     }
+
+
+def _tester_image_identity() -> dict[str, str]:
+    return {
+        "tester_image": "tester-unified:local",
+        "tester_image_id": "sha256:" + "d" * 64,
+        "tester_image_wheel_sha256": _sample_wheel_sha256(),
+    }
+
+
+def _run_gate_release_artifacts() -> dict[str, str]:
+    return {
+        "published_wheel_sha256": _sample_wheel_sha256(),
+        "published_payload_sha256": _sample_payload_sha256(),
+        **_tester_image_identity(),
+    }
+
+
+def _gate_identity(version: str = "24.0.0") -> dict[str, str]:
+    return {**_base_run_gate_identity(version), **_run_gate_release_artifacts()}
+
+
+def _matching_release_identity(wheel_sha: str) -> dict[str, str]:
+    identity = _base_run_gate_identity()
+    identity["installed_wheel_sha256"] = wheel_sha
+    return identity
 
 
 def _probe_ref(worktree: Path) -> str:
@@ -141,7 +195,15 @@ def _fixture(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_release_gate, "_preflight_assay_source", lambda _root: None)
     monkeypatch.setattr(
         run_release_gate, "_check_run_gate_identity",
-        lambda _root: _gate_identity(),
+        lambda _root: _base_run_gate_identity(),
+    )
+    monkeypatch.setattr(
+        run_release_gate, "_check_run_gate_release_artifacts",
+        lambda _root, _identity: _run_gate_release_artifacts(),
+    )
+    monkeypatch.setattr(
+        run_release_gate, "_check_tester_image_identity",
+        lambda _root, **_kwargs: _tester_image_identity(),
     )
     return repo, root_secret, project_secret, metadata, auth, calls
 
@@ -919,21 +981,27 @@ def test_isolated_component_loader_imports_real_gate_helpers_from_tools():
     assert "CMRU_ISOLATED_COMPONENTS=loaded" in result.stdout
 
 
-@pytest.mark.parametrize("cli_version, version, expected", [
-    ("run-gate 24.0.0", "24.0.0", None),
-    ("run-gate 23.11.9", "23.11.9", "requires Run-Gate 24.0.0 or later"),
-    ("run-gate 24.0.0", "24.0.0.dev4+g1234567", "stable Run-Gate wheel"),
-    ("run-gate 24.0.0", "24.0.0+tester.unified", "stable Run-Gate wheel"),
+@pytest.mark.parametrize("cli_version, version, wheel_sha256, payload_sha256, expected", [
+    ("run-gate 24.0.0", "24.0.0", _sample_wheel_sha256(), _sample_payload_sha256(), None),
+    ("run-gate 23.11.9", "23.11.9", "c" * 64, _sample_payload_sha256(), "requires Run-Gate 24.0.0 or later"),
+    ("run-gate 24.0.0", "24.0.0.dev4+g1234567", "c" * 64, _sample_payload_sha256(), "stable Run-Gate wheel"),
+    ("run-gate 24.0.0", "24.0.0+tester.unified", "c" * 64, _sample_payload_sha256(), "stable Run-Gate wheel"),
     (
         "run-gate 23.10.1.dev458+g2c9f6be37",
         "23.10.1.dev458+g2c9f6be37",
+        "c" * 64,
+        _sample_payload_sha256(),
         "requires a stable Run-Gate wheel at SemVer 24.0.0 or later",
     ),
-    ("run-gate 24.0.1", "24.0.0", "does not match its wheel metadata"),
-    ("run-gate rev 68", "24.0.0", "unrecognized SemVer identity"),
+    ("run-gate 24.0.1", "24.0.0", "c" * 64, _sample_payload_sha256(), "does not match its wheel metadata"),
+    ("run-gate rev 68", "24.0.0", "c" * 64, _sample_payload_sha256(), "unrecognized SemVer identity"),
+    ("run-gate 24.0.0", "24.0.0", None, _sample_payload_sha256(), "not proven to come from a non-editable wheel"),
+    ("run-gate 24.0.0", "24.0.0", "z" * 64, _sample_payload_sha256(), "not proven to come from a non-editable wheel"),
+    ("run-gate 24.0.0", "24.0.0", _sample_wheel_sha256(), None, "module hashes are malformed"),
+    ("run-gate 24.0.0", "24.0.0", _sample_wheel_sha256(), "z" * 64, "module hashes are malformed"),
 ])
 def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
-    tmp_path, monkeypatch, cli_version, version, expected,
+    tmp_path, monkeypatch, cli_version, version, wheel_sha256, payload_sha256, expected,
 ):
     launcher = tmp_path / "run-gate"
     launcher.write_text(f"#!{sys.executable}\n", encoding="utf-8")
@@ -948,7 +1016,10 @@ def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
         return subprocess.CompletedProcess(
             argv, 0,
             stdout=json.dumps({
-                "version": version, "distribution_sha256": "b" * 64,
+                "version": version,
+                "distribution_sha256": "b" * 64,
+                "installed_wheel_sha256": wheel_sha256,
+                "installed_payload_sha256": payload_sha256,
             }),
             stderr="",
         )
@@ -967,12 +1038,306 @@ def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
             launcher.read_bytes()
         ).hexdigest()
         assert identity["distribution_sha256"] == "b" * 64
+        assert identity["installed_wheel_sha256"] == wheel_sha256
+        assert identity["installed_payload_sha256"] == payload_sha256
 
 
 def test_release_gate_refuses_when_run_gate_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(run_release_gate.shutil, "which", lambda _name: None)
     with pytest.raises(RuntimeError, match="requires the installed run-gate CLI"):
         run_release_gate._check_run_gate_identity(tmp_path)
+
+
+def _mock_run_gate_release_artifact_inputs(
+    tmp_path, monkeypatch, *, version="24.0.0", asset_name=None, sidecar_sha=None,
+    downloaded=None, sidecar_downloaded=None,
+    image_labels=None, docker_returncode=0, omit_sidecar=False,
+    duplicate_wheel=False, duplicate_sidecar=False, sidecar_url_value=None,
+    docker_stdout=None, docker_stderr="", image_env="RUN_GATE_IMAGE_FOR_TEST",
+    provider_present=True, release_result="configured", release_error=None,
+    release_tag=None, release_draft=False, release_prerelease=False,
+    asset_url="https://example.invalid/run-gate.whl", image_id=None,
+    docker_error=None, configured_image="tester-unified:configured",
+    run_gate_config_text=None, write_run_gate_config=True,
+):
+    from cmru import config as cmru_config
+    from cmru import tool_deps
+
+    published_wheel_bytes = _sample_run_gate_wheel() if downloaded is None else downloaded
+    wheel_bytes_for_identity = (
+        published_wheel_bytes if isinstance(published_wheel_bytes, bytes)
+        else _sample_run_gate_wheel()
+    )
+    wheel_sha = hashlib.sha256(wheel_bytes_for_identity).hexdigest()
+    (tmp_path / "cmru.orchestration.toml").write_text(
+        "schema_version = 1\n", encoding="utf-8",
+    )
+    if write_run_gate_config:
+        if run_gate_config_text is None:
+            image_env_line = (
+                "" if image_env is None
+                else f'image_env = "{image_env}"\n'
+            )
+            (tmp_path / "run-gate.root.toml").write_text(
+                "schema_version = 1\n"
+                "[environments.tester-unified]\n"
+                f'image = "{configured_image}"\n'
+                f"{image_env_line}",
+                encoding="utf-8",
+            )
+        else:
+            (tmp_path / "run-gate.root.toml").write_text(
+                run_gate_config_text, encoding="utf-8",
+            )
+    forge = SimpleNamespace(
+        projects=(
+            {"run-gate-project": SimpleNamespace(prefix="run-gate-v")}
+            if provider_present else {}
+        ),
+        github=SimpleNamespace(owner="volkb79-2", repo="vbpub", token="test-token"),
+    )
+    monkeypatch.setattr(cmru_config, "load_forge_config", lambda *_args, **_kwargs: forge)
+    wheel_name = asset_name or f"run_gate-{version}-py3-none-any.whl"
+    sidecar_url = "https://example.invalid/run-gate.whl.sha256"
+    sidecar_bytes = (
+        f"{wheel_sha}  {wheel_name}\n".encode()
+        if sidecar_sha is None else f"{sidecar_sha}  {wheel_name}\n".encode()
+    )
+    if sidecar_downloaded is not None:
+        sidecar_bytes = sidecar_downloaded
+    sidecar_url_value = sidecar_url if sidecar_url_value is None else sidecar_url_value
+    checksum_asset = {
+        "name": f"run_gate-{version}-py3-none-any.whl.sha256",
+        "browser_download_url": sidecar_url_value,
+    }
+    wheel_asset = {"name": wheel_name, "browser_download_url": asset_url}
+    release = {
+        "tag_name": release_tag or f"run-gate-v{version}",
+        "draft": release_draft,
+        "prerelease": release_prerelease,
+        "assets": [
+            wheel_asset,
+            *([wheel_asset.copy()] if duplicate_wheel else []),
+            *([] if omit_sidecar else [checksum_asset]),
+            *([checksum_asset.copy()] if duplicate_sidecar else []),
+        ],
+    }
+
+    def get_release(path, **_kwargs):
+        assert path == "/repos/volkb79-2/vbpub/releases/tags/run-gate-v24.0.0"
+        if release_error is not None:
+            raise release_error
+        return None if release_result is None else release
+
+    monkeypatch.setattr(tool_deps, "_github_get_json", get_release)
+
+    def download_asset(url, **_kwargs):
+        result = sidecar_bytes if url == sidecar_url else published_wheel_bytes
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(tool_deps, "_download_asset", download_asset)
+    labels = {
+        "org.vbpub.run-gate.version": "24.0.0",
+        "org.vbpub.run-gate.wheel-sha256": wheel_sha,
+    } if image_labels is None else (None if image_labels == "__missing__" else image_labels)
+    image_data = {
+        "Id": "sha256:" + "d" * 64 if image_id is None else image_id,
+        "Config": {"Labels": labels},
+    }
+    stdout = json.dumps(image_data) if docker_stdout is None else docker_stdout
+    docker_calls = []
+
+    def fake_run(argv, **_kwargs):
+        docker_calls.append(argv)
+        if docker_error is not None:
+            raise docker_error
+        return subprocess.CompletedProcess(
+            argv, docker_returncode, stdout=stdout, stderr=docker_stderr,
+        )
+
+    monkeypatch.setattr(run_release_gate.subprocess, "run", fake_run)
+    return release, wheel_sha, docker_calls
+
+
+def test_release_gate_binds_installed_and_tester_run_gate_to_published_wheel(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setenv("RUN_GATE_IMAGE_FOR_TEST", "tester-unified:release")
+    release, wheel_sha, docker_calls = _mock_run_gate_release_artifact_inputs(
+        tmp_path, monkeypatch,
+    )
+
+    identity = run_release_gate._check_run_gate_release_artifacts(
+        tmp_path, _matching_release_identity(wheel_sha),
+    )
+
+    assert identity == {
+        "published_wheel_sha256": wheel_sha,
+        "published_payload_sha256": _sample_payload_sha256(),
+        "tester_image": "tester-unified:release",
+        "tester_image_id": "sha256:" + "d" * 64,
+        "tester_image_wheel_sha256": wheel_sha,
+    }
+    assert release["tag_name"] == "run-gate-v24.0.0"
+    assert docker_calls == [[
+        "docker", "image", "inspect", "--format", "{{json .}}",
+        "tester-unified:release",
+    ]]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"provider_present": False}, "cannot resolve the configured run-gate-project"),
+        ({"release_result": None}, "no published Run-Gate release"),
+        ({"release_error": OSError("offline")}, "cannot resolve the published Run-Gate release"),
+        ({"release_tag": "run-gate-v24.0.1"}, "returned Run-Gate release tag"),
+        ({"release_draft": True}, "not a published stable release"),
+        ({"release_prerelease": True}, "not a published stable release"),
+        ({"asset_name": "run-gate-v24.0.0.tar.gz"}, "exactly one asset named"),
+        ({"duplicate_wheel": True}, "exactly one asset named"),
+        ({"omit_sidecar": True}, "exactly one checksum asset"),
+        ({"duplicate_sidecar": True}, "exactly one checksum asset"),
+        ({"asset_url": ""}, "has no download URL"),
+        ({"sidecar_url_value": ""}, "checksum .* has no download URL"),
+        ({"sidecar_downloaded": b"not a digest"}, "no trustworthy wheel digest"),
+        ({"sidecar_sha": "bad"}, "no trustworthy wheel digest"),
+        ({"sidecar_sha": 12}, "no trustworthy wheel digest"),
+        ({"sidecar_downloaded": OSError("checksum download failed")}, "cannot read the published Run-Gate wheel checksum"),
+        ({
+            "downloaded": b"wrong bytes",
+            "sidecar_sha": _sample_wheel_sha256(),
+        }, "do not match the release checksum sidecar"),
+        ({"downloaded": OSError("download failed")}, "cannot download the published Run-Gate wheel"),
+        ({"image_labels": {
+            "org.vbpub.run-gate.version": "24.0.1",
+            "org.vbpub.run-gate.wheel-sha256": hashlib.sha256(
+                b"published Run-Gate wheel"
+            ).hexdigest(),
+        }}, "does not contain the published Run-Gate wheel"),
+        ({"image_labels": {
+            "org.vbpub.run-gate.version": "24.0.0",
+            "org.vbpub.run-gate.wheel-sha256": "e" * 64,
+        }}, "does not contain the published Run-Gate wheel"),
+        ({"image_labels": "__missing__"}, "no readable identity labels"),
+        ({"image_id": 4}, "no readable identity labels"),
+        ({"docker_stdout": "[]"}, "invalid JSON identity"),
+        ({"docker_stdout": json.dumps({"Id": "sha256:" + "d" * 64, "Config": {"Labels": {}}})},
+         "does not contain the published Run-Gate wheel"),
+        ({"docker_stdout": json.dumps({
+            "Id": "bad-image-id",
+            "Config": {"Labels": {
+                "org.vbpub.run-gate.version": "24.0.0",
+                "org.vbpub.run-gate.wheel-sha256": hashlib.sha256(
+                    b"published Run-Gate wheel"
+                ).hexdigest(),
+            }},
+        })}, "image ID is malformed"),
+        ({"docker_returncode": 1, "docker_stderr": "No such image"}, "cannot inspect tester-unified image"),
+        ({"docker_error": OSError("docker is unavailable")}, "cannot inspect tester-unified image"),
+        ({"docker_error": subprocess.TimeoutExpired("docker", 10)}, "cannot inspect tester-unified image"),
+        ({"run_gate_config_text": "not = [toml"}, "cannot resolve tester-unified image"),
+        ({"run_gate_config_text": "schema_version = 1\n[environments]\n"}, "cannot resolve tester-unified image"),
+        ({"run_gate_config_text": (
+            "schema_version = 1\n[environments.tester-unified]\n"
+            'image = "tester-unified:local"\nimage_env = 7\n'
+        )}, "image_env is malformed"),
+        ({"run_gate_config_text": (
+            "schema_version = 1\n[environments.tester-unified]\nimage = 7\n"
+        )}, "image is missing from run-gate.root.toml"),
+        ({"write_run_gate_config": False}, "cannot resolve tester-unified image"),
+        ({"configured_image": ""}, "image is missing from run-gate.root.toml"),
+    ],
+)
+def test_release_gate_refuses_unbound_run_gate_release_artifacts(
+    tmp_path, monkeypatch, overrides, match,
+):
+    _release, wheel_sha, _calls = _mock_run_gate_release_artifact_inputs(
+        tmp_path, monkeypatch, **overrides,
+    )
+
+    with pytest.raises(RuntimeError, match=match):
+        run_release_gate._check_run_gate_release_artifacts(
+            tmp_path, _matching_release_identity(wheel_sha),
+        )
+
+
+def test_release_gate_refuses_installed_run_gate_wheel_digest_mismatch(
+    tmp_path, monkeypatch,
+):
+    _mock_run_gate_release_artifact_inputs(tmp_path, monkeypatch)
+    identity = _base_run_gate_identity()
+    identity["installed_wheel_sha256"] = "e" * 64
+
+    with pytest.raises(RuntimeError, match="installed Run-Gate wheel does not match"):
+        run_release_gate._check_run_gate_release_artifacts(tmp_path, identity)
+
+
+def test_release_gate_refuses_installed_run_gate_module_digest_mismatch(
+    tmp_path, monkeypatch,
+):
+    _release, wheel_sha, _calls = _mock_run_gate_release_artifact_inputs(
+        tmp_path, monkeypatch,
+    )
+    identity = _matching_release_identity(wheel_sha)
+    identity["installed_payload_sha256"] = "f" * 64
+
+    with pytest.raises(RuntimeError, match="executable modules do not match"):
+        run_release_gate._check_run_gate_release_artifacts(tmp_path, identity)
+
+
+def test_release_gate_refuses_unreadable_run_gate_wheel_payload(tmp_path, monkeypatch):
+    bad_wheel = b"not a wheel archive"
+    bad_sha = hashlib.sha256(bad_wheel).hexdigest()
+    _release, _wheel_sha, _calls = _mock_run_gate_release_artifact_inputs(
+        tmp_path, monkeypatch, downloaded=bad_wheel, sidecar_sha=bad_sha,
+    )
+    identity = _matching_release_identity(bad_sha)
+
+    with pytest.raises(RuntimeError, match="not a readable archive"):
+        run_release_gate._check_run_gate_release_artifacts(tmp_path, identity)
+
+
+def test_release_gate_refuses_empty_tester_image_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("RUN_GATE_IMAGE_FOR_TEST", "")
+    _release, wheel_sha, _calls = _mock_run_gate_release_artifact_inputs(
+        tmp_path, monkeypatch,
+    )
+
+    with pytest.raises(RuntimeError, match="image override .* is empty"):
+        run_release_gate._check_run_gate_release_artifacts(
+            tmp_path, _matching_release_identity(wheel_sha),
+        )
+
+
+def test_release_gate_uses_configured_image_when_override_is_unset(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUN_GATE_IMAGE_FOR_TEST", raising=False)
+    _release, wheel_sha, docker_calls = _mock_run_gate_release_artifact_inputs(
+        tmp_path, monkeypatch,
+    )
+
+    identity = run_release_gate._check_run_gate_release_artifacts(
+        tmp_path, _matching_release_identity(wheel_sha),
+    )
+
+    assert identity["tester_image"] == "tester-unified:configured"
+    assert docker_calls[0][-1] == "tester-unified:configured"
+
+
+def test_release_gate_accepts_environment_without_image_override(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUN_GATE_IMAGE_FOR_TEST", raising=False)
+    _release, wheel_sha, docker_calls = _mock_run_gate_release_artifact_inputs(
+        tmp_path, monkeypatch, image_env=None,
+    )
+
+    identity = run_release_gate._check_run_gate_release_artifacts(
+        tmp_path, _matching_release_identity(wheel_sha),
+    )
+
+    assert identity["tester_image"] == "tester-unified:configured"
+    assert docker_calls[0][-1] == "tester-unified:configured"
 
 
 # --- C-2: only refs this gate owns are protected -----------------------------
@@ -984,8 +1349,9 @@ def test_unrelated_commits_tags_and_fetches_do_not_fail_the_gate(tmp_path, monke
     private_root = tmp_path / "private-backups"
     private_root.mkdir(mode=0o700)
 
-    def invoke(_root, lane, _environment, _worktree):
+    def invoke(_root, lane, environment, _worktree):
         calls.append(lane)
+        assert environment["RUN_GATE_TESTER_UNIFIED_IMAGE"] == "sha256:" + "d" * 64
         if lane == "assay":  # another agent's worktree, mid-gate
             serial = len(calls)
             _git(primary, "commit", "--allow-empty", "-q", "-m", f"unrelated work {serial}")
@@ -1132,10 +1498,62 @@ def test_resuming_a_snapshot_under_a_different_run_gate_identity_refuses(tmp_pat
 
     monkeypatch.setattr(
         run_release_gate, "_check_run_gate_identity",
-        lambda _root: _gate_identity("23.12.0"),
+        lambda _root: _base_run_gate_identity("23.12.0"),
     )
     with pytest.raises(RuntimeError, match="judged by a different Run-Gate identity"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
+
+
+def test_release_gate_refuses_when_run_gate_wheel_changes_during_a_lane(
+    tmp_path, monkeypatch,
+):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+    identity_reads = 0
+
+    def changed_identity(_root):
+        nonlocal identity_reads
+        identity_reads += 1
+        version = "24.0.0" if identity_reads <= 2 else "24.0.1"
+        return _base_run_gate_identity(version)
+
+    monkeypatch.setattr(run_release_gate, "_check_run_gate_identity", changed_identity)
+    monkeypatch.setattr(
+        run_release_gate, "_invoke_lane", _probing(lambda *_args: calls.append("lane") or 0),
+    )
+
+    with pytest.raises(RuntimeError, match="Run-Gate identity changed during"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
+
+    assert calls == ["lane"]
+
+
+def test_release_gate_refuses_when_tester_image_changes_during_a_lane(
+    tmp_path, monkeypatch,
+):
+    repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
+    private_root = tmp_path / "private-backups"
+    private_root.mkdir(mode=0o700)
+    image_reads = 0
+
+    def changed_image(_root, **_kwargs):
+        nonlocal image_reads
+        image_reads += 1
+        image = _tester_image_identity()
+        if image_reads > 1:
+            image["tester_image_id"] = "sha256:" + "e" * 64
+        return image
+
+    monkeypatch.setattr(run_release_gate, "_check_tester_image_identity", changed_image)
+    monkeypatch.setattr(
+        run_release_gate, "_invoke_lane", _probing(lambda *_args: calls.append("lane") or 0),
+    )
+
+    with pytest.raises(RuntimeError, match="tester-unified Run-Gate image identity changed"):
+        run_release_gate.run_release_gate(repo, temp_parent=private_root)
+
+    assert calls == ["lane"]
 
 
 def test_a_silent_ref_detector_fails_the_gate(tmp_path, monkeypatch):
@@ -1481,6 +1899,8 @@ def test_lane_boundary_preserves_unavailable_anchor_evidence(
     {"version": 23},
     {"revision": True, "version": "24.0.0"},
     {"revision": 68, "version": "24.0.0", "unexpected": True},
+    {**_gate_identity(), "installed_payload_sha256": "f" * 64},
+    {**_gate_identity(), "published_payload_sha256": "f" * 64},
 ])
 def test_a_retained_snapshot_without_valid_run_gate_identity_refuses_resume(
     tmp_path, monkeypatch, identity,

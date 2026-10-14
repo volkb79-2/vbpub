@@ -2901,6 +2901,7 @@ def _run_release_gates_on_exact_head(
 ) -> str:
     """Run the declared gate and return only the commit it actually judged."""
     judged_sha = _git(repo_root, "rev-parse", "HEAD")
+    _assert_release_gate_source_matches_commit(repo_root, judged_sha, phase="before")
     _run_release_gates(repo_root, configs, names)
     current_sha = _git(repo_root, "rev-parse", "HEAD")
     if current_sha != judged_sha:
@@ -2909,7 +2910,44 @@ def _run_release_gates_on_exact_head(
             f"({judged_sha[:12]} -> {current_sha[:12]}); refusing to tag a commit "
             "that the gate did not judge"
         )
+    _assert_release_gate_source_matches_commit(repo_root, judged_sha, phase="after")
     return judged_sha
+
+
+def _assert_release_gate_source_matches_commit(
+    repo_root: Path, expected_sha: str, *, phase: str,
+) -> None:
+    """Reject hidden tracked-byte changes around a release gate.
+
+    `git status` and `git diff` honor index flags such as assume-unchanged and
+    skip-worktree. Check those flags directly, then compare every tracked byte
+    and mode with the exact commit before trusting the usual dirty-path scan.
+    """
+    index = _git(repo_root, "ls-files", "-v", "-z")
+    flagged = [
+        entry for entry in index.split("\0")
+        if entry and (entry[:1] == "S" or entry[:1].islower())
+    ]
+    if flagged:
+        raise RuntimeError(
+            f"release gate source {phase} the gate has assume-unchanged or "
+            "skip-worktree index entries; clear them before judging an exact commit"
+        )
+    try:
+        from cmru.gate_snapshot import _verify_tracked_files_match_commit
+
+        _verify_tracked_files_match_commit(repo_root, expected_sha)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"release gate source {phase} the gate does not match commit "
+            f"{expected_sha[:12]}: {exc}"
+        ) from exc
+    changed = _worktree_changed_paths(repo_root)
+    if changed:
+        raise RuntimeError(
+            f"release gate source {phase} the gate has non-ignored changes: "
+            f"{', '.join(changed[:8])}"
+        )
 
 
 def _run_tagged_build_and_publish(
@@ -5326,6 +5364,18 @@ def _exit_for_domain_error(exc: CmruError) -> NoReturn:
     sys.exit(exc.exit_code)
 
 
+def _record_release_controller_identity(phase: str) -> Mapping[str, str]:
+    """Validate the installed release controller and return its audit identity."""
+    from cmru.release_controller import release_controller_identity
+
+    identity = release_controller_identity(Path(__file__))
+    log_debug(
+        f"verified CMRU release controller during {phase}: "
+        f"module={identity['module_path']}"
+    )
+    return identity
+
+
 def _release_launcher(
     rest: List[str], vargs, cfg_path: Path, repo_root: Path, configs, ordered,
     project_order, selected_names: List[str], resume_scope, git_auth,
@@ -5371,6 +5421,14 @@ def _release_launcher(
     # project's own path (--allow-uncommitted overrides): otherwise it would be
     # silently left out with no warning, since the build never looks at it.
     try:
+        if not vargs.dry_run:
+            identity = _record_release_controller_identity("launcher")
+            log_info(
+                "CMRU release controller: "
+                f"version={identity['version']} "
+                f"wheel-sha256={identity['wheel_sha256']} "
+                f"installed-files-sha256={identity['distribution_sha256']}"
+            )
         transaction_root = transaction.source_git_root_for_projects(
             repo_root, [configs[name] for name in release_scope]
         )
@@ -5578,6 +5636,15 @@ def _release_child(
 ) -> None:
     """The in-worktree half of ``release``: detect, tag, push, build, publish."""
     from cmru.version import ReleasePlanRefused, release_cmd, detect_changed_projects
+
+    if not vargs.dry_run:
+        identity = _record_release_controller_identity("transaction")
+        log_info(
+            "CMRU transaction controller: "
+            f"version={identity['version']} "
+            f"wheel-sha256={identity['wheel_sha256']} "
+            f"installed-files-sha256={identity['distribution_sha256']}"
+        )
 
     selected_ordered = {name: ordered[name] for name in selected_names}
 

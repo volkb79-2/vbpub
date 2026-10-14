@@ -691,8 +691,17 @@ run-gate gate
 The CMRU aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later.
 `run-gate --version` reports its SemVer; the CMRU gate verifies that it matches
 the installed wheel metadata and refuses development, local-suffix, or older builds
-before any CMRU sub-lane starts. It records the wheel version in the snapshot
-manifest, and a resumed snapshot refuses if that identity changed.
+before any CMRU sub-lane starts. It also requires a non-editable wheel install,
+resolves and hashes the published Run-Gate wheel for that installed version,
+checks that the installed executable module bytes match the wheel, and verifies
+that the installed wheel's `direct_url.json` digest and configured
+`tester-unified` image's version and wheel-digest labels match those exact
+bytes. The installed version need not be the newest published version as
+long as it meets the declared minimum. The gate rechecks the
+image ID and labels around every lane, and pins each lane to that image ID. The
+snapshot manifest records the CLI,
+installed wheel, published wheel, and tester image identities; resume refuses
+if any of them changed.
 
 The native-R2 `mutation` lane requests contract-2 event evidence from
 `cgprofile`. The `installed-wheel`, `installed-wheel-live`, `ref-probe`,
@@ -942,6 +951,22 @@ change. `cmru status`, release tags, generated changelog headings, and release n
 same configured project-scope registry. Check the plan with `cmru status`; use
 `cmru release <project> --set-version <version>`
 when the release requires an explicit version. See the [scope-bump design](DESIGN-GUIDE.md#known-project-scopes-localize-version-bumps).
+
+An actual release requires the `cmru` command to come from a non-editable CMRU
+wheel. Install the exact wheel built from the committed release-controller
+source, then invoke the ordinary release verb:
+
+```sh
+python -m pip install --force-reinstall /path/to/cmru-<version>-py3-none-any.whl
+cmru --version
+cmru release <project>
+```
+
+`cmru release --dry-run` remains available from a source checkout. A real
+release refuses editable or source-tree execution and records the controller
+version, wheel digest, and installed-file digest in `cmru.release.log` and the
+transaction log. The [release-transaction guide](RELEASE-TRANSACTIONS.md#bootstrap-when-the-release-engine-changes-in-the-same-wave)
+shows how to build that bootstrap wheel when the release engine itself changed.
 
 For an HTTPS GitHub `origin`, keep the repository credential in the ignored CMRU-root secret
 file:
