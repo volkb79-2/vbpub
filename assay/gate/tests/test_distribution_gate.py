@@ -80,6 +80,7 @@ def gate_functions(tmp_path_factory) -> Path:
 
     out = tmp_path_factory.mktemp("gate-functions") / "gate-functions.sh"
     out.write_text(body, encoding="utf-8")
+    shutil.copyfile(OBSERVER_GID_HELPER, out.parent / OBSERVER_GID_HELPER.name)
     return out
 
 

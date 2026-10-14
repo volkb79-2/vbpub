@@ -46,6 +46,7 @@ _FIXTURE_ROOT = PROJECT_ROOT / "gate" / "python" / "fixtures" / "sql"
 _SCHEMA_PATH = PROJECT_ROOT / "tests" / "fixtures" / "mutation" / "sql" / "qualification" / "01-schema.sql"
 _WITNESS_PATH = _FIXTURE_ROOT / "expected" / "sql-r2-witness.json"
 _GATE_SCRIPT = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
+_OBSERVER_GID_HELPER = PROJECT_ROOT / "tools" / "resource-observer-gid.sh"
 
 
 def _matrix() -> list[dict]:
@@ -1818,6 +1819,9 @@ def gate_functions(tmp_path_factory) -> Path:
         "docker_socket=/var/run/docker.sock", f"docker_socket={socket_path}"
     )
     out.write_text(body, encoding="utf-8")
+    shutil.copyfile(
+        _OBSERVER_GID_HELPER, out.parent / _OBSERVER_GID_HELPER.name
+    )
     return out
 
 

@@ -5438,8 +5438,10 @@ The reader is bounded: a supplied state directory may contain at most 50,000
 directory entries, 10,000 mutation records and 64 MiB of record data. The
 pretty-printed JSON report has a 16 MiB limit. If a large store or campaign
 history exceeds a limit, Assay returns `evidence_error` with the exceeded
-budget; it does not drop records and present a partial summary. Candidate
-details remain paged with `--offset` and `--limit`.
+budget; it does not drop records and present a partial summary. Refusal JSON
+is limited to 64 KiB and each input-derived error detail to 768 characters, so
+a malformed input with a very long error detail cannot produce an unbounded
+response. Candidate details remain paged with `--offset` and `--limit`.
 
 - **Plan rows.** The JSON rows printed by `assay plan --json` carry `source_sha256` (the
   candidate's source file) and `mutated_file_sha256` (the file with the

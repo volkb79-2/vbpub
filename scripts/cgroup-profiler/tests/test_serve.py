@@ -3694,6 +3694,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
     socket_path = str(tmp_path / "ctl.sock")
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"), socket_path=socket_path,
+        observer_socket_path=str(tmp_path / "resource-observer.sock"),
         cgroup_root=str(root_link), proc_root=str(proc_link),
         clock=lambda: clock_box["t"], sampler_clock=_counting_sampler_clock(),
         sampler_sleep=lockstep, session_id_fn=lambda: SESSION_ID, accept_timeout=0.05,
@@ -3749,7 +3750,7 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
         }
         assert version_out["resource_observer"] == {
             "contract": 2,
-            "path": str(Path(socket_path).with_name("resource-observer.sock")),
+            "path": str(tmp_path / "resource-observer.sock"),
             "listening": True,
         }
         version_out.pop("transports")

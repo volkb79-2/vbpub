@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import socket
 import stat
 import struct
@@ -451,20 +452,25 @@ def test_default_observer_directory_accepts_0751_without_changing_it(
     monkeypatch.setattr(serve, "DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH", str(socket_path))
     real_lstat = serve.os.lstat
     directory_gid = 1234
+    directory_stat = real_lstat(observer_dir)
+    chowns = []
 
     def host_metadata(path):
         if str(path) == str(observer_dir):
             return SimpleNamespace(
-                st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=directory_gid
+                st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=directory_gid,
+                st_dev=directory_stat.st_dev, st_ino=directory_stat.st_ino,
             )
         if str(path) == str(socket_path) and real_lstat(path):
+            socket_stat = real_lstat(path)
             return SimpleNamespace(
-                st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=directory_gid
+                st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=directory_gid,
+                st_dev=socket_stat.st_dev, st_ino=socket_stat.st_ino,
             )
         return real_lstat(path)
 
     monkeypatch.setattr(serve.os, "lstat", host_metadata)
-    monkeypatch.setattr(serve.os, "chown", lambda *_args: None)
+    monkeypatch.setattr(serve.os, "chown", lambda *args: chowns.append(args))
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"),
         socket_path=str(tmp_path / "ctl.sock"),
@@ -473,6 +479,7 @@ def test_default_observer_directory_accepts_0751_without_changing_it(
     try:
         assert server._observer_sock is not None
         assert stat.S_IMODE(observer_dir.stat().st_mode) == 0o751
+        assert chowns == [(str(socket_path), 0, directory_gid)]
     finally:
         server._close_socket()
 

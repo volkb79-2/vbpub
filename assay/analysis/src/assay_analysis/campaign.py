@@ -46,6 +46,9 @@ MAX_STATE_DIRECTORY_ENTRIES = 50_000
 MAX_STATE_DIRECTORY_RECORDS = 10_000
 MAX_STATE_DIRECTORY_BYTES = 64 * 1024 * 1024
 MAX_ANALYSIS_OUTPUT_BYTES = 16 * 1024 * 1024
+MAX_ERROR_OUTPUT_BYTES = 64 * 1024
+MAX_ERROR_MESSAGE_CHARS = 768
+MAX_ERROR_CONTEXT_CHARS = 256
 MIN_ETA_SAMPLE = 20
 MAX_ERRORS = 10
 MAX_SAMPLE_IDS = 10
@@ -828,6 +831,10 @@ class EvidenceErrors(ValueError):
         self.errors = errors
 
 
+class _StateAggregateBudgetExceeded(ValueError):
+    """Stop a state-store scan as soon as its aggregate read budget is crossed."""
+
+
 def _identity_reproduces(fields: dict, expected_id: Any) -> bool:
     """Whether the six identity inputs in *fields* reproduce *expected_id* (section C)."""
     try:
@@ -1002,13 +1009,29 @@ def _read_state_dir(state_dir: Path) -> list[dict]:
     failures: list[dict] = []
     total_bytes = 0
     for name in sorted(names):
+        path = state_dir / name
+        try:
+            path_stat = path.lstat()
+        except OSError as exc:
+            failures.append({
+                "source": "state",
+                "message": f"cannot inspect state record {name}: {exc}",
+            })
+            continue
+        remaining = MAX_STATE_DIRECTORY_BYTES - total_bytes
+        if stat.S_ISREG(path_stat.st_mode) and path_stat.st_size > remaining:
+            raise ValueError(
+                "state records exceed "
+                f"{MAX_STATE_DIRECTORY_BYTES} aggregate bytes"
+            )
+        record_limit = min(mutation.MUTATION_STATE_RECORD_LIMIT, remaining)
         try:
             raw, artifact = _read_artifact(
-                state_dir / name, limit=mutation.MUTATION_STATE_RECORD_LIMIT, label="state record"
+                path, limit=record_limit, label="state record"
             )
             total_bytes += artifact["bytes"]
             if total_bytes > MAX_STATE_DIRECTORY_BYTES:
-                raise ValueError(
+                raise _StateAggregateBudgetExceeded(
                     "state records exceed "
                     f"{MAX_STATE_DIRECTORY_BYTES} aggregate bytes"
                 )
@@ -1016,7 +1039,16 @@ def _read_state_dir(state_dir: Path) -> list[dict]:
             if not isinstance(record, dict):
                 raise ValueError("record is not a JSON object")
             entries.append(_state_entry(record, name[: -len(".json")]))
+        except _StateAggregateBudgetExceeded as exc:
+            raise ValueError(str(exc)) from exc
         except ValueError as exc:
+            if record_limit < mutation.MUTATION_STATE_RECORD_LIMIT and (
+                f"exceeds {record_limit} bytes" in str(exc)
+            ):
+                raise ValueError(
+                    "state records exceed "
+                    f"{MAX_STATE_DIRECTORY_BYTES} aggregate bytes"
+                ) from exc
             failures.append({"source": "state", "message": f"state record {name}: {exc}"})
     if failures:
         raise EvidenceErrors(failures)
@@ -1977,7 +2009,7 @@ def campaign(
         "schema_version": SCHEMA_VERSION,
         "analysis": "mutation_campaign",
         "status": status,
-        "qualifying": not pilot_requested,
+        "qualifying": not pilot_requested and shard[0] is None,
         "complete_blockers": sorted(blockers),
         "expected_commit": expected_commit,
         "tree": tree,
@@ -2078,15 +2110,53 @@ def _evidence_error_document(args: argparse.Namespace, exc: BaseException) -> di
         exc.errors if isinstance(exc, EvidenceErrors)
         else [{"source": getattr(exc, "source", "input"), "message": str(exc)}]
     )
+    bounded_errors = []
+    for error in errors[:MAX_ERRORS]:
+        source = error.get("source", "input")
+        if source not in ERROR_SOURCES:
+            source = "input"
+        bounded_errors.append({
+            "source": source,
+            "message": _bounded_error_text(
+                error.get("message", "analysis refused the supplied evidence"),
+                MAX_ERROR_MESSAGE_CHARS,
+            ),
+        })
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": ERROR_DOCUMENT_KIND,
         "status": "evidence_error",
-        "lane": args.lane,
-        "expected_commit": args.expected_commit,
-        "errors": errors[:MAX_ERRORS],
+        "lane": _bounded_error_text(args.lane, MAX_ERROR_CONTEXT_CHARS),
+        "expected_commit": _bounded_error_text(
+            args.expected_commit, MAX_ERROR_CONTEXT_CHARS
+        ),
+        "errors": bounded_errors,
         "errors_truncated": len(errors) > MAX_ERRORS,
     }
+
+
+def _bounded_error_text(value: Any, max_chars: int) -> str:
+    """Keep refusal output useful without echoing unbounded input text."""
+    text = str(value)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + "… [truncated]"
+
+
+def _render_evidence_error(args: argparse.Namespace, exc: BaseException) -> str:
+    """Serialize a schema-valid refusal under its independent, small output cap."""
+    document = _evidence_error_document(args, exc)
+    rendered = json.dumps(document, indent=2, sort_keys=True)
+    if len(rendered.encode("utf-8")) > MAX_ERROR_OUTPUT_BYTES:
+        # The per-field bounds above make this unreachable with shipped
+        # constants. Keep a minimal, useful refusal if those constants change.
+        document["errors"] = [{
+            "source": "input",
+            "message": "analysis refused the evidence; refusal details were truncated",
+        }]
+        document["errors_truncated"] = True
+        rendered = json.dumps(document, indent=2, sort_keys=True)
+    return rendered
 
 
 def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
@@ -2119,11 +2189,12 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
         )
     except (OSError, ValueError, RecursionError, KeyError, TypeError,
             AttributeError, AssayError) as exc:
-        print(f"assay analyze campaign: {exc}", file=stderr)
         print(
-            json.dumps(_evidence_error_document(args, exc), indent=2, sort_keys=True),
-            file=stdout,
+            f"assay analyze campaign: "
+            f"{_bounded_error_text(exc, MAX_ERROR_MESSAGE_CHARS)}",
+            file=stderr,
         )
+        print(_render_evidence_error(args, exc), file=stdout)
         return EXIT_EVIDENCE_ERROR
     if args.format == "text":
         verdict_outcome = None if result["verdict"] is None else result["verdict"]["outcome"]

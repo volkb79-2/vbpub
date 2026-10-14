@@ -7,6 +7,7 @@ The store is read-only evidence: every test builds records with
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -205,6 +206,42 @@ def test_state_aggregate_byte_budget_refuses_before_record_parsing(tmp_path, mon
         "message": "state records exceed 1 aggregate bytes",
     }]
     assert "aggregate bytes" in err
+
+
+def test_state_aggregate_budget_stops_before_reading_the_next_record(
+    tmp_path, monkeypatch
+):
+    root, head, rows = _synthetic(tmp_path, monkeypatch, 2)
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(progress, support.run_records(head, rows))
+    state = support.write_state(tmp_path / "state", [
+        support.state_record(rows[0], "killed", J_X),
+        support.state_record(rows[1], "killed", J_X),
+    ])
+    first_path = sorted(state.iterdir())[0]
+    monkeypatch.setattr(
+        campaign_api, "MAX_STATE_DIRECTORY_BYTES", first_path.stat().st_size + 1
+    )
+    read_state_records = []
+    read_artifact = campaign_api._read_artifact
+
+    def record_reads(path, *, limit, label):
+        if label == "state record":
+            read_state_records.append(Path(path).name)
+        return read_artifact(path, limit=limit, label=label)
+
+    monkeypatch.setattr(campaign_api, "_read_artifact", record_reads)
+    code, err, document = _analyze(
+        root, head, progress, extra=("--state-dir", str(state))
+    )
+    assert code == 2
+    assert document["errors"] == [{
+        "source": "state",
+        "message": (
+            f"state records exceed {first_path.stat().st_size + 1} aggregate bytes"
+        ),
+    }]
+    assert read_state_records == [first_path.name]
 
 
 # ---- O5 -------------------------------------------------------------------

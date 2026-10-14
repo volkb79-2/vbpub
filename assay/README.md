@@ -97,8 +97,10 @@ an installed wheel or zipapp needs nothing extra:
   `qualifying: true` means the report covers the whole plan; it does not mean
   the campaign is complete or passed. State input is limited to 50,000
   directory entries, 10,000 mutation records and 64 MiB total, and a JSON
-  report is limited to 16 MiB. Exceeding a limit is a named evidence error,
-  never a partial report or an invented zero.
+  report is limited to 16 MiB. Refusal JSON is limited to 64 KiB and each
+  input-derived error detail to 768 characters; long details are truncated
+  while preserving the named refusal. Exceeding a limit is a named evidence
+  error, never a partial report or an invented zero.
 
 <!-- assay-analysis-example -->
 ```bash

@@ -4787,6 +4787,10 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   unpaged run or reclassification history exceeds that limit, analysis returns
   a named `evidence_error` rather than silently truncating evidence. Progress
   input remains capped at 64 MiB and 10,000 runs.
+  Refusal JSON has a 64 KiB cap and each input-derived error detail has a
+  768-character cap; details are truncated while retaining the failure kind,
+  so a duplicate key or other input-derived detail cannot bypass the output
+  cap.
 - **`qualifying` is scope metadata.** `true` means analysis used the whole
   declared plan rather than a selected pilot. It does not mean the campaign is
   complete, passed, or acceptable. Read `status`, `verdict`, and

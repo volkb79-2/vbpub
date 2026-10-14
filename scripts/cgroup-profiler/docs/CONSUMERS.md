@@ -62,6 +62,11 @@ selects the separate `cgprofile-release` Bake target, which contains only the
 versioned `ghcr.io/volkb79-2/cgprofile:<version>` tag; it does not publish the
 unqualified local alias to Docker Hub.
 
+The managed Compose file declares `create_host_path: false` for required host
+binds. If `/run/cgprofile` is missing, CIU refuses a missing source rather
+than creating an empty directory; host setup must also provision the observer
+subdirectory before the contract-2 listener can start.
+
 ## One-shot collector behavior
 
 If `cgprofile run` or `attach` requests DAMON while the host's `nr_kdamonds`

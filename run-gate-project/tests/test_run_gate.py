@@ -1399,6 +1399,17 @@ class TestRG78ClosedExitTable:
             1, "PASS", verdict_exit_code=1, judge_provenance=provenance)
         assert mismatched_outcome.verdict == "ERROR"
         assert mismatched_outcome.reason == "assay-outcome-exit-code-mismatch"
+        runner_passed_fail_artifact = run_gate.assay_lane_result(
+            0, "FAIL", verdict_exit_code=1, judge_provenance=provenance)
+        assert runner_passed_fail_artifact.verdict == "ERROR"
+        assert runner_passed_fail_artifact.reason == "assay-exit-code-mismatch"
+        for malformed_exit in ("1", 1.0):
+            malformed_artifact_exit = run_gate.assay_lane_result(
+                0, "FAIL", verdict_exit_code=malformed_exit,
+                judge_provenance=provenance)
+            assert malformed_artifact_exit.verdict == "ERROR"
+            assert malformed_artifact_exit.reason == \
+                "missing-or-invalid-assay-verdict-exit-code"
         boolean_exit = run_gate.assay_lane_result(
             0, "PASS", verdict_exit_code=True, judge_provenance=provenance)
         assert boolean_exit.verdict == "ERROR"
