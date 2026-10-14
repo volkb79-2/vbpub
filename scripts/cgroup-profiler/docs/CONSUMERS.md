@@ -466,6 +466,10 @@ pass it through the lane as `RUN_GATE_PROFILE_SESSION`; the token makes a
 retry-safe `(container_id, token)` start idempotent. The `meta` object is
 required and its `kind` is either `command` or `assay`.
 
+Use the installed Run-Gate wheel, not a copied project-local `run-gate.py`
+script. Check the installed SemVer with `run-gate --version` before adopting a
+lane; see [Run-Gate's wheel contract](../../../run-gate-project/CONSUMERS.md#distribution-installed-wheel-and-semver).
+
 The following is a minimal shell-shaped integration. Replace the image,
 command, and metadata values for the consuming project:
 

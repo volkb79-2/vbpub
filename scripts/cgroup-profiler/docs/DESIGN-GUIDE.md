@@ -81,6 +81,15 @@ systemd Manager (owns unit boundary)
                 └── samples ──► daemon summary / ctl response
 ```
 
+### Run-Gate is an installed SemVer consumer
+
+Run-Gate reaches the daemon through its installed wheel, whose SemVer is the
+public compatibility identity. A project-local copy of `run-gate.py` can drift
+from that installed package and is no longer a supported integration. Keeping
+the contract tied to the installed CLI makes the compatibility check describe
+the code that actually drives the lane. See the
+[Run-Gate wheel contract](../../../run-gate-project/CONSUMERS.md#distribution-installed-wheel-and-semver).
+
 Scope creation registers initial PIDs with systemd. cgprofile then moves each
 validated PID from the scope root into the leaf through
 `AttachProcessesToUnit`, verifies membership, enables controllers only after

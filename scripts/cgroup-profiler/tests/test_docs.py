@@ -61,6 +61,14 @@ def test_every_closed_consumer_vocabulary_is_documented():
         assert re.search(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9_-])", text)
 
 
+def test_run_gate_consumer_identity_is_documented_for_all_adopters():
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert "installed Run-Gate wheel" in text, path
+        assert "SemVer" in text, path
+    assert "run-gate --version" in (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+
+
 def test_package_contract_mirrors_canonical_contract_byte_for_byte():
     canonical = ROOT.parents[1] / "run-gate-project" / "nyxloom-trove" / "RG55-INTERFACE-CONTRACT.md"
     local = ROOT / "docs" / "RG55-INTERFACE-CONTRACT.md"

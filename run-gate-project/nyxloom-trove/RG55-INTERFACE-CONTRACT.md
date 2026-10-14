@@ -32,11 +32,15 @@ specifically hides ancestors. The control socket and its verbs are unchanged.
 supported observer version; contract-1 observer requests receive an explicit
 unsupported-contract refusal. The separate daemon control protocol remains
 contract 1. The combined first cgroup-profiler release is 1.0.0.
+**RW-570 (2026-10-14):** the supported Run-Gate consumer is its installed
+SemVer wheel. A copied project-local `run-gate.py` script is not supported;
+compatibility checks use the installed `run-gate --version`.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
 client verb (`cgprofile ctl`), running inside the container
-`cgprofile-host-daemon`; **consumer** = `run-gate.py` (stdlib-only, docker
-CLI only), invoking `docker exec cgprofile-host-daemon cgprofile ctl <verb>
+`cgprofile-host-daemon`; **consumer** = the installed Run-Gate wheel
+(stdlib-only runtime, docker CLI only), invoking
+`docker exec cgprofile-host-daemon cgprofile ctl <verb>
 [args] --json` from any devcontainer, worktree or instance.
 
 ---

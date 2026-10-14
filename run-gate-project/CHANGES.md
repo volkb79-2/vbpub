@@ -9,7 +9,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
-<!-- Empty on purpose: CMRU generates versioned history from project-scoped commits. -->
+- Documentation: state that the installed SemVer wheel is the only supported
+  Run-Gate consumer; copied `run-gate.py` scripts are retired.
 
 <!-- cmru: release history -->
 
