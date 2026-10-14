@@ -35,14 +35,22 @@ copied Assay tree, because the judged worktree is the source of truth.
 
 ## The installed Run-Gate CLI
 
-Some CMRU steps must invoke Run-Gate after CMRU has started tester-unified,
-where no repository-level `run-gate.py` is in the project directory. The image
+Some CMRU steps invoke Run-Gate after CMRU has started tester-unified. The image
 builds the internal Run-Gate wheel from the copied source and installs its
 console script into `/opt/tester-venv`; `PATH` places that venv first. This
 keeps the command readable as `run-gate <lane>` and avoids relying on the
 base image's private `/home/vscode/.venv`, which the uid 1003 tester cannot
 traverse. The wheel supplies the command entry point; the selected checkout
-still supplies the lane configuration and judged project files.
+still supplies the lane configuration and judged project files. CIU's release
+gate uses this installed CLI even though its checkout also contains a
+repository-level Run-Gate symlink; it first compares the installed module files
+with the selected source and refuses a stale tester image.
+`tester-unified:local` is one mutable tag shared by worktrees. Other consumers
+that invoke Run-Gate inside the image must rebuild it from the selected checkout
+after changing Run-Gate source, or add an equivalent source-match preflight.
+Concurrent exact-tree runs that need different Run-Gate revisions require
+distinct image tags; consumers that use the shared local tag must serialize
+those rebuilds and runs.
 
 The launcher refuses missing cgroup configuration, workspace-root fallbacks,
 high launch-time memory pressure, absent Docker access, missing images, more

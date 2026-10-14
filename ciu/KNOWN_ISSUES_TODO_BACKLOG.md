@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-10-14 — **CIU-131 release-gate wiring reworked for tester-unified/DinD; registered acceptance pending.** The release flow invokes the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path. CIU-134 remains OPEN: worktree removal can finish CIU cleanup and then fail deleting a checkout on permission-protected descendants, leaving a partial Git lifecycle state; offer a checked retry through CIU's existing S6.5 root helper and report exactly what remains. CIU-118 follow-up remains OPEN (service discovery: attached networks, aliases, URLs, exit status; filed from nyxloom NL-38, no new id; the shipped `ciu resolve`/`ciu exec` stay FIXED). Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; CIU-128 implementation and regression oracles are committed, with its registered gate pending. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
+Last updated: 2026-10-14 — **CIU-131 release-gate implementation is in review.** The release flow invokes the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path; the exact registered sequence passed once, and the review follow-up adds an installed-wheel/source match check and a digest-pinned fixture. Final acceptance and the controlled-break oracle remain pending. CIU-134 remains OPEN: worktree removal can finish CIU cleanup and then fail deleting a checkout on permission-protected descendants, leaving a partial Git lifecycle state; offer a checked retry through CIU's existing S6.5 root helper and report exactly what remains. CIU-118 follow-up remains OPEN (service discovery: attached networks, aliases, URLs, exit status; filed from nyxloom NL-38, no new id; the shipped `ciu resolve`/`ciu exec` stay FIXED). Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; CIU-128 implementation and regression oracles are committed, with its registered gate pending. dstdns caller migration ships with CIU-118; RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -579,7 +579,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-128 | Worktree reports `ready` before committed nested roots are prepared | High | FIXED 2026-10-05 |
 | CIU-129 | `assay.toml` runs pytest with `--maxfail=1` plus coverage, so a failing run writes no coverage report and assay reports NO_MEASUREMENT instead of naming the test | Medium | OPEN |
 | CIU-130 | `ciu host upgrade <host> --version X`: upgrade an enrolled host's pinned ciu over the push-over-SSH path | Medium | OPEN — v8.2 (cmru program 2026-10, O9) |
-| CIU-131 | The real-system `get.py enroll` oracles (O2/O3, ciu `enroll` lane) are in no automated release gate since the move from cmru | High | OPEN — wired into release flow; registered lane verdict pending |
+| CIU-131 | The real-system `get.py enroll` oracles (O2/O3, ciu `enroll` lane) are in no automated release gate since the move from cmru | High | OPEN — registered gate and wheel/source preflight implemented; final exact-tree run and controlled-break oracle pending |
 | CIU-132 | Outdated-identity guard blocks a stopped stack's data-preserving migration and is not told ownership drift or stale persisted hostnames | High | OPEN |
 | CIU-133 | `ciu up` hangs forever at "STEP 10/17 Resolving and materializing secrets" for a stack that IS its own ciu root (stack files in the root directory, the `mattermost/` and `pwmcp/` layout) when any GEN_LOCAL secret is declared. **Observed (2026-10-07, `ciu up --dir mattermost -y`):** `/proc/locks` listed the same PID as both holder and waiter (`->`), wchan `locks_lock_inode_wait`. `secrets/materialize.py::materialize` took `_flock(stack_dir/.ciu/lock)` and then `_flock(repo_root/.ciu/lock)`; with `stack_dir == repo_root` both are one file, flock locks an open file description, so the second `os.open()` + `LOCK_EX` blocked on the process's own first lock | High | FIXED 2026-10-07 (`dca8e1f75`): the project lock is taken only when `realpath(stack_lock) != realpath(project_lock)`, so a symlinked stack dir that resolves to the root is also covered; the stack lock already serializes the project store in that layout. Order for distinct files is unchanged (stack, then project, S4.26). **Oracle:** `tests/tests/test_ciu_materialize_self_root_lock.py` — real-flock subprocess with an 8 s timeout for `stack_dir == repo_root` and for a symlink to the root (both FAIL by timeout with the fix reverted, PASS with it), plus a `_flock` spy asserting both locks, stack first, for distinct paths. Sweep of every other `.ciu/lock` / flock site (`persist_hook_secret`, `materialize_host_secrets`, `worktree._allocation_lock`, `worktree_budget_slot`, `workspace_lock`) found no other same-file nesting |
 | CIU-134 | Worktree removal can finish `ciu clean` and then fail deleting the checkout due to protected descendants, leaving a partial Git/CIU lifecycle state with no supported root-assisted retry | High | OPEN — add permission-specific, consented retry through the existing S6.5 helper and truthful partial-state reporting |
@@ -4984,25 +4984,26 @@ Severity: Medium. Type: feature. Target: **v8.2** (with the enrollment rewrite, 
 
 Severity: High (the root-level `authorized_keys` writer lost its automated real-system evidence). Type: gate gap. Filed 2026-10-06 by the cmru program 2026-10 (package W1-CIU-ENROLL review, controller ruling).
 
-**Observed.** Until the move, cmru's `gate` ran an `enroll` lane (`TestEnrollAgainstRealSystem`: real user creation, `authorized_keys` writes, modes/ownership, a host-key fingerprint cross-check and a real-sshd login) on every cmru release. The code and tests moved to ciu (`ciu/installer/enroll.py`, `ciu/tests/tests/test_getpy_enroll.py`) and cmru's lane was removed. ciu's `[lanes.enroll]` (`ciu/run-gate.toml`, `CIU_ENROLL_REQUIRED=1`, bare-host) exists but nothing runs it: ciu's release gate is the `ciu` assay lane in tester-unified, which has no docker socket, so the 8 container tests skip there.
+**Observed.** Until the move, cmru's `gate` ran an `enroll` lane (`TestEnrollAgainstRealSystem`: real user creation, `authorized_keys` writes, modes/ownership, a host-key fingerprint cross-check and a real-sshd login) on every cmru release. The code and tests moved to ciu (`ciu/installer/enroll.py`, `ciu/tests/tests/test_getpy_enroll.py`) and cmru's lane was removed. CIU's `[lanes.enroll]` (`ciu/run-gate.toml`, `CIU_ENROLL_REQUIRED=1`, `mode = "host"`) was not invoked by CIU's Assay lane, which runs in tester-unified without Docker access, so the container tests could skip.
 
-**Fix direction.** Wire the lane into CIU's release flow: CMRU starts `tester-unified` with its isolated DinD sidecar, and the registered lane runs inside that container through the installed `run-gate enroll` CLI. Keep `CIU_ENROLL_REQUIRED=1` so a missing Docker prerequisite or fixture build fails rather than skips. Run-Gate's general `host` and `bare-host` modes remain available; MDT's cockpit policy recommends that the cockpit drive gates while a stable test container hosts the suite.
+**Implemented direction.** CIU's `[steps.run-tests]` runs the registered `enroll` lane after the full suite through `cmru tester-gate --enable-docker`; the installed Run-Gate console script is invoked inside tester-unified. A preflight compares the installed wheel's `run_gate` and `run_gate_admission` module bytes with the selected checkout and refuses a stale tester image. `CIU_ENROLL_REQUIRED=1` keeps missing prerequisites fail-closed. The fixture base image is digest-pinned. Run-Gate remains a general tool that supports host-mode execution; MDT policy governs the MDT cockpit's role separately.
 
-**Cost to note.** The lane builds the image `ciu-enroll-fixture:local` (`apt-get install openssh-server ...` from `debian:bookworm-slim`) and starts non-privileged containers through an isolated DinD sidecar. CMRU caps the tester and sidecar separately, and the sidecar runs under the verified gates slice; the nested fixture is capped at 1.5 CPUs and 1 GiB.
+**Cost to note.** CMRU verifies the gates slice and places/caps the outer tester and DinD sidecar before the lane begins. The sidecar is capped at 1.5 CPUs and 2 GiB; its nested fixture is capped at 1.5 CPUs and 1 GiB and inherits the sidecar's placement. The nested daemon cannot resolve a host slice, so fixtures do not set `--cgroup-parent`. The fixture uses a digest-pinned Debian base but still installs packages from Debian mirrors. In the supported CMRU path, the tester targets the isolated sidecar; the endpoint-string preflight alone does not authenticate a daemon for arbitrary manual invocations.
 
-**Oracles.** A ciu release cannot complete without the `enroll` lane verdict PASS (or a recorded manual run), and a controlled break of `_enroll_install_key` (e.g. appending a duplicate line) fails the lane.
+**Oracles.** A CIU release cannot complete without the `enroll` lane verdict PASS. The lane runs after the full suite through CMRU's isolated tester-gate; the installed Run-Gate wheel must byte-match both checkout modules; and missing Docker wiring or a fixture build failure fails closed. A controlled break of `_enroll_install_key` (for example, appending a duplicate authorized-key line) must fail the real-system lane; that negative acceptance probe is still pending.
 
-**Implementation update (2026-10-14).** CIU's `[steps.run-tests]` now invokes
-`cmru tester-gate --enable-docker -- run-gate enroll` after the ordinary
-`tester-unified` suite. The installed Run-Gate CLI executes the registered
-lane inside that tester container. The lane requires CMRU's exact
-`tcp://localhost:2375` endpoint and the forwarded gates-slice fact; the
-enrollment tests fail closed when this CIU release-gate wiring is absent and do
-not inspect or mutate the host Docker daemon. The item stays OPEN until the
-nested-Docker acceptance run and registered release gate pass on the candidate
-tip. The lane opts out of Run-Gate resource profiling: its nested Docker view
-cannot inspect the outer tester container's host cgroup, while CMRU enforces
-the host placement and caps.
+**Implementation update (2026-10-14).** CIU's `[steps.run-tests]` invokes the
+registered `enroll` lane through CMRU's isolated tester-gate after the ordinary
+`tester-unified` suite. The installed Run-Gate CLI executes the lane inside
+that tester container after a byte-for-byte check against the selected
+checkout. The lane requires CMRU's exact `tcp://localhost:2375` endpoint and
+forwarded gates-slice fact. In this supported CMRU path, the tester is attached
+to the isolated sidecar; the endpoint check by itself does not authenticate a
+daemon for arbitrary manual invocations. The lane opts out of Run-Gate resource
+profiling: its nested Docker view cannot inspect the outer tester container's
+host cgroup, while CMRU enforces the host placement and caps. The initial
+registered run passed; final exact-tree acceptance and the negative controlled
+break oracle remain pending.
 
 **Related.** CIU-122/CIU-123 (the fix work these oracles protect), cmru KI-25 (the original lane).
 

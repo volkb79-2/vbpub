@@ -1,10 +1,10 @@
 # =============================================================================
-# ciu project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# ciu project gate lanes — parsed ONLY by Run-Gate (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml (nearest
 # ancestor); judgment policy lives in assay.toml [lanes.ciu] (R0-R3: the full
 # pytest suite, 100% line AND branch floor plus native mutation and
 # canary). This file is the SSOT
-# for how ciu's gate runs; consumers point at `./run-gate.py ciu`.
+# for how ciu's gate runs; consumers invoke the installed `run-gate ciu` CLI.
 # See run-gate-project/SPEC.md.
 # =============================================================================
 schema_version = 1
@@ -37,8 +37,8 @@ mode = "host"
 # facts and the exact CMRU DinD endpoint. Its command sets CIU_ENROLL_REQUIRED=1,
 # so missing prerequisites fail rather than silently skipping the real-system
 # assertions. Run-Gate remains a general tool: `mode = "host"` runs a
-# subprocess in its invoking environment, and the built-in `bare-host` lane is
-# also available when a consumer's policy permits it. The inner fixtures keep
+# subprocess in its invoking environment. Consumers choose whether that mode
+# fits their own execution policy. The inner fixtures keep
 # CPU/RAM bounds but inherit the outer DinD sidecar's host placement instead of
 # naming a host systemd slice the nested daemon cannot resolve.
 [lanes.enroll]
@@ -50,5 +50,5 @@ required_env = ["DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"]
 # cgroup, so this lane makes no Run-Gate resource-profile claim; CMRU applies
 # the host placement and container caps.
 profile = false
-argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_ENROLL_REQUIRED=1 PYTHONPATH=src:../cmru/src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/tests/test_getpy_enroll.py -k 'TestEnrollAgainstRealSystem or registered_enroll_lane' -q"]
+argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_ENROLL_REQUIRED=1 PYTHONPATH=src:../cmru/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/tests/test_getpy_enroll.py -k 'TestEnrollAgainstRealSystem or registered_enroll_lane' -q"]
 budget = "20m"

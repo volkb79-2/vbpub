@@ -66,7 +66,7 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
 Run a gate through the canonical launcher:
 
 ```bash
-tester-unified/run --workdir run-gate-project -- ./run-gate.py selftest
+tester-unified/run --workdir run-gate-project -- run-gate selftest
 ```
 
 The launcher requires the cockpit-provided

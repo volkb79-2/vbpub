@@ -5419,7 +5419,15 @@ evidence-judgment command.
   `enroll` lane after the ordinary suite, inside `tester-unified` through
   `cmru tester-gate --enable-docker`; that command invokes the installed
   Run-Gate CLI as `run-gate enroll` inside the tester container. The lane's
-  declared `mode = "host"` runs its subprocess in that current tester
+  preflight compares the installed wheel's two Python modules byte-for-byte
+  with the selected checkout and refuses to run with a stale tester image. The
+  command still invokes the installed wheel's console script, not the checkout
+  symlink or Python file directly.
+  This lane is DinD-specific today: an externally managed VM is not a
+  compatible drop-in because the command requires CMRU's exact local endpoint
+  and sidecar placement evidence. A VM runner needs its own declared runner,
+  endpoint, and placement preflight.
+  Its declared `mode = "host"` runs its subprocess in that current tester
   container. CMRU verifies the host gates slice before starting the
   tester-unified container and its isolated DinD sidecar; the host Docker
   socket is never mounted. The lane requires `DOCKER_HOST` to equal

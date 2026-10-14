@@ -66,10 +66,18 @@ distribution = "ciu"
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "CIU: tester-unified coverage gate", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "/opt/tester-venv/bin/python", "run-ciu-tests.py"], cwd = "." },
+  # Both containers validate their own installed Run-Gate wheel against this
+  # checkout because tester-unified:local is a mutable tag shared by worktrees.
+  { label = "CIU: tester-unified coverage gate", argv = [
+    "cmru", "tester-gate", "--cwd", ".", "--", "bash", "-c",
+    "/opt/tester-venv/bin/python scripts/check_run_gate_wheel.py && exec /opt/tester-venv/bin/python run-ciu-tests.py",
+  ], cwd = "." },
   # CIU-131: run the registered lane inside tester-unified with CMRU's isolated
   # nested daemon. No host Docker socket or cockpit pytest process is involved.
-  { label = "CIU: isolated enrollment gate", argv = ["cmru", "tester-gate", "--cwd", ".", "--enable-docker", "--", "run-gate", "enroll"], cwd = "." },
+  { label = "CIU: isolated enrollment gate", argv = [
+    "cmru", "tester-gate", "--cwd", ".", "--enable-docker", "--", "bash", "-c",
+    "/opt/tester-venv/bin/python scripts/check_run_gate_wheel.py && exec /opt/tester-venv/bin/run-gate enroll",
+  ], cwd = "." },
 ]
 
 [steps.build]

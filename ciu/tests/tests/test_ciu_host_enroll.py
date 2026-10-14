@@ -1116,9 +1116,20 @@ class TestRenderedInstaller:
         run_gate = tomllib.loads((CIU_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
         commands = project["steps"]["run-tests"]["commands"]
         assert len(commands) == 2
+        coverage_argv = commands[0]["argv"]
+        assert coverage_argv[:5] == ["cmru", "tester-gate", "--cwd", ".", "--"]
+        assert coverage_argv[5:7] == ["bash", "-c"]
+        assert coverage_argv[7] == (
+            "/opt/tester-venv/bin/python scripts/check_run_gate_wheel.py && "
+            "exec /opt/tester-venv/bin/python run-ciu-tests.py"
+        )
         argv = commands[1]["argv"]
         assert argv[:5] == ["cmru", "tester-gate", "--cwd", ".", "--enable-docker"]
-        assert argv[5:] == ["--", "run-gate", "enroll"]
+        assert argv[5:8] == ["--", "bash", "-c"]
+        assert argv[8] == (
+            "/opt/tester-venv/bin/python scripts/check_run_gate_wheel.py && "
+            "exec /opt/tester-venv/bin/run-gate enroll"
+        )
         assert commands[1]["cwd"] == "."
         assert project["env"]["CMRU_TESTER_DIND_IMAGE"].startswith("docker@sha256:")
         lane = run_gate["lanes"]["enroll"]

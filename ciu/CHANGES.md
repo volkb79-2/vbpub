@@ -24,7 +24,7 @@ restatement of the technical detail below it.
 ## [Unreleased]
 
 ### Changed
-- Make the real-system enrollment lane a required CIU release gate after the isolated suite (CIU-131).
+- Run the real-system enrollment lane as a required release gate, verify the installed Run-Gate wheel matches the selected checkout, and pin the disposable fixture image (CIU-131).
 
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->
