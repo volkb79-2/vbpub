@@ -196,6 +196,11 @@ def _build_repo(tmp_path: Path, monkeypatch) -> Path:
     # the daemon (patch BOTH import sites).
     from ciu import workspace_env as workspace_env_mod
 
+    # Docker group identity is another host fact outside this test's subject;
+    # tester-unified intentionally need not expose it to the suite.
+    monkeypatch.setattr(
+        workspace_env_mod, "_detect_docker_gid", lambda: "999"
+    )
     monkeypatch.setattr(
         workspace_env_mod, "ensure_workspace_network", lambda *a, **k: None
     )

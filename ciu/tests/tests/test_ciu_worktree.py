@@ -348,6 +348,22 @@ class TestManagedIdentityLifecycle:
         assert ensured.state == "ready"
         assert overlay.read_bytes() == edited
 
+    def test_ready_root_repair_preserves_operator_overlay_edits(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-root-repair", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        edited = b'# operator edit\n[ciu.instance]\nservice_profiles = ["db"]\n'
+        overlay.write_bytes(edited)
+        generated = created.ciu_root / "ciu.instance.generated.toml"
+        generated.unlink()
+
+        ensured = worktree.ensure(tmp_repo, "overlay-ready-root-repair")
+
+        assert ensured.state == "ready"
+        assert generated.is_file()
+        assert overlay.read_bytes() == edited
+
     def test_partial_ensure_refuses_crlf_normalized_overlay_bytes(
         self, tmp_repo, fake_generate_env
     ):

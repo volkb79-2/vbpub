@@ -102,18 +102,18 @@ ciu.toml.j2           ────────┤  config_model.render_stack
 The gate is orchestration above the released Assay CLI, not a CIU module:
 
 ```
-operator / nyxloomd
-  └─ ./ciu/run-gate.py ciu (host; clean-tree check)
-       └─ resolve CGROUP_PARENT_DEV_GATES from the root gate config
-            └─ detached tester-unified container in that cgroup slice
-                 ├─ install Assay from the selected worktree's assay/
-                 └─ assay run ciu --resume --progress .assay/progress-ciu.jsonl
-                      ├─ Assay snapshot (repository-minus-unsafe-symlinks)
-                      ├─ lane argv: python -m pytest (100% line+branch)
-                      ├─ R2 liveness required; argv matches
-                      │  run-ciu-tests.py's pytest_args()
-                      └─ R1 judges base..HEAD changed-line floor
-                           → .assay/verdict-ciu.json (gitignored evidence)
+operator / CMRU
+  └─ cmru run ciu --step run-tests
+       ├─ installed Run-Gate CLI: run-gate ciu
+       │    └─ detached tester-unified container in CGROUP_PARENT_DEV_GATES
+       │         ├─ install Assay from the selected worktree's assay/
+       │         └─ assay run ciu --resume --progress .assay/progress-ciu.jsonl
+       │              ├─ Assay snapshot (repository-minus-unsafe-symlinks)
+       │              ├─ lane argv: python -m pytest (100% line+branch)
+       │              └─ R1 judges base..HEAD changed-line floor
+       └─ installed Run-Gate CLI: run-gate enroll
+            └─ tester-unified + CMRU's isolated DinD sidecar
+                 └─ real-system enrollment security assertions
 ```
 
 CIU source never imports Assay and never runs a nyxloom coverage/mutation/
