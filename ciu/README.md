@@ -309,7 +309,9 @@ installed Run-Gate CLI (`run-gate enroll`) inside the tester container. Run-Gate
 also supports host-mode and built-in `bare-host` execution for general use;
 MDT's cockpit policy
 recommends using the cockpit to drive gates while a stable test container hosts
-the suite. See
+the suite. This nested lane opts out of Run-Gate resource profiling because its
+Docker view cannot inspect the outer tester container's host cgroup; CMRU still
+applies host placement and CPU/memory caps. See
 [CONSUMERS §12](docs/CONSUMERS.md#12-the-implementation-gate-assay-backed-s18)
 for the command and prerequisites, and the
 [design rationale](docs/DESIGN-GUIDE.md#why-enrollment-runs-in-the-isolated-gate)

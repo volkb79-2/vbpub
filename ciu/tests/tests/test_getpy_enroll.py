@@ -993,8 +993,11 @@ class TestEnrollAgainstRealSystem:
             )
             assert enrolled.returncode == 0, enrolled.stdout + enrolled.stderr
 
-            started = _cexec(c, "sh", "-c",
-                             "mkdir -p /run/sshd && /usr/sbin/sshd -p 2222")
+            started = _cexec(
+                c, "sh", "-c",
+                "mkdir -p /run/sshd && chown root:root /run/sshd "
+                "&& chmod 0755 /run/sshd && /usr/sbin/sshd -p 2222",
+            )
             assert started.returncode == 0, started.stderr
             login = _cexec(
                 c, "ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",

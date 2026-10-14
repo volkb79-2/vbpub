@@ -1124,6 +1124,7 @@ class TestRenderedInstaller:
         lane = run_gate["lanes"]["enroll"]
         assert lane["environment"] == "enroll-tester"
         assert set(lane["required_env"]) == {"DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"}
+        assert lane["profile"] is False
         assert run_gate["environments"]["enroll-tester"]["mode"] == "host"
         assert "forward_env" not in run_gate["environments"]["enroll-tester"]
         assert "CIU_ENROLL_REQUIRED=1" in lane["argv"][-1]

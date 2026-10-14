@@ -633,6 +633,10 @@ this CIU path chooses a stable tester image so package versions and the test
 environment are declared.
 MDT's cockpit policy advises against hosting the suite in the interactive
 devcontainer, while keeping the cockpit available to drive and inspect gates.
+This lane sets `profile = false` because the tester container's Docker view is
+the nested daemon, which cannot inspect the outer tester container in the host
+cgroup tree. CMRU still enforces host placement and CPU/memory caps; the lane
+does not claim a Run-Gate resource profile from that nested view.
 
 A VM-based runner is the stronger alternative when a lane needs its own guest
 kernel and container daemon rather than a nested Docker daemon. A VM separates

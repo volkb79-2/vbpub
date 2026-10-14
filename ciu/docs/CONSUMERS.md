@@ -1010,8 +1010,11 @@ Run-Gate supports host-mode and built-in `bare-host` execution for general use;
 it does not impose a universal ban on running a lane on the host. MDT's cockpit
 policy is narrower: use the devcontainer to drive gates, and let a stable,
 declared test environment host the suite so its dependencies and resource
-conditions are repeatable. If stronger independence from the host kernel and
-container daemon is needed, an externally managed VM runner is an alternative.
+conditions are repeatable. This lane sets `profile = false`: its isolated
+Docker daemon cannot inspect the outer tester container's host cgroup, while
+CMRU applies the host placement and container caps. If stronger independence
+from the host kernel and container daemon is needed, an externally managed VM
+runner is an alternative.
 The VM still shares physical CPU, memory, and I/O with its host unless those
 resources are reserved. CIU and CMRU do not provision that VM in this release
 workflow; its supported path uses CMRU's tester-unified DinD setup. See

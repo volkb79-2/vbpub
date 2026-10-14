@@ -5000,7 +5000,9 @@ lane inside that tester container. The lane requires CMRU's exact
 enrollment tests fail closed when this CIU release-gate wiring is absent and do
 not inspect or mutate the host Docker daemon. The item stays OPEN until the
 nested-Docker acceptance run and registered release gate pass on the candidate
-tip.
+tip. The lane opts out of Run-Gate resource profiling: its nested Docker view
+cannot inspect the outer tester container's host cgroup, while CMRU enforces
+the host placement and caps.
 
 **Related.** CIU-122/CIU-123 (the fix work these oracles protect), cmru KI-25 (the original lane).
 

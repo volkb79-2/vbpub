@@ -5428,7 +5428,10 @@ evidence-judgment command.
   inside the sidecar and do not specify the host slice as their cgroup parent.
   `CIU_ENROLL_REQUIRED=1` makes missing Docker prerequisites or fixture-build
   failures fatal rather than skips. Both the ordinary suite and enrollment lane
-  must pass before a CIU release proceeds.
+  must pass before a CIU release proceeds. This command lane sets
+  `profile = false` because its nested Docker view cannot inspect the outer
+  tester container in the host cgroup tree; CMRU still enforces host placement
+  and CPU/memory caps.
 
 ## S19 — Repository scaffolding (`ciu init`)
 

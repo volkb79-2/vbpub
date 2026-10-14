@@ -45,5 +45,10 @@ mode = "host"
 kind = "command"
 environment = "enroll-tester"
 required_env = ["DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"]
+# The lane runs inside tester-unified while its Docker CLI targets the isolated
+# DinD sidecar. That daemon cannot inspect the outer tester container's host
+# cgroup, so this lane makes no Run-Gate resource-profile claim; CMRU applies
+# the host placement and container caps.
+profile = false
 argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_ENROLL_REQUIRED=1 PYTHONPATH=src:../cmru/src:../libraries/cli-extended/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/tests/test_getpy_enroll.py -k 'TestEnrollAgainstRealSystem or registered_enroll_lane' -q"]
 budget = "20m"
