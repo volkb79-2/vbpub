@@ -77,7 +77,10 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree adopt LOGICAL PATH [--profile P1,P2]
          [--adopt-existing-network] [--json]
                                 adopt an existing unmanaged linked checkout
-    worktree rm LOGICAL [-y] [--json]   clean, THEN remove the checkout
+    worktree rm LOGICAL [-y] [--force]
+         [--root-escalation {ask,yes,no}] [--json]
+                                clean, then remove; narrowly retry a confirmed
+                                permission blocker through CIU's S6.5 helper
     worktree list [--json]      list linked checkouts
     worktree inspect LOGICAL [--json]   exact record + freshly read Git facts
     worktree lease LOGICAL (--extend D | --perpetual | --release) [--json]
@@ -205,7 +208,7 @@ ciu worktree ensure LOGICAL [--base REF] [--profile P1,P2]
                              [--name DISPLAY | --prefix P --feature F]
                              [--branch BRANCH] [--path PATH]
                              [--worktree-dir DIR] [--adopt-existing-network] [--json]
-ciu worktree rm LOGICAL [-y] [--force] [--json]
+ciu worktree rm LOGICAL [-y] [--force] [--root-escalation {ask,yes,no}] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
 ciu worktree lease LOGICAL (--extend DURATION | --perpetual | --release) [--json]
@@ -1904,6 +1907,10 @@ def _worktree(rest: list[str]) -> int:
     p_rm.add_argument("name")
     p_rm.add_argument("-y", "--yes", action="store_true", default=False)
     p_rm.add_argument("--force", action="store_true", default=False)
+    p_rm.add_argument(
+        "--root-escalation", choices=("ask", "yes", "no"), default="ask",
+        help="after a confirmed permission blocker, ask, authorize, or refuse one exact S6.5 retry",
+    )
     p_rm.add_argument("--json", action="store_true", default=False)
 
     p_list = sub.add_parser("list", add_help=False)
@@ -2052,18 +2059,31 @@ def _worktree(rest: list[str]) -> int:
             return 0
 
         if opts.action == "rm":
-            if getattr(opts, "json", False):
-                print(json.dumps(
-                    wt_mod.remove_document(
-                        lifecycle_root, opts.name, yes=opts.yes, force=opts.force
-                    ),
-                    sort_keys=True,
-                ))
-            else:
-                path = wt_mod.remove(
-                    lifecycle_root, opts.name, yes=opts.yes, force=opts.force
-                )
-                print(f"removed: {path}")
+            try:
+                if getattr(opts, "json", False):
+                    document = wt_mod.remove_document(
+                        lifecycle_root,
+                        opts.name,
+                        yes=opts.yes,
+                        force=opts.force,
+                        root_escalation=opts.root_escalation,
+                    )
+                    print(json.dumps(document, sort_keys=True))
+                else:
+                    path = wt_mod.remove(
+                        lifecycle_root,
+                        opts.name,
+                        yes=opts.yes,
+                        force=opts.force,
+                        root_escalation=opts.root_escalation,
+                    )
+                    print(f"removed: {path}")
+            except wt_mod.WorktreeRemovalFailure as exc:
+                if getattr(opts, "json", False):
+                    print(json.dumps(exc.document, sort_keys=True))
+                else:
+                    print(str(exc), file=sys.stderr)
+                return 2
             return 0
 
         if opts.action == "inspect":

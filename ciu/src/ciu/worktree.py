@@ -348,6 +348,14 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 WorktreeError = _shared_worktree().WorkspaceError
 
 
+class WorktreeRemovalFailure(WorktreeError):
+    """A failed removal with a mechanically observed phase/artifact report."""
+
+    def __init__(self, message: str, document: Mapping[str, Any]) -> None:
+        super().__init__(message, category="removal-failure")
+        self.document = dict(document)
+
+
 class RuntimeNetworkVerificationError(WorktreeError):
     """CIU could not establish runtime identity/network uniqueness."""
 
@@ -1080,6 +1088,146 @@ def read_own_instance_record(ciu_root: Path) -> WorktreeInstanceRecord | None:
     if not path.is_file():
         return None
     return read_instance_record(path)
+
+
+def _permission_blocker(path: Path) -> tuple[Path, OSError] | None:
+    """Find a concrete permission blocker in a residual checkout tree.
+
+    Git versions can report ``Directory not empty`` after failing to descend
+    into a protected descendant, so stderr alone does not distinguish that
+    case from an ordinary non-empty directory. This probe examines only the
+    logical checkout path and does not follow symlinks or mutate the tree.
+    """
+    pending = [Path(path)]
+    while pending:
+        directory = pending.pop()
+        try:
+            if not os.access(directory, os.W_OK | os.X_OK, effective_ids=True):
+                return directory, PermissionError(
+                    errno.EACCES,
+                    "current user cannot write and traverse this directory",
+                    str(directory),
+                )
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(Path(entry.path))
+                    except OSError as exc:
+                        if exc.errno in {errno.EACCES, errno.EPERM}:
+                            return Path(entry.path), exc
+                        return None
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EPERM}:
+                return directory, exc
+            return None
+    return None
+
+
+def _removal_failure_document(
+    *,
+    path: Path,
+    logical_name: str,
+    branch: str,
+    phases: Mapping[str, str],
+    failed_phase: str,
+    repo_root: Path,
+    managed: WorktreeInstanceRecord | None,
+    shared_record: object | None,
+    message: str,
+    recovery_command: str | None = None,
+) -> dict[str, Any]:
+    """Capture the artifacts that remain after a failed lifecycle phase."""
+    shared = _shared_worktree()
+    target = Path(path).resolve()
+    try:
+        inventory = shared.list_git_worktrees(repo_root)
+        registration_state = (
+            "registered"
+            if any(Path(item.path).resolve() == target for item in inventory)
+            else "absent"
+        )
+    except Exception:
+        registration_state = "unknown"
+
+    if branch in {"", "HEAD", "(detached)"}:
+        branch_state = "not-applicable"
+    else:
+        result = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+            cwd=repo_root, text=True, capture_output=True, check=False,
+        )
+        branch_state = "present" if result.returncode == 0 else (
+            "absent" if result.returncode == 1 else "unknown"
+        )
+
+    ciu_record_path = managed.record_path if managed is not None else None
+    ciu_record_state = (
+        "not-applicable" if ciu_record_path is None else
+        "present" if ciu_record_path.exists() else "absent"
+    )
+    shared_record_path = getattr(shared_record, "record_path", None)
+    shared_record_state = "not-applicable"
+    if shared_record_path is None:
+        try:
+            _top, common, _branch, _head = shared.discover_git_context(repo_root)
+            records = shared.list_workspaces(common)
+            matches = [item for item in records if item.worktree_path == target]
+            if len(matches) == 1:
+                shared_record_path = matches[0].record_path
+            elif len(matches) > 1:
+                shared_record_state = "ambiguous"
+            else:
+                shared_record_state = "absent"
+        except Exception:
+            shared_record_state = "unknown"
+    if shared_record_path is not None:
+        shared_record_state = "present" if Path(shared_record_path).exists() else "absent"
+
+    observed_phases = dict(phases)
+    if registration_state == "absent" and observed_phases.get("git_registration") == "pending":
+        observed_phases["git_registration"] = "complete"
+    if ciu_record_state == "absent" and observed_phases.get("ciu_record_removal") == "pending":
+        observed_phases["ciu_record_removal"] = "complete"
+    if shared_record_state == "absent" and observed_phases.get("shared_record_removal") == "pending":
+        observed_phases["shared_record_removal"] = "complete"
+    completed = [
+        name for name, state in observed_phases.items()
+        if state in {"complete", "skipped-no-resources", "skipped-detached"}
+    ]
+    status = (
+        "partial"
+        if completed or "failed-forced" in observed_phases.values() or not path.exists()
+        else "failed"
+    )
+    document: dict[str, Any] = {
+        "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
+        "operation": "remove",
+        "status": status,
+        "logical_name": logical_name,
+        "checkout_path": str(path),
+        "failed_phase": failed_phase,
+        "completed_phases": completed,
+        "phases": observed_phases,
+        "message": message,
+        "remaining_artifacts": {
+            "resource_cleanup": observed_phases.get("resource_cleanup", "unknown"),
+            "checkout": "present" if path.exists() else "absent",
+            "git_registration": registration_state,
+            "branch": branch_state,
+            "ciu_record": {
+                "path": str(ciu_record_path) if ciu_record_path is not None else None,
+                "state": ciu_record_state,
+            },
+            "shared_record": {
+                "path": str(shared_record_path) if shared_record_path is not None else None,
+                "state": shared_record_state,
+            },
+        },
+    }
+    if recovery_command is not None:
+        document["recovery_command"] = recovery_command
+    return document
 
 
 def acquire_own_lease(
@@ -2307,7 +2455,7 @@ CAPABILITIES_SCHEMA_VERSION = 1
 WORKTREE_JSON_OPERATIONS = frozenset({
     "adopt", "create", "ensure", "inspect", "lease", "list", "remove",
 })
-WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed"}
+WORKTREE_JSON_STATUSES = WORKTREE_LIFECYCLE_STATES | {"removed", "failed", "partial"}
 
 # The closed, sorted allowlist of shipped machine contracts. Consumers
 # allowlist these identifiers instead of inferring features from SemVer
@@ -2329,6 +2477,7 @@ WORKTREE_CAPABILITIES = (
     "worktree.up.v1",
     "worktree.exec-local.v1",
     "worktree.exec-target.v1",
+    "worktree.rm-root-retry.v1",
 )
 
 
@@ -2430,16 +2579,21 @@ def remove_document(
     *,
     yes: bool = False,
     force: bool = False,
+    root_escalation: str = "ask",
 ) -> dict[str, Any]:
-    """Run the existing clean-then-remove and return the versioned removal
-    document (S16.4). The validated pre-state (the instance record, when the
-    worktree is managed) is captured before removal; success is emitted only
-    after BOTH clean and ``git worktree remove`` complete. A failure is the
-    existing :class:`WorktreeError` (identifying retained resources) — no
-    success document is ever produced."""
+    """Run the clean-then-remove lifecycle and return the versioned removal
+    document (S16.4). The validated pre-state is captured before removal.
+    Success is emitted only after cleanup, checkout, Git registration, branch,
+    and record phases complete; a :class:`WorktreeRemovalFailure` carries the
+    observed partial-state document on any failed phase."""
     repo_root = Path(repo_root).resolve()
     record = find_instance_record(repo_root, name)
-    removed_path = remove(repo_root, name, yes=yes, force=force)
+    phases: dict[str, str] = {}
+    removed_path = remove(
+        repo_root, name, yes=yes, force=force,
+        root_escalation=root_escalation,
+        _phase_report=phases,
+    )
     doc: dict[str, Any] = {
         "schema_version": WORKTREE_JSON_SCHEMA_VERSION,
         "operation": "remove",
@@ -2448,6 +2602,7 @@ def remove_document(
     }
     if record is not None:
         doc["instance"] = record.to_dict()
+    doc["phases"] = phases
     return doc
 
 
@@ -5978,6 +6133,8 @@ def remove(
     *,
     yes: bool = False,
     force: bool = False,
+    root_escalation: str = "ask",
+    _phase_report: dict[str, str] | None = None,
 ) -> Path:
     """Dispose of worktree *name*: ``ciu clean``, then remove the checkout.
 
@@ -5985,8 +6142,11 @@ def remove(
     ABORTS the removal (unless *force*), because removing the checkout after a
     failed clean destroys the only config that could complete it and leaves
     root-owned volume dirs no unprivileged operator can delete.
-
     """
+    if root_escalation not in {"ask", "yes", "no"}:
+        raise WorktreeError(
+            "[CIU-134] --root-escalation must be one of: ask, yes, no"
+        )
     path_hint = find_worktree(repo_root, name)
     managed = find_instance_record(
         repo_root, name,
@@ -6007,6 +6167,49 @@ def remove(
             "not a worktree instance."
         )
 
+    shared = _shared_worktree()
+    try:
+        family_root, common, _family_branch, _family_head = shared.discover_git_context(repo_root)
+        worktree_top, worktree_common, worktree_branch, _worktree_head = (
+            shared.discover_git_context(wt.path)
+        )
+        if (
+            worktree_top != wt.path.resolve()
+            or worktree_common != common
+            or worktree_branch != wt.branch
+        ):
+            raise WorktreeError(
+                f"[CIU-134] checkout Git facts changed before removal: "
+                f"path={worktree_top}, common={worktree_common}, branch={worktree_branch}"
+            )
+        shared_record = shared.find_workspace(common, wt.path.resolve())
+    except WorktreeError:
+        raise
+    except Exception as exc:
+        raise WorktreeError(
+            f"[CIU-134] could not verify worktree-family ownership before removal: {exc}"
+        ) from exc
+
+    if managed is not None and (
+        managed.git_worktree_path.resolve() != wt.path.resolve()
+        or managed.branch != wt.branch
+    ):
+        raise WorktreeError(
+            f"[CIU-134] CIU identity record does not match checkout path/branch "
+            f"for {wt.path}; refusing removal"
+        )
+    if shared_record is not None and (
+        shared_record.worktree_path != wt.path.resolve()
+        or shared_record.git_common_dir != common
+        or shared_record.branch != wt.branch
+        or shared_record.source_git_root != family_root
+    ):
+        raise WorktreeError(
+            f"[CIU-134] shared worktree record does not match the exact checkout "
+            f"path, Git family, or branch for {wt.path}; refusing removal"
+        )
+
+    path = wt.path
     ciu_root = managed.ciu_root if managed is not None else wt.path / _ciu_root_offset(repo_root)
     rootless_managed = (
         managed is not None
@@ -6015,16 +6218,82 @@ def remove(
         and managed.network is None
         and not _ciu_root_marker_present(managed.ciu_root)
     )
+
+    phases = {
+        "resource_cleanup": "pending",
+        "lease_release": "pending",
+        "checkout_deletion": "pending",
+        "git_registration": "pending",
+        "branch_removal": "pending",
+        "ciu_record_removal": "pending" if managed is not None else "skipped-no-record",
+        "shared_record_removal": "pending",
+    }
+    if _phase_report is not None:
+        _phase_report.update(phases)
+
+    def mark(phase: str, status: str) -> None:
+        phases[phase] = status
+        if _phase_report is not None:
+            _phase_report[phase] = status
+
+    def failure(
+        failed_phase: str,
+        message: str,
+        *,
+        recovery: bool = False,
+    ) -> WorktreeRemovalFailure:
+        recovery_command = (
+            f"ciu worktree rm {name} --root-escalation yes"
+            if recovery else None
+        )
+        document = _removal_failure_document(
+            path=path,
+            logical_name=name,
+            branch=wt.branch,
+            phases=phases,
+            failed_phase=failed_phase,
+            repo_root=repo_root,
+            managed=managed,
+            shared_record=shared_record,
+            message=message,
+            recovery_command=recovery_command,
+        )
+        artifacts = document["remaining_artifacts"]
+        details = ", ".join(
+            (
+                f"resource_cleanup={artifacts['resource_cleanup']}",
+                f"checkout={artifacts['checkout']}",
+                f"git_registration={artifacts['git_registration']}",
+                f"branch={artifacts['branch']}",
+                f"ciu_record={artifacts['ciu_record']['state']}",
+                f"shared_record={artifacts['shared_record']['state']}",
+            )
+        )
+        human = (
+            f"[CIU-134] worktree removal failed for {path}; phase={failed_phase}; "
+            f"completed={', '.join(document['completed_phases']) or 'none'}; "
+            f"remaining: {details}. {message}"
+        )
+        if recovery_command:
+            human += f" Recovery command: `{recovery_command}`."
+        return WorktreeRemovalFailure(human, document)
+
     rc = 0 if rootless_managed else _clean_in(ciu_root, yes=yes)
     if rc != 0 and not force:
-        raise WorktreeError(
-            f"[S16] `ciu clean` failed (exit {rc}) in {ciu_root}; NOT removing the "
-            "checkout. Removing it now would destroy the rendered config that "
-            "tells CIU what to clean, stranding root-owned vol-* directories "
-            "that an unprivileged `rm -rf` cannot delete. Fix the cause and "
-            "retry, or pass --force to remove anyway (leftovers become your "
-            "problem)."
+        mark("resource_cleanup", "failed")
+        raise failure(
+            "resource_cleanup",
+            f"`ciu clean` failed (exit {rc}) in {ciu_root}; NOT removing the "
+            "checkout, and checkout deletion and "
+            "root escalation were not attempted. Fix the cleanup cause and retry, "
+            "or use --force only if you explicitly accept the unrecovered resources.",
         )
+    if rootless_managed:
+        mark("resource_cleanup", "skipped-no-resources")
+    elif rc == 0:
+        mark("resource_cleanup", "complete")
+    else:
+        mark("resource_cleanup", "failed-forced")
 
     # S16.9 — ON SUCCESS ONLY. The lease is the evidence that something still
     # owns this instance's Docker resources, so it is cleared exactly when the
@@ -6033,35 +6302,231 @@ def remove(
     # resources possibly still standing, which is precisely when the ownership
     # record must NOT be erased.
     if rc == 0 and not rootless_managed:
-        release_own_lease(ciu_root)
+        try:
+            release_own_lease(ciu_root)
+        except Exception as exc:
+            mark("lease_release", "failed")
+            raise failure("lease_release", f"could not release the CIU worktree lease: {exc}") from exc
+        mark("lease_release", "complete")
+    else:
+        mark("lease_release", "skipped-no-resources" if rootless_managed else "skipped-clean-failed")
+
+    clean_succeeded = rc == 0
+    identity_proven = [managed is not None or shared_record is not None]
+    permission_confirmed = [False]
+
+    def recover_checkout(
+        context, git_dir: Path | None, git_error: WorktreeError
+    ) -> bool:
+        blocker = _permission_blocker(context.worktree_path)
+        if blocker is None:
+            return False
+        permission_confirmed[0] = True
+        mark("checkout_deletion", "failed")
+        blocker_path, blocker_error = blocker
+        reason = (
+            f"{git_error}; a permission blocker was confirmed at "
+            f"{blocker_path}: {blocker_error}"
+        )
+
+        def prove_exact_identity() -> None:
+            """Recheck the records and Git family immediately before deletion."""
+            current_top, current_common, _current_branch, _current_head = (
+                shared.discover_git_context(repo_root)
+            )
+            if current_top != family_root or current_common != common:
+                raise WorktreeError("the Git family changed during removal")
+            current_managed = (
+                read_own_instance_record(managed.ciu_root)
+                if managed is not None else None
+            )
+            current_shared = shared.find_workspace(common, context.worktree_path)
+            managed_matches = current_managed is not None and (
+                current_managed.logical_name == managed.logical_name
+                and current_managed.git_worktree_path == managed.git_worktree_path
+                and current_managed.branch == managed.branch
+                and current_managed.ciu_root_offset == managed.ciu_root_offset
+                and current_managed.instance_id == managed.instance_id
+            ) if managed is not None else False
+            shared_matches = current_shared is not None and (
+                current_shared.workspace_id == shared_record.workspace_id
+                and current_shared.worktree_path == shared_record.worktree_path
+                and current_shared.git_common_dir == shared_record.git_common_dir
+                and current_shared.branch == shared_record.branch
+                and current_shared.source_git_root == shared_record.source_git_root
+            ) if shared_record is not None else current_shared is not None
+            if managed is not None and not managed_matches:
+                raise WorktreeError("the CIU identity record is missing or changed")
+            if shared_record is not None and not shared_matches:
+                raise WorktreeError("the shared workspace record is missing or changed")
+            if not managed_matches and not shared_matches:
+                raise WorktreeError("no readable CIU/shared record remains for this checkout")
+            if context.worktree_path.resolve() != path.resolve() or context.branch != wt.branch:
+                raise WorktreeError("the failed Git operation names a different path or branch")
+            current_entries = [
+                item for item in shared.list_git_worktrees(repo_root)
+                if Path(item.path).resolve() == path.resolve()
+            ]
+            if len(current_entries) > 1 or (
+                current_entries and current_entries[0].branch != wt.branch
+            ):
+                raise WorktreeError(
+                    "the exact Git registration changed path/branch during removal"
+                )
+            if git_dir is not None:
+                admin_root = (common / "worktrees").resolve()
+                git_dir.resolve().relative_to(admin_root)
+            identity_proven[0] = True
+
+        # Consent applies only to a still-matching target. Check once before
+        # showing the prompt, then again after consent so a changed record
+        # cannot inherit authorization gathered for an earlier identity.
+        try:
+            prove_exact_identity()
+        except Exception as exc:
+            raise failure(
+                "checkout_deletion",
+                reason + f"; exact target validation failed: {exc}",
+            ) from exc
+
+        if not clean_succeeded:
+            raise failure(
+                "checkout_deletion",
+                reason + "; CIU resource cleanup did not succeed, so escalation is refused",
+            )
+        if root_escalation == "no":
+            raise failure("checkout_deletion", reason + "; privileged retry was declined", recovery=True)
+        if root_escalation == "ask":
+            if not sys.stdin.isatty():
+                raise failure(
+                    "checkout_deletion",
+                    reason + "; this is non-interactive, so no privileged retry was attempted; "
+                    "rerun with --root-escalation yes to authorize that retry",
+                    recovery=True,
+                )
+            preview = failure("checkout_deletion", reason).document
+            remaining = preview["remaining_artifacts"]
+            record_states = (
+                f"CIU record={remaining['ciu_record']['state']}, "
+                f"shared record={remaining['shared_record']['state']}"
+            )
+            print(
+                f"[CIU-134] {reason}. Completed phases: "
+                f"{', '.join(preview['completed_phases']) or 'none'}. Remaining: "
+                f"checkout={remaining['checkout']}, "
+                f"Git registration={remaining['git_registration']}, "
+                f"branch={remaining['branch']}, {record_states}.",
+                file=sys.stderr,
+                flush=True,
+            )
+            print(
+                f"CIU can retry removal of only {path} and its exact Git registration "
+                "through the existing S6.5 privileged helper. Continue? [y/N] ",
+                end="",
+                file=sys.stderr,
+                flush=True,
+            )
+            try:
+                answer = input().strip().lower()
+            except (EOFError, OSError):
+                answer = ""
+            if answer not in {"y", "yes"}:
+                raise failure(
+                    "checkout_deletion",
+                    reason + "; privileged retry was declined",
+                    recovery=True,
+                )
+
+        try:
+            blocker = _permission_blocker(context.worktree_path)
+            if blocker is None:
+                permission_confirmed[0] = False
+                raise WorktreeError(
+                    "the confirmed permission blocker no longer exists; retry removal normally"
+                )
+            prove_exact_identity()
+        except Exception as exc:
+            raise failure(
+                "checkout_deletion",
+                reason + f"; exact target revalidation failed: {exc}",
+            ) from exc
+
+        try:
+            from . import engine
+
+            physical_checkout = to_physical_path(context.worktree_path, repo_root=repo_root)
+            engine.privileged_rmtree(physical_checkout)
+            if context.worktree_path.exists():
+                raise RuntimeError(
+                    f"privileged helper returned success but checkout remains: {context.worktree_path}"
+                )
+            if git_dir is not None and git_dir.exists():
+                admin_root = (common / "worktrees").resolve()
+                resolved_git_dir = git_dir.resolve()
+                resolved_git_dir.relative_to(admin_root)
+                engine.privileged_rmtree(
+                    to_physical_path(resolved_git_dir, repo_root=repo_root)
+                )
+                if resolved_git_dir.exists():
+                    raise RuntimeError(
+                        f"privileged helper returned success but Git registration remains: {resolved_git_dir}"
+                    )
+        except Exception as exc:
+            raise failure(
+                "checkout_deletion",
+                reason + f"; privileged cleanup failed: {exc}",
+            ) from exc
+        return True
+
+    def report_phase(phase: str, status: str) -> None:
+        mark(phase, status)
+        if phase == "checkout_deletion" and status == "complete" and managed is not None:
+            mark("ciu_record_removal", "complete")
 
     # New allocations have a neutral family record.  CIU has already completed
     # its product cleanup above, so hand the final Git removal to the shared
     # lifecycle owner; this preserves the generic cleanup-before-removal order
     # and removes the shared record atomically with the checkout.
     try:
-        shared = _shared_worktree()
-        _top, common, _branch, _head = shared.discover_git_context(wt.path)
-        shared_record = shared.find_workspace(common, wt.path.resolve())
+        if shared_record is not None:
+            shared.remove_workspace(
+                shared_record,
+                checkout_recovery=recover_checkout if clean_succeeded else None,
+                on_phase=report_phase,
+            )
+        else:
+            shared.remove_unrecorded_workspace(
+                repo_root,
+                wt.path,
+                expected_branch=wt.branch,
+                purpose="ciu-legacy",
+                force=force,
+                checkout_recovery=recover_checkout if clean_succeeded else None,
+                on_phase=report_phase,
+            )
+    except WorktreeRemovalFailure:
+        raise
     except Exception as exc:
-        raise WorktreeError(f"[S16] could not inspect shared workspace ownership: {exc}") from exc
-    if shared_record is not None:
-        try:
-            shared.remove_workspace(shared_record)
-            return wt.path
-        except Exception as exc:
-            raise WorktreeError(f"[S16] shared workspace removal failed: {exc}") from exc
-
-    try:
-        shared.remove_unrecorded_workspace(
-            repo_root,
-            wt.path,
-            expected_branch=wt.branch,
-            purpose="ciu-legacy",
-            force=force,
+        failed_phase = next(
+            (
+                phase for phase in (
+                    "checkout_deletion", "git_registration", "branch_removal",
+                    "shared_record_removal",
+                )
+                if phases.get(phase) in {"pending", "failed"}
+            ),
+            "checkout_deletion",
         )
-    except Exception as exc:
-        raise WorktreeError(f"[S16] shared legacy workspace removal failed: {exc}") from exc
+        mark(failed_phase, "failed")
+        raise failure(
+            failed_phase,
+            f"shared worktree removal failed: {exc}",
+            recovery=(
+                clean_succeeded
+                and identity_proven[0]
+                and permission_confirmed[0]
+            ),
+        ) from exc
     return wt.path
 
 

@@ -13,6 +13,7 @@ import io
 import json
 import os
 import queue
+import shutil
 import stat
 import subprocess
 import sys
@@ -492,14 +493,19 @@ class TestCreateRemoveList:
     def test_remove_cleans_before_git_remove(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
+        from ciu import engine
+
         target = create_path(tmp_repo, "wt1", base="main")
         calls: list[str] = []
+        helpers = []
         monkeypatch.setattr(
             worktree, "_clean_in", lambda wt, *, yes: calls.append("clean") or 0
         )
+        monkeypatch.setattr(engine, "privileged_rmtree", lambda path: helpers.append(path))
         removed = worktree.remove(tmp_repo, "wt1", force=True)
         assert removed == target
         assert calls == ["clean"]
+        assert helpers == []
         assert not target.exists()
 
     def test_remove_failed_clean_aborts_without_force(
@@ -534,6 +540,288 @@ class TestCreateRemoveList:
         )
         with pytest.raises(worktree.WorktreeError, match="checkout locked"):
             worktree.remove(tmp_repo, "wt1")
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="permission-bit probe requires an unprivileged gate uid")
+    @pytest.mark.parametrize(
+        ("root_escalation", "interactive", "expects_prompt"),
+        [("ask", True, True), ("yes", False, False)],
+    )
+    def test_permission_failure_retries_only_exact_checkout(
+        self, tmp_repo, fake_generate_env, monkeypatch, capsys,
+        root_escalation, interactive, expects_prompt,
+    ):
+        from ciu import engine
+
+        record = worktree.create(tmp_repo, "protected", base="main")
+        target = record.git_worktree_path
+        protected = target / "scratch-worktree"
+        protected.mkdir()
+        (protected / "payload").write_text("retained until explicit retry\n")
+        protected.chmod(0)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(
+            worktree.sys, "stdin", SimpleNamespace(isatty=lambda: interactive)
+        )
+        if interactive:
+            monkeypatch.setattr(builtins, "input", lambda: "yes")
+        else:
+            monkeypatch.setattr(
+                builtins, "input",
+                lambda: pytest.fail("--root-escalation yes must not prompt"),
+            )
+
+        physical_checkout = worktree.to_physical_path(target, repo_root=tmp_repo)
+        physical_git_dir = Path(
+            _git(["rev-parse", "--absolute-git-dir"], target).stdout.strip()
+        ).resolve()
+        helper_calls = []
+
+        def fake_privileged_rmtree(physical_path):
+            physical_path = Path(physical_path)
+            helper_calls.append(physical_path)
+            if physical_path == physical_checkout:
+                protected.chmod(0o700)
+                shutil.rmtree(target)
+            elif physical_path == worktree.to_physical_path(
+                physical_git_dir, repo_root=tmp_repo
+            ):
+                shutil.rmtree(physical_git_dir)
+            else:
+                pytest.fail(f"root helper received an unvalidated path: {physical_path}")
+
+        monkeypatch.setattr(engine, "privileged_rmtree", fake_privileged_rmtree)
+        try:
+            result = worktree.remove_document(
+                tmp_repo, "protected", root_escalation=root_escalation
+            )
+        finally:
+            if protected.exists():
+                protected.chmod(0o700)
+
+        assert helper_calls[0] == physical_checkout
+        prompt = capsys.readouterr().err
+        if expects_prompt:
+            assert "Remaining: checkout=present" in prompt
+            assert "branch=present" in prompt
+            assert "Continue? [y/N]" in prompt
+        else:
+            assert "Continue?" not in prompt
+        assert result["status"] == "removed"
+        assert result["phases"]["checkout_deletion"] == "complete"
+        assert result["phases"]["git_registration"] == "complete"
+        assert result["phases"]["branch_removal"] == "complete"
+        assert result["phases"]["shared_record_removal"] == "complete"
+        assert not target.exists()
+        assert _git(["show-ref", "--verify", "--quiet", f"refs/heads/{record.branch}"], tmp_repo).returncode == 1
+        shared = worktree._shared_worktree()
+        _top, common, _branch, _head = shared.discover_git_context(tmp_repo)
+        assert shared.find_workspace(common, target) is None
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="permission-bit probe requires an unprivileged gate uid")
+    def test_root_escalation_no_reports_partial_git_state_without_helper(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record = worktree.create(tmp_repo, "protected-no", base="main")
+        target = record.git_worktree_path
+        protected = target / "scratch-worktree"
+        protected.mkdir()
+        (protected / "payload").write_text("keep\n")
+        protected.chmod(0)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
+        helper_calls = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree", lambda path: helper_calls.append(Path(path))
+        )
+        try:
+            with pytest.raises(worktree.WorktreeRemovalFailure) as raised:
+                worktree.remove_document(
+                    tmp_repo, "protected-no", root_escalation="no"
+                )
+        finally:
+            if protected.exists():
+                protected.chmod(0o700)
+
+        report = raised.value.document
+        assert helper_calls == []
+        assert report["status"] == "partial"
+        assert report["failed_phase"] == "checkout_deletion"
+        assert {"resource_cleanup", "lease_release"} <= set(report["completed_phases"])
+        assert report["remaining_artifacts"]["checkout"] == "present"
+        assert report["remaining_artifacts"]["branch"] == "present"
+        assert report["remaining_artifacts"]["shared_record"]["state"] == "present"
+        assert report["recovery_command"].endswith("--root-escalation yes")
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="permission-bit probe requires an unprivileged gate uid")
+    def test_noninteractive_ask_reports_retry_command_without_helper(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record = worktree.create(tmp_repo, "protected-nontty", base="main")
+        target = record.git_worktree_path
+        protected = target / "scratch-worktree"
+        protected.mkdir()
+        (protected / "payload").write_text("keep\n")
+        protected.chmod(0)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(worktree.sys, "stdin", SimpleNamespace(isatty=lambda: False))
+        helper_calls = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree", lambda path: helper_calls.append(Path(path))
+        )
+        try:
+            with pytest.raises(worktree.WorktreeRemovalFailure) as raised:
+                worktree.remove_document(
+                    tmp_repo, "protected-nontty", root_escalation="ask"
+                )
+        finally:
+            if protected.exists():
+                protected.chmod(0o700)
+
+        report = raised.value.document
+        assert helper_calls == []
+        assert report["remaining_artifacts"]["checkout"] == "present"
+        assert report["recovery_command"].endswith("--root-escalation yes")
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="permission-bit probe requires an unprivileged gate uid")
+    def test_identity_change_during_prompt_prevents_privileged_retry(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record = worktree.create(tmp_repo, "protected-race", base="main")
+        target = record.git_worktree_path
+        protected = target / "scratch-worktree"
+        protected.mkdir()
+        (protected / "payload").write_text("keep until record revalidation\n")
+        protected.chmod(0)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(worktree.sys, "stdin", SimpleNamespace(isatty=lambda: True))
+        helper_calls = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree", lambda path: helper_calls.append(Path(path))
+        )
+
+        def remove_identity_record_then_authorize():
+            Path(record.record_path).unlink()
+            return "yes"
+
+        monkeypatch.setattr(builtins, "input", remove_identity_record_then_authorize)
+        try:
+            with pytest.raises(worktree.WorktreeRemovalFailure) as raised:
+                worktree.remove(
+                    tmp_repo, "protected-race", root_escalation="ask"
+                )
+        finally:
+            if protected.exists():
+                protected.chmod(0o700)
+
+        assert helper_calls == []
+        assert "identity record is missing or changed" in str(raised.value)
+        report = raised.value.document
+        assert report["status"] == "partial"
+        assert report["remaining_artifacts"]["checkout"] == "present"
+        assert report["remaining_artifacts"]["ciu_record"]["state"] == "absent"
+        assert report["remaining_artifacts"]["shared_record"]["state"] == "present"
+
+    @pytest.mark.skipif(os.geteuid() == 0, reason="permission-bit probe requires an unprivileged gate uid")
+    def test_privileged_helper_failure_reports_partial_state(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        record = worktree.create(tmp_repo, "protected-helper-failure", base="main")
+        target = record.git_worktree_path
+        protected = target / "scratch-worktree"
+        protected.mkdir()
+        (protected / "payload").write_text("preserve after helper failure\n")
+        protected.chmod(0)
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(
+            builtins, "input",
+            lambda: pytest.fail("--root-escalation yes must not prompt"),
+        )
+        physical_checkout = worktree.to_physical_path(target, repo_root=tmp_repo)
+        helper_calls = []
+
+        def fail_helper(path):
+            helper_calls.append(Path(path))
+            raise RuntimeError("root helper unavailable")
+
+        monkeypatch.setattr(engine, "privileged_rmtree", fail_helper)
+        try:
+            with pytest.raises(worktree.WorktreeRemovalFailure) as raised:
+                worktree.remove(
+                    tmp_repo, "protected-helper-failure", root_escalation="yes"
+                )
+        finally:
+            if protected.exists():
+                protected.chmod(0o700)
+
+        report = raised.value.document
+        assert helper_calls == [physical_checkout]
+        assert "privileged cleanup failed: root helper unavailable" in str(raised.value)
+        assert report["status"] == "partial"
+        assert report["failed_phase"] == "checkout_deletion"
+        assert report["remaining_artifacts"]["checkout"] == "present"
+        assert report["remaining_artifacts"]["branch"] == "present"
+        assert report["remaining_artifacts"]["ciu_record"]["state"] == "present"
+        assert report["remaining_artifacts"]["shared_record"]["state"] == "present"
+
+    def test_non_permission_git_failure_never_invokes_helper(
+        self, tmp_repo, fake_generate_env, monkeypatch, capsys
+    ):
+        from ciu import engine
+
+        record = worktree.create(tmp_repo, "locked", base="main")
+        target = record.git_worktree_path
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
+        helper_calls = []
+        monkeypatch.setattr(
+            engine, "privileged_rmtree", lambda path: helper_calls.append(Path(path))
+        )
+        shared = worktree._shared_worktree()
+
+        def fail_without_permission(record, *, checkout_recovery=None, **_kw):
+            git_dir = Path(_git(["rev-parse", "--absolute-git-dir"], target).stdout.strip())
+            error = shared.WorkspaceError("synthetic non-permission failure", category="git-error")
+            assert checkout_recovery is not None
+            assert checkout_recovery(record.context(), git_dir, error) is False
+            raise error
+
+        monkeypatch.setattr(shared, "remove_workspace", fail_without_permission)
+        with pytest.raises(worktree.WorktreeRemovalFailure) as raised:
+            worktree.remove(tmp_repo, "locked", root_escalation="yes")
+
+        assert helper_calls == []
+        assert "confirmed permission blocker" not in str(raised.value)
+        assert "Continue?" not in capsys.readouterr().err
+
+    def test_force_after_failed_clean_does_not_authorize_root_retry(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        from ciu import engine
+
+        create_path(tmp_repo, "force-clean", base="main")
+        monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 1)
+        helpers = []
+        monkeypatch.setattr(engine, "privileged_rmtree", lambda path: helpers.append(path))
+        shared = worktree._shared_worktree()
+
+        def fail_after_forced_clean(record, *, checkout_recovery=None, **_kw):
+            assert checkout_recovery is None
+            raise shared.WorkspaceError("synthetic Git failure", category="git-error")
+
+        monkeypatch.setattr(shared, "remove_workspace", fail_after_forced_clean)
+        with pytest.raises(worktree.WorktreeRemovalFailure) as raised:
+            worktree.remove(
+                tmp_repo, "force-clean", force=True, root_escalation="yes"
+            )
+
+        assert helpers == []
+        assert raised.value.document["phases"]["resource_cleanup"] == "failed-forced"
 
 
 class TestManagedIdentityLifecycle:
@@ -3199,6 +3487,7 @@ class TestStructuredControlDocuments:
             "worktree.lease.v1",
             "worktree.lifecycle-json.v1",
             "worktree.reap.v1",
+            "worktree.rm-root-retry.v1",
             "worktree.up.v1",
         ]
 
@@ -3213,6 +3502,7 @@ class TestStructuredControlDocuments:
             "worktree.up.v1",
             "worktree.exec-local.v1",
             "worktree.exec-target.v1",
+            "worktree.rm-root-retry.v1",
         }
         assert not any("future" in c for c in worktree.WORKTREE_CAPABILITIES)
 

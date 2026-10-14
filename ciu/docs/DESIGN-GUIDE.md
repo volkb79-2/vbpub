@@ -703,20 +703,29 @@ place a consumer must learn the shape, and the closed vocabulary is a single
 constant in code (`WORKTREE_JSON_OPERATIONS` / `WORKTREE_JSON_STATUSES`), so a
 new value cannot be introduced accidentally.
 
+### Why CIU-134 removal escalation is a separate explicit choice
+
 Removal keeps the same contract under partial failure: CIU captures the
 validated pre-state, runs `ciu clean` **then** `git worktree remove` (the
 normative order — see SPEC §S16), and only then emits `"status": "removed"`.
-A failed clean or failed git removal raises the existing `WorktreeError`,
-which names the retained resources; there is never a success document for a
-removal that did not happen. This matters because the failure mode is
-unrecoverable-by-CIU: once the checkout is gone, so is the rendered config
-that told CIU what to clean, and root-owned `vol-*` directories can then only
-be removed by hand.
+CIU-134 adds phase and artifact reporting because Git may remove its
+registration before it fails to delete a protected descendant. CIU checks the
+residual logical checkout for a concrete permission blocker, re-reads the
+readable CIU/shared ownership evidence, then asks before using the existing
+S6.5 helper on that exact checkout and any still-present exact Git registration.
+`--root-escalation yes` supplies consent for that same checked retry; it does
+not bypass either check. `--force` remains limited to proceeding after failed
+resource cleanup and never authorizes root deletion. A declined or failed retry
+leaves the branch and any surviving records for inspection, and the error
+document reports each observed state. A failed `ciu clean` never offers
+checkout deletion or root escalation because the checkout holds the config
+needed to recover resources.
 
 ## Why `capabilities` is a separate, sorted, closed allowlist
 
 `worktree.identity.v1`, `worktree.inspect.v1`, `worktree.lifecycle-json.v1`,
-`worktree.up.v1`, `worktree.exec-local.v1`, and `worktree.exec-target.v1` are
+`worktree.up.v1`, `worktree.exec-local.v1`, `worktree.exec-target.v1`, and
+`worktree.rm-root-retry.v1` are
 the identifiers advertised in this release. Each maps to a shipped code path:
 
 - `worktree.identity.v1` — schema-v1 instance records and the create/adopt/
@@ -726,6 +735,8 @@ the identifiers advertised in this release. Each maps to a shipped code path:
 - `worktree.up.v1` — exact selected-worktree `up` (S16.6);
 - `worktree.exec-local.v1` — exact local `exec` (S16.6);
 - `worktree.exec-target.v1` — declared container-target `exec` (S16.7).
+- `worktree.rm-root-retry.v1` — permission-specific, record-validated removal
+  recovery with phase reporting (CIU-134).
 
 An identifier is added to `WORKTREE_CAPABILITIES` in the same commit as the
 code path it names, or not at all.

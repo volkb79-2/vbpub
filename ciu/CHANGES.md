@@ -23,6 +23,9 @@ restatement of the technical detail below it.
 
 ## [Unreleased]
 
+### Added
+- CIU-134: `ciu worktree rm` reports cleanup phases and remaining artifacts. After a confirmed permission blocker, `--root-escalation {ask,yes,no}` can authorize one record-validated retry through CIU's existing S6.5 helper, then removes only the exact Git registration without broad pruning.
+
 ### Fixed
 - Managed worktree creation and adoption validate initial overlay options before lifecycle mutation and preserve the exact request for safe interrupted recovery. Schema v5 records overlay recovery, the one-time checkout-reset boundary, and a verified Docker network object id. The requested base is snapshotted before allocation so marker validation, workspace creation, and reset use one commit. All worktree verbs use the selected nested CIU root for record lookup.
 - `ensure` refuses to repeat an uncheckpointed initial reset, verifies same-name networks on its ready path, and checks explicit base/directory constraints. Managed `up` also verifies network ownership before launching. A failed Docker permission probe is indeterminate rather than network absence; a failed allocation records `runtime-verification-failed`, reserving `runtime-collision` for proven conflicts. A one-time legacy claim cannot replace a saved object id. Lease updates serialize with lifecycle transitions, record writes sync the parent directory after replacement, and CIU's ignore rules cover interrupted record and overlay staging files.
