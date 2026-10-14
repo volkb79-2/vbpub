@@ -478,24 +478,22 @@ release tag.
 A GitHub Release published by a CMRU handler (`wheel-publish`, `tarball-publish`) is the
 generated install/artifact block (artifact name, SHA256, verification and
 resolve-latest instructions) followed by the **exact `## [X.Y.Z] - YYYY-MM-DD`
-section of the project's changelog for the version being released**, verbatim, and then
-whatever the author left under `## [Unreleased]` (migration notes included), also
-verbatim and last. `[Unreleased]` never *replaces* the version section and no other
-version is included. Those pending notes stay in the file through a dry run or any
-failure and move into the released version's history in one commit **after a successful
-publish** (before promotion), so they are neither lost nor published twice. That commit
-reaches `main` only through the promotion push, so any failure (gate, build, publish or
-promotion) leaves `main`'s `[Unreleased]` exactly as written. It works for every
-consumer and every configured changelog path: wheel, tarball and variants publishers
-alike, because the changelog is excluded from change detection whatever it is called.
-A project that opted out
-(`changelog = false`) gets the generated body alone. A changelog without exactly one
-dated, non-empty section for that version **refuses before the gate, tag or upload**
-instead of publishing a body without notes. `cmru release --dry-run` prints the complete
-body (between `----- begin release body -----` markers) built by the same function the
-publisher calls; only the artifact file name and SHA256, which exist only after the
-build, appear as marked placeholders. A `--notes-env` text only replaces the opening
-line and cannot bypass this. See [why](docs/DESIGN-GUIDE.md#release-bodies-carry-the-versions-curated-notes)
+section of the project's changelog for the version being released**, verbatim. Pending
+`## [Unreleased]` entries, including migration notes, are folded into that dated section
+in the disposable release candidate before its gate and tag. The publisher reads the
+section from the exact tagged commit, so the tag and release body carry the same notes.
+The candidate reaches `main` only after a successful publish; gate, build, publish, and
+promotion failures leave the source branch's `[Unreleased]` unchanged. A dry run prints
+the complete body and restores the changelog bytes. `--no-build` and push steps without
+a CMRU GitHub Release-body handler leave pending notes in `[Unreleased]` because no body
+is published. This works for every configured changelog path, and those paths remain
+excluded from change detection. A project that opted out (`changelog = false`) gets the
+generated body alone. A changelog without exactly one dated, non-empty section for that
+version **refuses before the gate, tag or upload** instead of publishing a body without
+notes. `cmru release --dry-run` uses the same builder as the publisher; only the artifact
+file name and SHA256, which exist only after the build, appear as marked placeholders.
+A `--notes-env` text only replaces the opening line and cannot bypass the changelog
+section. See [why](docs/DESIGN-GUIDE.md#release-bodies-carry-the-versions-curated-notes)
 and the [adoption recipe](docs/CONSUMERS.md#release-bodies-and-curated-notes).
 
 ## Reproducibility & the commit model

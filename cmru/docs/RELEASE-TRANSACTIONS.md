@@ -255,18 +255,16 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
 
 ### Release history behaviour changes (REL-02, REL-10)
 
-- **A non-empty plain `## [Unreleased]` section is carried, then consumed after the publish
-  (KI-78).** For any project with a configured changelog the text is appended verbatim to
-  the GitHub Release body below the version section (`--dry-run` prints that exact body).
-  After the tagged build and publish succeeded, and before promotion, cmru commits one
-  `chore(<name>): move [Unreleased] notes into <tag>` change (trailer
-  `Cmru-Release-Candidate`) that moves the text to the end of the released version's section
-  and empties `[Unreleased]`. That commit reaches `main` only through the promotion push, so
-  a dry run, a failed gate, build, publish or promotion, and `--no-build` all leave `main`'s
-  `[Unreleased]` exactly as written (an earlier project in the same run that already
-  completed stays consumed). The project's configured changelog path is excluded from
-  change detection, so the commit never schedules the next release. This replaces the KI-30
-  refusal; a comment-only body is still just an empty section.
+- **A non-empty plain `## [Unreleased]` section is folded into the candidate before the gate
+  and tag (KI-78).** For a CMRU GitHub Release-body handler, the text is appended verbatim
+  inside the generated dated version section, then the exact tagged section is used in the
+  GitHub Release body (`--dry-run` prints that same body). The release tag and body therefore
+  describe the same notes. The candidate reaches `main` only after a successful publish;
+  failed gates, builds, publishes, and promotions leave source `main`'s `[Unreleased]`
+  unchanged. `--no-build` and push steps without a CMRU GitHub Release-body handler leave
+  notes pending. No post-publish changelog commit is needed. The project's configured
+  changelog path remains excluded from change detection. This replaces the KI-30 refusal;
+  a comment-only body is still just an empty section.
 - **Regenerating a stale generated section overwrites hand edits inside it.** When project
   commits landed after a generated section's `source-end` cursor (for example on `--resume`
   of a candidate that was prepared earlier), the section is rebuilt in place from the project

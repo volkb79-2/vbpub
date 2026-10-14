@@ -863,8 +863,8 @@ accepts (`changelog:<project-relative path>` or `none`).
 
 **Pending notes and migration guidance: write them under `## [Unreleased]` (KI-78).**
 Whatever is under `## [Unreleased]` in the project's configured changelog (`CHANGES.md` by
-default; any `release.changelog` path works) is appended to the release body, verbatim,
-after the version section:
+default; any `release.changelog` path works) is folded into the generated dated version
+section in the disposable release candidate before the gate and tag:
 
 ```markdown
 ## [Unreleased]
@@ -873,15 +873,15 @@ after the version section:
 1. Run `tool migrate --yes` before upgrading; it rewrites `tool.toml`.
 ```
 
-`cmru release <name> --dry-run` prints the body with those lines last and leaves the file
-untouched. After a **successful publish** (and only then) CMRU commits one
-`chore(<name>): move [Unreleased] notes into <tag>` change, before promotion, that appends
-the text to the released version's section behind
-`<!-- cmru: unreleased notes published with this release -->` and empties `[Unreleased]`
-(its comments stay). That commit reaches `main` only through the promotion push, so a failed
-gate, build, publish or promotion, a dry run, and `--no-build` all leave your notes in place
-on `main` for the next attempt. This also removes the need to park notes outside the
-changelog (KI-58): leave them under `[Unreleased]` and the release carries them.
+`cmru release <name> --dry-run` prints the body with those notes inside the dated section
+and leaves the file bytes untouched. During a real release, the candidate changelog is
+committed before the gate; its release tag and GitHub body use that same version section.
+Promotion carries the candidate to `main` only after a successful publish. A failed gate, build,
+publish or promotion leaves the source branch's notes under `[Unreleased]`. `--no-build`
+and push steps without a CMRU GitHub Release-body handler leave the notes pending because
+they do not publish a body. This removes the need to park notes outside the changelog
+(KI-58). CMRU also reads direct `cmru publish --from-checkout` release notes from the
+matching local release tag, never from later mutable changelog edits.
 
 **Carrying forward notes that were parked outside a changelog (KI-58).** Notes that were
 already removed from `## [Unreleased]` can either be put back under `[Unreleased]` (above)
@@ -1199,9 +1199,10 @@ valid for another publish. `--dry-run` checks local evidence and renders the
 step but does not query remote tag availability. Use `cmru release` for the
 source-first tag/build/publish/promote workflow.
 
-A non-empty plain `## [Unreleased]` section is carried into the release body and moved into the
-released version after a successful publish (KI-78; this replaced the KI-30 refusal),
-and a stale generated history section that holds hand edits is refused rather than regenerated
+A non-empty plain `## [Unreleased]` section is folded into the tagged version section before
+the gate when a CMRU GitHub Release-body handler will publish it (KI-78; this replaced the
+KI-30 refusal). Other release publishers leave it pending. A stale generated history section
+that holds hand edits is refused rather than regenerated
 over them (KI-68); see
 [release history behaviour changes](RELEASE-TRANSACTIONS.md#release-history-behaviour-changes-rel-02-rel-10).
 To hand-curate a pending generated section, advance its `source-end` marker in the same final

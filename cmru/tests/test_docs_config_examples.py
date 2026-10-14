@@ -257,11 +257,8 @@ def test_release_body_contract_is_documented_in_all_user_guides():
         text = " ".join(document.read_text(encoding="utf-8").split())
         required = ["begin release body", "exact", "[Unreleased]"]
         required.append("changelog = false" if document.name == "README.md" else "CMRU_RELEASE_NOTES_SOURCE")
-        # KI-78: pending [Unreleased] notes are appended and consumed only after success.
-        required.append(
-            "after the publish succeeded" if document.name == "DESIGN-GUIDE.md"
-            else "successful publish"
-        )
+        # KI-78: promotion carries staged release notes only after publication succeeds.
+        required.append("successful publish")
         for phrase in required:
             assert phrase in text, (document.name, phrase)
 

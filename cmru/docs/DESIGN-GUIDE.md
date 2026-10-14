@@ -774,30 +774,22 @@ The choices, and what was rejected:
   migration steps survive byte for byte. It follows the install block because that
   is what a reader needs first. Other versions are never read, and `[Unreleased]` is
   never a *substitute* for the section (see the next item for what it is).
-- **`[Unreleased]` is a supplement, consumed only after success (KI-78).** The original
-  KI-30 rule refused a tagged release while `[Unreleased]` held text, because CMRU does
-  not fold it and the text would be orphaned. That forced authors to park migration
-  notes outside the changelog until after the release (KI-58), which is exactly where
-  they get lost. Instead the body is generated block, then the exact version section,
-  then the `[Unreleased]` text verbatim, so the notes an author wrote for the next
-  release are in the body of that release. Moving the text is a *consequence of
-  publishing*, so it happens in a single commit after the publish succeeded and before
-  promotion (trailer `Cmru-Release-Candidate`), appended to that version's section
-  behind a marker comment; `[Unreleased]` returns to its empty (comments kept) state.
-  A dry run, a failed gate, build or publish, and `--no-build` all return before that
-  commit, so the notes stay where the author put them and the next attempt publishes
-  them. Rejected: clearing before the publish (a failed upload would lose the notes);
-  a second changelog file for pending notes (one more place to forget).
-  "Until the complete transaction succeeds" is met structurally: the consume commit
-  sits on the release candidate and reaches `main` only through the promotion push, so
-  a failed gate, build, publish or promotion leaves `main`'s `[Unreleased]` as the
-  author wrote it (the retained candidate branch tip is the only place the move
-  exists). Projects release one after another, so an earlier project's completed
-  cycle stays consumed when a later project fails. The post-publish commit edits only
-  the project's changelog; change detection excludes the project's *configured*
-  changelog path (not just `CHANGES.md`/`CHANGELOG.md`), so the commit never reads as
-  product work and schedules the next release, and the feature serves every consumer
-  whatever it calls its changelog.
+- **Fold `[Unreleased]` into the candidate before the gate (KI-78).** The original
+  KI-30 refusal left migration guidance outside the release record. CMRU now moves
+  pending notes into the dated version section in the disposable candidate, before
+  the gate and tag. The release body is generated block plus that exact section from
+  the tag. The tag and body therefore share one immutable notes source, and there is
+  no post-publish changelog commit that can fail after a release is already public.
+  A failed gate or build leaves the candidate's staged section on its retained branch;
+  the source branch remains unchanged. A failed publish also leaves source `[Unreleased]`
+  unchanged, while the tagged candidate retains the exact notes sent to the publisher.
+  Promotion carries the staged changelog to `main` only after a successful publish. A dry
+  run stages the same section temporarily and restores the original bytes. `--no-build`
+  and push steps without a CMRU GitHub Release-body handler do not fold notes, because
+  neither publishes a body. Rejected: a post-publish changelog commit, which could block
+  promotion after the body and assets were already public; a second changelog file,
+  which would give authors another place to forget migration notes. Changelog paths
+  remain excluded from project change detection, including custom names.
 - **No silent fallback.** A missing, undated (`UNRELEASED`), duplicated, wrong-version
   or empty section refuses. The alternative, publishing the generic body, is the
   exact failure this change exists to remove. A project that declares
@@ -807,10 +799,10 @@ The choices, and what was rejected:
   publishing step and projects cannot set. A publisher invoked without it refuses
   and names the remedy instead of guessing.
 - **Refuse early, read the right bytes.** The prepare phase resolves the pending
-  section right after generating the history, before the gate, tag or upload. At
-  publish time the text is read from the tagged candidate's commit
-  (`CMRU_RELEASE_COMMIT`, or a retained build's source commit), not from whatever
-  the working tree holds later.
+  section after generating history and folding eligible `[Unreleased]` notes, before
+  the gate, tag or upload. At publish time the text is read from the tagged candidate's
+  commit (`CMRU_RELEASE_COMMIT`, a retained build's source commit, or the matching local
+  release tag for explicit `publish --from-checkout`), not from later working-tree edits.
 - **`--notes-env` stays, as a supplement.** It replaces only the opening line; it
   cannot supply or suppress the section.
 - **KI-68 protects the notes.** Curated notes live in the generated section. If

@@ -2964,7 +2964,8 @@ def _release_projects_sequentially(
         log_info(f"=== {name}: releasing ===")
 
         _prepare_release_projects(
-            repo_root, configs, [name], minor=minor, major=major, set_version=set_version,
+            repo_root, configs, [name], minor=minor, major=major,
+            set_version=set_version, include_pending_notes=not no_build,
         )
         # Keep the remote candidate branch current before the gate too. A gate
         # failure must leave the generated candidate available for inspection.
@@ -3021,7 +3022,6 @@ def _release_projects_sequentially(
                     )
                     released.append(f"{name} ({tag})")
                     transaction.write_release_result(repo_root, workspace, name, tag)
-                    _consume_published_unreleased_notes(repo_root, project, tag)
                 else:
                     log_info(f"{name}: --no-build — tagged {tag}, skipped build/publish")
                     transaction.write_release_result(repo_root, workspace, name, tag)
@@ -4270,30 +4270,36 @@ def _commit_prepared_generated(
     return True
 
 
-def _consume_published_unreleased_notes(repo_root: Path, project, tag: str) -> bool:
-    """After a SUCCESSFUL publish, move ``[Unreleased]`` into the released version (KI-78).
+_RELEASE_BODY_HANDLERS = frozenset({"wheel-publish", "tarball-publish"})
 
-    The notes were already part of the published body; this keeps the changelog
-    from describing them as pending forever. It runs only after the publish and
-    before promotion, so every earlier failure (and every dry run) leaves the
-    author's notes where they were. A failure here is loud but never un-publishes:
-    the tag, artifacts and candidate branch are retained for the operator.
-    """
-    from cmru.changelog import consume_published_notes
 
-    if not getattr(project, "changelog", None):
+def _has_cmru_github_release_body(project) -> bool:
+    """Whether the declared push step uses a CMRU handler that publishes notes."""
+    step = (getattr(project, "runner_steps", None) or {}).get("push")
+    for command in getattr(step, "commands", ()):
+        argv = command.get("argv", ()) if isinstance(command, dict) else ()
+        if len(argv) >= 3 and [str(item) for item in argv[:2]] == ["cmru", "handler"]:
+            if str(argv[2]) in _RELEASE_BODY_HANDLERS:
+                return True
+    return False
+
+
+def _fold_pending_release_notes(repo_root: Path, project, version: str) -> bool:
+    """Fold pending notes into the generated section before the release gate."""
+    from cmru.changelog import _validate_changelog_path, fold_unreleased_notes
+    from cmru.release_notes import ReleaseNotesError
+
+    path = _validate_changelog_path(project, repo_root)
+    try:
+        updated = fold_unreleased_notes(path.read_text(encoding="utf-8"), version)
+    except ReleaseNotesError as exc:
+        raise RefusedBeforeChange(f"{project.name}: release notes: {exc}") from exc
+    if updated is None:
         return False
-    if not consume_published_notes(repo_root, project, tag):
-        return False
-    changelog = (Path(_project_working_directory(project)) / project.changelog).as_posix()
-    subprocess.run(["git", "add", "--", changelog], cwd=repo_root, check=True)
-    run_local_git(
-        repo_root, "commit", "-m",
-        f"chore({project.name}): move [Unreleased] notes into {tag}\n\n"
-        f"{RELEASE_CANDIDATE_TRAILER}: {tag}",
-        check=True,
+    path.write_text(updated, encoding="utf-8")
+    log_info(
+        f"{project.name}: folded [Unreleased] notes into [{version}] in the release candidate"
     )
-    log_info(f"{project.name}: moved the published [Unreleased] notes into {tag}'s history")
     return True
 
 
@@ -4312,6 +4318,8 @@ def _preview_release_bodies(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
     project_names: List[str],
+    *,
+    no_build: bool = False,
     **plan,
 ) -> None:
     """Print the GitHub Release body each tagged project would publish (dry-run).
@@ -4329,10 +4337,21 @@ def _preview_release_bodies(
         project = configs[name]
         if not getattr(project, "changelog", None) or not getattr(project, "git_tag", True):
             continue
+        if no_build:
+            log_info(f"[DRY RUN] {name}: --no-build skips publication; [Unreleased] notes stay pending")
+            continue
+        if not _has_cmru_github_release_body(project):
+            log_info(
+                f"[DRY RUN] {name}: its push step does not use a CMRU GitHub Release-body "
+                "handler; no release body is previewed and [Unreleased] notes stay pending"
+            )
+            continue
         path = _validate_changelog_path(project, repo_root)
         original = path.read_bytes() if path.exists() else None
         try:
             generate_release_changelog(repo_root, project, **plan)
+            notes = _pending_release_notes_or_refuse(repo_root, project, **plan)
+            _fold_pending_release_notes(repo_root, project, notes.version)
             notes = _pending_release_notes_or_refuse(repo_root, project, **plan)
         finally:
             if original is None:
@@ -4346,11 +4365,10 @@ def _preview_release_bodies(
         )
         log_info(
             f"[DRY RUN] {name}: GitHub Release body for {prefix}-v{notes.version} "
-            f"(curated section from {project.changelog}"
-            + ("; its pending [Unreleased] notes are appended and stay in the file "
-               "until the publish succeeds" if notes.unreleased else "")
-            + "; the artifact name and SHA256 are placeholders until the build; a "
-            "--notes-env text replaces only the opening line):"
+            f"(curated section from {project.changelog}; pending notes, when present, "
+            "are folded into this version section in the candidate before its gate and tag; "
+            "the artifact name and SHA256 are placeholders until the build; a --notes-env "
+            "text replaces only the opening line):"
         )
         print("----- begin release body -----")
         print(body)
@@ -4365,8 +4383,9 @@ def _prepare_release_projects(
     minor: bool = False,
     major: bool = False,
     set_version: Optional[str] = None,
+    include_pending_notes: bool = True,
 ) -> None:
-    """Prepare declared source inputs, including an optional generated changelog."""
+    """Prepare declared inputs, folding publishable notes before gate and tag."""
     from cmru.changelog import generate_release_changelog, pending_release_tag
 
     log_dir = repo_root / "logs"
@@ -4383,6 +4402,26 @@ def _prepare_release_projects(
             )
             if changed:
                 log_info(f"{name}: updated {changelog}")
+        notes = None
+        if changelog and getattr(project, "git_tag", True):
+            # Validate the exact version section before committing any generated
+            # inputs. A supported CMRU GitHub publisher reads only this section
+            # from the eventual tag, never the mutable [Unreleased] source.
+            notes = _pending_release_notes_or_refuse(
+                repo_root, project, minor=minor, major=major, set_version=set_version,
+            )
+            if include_pending_notes and _has_cmru_github_release_body(project):
+                _fold_pending_release_notes(repo_root, project, notes.version)
+                notes = _pending_release_notes_or_refuse(
+                    repo_root, project, minor=minor, major=major, set_version=set_version,
+                )
+            elif not include_pending_notes:
+                log_info(f"{name}: --no-build leaves [Unreleased] notes pending")
+            elif not _has_cmru_github_release_body(project):
+                log_info(
+                    f"{name}: push step has no CMRU GitHub Release-body handler; "
+                    "[Unreleased] notes stay pending"
+                )
         if "prepare" in project.steps or changelog:
             candidate_label = project.name
             if getattr(project, "git_tag", True):
@@ -4394,12 +4433,7 @@ def _prepare_release_projects(
                 except RuntimeError:
                     pass  # the trailer is provenance only; fall back to the name
             _commit_prepared_generated(repo_root, project, candidate_label)
-        if changelog and getattr(project, "git_tag", True):
-            # KI-75: the GitHub Release body ends with this exact section. Refuse
-            # NOW (before the gate, tag, build or upload) if it cannot be built.
-            notes = _pending_release_notes_or_refuse(
-                repo_root, project, minor=minor, major=major, set_version=set_version,
-            )
+        if notes is not None:
             log_info(
                 f"{name}: the release body will end with the [{notes.version}] "
                 f"section of {changelog}"
@@ -5546,6 +5580,7 @@ def _release_child(
         # commits/gates/promotion/tags — nothing here has side effects.
         _preview_release_bodies(
             repo_root, ordered, release_names,
+            no_build=vargs.no_build,
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
         )
         release_cmd(

@@ -14,10 +14,11 @@ before any tag or upload; nothing falls back to a generic prefix, to
 ``[Unreleased]``, or to another version's text.
 
 The author's pending ``## [Unreleased]`` entries (migration notes included) are
-a SUPPLEMENT, never a substitute: they ride below the version section in the
-body, stay in the changelog through a dry run or a failed release, and are moved
-into that version's history only after the publish succeeded (``changelog.
-consume_published_notes``, KI-78).
+folded into the dated version section in the disposable release candidate before
+the gate and tag. The publisher then reads that section from the exact tagged
+commit. A dry run restores its input, while a failed release never promotes the
+candidate; ``--no-build`` and image-only pushes leave pending notes untouched
+(KI-78).
 """
 from __future__ import annotations
 
@@ -36,14 +37,11 @@ NO_NOTES = "none"
 ARTIFACT_PLACEHOLDER = "<artifact file name, known after the build>"
 SHA256_PLACEHOLDER = "<sha256 of the built artifact>"
 
-_HEADING_LINE = re.compile(r"^## .*$", re.MULTILINE)
-_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
-_PLAIN_UNRELEASED = re.compile(r"^## \[Unreleased\][ \t]*$", re.MULTILINE)
-
 #: Where CMRU may insert release sections; also ends an ``[Unreleased]`` body.
 HISTORY_MARKER = "<!-- cmru: release history -->"
-#: Written above notes that moved from ``[Unreleased]`` into a published version.
-CONSUMED_MARKER = "<!-- cmru: unreleased notes published with this release -->"
+#: Delimit the operator-authored notes folded into a candidate before its gate.
+PENDING_NOTES_BEGIN = "<!-- cmru: pending release notes begin -->"
+PENDING_NOTES_END = "<!-- cmru: pending release notes end -->"
 
 
 class ReleaseNotesError(RuntimeError):
@@ -52,35 +50,162 @@ class ReleaseNotesError(RuntimeError):
 
 @dataclass(frozen=True)
 class ReleaseNotes:
-    """One version's curated section plus the pending ``[Unreleased]`` notes.
+    """One version's curated section, read from the release source commit.
 
-    ``text`` is the dated version section, verbatim. ``unreleased`` is the
-    author's ``## [Unreleased]`` body (HTML comments removed, otherwise verbatim,
-    migration notes included); empty when there is none. It is appended to the
-    release body below the section and moved into the version's history only
-    after the publish succeeds (:func:`cmru.changelog.consume_published_notes`).
+    ``text`` is the dated version section, verbatim. CMRU folds pending notes
+    into this section in the disposable release candidate before the gate and
+    tag, so the publisher never combines a tagged section with mutable checkout
+    content.
     """
 
     version: str
     source: str
     text: str
-    unreleased: str = ""
+
+
+@dataclass(frozen=True)
+class MarkdownHeading:
+    """An H2 heading outside HTML comments and fenced code blocks."""
+
+    text: str
+    start: int
+    end: int
+
+
+def _mask_html_comments(markdown: str) -> str:
+    """Mask HTML comments outside fenced code while preserving offsets/newlines."""
+    output: list[str] = []
+    fence_char: str | None = None
+    fence_length = 0
+    in_comment = False
+    for line in markdown.splitlines(keepends=True):
+        if fence_char is not None:
+            output.append(line)
+            content = line.rstrip("\r\n")
+            if re.match(rf"^ {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$", content):
+                fence_char = None
+                fence_length = 0
+            continue
+
+        chars = list(line)
+        index = 0
+        while index < len(line):
+            if in_comment:
+                if line.startswith("-->", index):
+                    for position in range(index, index + 3):
+                        if chars[position] not in "\r\n":
+                            chars[position] = " "
+                    index += 3
+                    in_comment = False
+                    continue
+                if line[index] not in "\r\n":
+                    chars[index] = " "
+                index += 1
+                continue
+            if line.startswith("<!--", index):
+                for position in range(index, index + 4):
+                    if chars[position] not in "\r\n":
+                        chars[position] = " "
+                index += 4
+                in_comment = True
+                continue
+            index += 1
+
+        masked = "".join(chars)
+        output.append(masked)
+        content = masked.rstrip("\r\n")
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", content)
+        if opening is not None:
+            marker = opening.group(1)
+            info = opening.group(2)
+            if marker[0] != "`" or "`" not in info:
+                fence_char = marker[0]
+                fence_length = len(marker)
+    return "".join(output)
+
+
+def html_comments_outside_fenced_code(markdown: str) -> tuple[str, ...]:
+    """Return actual HTML comments, excluding comment-like text in code fences."""
+    masked = _mask_html_comments(markdown)
+    return tuple(
+        match.group(0)
+        for match in re.finditer(r"<!--.*?-->", markdown, re.DOTALL)
+        if masked[match.start():match.end()] != match.group(0)
+    )
+
+
+def html_comment_positions_outside_fenced_code(markdown: str, comment: str) -> tuple[int, ...]:
+    """Source offsets of a literal control comment outside fenced code."""
+    masked = _mask_html_comments(markdown)
+    return tuple(
+        match.start()
+        for match in re.finditer(re.escape(comment), markdown)
+        if masked[match.start():match.end()] != comment
+    )
+
+
+def markdown_h2_headings(markdown: str) -> tuple[MarkdownHeading, ...]:
+    """Return top-level H2 source sections, excluding comments and code fences."""
+    masked = _mask_html_comments(markdown)
+    headings: list[MarkdownHeading] = []
+    offset = 0
+    fence_char: str | None = None
+    fence_length = 0
+    for line in masked.splitlines(keepends=True):
+        content = line.rstrip("\r\n")
+        if fence_char is not None:
+            if re.match(rf"^ {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$", content):
+                fence_char = None
+                fence_length = 0
+            offset += len(line)
+            continue
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", content)
+        if opening is not None:
+            marker = opening.group(1)
+            info = opening.group(2)
+            if marker[0] != "`" or "`" not in info:
+                fence_char = marker[0]
+                fence_length = len(marker)
+            offset += len(line)
+            continue
+        if content.startswith("## "):
+            heading_text = content.rstrip()
+            headings.append(MarkdownHeading(heading_text, offset, offset + len(heading_text)))
+        offset += len(line)
+    return tuple(headings)
 
 
 def unreleased_span(markdown: str) -> tuple[int, int] | None:
-    """Character span of a plain ``## [Unreleased]`` body, or ``None`` if absent.
+    """Character span of the unique ``## [Unreleased]`` body, or ``None``.
 
-    The body runs to the next ``## `` heading or the history marker.
+    Near-miss and duplicate Unreleased headings refuse instead of hiding notes.
     """
-    match = _PLAIN_UNRELEASED.search(markdown)
-    if match is None:
+    candidates = []
+    for heading in markdown_h2_headings(markdown):
+        value = heading.text[3:].strip()
+        folded = value.casefold()
+        if folded == "unreleased" or folded.startswith("[unreleased]"):
+            candidates.append((heading, value == "[Unreleased]"))
+    if not candidates:
         return None
-    rest = markdown[match.end():]
+    if len(candidates) != 1 or not candidates[0][1]:
+        raise ReleaseNotesError(
+            "the changelog must have at most one exact `## [Unreleased]` heading; "
+            "fix its spelling and remove duplicates"
+        )
+    heading = candidates[0][0]
+    rest = markdown[heading.end:]
+    history_markers = [
+        position - heading.end
+        for position in html_comment_positions_outside_fenced_code(markdown, HISTORY_MARKER)
+        if position > heading.end
+    ]
     ends = [i for i in (
-        rest.find(HISTORY_MARKER),
-        *(m.start() for m in re.finditer(r"^## ", rest, re.MULTILINE)),
+        *history_markers,
+        *(item.start - heading.end for item in markdown_h2_headings(markdown)
+          if item.start > heading.start),
     ) if i >= 0]
-    return match.end(), match.end() + (min(ends) if ends else len(rest))
+    return heading.end, heading.end + (min(ends) if ends else len(rest))
 
 
 def unreleased_body(markdown: str) -> str:
@@ -88,7 +213,7 @@ def unreleased_body(markdown: str) -> str:
     span = unreleased_span(markdown)
     if span is None:
         return ""
-    return _HTML_COMMENT.sub("", markdown[span[0]:span[1]]).strip()
+    return _mask_html_comments(markdown[span[0]:span[1]]).strip()
 
 
 def declaration_for(changelog: str | None) -> str:
@@ -98,11 +223,11 @@ def declaration_for(changelog: str | None) -> str:
 
 def extract_release_section(markdown: str, version: str, *, source: str) -> ReleaseNotes:
     """Return the exact ``## [version] - date`` section, or refuse precisely."""
-    headings = list(_HEADING_LINE.finditer(markdown))
-    named = [item for item in headings if item.group(0).startswith(f"## [{version}]")]
+    headings = markdown_h2_headings(markdown)
+    named = [item for item in headings if item.text.startswith(f"## [{version}]")]
     dated = [
         item for item in named
-        if re.fullmatch(rf"## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}", item.group(0))
+        if re.fullmatch(rf"## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}", item.text)
     ]
     if len(dated) > 1:
         raise ReleaseNotesError(
@@ -112,28 +237,26 @@ def extract_release_section(markdown: str, version: str, *, source: str) -> Rele
     if not dated:
         if named:
             raise ReleaseNotesError(
-                f"{source}: the heading `{named[0].group(0)}` is not "
+                f"{source}: the heading `{named[0].text}` is not "
                 f"`## [{version}] - YYYY-MM-DD`; date the section before releasing"
             )
         found = ", ".join(
-            item.group(0).removeprefix("## ") for item in headings[:5]
+            item.text.removeprefix("## ") for item in headings[:5]
         ) or "no `## ` sections"
         raise ReleaseNotesError(
             f"{source} has no `## [{version}] - YYYY-MM-DD` section for this release "
             f"(found: {found}); CMRU never substitutes [Unreleased] or another version"
         )
-    start = dated[0].start()
-    later = [item.start() for item in headings if item.start() > start]
+    start = dated[0].start
+    later = [item.start for item in headings if item.start > start]
     section = markdown[start:min(later) if later else len(markdown)].rstrip()
-    body = _HTML_COMMENT.sub("", section.split("\n", 1)[1] if "\n" in section else "").strip()
+    body = _mask_html_comments(section.split("\n", 1)[1] if "\n" in section else "").strip()
     if not body:
         raise ReleaseNotesError(
             f"{source}: the `## [{version}]` section has no release notes; write them "
             "or declare the project without a changelog (release.changelog = false)"
         )
-    return ReleaseNotes(
-        version=version, source=source, text=section, unreleased=unreleased_body(markdown),
-    )
+    return ReleaseNotes(version=version, source=source, text=section)
 
 
 def _read_changelog(project_dir: Path, relative: str, commit: str | None) -> tuple[str, str]:
@@ -201,13 +324,11 @@ def compose_release_body(headline: str, generated: str, notes: ReleaseNotes | No
 
     ``headline`` is the opening line (the operator's supplementary
     ``--notes-env`` text or ``<prefix> <version>``); ``generated`` is the
-    install/artifact block; the curated section, when present, follows verbatim,
-    and the pending ``[Unreleased]`` notes come last, also verbatim, so the
-    generic install/usage text is always first.
+    install/artifact block; the curated section, when present, follows verbatim.
+    Pending notes are folded into that section in the candidate before its gate
+    and tag, so the tag is the release body's only notes source.
     """
     body = headline + generated
     if notes is not None:
         body += "\n\n" + notes.text
-        if notes.unreleased:
-            body += "\n\n" + notes.unreleased
     return body

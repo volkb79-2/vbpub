@@ -60,7 +60,7 @@ def test_the_exact_version_section_is_returned_verbatim_without_neighbours():
     assert notes.text.startswith("## [2.0.0] - 2026-10-13\n")
     assert notes.text.endswith('key = "value"\n```')
     assert "Repaired the ordering." in notes.text and "Migration" in notes.text
-    assert "first release" not in notes.text and notes.unreleased == ""
+    assert "first release" not in notes.text
     # exactly the document's own bytes for that section
     start = CHANGES.index("## [2.0.0]")
     assert CHANGES[start:].startswith(notes.text)
@@ -280,6 +280,12 @@ def publisher(monkeypatch, tmp_path):
     project.mkdir()
     _wheel(project)
     (project / "CHANGES.md").write_text(CHANGES, encoding="utf-8")
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.invalid")
+    _git(tmp_path, "config", "user.name", "t")
+    _git(tmp_path, "add", "demo/CHANGES.md")
+    _git(tmp_path, "commit", "-q", "-m", "release candidate")
+    _git(tmp_path, "tag", "demo-v2.0.0")
     return project, gh
 
 
@@ -302,6 +308,9 @@ def test_a_missing_or_wrong_version_section_refuses_before_anything_is_published
 ):
     project, gh = publisher
     (project / "CHANGES.md").write_text(CHANGES.replace("## [2.0.0]", "## [2.0.1]"), encoding="utf-8")
+    _git(project.parent, "add", "demo/CHANGES.md")
+    _git(project.parent, "commit", "-q", "-m", "wrong notes")
+    _git(project.parent, "tag", "-f", "demo-v2.0.0", "HEAD")
     monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
     assert _wheel_publish(project) == exit_codes.REFUSED
     assert gh.bodies == []
@@ -336,16 +345,19 @@ def test_a_dev_build_publishes_no_immutable_body_so_it_needs_no_section(publishe
 def test_the_tagged_candidates_commit_wins_over_a_later_working_tree(publisher, monkeypatch):
     project, gh = publisher
     repo = project.parent
-    _git(repo, "init", "-q", "-b", "main")
-    _git(repo, "config", "user.email", "t@t.invalid")
-    _git(repo, "config", "user.name", "t")
-    _git(repo, "add", "demo/CHANGES.md")
-    _git(repo, "commit", "-q", "-m", "candidate")
     (project / "CHANGES.md").write_text("# edited after tagging\n", encoding="utf-8")
     monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
-    monkeypatch.setenv("CMRU_RELEASE_COMMIT", _git(repo, "rev-parse", "HEAD"))
     assert _wheel_publish(project) == 0
     assert "Repaired the ordering." in gh.bodies[0][1]
+
+
+def test_direct_publish_refuses_when_no_matching_tag_binds_the_notes(publisher, monkeypatch, capsys):
+    project, gh = publisher
+    _git(project.parent, "tag", "-d", "demo-v2.0.0")
+    monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
+    assert _wheel_publish(project) == exit_codes.REFUSED
+    assert gh.bodies == []
+    assert "cannot bind release notes to demo-v2.0.0" in capsys.readouterr().err
 
 
 def test_a_retained_builds_source_commit_selects_the_notes(tmp_path, monkeypatch):
@@ -361,7 +373,7 @@ def test_a_retained_builds_source_commit_selects_the_notes(tmp_path, monkeypatch
     monkeypatch.delenv("CMRU_RELEASE_COMMIT", raising=False)
     (project / "CHANGES.md").write_text("# newer working tree\n", encoding="utf-8")
     record = {"manifest": {"source_commit": _git(tmp_path, "rev-parse", "HEAD")}}
-    notes = handlers._curated_release_notes(project, "2.0.0", record)
+    notes = handlers._curated_release_notes(project, "demo", "2.0.0", record)
     assert "Repaired the ordering." in notes.text
 
 

@@ -17,11 +17,15 @@ from typing import Any
 
 from cmru.errors import RefusedBeforeChange, StepUnavailable, UsageRefusal
 from cmru.release_notes import (
-    CONSUMED_MARKER,
     HISTORY_MARKER,
+    PENDING_NOTES_BEGIN,
+    PENDING_NOTES_END,
     ReleaseNotes,
     ReleaseNotesError,
     extract_release_section,
+    html_comments_outside_fenced_code,
+    html_comment_positions_outside_fenced_code,
+    markdown_h2_headings,
     unreleased_body,
     unreleased_span,
 )
@@ -37,70 +41,95 @@ from cmru.version import (
 _HISTORY_MARKER = HISTORY_MARKER
 _GENERATED_MARKER = "<!-- cmru: generated -->"
 _SOURCE_END_MARKER_RE = re.compile(r"<!-- cmru: source-end=([0-9a-f]{40}) -->")
-_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - \d{4}-\d{2}-\d{2}$", re.MULTILINE)
 # KI-23: a hand-authored pre-release draft is conventionally headed
 # `## [X.Y.Z] - UNRELEASED` (renamed to a dated heading and folded at release
-# time). _HEADING_RE never matches it (UNRELEASED is not a date), so it was
+# time). The dated-heading parser below does not match it, so it was
 # invisible to the collision guard below and got silently duplicated instead
 # of blocking the release -- recurred on six consecutive ciu releases.
-_UNRELEASED_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - UNRELEASED$", re.MULTILINE)
 _CONVENTIONAL_TYPE_RE = re.compile(r"^([a-z]+)(?:\([^)]+\))?!?:", re.IGNORECASE)
 
 
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+def _dated_versions(markdown: str) -> set[str]:
+    """The release versions named by real H2 headings, outside comments/code."""
+    return {
+        match.group(1)
+        for heading in markdown_h2_headings(markdown)
+        if (match := re.fullmatch(
+            r"## \[([^\]]+)\] - \d{4}-\d{2}-\d{2}", heading.text,
+        )) is not None
+    }
 
 
-def consume_unreleased_notes(markdown: str, version: str) -> str | None:
-    """Move the ``[Unreleased]`` notes into ``version``'s section; ``None`` if none.
+def _folded_notes_block(markdown: str) -> tuple[int, int, str] | None:
+    """Return the unique CMRU-owned pending-notes block in a version section."""
+    starts = list(html_comment_positions_outside_fenced_code(markdown, PENDING_NOTES_BEGIN))
+    ends = list(html_comment_positions_outside_fenced_code(markdown, PENDING_NOTES_END))
+    if not starts and not ends:
+        return None
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        raise ReleaseNotesError("the changelog has malformed or duplicate CMRU pending-note markers")
+    content_start = markdown.find("\n", starts[0])
+    if content_start < 0 or content_start > ends[0]:
+        raise ReleaseNotesError("the changelog has malformed CMRU pending-note markers")
+    content_start += 1
+    content = markdown[content_start:ends[0]].strip("\r\n")
+    if not content.strip():
+        raise ReleaseNotesError("the changelog has an empty CMRU pending-note block")
+    end = ends[0] + len(PENDING_NOTES_END)
+    return starts[0], end, content
 
-    The author's text is appended verbatim to the end of the released version's
-    section behind :data:`~cmru.release_notes.CONSUMED_MARKER`, and the
-    ``[Unreleased]`` body is cleared down to any HTML comments it already held, so
-    the file is back to the empty-and-ready state and nothing is published twice.
-    Idempotent: with nothing under ``[Unreleased]`` the document is unchanged
-    (``None``).
+
+def _render_folded_notes(notes: str) -> str:
+    return f"{PENDING_NOTES_BEGIN}\n{notes}\n{PENDING_NOTES_END}"
+
+
+def _without_folded_notes(section: str) -> str:
+    block = _folded_notes_block(section)
+    if block is None:
+        return section
+    start, end, _notes = block
+    return section[:start] + section[end:]
+
+
+def fold_unreleased_notes(markdown: str, version: str) -> str | None:
+    """Move pending notes into the release section in the disposable candidate.
+
+    This happens before the gate and tag. Promotion carries the same changelog
+    bytes that the publisher reads from the tag, while a failed release leaves
+    the source branch's ``[Unreleased]`` untouched. ``None`` means there are no
+    pending notes to move.
     """
     notes = unreleased_body(markdown)
     span = unreleased_span(markdown) if notes else None
     if span is None:
         return None
-    comments = "".join(f"{item}\n\n" for item in _HTML_COMMENT_RE.findall(markdown[span[0]:span[1]]))
+    if _folded_notes_block(markdown) is not None:
+        raise ReleaseNotesError(
+            "the changelog has both pending [Unreleased] notes and an existing folded-note block"
+        )
+    comments = "".join(
+        f"{item}\n\n"
+        for item in html_comments_outside_fenced_code(markdown[span[0]:span[1]])
+    )
     cleared = markdown[:span[0]] + "\n\n" + comments + markdown[span[1]:]
-    headings = list(re.finditer(r"^## .*$", cleared, re.MULTILINE))
+    headings = markdown_h2_headings(cleared)
     target = [
         item for item in headings
-        if re.fullmatch(rf"## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}", item.group(0))
+        if re.fullmatch(rf"## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}", item.text)
     ]
     if len(target) != 1:
         raise ReleaseNotesError(
             f"cannot move the [Unreleased] notes: the changelog has {len(target)} dated "
             f"`## [{version}]` sections (expected exactly one)"
         )
-    later = [item.start() for item in headings if item.start() > target[0].start()]
+    later = [item.start for item in headings if item.start > target[0].start]
     end = min(later) if later else len(cleared)
-    section = cleared[target[0].start():end].rstrip("\n")
+    section = cleared[target[0].start:end].rstrip("\n")
     return (
-        cleared[:target[0].start()]
-        + f"{section}\n\n{CONSUMED_MARKER}\n{notes}\n"
+        cleared[:target[0].start]
+        + f"{section}\n\n{_render_folded_notes(notes)}\n"
         + ("\n" + cleared[end:] if later else "")
     )
-
-
-def consume_published_notes(repo_root: Path, project: Any, tag: str) -> bool:
-    """Rewrite the changelog to move ``[Unreleased]`` into the published release (KI-78).
-
-    The release transaction calls this only after the publish succeeded and
-    before promotion, then commits the file, so a dry run, a failed
-    gate/build/publish, or ``--no-build`` leaves the author's notes in place.
-    Returns whether the file changed.
-    """
-    path = _validate_changelog_path(project, repo_root)
-    prefix = getattr(project, "prefix", None) or f"{project.name}-v"
-    updated = consume_unreleased_notes(path.read_text(encoding="utf-8"), tag[len(prefix):])
-    if updated is None:
-        return False
-    path.write_text(updated, encoding="utf-8")
-    return True
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -425,7 +454,8 @@ def _dropped_hand_edits(
         return []
     produced = set(_comparable_lines(_render_section(heading, old_groups, source_end=cursor)))
     # The `## [x] - date` heading line is the section's own anchor, never content.
-    body = section.split("\n", 1)[1] if "\n" in section else ""
+    section_without_pending = _without_folded_notes(section)
+    body = section_without_pending.split("\n", 1)[1] if "\n" in section_without_pending else ""
     return [line for line in _comparable_lines(body) if line not in produced]
 
 
@@ -488,27 +518,39 @@ def generate_release_changelog(
     if version is None and not groups and not _generated_outputs_changed(repo_root, project):
         return False
     heading = version if version is not None else f"source-{source_end[:12]}"
-    if heading in set(_UNRELEASED_HEADING_RE.findall(existing)):
+    headings = markdown_h2_headings(existing)
+    if any(
+        re.fullmatch(r"## \[([^\]]+)\] - UNRELEASED", item.text)
+        and re.fullmatch(r"## \[([^\]]+)\] - UNRELEASED", item.text).group(1) == heading
+        for item in headings
+    ):
         raise RefusedBeforeChange(
             f"{project.name}: {path} already has a hand-authored [{heading}] - UNRELEASED "
             "section (KI-23); CMRU refuses to create a second, un-merged heading for the "
             "same version -- fold it into the generated section by hand first, then rename "
             "its heading to match (or remove it)"
         )
-    # KI-78: a non-empty `## [Unreleased]` is no longer refused (KI-30). Its text rides
-    # the GitHub Release body and moves into the version's history after a
-    # successful publish (`consume_published_notes`), for any configured changelog
-    # path; change detection excludes that path, so the move cannot schedule a release.
-    existing_versions = set(_HEADING_RE.findall(existing))
+    # KI-78 folds pending notes into the generated release section in the
+    # disposable candidate before its gate. The tag is then the source for both
+    # the published body and the promoted changelog; failed transactions leave
+    # the source branch's notes untouched.
+    existing_versions = _dated_versions(existing)
     if heading in existing_versions:
-        expected = f"## [{heading}]"
-        # Anchor to a real heading line: prose or a comment that merely MENTIONS
-        # `## [X]` mid-line (e.g. inside the [Unreleased] notes) is not the section.
-        start = re.search(
-            rf"^{re.escape(expected)} - \d{{4}}-\d{{2}}-\d{{2}}$", existing, re.MULTILINE,
-        ).start()
-        next_heading = existing.find("\n## [", start + len(expected))
-        section = existing[start:next_heading if next_heading >= 0 else len(existing)]
+        target = [
+            item for item in headings
+            if re.fullmatch(
+                rf"## \[{re.escape(heading)}\] - \d{{4}}-\d{{2}}-\d{{2}}", item.text,
+            )
+        ]
+        if len(target) != 1:
+            raise RefusedBeforeChange(
+                f"{project.name}: {path} has {len(target)} real dated sections for "
+                f"[{heading}]; CMRU requires exactly one"
+            )
+        start = target[0].start
+        later = [item.start for item in headings if item.start > start]
+        next_heading = min(later) if later else None
+        section = existing[start:next_heading if next_heading is not None else len(existing)]
         if _GENERATED_MARKER not in section:
             raise RefusedBeforeChange(
                 f"{project.name}: {path} already has a hand-authored [{version}] section; "
@@ -544,9 +586,12 @@ def generate_release_changelog(
                 "current is kept byte-identical)."
             )
         regenerated = _render_section(heading, groups, source_end=source_end)
+        folded = _folded_notes_block(section)
+        if folded is not None:
+            regenerated = f"{regenerated.rstrip()}\n\n{_render_folded_notes(folded[2])}\n"
         new_content = (
             existing[:start] + regenerated
-            + (existing[next_heading:] if next_heading >= 0 else "")
+            + (existing[next_heading:] if next_heading is not None else "")
         )
         path.write_text(new_content, encoding="utf-8")
         return True
@@ -609,7 +654,7 @@ def backfill_release_changelog(
     source_end = _git(repo_root, "rev-parse", f"{tag}^{{commit}}").strip()
     version = tag[len(prefix):]
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    existing_versions = set(_HEADING_RE.findall(existing))
+    existing_versions = _dated_versions(existing)
     if version in existing_versions:
         return False
     previous_tag = _previous_project_tag(repo_root, prefix, tag)

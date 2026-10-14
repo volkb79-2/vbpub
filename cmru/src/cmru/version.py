@@ -631,7 +631,7 @@ def detect_changed_projects(
         )
         if last_tag:
             # The project's own changelog is release metadata whatever it is called
-            # (KI-78: the post-publish commit that consumes [Unreleased] edits it).
+            # (KI-78 stages pending notes there before publishing).
             changelog = getattr(proj, "changelog", None)
             messages = _git_log(
                 repo_root, last_tag, *paths, end_ref=end_ref,
