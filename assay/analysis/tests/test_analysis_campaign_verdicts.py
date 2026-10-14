@@ -146,6 +146,32 @@ def test_o17_f4_a_sharded_pass_verdict_is_never_a_complete_campaign(tmp_path, mo
     assert result["qualifying"] is False
 
 
+def test_a_complete_single_shard_campaign_qualifies_as_whole_plan(tmp_path, monkeypatch):
+    rows = support.make_rows(8)
+    document, _everything = _verdict_document(
+        {"killed": rows}, outcome="PASS", exit_code=0, reason=None,
+        policy={"shard_index": 0, "shard_count": 1},
+    )
+    root, head, verdict = _repository(tmp_path, document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    records = support.run_records(head, rows)
+    records.insert(1, {
+        "event": "shard", "shard_index": 0, "shard_count": 1,
+        "selected_total": len(rows),
+    })
+    support.write_records(progress, records)
+
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+
+    assert (code, err) == (0, "")
+    result = json.loads(out)
+    _validate(result)
+    assert result["status"] == "complete"
+    assert result["qualifying"] is True
+    assert result["plan"]["shard"] == "0/1"
+
+
 # ---- O18 ------------------------------------------------------------------
 
 def _six_bucket_fixture(tmp_path, monkeypatch):

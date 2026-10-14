@@ -22,12 +22,14 @@ schema_version = 1
 kind = "assay"
 assay_lane = "cmru"                 # -> assay.toml [lanes.cmru]
 environment = "tester-unified"
+resource_observer = "cgprofile"
 budget = "20m"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
 # verdict records the exact runtime assay version and source commit.
 
 [lanes.assay.resources]
+pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
@@ -42,10 +44,12 @@ memory_swap = "16g"
 [lanes.installed-wheel]
 kind = "command"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py"]
 budget = "10m"
 
 [lanes.installed-wheel.resources]
+pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
@@ -56,10 +60,12 @@ memory_swap = "16g"
 [lanes.installed-wheel-live]
 kind = "command"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py --require-live-snapshot"]
 budget = "10m"
 
 [lanes.installed-wheel-live.resources]
+pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
@@ -70,6 +76,7 @@ memory_swap = "16g"
 [lanes.ref-probe]
 kind = "command"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 argv = [
   "bash",
   "-c",
@@ -87,12 +94,14 @@ exec git update-ref "refs/cmru-gate/${branch#cmru-gate-}/ref-probe" HEAD
 budget = "5m"
 
 [lanes.ref-probe.resources]
+pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
 [lanes.coverage]
 kind = "command"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 argv = [
   "bash",
   "-c",
@@ -109,6 +118,7 @@ budget = "20m"
 artifacts = ["coverage.json", "junit-coverage.xml"]     # disclosed after every run (RG-10)
 
 [lanes.coverage.resources]
+pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
@@ -183,6 +193,7 @@ memory_swap = "16g"
 [lanes.canary]
 kind = "command"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 argv = [
   "bash",
   "-c",
@@ -200,6 +211,7 @@ budget = "20m"
 artifacts = [".assay/coverage-canary-cmru.json"]
 
 [lanes.canary.resources]
+pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
@@ -207,8 +219,11 @@ memory_swap = "16g"
 # to ciu/run-gate.toml [lanes.enroll] with the enrollment code itself (cmru
 # program 2026-10, W1-CIU-ENROLL / O4): `get.py enroll` is ciu-owned now.
 
-# The implementation/release gate: every consumer (cmru release steps, agents,
-# humans) runs THIS lane; none duplicates the sub-lane sequence. Bare-host,
+# The full implementation gate includes R2. The release step may select the
+# explicit provisional sibling below when the operator postpones that long
+# campaign; the marker is retained with release evidence. Both lanes run the
+# same ref-probe, installed-wheel, assay R0/R1/R3, coverage, and canary checks.
+# Bare-host,
 # not "host" (run-gate RG-43 estate-wide sweep, 2026-09-03): as of rev 36,
 # plain "host" is a CONTAINER default with no docker-socket mount (verified
 # live via --dry-run), and each sub-lane below launches its OWN gated
@@ -224,7 +239,20 @@ kind = "command"
 environment = "bare-host"
 argv = ["python3", "-I", "-B", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
-# The conjunction includes the 20m Assay R0/R1/R3 lane plus the retained
-# total-coverage, 7h tag-based R2 mutation, and cause-sensitive canary
-# lanes; this is advisory but must not understate the declared work.
+# The conjunction includes the 20m Assay R0/R1/R3 lane plus total coverage,
+# the 7h tag-based R2 mutation, and the cause-sensitive canary.
 budget = "14h"
+
+# Operator-approved provisional release gate (KI-79): skips ONLY the long R2
+# mutation lane; every other full-gate lane still runs. The run records the
+# tracking id, reason, commit and timestamp under .assay and emits one WARN.
+# The ordinary `gate` lane remains available for the post-release R2 campaign.
+[lanes.gate-provisional]
+kind = "command"
+environment = "bare-host"
+argv = [
+  "python3", "-I", "-B", "{worktree}/cmru/tools/run_release_gate.py",
+  "--worktree", "{worktree}", "--postpone-mutation", "KI-79",
+]
+clean_tree = false
+budget = "3h"

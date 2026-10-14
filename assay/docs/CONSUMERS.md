@@ -5432,7 +5432,9 @@ For a lane that declares R1 coverage, include `--coverage` with its declared
 artifact; without it the report stays incomplete. The artifact must be present
 in the worktree (and ignored by Git) even when the judge produced it inside a
 snapshot. `qualifying: true` identifies whole-plan scope only; it does not
-mean the verdict passed or that all evidence is complete.
+mean the verdict passed or that all evidence is complete. A `0/1` shard covers
+the full inventory and can qualify; a single result from a multi-shard campaign
+cannot qualify the combined plan.
 
 The reader is bounded: a supplied state directory may contain at most 50,000
 directory entries, 10,000 mutation records and 64 MiB of record data. The

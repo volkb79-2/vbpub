@@ -246,17 +246,76 @@ _WHEEL_BUILDER_IMAGE_ENV = "CMRU_WHEEL_BUILDER_IMAGE"
 _DOCKER_CGROUP_PARENT_ENV = "CMRU_DOCKER_CGROUP_PARENT"
 
 
-def _check_build_prerequisites() -> None:
+def _configured_wheel_builder_image(cwd: Path) -> str:
+    """Read the wheel-builder image from CMRU config enclosing *cwd*.
+
+    A direct handler invocation does not run through the release-step
+    environment injector. For registered estate projects, the nearest
+    orchestration document is authoritative; for a standalone project, its
+    own ``cmru.toml`` is authoritative. No image name is invented here.
+    """
+    from cmru.config import (
+        ORCHESTRATION_CONFIG_FILENAME,
+        PROJECT_CONFIG_FILENAME,
+        load_forge_config,
+    )
+
+    ancestors = (cwd, *cwd.parents)
+    orchestration_path = next(
+        (directory / ORCHESTRATION_CONFIG_FILENAME for directory in ancestors
+         if (directory / ORCHESTRATION_CONFIG_FILENAME).exists()),
+        None,
+    )
+    project_path = next(
+        (directory / PROJECT_CONFIG_FILENAME for directory in ancestors
+         if (directory / PROJECT_CONFIG_FILENAME).exists()),
+        None,
+    )
+    config_path = orchestration_path or project_path
+    if config_path is None:
+        return ""
+
+    forge = load_forge_config(config_path)
+    values = dict(forge.env)
+    if forge.orchestration is not None:
+        matches: list[tuple[int, str]] = []
+        for name, path in forge.orchestration.project_configs.items():
+            project_root = path.resolve().parent
+            try:
+                cwd.relative_to(project_root)
+            except ValueError:
+                continue
+            matches.append((len(project_root.parts), name))
+        if not matches:
+            raise ValueError(
+                f"{cwd} is not inside a project registered by {config_path}"
+            )
+        project_name = max(matches, key=lambda item: item[0])[1]
+        values.update(forge.projects[project_name].env)
+    elif len(forge.projects) == 1:
+        values.update(next(iter(forge.projects.values())).env)
+
+    return str(values.get(_WHEEL_BUILDER_IMAGE_ENV, "") or "").strip()
+
+
+def _resolve_wheel_builder_image(cwd: Path | None = None) -> str:
+    if _WHEEL_BUILDER_IMAGE_ENV in os.environ:
+        return os.environ[_WHEEL_BUILDER_IMAGE_ENV].strip()
+    return _configured_wheel_builder_image(cwd) if cwd is not None else ""
+
+
+def _check_build_prerequisites(cwd: Path | None = None) -> str:
     """Check the wheel-build path is usable before `cmd_wheel_build` invokes it.
     Exit 3 (PREREQ_MISSING) with an actionable message if not, rather than failing
     deep in a subprocess with a bare `No module named build` (direct mode) or a
     confusing docker error (container mode)."""
     from cmru import exit_codes
 
-    if not (os.getenv(_WHEEL_BUILDER_IMAGE_ENV) or "").strip():
+    image = _resolve_wheel_builder_image(cwd)
+    if not image:
         print(
             f"[ERROR] ${_WHEEL_BUILDER_IMAGE_ENV} is required for wheel-build. "
-            "Declare an immutable wheel-builder image in the project's cmru.toml [env]; "
+            "Set it explicitly or declare it in the enclosing CMRU configuration; "
             "CMRU refuses the non-reproducible local-Python build path.",
             file=sys.stderr,
         )
@@ -269,6 +328,7 @@ def _check_build_prerequisites() -> None:
             file=sys.stderr,
         )
         raise SystemExit(exit_codes.PREREQ_MISSING)
+    return image
 
 
 def _docker_cgroup_parent() -> str:
@@ -423,8 +483,8 @@ def _wheel_builder_env_args() -> list[str]:
 
 def cmd_wheel_build(args: argparse.Namespace) -> None:
     """Clean stale wheels + `python -m build --wheel --outdir dist` in the project."""
-    _check_build_prerequisites()
     cwd = Path(args.cwd).resolve()
+    image = _check_build_prerequisites(cwd)
     if _git_common_dir(cwd) is None:
         raise RuntimeError(
             f"Wheel build requires a Git worktree: cannot resolve git common directory for {cwd}."
@@ -435,15 +495,6 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
             stale.unlink()
     print(f"[INFO] cmru handler: building wheel in {cwd}")
 
-    # _check_build_prerequisites() has already rejected an absent image.  Read it
-    # again rather than carrying ambient state in a module global: each command
-    # invocation remains self-contained and a caller which mutates its environment
-    # between the check and launch still fails loudly.
-    image = (os.getenv(_WHEEL_BUILDER_IMAGE_ENV) or "").strip()
-    if not image:
-        raise RuntimeError(
-            "wheel-builder image disappeared after prerequisite validation; refusing build"
-        )
     cgroup_parent = _docker_cgroup_parent()
     # Run from the parent directory with the project dir as positional source;
     # the image's venv replaces the retired local-Python build path.

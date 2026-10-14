@@ -14,8 +14,9 @@
 # that relied on the pre-3.14 multiprocessing "fork" default is now explicitly
 # fork-scoped, so 3.14 is green.
 #
-# Build from the repo root using the complete command in README. That command
-# supplies the required exact Run-Gate wheel version as RUN_GATE_TESTER_VERSION.
+# Build from the repo root using `tester-unified/build-image.sh`; it supplies
+# the exact Run-Gate wheel as a named build context and verifies its version
+# and digest during the image build.
 # The repo-root .dockerignore whitelists the project sources in this context.
 FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
 
@@ -98,20 +99,19 @@ ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
 ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.3.0/cli_extended-0.3.0-py3-none-any.whl
 ARG CLI_EXTENDED_WHEEL_SHA256=a0f80f1b614bcaf81fac235aa3a7f42f20eccac06f82311a6d8d5a725eea5f50
-# Required exact wheel version for the Run-Gate source copied into this image.
-# The build caller derives it from the same candidate/release wheel it intends
-# to install into the cockpit; this value is never guessed from a source file.
+# Exact identity of the Run-Gate wheel supplied through the named build context.
+# The image installs those exact wheel bytes; the version and digest are
+# independently checked before installation and against installed metadata.
 ARG RUN_GATE_TESTER_VERSION
+ARG RUN_GATE_TESTER_WHEEL_SHA256
 RUN test -n "${RUN_GATE_TESTER_VERSION}" \
-    || { echo "RUN_GATE_TESTER_VERSION is required; derive it from the exact Run-Gate wheel used for this image" >&2; exit 1; }
+ && test -n "${RUN_GATE_TESTER_WHEEL_SHA256}" \
+    || { echo "Run-Gate version and wheel SHA-256 are required; use tester-unified/build-image.sh" >&2; exit 1; }
 RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
       > /tmp/tester-requirements.txt \
  && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
       --build-requires cmru/pyproject.toml \
       > /tmp/internal-build-requirements.txt \
- && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
-      --build-requires run-gate-project/pyproject.toml \
-      > /tmp/run-gate-build-requirements.txt \
  && case "${CLI_EXTENDED_RESOLVE}" in \
       pinned) set -- --wheel-url "${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; \
       latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; \
@@ -146,31 +146,19 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
 # candidate sources.
 RUN rm -rf /src/cmru /src/libraries/worktree /src/run-gate-project
 
-# Run-Gate has a different pinned build backend from CMRU, so build it in its
-# own throwaway venv. The caller supplies the exact candidate/release wheel
-# version; the image appends +tester.unified and checks that local identity
-# against the installed wheel below. Build and install it before CMRU so CMRU's
-# existing final-wheel oracle remains the last package installation in this
-# image.
+# Keep Run-Gate's metadata for dependency closure generation. Its code is not
+# rebuilt from this mutable context: the named context supplies the exact wheel
+# whose version and digest the caller also installs into the cockpit.
 COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
-COPY run-gate-project/README.md /src/run-gate-project/README.md
-COPY run-gate-project/run_gate.py /src/run-gate-project/run_gate.py
-COPY run-gate-project/run_gate_admission.py /src/run-gate-project/run_gate_admission.py
-
-RUN rm -rf /tmp/run-gate-build-venv /tmp/run-gate-wheels \
- && /usr/local/bin/python3.14 -m venv /tmp/run-gate-build-venv \
- && /tmp/run-gate-build-venv/bin/pip install --no-cache-dir \
-      -r /tmp/run-gate-build-requirements.txt \
- && mkdir -p /tmp/run-gate-wheels \
- && RUN_GATE_TESTER_LOCAL_VERSION="${RUN_GATE_TESTER_VERSION%%+*}+tester.unified" \
- && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_LOCAL_VERSION}" \
-      /tmp/run-gate-build-venv/bin/pip wheel --no-index --no-deps \
-        --no-build-isolation -w /tmp/run-gate-wheels /src/run-gate-project
-
-RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps \
-      /tmp/run-gate-wheels/*.whl \
- && rm -rf /tmp/run-gate-build-venv /tmp/run-gate-wheels \
-      /tmp/run-gate-build-requirements.txt /src/run-gate-project
+COPY --from=run-gate-wheel /run_gate-*.whl /tmp/run-gate-wheels/
+RUN set -eu; \
+    set -- /tmp/run-gate-wheels/run_gate-*.whl; \
+    if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then \
+      echo "named run-gate-wheel context must contain exactly one run_gate-*.whl" >&2; exit 1; \
+    fi; \
+    printf '%s  %s\n' "${RUN_GATE_TESTER_WHEEL_SHA256}" "$1" | sha256sum -c -; \
+    /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "$1"; \
+    rm -rf /tmp/run-gate-wheels /src/run-gate-project
 
 # Build tooling is ready before package sources enter the image. These copies
 # stay untouched until the single-command offline CMRU wheel build below; gate
@@ -229,7 +217,7 @@ assert version.endswith("+tester.unified"), (
 )
 run_gate_version = metadata.version("run-gate")
 expected_run_gate_version = (
-    os.environ["RUN_GATE_TESTER_VERSION"].split("+", 1)[0] + "+tester.unified"
+    os.environ["RUN_GATE_TESTER_VERSION"]
 )
 assert run_gate_version == expected_run_gate_version, (
     f"Run-Gate wheel {run_gate_version} does not match the requested image version "

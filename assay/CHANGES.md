@@ -20,6 +20,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Redact passed-through secrets from subprocess output before clipping verdict
   tails, including secrets that cross the tail boundary.
 - Emit schema-valid non-qualifying campaign summaries for sharded analyses.
+- Treat a complete `0/1` shard as whole-plan qualification because it contains
+  the full deterministic candidate inventory.
 
 <!-- cmru: release history -->
 

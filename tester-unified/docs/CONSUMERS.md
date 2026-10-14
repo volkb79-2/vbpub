@@ -5,9 +5,10 @@
 From a vbpub checkout or linked worktree, keep the gate command after `--` so
 its argv is passed without a second shell parse:
 
-Build the image with the current Run-Gate wheel version first (see the
-[image build steps](../README.md#tester-unified)); its installed CLI must match
-the Run-Gate wheel built from the same checkout.
+Build the Run-Gate wheel from the checkout, then use the supported image
+builder (see the [image build steps](../README.md#tester-unified)). The builder
+passes the exact wheel bytes through a named BuildKit context, checks its
+version and digest, and installs that wheel into the image.
 
 ```bash
 tester-unified/run --workdir run-gate-project -- run-gate selftest
@@ -23,11 +24,10 @@ the installed console script directly:
 $ run-gate enroll
 ```
 
-The image builds the Run-Gate wheel from the repository source and installs it
-into `/opt/tester-venv`; that venv is first on `PATH`. The selected checkout
-provides `run-gate.toml` and the worktree being judged. This console command is
-available to the non-root tester user and does not depend on a script path
-inside the project's directory.
+The image installs the exact Run-Gate wheel into `/opt/tester-venv`; that venv
+is first on `PATH`. The selected checkout provides `run-gate.toml` and the
+worktree being judged. This console command is available to the non-root tester
+user and does not depend on a script path inside the project's directory.
 
 Assay's offline wheel/self-hosting phases can run through the same launcher:
 
@@ -55,13 +55,12 @@ The image must be rebuilt from the same checkout after changing Assay's
 `assay/` source into the image's writable `/opt/tester-venv` and the verdict
 records the runtime version and source commit.
 
-The image's installed Run-Gate CLI is built from the source copied at image
-build time. `tester-unified:local` is a mutable tag shared across worktrees, so
-a changed `run-gate-project/` checkout can otherwise be judged by an older
-wheel. From the repository root, rebuild the image using the version
-extraction and build command in the [tester-unified README](../README.md).
-The Dockerfile requires `RUN_GATE_TESTER_VERSION`; a bare build command would
-not identify the Run-Gate source it embeds.
+`tester-unified:local` is a mutable tag shared across worktrees, so a changed
+`run-gate-project/` checkout can otherwise be judged by an older wheel. From
+the repository root, build the wheel from the selected checkout and rebuild
+the image using the supported procedure in the
+[tester-unified README](../README.md). CIU's registered lane compares the
+installed wheel modules with the selected checkout and refuses a stale image.
 
 Alternatively, add a source-match preflight to the consumer's gate. CIU runs
 that preflight before its suite and enrollment commands; the failure message

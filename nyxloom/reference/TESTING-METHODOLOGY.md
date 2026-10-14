@@ -242,15 +242,22 @@ configuration needed for cost comparisons.
 
 For replayable evidence, pass a content-addressed tester reference through
 `--tester-image registry/name@sha256:...`. Without it, the launcher builds the
-audited commit's Dockerfile and records the resulting local image ID; this is
-useful audit evidence, but a mutable base tag may prevent an identical future
-rebuild and must not be presented as reproducible.
+audited commit's Dockerfile through the installed CMRU wheel-build handler and
+records the resulting local image ID; CMRU must be installed and able to resolve
+the declared wheel-builder image from its configuration. This is useful audit
+evidence, but a mutable base tag may prevent an identical future rebuild and
+must not be presented as reproducible.
 
 Docker-socket access is separate from lifecycle authorization:
 `--allow-infra` permits trusted argv hooks, while `--allow-docker-socket` is an
 additional explicit capability. The default launcher grants neither a Docker
-socket nor a privileged container. A cgroup parent is optional and explicit via
-`--cgroup-parent` or `MUTATION_AUDIT_CGROUP_PARENT`.
+socket nor a privileged container. Every container uses a required cgroup parent:
+`--cgroup-parent` or `MUTATION_AUDIT_CGROUP_PARENT` overrides
+`CGROUP_PARENT_DEV_GATES`. Before cloning or launching containers, the host
+launcher verifies that systemd reports the selected unit as loaded; missing,
+unreadable, or misspelled units refuse before Docker can create an unbounded
+transient slice. The same parent is applied to wheel-builder, staging, worker,
+and report-relay containers.
 
 For stateful test infrastructure, prefer a unique Compose project and disposable
 named volumes per audit. When cold setup is material, a trusted hook may create a
@@ -755,8 +762,9 @@ mutation score can preserve a wrong specification.
 1. Establish an isolated, fail-closed, commit-addressed gate.
 2. Add branch-aware global coverage and changed-line coverage; prove
    serial/xdist parity.
-3. Run `./run-gate.py tester-unified` at adoption and on a cadence; run `nyxloomctl doctor`
-   after image, Docker transport, or cgroup changes.
+3. Use the installed `run-gate --list` to find the project's declared lanes,
+   then run `run-gate <lane>` at adoption and on a cadence; run
+   `nyxloomctl doctor` after image, Docker transport, or cgroup changes.
 4. Add API/message contracts, real fixtures, and independent-channel round trips
    on critical public boundaries; use resettable serialized journeys for
    lifecycle workflows. Add fail-before/pass-after evidence for bugs.

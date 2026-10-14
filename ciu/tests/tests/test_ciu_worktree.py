@@ -2943,8 +2943,24 @@ class TestWorktreeSubprocessEnvironment:
         argv = seen["argv"]
         assert argv[1] == "-c"
         assert "--allocation-lock-held" not in argv
-        assert "action_generate_env" in argv[2]
-        assert "allocation_lock_held=True" in argv[2]
+        assert "_generate_env_with_lock_held" in argv[2]
+
+    def test_locked_env_generation_keeps_cli_error_diagnostic(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        from ciu import deploy
+        from ciu.workspace_env import WorkspaceEnvError
+
+        def fail_generation(*_args, **_kwargs):
+            raise WorkspaceEnvError("workspace identity is malformed")
+
+        monkeypatch.setattr(deploy, "action_generate_env", fail_generation)
+        monkeypatch.chdir(tmp_path)
+
+        assert worktree._generate_env_with_lock_held() == 1
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == "[ERROR] workspace identity is malformed\n"
 
     def test_clean_strips_the_callers_service_profile_selection(
         self, tmp_path, monkeypatch, write_instance_facts

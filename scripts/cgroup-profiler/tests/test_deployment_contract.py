@@ -163,7 +163,7 @@ def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
         ["type=bind", "source=/host/git-common", f"target={reported_common_dir}", "readonly"],
     ]
     assert gate_run[gate_run.index("-w") + 1] == f"{worktree}/scripts/cgroup-profiler"
-    assert "docker buildx build --load" in (PROJECT_ROOT / "tools" / "gate.sh").read_text(
+    assert "tester-unified/build-image.sh" in (PROJECT_ROOT / "tools" / "gate.sh").read_text(
         encoding="utf-8"
     )
 

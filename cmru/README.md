@@ -182,7 +182,8 @@ alias limits that commit's feature or breaking bump to the matching project. For
 `feat(assay)!: change verdict format` requests a major bump for Assay when the same commit
 also touches Run-Gate. An unscoped breaking subject still affects every changed project.
 Unknown scopes keep the historical path-based behavior so a typo or new scope cannot silently
-downgrade a breaking change. See the [scope-bump design](docs/DESIGN-GUIDE.md#known-project-scopes-localize-version-bumps)
+downgrade a breaking change. Status, release tags, generated changelog headings, and release notes
+use the same configured project-scope registry. See the [scope-bump design](docs/DESIGN-GUIDE.md#known-project-scopes-localize-version-bumps)
 and [consumer example](docs/CONSUMERS.md#scoping-conventional-commits-in-a-multi-project-release).
 
 These are representative operator workflows. The complete registered grammar,
@@ -421,8 +422,11 @@ uses `--enable-docker` must also declare its nested-Docker image and that sideca
 (`CMRU_TESTER_DIND_MEMORY`, `CMRU_TESTER_DIND_CPUS`, `CMRU_TESTER_DIND_PIDS_LIMIT`). The probe
 and DinD images run privileged, so they must be `@sha256:`-pinned and already present locally:
 they are started with `--pull=never`. The stock `wheel-build`
-handler requires an explicit wheel-builder image. These are release inputs, not CMRU
-defaults; pin immutable digests in a production contract.
+handler resolves the wheel-builder image from its explicit environment or the nearest
+enclosing CMRU configuration. These are release inputs, not CMRU defaults; pin immutable
+digests in a production contract. Direct calls from a registered project resolve the
+central orchestration environment even when they run outside a release step. See the
+[configuration resolution design](docs/DESIGN-GUIDE.md#direct-wheel-build-uses-the-declared-image).
 The CPU ceiling must be a finite decimal Docker can enforce (at least `0.00001` CPUs). CMRU
 uses Docker's `--cpus` limit and refuses values below that bound before host probes. Docker
 rejects `--cpus` and `--cpu-period` together, so CMRU does not set a separate CPU period.
@@ -748,7 +752,8 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 The installed `run-gate` wheel is the canonical test entrypoint. From the
 `cmru/` directory, `run-gate --list` discovers the declared lanes and
 `run-gate gate` runs the aggregate; definitions live in `run-gate.toml`. The
-aggregate requires Run-Gate wheel SemVer `24.0.0` or later. Its preflight
+aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later;
+development and local build suffixes are rejected. Its preflight
 checks that `run-gate --version` agrees with the installed wheel's SemVer,
 enforces that version floor, and records the version in the gate manifest. See the
 [gate design](docs/DESIGN-GUIDE.md#aggregate-gate-binds-its-source-and-judge).
@@ -757,6 +762,12 @@ The
 and an import-break canary. The release `gate` adds R2 through a separate
 changed-source mutation campaign based on the highest-version published
 `cmru-v*` tag in the candidate's full ancestry.
+Every ephemeral CMRU tester lane declares contract-2 `cgprofile` resource
+observation and explicit memory and PID ceilings. The current 6.2.0 release
+candidate selects `gate-provisional`: it runs the ref, installed-wheel, Assay
+R0/R1/R3, coverage, and canary checks, then records the operator-approved R2
+deferral under KI-79. The full `gate` lane remains available for the
+post-release mutation campaign.
 The registered `gate` lane queries every CMRU release tag on origin through
 CMRU's credential-scoped Git transport, then forwards only token-free tag and
 commit facts to the `cmru-mutation` tester environment as

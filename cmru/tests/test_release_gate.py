@@ -886,9 +886,14 @@ def test_isolated_component_loader_imports_real_gate_helpers_from_tools():
 
 @pytest.mark.parametrize("cli_version, version, expected", [
     ("run-gate 24.0.0", "24.0.0", None),
-    ("run-gate 24.0.0+tester.unified", "24.0.0+tester.unified", None),
     ("run-gate 23.11.9", "23.11.9", "requires Run-Gate 24.0.0 or later"),
-    ("run-gate 24.0.0", "24.0.0.dev4+g1234567", "stable released Run-Gate wheel"),
+    ("run-gate 24.0.0", "24.0.0.dev4+g1234567", "stable Run-Gate wheel"),
+    ("run-gate 24.0.0", "24.0.0+tester.unified", "stable Run-Gate wheel"),
+    (
+        "run-gate 23.10.1.dev458+g2c9f6be37",
+        "23.10.1.dev458+g2c9f6be37",
+        "requires a stable Run-Gate wheel at SemVer 24.0.0 or later",
+    ),
     ("run-gate 24.0.1", "24.0.0", "does not match its wheel metadata"),
     ("run-gate rev 68", "24.0.0", "unrecognized SemVer identity"),
 ])

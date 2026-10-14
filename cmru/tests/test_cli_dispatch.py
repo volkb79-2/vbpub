@@ -170,6 +170,43 @@ def test_load_config_s2_schema(tmp_path):
     assert set(alpha.steps) == {"run-tests", "build", "push"}
 
 
+def test_transaction_child_retains_full_project_scope_registry(tmp_path, monkeypatch):
+    """A single-project release child still knows scopes for unselected projects."""
+    orchestration_text = MINIMAL_S2.replace(
+        'project_order = ["alpha"]', 'project_order = ["alpha", "beta"]',
+    ) + '\n[orchestration.project.beta]\nconfig = "beta/cmru.toml"\ndepends_on = []\n'
+    orchestration = _write(
+        tmp_path, orchestration_text, name="cmru.orchestration.toml",
+    )
+    alpha_source = tmp_path / "alpha" / "cmru.toml"
+    alpha_source.parent.mkdir()
+    alpha_source.write_text(PROJECT_CENTRAL, encoding="utf-8")
+    beta_source = tmp_path / "beta" / "cmru.toml"
+    beta_source.parent.mkdir()
+    beta_source.write_text(
+        PROJECT_CENTRAL.replace('id = "alpha"', 'id = "beta"')
+        .replace('prefix = "alpha-v"', 'prefix = "beta-v"')
+        .replace('scm_dist = "alpha"', 'scm_dist = "beta"'),
+        encoding="utf-8",
+    )
+
+    candidate = tmp_path / "candidate"
+    candidate_alpha = candidate / "alpha" / "cmru.toml"
+    candidate_alpha.parent.mkdir(parents=True)
+    candidate_alpha.write_text(PROJECT_CENTRAL, encoding="utf-8")
+
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    monkeypatch.setenv(cli.transaction.CHILD_ENV, "1")
+    monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(candidate))
+    monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(tmp_path))
+    monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "alpha")
+
+    _root, projects, *_rest = cli.load_config(orchestration)
+
+    assert list(projects) == ["alpha"]
+    assert projects["alpha"].known_project_names == frozenset({"alpha", "beta"})
+
+
 def test_orchestration_env_policy_is_merged_before_a_project_override(tmp_path):
     cfg = _valid_config(
         tmp_path,

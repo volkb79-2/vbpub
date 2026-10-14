@@ -277,7 +277,7 @@ class TestDetectChangedProjects(unittest.TestCase):
             }
             tags = release_cmd(
                 repo, {"run-gate": all_projects["run-gate"]},
-                known_projects=all_projects, dry_run=True,
+                known_project_names=frozenset({"assay", "run-gate"}), dry_run=True,
             )
             self.assertEqual(tags, ["run-gate-v1.0.1"])
 

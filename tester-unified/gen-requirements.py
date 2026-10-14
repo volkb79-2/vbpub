@@ -54,7 +54,7 @@ PROJECTS = (
 #: Source-backed Assay lanes install the selected assay tree into the tester
 #: venv; the Run-Gate wheel is built offline from the copied source tree. Their
 #: pinned build backends are installed in the isolated build venv.
-BUILD_REQUIRES_FOR = frozenset({"assay", "run-gate"})
+BUILD_REQUIRES_FOR = frozenset({"assay"})
 
 _NAME = re.compile(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
 

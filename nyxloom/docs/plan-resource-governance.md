@@ -16,6 +16,14 @@ that stays separate from the operator's own interactive work.
 | Host slice weights today | `interactive.slice` CPUWeight **200** (MemoryLow=2G, Max=7G) · `dev-workloads.slice` **50** (Max=14G) · `besteffort.slice` **20** (Max=12G, MemorySwapMax=24G, IO caps, systemd-oomd) |
 | Agent sessions are **processes**, not containers | `wrapper.launch_detached` → `os.fork()`. `--cgroup-parent` is a no-op for them today. This is what motivates containerising them (below). |
 
+**Admission rule:** a host script that starts Docker containers must require an
+explicit or environment-provided cgroup parent, ask systemd to confirm that
+unit is loaded, and refuse before cloning or launching when it cannot prove
+placement. Apply the selected parent to every helper container as well as the
+main worker. Docker silently accepts a misspelled parent by creating an
+unbounded transient slice, so merely passing a non-empty string is not a safety
+check.
+
 ## D-G1 — Slice hierarchy: one leaf per workload instance
 
 systemd derives the tree from dash-separated **names** — `nyxloom-gates-<id>.slice`

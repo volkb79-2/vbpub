@@ -80,7 +80,7 @@ if ! docker image inspect "$image" >/dev/null 2>&1; then
     die "gate image $image is not present.
   Build and load it using the version-pinned procedure in
   $repo_root/tester-unified/README.md
-The build requires RUN_GATE_TESTER_VERSION from the Run-Gate wheel built from that checkout."
+Use tester-unified/build-image.sh with the Run-Gate wheel built from that checkout."
   fi
   printf -v image_shell '%q' "$image"
   die "configured gate image $image_shell is not present. Build and load that selected image, or unset CGPROFILE_GATE_IMAGE to use tester-unified:local."

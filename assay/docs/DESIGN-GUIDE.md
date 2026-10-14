@@ -4796,6 +4796,11 @@ name (CD18), judges nothing, and every estimate it prints is diagnostic.
   complete, passed, or acceptable. Read `status`, `verdict`, and
   `complete_blockers` for those conclusions. A report can be
   `qualifying: true` with `status: incomplete` or a non-PASS verdict.
+- **A single shard is the whole plan.** The `0/1` selection contains every
+  candidate in the deterministic inventory, so a complete and reconciled
+  `0/1` campaign can qualify just like an unsharded campaign. A shard from a
+  multi-shard fan-out remains non-qualifying until the complete campaign is
+  assembled; its selected slice is not the whole plan.
 - **Projection contract.** For a native R2 lane, `--project-jobs` must equal
   the lane's declared `mutation.jobs`; a different worker count describes an
   execution model the lane cannot run and is refused in ordinary campaign

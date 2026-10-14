@@ -119,12 +119,22 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert gate_command == (
         "python3 -I -B {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
     )
-    assert "gate-provisional" not in gate["lanes"]
+    provisional = gate["lanes"]["gate-provisional"]
+    assert provisional["argv"][-2:] == ["--postpone-mutation", "KI-79"]
     cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
     release_steps = cmru["steps"]["run-tests"]["commands"]
     assert len(release_steps) == 1
-    assert release_steps[0]["argv"] == ["run-gate", "gate"]
-    assert "KI-62" in (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
+    assert release_steps[0]["argv"] == ["run-gate", "gate-provisional"]
+    backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
+    assert "KI-79" in backlog
+    for name in (
+        "assay", "installed-wheel", "installed-wheel-live", "ref-probe",
+        "coverage", "mutation", "canary",
+    ):
+        lane = gate["lanes"][name]
+        assert lane["resource_observer"] == "cgprofile"
+        assert lane["resources"]["pids"] == 8192
+        assert lane["resources"]["memory"] == "2g"
     release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
     for name in ("assay", "coverage", "mutation", "canary"):
         assert f'"{name}"' in release_gate

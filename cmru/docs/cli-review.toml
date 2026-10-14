@@ -1420,12 +1420,12 @@ id = "case:route:entrypoint:cmru/handler/wheel-build/minimum"
 state = "active"
 decision = "accept"
 reviewed_signature = "sha256:9695dac128fad7bbfb146ee9e6e57d0f3ddda1c5f55bc52184868c7d77350dbd"
-rationale = "--cwd PATH is the only required input; the builder image comes from CMRU_WHEEL_BUILDER_IMAGE."
+rationale = "--cwd PATH identifies the project; the builder image comes from the explicit environment or enclosing CMRU configuration."
 invocation = ["handler", "wheel-build", "--cwd", "missing-dir"]
 expected_exit_status = 3
 expected_stdout_contains = ""
 expected_stderr_contains = "CMRU_WHEEL_BUILDER_IMAGE is required"
-effects = ["Refuses on the undeclared builder image (exit 3); no container is started."]
+effects = ["Refuses when neither environment nor enclosing CMRU configuration declares the builder image (exit 3); no container is started."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/wheel-build/minimum]"]
 
 [[cases]]

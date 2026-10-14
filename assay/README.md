@@ -94,8 +94,9 @@ an installed wheel or zipapp needs nothing extra:
   candidate's runtime from fixed overhead. See the
   [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108)
   and [design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1).
-  `qualifying: true` means the report covers the whole plan; it does not mean
-  the campaign is complete or passed. State input is limited to 50,000
+  A `0/1` shard covers the full inventory and can qualify; one shard of a
+  multi-shard campaign cannot. `qualifying: true` means whole-plan scope, not
+  that the campaign is complete or passed. State input is limited to 50,000
   directory entries, 10,000 mutation records and 64 MiB total, and a JSON
   report is limited to 16 MiB. Refusal JSON is limited to 64 KiB and each
   input-derived error detail to 768 characters; long details are truncated

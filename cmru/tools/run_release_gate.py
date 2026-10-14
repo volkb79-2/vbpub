@@ -136,12 +136,27 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
     cli_version_lines = cli_version_result.stdout.strip().splitlines()
     cli_match = (
         re.fullmatch(
-            r"run-gate ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:\+tester\.unified)?)",
+            r"run-gate ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))",
             cli_version_lines[0],
         )
         if len(cli_version_lines) == 1 else None
     )
     if cli_match is None:
+        raw_line = cli_version_lines[0] if len(cli_version_lines) == 1 else ""
+        raw_version = (
+            raw_line.removeprefix("run-gate ")
+            if raw_line.startswith("run-gate ") else ""
+        )
+        if (
+            raw_version
+            and re.match(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", raw_version)
+            and any(marker in raw_version for marker in (".dev", "+", "-"))
+        ):
+            raise RuntimeError(
+                f"CMRU's release gate requires a stable Run-Gate wheel at "
+                f"SemVer {RUN_GATE_MIN_VERSION} or later; installed development/local "
+                f"build reports {raw_line!r}"
+            )
         raise RuntimeError(
             "installed run-gate --version returned an unrecognized SemVer identity: "
             f"{cli_version_result.stdout.strip()!r}"
@@ -192,12 +207,12 @@ print(json.dumps({"version": dist.version, "distribution_sha256": digest.hexdige
             "cannot bind installed Run-Gate package identity to its wheel files"
         ) from exc
     package_match = re.fullmatch(
-        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+tester\.unified)?",
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
         package_version,
     )
     if package_match is None:
         raise RuntimeError(
-            "CMRU's release gate requires a stable released Run-Gate wheel; "
+            "CMRU's release gate requires a stable Run-Gate wheel; "
             f"installed package version is {package_version!r}"
         )
     if cli_version != package_version:

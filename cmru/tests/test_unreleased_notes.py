@@ -49,6 +49,22 @@ def test_unreleased_notes_are_read_without_comments_and_not_mixed_with_the_versi
     assert notes.text.startswith("## [2.0.0] - 2026-10-13")  # the section is unchanged
 
 
+@pytest.mark.parametrize("spacing", [" ", "  ", "\t "])
+def test_unreleased_and_version_headings_accept_markdown_whitespace(spacing):
+    document = DOCUMENT.replace("## [Unreleased]", f"##{spacing}[Unreleased]")
+    document = document.replace("## [2.0.0]", f"##{spacing}[2.0.0]")
+
+    assert release_notes.unreleased_body(document) == PENDING
+    notes = release_notes.extract_release_section(document, "2.0.0", source="CHANGES.md")
+    folded = changelog.fold_unreleased_notes(document, "2.0.0")
+
+    assert notes.text.startswith("## [2.0.0] - 2026-10-13")
+    assert folded is not None
+    assert PENDING in release_notes.extract_release_section(
+        folded, "2.0.0", source="CHANGES.md",
+    ).text
+
+
 @pytest.mark.parametrize("document", [
     "## [1.0.0] - 2026-01-01\n- a\n",                                            # no section
     "## [Unreleased]\n\n## [1.0.0] - 2026-01-01\n- a\n",                         # empty

@@ -5287,3 +5287,13 @@ review, two adjacent gaps found while closing those findings, and five
 additional findings from the final follow-up review; all are folded into the
 isolated implementation and regression oracles. The exact candidate still
 needs its registered CIU gate and a final read-only review before merge.
+
+## CIU-136 — private locked env generation prints a traceback for expected workspace errors
+
+**Status:** fix and regression test in the 2026-10-14 release candidate; registered CIU gate and final review pending. Severity: low (diagnostic quality; the operation still fails closed).
+
+**Observed:** managed worktree recovery invokes `action_generate_env(..., allocation_lock_held=True)` in a private Python child so it does not reacquire the allocation lock. Unlike the public `ciu env generate` handler, that child did not catch `WorkspaceEnvError`; malformed or unreadable workspace facts therefore produced a traceback instead of the normal `[ERROR]` message.
+
+**Chosen behavior:** route the private child through a private helper that catches only `WorkspaceEnvError`, prints the same concise error form as the CLI, and returns exit 1. Unexpected programming errors still retain their traceback.
+
+**Oracle:** a focused test forces `WorkspaceEnvError` through the private helper and asserts the exact stderr line and exit code; a neighboring test verifies the allocation-lock bypass remains private and does not add a user-facing CLI flag.

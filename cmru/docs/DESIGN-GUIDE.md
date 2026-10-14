@@ -358,6 +358,16 @@ policy outside repository directories. A discovered project `cmru.toml` must be 
 by the selected central file. A nearer unregistered project file is an error instead of being
 silently routed through an outer project, and symlinked paths cannot escape the CMRU root.
 
+### Direct wheel-build uses the declared image
+
+`cmru release` injects each project's configured environment before running a build step.
+An operator can also invoke the supported `cmru handler wheel-build` verb directly before
+building a gate image. The handler therefore resolves `CMRU_WHEEL_BUILDER_IMAGE` from an
+explicit environment value or the nearest CMRU orchestration/project configuration enclosing
+the selected project directory. It does not invent `wheel-builder:local` when configuration
+is absent. This keeps bootstrap builds on the same declared builder as release builds while
+making an unconfigured project fail before Docker starts.
+
 ## Git family is separate from CMRU root
 
 An orchestration root is policy scope, not a Git checkout. A registered project
@@ -556,6 +566,17 @@ excludes every local CMRU release tag at HEAD and finds the highest-version
 published tag in HEAD's remaining full ancestry, keeping the pinned R1 base
 stable.
 
+An operator may explicitly postpone the long R2 campaign for a provisional
+release. The `gate-provisional` lane calls the same aggregate driver with a
+tracking id; the driver still runs the protected-ref probe, installed-wheel
+acceptance, Assay R0/R1/R3, total coverage, and canary. It records the skipped
+mutation lane with the candidate commit, time, reason, and tracking id under
+`.assay/mutation-postponed-cmru.json`. The full `gate` remains separate and
+continues to run R2. A provisional marker is evidence of a deferral, never a
+mutation pass. All ephemeral lanes declare contract-2 event observation and
+explicit resource ceilings so OOM or process-limit events cannot be confused
+with ordinary test outcomes.
+
 #### Mutation process-tree isolation
 
 Each mutation command starts in a fresh process group while CMRU's host
@@ -746,9 +767,10 @@ disables host Git hooks while it prepares remote baseline facts. CMRU starts its
 host release-gate driver with isolated Python (`-I -B`) so an untracked module
 beside `run_release_gate.py` cannot run before the source integrity check. The
 driver starts lane processes through the installed `run-gate` CLI, not a script
-from the mutable checkout. Before any sub-lane starts, CMRU requires the
-Run-Gate wheel at SemVer `24.0.0` or later. It verifies the CLI's reported
-SemVer against wheel metadata and records that version in the snapshot manifest.
+from the mutable checkout. Before any sub-lane starts, CMRU requires a stable Run-Gate wheel at SemVer
+`24.0.0` or later. It rejects development and local suffixes, verifies the
+CLI's reported SemVer against wheel metadata, and records that version in the
+snapshot manifest.
 Nested `run-gate` processes receive neither
 publisher-token nor extra-mount variables (`RUN_GATE_EXTRA_MOUNTS`); origin
 facts passed to mutation contain tag names and commit IDs, not credentials.
@@ -879,6 +901,10 @@ touched project's version into a major release. An unscoped subject retains its 
 effect on every changed project. An unknown scope also retains path-based behavior: treating an
 unrecognized value as narrow could turn a typo into a silent downgrade. Inspect the result with
 `cmru status`, or use `cmru release <project> --set-version <version>` for an explicit version.
+The scope registry must be identical when CMRU computes the status bump, release tag, generated
+changelog heading, and published notes. A selected-project-only registry can mistake another
+configured scope for an unknown one and give the release metadata a different version from the
+tag.
 
 ## Candidate-first promotion protects the source history
 

@@ -38,6 +38,7 @@ restatement of the technical detail below it.
 ### Fixed
 - Detect ignored files placed over tracked worktree paths before a reset, so recovery cannot silently overwrite local data.
 - Keep the allocation-lock bypass private to CIU's internal call path instead of exposing it as a user-facing CLI option.
+- Preserve the CLI's concise `[ERROR]` diagnostic when private worktree env generation runs under an already-held allocation lock; expected workspace identity errors no longer surface as Python tracebacks.
 
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->

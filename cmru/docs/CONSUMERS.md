@@ -395,8 +395,11 @@ operator commands, use the installed `cmru` script. The bundle module is a libra
 is `cmru run --step NAME`.
 
 A real `wheel-build` handler invocation requires a Git worktree and a configured
-`CMRU_WHEEL_BUILDER_IMAGE`; the dry-run example only displays accepted inputs.
-See the wheel-build contract in [the CMRU spec](SPEC.md).
+`CMRU_WHEEL_BUILDER_IMAGE`. It reads an explicit environment value first, then derives
+the value from the nearest enclosing orchestration config or standalone project config;
+it refuses if neither source declares one. The dry-run example only displays accepted
+inputs. See the wheel-build contract in [the CMRU spec](SPEC.md) and the
+[configuration resolution design](DESIGN-GUIDE.md#direct-wheel-build-uses-the-declared-image).
 The bundle contract guarantees normalized deterministic output for `xztar`;
 other supported archive formats use the platform archive writer.
 
@@ -613,7 +616,7 @@ overrides a value only where it has a genuinely different requirement). The requ
 | `CMRU_TESTER_CGROUP_PARENT` | required host gates slice (`${CGROUP_PARENT_DEV_GATES}`) |
 | `CMRU_TESTER_DIND_IMAGE` | **only** with `--enable-docker` (nested Docker daemon); privileged, so digest-pinned and local like the probe image |
 | `CMRU_TESTER_DIND_MEMORY`, `CMRU_TESTER_DIND_CPUS`, `CMRU_TESTER_DIND_PIDS_LIMIT` | **only** with `--enable-docker`: the sidecar's own memory / CPU / pids limits |
-| `CMRU_WHEEL_BUILDER_IMAGE` | required by `wheel-build` |
+| `CMRU_WHEEL_BUILDER_IMAGE` | resolved by `wheel-build` from an explicit environment value or the selected CMRU config |
 
 These reach the step through `cmru release`. **`cmru standards` checks this exact set** against
 your declared config statically, and at runtime `tester-gate` validates the same set up front
@@ -685,11 +688,20 @@ run-gate --list
 run-gate gate
 ```
 
-The CMRU aggregate requires the Run-Gate wheel SemVer `24.0.0` or later.
+The CMRU aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later.
 `run-gate --version` reports its SemVer; the CMRU gate verifies that it matches
-the installed wheel metadata and refuses development, local, or older builds
+the installed wheel metadata and refuses development, local-suffix, or older builds
 before any CMRU sub-lane starts. It records the wheel version in the snapshot
 manifest, and a resumed snapshot refuses if that identity changed.
+
+All ephemeral lanes used by the CMRU aggregate (`installed-wheel`,
+`installed-wheel-live`, `ref-probe`, `assay`, `coverage`, `mutation`, and
+`canary`) request contract-2 event evidence from `cgprofile` and declare 2 GiB
+memory and an 8192-process ceiling. The release step for the current 6.2.0
+candidate runs `run-gate gate-provisional`, which skips only the long mutation
+lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
+KI-79. Run `run-gate gate` when full R2 evidence is required; that lane includes
+the mutation campaign.
 
 The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0
@@ -924,7 +936,9 @@ feature or breaking bump. For example, `feat(assay)!: change verdict format` req
 major bump if the commit also changes Run-Gate. Use a configured project name or alias as the
 scope. An unscoped breaking subject keeps its existing effect on all changed projects. An
 unknown scope also keeps the historical path-based effect, so a typo cannot hide a breaking
-change. Check the plan with `cmru status`; use `cmru release <project> --set-version <version>`
+change. `cmru status`, release tags, generated changelog headings, and release notes all use the
+same configured project-scope registry. Check the plan with `cmru status`; use
+`cmru release <project> --set-version <version>`
 when the release requires an explicit version. See the [scope-bump design](DESIGN-GUIDE.md#known-project-scopes-localize-version-bumps).
 
 For an HTTPS GitHub `origin`, keep the repository credential in the ignored CMRU-root secret

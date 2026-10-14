@@ -3,9 +3,11 @@
 `tester-unified` is the vbpub gate environment. The devcontainer is only the
 cockpit used to launch it; pytest and the actual gate command run in the image.
 
-Build the Run-Gate wheel from the same checkout first, then use its metadata
-version to build the image. The image builds that exact source into a separate
-wheel so nested gate commands use the same Run-Gate release.
+Build the Run-Gate wheel from the same checkout first, then use the supported
+image builder to install those exact wheel bytes into the image. The wheel
+version and SHA-256 are checked during the build, and CIU's source-match
+preflight verifies that the installed wheel modules match the selected
+checkout.
 
 For a release candidate, set the exact planned SemVer before building the
 Run-Gate wheel. This 23.x-to-24.0.0 transition uses:
@@ -21,14 +23,17 @@ For an ordinary local image, the wheel's scm-derived version is sufficient:
 cmru handler wheel-build --cwd run-gate-project
 ```
 
-After either build, read the built wheel metadata and build the image:
+After either build, build and load the image from that exact wheel:
 
 ```bash
-run_gate_test_version="$(python3 tester-unified/run-gate-wheel-version.py run-gate-project/dist)"
-docker buildx build --load -f tester-unified/Dockerfile \
-  --build-arg "RUN_GATE_TESTER_VERSION=$run_gate_test_version" \
-  -t tester-unified:local .
+tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local
 ```
+
+`cmru handler wheel-build` runs the project build in CMRU's declared
+`wheel-builder` container. From this repository root, CMRU resolves the image
+from the enclosing CMRU configuration and refuses if no builder is declared;
+the configured host cgroup placement and Docker access must also be available.
+Do not substitute a local host-Python wheel build.
 
 Image contents worth knowing (KI-52 / BG-05, 2026-10):
 
@@ -71,32 +76,29 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   host. Either way it requires and verifies the sha256, and the wheel is installed
   `--no-index --no-deps` BEFORE cmru. cmru is built offline from the COPYed
   `cmru/` and `libraries/worktree/` sources (`pip wheel --no-index --no-deps
-  --no-build-isolation`, in separate throwaway venvs for their pinned build
-  backends) with a `+tester.unified` local version, and the build asserts that
+  --no-build-isolation` in a throwaway venv for its pinned build backend) with a
+  `+tester.unified` local version. Run-Gate is separately installed from the
+  exact wheel supplied by `build-image.sh`. The build asserts that
   `cli_extended` and `worktree` import from `/opt/tester-venv`, that cmru is the
   local build and that cli-extended is the release. Gate lanes put only
   `src:../libraries/worktree/src` on `PYTHONPATH`; cli_extended always comes from
   the installed release. The repo-root `.dockerignore` whitelists exactly the
-  files this needs. CMRU and Run-Gate are built as internal wheels from the
-  copied repository source and installed into `/opt/tester-venv`; `PATH` puts
-  that venv first, so its `run-gate` console script is accessible to the tester
-  user without traversing `/home/vscode` in the base image. See the
+  inputs used by the image build. CMRU is built as an internal wheel from the
+  copied repository source and installed into `/opt/tester-venv`. See the
   [design rationale](docs/DESIGN-GUIDE.md#the-installed-run-gate-cli) and
   [consumer command](docs/CONSUMERS.md#invoking-run-gate-from-a-cmru-step).
 
-- **Run-Gate is installed as a wheel.** The image builds the Run-Gate source
-  from this checkout using the exact version extracted from the candidate wheel
-  above, installs it into `/opt/tester-venv`, and verifies that
+- **Run-Gate is installed from the exact wheel.** The builder copies the single
+  wheel into a named BuildKit context, verifies its SHA-256 before and during
+  the image build, installs those bytes into `/opt/tester-venv`, and verifies that
   `run-gate --version` agrees with installed distribution metadata. Run-Gate
-  uses a separate build environment because it pins a different build backend
-  from CMRU. The image contains no project-local `run-gate.py` CLI script or
+  remains a stdlib-only package. Its source is not rebuilt from mutable files
+  inside the image. The image contains no project-local `run-gate.py` CLI script or
   revision-marker compatibility shim; it uses the installed wheel.
 
-Inside the image, Run-Gate carries the non-release local version suffix
-`+tester.unified`. The build derives that identity from the public version of
-the exact wheel built from the same checkout. This lets CMRU distinguish the
-registered test image from a released wheel while enforcing the same SemVer
-floor.
+Inside the image, Run-Gate reports the exact SemVer from the installed wheel.
+The image digest and the CIU source-match preflight bind that package identity
+to the checkout under test; no synthetic local version suffix is used.
 
 Run a gate through the canonical launcher:
 

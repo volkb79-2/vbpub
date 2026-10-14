@@ -2009,7 +2009,10 @@ def campaign(
         "schema_version": SCHEMA_VERSION,
         "analysis": "mutation_campaign",
         "status": status,
-        "qualifying": not pilot_requested and shard[0] is None,
+        # One shard covers the complete deterministic inventory. Treat it as
+        # whole-plan scope, like an unsharded run; only a multi-shard campaign
+        # needs the merged evidence before it can qualify.
+        "qualifying": not pilot_requested and (shard[0] is None or shard[1] == 1),
         "complete_blockers": sorted(blockers),
         "expected_commit": expected_commit,
         "tree": tree,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -44,6 +45,63 @@ jobs = 1
         encoding="utf-8",
     )
     return path
+
+
+def test_host_launcher_refuses_missing_cgroup_parent_before_git_or_docker(tmp_path):
+    script = TOOLS / "remote-mutation-audit-host.sh"
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    effects = tmp_path / "effects.log"
+    for name in ("git", "docker", "systemctl"):
+        tool = fake_bin / name
+        tool.write_text("#!/bin/sh\necho called >> \"$EFFECTS\"\nexit 99\n", encoding="utf-8")
+        tool.chmod(0o755)
+    env = os.environ.copy()
+    for name in (
+        "CGROUP_PARENT_DEV_GATES", "MUTATION_AUDIT_CGROUP_PARENT",
+    ):
+        env.pop(name, None)
+    env["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+    env["EFFECTS"] = str(effects)
+    result = subprocess.run(
+        [str(script), "--manifest-rel", "audit.toml", "--repo", "https://example.invalid/repo.git"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "refusing ungoverned Docker containers" in result.stderr
+    assert not effects.exists()
+
+
+def test_host_launcher_refuses_unloaded_cgroup_parent_before_clone(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    systemctl = fake_bin / "systemctl"
+    systemctl.write_text("#!/bin/sh\nprintf 'not-found\\n'\n", encoding="utf-8")
+    systemctl.chmod(0o755)
+    effects = tmp_path / "effects.log"
+    for name in ("git", "docker"):
+        tool = fake_bin / name
+        tool.write_text("#!/bin/sh\necho called >> \"$EFFECTS\"\nexit 99\n", encoding="utf-8")
+        tool.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+    env["EFFECTS"] = str(effects)
+    env["CGROUP_PARENT_DEV_GATES"] = "misspelled.slice"
+    result = subprocess.run(
+        [str(TOOLS / "remote-mutation-audit-host.sh"), "--manifest-rel", "audit.toml", "--repo", "https://example.invalid/repo.git"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 2
+    assert "not a loaded systemd unit" in result.stderr
+    assert not effects.exists()
 
 
 @pytest.mark.parametrize(

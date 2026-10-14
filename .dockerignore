@@ -13,9 +13,6 @@
 !run-gate-project
 run-gate-project/*
 !run-gate-project/pyproject.toml
-!run-gate-project/README.md
-!run-gate-project/run_gate.py
-!run-gate-project/run_gate_admission.py
 !wheel-builder
 # Nyxloom's image now builds with the repository root as context. Expose only
 # what its cli-extended WHEEL build copies (pyproject.toml + README.md + src;
@@ -55,14 +52,10 @@ tester-unified/*
 scripts/*
 !scripts/cgroup-profiler
 
-# tester-unified installs Run-Gate as an internal wheel. Keep only the wheel's
-# metadata, README and modules; tests and reports stay out of the image context.
+# tester-unified installs the exact Run-Gate wheel through a named build
+# context. Keep only pyproject metadata for the dependency closure generator.
 run-gate-project/*
 !run-gate-project/pyproject.toml
-!run-gate-project/README.md
-!run-gate-project/run-gate.py
-!run-gate-project/run_gate.py
-!run-gate-project/run_gate_admission.py
 
 # Drop generated content and the top-level test suites from the whitelisted
 # projects. Keep package-data paths named `tests` (for example a CLI skill) in

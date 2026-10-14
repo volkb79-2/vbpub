@@ -1720,15 +1720,15 @@ complete KI-51.
 
 **Oracle:** `cli-extended surface check` and `cli-extended audit --cli cmru` both exit 0 with no tolerance in the test.
 
-### KI-62 — R2 mutation campaign for 6.0.0 postponed by operator decision 2026-10-06; restore full R2 to the next release gate — *in progress, severity: major (release evidence gap)*
+### KI-62 — R2 mutation campaign for 6.0.0 postponed by operator decision 2026-10-06 — *historical deferral*
 
 **Observed:** the operator decided to merge and release cmru 6.0.0 with the R2 mutation campaign postponed. The release step (`cmru.toml` `[steps.run-tests]`) therefore runs `./run-gate.py gate-provisional`, which is `tools/run_release_gate.py --postpone-mutation KI-62`: every lane except `mutation` runs as in `gate`, and `.assay/mutation-postponed-cmru.json` (tracking id, timestamp, reason) is retained with the gate evidence next to one WARN line. The 6.0.0 release therefore has NO mutation evidence.
 
-**Current plan:** CMRU 6.2.0 restores `./run-gate.py gate` as its release step and removes the provisional lane. The full R2 gate will qualify the current release source; it does not retroactively add mutation evidence to 6.0.0. CMRU 6.1.0 has superseded 6.0.0, so a separate campaign on the old tag is no longer the release gate.
+**Disposition:** this records only the 6.0.0 deferral. The current release wave has a separate, explicit provisional gate under KI-79; KI-62 is not a standing instruction to block every later release on R2.
 
-**Oracle:** CMRU's release step names `gate`; the exact 6.2.0 release source passes the full gate with `.assay/mutation-cmru.json`; every survivor is fixed or otherwise dispositioned; and no `gate-provisional` lane remains.
+**Historical oracle:** the exact 6.0.0 release source has no mutation evidence. No retroactive rerun is planned.
 
-**2026-10-13:** the `--postpone-mutation` option of `tools/run_release_gate.py` still exists (with its WARN and retained marker) but is NOT used for the `cmru-release-fixes-20261013` wave: its qualifying gate is the full `./run-gate.py gate` including the 7h R2 lane. Removing the option stays with the 6.2.0 plan above.
+**2026-10-13:** the `--postpone-mutation` option remained available with a WARN and retained marker; the 2026-10-13 candidate used the full gate. The 2026-10-14 release wave's separate deferral is recorded in KI-79.
 
 ### KI-63 — release-gate secret-overlay inventory aborted on a foreign-owned unreadable directory (blocked the 6.0.0 release gate) — *superseded by KI-74; retained as incident history*
 
@@ -1910,11 +1910,23 @@ one-command UX without shell-specific pipe-status traps.
 
 **Status:** partly implemented in the CMRU candidate; gate evidence pending; severity: major.
 
-**Observed (review D-2, D-3, plus C-2 follow-up):** Run-Gate's common Git directory remains read-write; only hooks and `info/` receive the documented mounts. CMRU checks `run-gate --version` against installed wheel metadata, requires SemVer `24.0.0` or later, records the wheel version in the gate manifest, and protects existing tags plus monotonic `main` during each lane. New refs and unrelated existing branch refs remain writable and unguarded; fully confining those needs Run-Gate mount changes. Separately only `[lanes.mutation]` opts into `resource_observer = "cgprofile"`; the other container lanes (`installed-wheel*`, `ref-probe`, `assay`, `coverage`, `canary`) rely on `--init`, `--pids-limit` and their command surfacing its own fork/OOM failure, and the docs do not say which lanes carry container-level event evidence.
+**Observed (review D-2, D-3, plus C-2 follow-up):** Run-Gate's common Git directory remains read-write; only hooks and `info/` receive the documented mounts. CMRU checks `run-gate --version` against installed wheel metadata, requires SemVer `24.0.0` or later, records the wheel version in the gate manifest, and protects existing tags plus monotonic `main` during each lane. New refs and unrelated existing branch refs remain writable and unguarded; fully confining those needs Run-Gate mount changes. The current candidate opts all ephemeral container lanes (`assay`, `installed-wheel*`, `ref-probe`, `coverage`, `mutation`, `canary`) into `resource_observer = "cgprofile"` and declares memory/PID limits. The registered gate still needs to establish the emitted event evidence and the docs must remain aligned with the actual lane results.
 
-**Expected:** the CMRU-side stable Run-Gate floor and identity check remain in the release gate; short ephemeral lanes declare `resource_observer` plus `resources.memory`/`resources.pids` where Run-Gate supports it, with docs naming exactly which lanes receive event evidence. In a Run-Gate follow-up, make shared Git refs read-only except for exact worktree refs a lane must create; CMRU's current `main`/tag checks are detection, not mount-level prevention.
+**Expected:** the CMRU-side stable Run-Gate floor and identity check remain in the release gate; gate evidence proves each declared lane captures resource events, with docs naming exactly which lanes receive event evidence. In a Run-Gate follow-up, make shared Git refs read-only except for exact worktree refs a lane must create; CMRU's current `main`/tag checks are detection, not mount-level prevention.
 
 **Oracle:** a gate run against Run-Gate below SemVer `24.0.0`, a development/local package, or a CLI/package version mismatch refuses before any CMRU sub-lane; the manifest records the stable wheel version. Tests demonstrate container-event evidence on each declared lane and that a lane cannot rewrite/delete a release tag or move `main` non-fast-forward.
+
+### KI-79 — CMRU 6.2.0 provisional release defers the long R2 campaign
+
+**Status:** implementation in the 2026-10-14 release candidate; exact-tree gate and independent review pending; severity: major (mutation evidence gap).
+
+**Reason:** the full CMRU mutation lane is a multi-hour R2 campaign. The operator's release objective explicitly permits long R2 to run asynchronously or be postponed so short correctness, coverage, and integration gates can unblock the tool release wave.
+
+**Chosen behavior:** the 6.2.0 release step invokes `gate-provisional`. It runs every lane in the full `gate` conjunction except `mutation`, including ref-probe, installed-wheel/live, Assay R0/R1/R3, coverage, and canary. `tools/run_release_gate.py --postpone-mutation KI-79` writes a timestamped marker bound to the candidate commit under `.assay/mutation-postponed-cmru.json` and emits a WARN; that marker is deferral evidence, not an R2 pass. The full `gate` remains available for the exact tagged source after release. No survivor or mutation-quality claim is made until that campaign completes and survivors are triaged.
+
+**Follow-up:** run full R2 against the exact 6.2.0 tag and the declared nearest published baseline, triage and fix/backport any survivors, then retain the report. Restore the release step to full `gate` before the next CMRU release. This does not retroactively qualify earlier releases or close KI-62's historical 6.0.0 evidence gap.
+
+**Oracles:** the release step selects `gate-provisional`; the marker records KI-79 and the judged commit; every non-mutation lane runs and passes; the gate summary makes the R2 deferral visible; full `gate` still includes `mutation`; docs and changelog distinguish provisional release evidence from a mutation pass.
 
 ### KI-78 — `[Unreleased]` entries (migration notes included) do not reach the immutable release notes — *implemented in branch `cmru-release-fixes-20261013`, pending review and registered aggregate gate; severity: major (upgrade guidance can be lost or duplicated)*
 
@@ -1943,3 +1955,13 @@ one-command UX without shell-specific pipe-status traps.
 8. A custom changelog path folds correctly, and changelog-only commits remain excluded from project change detection.
 
 **Verification:** the registered coverage lane passed at `187366468` before this KI-78 correction. Run the registered coverage lane and aggregate `gate` on the final reviewed commit; do not use `./run-gate.py` (CMRU now invokes the installed `run-gate` CLI).
+
+### KI-80 — changelog version planning must use the same project-scope registry as the release tag
+
+**Status:** implementation and behavioral test in the 2026-10-14 candidate; exact-tree gate and independent review pending; severity: medium (release metadata mismatch).
+
+**Observed:** the release planner knows every configured project when it filters scoped Conventional Commits, but changelog planning and `cmru status` previously received only the selected project set. A commit such as `feat(other)!: change demo API` that touches `demo/` is recognized as scope `other` by the release tag planner but can be treated as an unknown scope by the changelog planner. The tag can then use a patch bump while the generated heading and published notes use a major bump.
+
+**Chosen behavior:** pass the full project registry for the selected Git family through status and changelog planning. Status, release tags, generated changelog headings, and release notes must interpret the same commit with the same recognized scope names.
+
+**Oracles:** a real-Git test with two configured projects proves that a scoped breaking commit touching the other project's path gives the same bump in `cmru status`, `pending_release_tag`, and the generated dated changelog heading. A registered CMRU gate exercises the updated release preparation and dry-run path.

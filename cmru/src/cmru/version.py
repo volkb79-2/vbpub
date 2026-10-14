@@ -288,7 +288,10 @@ _CC_SUBJECT_SCOPE = re.compile(r"^[a-z]+(?:\(([^)]+)\))?!?:")
 def _project_scope_names(name: str, project: Any) -> frozenset[str]:
     """Return the configured project names accepted in a commit scope."""
     prefix = getattr(project, "prefix", None) or f"{name}-v"
-    cwd = getattr(project, "cwd", None) or name
+    cwd = getattr(project, "cwd", None)
+    if not cwd:
+        project_root = getattr(project, "project_root", None)
+        cwd = project_root.name if isinstance(project_root, Path) else name
     candidates = {
         name,
         getattr(project, "scm_dist", None),
@@ -599,6 +602,7 @@ def detect_changed_projects(
     end_ref: str = "HEAD",
     git_auth: GitHubGitAuth | None = None,
     known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> List[Tuple[str, Any, Optional[str], str]]:
     """Return [(name, config, last_tag_or_None, bump)] for projects with changes.
 
@@ -641,12 +645,15 @@ def detect_changed_projects(
     there.
     """
     changed = []
-    scoped_projects = known_projects if known_projects is not None else projects
-    known_project_names = frozenset(
-        alias
-        for project_name, project in scoped_projects.items()
-        for alias in _project_scope_names(project_name, project)
-    )
+    if known_project_names is None:
+        scoped_projects = known_projects if known_projects is not None else projects
+        resolved_scope_names = frozenset(
+            alias
+            for project_name, project in scoped_projects.items()
+            for alias in _project_scope_names(project_name, project)
+        )
+    else:
+        resolved_scope_names = frozenset(name.lower() for name in known_project_names)
     for name, proj in projects.items():
         prefix = getattr(proj, "prefix", None) or f"{name}-v"
         paths = getattr(proj, "paths", None) or [getattr(proj, "cwd", None) or name]
@@ -694,7 +701,7 @@ def detect_changed_projects(
             bump = _bump_from_commits(
                 messages,
                 project_names=_project_scope_names(name, proj),
-                known_project_names=known_project_names,
+                known_project_names=resolved_scope_names,
             )
         else:
             bump = "patch"
@@ -715,6 +722,8 @@ def status_cmd(
     major: bool = False,
     set_version: Optional[str] = None,
     ref: str = "HEAD",
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> None:
     """Print a table of changed projects and their proposed next versions (S12.7 status).
 
@@ -725,7 +734,8 @@ def status_cmd(
     records = [
         record for record in status_records(
             repo_root, projects, minor=minor, major=major,
-            set_version=set_version, ref=ref,
+            set_version=set_version, ref=ref, known_projects=known_projects,
+            known_project_names=known_project_names,
         )
         if record["changed"]
     ]
@@ -753,6 +763,8 @@ def status_records(
     major: bool = False,
     set_version: Optional[str] = None,
     ref: str = "HEAD",
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> List[Dict[str, Any]]:
     """One record per SELECTED project (changed or not), in the given order.
 
@@ -764,7 +776,10 @@ def status_records(
     (the full next tag, or ``None`` when CMRU does not derive one or the project
     is unchanged) and ``note`` (a human explanation, or ``None``).
     """
-    changed = detect_changed_projects(repo_root, projects, end_ref=ref)
+    changed = detect_changed_projects(
+        repo_root, projects, end_ref=ref, known_projects=known_projects,
+        known_project_names=known_project_names,
+    )
     changed_by_name = {entry[0]: entry for entry in changed}
     bump_override = "major" if major else "minor" if minor else None
     records: List[Dict[str, Any]] = []
@@ -820,6 +835,7 @@ def release_cmd(
     set_version: Optional[str] = None,
     dry_run: bool = False,
     known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> List[str]:
     """Tag changed projects; return list of tags created (S12.7 release).
 
@@ -832,7 +848,8 @@ def release_cmd(
         sys.exit(1)
 
     changed = detect_changed_projects(
-        repo_root, projects, known_projects=known_projects
+        repo_root, projects, known_projects=known_projects,
+        known_project_names=known_project_names,
     )
     if project_filter:
         changed = [(n, p, lt, b) for n, p, lt, b in changed if n == project_filter]

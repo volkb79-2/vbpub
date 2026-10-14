@@ -5135,6 +5135,13 @@ class TestPointerLinkageEstate:
 
     ESTATE_DOCS = sorted(RUN_GATE_DIR.parent.glob("*/nyxloom-trove/nyxloom.toml"))
 
+    def test_canonical_testing_methodology_uses_installed_run_gate_cli(self):
+        doc = RUN_GATE_DIR.parent / "nyxloom" / "reference" / "TESTING-METHODOLOGY.md"
+        text = doc.read_text(encoding="utf-8")
+        assert "./run-gate.py" not in text
+        assert "run-gate --list" in text
+        assert "run-gate <lane>" in text
+
     @pytest.mark.parametrize("doc", ESTATE_DOCS,
                              ids=[d.parent.parent.name for d in ESTATE_DOCS])
     def test_trove_pointers_name_real_lanes(self, doc):

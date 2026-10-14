@@ -1,17 +1,26 @@
 #!/usr/bin/env python3
-"""Print the version from the single Run-Gate wheel in a dist directory."""
+"""Read version, filename and SHA-256 for one Run-Gate wheel."""
 from __future__ import annotations
 
+import hashlib
+import json
+import stat
 import sys
 from email.parser import Parser
 from pathlib import Path
 from zipfile import BadZipFile, ZipFile
 
 
-def read_wheel_version(dist_dir: Path) -> str:
+def read_wheel_identity(dist_dir: Path) -> dict[str, str]:
     wheels = sorted(dist_dir.glob("run_gate-*.whl"))
     if len(wheels) != 1:
         raise ValueError(f"expected one Run-Gate wheel in {dist_dir}, found {len(wheels)}")
+    try:
+        mode = wheels[0].lstat().st_mode
+    except OSError as exc:
+        raise ValueError(f"cannot inspect Run-Gate wheel {wheels[0]}: {exc}") from exc
+    if not stat.S_ISREG(mode):
+        raise ValueError(f"Run-Gate wheel is not a regular file: {wheels[0]}")
     try:
         with ZipFile(wheels[0]) as archive:
             metadata_paths = [
@@ -33,18 +42,31 @@ def read_wheel_version(dist_dir: Path) -> str:
         raise ValueError(
             f"wheel metadata in {wheels[0]} must name run-gate and include a version"
         )
-    return version
+    digest = hashlib.sha256()
+    with wheels[0].open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return {"version": version, "filename": wheels[0].name, "sha256": digest.hexdigest()}
+
+
+def read_wheel_version(dist_dir: Path) -> str:
+    return read_wheel_identity(dist_dir)["version"]
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print(f"usage: {Path(argv[0]).name} DIST_DIR", file=sys.stderr)
+    json_output = len(argv) == 3 and argv[2] == "--json"
+    if len(argv) not in (2, 3) or (len(argv) == 3 and not json_output):
+        print(f"usage: {Path(argv[0]).name} DIST_DIR [--json]", file=sys.stderr)
         return 2
     try:
-        print(read_wheel_version(Path(argv[1])))
+        identity = read_wheel_identity(Path(argv[1]))
     except ValueError as exc:
         print(f"run-gate wheel version: {exc}", file=sys.stderr)
         return 2
+    if json_output:
+        print(json.dumps(identity, sort_keys=True))
+    else:
+        print(identity["version"])
     return 0
 
 

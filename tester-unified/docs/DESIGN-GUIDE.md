@@ -36,12 +36,13 @@ copied Assay tree, because the judged worktree is the source of truth.
 ## The installed Run-Gate CLI
 
 Some CMRU steps invoke Run-Gate after CMRU has started tester-unified. The image
-builds a Run-Gate wheel from the selected source modules, installs its console
-script into `/opt/tester-venv`, and puts that environment first on `PATH`. The
-build requires an explicit version derived from the candidate or release wheel;
-the image verifies that `run-gate --version` reports the same installed
-metadata version. This keeps command lookup independent of the base image's
-private `/home/vscode/.venv`, which uid 1003 cannot traverse.
+installs the exact Run-Gate wheel built from the selected checkout, exposes its
+console script from `/opt/tester-venv`, and puts that environment first on
+`PATH`. The supported image builder passes one wheel through a named BuildKit
+context, verifies its digest during the build, and checks the installed
+metadata version against the wheel's version. This keeps command lookup
+independent of the base image's private `/home/vscode/.venv`, which uid 1003
+cannot traverse.
 
 The wheel supplies the command entrypoint; the bind-mounted checkout supplies
 lane configuration and judged project files. CIU's release gate also compares

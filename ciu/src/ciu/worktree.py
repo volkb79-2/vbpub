@@ -1922,6 +1922,23 @@ def _preflight_shared_infra_for_add(
     )
 
 
+def _generate_env_with_lock_held() -> int:
+    """Run full env generation under the caller's allocation lock.
+
+    The ordinary CLI converts an invalid or unreadable workspace identity into
+    a concise ``[ERROR]`` diagnostic. This private child entry point preserves
+    that behavior while avoiding a second lock acquisition.
+    """
+    from .workspace_env import WorkspaceEnvError
+    from .deploy import action_generate_env
+
+    try:
+        return action_generate_env(None, Path.cwd(), allocation_lock_held=True)
+    except WorkspaceEnvError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+
+
 def _generate_env_in(
     worktree: Path,
     *,
@@ -1964,10 +1981,8 @@ def _generate_env_in(
         # that lets an ordinary user bypass allocation serialization.
         argv = [
             sys.executable, "-c",
-            "from pathlib import Path; "
-            "from ciu.deploy import action_generate_env; "
-            "raise SystemExit(action_generate_env(None, Path.cwd(), "
-            "allocation_lock_held=True))",
+            "from ciu.worktree import _generate_env_with_lock_held; "
+            "raise SystemExit(_generate_env_with_lock_held())",
         ]
     try:
         return subprocess.run(argv, cwd=str(worktree), env=env, check=False).returncode

@@ -4,7 +4,7 @@ set -euo pipefail
 
 usage() { echo "usage: $0 --manifest-rel PATH [--repo URL] [--ref origin/main] [--reports-root DIR] [--tester-image REF@sha256:DIGEST] [--allow-infra] [--allow-docker-socket] [--max-mutants N] [--start-at N] [--shard-index N --shard-count N] [--cgroup-parent NAME] [--zfs-allowed-prefix DATASET] [--zfs-sudo]" >&2; exit 2; }
 manifest_rel=""; repo=""; ref="origin/main"; reports_root="${MUTATION_AUDIT_REPORT_ROOT:-$PWD/mutation-audit-reports}"
-allow_infra=""; allow_docker_socket=""; max_mutants=""; start_at=""; shard_index=""; shard_count=""; cgroup_parent="${MUTATION_AUDIT_CGROUP_PARENT:-}"
+allow_infra=""; allow_docker_socket=""; max_mutants=""; start_at=""; shard_index=""; shard_count=""; cgroup_parent="${MUTATION_AUDIT_CGROUP_PARENT:-${CGROUP_PARENT_DEV_GATES:-}}"
 zfs_allowed_prefix=""; zfs_sudo=""; tester_image=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -29,6 +29,13 @@ done
 [[ "$manifest_rel" != /* && "/$manifest_rel/" != *"/../"* && "$manifest_rel" != *$'\n'* ]] || { echo "manifest path must stay beneath the checkout" >&2; exit 2; }
 [[ "$ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo "unsafe --ref" >&2; exit 2; }
 [[ -z "$allow_docker_socket" || -n "$allow_infra" ]] || { echo "--allow-docker-socket requires --allow-infra" >&2; exit 2; }
+[[ -n "$cgroup_parent" ]] || { echo "set CGROUP_PARENT_DEV_GATES, MUTATION_AUDIT_CGROUP_PARENT, or --cgroup-parent; refusing ungoverned Docker containers" >&2; exit 2; }
+command -v systemctl >/dev/null 2>&1 || { echo "systemctl is required to verify cgroup parent '$cgroup_parent' is loaded" >&2; exit 2; }
+if ! cgroup_parent_load_state=$(systemctl show "$cgroup_parent" --property=LoadState --value 2>/dev/null); then
+  echo "could not verify cgroup parent '$cgroup_parent' with systemctl; refusing ungoverned Docker containers" >&2
+  exit 2
+fi
+[[ "$cgroup_parent_load_state" == loaded ]] || { echo "cgroup parent '$cgroup_parent' is not a loaded systemd unit (LoadState=${cgroup_parent_load_state:-empty}); refusing ungoverned Docker containers" >&2; exit 2; }
 [[ -n "$repo" ]] || repo=$(git config --get remote.origin.url) || { echo "no --repo and no origin remote" >&2; exit 2; }
 
 run_id=$(date -u +%Y%m%dT%H%M%SZ)-$$
@@ -87,16 +94,14 @@ if [[ -n "$tester_image" ]]; then
   image_tag="$tester_image"
   image_reference="$tester_image"
 else
+  command -v cmru >/dev/null 2>&1 || { echo "CMRU is required to build the exact Run-Gate wheel and tester image; install the CMRU CLI or pass --tester-image" >&2; exit 2; }
   owned_image_tag="tester-unified:mutation-audit-${sha:0:12}-${volume_suffix}"
   image_tag="$owned_image_tag"
   image_reference="locally-built:$owned_image_tag"
-  cmru handler wheel-build --cwd "$checkout/run-gate-project"
-  run_gate_test_version=$(python3 \
-    "$checkout/tester-unified/run-gate-wheel-version.py" \
-    "$checkout/run-gate-project/dist")
-  docker build -f "$checkout/tester-unified/Dockerfile" \
-    --build-arg "RUN_GATE_TESTER_VERSION=$run_gate_test_version" \
-    -t "$image_tag" "$checkout"
+  CMRU_DOCKER_CGROUP_PARENT="$cgroup_parent" cmru handler wheel-build --cwd "$checkout/run-gate-project"
+  "$checkout/tester-unified/build-image.sh" \
+    --wheel-dir "$checkout/run-gate-project/dist" \
+    --tag "$image_tag"
 fi
 image_id=$(docker image inspect --format '{{.Id}}' "$image_tag")
 manifest_sha256=$(sha256sum "$checkout/$manifest_rel" | awk '{print $1}')
@@ -139,23 +144,23 @@ source_volume="nyxloom-mutation-src-${volume_suffix}"
 report_volume="nyxloom-mutation-report-${volume_suffix}"
 docker volume create --label nyxloom.role=mutation-audit --label nyxloom.run="$run_id" "$source_volume" >/dev/null
 docker volume create --label nyxloom.role=mutation-audit --label nyxloom.run="$run_id" "$report_volume" >/dev/null
-stage_container=$(docker create -v "$source_volume:/remote-audit" "$image_tag" /bin/true)
+stage_container=$(docker create --cgroup-parent="$cgroup_parent" -v "$source_volume:/remote-audit" "$image_tag" /bin/true)
 docker cp "$checkout/." "$stage_container:/remote-audit"
 docker rm "$stage_container" >/dev/null
 stage_container=""
 # Docker creates named volumes as root.  The tester image deliberately runs as
 # its unprivileged test uid, which needs to make disposable worktrees and write
 # reports; fix ownership before the audit starts.
-docker run --rm --user 0 -v "$source_volume:/remote-audit" -v "$report_volume:/reports" "$image_tag" /bin/sh -lc \
+docker run --rm --cgroup-parent="$cgroup_parent" --user 0 -v "$source_volume:/remote-audit" -v "$report_volume:/reports" "$image_tag" /bin/sh -lc \
   'chown -R 1003:994 /remote-audit && chown 1003:994 /reports'
 
 docker_args=(docker create --label nyxloom.role=mutation-audit --label nyxloom.run="$run_id" -v "$source_volume:/remote-audit" -v "$report_volume:/reports" -w /remote-audit)
-[[ -n "$cgroup_parent" ]] && docker_args+=(--cgroup-parent="$cgroup_parent")
+docker_args+=(--cgroup-parent="$cgroup_parent")
 if [[ -n "$allow_docker_socket" ]]; then
   docker_args+=(-v /var/run/docker.sock:/var/run/docker.sock)
 fi
 if [[ "$zfs_enabled" == 1 ]]; then
-  docker run --rm -v "$broker_dir:/host-lifecycle:ro" "$image_tag" /bin/sh -lc 'test -S /host-lifecycle/zfs.sock' || { echo "ZFS mode must run directly on the Docker host so its broker socket is bind-visible" >&2; exit 2; }
+  docker run --rm --cgroup-parent="$cgroup_parent" -v "$broker_dir:/host-lifecycle:ro" "$image_tag" /bin/sh -lc 'test -S /host-lifecycle/zfs.sock' || { echo "ZFS mode must run directly on the Docker host so its broker socket is bind-visible" >&2; exit 2; }
   docker_args+=(-v "$broker_dir:/host-lifecycle:ro" -v "$zfs_mountpoint:$zfs_container_mount")
   docker_args+=(-e "NYXLOOM_ZFS_BROKER_TOKEN=$zfs_broker_token")
 fi
@@ -173,7 +178,7 @@ if docker start -a "$audit_container"; then
 else
   audit_rc=$?
 fi
-relay_container=$(docker create -v "$report_volume:/reports" "$image_tag" /bin/true)
+relay_container=$(docker create --cgroup-parent="$cgroup_parent" -v "$report_volume:/reports" "$image_tag" /bin/true)
 docker cp "$relay_container:/reports/." "$report_dir"
 docker rm "$relay_container" >/dev/null
 relay_container=""

@@ -103,6 +103,9 @@ class ProjectConfig:
     # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
     # no declared tool dependency (today's behaviour, unchanged).
     tool_dependencies: tuple = ()
+    # Scope names from the full orchestration registry, retained when a
+    # release child loads only selected projects from its candidate tree.
+    known_project_names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -572,6 +575,18 @@ def _bare_prefix(prefix: Optional[str]) -> str:
     return prefix[:-2] if prefix.endswith("-v") else prefix
 
 
+def _known_project_scope_names(
+    configs: Mapping[str, ProjectConfig],
+) -> frozenset[str] | None:
+    """Return the full scope registry retained on selected project configs."""
+    names = frozenset(
+        scope_name
+        for project in configs.values()
+        for scope_name in project.known_project_names
+    )
+    return names or None
+
+
 def load_config(
     config_path: Path,
     *,
@@ -597,6 +612,13 @@ def load_config(
     """
     resolved_config_path = config_path.expanduser().resolve()
     forge = load_forge_config(resolved_config_path)
+    from cmru.version import _project_scope_names
+
+    known_project_names = frozenset(
+        alias
+        for name, project in forge.projects.items()
+        for alias in _project_scope_names(name, project)
+    )
     if (
         validate_dependencies
         and resolved_config_path.name == ORCHESTRATION_CONFIG_FILENAME
@@ -726,6 +748,7 @@ def load_config(
             github_token=forge.project_tokens.get(name, forge.github.token or ""),
             tool_dependencies=tuple(parsed.tool_dependencies),
             runtime_kind=parsed.runtime_kind,
+            known_project_names=known_project_names,
         )
 
     cleanup_raw = forge.cleanup
@@ -3018,6 +3041,7 @@ def _release_projects_sequentially(
             release_cmd(
                 repo_root, {name: project}, minor=minor, major=major,
                 set_version=set_version, known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
             )
             # A file:-strategy tag commits a version bump here. Refresh the
             # durable candidate before tags or public publication are touched.
@@ -4363,6 +4387,15 @@ def _preview_release_bodies(
     from cmru.release import build_release_body
     from cmru.release_notes import ARTIFACT_PLACEHOLDER, SHA256_PLACEHOLDER
 
+    # The release plan knows every project in the Git family, including scopes
+    # that are not selected for this particular release. Changelog headings,
+    # notes and tags must interpret scoped Conventional Commits the same way.
+    plan = {
+        **plan,
+        "known_projects": configs,
+        "known_project_names": _known_project_scope_names(configs),
+    }
+
     for name in project_names:
         project = configs[name]
         if not getattr(project, "changelog", None) or not getattr(project, "git_tag", True):
@@ -4433,6 +4466,8 @@ def _prepare_release_projects(
             log_info(f"{name}: generating release history")
             changed = generate_release_changelog(
                 repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
             )
             if changed:
                 log_info(f"{name}: updated {changelog}")
@@ -4443,10 +4478,14 @@ def _prepare_release_projects(
             # from the eventual tag, never the mutable [Unreleased] source.
             notes = _pending_release_notes_or_refuse(
                 repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
             )
             _fold_pending_release_notes(repo_root, project, notes.version)
             notes = _pending_release_notes_or_refuse(
                 repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
             )
             if not _has_cmru_github_release_body(project):
                 log_info(
@@ -4459,7 +4498,8 @@ def _prepare_release_projects(
                 try:
                     candidate_label = pending_release_tag(
                         repo_root, project, minor=minor, major=major,
-                        set_version=set_version,
+                        set_version=set_version, known_projects=configs,
+                        known_project_names=_known_project_scope_names(configs),
                     ) or project.name
                 except RuntimeError:
                     pass  # the trailer is provenance only; fall back to the name
@@ -5250,14 +5290,19 @@ def _status(vargs, runtime, repo_root: Path, configs, selected_names: List[str])
     groups = transaction.project_git_family_groups(
         repo_root, [configs[name] for name in selected_names]
     )
+    all_groups = transaction.project_git_family_groups(repo_root, list(configs.values()))
     records: list = []
     for family_root, members in groups.items():
         family_names = [getattr(project, "name") for project in members]
         family_configs = _configs_for_git_family(configs, family_names, family_root)
+        known_members = all_groups.get(family_root, members)
+        known_names = [getattr(project, "name") for project in known_members]
+        known_configs = _configs_for_git_family(configs, known_names, family_root)
         family = {name: family_configs[name] for name in family_names}
         options = dict(
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-            ref=vargs.ref or "HEAD",
+            ref=vargs.ref or "HEAD", known_projects=known_configs,
+            known_project_names=_known_project_scope_names(known_configs),
         )
         if vargs.json:
             records.extend(status_records(family_root, family, **options))
@@ -5569,6 +5614,7 @@ def _release_child(
             allow_tag_ahead_of_head=vargs.allow_tag_ahead_of_head,
             git_auth=git_auth,
             known_projects=configs,
+            known_project_names=_known_project_scope_names(configs),
         )
     except ReleasePlanRefused as exc:
         log_error(str(exc))
@@ -5620,11 +5666,13 @@ def _release_child(
             repo_root, ordered, release_names,
             no_build=vargs.no_build,
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            known_projects=configs,
         )
         release_cmd(
             repo_root, selected_ordered,
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-            dry_run=True,
+            dry_run=True, known_projects=configs,
+            known_project_names=_known_project_scope_names(configs),
         )
         log_info("[DRY RUN] No tags pushed, nothing built/published.")
         return

@@ -61,9 +61,11 @@ evidence_paths = ["coverage.json"]
 # privileged host-PID systemd probe which this package gate does not need.
 # The lane's container bind-mounts this checkout so mountinfo tests exercise
 # a real mapping, and the release step runs with project_root as cwd.
-# The installed CMRU 6.1.0 executes this argv as a project step; Run-Gate
-# itself now supplies `--init` for the tester container (RG-84).
-# Run-Gate must be installed from its wheel before invoking this release step.
+# CMRU executes this argv from its active runtime; when a release wave needs
+# unreleased CMRU behavior, bootstrap from a non-editable wheel built from the
+# exact merged source (docs/RELEASE-TRANSACTIONS.md#bootstrap-when-the-release-engine-changes-in-the-same-wave).
+# Run-Gate must be installed from the exact wheel built from this candidate
+# before invoking this selftest release step.
 #
 # RG-55 wave, package P2, C2 (2026-09-12): run-gate.toml grew `assay-r1`/
 # `assay-r2`/`assay-r3`/`gate-full` (assay-based judgment, stricter and

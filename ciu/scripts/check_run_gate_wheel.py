@@ -26,9 +26,9 @@ def verify_module_file(
         raise SystemExit(
             "tester-unified's installed Run-Gate wheel does not match the "
             f"selected checkout ({module_name}); rebuild it from the selected "
-            "checkout using the version-pinned procedure in "
-            "`tester-unified/README.md` (derive RUN_GATE_TESTER_VERSION from "
-            "the wheel built from that checkout), then rerun the registered CIU gate"
+            "checkout using the supported procedure in "
+            "`tester-unified/README.md` (build the image from the exact Run-Gate "
+            "wheel for that checkout), then rerun the registered CIU gate"
         )
 
 

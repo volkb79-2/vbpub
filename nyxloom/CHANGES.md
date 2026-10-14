@@ -4,11 +4,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-<!-- Empty on purpose (cmru KI-30 refuses a tagged release while this body is non-empty).
-     Release-notes pointer for the next nyxloom release (NYX-CLIX): the wheel no longer
-     vendors cli_extended; it declares `cli-extended>=0.3.0` as a real dependency
-     (unified-adoption CX-D1). Install the released cli-extended wheel first (GitHub
-     Releases only, never PyPI; CX-D2). Details: nyxloom/nyxloom-trove/reports/MM-MOVE-REPORT.md. -->
+### Changed
+- Declare released `cli-extended>=0.3.0` as a runtime dependency instead of vendoring it; install the released cli-extended wheel first (GitHub Releases only, never PyPI). Details: `nyxloom/nyxloom-trove/reports/MM-MOVE-REPORT.md`.
+- The remote mutation-audit host launcher requires a loaded systemd cgroup parent before cloning or starting Docker containers, and applies that parent to builder, staging, worker, and report-relay containers.
 
 <!-- cmru: release history -->
 
