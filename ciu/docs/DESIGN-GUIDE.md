@@ -26,6 +26,13 @@ operator-owned and later edits are left alone. The workspace operation still
 prepares all committed roots, while ordinary stack verbs resolve the nearest
 root above their invocation directory.
 
+The schema-v4 record keeps `initial_overlay_pending` separate from the
+worktree's lifecycle state. It starts true and is cleared in the same record
+write that first publishes `ready`. Root repair can later move a ready record
+through `allocating`; if that repair is interrupted, the false marker survives
+and a retry does not mistake the repair for unfinished first-time setup. This
+is why operator edits and deletions remain intact even across a failed repair.
+
 The family registry also records generic Git worktrees whose selected base
 contains no CIU root. Their ready record has null runtime values because there
 is no CIU instance to identify; the reader accepts that exact state only when
@@ -365,7 +372,7 @@ logic at all. The operator's own file — renamed
 instance and not every checkout is a git worktree — no longer has an ongoing
 CIU writer. CIU-135 adds one narrow exception: an explicit managed lifecycle
 request may publish the initial overlay once, after persisting the exact
-payload in the schema-v3 lifecycle record. Resume can restore that payload
+payload in the schema-v4 lifecycle record. Resume can restore that payload
 only when the file is missing. A differing operator file is never replaced,
 and CIU does not check, restore, or rewrite the overlay after the allocation
 becomes ready. New overlays use mode `0644` because this is non-secret config

@@ -183,12 +183,14 @@ a slice name should verify it's actually a loaded unit first
 
 ## Manual tester-unified fallback runs — the four traps (estate-wide)
 
-**For any project with a root `run-gate.py`, use `./run-gate.py <lane>` for
-registered gates — the mechanics are tested code (`run-gate-project/SPEC.md`),
-not doctrine prose.** The manual recipe below is only a fallback for projects
-without a root runner or for a narrowly-scoped live acceptance probe that the
-registered lane cannot express; it is not a substitute for registered gate
-evidence. Adopted estate-wide
+**For any project with a registered Run-Gate lane, invoke the installed wheel's
+CLI as `run-gate <lane>` — the mechanics are tested code
+(`run-gate-project/SPEC.md`), not doctrine prose.** Use the project's owning
+workflow (such as `cmru run` or nyxloomd) when it supplies additional setup; a
+checkout-relative `run-gate.py` script is not the entrypoint. The manual recipe
+below is only a fallback for projects without a registered lane or for a
+narrowly-scoped live acceptance probe that the registered lane cannot express;
+it is not a substitute for registered gate evidence. Adopted estate-wide
 2026-08-22 (ciu, cmru, assay, nyxloom, topos, pwmcp,
 shared-ramdisk-depot-manager, plesk-mailbox-create,
 modern-debian-tools-python-debug); projects without an executable test

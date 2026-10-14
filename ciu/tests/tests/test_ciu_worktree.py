@@ -159,6 +159,43 @@ class TestInitialCheckoutResetSafety:
         with pytest.raises(ValueError, match="requires worktree record schema version 3"):
             record.to_dict()
 
+    def test_record_rejects_pending_marker_below_schema_four(self, tmp_path):
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            overlay_intent_known=True, initial_overlay_pending=True,
+        )
+        with pytest.raises(ValueError, match="requires worktree record schema version 4"):
+            record.to_dict()
+
+    @pytest.mark.parametrize(
+        ("updates", "message"),
+        [
+            (
+                {"schema_version": 4, "initial_overlay": "payload"},
+                "unknown initial overlay intent cannot carry a payload",
+            ),
+            (
+                {"schema_version": 4, "initial_overlay_pending": True},
+                "pending initial overlay recovery requires known intent",
+            ),
+            (
+                {
+                    "schema_version": 4,
+                    "state": "ready",
+                    "overlay_intent_known": True,
+                    "initial_overlay_pending": True,
+                },
+                "ready worktree record cannot have pending overlay recovery",
+            ),
+        ],
+    )
+    def test_record_writer_refuses_inconsistent_v4_overlay_state(
+        self, tmp_path, updates, message
+    ):
+        record = replace(self._record(tmp_path), **updates)
+        with pytest.raises(ValueError, match=message):
+            record.to_dict()
+
     def test_overlay_writer_accepts_known_no_overlay_intent(self, tmp_path):
         worktree._write_rendered_worktree_overlay(tmp_path, None)
         assert not (tmp_path / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists()
@@ -458,7 +495,7 @@ class TestManagedIdentityLifecycle:
     def test_create_persists_atomic_ready_record(self, tmp_repo, fake_generate_env):
         record = worktree.create(tmp_repo, "logical-one", base="main")
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
-        assert stored["schema_version"] == 3
+        assert stored["schema_version"] == 4
         assert stored["logical_name"] == "logical-one"
         assert stored["state"] == "ready"
         assert stored["runtime"]["instance_id"] == record.instance_id
@@ -556,6 +593,50 @@ class TestManagedIdentityLifecycle:
         assert generated.is_file()
         assert overlay.read_bytes() == edited
 
+    @pytest.mark.parametrize("operator_state", ["edited", "deleted"])
+    def test_interrupted_ready_root_repair_preserves_overlay_and_live_network(
+        self, tmp_repo, fake_generate_env, monkeypatch, operator_state
+    ):
+        logical_name = f"overlay-ready-repair-{operator_state}"
+        created = worktree.create(tmp_repo, logical_name, profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        edited = b'# operator edit\n[ciu.instance]\nservice_profiles = ["db"]\n'
+        if operator_state == "edited":
+            overlay.write_bytes(edited)
+        else:
+            overlay.unlink()
+        generated = created.ciu_root / "ciu.instance.generated.toml"
+        generated.unlink()
+
+        record = worktree.read_instance_record(created.record_path)
+        assert record.state == "ready"
+        assert record.initial_overlay_pending is False
+        monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: True)
+        real_finish = worktree._finish_allocation
+        monkeypatch.setattr(
+            worktree,
+            "_finish_allocation",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                KeyboardInterrupt("simulated interruption during root repair")
+            ),
+        )
+        with pytest.raises(KeyboardInterrupt, match="during root repair"):
+            worktree.ensure(tmp_repo, logical_name)
+
+        interrupted = worktree.read_instance_record(created.record_path)
+        assert interrupted.state == "allocating"
+        assert interrupted.initial_overlay_pending is False
+        monkeypatch.setattr(worktree, "_finish_allocation", real_finish)
+
+        repaired = worktree.ensure(tmp_repo, logical_name)
+
+        assert repaired.state == "ready"
+        assert generated.is_file()
+        if operator_state == "edited":
+            assert overlay.read_bytes() == edited
+        else:
+            assert not overlay.exists()
+
     def test_partial_ensure_refuses_crlf_normalized_overlay_bytes(
         self, tmp_repo, fake_generate_env
     ):
@@ -565,7 +646,10 @@ class TestManagedIdentityLifecycle:
         crlf = expected.replace(b"\n", b"\r\n")
         overlay.write_bytes(crlf)
         partial = replace(
-            created, state="recovery-required", recovery_status="env-generation-failed"
+            created,
+            state="recovery-required",
+            recovery_status="env-generation-failed",
+            initial_overlay_pending=True,
         )
         worktree._write_instance_record(partial)
 
@@ -586,7 +670,10 @@ class TestManagedIdentityLifecycle:
         overlay.unlink()
         overlay.symlink_to(target)
         partial = replace(
-            created, state="recovery-required", recovery_status="env-generation-failed"
+            created,
+            state="recovery-required",
+            recovery_status="env-generation-failed",
+            initial_overlay_pending=True,
         )
         worktree._write_instance_record(partial)
 
@@ -604,7 +691,10 @@ class TestManagedIdentityLifecycle:
         overlay.unlink()
         overlay.mkdir()
         partial = replace(
-            created, state="recovery-required", recovery_status="env-generation-failed"
+            created,
+            state="recovery-required",
+            recovery_status="env-generation-failed",
+            initial_overlay_pending=True,
         )
         worktree._write_instance_record(partial)
 
@@ -629,11 +719,37 @@ class TestManagedIdentityLifecycle:
         assert ensured.schema_version == 2
         assert legacy.record_path.read_bytes() == before
 
+    def test_ensure_refuses_incomplete_v3_record_with_ambiguous_recovery_state(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "legacy-v3-partial", profile="core")
+        legacy = replace(
+            created,
+            schema_version=3,
+            state="allocating",
+            recovery_status=None,
+        )
+        worktree._write_instance_record(legacy)
+        before = legacy.record_path.read_bytes()
+
+        with pytest.raises(worktree.WorktreeError, match="schema-v3 allocation"):
+            worktree.ensure(tmp_repo, "legacy-v3-partial")
+
+        assert legacy.record_path.read_bytes() == before
+        overlay = legacy.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        assert overlay.read_text(encoding="utf-8") == created.initial_overlay
+
     def test_ensure_repairs_ready_record_while_its_network_exists(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
         monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
-        created = worktree.create(tmp_repo, "logical-one")
+        created = worktree.create(tmp_repo, "logical-one", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        original_overlay = overlay.read_bytes()
+        legacy_v3 = replace(
+            created, schema_version=3, initial_overlay_pending=False,
+        )
+        worktree._write_instance_record(legacy_v3)
         context = worktree._ensure_shared_record(tmp_repo, created)
         shared = worktree._shared_worktree()
         shared_record = shared.read_record(context.record_path)
@@ -652,9 +768,11 @@ class TestManagedIdentityLifecycle:
         repaired = worktree.ensure(tmp_repo, "logical-one")
 
         assert repaired.state == "ready"
+        assert repaired.schema_version == 4
         assert repaired.instance_id == created.instance_id
         assert repaired.network == created.network
         assert facts.is_file()
+        assert overlay.read_bytes() == original_overlay
         assert shared.read_record(context.record_path).metadata["root_entries"]
 
     def test_ensure_constraint_mismatch_fails_closed(self, tmp_repo, fake_generate_env):
@@ -850,6 +968,7 @@ class TestManagedIdentityLifecycle:
         assert partial is not None and partial.state == "allocating"
         assert partial.overlay_intent_known is True
         assert partial.initial_overlay is not None
+        assert partial.initial_overlay_pending is True
         assert partial.fork_point_sha == _git(
             ["rev-parse", "HEAD"], partial.git_worktree_path
         ).stdout.strip()
@@ -859,6 +978,7 @@ class TestManagedIdentityLifecycle:
         monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", real_writer)
         resumed = worktree.ensure(tmp_repo, "overlay-resume")
         assert resumed.state == "ready"
+        assert resumed.initial_overlay_pending is False
         assert overlay.read_text(encoding="utf-8") == partial.initial_overlay
 
     def test_create_resume_checks_out_a_recorded_but_unpopulated_workspace(
@@ -1539,22 +1659,32 @@ class TestManagedRecordValidation:
         ("updates", "message"),
         [
             ({"overlay_intent_known": 1}, "overlay_intent_known must be boolean"),
+            ({"initial_overlay_pending": 1}, "initial_overlay_pending must be boolean"),
             ({"initial_overlay": []}, "expected a string or null"),
             (
                 {"initial_overlay": "payload", "overlay_intent_known": False},
                 "unknown intent cannot carry a payload",
             ),
+            (
+                {"initial_overlay_pending": True, "overlay_intent_known": False},
+                "pending recovery requires known intent",
+            ),
+            (
+                {"initial_overlay_pending": True},
+                "ready record cannot have pending recovery",
+            ),
         ],
     )
-    def test_schema_three_rejects_malformed_overlay_intent(
+    def test_schema_four_rejects_malformed_overlay_intent(
         self, tmp_path, updates, message
     ):
         raw = self.raw(tmp_path)
         raw.update(
-            schema_version=3,
+            schema_version=4,
             lease=None,
             initial_overlay=None,
             overlay_intent_known=True,
+            initial_overlay_pending=False,
         )
         raw.update(updates)
         with pytest.raises(worktree.WorktreeError, match=message):

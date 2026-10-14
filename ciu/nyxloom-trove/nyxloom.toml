@@ -55,7 +55,7 @@ docs_dir = "docs"
 # this entry owns only scheduling policy. run-gate resolves the slice from
 # $CGROUP_PARENT_DEV_GATES, dual-mounts the repo, and runs the selected
 # assay lane (assay.toml [lanes.ciu]) in tester-unified.
-argv = ["bash", "-c", "cd {worktree}/ciu && exec ./run-gate.py --worktree {worktree} ciu"]
+argv = ["bash", "-c", "cd {worktree}/ciu && exec run-gate ciu --worktree {worktree}"]
 phase = "implementation"
 asserts = ["tests-pass", "changed-line-coverage", "canary-verified", "assay-verdict"]
 timeout_seconds = 57600

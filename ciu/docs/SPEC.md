@@ -285,7 +285,7 @@ requirements are marked *(withdrawn)*.
   request its initial `ciu.instance.service_profiles` and
   `ciu.instance.shared_infra` values. CIU validates and renders the complete
   payload before allocation side effects, then checkpoints those exact bytes
-  in the schema-v3 worktree record before publishing the file. If allocation
+  in the schema-v4 worktree record before publishing the file. If allocation
   is interrupted, `ensure` may restore a missing file from that checkpoint;
   it accepts an existing file only when it is a regular file with identical
   contents, and refuses symlinks, non-regular files and operator edits rather
@@ -5147,12 +5147,15 @@ reaping is only ever as safe as the ownership signal it consults).
 Managed `create` and `adopt` validate and render their complete requested
 initial `ciu.global.instance.toml.j2` payload before mutating Git worktree
 state, the shared workspace record, the CIU instance record, or Git excludes.
-The CIU instance record is written as schema v3 and records both the exact
-rendered payload (`initial_overlay`, or `null` when no overlay was requested)
-and `overlay_intent_known: true` before the overlay is published. Schema v3
-also carries the `lease` field introduced in S16.9. Schemas v1 and v2 remain
-readable; a v1/v2 record that still needs allocation recovery is refused
-because it cannot prove whether an initial overlay was requested.
+The CIU instance record is written as schema v4 and records the exact rendered
+payload (`initial_overlay`, or `null` when no overlay was requested),
+`overlay_intent_known: true`, and `initial_overlay_pending: true` before the
+overlay is published. Schema v3 added initial-overlay intent to the
+lease-aware schema-v2 record; schema v4 adds the pending marker. Ready v1-v3
+records remain readable. An incomplete v1/v2 record is refused because it
+cannot prove whether an initial overlay was requested. An incomplete v3 record
+is also refused because it cannot distinguish first-allocation recovery from
+an interrupted repair after readiness.
 For a newly created worktree, CIU then checks out the requested base and
 persists the resulting fork point before publishing the overlay. If the process
 stops before publication, `ensure` resumes from that recorded checkout instead
@@ -5162,20 +5165,26 @@ checkout and never resets it. If a process stops before the first checkout,
 matches and the worktree is clean or wholly unpopulated; local changes or an
 ambiguous checkout are preserved and refused.
 
-When `ensure` resumes an incomplete schema-v3 allocation, it restores a
-missing recorded overlay with a same-directory atomic no-clobber publish. If
-an overlay already exists, CIU accepts it only when it is a regular file whose
-contents exactly match the recorded payload. A symlink, non-regular file, or
-different contents is preserved and reported as a refusal. A schema-v3 record
-with known `null` intent means no initial overlay was requested; `ensure` does
-not create one. A unique ignored staging file is linked into place only after
-its contents are complete; a hard interruption before publication leaves no
-partial destination file. CIU publishes this non-secret TOML at mode `0644`
-so a container process with a different uid can read it. Once the worktree is
-`ready`, the overlay is operator-owned: the checkpoint is recovery evidence
-for an interrupted allocation, not an ongoing policy that overwrites later
-operator edits. Later `ensure` calls do not check or restore the initial
-payload once the allocation has reached `ready`.
+When `ensure` resumes an incomplete schema-v4 allocation with
+`initial_overlay_pending: true`, it restores a missing recorded overlay with a
+same-directory atomic no-clobber publish. If an overlay already exists, CIU
+accepts it only when it is a regular file whose contents exactly match the
+recorded payload. A symlink, non-regular file, or different contents is
+preserved and reported as a refusal. A schema-v3 or v4 record with known `null`
+intent means no initial overlay was requested; `ensure` does not create one. A
+unique ignored staging file is linked into place only after its contents are
+complete; a hard interruption before publication leaves no partial destination
+file. CIU publishes this non-secret TOML at mode `0644` so a container process
+with a different uid can read it.
+
+The pending marker is cleared in the same record write that first publishes
+the allocation as `ready`. It remains clear if a later repair moves the record
+through `allocating`; a retry repairs generated facts but does not replay the
+original overlay. This keeps the overlay operator-owned after first readiness,
+including when a later repair is interrupted. A ready schema-v4 record with
+pending recovery is malformed and is refused. A ready schema-v3 record that
+needs root repair is upgraded to schema v4 with recovery already marked
+complete before its lifecycle state changes.
 
 `adopt` with no overlay flags records known `null` intent and preserves any
 pre-existing operator overlay. If adopt flags would create an overlay where

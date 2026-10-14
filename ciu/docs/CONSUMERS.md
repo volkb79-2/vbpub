@@ -68,7 +68,7 @@ problem is corrected, retry with `ciu worktree ensure NAME`.
 
 When you pass initial shared-infrastructure options, CIU validates and renders
 the local overlay before allocating the checkout, then saves the exact payload
-in the schema-v3 worktree record before writing the file. For example:
+in the schema-v4 worktree record before writing the file. For example:
 
 ```console
 $ ciu worktree create pkg-under-test --base main \
@@ -86,6 +86,13 @@ be read by a test or application container running under a different uid. For
 an adopted checkout, omitting overlay options preserves any existing overlay.
 Passing options that would create an overlay where one already exists refuses
 before CIU records ownership.
+
+The one-time recovery marker is cleared when the first allocation becomes
+`ready`. If a later root repair is itself interrupted, the next `ensure` still
+repairs generated facts but does not replay the original overlay, so operator
+edits and deletions remain in place. Ready schema-v3 records remain readable;
+an incomplete schema-v3 record is refused because it predates this marker and
+cannot prove whether it represents initial allocation or an interrupted repair.
 
 If root preparation fails, keep the checkout and retry through CIU:
 
@@ -964,29 +971,31 @@ reset); plain `ciu clean` preserves it. `ciu migration-check` reports a
 
 ## 12. The implementation gate (Assay-backed, S18)
 
-CIU's gate is judged by Assay installed from the **selected vbpub worktree**.
-There is no consumer-owned pyz or fixed version to refresh. You can reproduce
-the judgment half locally (the container orchestration belongs to Run-Gate,
-invoked through its installed wheel's `run-gate` CLI):
+CIU's implementation lane is judged by Assay installed from the **selected
+vbpub worktree**. There is no consumer-owned pyz or fixed version to refresh.
+Run the registered lane through the installed Run-Gate CLI from the `ciu/`
+directory of the worktree you want tested:
 
-```bash
-# 1. Install the selected worktree's source, with no dependency resolution.
-python3 -m pip install --no-deps --no-build-isolation --editable ./assay
-
-# 2. Inspect the declared lane (validates config, runs nothing).
-assay lanes --file ciu/assay.toml
-
-# 3. Run the lane; Assay snapshots the commit, runs the full suite at 100%
-#    line+branch, judges the changed-line floor (R1), runs native mutation
-#    (R2), and runs the import-break canary (R3).
-#    R2 liveness bounds stalled pytest candidates; --maxfail=1 stops a failing
-#    mutant at its first failed test without shortening a successful full run.
-#    The verdict goes OUTSIDE the judged tree (gitignored .assay/).
-cd ciu && mkdir -p .assay && \
-  assay run ciu \
-    --file assay.toml --verdict-json .assay/verdict-ciu.json \
-    --resume --progress .assay/progress-ciu.jsonl
+```console
+$ run-gate ciu
 ```
+
+Run-Gate starts the declared `tester-unified` environment, installs Assay from
+that selected worktree, and invokes the lane with resume and progress reporting.
+To target a different checkout explicitly, add `--worktree /absolute/path/to/vbpub`.
+For the full CIU release-test sequence, including the isolated real-system
+enrollment lane, use the registered CMRU workflow:
+
+```console
+$ cmru run ciu --step run-tests
+```
+
+The Assay lane runs the full suite with the configured coverage floor,
+changed-line judgment (R1), native mutation (R2), and import-break canary
+(R3). R2 liveness bounds stalled pytest candidates; `--maxfail=1` stops a
+failing mutant at its first failed test without shortening a successful full
+run. The verdict and progress stream live outside the judged tree in gitignored
+`.assay/`.
 
 Contract notes for a consumer of the gate:
 

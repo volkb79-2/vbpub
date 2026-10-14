@@ -5078,6 +5078,13 @@ to restore it and can finish with the requested selection absent.
   allocation record before publishing the overlay. This uses worktree record
   schema v3; v1/v2 remain readable, but a partial legacy record without
   overlay-intent evidence is refused rather than treated as an empty request.
+- Persist a separate `initial_overlay_pending` marker. It starts true and is
+  cleared atomically with the first `ready` record. A later ready-root repair
+  may temporarily set lifecycle state to `allocating`; retries must preserve
+  the cleared marker so they cannot replay the initial payload over later
+  operator edits or deletion. The marker is schema v4; ready v3 records remain
+  readable, but incomplete v3 records are refused because their recovery
+  phase cannot be inferred safely.
 - When `ensure` resumes an incomplete allocation, restore a missing recorded
   payload atomically. Accept an existing regular file only when it matches the
   recorded payload exactly; refuse symlinks, non-regular files and conflicting
@@ -5095,21 +5102,27 @@ checkout and all records unchanged. (3) Interrupt after the CIU record
 checkpoint but before overlay publication, then `ensure`: the exact requested
 bytes are restored before the worktree becomes ready. (4) Edit or replace the missing overlay
 before recovery `ensure`: CIU refuses and preserves the operator's file. (5) A
-partial v1/v2 record without saved overlay intent refuses before changing the
-checkout. (6) A file created between preflight and publish is never
+partial v1/v2 record without saved overlay intent and an incomplete v3 record
+without a recovery-phase marker refuse before changing the checkout. (6) A file
+created between preflight and publish is never
 overwritten. (7) After readiness, `ensure` preserves operator edits and does
-not recreate an operator-deleted overlay. Controlled wrong implementations
-that write the record first, guess an absent overlay, or use `os.replace`
+not recreate an operator-deleted overlay. (8) Interrupt a ready-root repair
+after it moves the record to `allocating`, then retry `ensure`: it repairs
+generated facts while preserving both an operator-edited overlay and an
+operator-deleted overlay, even if that worktree's recorded network remains
+live. Controlled wrong implementations that write the record first, guess an
+absent overlay, replay an initial overlay after readiness, or use `os.replace`
 must fail the corresponding oracle.
 
 **File list.** `src/ciu/worktree.py`; the owning worktree lifecycle tests;
 the root `.gitignore`, `ciu/.gitignore`, and the shipped `.gitignored.ciu`
 rules for interrupted atomic-writer scratch;
 `docs/SPEC.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `docs/CONFIG.md`,
-`docs/CIU.md`, and `README.md`; this backlog entry; and the next CIU
-`CHANGES.md` release-note section. The three adopter-facing documents (README,
-DESIGN-GUIDE, CONSUMERS) are required before merge, alongside the normative
-spec and configuration reference.
+`docs/CIU.md`, and `README.md`; the root `AGENTS.md` Run-Gate invocation rule;
+`libraries/worktree/SPEC.md` and `libraries/worktree/CONSUMERS.md` CLI examples;
+this backlog entry; and the next CIU `CHANGES.md` release-note section. The
+three adopter-facing documents (README, DESIGN-GUIDE, CONSUMERS) are required
+before merge, alongside the normative spec and configuration reference.
 
 **Disposition:** OPEN. Implementation is in a fresh CIU-managed worktree and
 has not yet passed its registered gate or independent review.

@@ -136,11 +136,15 @@ configuration authority.
 
 > **Amended 2026-10-13 (CIU-135).** `create` and `adopt` validate and render
 > the complete initial overlay before allocation mutations, then persist the
-> exact payload in worktree record schema v3 before publishing it. `ensure`
-> restores that payload only for an interrupted allocation whose file is
-> missing. A conflicting, unsafe, or operator-edited file is preserved and
-> causes refusal. Once the worktree is ready, the overlay remains operator
-> state and the recovery checkpoint does not authorize further writes.
+> exact payload in worktree record schema v4 before publishing it. `ensure`
+> restores that payload only while the durable `initial_overlay_pending`
+> marker is true. The marker is cleared in the same record write that first
+> publishes the worktree as ready and remains clear through later root repair,
+> including an interrupted repair whose lifecycle state temporarily returns
+> to `allocating`. A conflicting, unsafe, or operator-edited file during
+> initial recovery is preserved and causes refusal. Once the first ready state
+> is published, the overlay remains operator state and the recovery checkpoint
+> does not authorize further writes.
 
 ## D-012 — CIU-94/CIU-95 (per-container `memory.min` guaranteed-slice
 mechanism) ships in v7 now, not deferred to ciu8/v8 (2026-09-08)
