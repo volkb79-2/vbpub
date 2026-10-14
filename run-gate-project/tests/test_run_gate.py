@@ -5170,6 +5170,12 @@ class TestPointerLinkageEstate:
         assert gate_doc["lanes"]["selftest"]["resources"] == {
             "memory": "1g", "memory_swap": "16g", "cpus": "3",
         }
+        assert gate_doc["lanes"]["assay-r1"]["resources"] == {
+            "memory": "2g", "memory_swap": "16g",
+        }
+        assert gate_doc["lanes"]["assay-r3"]["resources"] == {
+            "memory": "1g", "memory_swap": "16g",
+        }
         commands = cmru_doc["steps"]["run-tests"]["commands"]
         assert len(commands) == 2
         assert commands[0]["argv"] == ["python", "tools/release_candidate.py", "prepare"]

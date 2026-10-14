@@ -90,6 +90,10 @@ environment = "tester-unified"
 clean_tree = true
 budget = "30m"
 
+[lanes.assay-r1.resources]
+memory = "2g"
+memory_swap = "16g"
+
 # Mutation (R2). Run in tester-unified with its private cgroup namespace;
 # the observer-only cgprofile socket supplies the hidden host ancestry needed
 # by Assay B145 without exposing the daemon control socket or using
@@ -133,6 +137,10 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/run-gate-project && exec tools/canary-run.sh"]
 budget = "15m"
+
+[lanes.assay-r3.resources]
+memory = "1g"
+memory_swap = "16g"
 
 # The implementation/release gate for THIS project's assay lanes: proves
 # selftest AND the r1/r3 pair together. r2 (mutation, up to 4h) is

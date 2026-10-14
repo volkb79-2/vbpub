@@ -203,6 +203,13 @@ def test_observer_r2_serializes_mutants_that_share_one_tester_cgroup():
     assert assay["lanes"]["r2"]["judge"]["mutation"]["jobs"] == 1
 
 
+def test_canary_lane_has_an_explicit_memory_admission_budget():
+    gate = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    assert gate["lanes"]["r3"]["resources"] == {
+        "memory": "1g", "memory_swap": "16g", "cpus": "3",
+    }
+
+
 def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
     compose = COMPOSE_TEMPLATE.read_text(encoding="utf-8")
     defaults = " ".join(

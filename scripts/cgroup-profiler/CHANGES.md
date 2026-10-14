@@ -17,5 +17,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 ### Changed
 - Documentation: identify the installed Run-Gate SemVer wheel as the supported
   consumer of the CGProfile interface; copied `run-gate.py` scripts are retired.
+- Gate R3 now declares memory and swap ceilings, so Run-Gate admits it against
+  the gates-slice budget and Docker enforces its per-container limit.
 
 <!-- cmru: release history -->

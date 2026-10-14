@@ -39,6 +39,8 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - Fix: build and receipt the exact candidate wheel before the release gate,
   verify the running tester image contains those bytes, and refuse publication
   if CMRU's post-tag wheel build differs.
+- Fix: give the R1 and R3 tester containers explicit memory and swap ceilings,
+  so gate admission accounts for their use and Docker applies per-container bounds.
 
 <!-- cmru: release history -->
 
