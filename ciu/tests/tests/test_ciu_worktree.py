@@ -134,6 +134,26 @@ class TestInitialCheckoutResetSafety:
         with pytest.raises(worktree.WorktreeError, match="operator.txt.*7 total entries"):
             worktree._assert_allocation_checkout_reset_is_safe(record)
 
+    def test_short_unexpected_status_sample_omits_total_count(
+        self, tmp_path, monkeypatch
+    ):
+        record = self._record(tmp_path)
+        record_path = record.record_path.relative_to(record.git_worktree_path).as_posix()
+        status_output = "\0".join([
+            f"?? {record_path}", "?? operator.txt", "D  tracked.txt",
+        ]) + "\0"
+
+        def fake_git(args, _cwd):
+            if args[0] == "status":
+                return subprocess.CompletedProcess(args, 0, status_output, "")
+            assert args[:2] == ["ls-tree", "-r"]
+            return subprocess.CompletedProcess(args, 0, "tracked.txt\0", "")
+
+        monkeypatch.setattr(worktree, "_git", fake_git)
+        with pytest.raises(worktree.WorktreeError, match="operator.txt") as raised:
+            worktree._assert_allocation_checkout_reset_is_safe(record)
+        assert "total entries" not in str(raised.value)
+
 
 class _FlushRecordingStream(io.StringIO):
     def __init__(self):
