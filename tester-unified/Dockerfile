@@ -33,13 +33,17 @@ RUN git config --system maintenance.autoDetach false \
  && test "$(git config --system --get maintenance.autoDetach)" = false \
  && test "$(git config --system --get gc.autoDetach)" = false
 
-# Copy only the Python projects pip needs to resolve + install from their
-# pyprojects. Gate runs execute against the BOUND worktree via PYTHONPATH, so
-# these baked copies only seed the dependency closure, not the code under test.
+# Copy the Python sources used to derive/install the image's internal command
+# wheels and dependency closure. Gate runs execute against the BOUND worktree
+# via PYTHONPATH, so the copied CIU/Assay sources seed dependencies rather than
+# replace the code under test. Run-Gate is installed as a console script in
+# /opt/tester-venv so the tester user need not traverse /home/vscode in the
+# base image to invoke it.
 COPY tester-unified/gen-requirements.py /usr/local/lib/tester-unified/gen-requirements.py
 COPY tester-unified/fetch-cli-extended.py /usr/local/lib/tester-unified/fetch-cli-extended.py
 COPY ciu/         /src/ciu/
 COPY cmru/        /src/cmru/
+COPY run-gate-project/ /src/run-gate-project/
 COPY assay/       /src/assay/
 COPY topos/       /src/topos/
 COPY nyxloom/ /src/nyxloom/
@@ -76,10 +80,11 @@ COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 # the RELEASED cli-extended wheel instead: fetch-cli-extended.py downloads the
 # pinned release asset (default; or `cli-extended-latest/latest.json` as an opt-in),
 # REQUIRES its sha256 and verifies it, and the wheel goes in with
-# `--no-index --no-deps` BEFORE cmru. cmru itself is built OFFLINE from the
-# COPYed source, in a throwaway venv holding only its pinned build backends
-# (`--no-index --no-deps --no-build-isolation`), and installed from that local
-# wheel, whose local version segment (+tester.unified) no PyPI release can have.
+# `--no-index --no-deps` BEFORE cmru. CMRU and Run-Gate are built OFFLINE from
+# their copied sources in separate throwaway venvs, each with its own pinned
+# build backends (`--no-index --no-deps --no-build-isolation`). Their pins
+# differ, so sharing one build venv makes pip reject the environment. The local
+# wheels use a +tester.unified version segment no PyPI release can have.
 # PINNED BY DEFAULT (D-3): the two WHEEL args below name the released 0.3.0 asset
 # and its sha256 IN THIS REPOSITORY, so the digest is an independent pin and not
 # something `latest.json` can vouch for over the same TLS channel. Because the pin
@@ -113,7 +118,10 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
       > /tmp/tester-requirements.txt \
  && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
       --build-requires cmru/pyproject.toml \
-      > /tmp/internal-build-requirements.txt \
+      > /tmp/cmru-build-requirements.txt \
+ && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
+      --build-requires run-gate-project/pyproject.toml \
+      > /tmp/run-gate-build-requirements.txt \
  && case "${CLI_EXTENDED_RESOLVE}" in \
       pinned) set -- --wheel-url "${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; \
       latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; \
@@ -134,36 +142,50 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt \
  && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/cli-extended-release/*.whl \
- && /usr/local/bin/python3.14 -m venv /tmp/internal-build-venv \
- && /tmp/internal-build-venv/bin/pip install --no-cache-dir -r /tmp/internal-build-requirements.txt \
+ && mkdir -p /tmp/internal-wheels \
+ && /usr/local/bin/python3.14 -m venv /tmp/cmru-build-venv \
+ && /tmp/cmru-build-venv/bin/pip install --no-cache-dir -r /tmp/cmru-build-requirements.txt \
  && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified \
-    /tmp/internal-build-venv/bin/pip wheel --no-index --no-deps --no-build-isolation \
+    /tmp/cmru-build-venv/bin/pip wheel --no-index --no-deps --no-build-isolation \
       -w /tmp/internal-wheels /src/cmru \
+ && /usr/local/bin/python3.14 -m venv /tmp/run-gate-build-venv \
+ && /tmp/run-gate-build-venv/bin/pip install --no-cache-dir -r /tmp/run-gate-build-requirements.txt \
+ && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=0.0.0+tester.unified \
+    /tmp/run-gate-build-venv/bin/pip wheel --no-index --no-deps --no-build-isolation \
+      -w /tmp/internal-wheels /src/run-gate-project \
  && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
- && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt /tmp/cli-extended-release \
+ && rm -rf /tmp/cmru-build-venv /tmp/run-gate-build-venv /tmp/internal-wheels \
+      /tmp/cmru-build-requirements.txt /tmp/run-gate-build-requirements.txt /tmp/cli-extended-release \
  && /opt/tester-venv/bin/python -c "import build, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')" \
  && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgroup-profiler report tier OK')"
 
-# Build-time assertion (BG-05): `worktree` and cmru resolve from THIS image's
-# locally built cmru wheel (a PyPI release can never carry the +tester.unified
-# local version segment), and cli_extended is the RELEASED wheel, not a local
-# build and not an index install; cmru's metadata must require it.
+# Build-time assertion (BG-05): `worktree`, cmru and run-gate resolve from THIS
+# image's local wheels, and cli_extended is the RELEASED wheel, not a local
+# build or index install. The local versions cannot be confused with PyPI
+# releases, and Run-Gate's console script must be executable by the tester.
 RUN /opt/tester-venv/bin/python - <<'PY'
 import importlib.metadata as metadata
 import os
 from pathlib import Path
 
 import cli_extended
+import run_gate
 import worktree
 
 site = "/opt/tester-venv/"
-for module in (cli_extended, worktree):
+for module in (cli_extended, worktree, run_gate):
     location = str(Path(module.__file__).resolve())
     assert location.startswith(site), f"{module.__name__} imports from {location}, not {site}"
 version = metadata.version("cmru")
 assert version.endswith("+tester.unified"), (
     f"cmru {version} was not built from the COPYed source in this image"
 )
+run_gate_version = metadata.version("run-gate")
+assert run_gate_version.endswith("+tester.unified"), (
+    f"run-gate {run_gate_version} was not built from the COPYed source in this image"
+)
+cli = Path("/opt/tester-venv/bin/run-gate")
+assert cli.is_file() and os.access(cli, os.X_OK), f"Run-Gate CLI is not executable: {cli}"
 released = metadata.version("cli-extended")
 if os.environ["CLI_EXTENDED_RESOLVE"] == "local":
     # Zero-release mode: the operator-built wheel (sha256-verified above) carries a
@@ -190,8 +212,13 @@ RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd \
  && chown -R 1003:994 /opt/tester-venv
 
 USER 1003
-ENV HOME=/home/tester \
+ENV PATH=/opt/tester-venv/bin:${PATH} \
+    HOME=/home/tester \
     XDG_CONFIG_HOME=/home/tester/.config \
     XDG_CACHE_HOME=/home/tester/.cache \
     XDG_STATE_HOME=/home/tester/.local/state \
     TESTER_VENV=/opt/tester-venv
+
+# Prove the installed console script resolves from the tester venv and is
+# executable by the non-root runtime user, not just by the build's root user.
+RUN run-gate --version

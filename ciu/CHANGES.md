@@ -21,6 +21,11 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Changed
+- Run the real-system enrollment lane as a required release gate, verify the installed Run-Gate wheel matches the selected checkout, and pin the disposable fixture image (CIU-131).
+
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=5a9154b69c381545422c6f896f269a8f947b287b -->

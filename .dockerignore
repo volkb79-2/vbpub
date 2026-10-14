@@ -7,6 +7,7 @@
 *
 !ciu
 !cmru
+!run-gate-project
 !assay
 !topos
 !nyxloom
@@ -48,6 +49,15 @@ tester-unified/*
 !scripts
 scripts/*
 !scripts/cgroup-profiler
+
+# tester-unified installs Run-Gate as an internal wheel. Keep only the wheel's
+# metadata, README and modules; tests and reports stay out of the image context.
+run-gate-project/*
+!run-gate-project/pyproject.toml
+!run-gate-project/README.md
+!run-gate-project/run-gate.py
+!run-gate-project/run_gate.py
+!run-gate-project/run_gate_admission.py
 
 # Drop heavy/generated content within the whitelisted projects.
 **/.git

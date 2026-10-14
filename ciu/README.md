@@ -298,8 +298,29 @@ cmru build   ciu     # retained worktree: gate + wheel build, no publish
 cmru resolve ciu     # resolve the current latest (version / url / sha256)
 ```
 
-The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). An old,
-unmanaged GitHub Release is CMRU maintenance, not CIU behavior: inspect first with
+The release gate runs the full suite in `tester-unified`, then runs the
+registered `enroll` lane inside `tester-unified` with CMRU's isolated
+`--enable-docker` sidecar. CMRU verifies the host gates slice before starting
+the sidecar and gate container; the host Docker socket is never mounted into
+the suite.
+The nested fixtures are bounded inside the sidecar, and the lane refuses
+when the required isolated-Docker endpoint is missing. CMRU invokes the
+installed Run-Gate CLI (`run-gate enroll`) inside the tester container. Before
+each gate command, CIU checks that the installed wheel's code matches the
+selected checkout; a stale tester image fails with the exact rebuild command.
+Run-Gate's `mode = "host"` is a general capability; each consumer chooses
+whether it fits its policy. The MDT cockpit policy requires the cockpit to drive gates
+while a stable test environment hosts the suite; see the
+[MDT container doctrine](../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+This nested lane opts out of Run-Gate resource profiling because its
+Docker view cannot inspect the outer tester container's host cgroup; CMRU still
+applies host placement and CPU/memory caps. See
+[CONSUMERS §12](docs/CONSUMERS.md#12-the-implementation-gate-assay-backed-s18)
+for the command and prerequisites, and the
+[design rationale](docs/DESIGN-GUIDE.md#why-enrollment-runs-in-the-isolated-gate)
+for the VM boundary. This CIU enrollment lane currently requires CMRU's DinD
+endpoint, so an external VM is not a drop-in runner for it. An old unmanaged
+GitHub Release is CMRU maintenance, not CIU behavior: inspect first with
 `cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run`,
 then repeat with `--yes` to delete that Release while deliberately retaining its Git tag.
 
@@ -448,9 +469,10 @@ ciu version
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
-discovers the declared lanes; definitions live in `run-gate.toml`.
-See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+The registered release test entrypoint is `cmru run ciu --step run-tests`;
+CMRU launches the declared lanes through the installed Run-Gate CLI in
+`tester-unified`. Lane definitions live in `run-gate.toml`. See
+[`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
 ### CLI diagnostics
 

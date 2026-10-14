@@ -5415,6 +5415,31 @@ evidence-judgment command.
   AGENTS.md "Manual tester-unified gate runs — the four traps": cgroup env
   passthrough, dual-path mount for worktree gitfiles, `safe.directory`, and
   the detached run form.
+- **S18.6** *Enrollment security lane.* Every CIU release runs the registered
+  `enroll` lane after the ordinary suite, inside `tester-unified` through
+  `cmru tester-gate --enable-docker`; that command invokes the installed
+  Run-Gate CLI as `run-gate enroll` inside the tester container. The lane's
+  preflight compares the installed wheel's two Python modules byte-for-byte
+  with the selected checkout and refuses to run with a stale tester image. The
+  command still invokes the installed wheel's console script, not the checkout
+  symlink or Python file directly.
+  This lane is DinD-specific today: an externally managed VM is not a
+  compatible drop-in because the command requires CMRU's exact local endpoint
+  and sidecar placement evidence. A VM runner needs its own declared runner,
+  endpoint, and placement preflight.
+  Its declared `mode = "host"` runs its subprocess in that current tester
+  container. CMRU verifies the host gates slice before starting the
+  tester-unified container and its isolated DinD sidecar; the host Docker
+  socket is never mounted. The lane requires `DOCKER_HOST` to equal
+  `tcp://localhost:2375` and requires the forwarded
+  `$CGROUP_PARENT_DEV_GATES` fact. Its nested fixture containers are bounded
+  inside the sidecar and do not specify the host slice as their cgroup parent.
+  `CIU_ENROLL_REQUIRED=1` makes missing Docker prerequisites or fixture-build
+  failures fatal rather than skips. Both the ordinary suite and enrollment lane
+  must pass before a CIU release proceeds. This command lane sets
+  `profile = false` because its nested Docker view cannot inspect the outer
+  tester container in the host cgroup tree; CMRU still enforces host placement
+  and CPU/memory caps.
 
 ## S19 — Repository scaffolding (`ciu init`)
 
