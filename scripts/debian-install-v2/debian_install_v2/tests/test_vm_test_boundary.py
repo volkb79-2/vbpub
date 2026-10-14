@@ -404,3 +404,81 @@ def test_vmctl_rejects_a_symlink_custom_seed_before_creating_a_run(tmp_path):
     assert result.returncode != 0
     assert "not a symlink" in result.stderr
     assert not (state / "runs" / "bad-seed").exists()
+
+
+def test_vmctl_grows_only_the_per_run_overlay_before_qemu_start(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "commands.log"
+    state = tmp_path / "state"
+    images = state / "images"
+    images.mkdir(parents=True)
+    base = images / "case-b-base.qcow2"
+    base.write_bytes(b"immutable-base-fixture")
+    seed_iso = tmp_path / "private.iso"
+    seed_iso.write_bytes(b"private-seed-fixture")
+
+    (fake_bin / "qemu-img").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "printf 'qemu-img %s\\n' \"$*\" >> \"$FAKE_VM_LOG\"\n"
+        "if [ \"$1\" = create ]; then\n"
+        "  for arg do last=$arg; done\n"
+        "  : > \"$last\"\n"
+        "fi\n"
+    )
+    (fake_bin / "qemu-system-x86_64").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "printf 'qemu-system-x86_64 %s\\n' \"$*\" >> \"$FAKE_VM_LOG\"\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = -pidfile ]; then printf '99999999\\n' > \"$2\"; shift 2; else shift; fi\n"
+        "done\n"
+    )
+    (fake_bin / "ssh-keygen").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "while [ \"$#\" -gt 0 ]; do\n"
+        "  if [ \"$1\" = -f ]; then key=$2; shift 2; else shift; fi\n"
+        "done\n"
+        ": > \"$key\"\n"
+        "printf 'ssh-ed25519 fixture\\n' > \"$key.pub\"\n"
+    )
+    for executable in fake_bin.iterdir():
+        executable.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        MDT_VM_STATE_DIR=str(state),
+        PATH=f"{fake_bin}:{env['PATH']}",
+        FAKE_VM_LOG=str(log),
+    )
+    result = subprocess.run(
+        [
+            str(VM / "vmctl"), "start", "disk-size-test",
+            "--disk-gb", "20", "--seed-iso", str(seed_iso), "--no-apt-cache",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+    calls = log.read_text().splitlines()
+    resize = next(i for i, call in enumerate(calls) if call.startswith("qemu-img resize "))
+    start = next(i for i, call in enumerate(calls) if call.startswith("qemu-system-x86_64 "))
+    assert resize < start
+    assert calls[resize].endswith(" 20G")
+    assert base.read_bytes() == b"immutable-base-fixture"
+    assert (state / "runs/disk-size-test/disk.qcow2").is_file()
+
+    invalid = subprocess.run(
+        [str(VM / "vmctl"), "start", "invalid-disk-size", "--disk-gb", "1.5"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert invalid.returncode != 0
+    assert "positive whole number of GiB" in invalid.stderr

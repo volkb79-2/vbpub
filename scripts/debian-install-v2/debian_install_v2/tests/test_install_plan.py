@@ -138,10 +138,11 @@ def test_credentials_are_not_written_to_bootstrap_env(tmp_path):
 def test_geometry_refuses_existing_partition_after_root():
     config = Config(telegram_bot_token="", telegram_chat_id="", auto_reboot_after_stage1=False)
     actions = HostActions(dry_run=True)
-    installer = Installer(config, actions)
+    installer = Installer(config, actions, inspect_host=False)
+    installer.root_number = 3
     current = {
         3: {"start": "2500608", "size": "20971520"},
-        4: {"start": "2500609", "size": "100"},
+        4: {"start": "23472128", "size": "100"},
     }
     plan = {
         3: {"start": "2500608", "size": "20971520"},
