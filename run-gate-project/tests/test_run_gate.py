@@ -30191,7 +30191,7 @@ class TestRunGateReleaseCoverageEdges:
         monkeypatch.setenv(run_gate.CGROUP_ENV_VAR, "dev-gates.slice")
         assert run_gate.resolve_slice({}, "fixture")[0] == "dev-gates.slice"
         assert run_gate.slice_cgroupfs_dir("dev-gates.slice") == Path(
-            "dev-gates.slice")
+            "dev.slice/dev-gates.slice")
         assert run_gate.slice_cgroupfs_dir("dev-test-gates.slice") == Path(
             "dev.slice/test.slice/dev-test-gates.slice")
 
