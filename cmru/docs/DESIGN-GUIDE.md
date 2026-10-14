@@ -746,9 +746,10 @@ disables host Git hooks while it prepares remote baseline facts. CMRU starts its
 host release-gate driver with isolated Python (`-I -B`) so an untracked module
 beside `run_release_gate.py` cannot run before the source integrity check. The
 driver starts lane processes through the installed `run-gate` CLI, not a script
-from the mutable checkout. Before any sub-lane starts, CMRU requires a stable
-released Run-Gate package at revision 68 or later and records that judge identity
-in the snapshot manifest. Nested `run-gate` processes receive neither
+from the mutable checkout. Before any sub-lane starts, CMRU requires the stable
+Run-Gate wheel at SemVer `23.11.0` or later. It verifies the CLI's reported
+SemVer against wheel metadata and records that version in the snapshot manifest.
+Nested `run-gate` processes receive neither
 publisher-token nor extra-mount variables (`RUN_GATE_EXTRA_MOUNTS`); origin
 facts passed to mutation contain tag names and commit IDs, not credentials.
 

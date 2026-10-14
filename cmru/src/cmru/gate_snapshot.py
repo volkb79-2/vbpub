@@ -530,14 +530,24 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         elif "anchor_refs" in prior_manifest:
             raise RuntimeError("CMRU gate snapshot has invalid main/tag ref anchors")
         candidate_judge = prior_manifest.get("run_gate_identity")
-        if (
-            isinstance(candidate_judge, dict)
+        candidate_keys = set(candidate_judge) if isinstance(candidate_judge, dict) else set()
+        version = candidate_judge.get("version") if isinstance(candidate_judge, dict) else None
+        stable_version = (
+            isinstance(version, str)
+            and re.fullmatch(
+                r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+                version,
+            ) is not None
+        )
+        legacy_revision = (
+            candidate_keys == {"revision", "version"}
             and type(candidate_judge.get("revision")) is int
             and candidate_judge["revision"] >= 0
-            and isinstance(candidate_judge.get("version"), str)
-            and bool(candidate_judge["version"].strip())
-        ):
-            manifest_judge = dict(candidate_judge)
+        )
+        if stable_version and (candidate_keys == {"version"} or legacy_revision):
+            # Old retained snapshots included the script revision as a second
+            # identity. SemVer is now the sole supported Run-Gate identity.
+            manifest_judge = {"version": version}
         else:
             raise RuntimeError(
                 "existing CMRU gate snapshot has no trusted Run-Gate identity; "

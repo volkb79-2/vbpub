@@ -748,9 +748,9 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 The installed `run-gate` wheel is the canonical test entrypoint. From the
 `cmru/` directory, `run-gate --list` discovers the declared lanes and
 `run-gate gate` runs the aggregate; definitions live in `run-gate.toml`. The
-aggregate requires a stable released Run-Gate package at rev 68 or later; its
-preflight checks both `run-gate --version` and the installed wheel version, then
-records that judge identity in the gate manifest. See the
+aggregate requires the stable Run-Gate wheel `23.11.0` or later. Its preflight
+checks that `run-gate --version` agrees with the installed wheel's SemVer,
+enforces that version floor, and records the version in the gate manifest. See the
 [gate design](docs/DESIGN-GUIDE.md#aggregate-gate-binds-its-source-and-judge).
 The
 `assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage,

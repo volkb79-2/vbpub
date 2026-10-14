@@ -6,6 +6,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Changed
 - KI-78 stages pending notes inside every tagged candidate's dated section before the gate and tag; direct publishers read the matching tag rather than mutable changelog files. `--no-build` and image-only releases retain notes in the tagged changelog without creating a GitHub Release body.
+- CMRU's aggregate gate uses Run-Gate SemVer as its compatibility floor and retained judge identity; it no longer treats a source revision counter as a compatibility version.
 
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.

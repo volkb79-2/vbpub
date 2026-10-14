@@ -685,11 +685,11 @@ run-gate --list
 run-gate gate
 ```
 
-The CMRU aggregate requires a stable released Run-Gate package at revision 68 or
-later. `run-gate --version` prints the revision; the CMRU gate also checks the
-installed package metadata and refuses development or local builds before any
-CMRU sub-lane starts. It records the judge revision and package version in the
-snapshot manifest, and a resumed snapshot refuses if that identity changed.
+The CMRU aggregate requires the stable Run-Gate wheel `23.11.0` or later.
+`run-gate --version` reports its SemVer; the CMRU gate verifies that it matches
+the installed wheel metadata and refuses development, local, or older builds
+before any CMRU sub-lane starts. It records the wheel version in the snapshot
+manifest, and a resumed snapshot refuses if that identity changed.
 
 The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0

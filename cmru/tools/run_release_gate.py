@@ -28,7 +28,7 @@ SECRET_ENV_KEYS = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN")
 FACTS_ENV_KEY = "CMRU_ASSAY_BASELINE_FACTS"
 EXTRA_MOUNTS_ENV_KEY = "RUN_GATE_EXTRA_MOUNTS"
 REF_PROBE_LANE = "ref-probe"
-RUN_GATE_MIN_REVISION = 68  # Required for the released hook/info mount protections.
+RUN_GATE_MIN_VERSION = "23.11.0"  # First SemVer release with the hook/info mount protections.
 # The gate-only variant of installed-wheel: it refuses to run unless it is
 # inside this gate's fresh, snapshot-bound manifest. The plain `installed-wheel`
 # lane stays runnable directly (it bypasses the secret boundary, as documented).
@@ -119,7 +119,7 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
         raise RuntimeError(f"installed run-gate launcher has a non-absolute interpreter: {command}")
 
     try:
-        revision_result = subprocess.run(
+        cli_version_result = subprocess.run(
             [executable, "--version"],
             cwd=repo_root / "cmru",
             capture_output=True,
@@ -129,22 +129,20 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(f"could not run installed Run-Gate `--version`: {exc}") from exc
-    if revision_result.returncode != 0:
-        detail = revision_result.stderr.strip() or revision_result.stdout.strip() or "no diagnostic output"
-        raise RuntimeError(f"cannot read installed Run-Gate revision: {detail}")
-    revision_lines = revision_result.stdout.strip().splitlines()
-    match = re.fullmatch(r"run-gate rev ([0-9]+)", revision_lines[0]) if len(revision_lines) == 1 else None
-    if match is None:
+    if cli_version_result.returncode != 0:
+        detail = cli_version_result.stderr.strip() or cli_version_result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot read installed Run-Gate version: {detail}")
+    cli_version_lines = cli_version_result.stdout.strip().splitlines()
+    cli_match = (
+        re.fullmatch(r"run-gate ([0-9]+\.[0-9]+\.[0-9]+)", cli_version_lines[0])
+        if len(cli_version_lines) == 1 else None
+    )
+    if cli_match is None:
         raise RuntimeError(
-            "installed run-gate --version returned an unrecognized identity: "
-            f"{revision_result.stdout.strip()!r}"
+            "installed run-gate --version returned an unrecognized SemVer identity: "
+            f"{cli_version_result.stdout.strip()!r}"
         )
-    revision = int(match.group(1))
-    if revision < RUN_GATE_MIN_REVISION:
-        raise RuntimeError(
-            f"CMRU's release gate requires Run-Gate rev {RUN_GATE_MIN_REVISION} or later "
-            f"for read-only host hook/info mounts; installed rev {revision} is too old"
-        )
+    cli_version = cli_match.group(1)
 
     version_code = (
         "from importlib.metadata import version; "
@@ -165,12 +163,28 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
         detail = version_result.stderr.strip() or version_result.stdout.strip() or "no diagnostic output"
         raise RuntimeError(f"cannot read installed Run-Gate package version: {detail}")
     package_version = version_result.stdout.strip()
-    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", package_version) is None:
+    package_match = re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+        package_version,
+    )
+    if package_match is None:
         raise RuntimeError(
             "CMRU's release gate requires a stable released Run-Gate wheel; "
             f"installed package version is {package_version!r}"
         )
-    return {"revision": revision, "version": package_version}
+    if cli_version != package_version:
+        raise RuntimeError(
+            "installed run-gate CLI version does not match its wheel metadata: "
+            f"CLI reports {cli_version!r}, package metadata reports {package_version!r}"
+        )
+    package_key = tuple(int(part) for part in package_match.groups())
+    minimum_key = tuple(int(part) for part in RUN_GATE_MIN_VERSION.split("."))
+    if package_key < minimum_key:
+        raise RuntimeError(
+            f"CMRU's release gate requires Run-Gate {RUN_GATE_MIN_VERSION} or later "
+            f"for read-only host hook/info mounts; installed version {package_version} is too old"
+        )
+    return {"version": package_version}
 
 
 def _preflight_assay_source(repo_root: Path) -> None:

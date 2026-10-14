@@ -127,7 +127,7 @@ def _fixture(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_release_gate, "_preflight_assay_source", lambda _root: None)
     monkeypatch.setattr(
         run_release_gate, "_check_run_gate_identity",
-        lambda _root: {"revision": 68, "version": "23.11.0"},
+        lambda _root: {"version": "23.11.0"},
     )
     return repo, root_secret, project_secret, metadata, auth, calls
 
@@ -874,13 +874,15 @@ def test_isolated_component_loader_imports_real_gate_helpers_from_tools():
     assert "CMRU_ISOLATED_COMPONENTS=loaded" in result.stdout
 
 
-@pytest.mark.parametrize("revision, version, expected", [
-    (68, "23.11.0", {"revision": 68, "version": "23.11.0"}),
-    (67, "23.11.0", "requires Run-Gate rev 68 or later"),
-    (68, "23.11.0.dev4+g1234567", "stable released Run-Gate wheel"),
+@pytest.mark.parametrize("cli_version, version, expected", [
+    ("run-gate 23.11.0", "23.11.0", {"version": "23.11.0"}),
+    ("run-gate 23.10.9", "23.10.9", "requires Run-Gate 23.11.0 or later"),
+    ("run-gate 23.11.0", "23.11.0.dev4+g1234567", "stable released Run-Gate wheel"),
+    ("run-gate 23.11.1", "23.11.0", "does not match its wheel metadata"),
+    ("run-gate rev 68", "23.11.0", "unrecognized SemVer identity"),
 ])
 def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
-    tmp_path, monkeypatch, revision, version, expected,
+    tmp_path, monkeypatch, cli_version, version, expected,
 ):
     launcher = tmp_path / "run-gate"
     launcher.write_text(f"#!{sys.executable}\n", encoding="utf-8")
@@ -889,7 +891,7 @@ def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
     def fake_run(argv, **_kwargs):
         if argv[0] == str(launcher):
             return subprocess.CompletedProcess(
-                argv, 0, stdout=f"run-gate rev {revision}\n", stderr="",
+                argv, 0, stdout=f"{cli_version}\n", stderr="",
             )
         assert argv[:3] == [sys.executable, "-I", "-B"]
         return subprocess.CompletedProcess(argv, 0, stdout=f"{version}\n", stderr="")
@@ -1067,7 +1069,7 @@ def test_resuming_a_snapshot_under_a_different_run_gate_identity_refuses(tmp_pat
 
     monkeypatch.setattr(
         run_release_gate, "_check_run_gate_identity",
-        lambda _root: {"revision": 69, "version": "23.12.0"},
+        lambda _root: {"version": "23.12.0"},
     )
     with pytest.raises(RuntimeError, match="judged by a different Run-Gate identity"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
@@ -1341,7 +1343,7 @@ def _closed_snapshot(source: Path):
     from cmru import gate_snapshot
 
     snapshot = gate_snapshot.open_gate_snapshot(source)
-    snapshot.run_gate_identity = {"revision": 68, "version": "23.11.0"}
+    snapshot.run_gate_identity = {"version": "23.11.0"}
     gate_snapshot.write_snapshot_manifest(snapshot, "failed")
     gate_snapshot.close_gate_snapshot(snapshot)
     return snapshot
@@ -1411,10 +1413,11 @@ def test_lane_boundary_preserves_unavailable_anchor_evidence(
 @pytest.mark.parametrize("identity", [
     None,
     {},
+    {"version": "23.11.0.dev1+g1234567"},
+    {"version": ""},
+    {"version": 23},
     {"revision": True, "version": "23.11.0"},
-    {"revision": -1, "version": "23.11.0"},
-    {"revision": 68, "version": ""},
-    {"revision": 68, "version": 23},
+    {"revision": 68, "version": "23.11.0", "unexpected": True},
 ])
 def test_a_retained_snapshot_without_valid_run_gate_identity_refuses_resume(
     tmp_path, monkeypatch, identity,
@@ -1677,16 +1680,18 @@ def test_stale_manifest_scope_is_upgraded_not_trusted(tmp_path, monkeypatch):
 
     repo, *_rest = _fixture(tmp_path, monkeypatch)
     snapshot = gs.open_gate_snapshot(repo)
-    snapshot.run_gate_identity = {"revision": 68, "version": "23.11.0"}
+    snapshot.run_gate_identity = {"version": "23.11.0"}
     gs.write_snapshot_manifest(snapshot, "running")
     manifest = repo / "cmru" / ".assay" / "release-gate-snapshot.json"
     document = json.loads(manifest.read_text(encoding="utf-8"))
     document.update(refs_scope="all-refs/0", git_refs_sha256="0" * 64)
+    document["run_gate_identity"] = {"revision": 68, "version": "23.11.0"}
     manifest.write_text(json.dumps(document), encoding="utf-8")
     gs.close_gate_snapshot(snapshot)
 
     reopened = gs.open_gate_snapshot(repo)  # the old whole-repository digest is ignored
     try:
         assert reopened.refs_sha256 == snapshot.refs_sha256 != "0" * 64
+        assert reopened.run_gate_identity == {"version": "23.11.0"}
     finally:
         gs.close_gate_snapshot(reopened)
