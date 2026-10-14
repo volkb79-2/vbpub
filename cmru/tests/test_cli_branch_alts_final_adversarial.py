@@ -35,6 +35,11 @@ def test_prepare_release_unchanged_changelog_does_not_log_update(monkeypatch, tm
     # The helper imports this dependency locally, so patch its defining module.
     import cmru.changelog as changelog
     monkeypatch.setattr(changelog, "generate_release_changelog", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        cli, "_pending_release_notes_or_refuse",
+        lambda *args, **kwargs: SimpleNamespace(version="1.0.0"),
+    )
+    monkeypatch.setattr(cli, "_fold_pending_release_notes", lambda *args, **kwargs: False)
     cli._prepare_release_projects(tmp_path, {"demo": project}, ["demo"])
     output = capsys.readouterr().out
     assert "generating release history" in output

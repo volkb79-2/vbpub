@@ -25,7 +25,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from cmru.config_names import PROJECT_CONFIG_FILENAME
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
@@ -60,9 +60,15 @@ _RELEASE_CONTROL_EXCLUDES = (
 )
 
 
-def _git_log(repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD") -> List[str]:
+def _git_log(
+    repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD",
+    exclude: Sequence[str] = (),
+) -> List[str]:
     """Commit messages reachable from ``end_ref`` but not from ``since_ref``,
     touching paths (release-control files excluded).
+
+    ``exclude`` adds repo-relative paths that are release metadata for THIS
+    project (its configured changelog, KI-78) to the default exclusions.
 
     KI-20: ``end_ref`` defaults to ``"HEAD"`` -- today's behavior, and already
     worktree-correct (each worktree's own HEAD, not the shared local ``main``
@@ -71,7 +77,10 @@ def _git_log(repo_root: Path, since_ref: str, *paths: str, end_ref: str = "HEAD"
     """
     cmd = ["git", "log", f"{since_ref}..{end_ref}", "--format=%s"]
     if paths:
-        cmd += ["--"] + list(paths) + list(_RELEASE_CONTROL_EXCLUDES)
+        cmd += (
+            ["--"] + list(paths) + list(_RELEASE_CONTROL_EXCLUDES)
+            + [f":(exclude){path}" for path in exclude]
+        )
     try:
         result = subprocess.run(cmd, cwd=repo_root, capture_output=True, text=True)
     except OSError as exc:
@@ -621,7 +630,13 @@ def detect_changed_projects(
             git_auth=git_auth,
         )
         if last_tag:
-            messages = _git_log(repo_root, last_tag, *paths, end_ref=end_ref)
+            # The project's own changelog is release metadata whatever it is called
+            # (KI-78 stages pending notes there before publishing).
+            changelog = getattr(proj, "changelog", None)
+            messages = _git_log(
+                repo_root, last_tag, *paths, end_ref=end_ref,
+                exclude=[f"{getattr(proj, 'cwd', None) or name}/{changelog}"] if changelog else [],
+            )
             if not messages:
                 if check_tag_at_head:
                     relationship = _tag_head_relationship(repo_root, last_tag)

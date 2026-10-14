@@ -205,6 +205,11 @@ def _prepare(monkeypatch, tmp_path, planner):
         cli, "_commit_prepared_generated",
         lambda _root, _project, label=None: labels.append(label),
     )
+    monkeypatch.setattr(
+        cli, "_pending_release_notes_or_refuse",
+        lambda *a, **k: SimpleNamespace(version="1.0.0"),
+    )
+    monkeypatch.setattr(cli, "_fold_pending_release_notes", lambda *a, **k: False)
     cli._prepare_release_projects(tmp_path, {"demo": project}, ["demo"])
     return labels
 

@@ -76,14 +76,16 @@ def test_project_git_family_groups_empty_selection_translates_and_propagates(mon
         transaction.project_git_family_groups(tmp_path, [])
 
 
-def test_remove_workspace_translates_and_propagates(monkeypatch):
+def test_remove_workspace_translates_and_propagates(monkeypatch, tmp_path):
     def worktree(exc):
         def remove(_context):
             raise exc
 
         return SimpleNamespace(remove_workspace=remove)
 
-    workspace = SimpleNamespace(context=object())
+    # `path` is the candidate checkout: remove_workspace first looks for gate
+    # snapshots attached to it (none here, it has no `.git`).
+    workspace = SimpleNamespace(context=object(), path=tmp_path / "candidate")
     monkeypatch.setattr(transaction, "_shared_worktree", lambda: worktree(OSError("gone")))
     with pytest.raises(RuntimeError, match="gone"):
         transaction.remove_workspace(workspace)

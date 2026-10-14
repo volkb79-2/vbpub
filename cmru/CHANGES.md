@@ -4,8 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-<!-- Empty on purpose: KI-30 refuses a tagged release while this body is non-empty, and KI-23
-     refuses one while a hand-authored `## [6.0.0] - UNRELEASED` heading exists, so this file
+### Changed
+- KI-78 stages pending notes inside every tagged candidate's dated section before the gate and tag; direct publishers read the matching tag rather than mutable changelog files. `--no-build` and image-only releases retain notes in the tagged changelog without creating a GitHub Release body.
+- CMRU's aggregate gate uses Run-Gate SemVer as its compatibility floor and retained judge identity; it no longer treats a source revision counter as a compatibility version.
+
+<!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
+     folds pending notes into the version section in the disposable release candidate.
+     KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
      carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
      pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`.
 

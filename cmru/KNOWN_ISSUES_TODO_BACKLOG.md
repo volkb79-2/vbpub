@@ -1231,7 +1231,7 @@ surface and normative details are synced in `README.md`, `docs/DESIGN-GUIDE.md`,
 
 ### KI-30 — release leaves the hand-written `## [Unreleased]` section orphaned
 
-**Status:** FIXED 2026-10-05 (program 2026-10 W0-REL, REL-10). A tagged release now refuses while a plain `## [Unreleased]` has a non-empty body (HTML comments and whitespace do not count), in the KI-23 guard's style (`changelog.py::_unreleased_body`). Tests: `tests/test_changelog.py::test_rel10_tagged_release_refuses_a_nonempty_plain_unreleased_section`, `::test_rel10_cleared_unreleased_section_with_a_comment_is_accepted`. Originally OPEN 2026-09-23; filed from assay Wave C P0.
+**Status:** FIXED 2026-10-05 (program 2026-10 W0-REL); **superseded 2026-10-14 by KI-78:** CMRU folds non-empty `[Unreleased]` notes into every tagged candidate's dated section before the gate and tag. CMRU GitHub Release-body handlers publish that section; `--no-build` and image-only releases keep the notes in the tagged changelog without publishing a GitHub Release body. The original KI-30 refusal is gone. Originally: a tagged release refused while a plain `## [Unreleased]` has a non-empty body (HTML comments and whitespace do not count), in the KI-23 guard's style (`changelog.py::_unreleased_body`). Tests: `tests/test_changelog.py::test_rel10_tagged_release_refuses_a_nonempty_plain_unreleased_section`, `::test_rel10_cleared_unreleased_section_with_a_comment_is_accepted`. Originally OPEN 2026-09-23; filed from assay Wave C P0.
 
 The assay changelog's hand-written `## [Unreleased]` block was left in place
 through releases 6.4.0, 6.5.0 and 7.0.0. Its `assay analyze` entry had already
@@ -1686,9 +1686,15 @@ complete KI-51.
 
 **Current disposition:** the sections remain empty for CMRU's preflight. The removed Run-Gate and cgprofile notes are preserved in `run-gate-project/nyxloom-trove/reports/CMRU-KI58-unreleased-notes-carry-forward-2026-10-13.md` and must be placed in the matching versioned release sections before tagging. Do not call this complete until the notes appear in the tagged changelogs and the dry-runs pass.
 
-**Oracle:** run `cmru release --dry-run` for each selected project from the pushed integration snapshot and confirm each passes the changelog check.
+**KI-78 (same branch) supersedes the parking requirement:** pending entries may stay under `## [Unreleased]` in `CHANGES.md`; CMRU folds them into every tagged candidate's dated section before its gate and tag. A GitHub body handler reads that same tagged section. `--no-build` and image-only releases carry notes in the tagged changelog without a GitHub Release body. The carry-forward below remains valid for notes that were already parked and is still a way to review them as part of the version history.
 
-### KI-59 — The `file:` resume bump-commit skip matches any subject starting with `chore: bump <prefix> to ` (W0-REL review nit) — *open, severity: minor*
+**KI-75 now makes this a verifiable data move (CMRU branch `cmru-release-fixes-20261013`).** That report is the single source: it is a superset of the older draft `scripts/cgroup-profiler/docs/release-notes-next-draft.md` on the unmerged `cmru-bugs62` (retire the draft once carried; never merge that branch). The downstream edit is deliberately NOT made from CMRU. The exact safe carry-forward, after a CMRU containing KI-75 is released: for each project, in ONE commit on `main`, author the pending version's section (`## [X.Y.Z] - <date>`, `<!-- cmru: generated -->`, `<!-- cmru: source-end=<full SHA of the final project commit, excluding the changelog> -->`) holding the parked entries under their `### Added/Changed/Fixed/Documentation` groups, leave `[Unreleased]` empty, pin `--set-version X.Y.Z`, and run `cmru release <name> --dry-run` from the pushed `main`: the printed body must end with exactly those entries. KI-68's refusal (below) now stops a later project commit from silently dropping them. Run-Gate has a handler publisher, so its GitHub Release body carries the notes; cgroup-profiler's push is an image push (`build-push.py --push`) with no release body, so its notes stay in its changelog (its `CHANGES.md` also has no versioned section yet).
+
+**Oracle:** run `cmru release --dry-run` for each selected project from the pushed integration snapshot and confirm each passes the changelog check and prints a body ending with the carried notes.
+
+### KI-59 — The `file:` resume bump-commit skip matches any subject starting with `chore: bump <prefix> to ` (W0-REL review nit) — *fixed in source (ported from `cmru-bugs62`, branch `cmru-release-fixes-20261013`), pending registered gate, severity: minor*
+
+**Fixed in source:** `changelog._is_own_bump_commit` skips only a commit whose subject equals `chore: bump <prefix> to <pending version>` exactly AND whose diff touches only the declared `file:` version file and the generated changelog outputs; an unlistable commit is not skipped. Covered by `tests/test_changelog_hand_edits.py` (the reviewer's look-alike probe, wrong file, wrong version, other prefix, non-`file:` strategy, unlistable commit).
 
 **Observed:** `changelog._project_commits_after_cursor` ignores cmru's own version-bump commit so a resumed `file:` release re-tags the gated commit. The match is a subject prefix only. The W0-REL reviewer committed a real code change to `demo/core.py` with subject `chore: bump demo-v to 9.9.9 and rewrite core`; `generate_release_changelog` then returned False, so that work was missed by the changelog and by the resume decision.
 
@@ -1721,6 +1727,8 @@ complete KI-51.
 **Current plan:** CMRU 6.2.0 restores `./run-gate.py gate` as its release step and removes the provisional lane. The full R2 gate will qualify the current release source; it does not retroactively add mutation evidence to 6.0.0. CMRU 6.1.0 has superseded 6.0.0, so a separate campaign on the old tag is no longer the release gate.
 
 **Oracle:** CMRU's release step names `gate`; the exact 6.2.0 release source passes the full gate with `.assay/mutation-cmru.json`; every survivor is fixed or otherwise dispositioned; and no `gate-provisional` lane remains.
+
+**2026-10-13:** the `--postpone-mutation` option of `tools/run_release_gate.py` still exists (with its WARN and retained marker) but is NOT used for the `cmru-release-fixes-20261013` wave: its qualifying gate is the full `./run-gate.py gate` including the 7h R2 lane. Removing the option stays with the 6.2.0 plan above.
 
 ### KI-63 — release-gate secret-overlay inventory aborted on a foreign-owned unreadable directory (blocked the 6.0.0 release gate) — *superseded by KI-74; retained as incident history*
 
@@ -1758,7 +1766,9 @@ complete KI-51.
 
 **Oracle:** `tests/test_cli_build_output_semantics.py::test_bound_cmru_launcher_identity_refusal_names_the_shadowing_metadata_location` (planted: hint text removed, fails). For the remaining ask: a launcher run with a stale egg-info under the source root reports the installed version.
 
-### KI-68 — REL-02: regenerating a stale generated changelog section silently drops hand edits — *docs fixed 2026-10-07 (`cmru-post6`); the WARN is open, severity: minor*
+### KI-68 — REL-02: regenerating a stale generated changelog section silently drops hand edits — *fixed in source (refusal; ported from `cmru-bugs62`, branch `cmru-release-fixes-20261013`), pending registered gate, severity: minor (raised in practice by KI-75: curated release notes live in that section)*
+
+**Fixed in source (2026-10-13):** `generate_release_changelog` now compares a stale generated section's body with its own generator's output for the old range (`_dropped_hand_edits`) and refuses with exit 4, listing at most 20 dropped lines, instead of regenerating over them. A current section (cursor at the final project commit) stays byte-identical. Unlike the `cmru-bugs62` version there is NO override flag (`--allow-changelog-regeneration` was not ported: it needs new CLI surface and a silent-drop escape hatch protects nothing); the remedy is to advance `source-end` in the same commit as the edit. Tests: `tests/test_changelog_hand_edits.py`.
 
 **Observed:** when project commits land after a generated section's `source-end`, cmru regenerates the section from commit subjects and discards any hand-written lines in it without a word. run-gate 23.10.0's release lost hand-curated text that two of its tests pin.
 
@@ -1826,13 +1836,17 @@ complete KI-51.
 
 ### KI-74 — aggregate release lanes must never mount the mutable caller checkout — *implemented with focused tests; registered gate pending; severity: critical (publisher-secret and evidence integrity)*
 
+**Review follow-up (2026-10-13, branch `cmru-release-fixes-20261013`; findings C-1..C-7 of `nyxloom-trove/reports/cmru-release-readiness-claude-opus-5-high-2026-10-13.md`):** C-1: the host runner now binds every helper under each `sys.path` root to `git ls-tree HEAD` by blob hash (untracked, ignored, symlinked or edited-away-from-HEAD refuse before any lane). C-2: a live `ref-probe` proves the gate-owned ref detector inside the real container; the snapshot also records existing tags and `main`, refuses moved/deleted tags or non-fast-forward `main`, and permits new refs and fast-forward `main`. The common Git directory remains writable, so unrelated existing branch refs are not guarded (KI-77). C-3: the dead untested cleanup is replaced by the tested `cmru gate-snapshots` verb (C-6). C-4: namespace-aware lease liveness (`gate_snapshot.gate_lease_state`: dead only on positive same-namespace evidence; foreign/legacy holders are live until the TTL and indeterminate after it) and `worktree.remove_orphan_workspace` refuses a source Git still registers as live. C-5: `installed-wheel` is a plain component lane again; `installed-wheel-live` (gate-only) requires a fresh manifest bound to its own snapshot. C-7: the canary is gitignored (already in the checkpoint) and tested clean after a passing and a SIGTERM-interrupted gate. C-8: KI-52's status text was already corrected in the checkpoint (B147 shipped in assay-v8.0.0). The CMRU-side Run-Gate floor is implemented in the current candidate; container-level event evidence for non-mutation lanes remains open in KI-77.
+
 **Observed:** the aggregate gate inventoried secret paths once and mounted the selected linked worktree read-write into several tester lanes. A publisher secret created after inventory, or in a directory the walk skipped, could therefore be read by tester code. In-place masking also temporarily changed the caller's tree and made safe restoration part of the gate's success claim. Run-Gate's shared Git metadata mount separately allowed a tester to write a common `post-commit` hook that host Git could later execute.
 
 **Chosen behavior:** CMRU requires a linked source worktree with no tracked changes, then creates a stable attached sidecar worktree at the exact source commit through the shared worktree lifecycle. Only the sidecar is mounted into lanes. A host-only canary is checked from inside the actual installed-wheel tester lane. Tracked publisher secrets, configured Git filters, and tracked gate-evidence paths refuse before lanes start. After each lane CMRU validates tracked state, unapproved ignored/untracked files and Run-Gate state; it retains only `.run-gate/` and a fixed evidence allowlist between lanes. Only that allowlist is copied back. Snapshot branches remain attached for resume and are removed with successful release-candidate cleanup. Run-Gate overlays shared `hooks/` with a private empty read-only directory and mounts common `info/` read-only; CMRU disables host hooks while preparing mutation facts. **The gate's own executable code and every helper it imports must also be bound to tracked files at the claimed source HEAD:** a helper imported from an untracked caller-side file is outside the exact snapshot and cannot participate in a gate that claims to judge that commit.
 
 **Oracles:** focused tests prove late ignored secrets in the source stay outside the exact snapshot, tracked secrets/filters/evidence paths refuse, lanes receive only allowlisted prior state, invalid output cannot copy a plausible verdict back, interrupted snapshots are validated before retry cleanup, and release-candidate cleanup removes its snapshot. Before preflight or importing CMRU/Assay helpers, the host runner inventories the import roots (including ignored entries) and refuses untracked Python modules or symlinks; it uses a private bytecode cache so ignored checkout-local `.pyc` files cannot shadow tracked code. An adversarial untracked helper that writes a marker on import must be refused before the marker appears, both when normally untracked and when ignored. A real registered CMRU tester lane checks the host canary; Run-Gate's real-container acceptance test proves an in-container commit cannot run or replace a host hook or alter `info/exclude`, and a later host commit still runs the original hook unchanged. Exact-tree registered gates and the aggregate release gate remain required before release.
 
-### KI-75 — GitHub release bodies omit curated version notes and migration guidance — *open, severity: major (release usability and upgrade risk)*
+### KI-75 — GitHub release bodies omit curated version notes and migration guidance — *implemented in branch `cmru-release-fixes-20261013`, pending registered gate, severity: major (release usability and upgrade risk)*
+
+**Implemented (2026-10-13).** `release_notes.py` extracts the exact `## [X.Y.Z] - YYYY-MM-DD` section; `release.build_release_body` / `build_variants_release_body` are the ONE builder used by `publish_versioned*` and by `cmru release --dry-run` (which prints the complete body between `----- begin release body -----` markers, with only the artifact name and SHA256 as marked placeholders). Handlers (`wheel-publish`, `tarball-publish`) read the text from the tagged commit (`CMRU_RELEASE_COMMIT`, or a retained build's source commit) via the protected `CMRU_RELEASE_NOTES_SOURCE=changelog:<path>|none` that the runner gives every step (reserved name; an undeclared publisher refuses). The prepare phase refuses before the gate/tag/upload when the pending section is missing, undated, duplicated, empty or wrong-version. `--notes-env` remains and replaces only the opening line. Decision recorded: a project WITH a changelog and no section refuses (it never gets a notes-less body); `changelog = false` publishes the generated body alone. Image-only pushes (no handler) have no GitHub Release body. Tests: `tests/test_release_notes.py`; docs: README / DESIGN-GUIDE / CONSUMERS.
 
 **Observed:** CMRU publishes generic product/use/install text in GitHub Release
 bodies, while project `CHANGES.md` files contain the version-specific feature,
@@ -1845,7 +1859,9 @@ changed or how to migrate.
 generated artifact and installation instructions, then appends the curated
 notes for the exact released version from the configured project changelog.
 The release must not silently omit notes, duplicate them, or pull text from
-`[Unreleased]` or another version. Projects with no curated notes retain the
+another version, and `[Unreleased]` can never substitute for the version section
+(KI-78 folds pending `[Unreleased]` entries into the dated section in the candidate before
+the gate and tag). Projects with no curated notes retain the
 generated body. This works for each CMRU-managed artifact type and custom
 changelog paths.
 
@@ -1856,8 +1872,8 @@ publication side effects.
 
 **Oracles:** a fixture with Added, Fixed, and migration notes proves their
 order after the generated installation block and exact preservation of
-Markdown; a second version and an `[Unreleased]` section prove no cross-version
-mixing; empty-note and missing-section cases distinguish “no notes” from
+Markdown; a second version proves no cross-version mixing and an `[Unreleased]`
+section is never substituted for a missing version section (KI-78 owns appending it); empty-note and missing-section cases distinguish “no notes” from
 “could not read the requested notes”; tests bind the dry-run preview to the
 body passed to the publisher. README, DESIGN-GUIDE, and CONSUMERS explain the
 note source, ordering, preview, and failure behavior before the feature ships.
@@ -1889,3 +1905,41 @@ failures; the generated installer can still install and update the signed
 bundle; README, DESIGN-GUIDE, and CONSUMERS distinguish bootstrap integrity
 from bundle integrity. Consider whether the workflow can retain the desired
 one-command UX without shell-specific pipe-status traps.
+
+### KI-77 — the release gate lacks container resource-event evidence on non-mutation lanes and cannot confine every shared Git ref
+
+**Status:** partly implemented in the CMRU candidate; gate evidence pending; severity: major.
+
+**Observed (review D-2, D-3, plus C-2 follow-up):** Run-Gate's common Git directory remains read-write; only hooks and `info/` receive the documented mounts. CMRU checks `run-gate --version` against installed wheel metadata, requires SemVer `24.0.0` or later, records the wheel version in the gate manifest, and protects existing tags plus monotonic `main` during each lane. New refs and unrelated existing branch refs remain writable and unguarded; fully confining those needs Run-Gate mount changes. Separately only `[lanes.mutation]` opts into `resource_observer = "cgprofile"`; the other container lanes (`installed-wheel*`, `ref-probe`, `assay`, `coverage`, `canary`) rely on `--init`, `--pids-limit` and their command surfacing its own fork/OOM failure, and the docs do not say which lanes carry container-level event evidence.
+
+**Expected:** the CMRU-side stable Run-Gate floor and identity check remain in the release gate; short ephemeral lanes declare `resource_observer` plus `resources.memory`/`resources.pids` where Run-Gate supports it, with docs naming exactly which lanes receive event evidence. In a Run-Gate follow-up, make shared Git refs read-only except for exact worktree refs a lane must create; CMRU's current `main`/tag checks are detection, not mount-level prevention.
+
+**Oracle:** a gate run against Run-Gate below SemVer `24.0.0`, a development/local package, or a CLI/package version mismatch refuses before any CMRU sub-lane; the manifest records the stable wheel version. Tests demonstrate container-event evidence on each declared lane and that a lane cannot rewrite/delete a release tag or move `main` non-fast-forward.
+
+### KI-78 — `[Unreleased]` entries (migration notes included) do not reach the immutable release notes — *implemented in branch `cmru-release-fixes-20261013`, pending review and registered aggregate gate; severity: major (upgrade guidance can be lost or duplicated)*
+
+**Observed:** KI-30 used to refuse a tagged release while `## [Unreleased]` had content. The first KI-78 implementation appended those notes to the release body, then changed the changelog after publication. Review found that a post-publish commit could fail after the release was public, direct `cmru publish --from-checkout` could read later mutable text, and image-only publishers could mark notes published without a GitHub body.
+
+**Operator requirement:** include pending changes and migration guidance below the generated install information in a published GitHub Release. The body and tag must use the same changelog bytes. Every tagged release, including `--no-build` and image-only releases, carries pending notes in the tagged changelog; only a CMRU GitHub Release-body handler publishes them in a GitHub Release body. Dry runs and failed transactions keep the source branch unchanged.
+
+**Current implementation:**
+- `changelog.fold_unreleased_notes` moves pending notes into the generated dated section in the disposable candidate before the gate and tag. A private marker block preserves those notes if the generated section must be refreshed; KI-68 still refuses unrelated hand edits.
+- `compose_release_body` uses the exact section from the tag or retained build source. A direct `cmru publish --from-checkout` resolves the matching local release tag and does not read mutable working-tree changelog text.
+- The release transaction has no post-publish changelog commit. Promotion carries the candidate to `main` only after the publish succeeds. Dry-run temporarily stages the same candidate section and restores original bytes.
+- Notes fold into every tagged candidate. A CMRU `wheel-publish` or `tarball-publish` handler also publishes that section in the GitHub Release body; `--no-build` and other publisher commands do not create a body. Custom changelog paths remain excluded from project change detection.
+- Release H2 parsing ignores comments and fenced code blocks, refuses duplicate or misspelled `[Unreleased]` headings, and does not let example headings truncate the released section.
+- README, DESIGN-GUIDE, CONSUMERS, RELEASE-TRANSACTIONS, and the CMRU changelog describe the same behavior.
+
+**Known limit:** if publication succeeds but promotion fails, the public tag and body still match the retained candidate; source `main` keeps its pending notes until the candidate is recovered and promoted. The existing post-publication recovery path remains the authority for that transaction state.
+
+**Acceptance oracles (`tests/test_unreleased_notes.py`, `tests/test_release_notes.py`):**
+1. A candidate with migration notes folds them into the exact dated section; the generated install block precedes that section, Markdown fences survive, and the body contains each note once.
+2. The registered dry-run preview uses the same staged section and restores the source bytes.
+3. Release preparation commits the folded notes before the candidate gate for every tagged release; a CMRU GitHub Release-body handler publishes them, while `--no-build` and other publishers retain them in the tag's changelog without a GitHub Release body.
+4. A failed publish creates no post-publish changelog commit; a promotion failure leaves source `main` untouched.
+5. Direct publish uses the matching tag despite later working-tree edits and refuses when it cannot resolve that tag; retained-build publication uses its manifest source commit.
+6. Fenced-code and HTML-comment examples do not truncate H2 sections; duplicate and near-miss `[Unreleased]` headings refuse.
+7. Regenerating a stale generated section preserves CMRU's marked folded-note block and still refuses unrelated hand edits.
+8. A custom changelog path folds correctly, and changelog-only commits remain excluded from project change detection.
+
+**Verification:** the registered coverage lane passed at `187366468` before this KI-78 correction. Run the registered coverage lane and aggregate `gate` on the final reviewed commit; do not use `./run-gate.py` (CMRU now invokes the installed `run-gate` CLI).

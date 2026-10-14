@@ -118,6 +118,9 @@ assert any(r.startswith("cli-extended") for r in metadata.requires("cmru") or ()
 print("cmru local, Run-Gate installed:", run_gate_version,
       "; cli-extended release:", released)
 PY'''
+# The run-uid identity block as the Dockerfile declares it (da06e52de gave the
+# uid its own group 1003 instead of squatting on the host's docker gid 994),
+# joined the way the Dockerfile reader joins continuation lines.
 CMRU_POST_INSTALL_IDENTITY_RUN = (
     'RUN if getent group 1003 >/dev/null; then '
     'test "$(getent group 1003 | cut -d: -f1)" != docker; '

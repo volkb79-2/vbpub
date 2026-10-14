@@ -93,6 +93,7 @@ def test_run_step_executes_in_the_project_root_with_env_and_protected_runtime(pr
     assert kwargs["extra_env"]["DEMO_FLAG"] == "on"
     assert kwargs["protected_env"]["CMRU_RUNTIME_KIND"] == "none"
     assert Path(kwargs["protected_env"]["CMRU_INTERNAL_BIN"]).name == "cmru"
+    assert kwargs["protected_env"]["CMRU_RELEASE_NOTES_SOURCE"] == "changelog:CHANGES.md"
 
 
 def test_run_step_quiet_detail_goes_to_the_project_local_log_root(project, monkeypatch, capsys):

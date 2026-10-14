@@ -6,7 +6,10 @@ import argparse
 import fcntl
 import json
 import os
+import re
+import shlex
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -24,15 +27,25 @@ REPOSITORY_ROOT = PROJECT_ROOT.parent
 SECRET_ENV_KEYS = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN")
 FACTS_ENV_KEY = "CMRU_ASSAY_BASELINE_FACTS"
 EXTRA_MOUNTS_ENV_KEY = "RUN_GATE_EXTRA_MOUNTS"
+REF_PROBE_LANE = "ref-probe"
+RUN_GATE_MIN_VERSION = "24.0.0"  # First wheel-only SemVer release with the hook/info protections.
+# The gate-only variant of installed-wheel: it refuses to run unless it is
+# inside this gate's fresh, snapshot-bound manifest. The plain `installed-wheel`
+# lane stays runnable directly (it bypasses the secret boundary, as documented).
+LIVE_WHEEL_LANE = "installed-wheel-live"
+# Every directory the gate puts on ``sys.path`` (or whose scripts it runs), so a
+# stray top-level module such as ``cmru/src/json.py`` is as visible as a
+# package helper.
 _GATE_CODE_ROOTS = (
-    "cmru/src/cmru",
+    "cmru/src",
     "cmru/tools",
-    "assay/src/assay",
+    "assay/src",
     "assay/analysis/src",
     "assay/tools",
-    "libraries/worktree/src/worktree",
+    "libraries/worktree/src",
 )
 _CODE_SUFFIXES = {".py", ".pyc", ".pyo", ".so", ".pyd"}
+_HASH_CHUNK = 200
 
 
 class GateInterrupted(SystemExit):
@@ -65,6 +78,7 @@ def _load_components():
     """Load the selected worktree's CMRU, Assay and baseline helper sources."""
     for source in (
         PROJECT_ROOT / "src",
+        PROJECT_ROOT / "tools",
         REPOSITORY_ROOT / "assay" / "src",
         # cli_extended is the INSTALLED released wheel (CX-D1), never a source root.
         REPOSITORY_ROOT / "libraries" / "worktree" / "src",
@@ -74,6 +88,103 @@ def _load_components():
     import prepare_assay_baseline
 
     return assay_git, prepare_assay_baseline
+
+
+def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
+    """Require and identify the stable Run-Gate judge used by this gate."""
+    executable = shutil.which("run-gate")
+    if executable is None:
+        raise RuntimeError("the registered CMRU gate requires the installed run-gate CLI")
+    command = Path(executable)
+    try:
+        with command.open(encoding="utf-8") as stream:
+            first_line = stream.readline().strip()
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"cannot read the installed run-gate launcher: {command}: {exc}") from exc
+    if not first_line.startswith("#!"):
+        raise RuntimeError(f"installed run-gate launcher has no Python shebang: {command}")
+    interpreter = shlex.split(first_line[2:])
+    if not interpreter:
+        raise RuntimeError(f"installed run-gate launcher has an empty Python shebang: {command}")
+    if interpreter[0] == "/usr/bin/env":
+        if len(interpreter) < 2 or interpreter[1].startswith("-"):
+            raise RuntimeError(f"installed run-gate launcher has an unsupported env shebang: {command}")
+        resolved = shutil.which(interpreter[1])
+        if resolved is None:
+            raise RuntimeError(
+                f"cannot resolve the Python interpreter named by run-gate: {interpreter[1]}"
+            )
+        interpreter = [resolved, *interpreter[2:]]
+    elif not Path(interpreter[0]).is_absolute():
+        raise RuntimeError(f"installed run-gate launcher has a non-absolute interpreter: {command}")
+
+    try:
+        cli_version_result = subprocess.run(
+            [executable, "--version"],
+            cwd=repo_root / "cmru",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not run installed Run-Gate `--version`: {exc}") from exc
+    if cli_version_result.returncode != 0:
+        detail = cli_version_result.stderr.strip() or cli_version_result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot read installed Run-Gate version: {detail}")
+    cli_version_lines = cli_version_result.stdout.strip().splitlines()
+    cli_match = (
+        re.fullmatch(r"run-gate ([0-9]+\.[0-9]+\.[0-9]+)", cli_version_lines[0])
+        if len(cli_version_lines) == 1 else None
+    )
+    if cli_match is None:
+        raise RuntimeError(
+            "installed run-gate --version returned an unrecognized SemVer identity: "
+            f"{cli_version_result.stdout.strip()!r}"
+        )
+    cli_version = cli_match.group(1)
+
+    version_code = (
+        "from importlib.metadata import version; "
+        "print(version('run-gate'))"
+    )
+    try:
+        version_result = subprocess.run(
+            [*interpreter, "-I", "-B", "-c", version_code],
+            cwd=repo_root / "cmru",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not inspect the installed Run-Gate package version: {exc}") from exc
+    if version_result.returncode != 0:
+        detail = version_result.stderr.strip() or version_result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot read installed Run-Gate package version: {detail}")
+    package_version = version_result.stdout.strip()
+    package_match = re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+        package_version,
+    )
+    if package_match is None:
+        raise RuntimeError(
+            "CMRU's release gate requires a stable released Run-Gate wheel; "
+            f"installed package version is {package_version!r}"
+        )
+    if cli_version != package_version:
+        raise RuntimeError(
+            "installed run-gate CLI version does not match its wheel metadata: "
+            f"CLI reports {cli_version!r}, package metadata reports {package_version!r}"
+        )
+    package_key = tuple(int(part) for part in package_match.groups())
+    minimum_key = tuple(int(part) for part in RUN_GATE_MIN_VERSION.split("."))
+    if package_key < minimum_key:
+        raise RuntimeError(
+            f"CMRU's release gate requires Run-Gate {RUN_GATE_MIN_VERSION} or later "
+            f"for read-only host hook/info mounts; installed version {package_version} is too old"
+        )
+    return {"version": package_version}
 
 
 def _preflight_assay_source(repo_root: Path) -> None:
@@ -121,8 +232,7 @@ def _lane_environment() -> dict[str, str]:
     return environment
 
 
-def _assert_no_untracked_gate_code(repo_root: Path) -> None:
-    """Refuse Python helpers outside HEAD before importing or executing them."""
+def _hardened_git_environment() -> dict[str, str]:
     environment = os.environ.copy()
     environment.update({
         "GIT_CONFIG_NOSYSTEM": "1",
@@ -138,34 +248,91 @@ def _assert_no_untracked_gate_code(repo_root: Path) -> None:
     for key in tuple(environment):
         if key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_"):
             environment.pop(key, None)
+    return environment
+
+
+def _git_output(repo_root: Path, *args: str) -> bytes:
     result = subprocess.run(
-        [
-            "git", "ls-files", "--others", "--ignored", "--exclude-standard",
-            "-z", "--", *_GATE_CODE_ROOTS,
-        ],
-        cwd=repo_root, env=environment, capture_output=True, check=False,
+        ["git", *args], cwd=repo_root, env=_hardened_git_environment(),
+        capture_output=True, check=False,
     )
     if result.returncode:
         detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
-        raise RuntimeError(f"cannot inventory gate helper source files: {detail}")
-    unsafe: list[str] = []
-    for raw_path in result.stdout.split(b"\0"):
-        if not raw_path:
-            continue
-        relative = PurePosixPath(os.fsdecode(raw_path))
-        if "__pycache__" in relative.parts:
-            continue  # private PYTHONPYCACHEPREFIX below makes these irrelevant
-        path = repo_root.joinpath(*relative.parts)
-        try:
-            metadata = path.lstat()
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(metadata.st_mode) or relative.suffix in _CODE_SUFFIXES:
-            unsafe.append(relative.as_posix())
-    if unsafe:
+        raise RuntimeError(f"cannot bind gate helper source to HEAD: git {args[0]}: {detail}")
+    return result.stdout
+
+
+def _tracked_gate_code(repo_root: Path) -> dict[str, str]:
+    """Map each gate-code path in HEAD to its blob id."""
+    listing = _git_output(
+        repo_root, "ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", *_GATE_CODE_ROOTS,
+    )
+    tracked: dict[str, str] = {}
+    for entry in listing.split(b"\0"):
+        if entry:
+            meta, _separator, raw_path = entry.partition(b"\t")
+            tracked[os.fsdecode(raw_path)] = meta.split(b" ")[2].decode("ascii")
+    return tracked
+
+
+def _disk_gate_code(repo_root: Path, tracked: Mapping[str, str]):
+    """Return ``(untracked_code, symlinks, present_tracked)`` found under the roots."""
+    untracked: list[str] = []
+    symlinks: list[str] = []
+    present: list[str] = []
+    for root in _GATE_CODE_ROOTS:
+        for current, directories, files in os.walk(repo_root / root, followlinks=False):
+            # A private PYTHONPYCACHEPREFIX makes checkout-local bytecode irrelevant.
+            directories[:] = [name for name in directories if name != "__pycache__"]
+            current_path = Path(current)
+            for name in directories:
+                if (current_path / name).is_symlink():
+                    symlinks.append((current_path / name).relative_to(repo_root).as_posix())
+            for name in files:
+                path = current_path / name
+                relative = path.relative_to(repo_root).as_posix()
+                if stat.S_ISLNK(path.lstat().st_mode):
+                    symlinks.append(relative)
+                elif relative in tracked:
+                    present.append(relative)
+                elif PurePosixPath(relative).suffix in _CODE_SUFFIXES:
+                    untracked.append(relative)
+    return untracked, symlinks, present
+
+
+def _assert_no_untracked_gate_code(repo_root: Path) -> None:
+    """Refuse gate code that is not byte-identical to the claimed HEAD.
+
+    The gate claims to judge one exact commit, yet its own helpers are imported
+    from the caller's mutable tree. Every file under each import root must
+    therefore be (a) tracked in HEAD, or non-code (b) with a working-tree blob
+    equal to HEAD's, and (c) free of symlinks. Plain untracked and ignored
+    helpers are both refused, as is a tracked helper edited, replaced or deleted
+    since HEAD, before anything imports or executes it.
+    """
+    tracked = _tracked_gate_code(repo_root)
+    untracked, symlinks, present = _disk_gate_code(repo_root, tracked)
+    modified = sorted(set(tracked) - set(present) - set(symlinks))
+    for start in range(0, len(present), _HASH_CHUNK):
+        chunk = present[start:start + _HASH_CHUNK]
+        digests = _git_output(
+            repo_root, "hash-object", "--no-filters", "--", *chunk,
+        ).decode("ascii").split()
+        if len(digests) != len(chunk):
+            raise RuntimeError("cannot bind gate helper source to HEAD: hash-object mismatch")
+        modified.extend(
+            path for path, digest in zip(chunk, digests) if digest != tracked[path]
+        )
+    problems = []
+    if untracked:
+        problems.append("untracked or ignored executable source: " + ", ".join(untracked[:8]))
+    if symlinks:
+        problems.append("symlinks: " + ", ".join(symlinks[:8]))
+    if modified:
+        problems.append("tracked source changed from HEAD: " + ", ".join(sorted(modified)[:8]))
+    if problems:
         raise RuntimeError(
-            "release gate refuses untracked or ignored executable source outside "
-            "the selected HEAD: " + ", ".join(unsafe[:8])
+            "release gate code is not bound to the selected HEAD; " + "; ".join(problems)
         )
 
 
@@ -299,14 +466,19 @@ def _invoke_lane(
 
 def _run_snapshot_lane(
         repo_root: Path, lane: str, environment: Mapping[str, str], snapshot,
-        gate_snapshot) -> int:
+        gate_snapshot, *, after_success=None) -> int:
     _assert_no_untracked_gate_code(repo_root)
+    # Refresh the host manifest FIRST: prepare_lane seeds the lane's copy from
+    # it, and the live-snapshot check accepts only a manifest this recent.
+    gate_snapshot.write_snapshot_manifest(snapshot, "running")
     gate_snapshot.prepare_lane(snapshot, lane)
     try:
         result = _invoke_lane(
             repo_root, lane, environment, snapshot.worktree_path,
         )
         snapshot.lane_exit_codes[lane] = result
+        if result == 0 and after_success is not None:
+            after_success(snapshot)
         return result
     except GateInterrupted as exc:
         snapshot.lane_exit_codes[lane] = 128 + exc.signum
@@ -316,6 +488,8 @@ def _run_snapshot_lane(
         raise
     finally:
         try:
+            if lane == REF_PROBE_LANE:
+                gate_snapshot.delete_probe_refs(snapshot)
             gate_snapshot.finish_lane(snapshot, lane)
         finally:
             gate_snapshot.write_snapshot_manifest(snapshot, "running")
@@ -352,6 +526,7 @@ def _run_release_gate_with_private_cache(
         )
     _assert_no_untracked_gate_code(repo_root)
     _preflight_assay_source(repo_root)
+    run_gate_identity = _check_run_gate_identity(repo_root)
     assay_git, baseline = _load_components()
     if assay_git.repo_top(project_root).resolve() != repo_root:
         raise RuntimeError("selected CMRU project does not belong to the requested worktree")
@@ -365,6 +540,12 @@ def _run_release_gate_with_private_cache(
         snapshot = gate_snapshot.open_gate_snapshot(repo_root)
         state = "incomplete"
         try:
+            if snapshot.run_gate_identity and snapshot.run_gate_identity != run_gate_identity:
+                raise RuntimeError(
+                    "resumed CMRU gate snapshot was judged by a different Run-Gate identity; "
+                    "remove the finished snapshot and start a fresh gate"
+                )
+            snapshot.run_gate_identity = run_gate_identity
             gate_snapshot.plant_source_canary(snapshot)
             gate_snapshot.write_snapshot_manifest(snapshot, "running")
             try:
@@ -407,7 +588,16 @@ def _run_locked_gate(
     lane_environment = _lane_environment()
     from cmru import gate_snapshot
 
-    for lane in ("installed-wheel", "assay", "coverage"):
+    # Live detector probe first: a lane that writes a protected ref from inside
+    # the real tester container must be seen by the gate, or no later lane's
+    # silence about refs means anything.
+    result = _run_snapshot_lane(
+        repo_root, REF_PROBE_LANE, lane_environment, snapshot, gate_snapshot,
+        after_success=gate_snapshot.verify_ref_probe_detected,
+    )
+    if result:
+        return result
+    for lane in (LIVE_WHEEL_LANE, "assay", "coverage"):
         result = _run_snapshot_lane(
             repo_root, lane, lane_environment, snapshot, gate_snapshot,
         )

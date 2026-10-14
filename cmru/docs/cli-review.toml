@@ -3912,6 +3912,110 @@ effects = ["Presentation only; refuses outside a repository (exit 2); read-only.
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[worktrees/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/constraint-requires/1"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:3dce113e4996da6a18620fd46158f1fdcd5eaa0eb0f786564e1818dc1d8679ba"
+rationale = "A removal preview is only meaningful with --remove: --dry-run alone is refused instead of silently listing."
+invocation = ["gate-snapshots", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--dry-run requires --remove"
+effects = ["Refused as a usage error (exit 2) before any repository is inspected; nothing is read or removed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/constraint-requires/1]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:20bcdc64fa444fae97e819f3e401c79eef76a9328fff6527e9efdc9dd3bffccd"
+rationale = "Bare `gate-snapshots` is the read-only listing of retained release-gate snapshots; --remove is the opt-in mutation (mixed-operations verb)."
+invocation = ["gate-snapshots"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:75c06b800556d5a6bfd73a9f03ebee5a5bff0a8f3fb8b5cc079bc7198b97c5b1"
+rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
+invocation = ["gate-snapshots", "--debug-raw"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the warning, then refuses outside a repository (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3dc2bd586aae61a337d5b093f7af6940e9257668530e2a182df87806fe5a9c99"
+rationale = "--dry-run (with --remove) previews which snapshots would be removed without removing anything."
+invocation = ["gate-snapshots", "--remove", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); nothing is removed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--include-current/--include-current"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:58b898866c1da1ddeba5aebd89ae8a5440ebb8bf9ca6452c820ea11453d4b097"
+rationale = "--include-current widens what counts as removable to a snapshot whose source is still at its commit (it can then no longer resume); lease and source-observability refusals still apply."
+invocation = ["gate-snapshots", "--include-current"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); read-only without --remove."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--include-current/--include-current]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:432476a85d9fc7871020f496a0654ad9d404062aa46bcbbfc9c690ceabc957d8"
+rationale = "--json emits machine-readable gate-snapshot reports (a genuine output mode, not a mutation selector)."
+invocation = ["gate-snapshots", "--json"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--json/--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e0b686d58dd2da8b97e7eb3a562768409ed85634138c32202f78e164b2070f26"
+rationale = "Consumer-global presentation option; output only."
+invocation = ["gate-snapshots", "--log-prefix-time-short"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Presentation only; refuses outside a repository (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--remove/--remove"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9a41a4adf8c6bcbc03156cade9e767325eb1221c2fc4e4df26d25ae1cf9ddcfc"
+rationale = "--remove is the opt-in deletion of every snapshot judged removable; each is re-judged from fresh facts and a live or unprovable one is kept."
+invocation = ["gate-snapshots", "--remove"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2) before anything is removed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--remove/--remove]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/skills/check/exclusive-conflict/target/option:route:entrypoint:cmru/skills/check/--dest/option:route:entrypoint:cmru/skills/check/--harness"
 state = "active"
 decision = "refuse"

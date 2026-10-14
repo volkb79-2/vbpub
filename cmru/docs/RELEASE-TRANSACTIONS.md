@@ -255,11 +255,16 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
 
 ### Release history behaviour changes (REL-02, REL-10)
 
-- **A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body**
-  (KI-30). cmru generates the notes for the release, so hand-written text left under
-  `[Unreleased]` would be silently dropped or duplicated. Remedy: move the text into the
-  generated notes of the release (or the project's own release-notes source), or empty the
-  section (a comment may stay). A comment-only body is accepted.
+- **A non-empty plain `## [Unreleased]` section is folded into every tagged candidate before
+  the gate and tag (KI-78).** For a CMRU GitHub Release-body handler, the text is appended
+  verbatim inside the generated dated version section, then the exact tagged section is used
+  in the GitHub Release body (`--dry-run` prints that same body). The release tag and body
+  therefore describe the same notes. `--no-build` and image-only publishers still carry the
+  notes in the tagged changelog, but do not publish a GitHub Release body. Failed gates,
+  builds, publishes, and promotions leave source `main`'s `[Unreleased]` unchanged. No
+  post-publish changelog commit is needed. The project's configured
+  changelog path remains excluded from change detection. This replaces the KI-30 refusal;
+  a comment-only body is still just an empty section.
 - **Regenerating a stale generated section overwrites hand edits inside it.** When project
   commits landed after a generated section's `source-end` cursor (for example on `--resume`
   of a candidate that was prepared earlier), the section is rebuilt in place from the project
@@ -271,11 +276,13 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
   reworded entry) is only safe if the SAME final commit also advances that section's
   `<!-- cmru: source-end=<sha> -->` marker to the project's current head, so cmru sees the section
   as current and keeps it byte-identical. Otherwise any project commit landing after the old
-  `source-end` makes cmru regenerate the section from commit subjects and silently drop the
-  edit (seen in run-gate 23.10.0, whose release lost hand-curated text that two of its tests
-  pin). The alternative that cannot go wrong: curate AFTER the release (a post-release
-  commit, keeping the markers intact). Tracked as KI-68 (a WARN when regeneration discards
-  non-generated lines).
+  `source-end` makes cmru need to regenerate the section from commit subjects. It used to drop
+  the edit silently (seen in run-gate 23.10.0, whose release lost hand-curated text that two of
+  its tests pin); since KI-68 it **refuses** instead (exit 4, before any gate or tag), listing
+  up to 20 lines the generator would not produce, with no override flag. Curated release
+  notes (KI-75) live in that section, so advancing `source-end` in the same commit is how they
+  survive. Text that is not release notes can still be curated AFTER the release (a
+  post-release commit, keeping the markers intact).
 
 ### Post-publication recovery
 

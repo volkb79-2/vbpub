@@ -10,6 +10,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -35,6 +36,13 @@ _MUTATION_RESUME_FILES = (
     "cmru/.assay/progress-mutation-cmru.jsonl",
 )
 _SNAPSHOT_MANIFEST = "cmru/.assay/release-gate-snapshot.json"
+# Run-Gate keeps resume state at the judged tree's root AND a per-project store
+# (history + locks) beside the project; both are ignored, validated, and kept
+# between lanes. Nothing else a lane leaves behind is.
+_RUN_GATE_STATE_DIRS = (".run-gate", "cmru/.run-gate")
+_CLEAN_KEEP = tuple(
+    argument for state in _RUN_GATE_STATE_DIRS for argument in ("-e", f"/{state}/")
+)
 _EVIDENCE_SET = frozenset((*_LANE_EVIDENCE_FILES, _SNAPSHOT_MANIFEST))
 _MAX_EVIDENCE_BYTES = 512 * 1024 * 1024
 _MAX_STATE_FILE_BYTES = 64 * 1024 * 1024
@@ -86,8 +94,6 @@ def _linked_git_context(root: Path, *, expected_common: Path | None = None):
         )
     if admin.parent != common / "worktrees":
         raise RuntimeError(f"linked-worktree admin dir is outside its common worktrees dir: {admin}")
-    if not common.is_dir():
-        raise RuntimeError(f"linked-worktree common Git dir is not a directory: {common}")
     return admin, common
 
 
@@ -122,47 +128,90 @@ def _process_start_ticks(pid: int) -> str | None:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
     except OSError:
         return None
-    close = raw.rfind(")")
-    if close < 0:
-        return None
-    fields = raw[close + 2:].split()  # field 3 (state) is index zero
+    # The command name (field 2) may contain spaces and parentheses; the last ")"
+    # ends it, and field 3 (state) is then index zero.
+    fields = raw[raw.rfind(")") + 2:].split()
     return fields[19] if len(fields) > 19 else None
 
 
-def _stale_gate_lease(lease) -> bool:
-    """Recognize a dead local CMRU gate holder; unknown holders stay protected."""
-    if lease is None or not lease.holder.startswith("cmru-gate:"):
-        return False
+def _local_namespace_identity() -> str | None:
+    """Identify this PID namespace and boot so a holder's PID can be interpreted.
+
+    A PID is meaningful only inside the namespace that issued it. The pair
+    (PID-namespace inode, boot id) lets a later process decide whether
+    "this PID is absent" is evidence about the holder or merely about where it
+    is looking.
+    """
+    try:
+        link = os.readlink("/proc/self/ns/pid")
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii")
+    except OSError:
+        return None
+    match = re.fullmatch(r"pid:\[(\d+)\]", link)
+    boot_id = boot.strip().replace("-", "")
+    if match is None or not boot_id.isalnum():
+        return None
+    return f"{match.group(1)}:{boot_id}"
+
+
+def _new_lease_holder() -> str:
+    """Name this process as a gate holder, with the facts needed to judge it later."""
+    nonce = uuid.uuid4().hex[:10]
+    start_ticks = _process_start_ticks(os.getpid())
+    identity = _local_namespace_identity()
+    if start_ticks is None or identity is None:
+        # Unprovable holder: every later liveness question is "indeterminate".
+        return f"cmru-gate:{os.getpid()}:{nonce}"
+    return f"cmru-gate:{os.getpid()}:{start_ticks}:{nonce}:{identity}"
+
+
+LEASE_LIVE = "live"
+LEASE_DEAD = "dead"
+LEASE_INDETERMINATE = "indeterminate"
+
+
+def gate_lease_state(lease, *, now: datetime | None = None) -> str:
+    """Classify a snapshot lease as live, dead, or indeterminate.
+
+    ``dead`` needs POSITIVE evidence: no lease, an expired lease whose holder is
+    not a CMRU gate, or a CMRU holder from THIS PID namespace whose process is
+    gone. Everything else that is not provably alive is ``indeterminate``. An
+    unexpired lease is never dead unless its same-namespace process is provably
+    gone: the TTL is a floor under every other claim, so a PID that is merely
+    absent from this namespace (another container, a host path) cannot release it.
+    """
+    if lease is None:
+        return LEASE_DEAD
+    if lease.expires_at_utc is None:
+        return LEASE_LIVE  # perpetual: an explicit operator-held lease
+    expiry = datetime.fromisoformat(
+        lease.expires_at_utc[:-1] + "+00:00"
+        if lease.expires_at_utc.endswith("Z") else lease.expires_at_utc
+    )
+    expired = expiry <= (now or datetime.now(timezone.utc))
     fields = lease.holder.split(":")
-    if len(fields) not in (3, 4) or not fields[1].isdecimal():
-        return False
+    if fields[0] != "cmru-gate":
+        return LEASE_DEAD if expired else LEASE_LIVE
+    foreign = LEASE_INDETERMINATE if expired else LEASE_LIVE
+    if len(fields) != 6 or not fields[1].isdecimal():
+        return foreign  # legacy or unprovable holder format
+    if f"{fields[4]}:{fields[5]}" != _local_namespace_identity():
+        return foreign  # issued in another PID namespace or boot
     pid = int(fields[1])
     start_ticks = _process_start_ticks(pid)
-    if start_ticks is None:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        except (PermissionError, OSError):
-            return False
-        return False
-    return len(fields) == 4 and fields[2] != start_ticks
+    if start_ticks is not None:
+        return LEASE_LIVE if start_ticks == fields[2] else LEASE_DEAD
+    if Path(f"/proc/{pid}").exists():
+        return LEASE_INDETERMINATE  # present but unreadable: cannot judge
+    return LEASE_DEAD
 
 
 def _worktree_api():
-    try:
-        import worktree
-        return worktree
-    except ModuleNotFoundError:
-        # Source execution from a checkout; release wheels carry this same
-        # package through CMRU's package-dir mapping.
-        source = Path(__file__).resolve().parents[3] / "libraries" / "worktree" / "src"
-        if source.is_dir():
-            import sys
-            sys.path.insert(0, str(source))
-            import worktree
-            return worktree
-        raise
+    # Release wheels carry `worktree` through CMRU's package-dir mapping; a
+    # source run puts libraries/worktree/src on sys.path (the release gate's
+    # `_load_components` does, and so do the registered lanes).
+    import worktree
+    return worktree
 
 
 @contextlib.contextmanager
@@ -195,44 +244,24 @@ def _host_git_policy() -> Iterator[None]:
 
 
 @contextlib.contextmanager
-def host_git_hooks_disabled(root: Path | None = None) -> Iterator[None]:
-    """Harden host Git calls and optionally pin them to a verified worktree."""
-    raw_count = os.environ.get("GIT_CONFIG_COUNT", "0")
-    if not raw_count.isdecimal():
-        raise RuntimeError("GIT_CONFIG_COUNT is malformed; refusing release-gate Git")
-    index = int(raw_count)
-    updates = {
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_CONFIG_COUNT": str(index + 2),
-        f"GIT_CONFIG_KEY_{index}": "core.hooksPath",
-        f"GIT_CONFIG_VALUE_{index}": os.devnull,
-        f"GIT_CONFIG_KEY_{index + 1}": "core.fsmonitor",
-        f"GIT_CONFIG_VALUE_{index + 1}": "false",
-    }
-    previous = {key: os.environ.get(key) for key in updates}
-    git_paths = None
-    if root is not None:
-        admin, _common = _linked_git_context(root)
-        git_paths = {
-            "GIT_DIR": str(admin),
-            "GIT_WORK_TREE": str(root.resolve(strict=True)),
-        }
-        previous.update({key: os.environ.get(key) for key in git_paths})
-    try:
-        os.environ.update(updates)
-        if git_paths:
-            os.environ.update(git_paths)
-        yield
-    finally:
-        for key, value in previous.items():
-            if value is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = value
+def host_git_hooks_disabled(root: Path) -> Iterator[None]:
+    """Harden host Git calls and pin them to a verified linked worktree."""
+    admin, _common = _linked_git_context(root)
+    pins = {"GIT_DIR": str(admin), "GIT_WORK_TREE": str(root.resolve(strict=True))}
+    previous = {key: os.environ.get(key) for key in pins}
+    with _host_git_policy():
+        try:
+            os.environ.update(pins)
+            yield
+        finally:
+            for key, value in previous.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
-def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+def _git(root: Path, *args: str, input: bytes | None = None) -> subprocess.CompletedProcess:
     admin, _common = _linked_git_context(root)
     with _host_git_policy():
         environment = os.environ.copy()
@@ -240,9 +269,9 @@ def _git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProc
         environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
         result = subprocess.run(
             ["git", *args], cwd=root, env=environment, capture_output=True,
-            text=False, check=False,
+            text=False, check=False, input=input,
         )
-    if check and result.returncode:
+    if result.returncode:
         detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
         raise RuntimeError(
             f"gate snapshot Git command failed ({result.returncode}): "
@@ -256,11 +285,99 @@ def _tracked_paths(root: Path, commit: str) -> list[bytes]:
     return [path for path in result.stdout.split(b"\0") if path]
 
 
-def _refs_sha256(root: Path) -> str:
+_REFS_SCOPE = "protected-refs/1"
+
+
+def protected_ref_patterns(snapshot_branch: str, source_branch: str) -> tuple[str, ...]:
+    """Name the refs only this gate may legitimately move.
+
+    The shared repository holds hundreds of refs that unrelated agents commit
+    to and fetch into while a 14-hour gate runs; digesting all of them reports
+    ordinary estate activity as tester tampering. A tester can plausibly
+    reach, and the verdict depends on, exactly these: the snapshot's own
+    branch, the source branch the gate is judging, and the gate-owned
+    ``refs/cmru-gate/<id>/`` namespace that carries the live detector probe.
+    """
+    identity = snapshot_branch.removeprefix("cmru-gate-")
+    return (
+        f"refs/heads/{snapshot_branch}",
+        f"refs/heads/{source_branch}",
+        f"refs/cmru-gate/{identity}",
+    )
+
+
+def _protected_refs_sha256(root: Path, patterns: tuple[str, ...]) -> str:
     refs = _git(
-        root, "for-each-ref", "--format=%(refname)%00%(objectname)",
+        root, "for-each-ref", "--format=%(refname)%00%(objectname)", *patterns,
     ).stdout
     return hashlib.sha256(refs).hexdigest()
+
+
+def _anchor_ref_values(root: Path) -> dict[str, str]:
+    """Capture pre-existing release tags and main for lane-time integrity checks.
+
+    New tags may be created by an unrelated release while a long gate runs, so
+    they are deliberately not part of the expected set. Existing tags are
+    immutable. ``main`` may advance normally, but must remain a fast-forward.
+    """
+    result = _git(
+        root, "for-each-ref", "--format=%(refname)%00%(objectname)",
+        "refs/heads/main", "refs/tags",
+    )
+    anchors: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        ref_raw, separator, oid_raw = line.partition(b"\0")
+        if not separator or not ref_raw or not oid_raw:
+            raise RuntimeError("Git returned a malformed main/tag ref record")
+        ref = ref_raw.decode("utf-8", "strict")
+        oid = oid_raw.decode("ascii", "strict")
+        if ref != "refs/heads/main" and not ref.startswith("refs/tags/"):
+            raise RuntimeError(f"Git returned an out-of-scope release anchor ref: {ref}")
+        if len(oid) not in (40, 64) or any(char not in "0123456789abcdef" for char in oid):
+            raise RuntimeError(f"Git returned an invalid object id for release anchor {ref}")
+        anchors[ref] = oid
+    return dict(sorted(anchors.items()))
+
+
+def _git_is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
+    admin, _common = _linked_git_context(root)
+    environment = os.environ.copy()
+    environment["GIT_DIR"] = str(admin)
+    environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
+    with _host_git_policy():
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+    raise RuntimeError(f"cannot verify main fast-forward ancestry: {detail}")
+
+
+def _verify_anchor_refs(root: Path, expected: dict[str, str]) -> dict[str, str]:
+    current = _anchor_ref_values(root)
+    for ref, oid in expected.items():
+        actual = current.get(ref)
+        if ref == "refs/heads/main":
+            if actual is None or not _git_is_ancestor(root, oid, actual):
+                raise RuntimeError(
+                    "a release gate lane deleted or moved refs/heads/main non-fast-forward"
+                )
+        elif actual != oid:
+            raise RuntimeError(
+                f"a release gate lane moved or deleted existing release tag {ref}"
+            )
+    # Make a fast-forward main tip the next checkpoint. Comparing every lane
+    # only with the initial tip would miss a lane that rewound main back to that
+    # old tip after an earlier lane had advanced it.
+    return current
 
 
 def _read_snapshot_manifest(source_root: Path) -> dict | None:
@@ -278,16 +395,11 @@ def _read_snapshot_manifest(source_root: Path) -> dict | None:
     return document
 
 
-def _verify_source(root: Path) -> tuple[Path, str]:
+def _verify_source(root: Path) -> tuple[Path, str, str]:
     root = root.resolve(strict=True)
+    # A main checkout has a `.git` directory, which this refuses: the gate
+    # requires a LINKED worktree so its sidecar can attach to the same family.
     _admin, common = _linked_git_context(root)
-    marker = root / ".git"
-    try:
-        marker_stat = marker.lstat()
-    except OSError as exc:
-        raise RuntimeError(f"cannot inspect release gate source Git marker: {marker}") from exc
-    if not stat.S_ISREG(marker_stat.st_mode):
-        raise RuntimeError("CMRU release gate requires a linked Git worktree")
 
     branch = _git(root, "branch", "--show-current").stdout.decode(
         "utf-8", "replace").strip()
@@ -295,8 +407,6 @@ def _verify_source(root: Path) -> tuple[Path, str]:
         "ascii", "replace").strip()
     if not branch:
         raise RuntimeError("CMRU release gate source must be attached to a branch")
-    if not head or any(char not in "0123456789abcdef" for char in head):
-        raise RuntimeError("CMRU release gate source HEAD is not a Git object id")
 
     status = _git(root, "status", "--porcelain=v1", "--untracked-files=no")
     if status.stdout:
@@ -334,31 +444,21 @@ def _verify_source(root: Path) -> tuple[Path, str]:
             "the source commit tracks: " + ", ".join(tracked_evidence[:8])
         )
 
-    if paths:
-        # Keep all path bytes NUL-delimited, including names with whitespace or
-        # newlines; a configured filter may execute a command during checkout.
-        with _host_git_policy():
-            admin, _common = _linked_git_context(root)
-            environment = os.environ.copy()
-            environment["GIT_DIR"] = str(admin)
-            environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
-            attrs = subprocess.run(
-                ["git", "check-attr", "-z", "--stdin", "filter"],
-                cwd=root, env=environment, input=b"\0".join(paths) + b"\0",
-                capture_output=True, check=False,
+    # Keep all path bytes NUL-delimited, including names with whitespace or
+    # newlines; a configured filter may execute a command during checkout.
+    attrs = _git(
+        root, "check-attr", "-z", "--stdin", "filter",
+        input=b"".join(path + b"\0" for path in paths),
+    )
+    fields = attrs.stdout.split(b"\0")
+    for index in range(0, len(fields) - 2, 3):
+        path, attribute, value = fields[index:index + 3]
+        if value not in (b"unspecified", b"unset"):
+            raise RuntimeError(
+                "release gate source declares a Git filter that could execute "
+                f"during checkout: {os.fsdecode(path)}"
             )
-        if attrs.returncode:
-            detail = (attrs.stderr or attrs.stdout).decode("utf-8", "replace").strip()
-            raise RuntimeError(f"cannot inspect Git filter attributes: {detail}")
-        fields = attrs.stdout.split(b"\0")
-        for index in range(0, len(fields) - 2, 3):
-            path, attribute, value = fields[index:index + 3]
-            if attribute == b"filter" and value not in (b"unspecified", b"unset"):
-                raise RuntimeError(
-                    "release gate source declares a Git filter that could execute "
-                    f"during checkout: {os.fsdecode(path)}"
-                )
-    return Path(common).resolve(), head
+    return Path(common).resolve(), head, branch
 
 
 @dataclass
@@ -370,20 +470,37 @@ class GateSnapshot:
     context: object
     lease_holder: str
     refs_sha256: str
+    source_branch: str
+    anchor_refs: dict[str, str] = field(default_factory=dict)
+    run_gate_identity: dict[str, object] = field(default_factory=dict)
     lane_exit_codes: dict[str, int | None] = field(default_factory=dict)
     lane_evidence_sha256: dict[str, dict[str, str]] = field(default_factory=dict)
     source_canary: Path | None = None
     source_canary_identity: tuple[int, int] | None = None
+
+    @property
+    def protected_refs(self) -> tuple[str, ...]:
+        return protected_ref_patterns(self.branch, self.source_branch)
 
 
 def open_gate_snapshot(source_root: Path) -> GateSnapshot:
     """Create or validate the stable linked worktree for one exact source HEAD."""
     api = _worktree_api()
     source_root = source_root.resolve(strict=True)
-    common, head = _verify_source(source_root)
+    common, head, source_branch = _verify_source(source_root)
+    source_anchors = _anchor_ref_values(source_root)
+    if "refs/heads/main" not in source_anchors:
+        raise RuntimeError(
+            "CMRU release gate requires a local refs/heads/main anchor; "
+            "fetch or create the repository's main branch before starting"
+        )
     prior_manifest = _read_snapshot_manifest(source_root)
     manifest_refs = None
-    if prior_manifest and prior_manifest.get("source_commit") == head:
+    if (
+        prior_manifest
+        and prior_manifest.get("source_commit") == head
+        and prior_manifest.get("refs_scope") == _REFS_SCOPE
+    ):
         candidate = prior_manifest.get("git_refs_sha256")
         if isinstance(candidate, str) and len(candidate) == 64 and all(
             char in "0123456789abcdef" for char in candidate
@@ -393,6 +510,51 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         f"{source_root}\0cmru-release-gate\0{head}".encode("utf-8")
     ).hexdigest()[:20]
     branch = f"cmru-gate-{identity}"
+    manifest_anchors = None
+    manifest_judge: dict[str, object] = {}
+    if (
+        prior_manifest
+        and prior_manifest.get("source_commit") == head
+        and prior_manifest.get("snapshot_branch") == branch
+    ):
+        candidate = prior_manifest.get("anchor_refs")
+        if isinstance(candidate, dict) and all(
+            isinstance(ref, str)
+            and (ref == "refs/heads/main" or ref.startswith("refs/tags/"))
+            and isinstance(oid, str)
+            and len(oid) in (40, 64)
+            and all(char in "0123456789abcdef" for char in oid)
+            for ref, oid in candidate.items()
+        ) and "refs/heads/main" in candidate:
+            manifest_anchors = dict(sorted(candidate.items()))
+        elif "anchor_refs" in prior_manifest:
+            raise RuntimeError("CMRU gate snapshot has invalid main/tag ref anchors")
+        candidate_judge = prior_manifest.get("run_gate_identity")
+        candidate_keys = set(candidate_judge) if isinstance(candidate_judge, dict) else set()
+        version = candidate_judge.get("version") if isinstance(candidate_judge, dict) else None
+        stable_version = (
+            isinstance(version, str)
+            and re.fullmatch(
+                r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+                version,
+            ) is not None
+        )
+        legacy_revision = (
+            candidate_keys == {"revision", "version"}
+            and type(candidate_judge.get("revision")) is int
+            and candidate_judge["revision"] >= 0
+        )
+        if stable_version and (candidate_keys == {"version"} or legacy_revision):
+            # Old retained snapshots included the script revision as a second
+            # identity. SemVer is now the sole supported Run-Gate identity.
+            manifest_judge = {"version": version}
+        else:
+            raise RuntimeError(
+                "existing CMRU gate snapshot has no trusted Run-Gate identity; "
+                "remove the retained snapshot with `cmru gate-snapshots --remove "
+                "--include-current` and start a fresh gate"
+            )
+    patterns = protected_ref_patterns(branch, source_branch)
     target = (source_root.parent / branch).resolve()
     records = api.list_workspaces(common)
     record = next((item for item in records if item.worktree_path == target), None)
@@ -415,7 +577,7 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
                 labels={"cmru.purpose": "release-gate"},
                 metadata={"source_commit": head, "source_root": str(source_root)},
             )
-        record = api.find_workspace(common, target)
+        record = api.read_record(context.record_path)
     else:
         if (
             record.purpose != "cmru-gate"
@@ -428,21 +590,23 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
                 f"existing gate snapshot identity does not match this source: {target}"
             )
         context = record.context()
-    if record is None:
-        raise RuntimeError(f"gate snapshot workspace record was not written: {target}")
 
     current_record = api.read_record(record.record_path)
-    if _stale_gate_lease(current_record.lease):
+    if gate_lease_state(current_record.lease) == LEASE_DEAD:
         api.release_lease(current_record)
-    start_ticks = _process_start_ticks(os.getpid())
-    holder = (
-        f"cmru-gate:{os.getpid()}:{start_ticks}:{uuid.uuid4().hex[:10]}"
-        if start_ticks is not None else
-        f"cmru-gate:{os.getpid()}:{uuid.uuid4().hex[:10]}"
-    )
+    holder = _new_lease_holder()
     api.acquire_lease(context, holder=holder, ttl=_LEASE_TTL)
     try:
-        refs_sha256 = record.metadata.get("refs_sha256")
+        if not created and manifest_anchors is None:
+            raise RuntimeError(
+                "existing CMRU gate snapshot has no trusted main/tag ref baseline; "
+                "remove the retained snapshot with `cmru gate-snapshots --remove "
+                "--include-current` and start a fresh gate"
+            )
+        refs_sha256 = (
+            record.metadata.get("refs_sha256")
+            if record.metadata.get("refs_scope") == _REFS_SCOPE else None
+        )
         if refs_sha256 is not None and (
             not isinstance(refs_sha256, str)
             or len(refs_sha256) != 64
@@ -464,34 +628,51 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
             # materialize its first tree before applying the retained-state
             # checks used for retries.
             _git(target, "reset", "--hard", head)
-            refs_sha256 = _refs_sha256(target)
+            refs_sha256 = _protected_refs_sha256(target, patterns)
+            # The source and sidecar share one Git ref store. Keep the baseline
+            # read before allocating the sidecar so a missing main ref cannot
+            # leave a newly registered orphan snapshot behind.
+            anchor_refs = source_anchors
         else:
             # Validate retained state before trusting or deleting anything
             # left by a prior lane. A crashed or tampered checkout must be
             # inspected, not silently cleaned into a passing-looking retry.
             if refs_sha256 is None:
                 # Upgrade a snapshot created before ref-integrity evidence was
-                # recorded. Subsequent resumes compare against this digest.
-                refs_sha256 = _refs_sha256(target)
-            validate_lane_outputs(target, head, expected_refs_sha256=refs_sha256)
+                # recorded (or under another digest scope). Subsequent resumes
+                # compare against this digest.
+                refs_sha256 = _protected_refs_sha256(target, patterns)
+            validate_lane_outputs(
+                target, head, protected_refs=patterns,
+                expected_refs_sha256=refs_sha256,
+                anchor_refs=manifest_anchors,
+            )
+            anchor_refs = manifest_anchors
         # A failed prior lane may have died after writing permitted evidence.
         # Rescue only those named files before resetting its tree.
         copy_evidence_to_source(target, source_root)
         _git(target, "reset", "--hard", head)
-        _git(target, "clean", "-ffdx", "-e", "/.run-gate/")
+        _git(target, "clean", "-ffdx", *_CLEAN_KEEP)
         copy_evidence_to_snapshot(source_root, target)
         _verify_snapshot(context, head)
-        if _refs_sha256(target) != refs_sha256:
-            raise RuntimeError("CMRU gate snapshot refs changed during admission")
-        if record.metadata.get("refs_sha256") != refs_sha256:
+        if (
+            record.metadata.get("refs_sha256") != refs_sha256
+            or record.metadata.get("refs_scope") != _REFS_SCOPE
+        ):
             record = api.read_record(record.record_path)
-            record = replace(record, metadata={**record.metadata, "refs_sha256": refs_sha256})
+            record = replace(record, metadata={
+                **record.metadata, "refs_sha256": refs_sha256,
+                "refs_scope": _REFS_SCOPE,
+            })
             api.write_record(record)
             context = record.context()
     except BaseException:
         api.release_lease(context)
         raise
-    return GateSnapshot(source_root, target, head, branch, context, holder, refs_sha256)
+    return GateSnapshot(
+        source_root, target, head, branch, context, holder, refs_sha256,
+        source_branch, anchor_refs, manifest_judge,
+    )
 
 
 def _verify_snapshot(context, commit: str) -> None:
@@ -525,10 +706,6 @@ def _verify_snapshot(context, commit: str) -> None:
             f"release-gate source HEAD changed during the run: expected {commit}, "
             f"found {source_head}"
         )
-    source_tree = _git(fresh.source_git_root, "rev-parse", f"{commit}^{{tree}}").stdout.strip()
-    snapshot_tree = _git(fresh.worktree_path, "rev-parse", "HEAD^{tree}").stdout.strip()
-    if source_tree != snapshot_tree:
-        raise RuntimeError("gate snapshot tree differs from the exact source commit")
 
 
 def assert_source_head(snapshot: GateSnapshot) -> None:
@@ -548,10 +725,7 @@ def assert_source_head(snapshot: GateSnapshot) -> None:
 
 
 def _safe_regular_file(path: Path, *, max_bytes: int = _MAX_EVIDENCE_BYTES) -> os.stat_result:
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError:
-        raise
+    metadata = path.lstat()  # FileNotFoundError is the caller's "absent" signal
     if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
         raise RuntimeError(f"gate evidence is not a private regular file: {path}")
     if metadata.st_size > max_bytes:
@@ -579,36 +753,25 @@ def _existing_evidence_hashes(root: Path) -> dict[str, str]:
     return hashes
 
 
-def _ensure_real_directory(path: Path, *, create: bool) -> None:
-    if create:
-        path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"gate evidence directory is missing: {path}") from exc
-    if not stat.S_ISDIR(metadata.st_mode):
+def _ensure_real_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not stat.S_ISDIR(path.lstat().st_mode):
         raise RuntimeError(f"gate evidence parent is not a real directory: {path}")
 
 
 def _copy_file(source: Path, destination: Path) -> None:
     try:
-        source_metadata = _safe_regular_file(source)
+        _safe_regular_file(source)
     except FileNotFoundError:
         return
-    _ensure_real_directory(destination.parent, create=True)
-    try:
-        destination_metadata = _safe_regular_file(destination)
-    except FileNotFoundError:
-        destination_metadata = None
-    if destination_metadata is not None and not stat.S_ISREG(destination_metadata.st_mode):
-        raise RuntimeError(f"gate evidence destination is not a regular file: {destination}")
+    _ensure_real_directory(destination.parent)
+    with contextlib.suppress(FileNotFoundError):
+        _safe_regular_file(destination)  # an existing destination must be private too
 
+    # O_NOFOLLOW makes a link swapped in after the check above an error.
     source_fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     temporary: Path | None = None
     try:
-        opened = os.fstat(source_fd)
-        if (opened.st_dev, opened.st_ino) != (source_metadata.st_dev, source_metadata.st_ino):
-            raise RuntimeError(f"gate evidence changed while being opened: {source}")
         with os.fdopen(source_fd, "rb", closefd=False) as stream:
             data = stream.read(_MAX_EVIDENCE_BYTES + 1)
         if len(data) > _MAX_EVIDENCE_BYTES:
@@ -659,8 +822,7 @@ def _generated_cache_path(relative: str) -> bool:
     )
 
 
-def _validate_run_gate_state(root: Path) -> None:
-    state = root / ".run-gate"
+def _validate_run_gate_state(state: Path) -> None:
     try:
         metadata = state.lstat()
     except FileNotFoundError:
@@ -682,15 +844,14 @@ def _validate_run_gate_state(root: Path) -> None:
                     "snapshot Run-Gate state contains a publisher secret: "
                     f"{current_path / name}"
                 )
-            child = current_path / name
-            item = _safe_regular_file(child, max_bytes=_MAX_STATE_FILE_BYTES)
-            if item.st_size > _MAX_STATE_FILE_BYTES:
-                raise RuntimeError(f"snapshot Run-Gate state file is too large: {child}")
+            _safe_regular_file(current_path / name, max_bytes=_MAX_STATE_FILE_BYTES)
 
 
 def validate_lane_outputs(
         snapshot_root: Path, commit: str, *,
-        expected_refs_sha256: str | None = None) -> None:
+        protected_refs: tuple[str, ...],
+        expected_refs_sha256: str | None = None,
+        anchor_refs: dict[str, str] | None = None) -> dict[str, str] | None:
     """Reject lane modifications and ignored outputs outside the state contract."""
     api = _worktree_api()
     _admin, common = _linked_git_context(snapshot_root)
@@ -698,8 +859,18 @@ def validate_lane_outputs(
     if record is None or record.purpose != "cmru-gate":
         raise RuntimeError(f"gate snapshot has no CMRU workspace record: {snapshot_root}")
     _verify_snapshot(record.context(), commit)
-    if expected_refs_sha256 is not None and _refs_sha256(snapshot_root) != expected_refs_sha256:
-        raise RuntimeError("a release gate lane changed shared Git refs")
+    if (
+        expected_refs_sha256 is not None
+        and _protected_refs_sha256(snapshot_root, protected_refs) != expected_refs_sha256
+    ):
+        raise RuntimeError(
+            "a release gate lane changed protected Git refs "
+            f"({', '.join(protected_refs)})"
+        )
+    current_anchors = (
+        _verify_anchor_refs(snapshot_root, anchor_refs)
+        if anchor_refs is not None else None
+    )
     changed = _git(snapshot_root, "status", "--porcelain=v1", "--untracked-files=no")
     if changed.stdout:
         raise RuntimeError("a release gate lane changed tracked snapshot files or HEAD")
@@ -714,63 +885,112 @@ def validate_lane_outputs(
         if not raw:
             continue
         relative = os.fsdecode(raw)
-        parts = PurePosixPath(relative).parts
         if PurePosixPath(relative).name == "cmru.secret.toml":
             unexpected.append(relative)
             continue
-        if parts and parts[0] == ".run-gate":
+        if any(relative.startswith(f"{state}/") for state in _RUN_GATE_STATE_DIRS):
             continue
         if relative in _EVIDENCE_SET or _generated_cache_path(relative):
             continue
         unexpected.append(relative)
-    _validate_run_gate_state(snapshot_root)
+    for state in _RUN_GATE_STATE_DIRS:
+        _validate_run_gate_state(snapshot_root / state)
     if unexpected:
         raise RuntimeError(
             "release gate lane left unapproved ignored/untracked files in its "
             f"snapshot: {', '.join(unexpected[:8])}"
         )
+    return current_anchors
 
 
 def prepare_lane(snapshot: GateSnapshot, lane: str) -> None:
     """Recover evidence, restore exact HEAD, clear lane residue, then reseed."""
-    validate_lane_outputs(
+    current_anchors = validate_lane_outputs(
         snapshot.worktree_path, snapshot.commit,
+        protected_refs=snapshot.protected_refs,
         expected_refs_sha256=snapshot.refs_sha256,
+        anchor_refs=snapshot.anchor_refs,
     )
+    if current_anchors is not None:
+        snapshot.anchor_refs = current_anchors
     copy_evidence_to_source(snapshot.worktree_path, snapshot.source_root)
     _git(snapshot.worktree_path, "reset", "--hard", snapshot.commit)
-    _git(snapshot.worktree_path, "clean", "-ffdx", "-e", "/.run-gate/")
+    _git(snapshot.worktree_path, "clean", "-ffdx", *_CLEAN_KEEP)
     copy_evidence_to_snapshot(snapshot.source_root, snapshot.worktree_path, lane=lane)
     _verify_snapshot(snapshot.context, snapshot.commit)
 
 
 def finish_lane(snapshot: GateSnapshot, lane: str) -> None:
     """Retain only Run-Gate state and named evidence between aggregate lanes."""
-    validate_lane_outputs(
+    current_anchors = validate_lane_outputs(
         snapshot.worktree_path, snapshot.commit,
+        protected_refs=snapshot.protected_refs,
         expected_refs_sha256=snapshot.refs_sha256,
+        anchor_refs=snapshot.anchor_refs,
     )
+    if current_anchors is not None:
+        snapshot.anchor_refs = current_anchors
     copy_evidence_to_source(snapshot.worktree_path, snapshot.source_root)
     snapshot.lane_evidence_sha256[lane] = _existing_evidence_hashes(snapshot.worktree_path)
-    _git(snapshot.worktree_path, "clean", "-ffdx", "-e", "/.run-gate/")
+    _git(snapshot.worktree_path, "clean", "-ffdx", *_CLEAN_KEEP)
     copy_evidence_to_snapshot(snapshot.source_root, snapshot.worktree_path, lane=lane)
+
+
+def delete_probe_refs(snapshot: GateSnapshot) -> None:
+    """Delete refs under the gate-owned probe namespace (the detector's fixture)."""
+    namespace = snapshot.protected_refs[2]
+    names = _git(
+        snapshot.worktree_path, "for-each-ref", "--format=%(refname)", namespace,
+    ).stdout.decode("utf-8").split()
+    for name in names:
+        _git(snapshot.worktree_path, "update-ref", "-d", name)
+
+
+def verify_ref_probe_detected(snapshot: GateSnapshot) -> None:
+    """Prove the protected-ref check fires on a REAL in-container ref write.
+
+    The ref-probe lane writes a ref under the gate-owned namespace from inside
+    the actual tester container. A detector that stayed silent would let any
+    other lane move a protected ref unnoticed, so silence is a gate failure.
+    The probe ref is always removed so the following lane starts from the
+    admitted digest.
+    """
+    try:
+        validate_lane_outputs(
+            snapshot.worktree_path, snapshot.commit,
+            protected_refs=snapshot.protected_refs,
+            expected_refs_sha256=snapshot.refs_sha256,
+            anchor_refs=snapshot.anchor_refs,
+        )
+    except RuntimeError as exc:
+        if "changed protected Git refs" not in str(exc):
+            raise
+    else:
+        raise RuntimeError(
+            "the ref-probe lane wrote a protected Git ref from inside the tester "
+            "container, but the gate did not detect it"
+        )
+    finally:
+        delete_probe_refs(snapshot)
 
 
 def write_snapshot_manifest(snapshot: GateSnapshot, state: str) -> None:
     path = snapshot.source_root / "cmru" / ".assay" / "release-gate-snapshot.json"
-    _ensure_real_directory(path.parent, create=True)
-    try:
-        previous = _safe_regular_file(path)
-    except FileNotFoundError:
-        previous = None
-    del previous
+    _ensure_real_directory(path.parent)
+    with contextlib.suppress(FileNotFoundError):
+        _safe_regular_file(path)  # refuse to replace a non-regular or linked manifest
     record = {
-        "schema_version": 1,
+        "schema_version": 3,
+        "refreshed_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source_commit": snapshot.commit,
         "snapshot_branch": snapshot.branch,
         "snapshot_path": str(snapshot.worktree_path),
         "source_root": str(snapshot.source_root),
+        "refs_scope": _REFS_SCOPE,
+        "protected_refs": list(snapshot.protected_refs),
         "git_refs_sha256": snapshot.refs_sha256,
+        "anchor_refs": snapshot.anchor_refs,
+        "run_gate_identity": snapshot.run_gate_identity,
         "lane_exit_codes": snapshot.lane_exit_codes,
         "lane_evidence_sha256": snapshot.lane_evidence_sha256,
         "source_canary": (
@@ -890,52 +1110,58 @@ def _validate_gate_snapshot_record(record, expected_common: Path) -> None:
         )
 
 
-def _snapshot_source_is_stale(record, expected_common: Path) -> bool:
+SOURCE_CURRENT = "current"
+SOURCE_STALE = "stale"
+SOURCE_UNKNOWN = "unknown"
+
+
+def _source_disposition(record, expected_common: Path, executor: Path) -> tuple[str, str, bool]:
+    """Judge whether a snapshot's source checkout has moved on.
+
+    Returns ``(disposition, reason, source_present)``. A source path this
+    process cannot stat is NOT a gone source: it may live in another mount
+    namespace (a host path from inside the devcontainer). Absence counts only
+    with Git's own evidence: the registry no longer lists the source, or lists
+    it prunable and unlocked. Anything else is ``unknown`` and blocks cleanup.
+    """
+    api = _worktree_api()
     source_root = record.source_git_root
     try:
         metadata = source_root.lstat()
     except FileNotFoundError:
-        return True
-    except OSError as exc:
-        raise RuntimeError(f"cannot inspect CMRU gate source {source_root}: {exc}") from exc
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise RuntimeError(
-            f"CMRU gate source is present but not a real directory: {source_root}"
+        entry = next(
+            (item for item in api.list_git_worktrees(executor)
+             if item.path == source_root),
+            None,
         )
-    _linked_git_context(source_root, expected_common=expected_common)
-    branch = _git(source_root, "branch", "--show-current").stdout.decode(
-        "utf-8", "replace",
-    ).strip()
+        if entry is None:
+            return SOURCE_STALE, "the source worktree is no longer registered with Git", False
+        if entry.is_prunable and not entry.is_locked:
+            return SOURCE_STALE, "Git reports the source worktree prunable", False
+        return (
+            SOURCE_UNKNOWN,
+            "the source path is not visible here but Git still registers it as live",
+            False,
+        )
+    except OSError as exc:
+        return SOURCE_UNKNOWN, f"cannot inspect the source path {source_root}: {exc}", False
+    if not stat.S_ISDIR(metadata.st_mode):
+        return SOURCE_UNKNOWN, f"the source path is not a real directory: {source_root}", True
+    try:
+        _linked_git_context(source_root, expected_common=expected_common)
+        branch = _git(source_root, "branch", "--show-current").stdout.decode(
+            "utf-8", "replace",
+        ).strip()
+        head = _git(source_root, "rev-parse", "--verify", "HEAD").stdout.decode(
+            "ascii", "replace",
+        ).strip()
+    except RuntimeError as exc:
+        return SOURCE_UNKNOWN, f"cannot read the source worktree's Git state: {exc}", True
     if not branch:
-        return True
-    head = _git(source_root, "rev-parse", "--verify", "HEAD").stdout.decode(
-        "ascii", "replace",
-    ).strip()
-    return head != record.base_commit
-
-
-def _gate_lease_is_live(lease) -> bool:
-    if lease is None:
-        return False
-    if lease.holder.startswith("cmru-gate:"):
-        fields = lease.holder.split(":")
-        if len(fields) in (3, 4) and fields[1].isdecimal():
-            pid = int(fields[1])
-            start_ticks = _process_start_ticks(pid)
-            if start_ticks is not None:
-                return len(fields) == 3 or fields[2] == start_ticks
-            try:
-                os.kill(pid, 0)
-                return True
-            except ProcessLookupError:
-                return False
-            except (PermissionError, OSError):
-                return True
-    expiry = datetime.fromisoformat(
-        lease.expires_at_utc[:-1] + "+00:00"
-        if lease.expires_at_utc.endswith("Z") else lease.expires_at_utc
-    )
-    return expiry > datetime.now(timezone.utc)
+        return SOURCE_STALE, "the source worktree is detached", True
+    if head != record.base_commit:
+        return SOURCE_STALE, f"the source HEAD moved to {head[:12]}", True
+    return SOURCE_CURRENT, "the source is still at the snapshot's commit", True
 
 
 def _snapshot_assay_state_dir(record) -> Path:
@@ -951,76 +1177,96 @@ def _snapshot_assay_state_dir(record) -> Path:
 
 
 def _remove_snapshot_assay_state(record) -> None:
-    """Remove only the dedicated Run-Gate state tree for this stale snapshot."""
-    state_root = record.git_common_dir.parent / ".run-gate"
+    """Remove only the dedicated Run-Gate state tree for this snapshot.
+
+    The path is derived (never read from the tree). Resolving it must change
+    nothing: a symlink anywhere in the chain would redirect the deletion, so it
+    refuses instead of following it.
+    """
     state_dir = _snapshot_assay_state_dir(record)
-    try:
-        relative = state_dir.relative_to(state_root)
-    except ValueError as exc:
-        raise RuntimeError(f"snapshot Assay state escapes {state_root}: {state_dir}") from exc
-    try:
-        metadata = state_root.lstat()
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise RuntimeError(f"cannot inspect Run-Gate state root {state_root}: {exc}") from exc
-    if not stat.S_ISDIR(metadata.st_mode):
-        raise RuntimeError(f"Run-Gate state root is not a real directory: {state_root}")
-    current = state_root
-    for index, component in enumerate(relative.parts):
-        current = current / component
-        try:
-            child = current.lstat()
-        except FileNotFoundError:
-            return
-        except OSError as exc:
-            raise RuntimeError(f"cannot inspect snapshot Assay state {current}: {exc}") from exc
-        if not stat.S_ISDIR(child.st_mode):
-            raise RuntimeError(f"snapshot Assay state path is not a real directory: {current}")
-        if index == len(relative.parts) - 1:
-            shutil.rmtree(current)
+    if state_dir.resolve(strict=False) != state_dir:
+        raise RuntimeError(
+            f"snapshot Assay state path is not a plain directory chain: {state_dir}"
+        )
+    if state_dir.is_dir():
+        shutil.rmtree(state_dir)
 
 
-def stale_gate_snapshot_records(executor_git_root: Path | str) -> list[object]:
-    """List stale, inactive CMRU gate sidecars without changing repository state."""
+REMOVABLE = "removable"
+RETAINED = "retained"
+
+
+@dataclass(frozen=True)
+class SnapshotReport:
+    """One retained gate snapshot and why cleanup may or may not touch it."""
+
+    record: object
+    status: str
+    reason: str
+    source_present: bool
+
+
+def _judge_snapshot(record, common: Path, executor: Path, *, include_current: bool) -> SnapshotReport:
+    """Decide cleanup eligibility; any indeterminate fact retains the snapshot."""
+
+    def retained(reason: str, present: bool = True) -> SnapshotReport:
+        return SnapshotReport(record, RETAINED, reason, present)
+
+    try:
+        _validate_gate_snapshot_record(record, common)
+    except RuntimeError as exc:
+        return retained(str(exc))
+    state = gate_lease_state(record.lease)
+    if state == LEASE_LIVE:
+        return retained(f"a gate lease is live (holder {record.lease.holder})")
+    if state == LEASE_INDETERMINATE:
+        return retained(
+            f"lease liveness cannot be proven from this namespace (holder "
+            f"{record.lease.holder}); run cleanup where the gate ran"
+        )
+    disposition, reason, present = _source_disposition(record, common, executor)
+    if disposition == SOURCE_UNKNOWN:
+        return retained(reason, present)
+    if disposition == SOURCE_CURRENT and not include_current:
+        return retained(f"{reason}; a retry can resume it (use --include-current to remove)")
+    return SnapshotReport(record, REMOVABLE, reason, present)
+
+
+def inspect_gate_snapshots(
+        executor_git_root: Path | str, *, include_current: bool = False,
+) -> list[SnapshotReport]:
+    """Report every CMRU gate snapshot in the repository family, read-only."""
     api = _worktree_api()
     executor = Path(executor_git_root).resolve(strict=True)
     with _host_git_policy():
         _top, common, _branch, _head = api.discover_git_context(executor)
-        stale = []
-        for record in api.list_workspaces(common):
-            if record.purpose != "cmru-gate":
-                continue
-            _validate_gate_snapshot_record(record, common)
-            if not _snapshot_source_is_stale(record, common):
-                continue
-            if _gate_lease_is_live(record.lease):
-                continue
-            stale.append(record)
-        return stale
+        return [
+            _judge_snapshot(record, common, executor, include_current=include_current)
+            for record in api.list_workspaces(common)
+            if record.purpose == "cmru-gate"
+        ]
 
 
-def remove_stale_gate_snapshot(
-        record_path: Path | str, *, executor_git_root: Path | str) -> None:
-    """Revalidate and remove one confirmed stale CMRU snapshot and its state."""
+def remove_gate_snapshot(
+        record_path: Path | str, *, executor_git_root: Path | str,
+        include_current: bool = False) -> None:
+    """Re-judge one snapshot from fresh facts and remove it only if removable."""
     api = _worktree_api()
     executor = Path(executor_git_root).resolve(strict=True)
     with _host_git_policy():
         _top, common, _branch, _head = api.discover_git_context(executor)
         record = api.read_record(record_path)
-        _validate_gate_snapshot_record(record, common)
-        if not _snapshot_source_is_stale(record, common):
+        if record.purpose != "cmru-gate":
+            raise RuntimeError(f"not a CMRU gate snapshot record: {record_path}")
+        report = _judge_snapshot(record, common, executor, include_current=include_current)
+        if report.status != REMOVABLE:
             raise RuntimeError(
-                f"CMRU gate snapshot source is current; refusing cleanup: {record.source_git_root}"
+                f"CMRU gate snapshot {record.worktree_path} is retained: {report.reason}"
             )
-        if _gate_lease_is_live(record.lease):
-            raise RuntimeError(
-                f"CMRU gate snapshot has an active lease: {record.worktree_path}"
-            )
-        if _stale_gate_lease(record.lease):
-            record = api.release_lease(record)
+        if record.lease is not None:
+            record = api.release_lease(record)  # judged dead above
         _remove_snapshot_assay_state(record)
-        if record.source_git_root.exists():
+        if report.source_present:
             api.remove_workspace(record)
         else:
             api.remove_orphan_workspace(record, executor_git_root=executor)
@@ -1046,11 +1292,12 @@ def remove_gate_snapshots_for_source(source_root: Path) -> None:
             )
         with _host_git_policy():
             _validate_gate_snapshot_record(record, common)
-            if _gate_lease_is_live(record.lease):
+            if gate_lease_state(record.lease) != LEASE_DEAD:
                 raise RuntimeError(
-                    f"CMRU gate snapshot has an active lease: {record.worktree_path}"
+                    "CMRU gate snapshot has a lease that is live or cannot be "
+                    f"proven dead from this namespace: {record.worktree_path}"
                 )
-            if _stale_gate_lease(record.lease):
+            if record.lease is not None:
                 record = api.release_lease(record)
             _remove_snapshot_assay_state(record)
             api.remove_workspace(record)

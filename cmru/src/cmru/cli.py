@@ -356,6 +356,13 @@ def run_project_step(
             # artifact steps receive the exact pair above.
             for key in ("CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG"):
                 internal_env.setdefault(key, None)
+            # KI-75: where a publisher finds the curated section for the version
+            # it releases (or `none` when the project opted out of a changelog).
+            # Protected: a project cannot declare or replace it.
+            from cmru.release_notes import NOTES_SOURCE_ENV, declaration_for
+            internal_env[NOTES_SOURCE_ENV] = declaration_for(
+                getattr(project, "changelog", None),
+            )
             resolved_token = (getattr(project, "github_token", None) or "").strip()
             if resolved_token:
                 # This is applied after project/step env and env commands by
@@ -2957,7 +2964,8 @@ def _release_projects_sequentially(
         log_info(f"=== {name}: releasing ===")
 
         _prepare_release_projects(
-            repo_root, configs, [name], minor=minor, major=major, set_version=set_version,
+            repo_root, configs, [name], minor=minor, major=major,
+            set_version=set_version,
         )
         # Keep the remote candidate branch current before the gate too. A gate
         # failure must leave the generated candidate available for inspection.
@@ -4262,6 +4270,116 @@ def _commit_prepared_generated(
     return True
 
 
+_RELEASE_BODY_HANDLERS = frozenset({"wheel-publish", "tarball-publish"})
+
+
+def _has_cmru_github_release_body(project) -> bool:
+    """Whether the declared push step uses a CMRU handler that publishes notes."""
+    step = (getattr(project, "runner_steps", None) or {}).get("push")
+    for command in getattr(step, "commands", ()):
+        argv = command.get("argv", ()) if isinstance(command, dict) else ()
+        if len(argv) >= 3 and [str(item) for item in argv[:2]] == ["cmru", "handler"]:
+            if str(argv[2]) in _RELEASE_BODY_HANDLERS:
+                return True
+    return False
+
+
+def _fold_pending_release_notes(repo_root: Path, project, version: str) -> bool:
+    """Fold pending notes into the generated section before the release gate."""
+    from cmru.changelog import _validate_changelog_path, fold_unreleased_notes
+    from cmru.release_notes import ReleaseNotesError
+
+    path = _validate_changelog_path(project, repo_root)
+    try:
+        updated = fold_unreleased_notes(path.read_text(encoding="utf-8"), version)
+    except ReleaseNotesError as exc:
+        raise RefusedBeforeChange(f"{project.name}: release notes: {exc}") from exc
+    if updated is None:
+        return False
+    path.write_text(updated, encoding="utf-8")
+    log_info(
+        f"{project.name}: folded [Unreleased] notes into [{version}] in the release candidate"
+    )
+    return True
+
+
+def _pending_release_notes_or_refuse(repo_root: Path, project, **plan):
+    """Resolve the pending release's curated section or refuse before any side effect."""
+    from cmru.changelog import pending_release_notes
+    from cmru.release_notes import ReleaseNotesError
+
+    try:
+        return pending_release_notes(repo_root, project, **plan)
+    except ReleaseNotesError as exc:
+        raise RefusedBeforeChange(f"{project.name}: release notes: {exc}") from exc
+
+
+def _preview_release_bodies(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: List[str],
+    *,
+    no_build: bool = False,
+    **plan,
+) -> None:
+    """Preview tagged changelog notes and any GitHub Release body (dry-run).
+
+    Uses the SAME builder as the publisher. The changelog section is generated
+    exactly as the real prepare phase would and then restored, so the disposable
+    candidate is unchanged. Only the artifact file name and its SHA256 are unknown
+    before a build; they appear as marked placeholders.
+    """
+    from cmru.changelog import _validate_changelog_path, generate_release_changelog
+    from cmru.release import build_release_body
+    from cmru.release_notes import ARTIFACT_PLACEHOLDER, SHA256_PLACEHOLDER
+
+    for name in project_names:
+        project = configs[name]
+        if not getattr(project, "changelog", None) or not getattr(project, "git_tag", True):
+            continue
+        has_release_body = _has_cmru_github_release_body(project)
+        path = _validate_changelog_path(project, repo_root)
+        original = path.read_bytes() if path.exists() else None
+        try:
+            generate_release_changelog(repo_root, project, **plan)
+            notes = _pending_release_notes_or_refuse(repo_root, project, **plan)
+            _fold_pending_release_notes(repo_root, project, notes.version)
+            notes = _pending_release_notes_or_refuse(repo_root, project, **plan)
+        finally:
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(original)
+        prefix = (getattr(project, "prefix", None) or f"{name}-v").removesuffix("-v")
+        if no_build or not has_release_body:
+            reason = (
+                "--no-build skips publication" if no_build else
+                "its push step has no CMRU GitHub Release-body handler"
+            )
+            log_info(
+                f"[DRY RUN] {name}: candidate tag {prefix}-v{notes.version} will include "
+                f"this changelog section; {reason}, so no GitHub Release body is published:"
+            )
+            print("----- begin release notes section -----")
+            print(notes.text)
+            print("----- end release notes section -----")
+            continue
+        body = build_release_body(
+            prefix, notes.version, artifact_name=ARTIFACT_PLACEHOLDER,
+            sha256=SHA256_PLACEHOLDER, release_notes=notes,
+        )
+        log_info(
+            f"[DRY RUN] {name}: GitHub Release body for {prefix}-v{notes.version} "
+            f"(curated section from {project.changelog}; pending notes, when present, "
+            "are folded into this version section in the candidate before its gate and tag; "
+            "the artifact name and SHA256 are placeholders until the build; a --notes-env "
+            "text replaces only the opening line):"
+        )
+        print("----- begin release body -----")
+        print(body)
+        print("----- end release body -----")
+
+
 def _prepare_release_projects(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -4271,7 +4389,7 @@ def _prepare_release_projects(
     major: bool = False,
     set_version: Optional[str] = None,
 ) -> None:
-    """Prepare declared source inputs, including an optional generated changelog."""
+    """Prepare declared inputs, folding pending notes into every tagged candidate."""
     from cmru.changelog import generate_release_changelog, pending_release_tag
 
     log_dir = repo_root / "logs"
@@ -4288,6 +4406,23 @@ def _prepare_release_projects(
             )
             if changed:
                 log_info(f"{name}: updated {changelog}")
+        notes = None
+        if changelog and getattr(project, "git_tag", True):
+            # Validate the exact version section before committing any generated
+            # inputs. A supported CMRU GitHub publisher reads only this section
+            # from the eventual tag, never the mutable [Unreleased] source.
+            notes = _pending_release_notes_or_refuse(
+                repo_root, project, minor=minor, major=major, set_version=set_version,
+            )
+            _fold_pending_release_notes(repo_root, project, notes.version)
+            notes = _pending_release_notes_or_refuse(
+                repo_root, project, minor=minor, major=major, set_version=set_version,
+            )
+            if not _has_cmru_github_release_body(project):
+                log_info(
+                    f"{name}: pending notes are in the tagged changelog; its push step "
+                    "does not publish a CMRU GitHub Release body"
+                )
         if "prepare" in project.steps or changelog:
             candidate_label = project.name
             if getattr(project, "git_tag", True):
@@ -4299,6 +4434,17 @@ def _prepare_release_projects(
                 except RuntimeError:
                     pass  # the trailer is provenance only; fall back to the name
             _commit_prepared_generated(repo_root, project, candidate_label)
+        if notes is not None:
+            if _has_cmru_github_release_body(project):
+                log_info(
+                    f"{name}: the release body will end with the [{notes.version}] "
+                    f"section of {changelog}"
+                )
+            else:
+                log_info(
+                    f"{name}: the tagged changelog will include the [{notes.version}] "
+                    f"section of {changelog}; no GitHub Release body is configured"
+                )
 
 
 def _prepare_dry_run_external_versions(
@@ -4343,6 +4489,72 @@ def _current_git_root() -> Path:
     """Resolve the current repository root through the shared Git API."""
 
     return transaction._shared_worktree().discover_git_root(Path.cwd())[0]
+
+
+def _gate_snapshots(args, runtime) -> None:
+    """List retained release-gate snapshots; ``--remove`` deletes the removable ones.
+
+    Removal is judged from fresh facts per snapshot (``gate_snapshot``): a live or
+    unprovable lease, an unobservable source, or a mismatched record keeps the
+    snapshot, so the verb is safe to repeat and never touches an active gate.
+    """
+    from cmru import gate_snapshot
+
+    shared = transaction._shared_worktree()
+    try:
+        repo_root = _current_git_root()
+    except shared.WorkspaceError as exc:
+        _usage_error(
+            "cmru gate-snapshots must run inside the repository whose gate "
+            f"snapshots you want to manage: {exc}"
+        )
+    try:
+        reports = gate_snapshot.inspect_gate_snapshots(
+            repo_root, include_current=args.include_current,
+        )
+    except RuntimeError as exc:
+        log_error(f"cannot inspect gate snapshots: {exc}")
+        sys.exit(exit_codes.FAILURE)
+    if args.json:
+        runtime.output.primary([
+            {
+                "branch": item.record.branch,
+                "path": str(item.record.worktree_path),
+                "source": str(item.record.source_git_root),
+                "status": item.status,
+                "reason": item.reason,
+            }
+            for item in reports
+        ])
+    elif not reports:
+        log_info("No retained CMRU gate snapshots.")
+    for item in reports if not args.json else ():
+        print(
+            f"{item.status}: {item.record.branch}\n  path: {item.record.worktree_path}\n"
+            f"  source: {item.record.source_git_root}\n  reason: {item.reason}"
+        )
+    if not args.remove:
+        return
+    failures = 0
+    for item in reports:
+        if item.status != gate_snapshot.REMOVABLE:
+            continue
+        path = item.record.worktree_path
+        if args.dry_run:
+            log_info(f"[DRY RUN] Would remove gate snapshot {path}")
+            continue
+        try:
+            gate_snapshot.remove_gate_snapshot(
+                item.record.record_path, executor_git_root=repo_root,
+                include_current=args.include_current,
+            )
+        except RuntimeError as exc:
+            failures += 1
+            log_error(f"could not remove gate snapshot {path}: {exc}")
+        else:
+            log_info(f"Removed gate snapshot {path}")
+    if failures:
+        sys.exit(exit_codes.FAILURE)
 
 
 def _dispatch(args, runtime):
@@ -4444,6 +4656,9 @@ def _dispatch(args, runtime):
                         "Inspect the checkout and its Git metadata before acting."
                     )
 
+
+    elif verb == "gate-snapshots":
+        _gate_snapshots(args, runtime)
 
     elif verb == "dependencies":
         vargs = args
@@ -5370,6 +5585,11 @@ def _release_child(
     if vargs.dry_run:
         # Preview only: show what would be tagged for every changed project, no
         # commits/gates/promotion/tags — nothing here has side effects.
+        _preview_release_bodies(
+            repo_root, ordered, release_names,
+            no_build=vargs.no_build,
+            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+        )
         release_cmd(
             repo_root, selected_ordered,
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
@@ -5993,6 +6213,18 @@ def _build_cli():
         include_progress=False, handler=direct(),
     ))
     registry.register(VerbSpec("worktrees", description="Discover retained CMRU build and release worktrees (read-only).", group=VerbGroup.EXPLORATION.value, include_json=True, include_progress=False, handler=direct()))
+    registry.register(VerbSpec(
+        "gate-snapshots",
+        description="List retained release-gate snapshots; --remove deletes only those proven unneeded.",
+        group=VerbGroup.MIXED.value,
+        options=(
+            OptionSpec(("--remove",), "remove every snapshot judged removable (default: list only)", parser_kwargs={"action": "store_true", "default": False}),
+            OptionSpec(("--include-current",), "also treat a snapshot whose source is still at its commit as removable (it can then no longer resume)", parser_kwargs={"action": "store_true", "default": False}),
+        ),
+        mutating=True, dry_run=True, include_confirmation=False, include_json=True,
+        include_progress=False, handler=direct(),
+        constraints=(Requires("--dry-run", ("--remove",), "a removal preview is only meaningful with --remove"),),
+    ))
     registry.register(VerbSpec(
         "dependencies",
         description="Show and preflight the project dependency graph; --write updates its generated block (read-only without it).",

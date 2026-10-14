@@ -117,7 +117,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
     gate_command = " ".join(gate["lanes"]["gate"]["argv"])
     assert gate_command == (
-        "python3 {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
+        "python3 -I -B {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
     )
     assert "gate-provisional" not in gate["lanes"]
     cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
@@ -126,12 +126,18 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert release_steps[0]["argv"] == ["run-gate", "gate"]
     assert "KI-62" in (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
     release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
-    for name in ("installed-wheel", "assay", "coverage", "mutation", "canary"):
+    for name in ("assay", "coverage", "mutation", "canary"):
         assert f'"{name}"' in release_gate
     assert '"enroll"' not in release_gate  # moved to ciu/run-gate.toml (O4)
     assert "enroll" not in gate["lanes"]
-    assert "_mask_secret_overlays(" in release_gate
+    assert "_mask_secret_overlays(" not in release_gate  # KI-74: no in-place masking
     assert "RUN_GATE_EXTRA_MOUNTS" in release_gate
+    for lane in ("installed-wheel", "installed-wheel-live", "ref-probe"):
+        assert lane in gate["lanes"]
+    assert "--require-live-snapshot" not in " ".join(gate["lanes"]["installed-wheel"]["argv"])
+    assert "--require-live-snapshot" in " ".join(gate["lanes"]["installed-wheel-live"]["argv"])
+    assert 'LIVE_WHEEL_LANE = "installed-wheel-live"' in release_gate
+    assert 'REF_PROBE_LANE = "ref-probe"' in release_gate
     mutation_command = " ".join(gate["lanes"]["mutation"]["argv"])
     assert "--cov" not in mutation_command
     assert "--cov-fail-under" not in mutation_command
@@ -234,12 +240,27 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
 def test_release_gate_credential_boundary_is_documented_in_all_user_guides():
     for document in DOCS:
         text = " ".join(document.read_text(encoding="utf-8").split())
-        assert "publisher-token and extra-mount variables" in text
         assert "gate credential design" in text or document.name == "DESIGN-GUIDE.md"
-        assert "if restoration fails" in text.lower()
-        assert "private backup" in text.lower()
+        # KI-74 follow-up (C-1..C-6): every user guide states each part of the
+        # boundary a reader must know before relying on, or bypassing, it.
+        for phrase in (
+            "installed-wheel-live", "ref-probe", "cmru gate-snapshots",
+            "protected Git refs", "bound to the claimed commit",
+        ):
+            assert phrase in text, (document.name, phrase)
     consumer_text = " ".join(DOCS[-1].read_text(encoding="utf-8").split())
-    assert "individual tester component lane bypasses this host wrapper" in consumer_text
+    assert "individual tester component lane bypasses this boundary" in consumer_text
+
+
+def test_release_body_contract_is_documented_in_all_user_guides():
+    for document in DOCS:
+        text = " ".join(document.read_text(encoding="utf-8").split())
+        required = ["begin release body", "exact", "[Unreleased]"]
+        required.append("changelog = false" if document.name == "README.md" else "CMRU_RELEASE_NOTES_SOURCE")
+        # KI-78: promotion carries staged release notes only after publication succeeds.
+        required.append("successful publish")
+        for phrase in required:
+            assert phrase in text, (document.name, phrase)
 
 
 def test_cross_document_links_resolve():

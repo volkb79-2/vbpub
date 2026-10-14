@@ -32,6 +32,8 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from cmru.release_notes import ReleaseNotes, compose_release_body
+
 API_BASE = "https://api.github.com"
 
 
@@ -317,6 +319,49 @@ class GitHubReleases:
         }
 
 
+# ─── release body (KI-75) ────────────────────────────────────────────────────
+def _resolve_pointer_text(prefix: str) -> str:
+    return (
+        f"Resolve latest programmatically by scanning `{prefix}-v*` releases "
+        f"(highest semver); see cmru docs/SPEC.md S5."
+    )
+
+
+def build_release_body(
+    prefix: str, version: str, *, artifact_name: str, sha256: str,
+    notes: Optional[str] = None, release_notes: Optional[ReleaseNotes] = None,
+) -> str:
+    """The GitHub Release body of a single-artifact release.
+
+    The publisher and ``cmru release --dry-run`` both call this function, so a
+    preview shows exactly what is published. ``notes`` is the operator's
+    supplementary opening text (``--notes-env``); ``release_notes`` is the
+    project's curated section for ``version`` and always comes last.
+    """
+    generated = (
+        f"\n\n**Artifact:** `{artifact_name}`\n"
+        f"**SHA256:** `{sha256}`\n\n"
+        f"Verify: `sha256sum -c {artifact_name}.sha256`\n\n"
+        f"{_resolve_pointer_text(prefix)}"
+    )
+    return compose_release_body(notes or f"{prefix} {version}", generated, release_notes)
+
+
+def build_variants_release_body(
+    prefix: str, version: str, *, records: Sequence[Dict[str, Any]],
+    notes: Optional[str] = None, release_notes: Optional[ReleaseNotes] = None,
+) -> str:
+    """The GitHub Release body of a multi-variant release (same contract as above)."""
+    variant_lines = "\n".join(f"- `{r['asset']}` — `{r['sha256']}`" for r in records)
+    generated = (
+        f"\n\n**Variants** ({len(records)}), one asset each under this tag "
+        f"(select at install time with `--variant <name>`):\n{variant_lines}\n\n"
+        f"Verify: `sha256sum -c <asset>.sha256`\n\n"
+        f"{_resolve_pointer_text(prefix)}"
+    )
+    return compose_release_body(notes or f"{prefix} {version}", generated, release_notes)
+
+
 # ─── high-level publish entrypoint ───────────────────────────────────────────
 def publish_versioned(
     gh: GitHubReleases,
@@ -331,8 +376,12 @@ def publish_versioned(
     require_existing_targets: bool = False,
     latest_pointer_recreate: bool = True,
     expected_tag_commit: Optional[str] = None,
+    release_notes: Optional[ReleaseNotes] = None,
 ) -> Dict[str, Any]:
     """Publish ``asset_path`` for ``version`` under the uniform scheme.
+
+    ``release_notes`` is the project's curated section for ``version`` (KI-75);
+    it follows the generated install/artifact block in the release body.
 
     * Always writes + uploads a ``<asset>.sha256`` sidecar and records the digest in
       the release notes (reproducibility baseline).
@@ -432,12 +481,9 @@ def publish_versioned(
 
     if released:
         assert release_tag is not None
-        body = (notes or f"{prefix} {version}") + (
-            f"\n\n**Artifact:** `{asset_path.name}`\n"
-            f"**SHA256:** `{digest}`\n\n"
-            f"Verify: `sha256sum -c {asset_path.name}.sha256`\n\n"
-            f"Resolve latest programmatically by scanning `{prefix}-v*` releases "
-            f"(highest semver); see cmru docs/SPEC.md S5."
+        body = build_release_body(
+            prefix, version, artifact_name=asset_path.name, sha256=digest,
+            notes=notes, release_notes=release_notes,
         )
         publish_assets(release_tag, release_tag, body, [asset_path, sidecar, *extras])
         result["release_tag"] = release_tag
@@ -535,6 +581,7 @@ def publish_versioned_variants(
     notes: Optional[str] = None,
     latest_pointer: bool = True,
     target_commitish: Optional[str] = None,
+    release_notes: Optional[ReleaseNotes] = None,
 ) -> Dict[str, Any]:
     """Publish N per-interpreter variants under ONE ``<prefix>-v<version>`` release.
 
@@ -578,15 +625,8 @@ def publish_versioned_variants(
     result: Dict[str, Any] = {"version": version, "release_tag": None, "variants": records}
 
     if released:
-        variant_lines = "\n".join(
-            f"- `{r['asset']}` — `{r['sha256']}`" for r in records
-        )
-        body = (notes or f"{prefix} {version}") + (
-            f"\n\n**Variants** ({len(records)}), one asset each under this tag "
-            f"(select at install time with `--variant <name>`):\n{variant_lines}\n\n"
-            f"Verify: `sha256sum -c <asset>.sha256`\n\n"
-            f"Resolve latest programmatically by scanning `{prefix}-v*` releases "
-            f"(highest semver); see cmru docs/SPEC.md S5."
+        body = build_variants_release_body(
+            prefix, version, records=records, notes=notes, release_notes=release_notes,
         )
         gh.publish(release_tag, release_tag, body, assets, target_commitish=target_commitish)
         result["release_tag"] = release_tag

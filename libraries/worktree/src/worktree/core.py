@@ -1218,6 +1218,25 @@ def remove_orphan_workspace(
                 "orphan cleanup executor belongs to a different Git family",
                 category="cleanup-refusal",
             )
+        # A path this process cannot see is not an orphan: it may live in
+        # another mount/PID namespace. Positive evidence comes from Git's own
+        # registry: the source is no longer registered, or Git reports it
+        # prunable. A registered entry Git still treats as live (locked, or
+        # not prunable) is refused, never inferred gone from a local stat.
+        source_entry = next(
+            (item for item in list_git_worktrees(executor)
+             if item.path == current.source_git_root),
+            None,
+        )
+        if source_entry is not None and (
+            source_entry.is_locked or not source_entry.is_prunable
+        ):
+            raise WorkspaceError(
+                f"recorded source checkout {current.source_git_root} is still "
+                "registered with Git and is not prunable; refusing to infer "
+                "that it is gone from a local path probe",
+                category="cleanup-refusal",
+            )
         if not _is_directory(current.worktree_path):
             raise WorkspaceError(
                 f"orphan workspace checkout is missing: {current.worktree_path}",

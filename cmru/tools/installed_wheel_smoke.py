@@ -11,6 +11,7 @@ import sys
 import tempfile
 import venv
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -113,21 +114,55 @@ def _build_wheel(source: Path, wheelhouse: Path, *, cwd: Path) -> None:
                 shutil.rmtree(created, ignore_errors=True)
 
 
-def _check_live_gate_snapshot(repo_root: Path, *, required: bool = False) -> None:
-    """Prove the real tester container cannot see a host-only canary file."""
+_MANIFEST_MAX_AGE = timedelta(minutes=30)
+
+
+def _manifest_is_fresh(record: dict, now: datetime) -> bool:
+    try:
+        refreshed = datetime.strptime(
+            record["refreshed_at_utc"], "%Y-%m-%dT%H:%M:%SZ",
+        ).replace(tzinfo=timezone.utc)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return timedelta(minutes=-5) <= now - refreshed <= _MANIFEST_MAX_AGE
+
+
+def _check_live_gate_snapshot(
+        repo_root: Path, *, required: bool = False, now: datetime | None = None) -> None:
+    """Prove the real tester container cannot see a host-only canary file.
+
+    A manifest only counts when it is the CURRENT gate's: running, naming THIS
+    snapshot checkout, and refreshed moments ago. A ``running`` manifest left by
+    a killed gate fails the second and third tests, so it can never satisfy
+    ``required``; without ``required`` it is simply not a live gate, and the
+    lane runs as the direct component lane its documentation describes.
+    """
+    now = now or datetime.now(timezone.utc)
     manifest = repo_root / "cmru" / ".assay" / "release-gate-snapshot.json"
-    if not manifest.is_file():
+
+    def not_live(reason: str) -> None:
         if required:
-            raise RuntimeError(f"required active release-gate manifest is missing: {manifest}")
-        return  # this lane can also be run directly, outside the aggregate gate
+            raise RuntimeError(
+                f"required live release-gate snapshot is not proven ({reason}): {manifest}"
+            )
+
+    if not manifest.is_file():
+        return not_live("the manifest is missing")
     try:
         record = json.loads(manifest.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise RuntimeError(f"release-gate snapshot manifest is unreadable: {manifest}") from exc
     if not isinstance(record, dict) or record.get("state") != "running":
-        if required:
-            raise RuntimeError(f"required release-gate manifest is not running: {manifest}")
-        return  # ignore a retained report from a completed aggregate run
+        return not_live("its state is not running")
+    snapshot_path = record.get("snapshot_path")
+    if (
+        not isinstance(snapshot_path, str)
+        or Path(snapshot_path).name != repo_root.name
+        or record.get("snapshot_branch") != repo_root.name
+    ):
+        return not_live("it names a different checkout than this one")
+    if not _manifest_is_fresh(record, now):
+        return not_live("it was not refreshed in the last 30 minutes")
     source_root = record.get("source_root")
     relative = record.get("source_canary")
     if not isinstance(source_root, str) or not Path(source_root).is_absolute():
@@ -148,7 +183,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--require-live-snapshot", action="store_true",
-        help="fail unless running inside CMRU's active exact-HEAD release gate",
+        help=(
+            "fail unless running inside CMRU's active exact-HEAD release gate "
+            "(a fresh manifest bound to this snapshot checkout); without it a "
+            "direct run is an ordinary component lane"
+        ),
     )
     args = parser.parse_args(argv)
     project_root = Path(__file__).resolve().parents[1]
