@@ -119,10 +119,11 @@ def _held(**overrides) -> dict:
 
 
 class TestSchemaVersionConstants:
-    def test_current_version_is_two_and_both_are_supported(self):
+    def test_lease_and_overlay_record_schemas_are_supported(self):
         assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSION == 2
+        assert worktree.WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION == 3
         assert worktree.WORKTREE_INSTANCE_BASE_SCHEMA_VERSION == 1
-        assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSIONS == {1, 2}
+        assert worktree.WORKTREE_INSTANCE_SCHEMA_VERSIONS == {1, 2, 3}
 
     def test_lease_vocabularies_are_closed(self):
         assert worktree.WORKTREE_LEASE_MODES == {"held", "perpetual"}
@@ -287,6 +288,22 @@ class TestReadingV1AndV2Records:
         assert record.lease.mode == "perpetual"
         assert record.lease.expires_at_utc is None
 
+    def test_v3_record_with_initial_overlay_intent_reads_and_round_trips(self, tmp_path):
+        raw = {
+            **_raw_v1(tmp_path),
+            "schema_version": 3,
+            "lease": None,
+            "initial_overlay": '[ciu.instance]\nservice_profiles = ["core"]\n',
+            "overlay_intent_known": True,
+        }
+
+        record = worktree._record_from_dict(raw, tmp_path / "r.json")
+
+        assert record.schema_version == 3
+        assert record.initial_overlay == raw["initial_overlay"]
+        assert record.overlay_intent_known is True
+        assert record.to_dict() == raw
+
     def test_v2_record_missing_the_lease_key_is_refused(self, tmp_path):
         """O1's key-set rule: v2 REQUIRES `lease`. The refusal names the
         schema_version, so the reason is legible without diffing key sets."""
@@ -300,7 +317,7 @@ class TestReadingV1AndV2Records:
             worktree._record_from_dict(raw, tmp_path / "r.json")
 
     def test_unsupported_future_version_is_refused(self, tmp_path):
-        raw = {**_raw_v1(tmp_path), "schema_version": 3}
+        raw = {**_raw_v1(tmp_path), "schema_version": 4}
         with pytest.raises(worktree.WorktreeError, match="unsupported"):
             worktree._record_from_dict(raw, tmp_path / "r.json")
 

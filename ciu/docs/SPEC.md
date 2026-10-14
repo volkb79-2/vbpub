@@ -281,14 +281,19 @@ requirements are marked *(withdrawn)*.
   **The operator's file: `<ciu-root>/ciu.global.instance.toml.j2`.** A sparse,
   non-secret, gitignored input for one checkout ("instance", not literally a
   git worktree — every checkout is one). It is merged after every committed
-  global layer and before stack defaults. Managed lifecycle commands may create
-  its initial `ciu.instance.service_profiles` and `ciu.instance.shared_infra`
-  values; operators may add ordinary sparse global overrides afterward. **CIU
-  MUST NOT write it after that initial creation** — there is no upsert, no
-  append, and therefore nothing an operator can put in it that CIU can
-  clobber. `ciu clean` and `ciu env generate` MUST preserve it
-  (`ciu clean --vanilla`, S6.4b, is the one explicit opt-in that removes it).
-  Instance configuration MUST NOT be appended to generated `ciu.env`.
+  global layer and before stack defaults. Managed `create`/`adopt` options may
+  request its initial `ciu.instance.service_profiles` and
+  `ciu.instance.shared_infra` values. CIU validates and renders the complete
+  payload before allocation side effects, then checkpoints those exact bytes
+  in the schema-v3 worktree record before publishing the file. If allocation
+  is interrupted, `ensure` may restore a missing file from that checkpoint;
+  it accepts an existing file only when it is a regular file with identical
+  contents, and refuses symlinks, non-regular files and operator edits rather
+  than replacing them. After the worktree reaches `ready`, the file is
+  operator-owned: CIU MUST NOT rewrite it. `ciu clean` and `ciu env generate`
+  MUST preserve it (`ciu clean --vanilla`, S6.4b, is the one explicit opt-in
+  that removes it). Instance configuration MUST NOT be appended to generated
+  `ciu.env`.
 
   **CIU's file: `<ciu-root>/ciu.instance.generated.toml` (CIU-60, normative).**
   A gitignored **plain TOML file, never a `.j2`** — nothing renders it, so a
@@ -4633,8 +4638,9 @@ inspect | lease | list | remove`) and the `status` vocabulary is closed
 instance additionally carries a closed `recovery_status`
 (`checkout-incomplete | env-generation-failed | runtime-collision`). The
 persisted instance record is nested under `instance`
-(`WorktreeInstanceRecord.to_dict()` — v1, or v2 with a `lease` key per
-S16.9); current Git facts are nested under `git`.
+(`WorktreeInstanceRecord.to_dict()` — v1, v2 with a `lease` key, or v3 with
+both `lease` and the initial-overlay intent checkpoint); current Git facts are
+nested under `git`.
 
 Git facts are freshly read from Git, never inferred from a name or a stale
 record: `git.registered` (the record's checkout is a current registered
@@ -5135,6 +5141,37 @@ exactly when it is most needed). The CLI exits 0 on `survey`/`dry-run`/
 
 Capability id: `worktree.reap.v1` (shipped alongside `worktree.lease.v1` —
 reaping is only ever as safe as the ownership signal it consults).
+
+### S16.11 — Durable initial overlay intent (CIU-135)
+
+Managed `create` and `adopt` validate and render their complete requested
+initial `ciu.global.instance.toml.j2` payload before mutating Git worktree
+state, the shared workspace record, the CIU instance record, or Git excludes.
+The CIU instance record is written as schema v3 and records both the exact
+rendered payload (`initial_overlay`, or `null` when no overlay was requested)
+and `overlay_intent_known: true` before the overlay is published. Schema v3
+also carries the `lease` field introduced in S16.9. Schemas v1 and v2 remain
+readable; a v1/v2 record that still needs allocation recovery is refused
+because it cannot prove whether an initial overlay was requested.
+
+When `ensure` resumes an incomplete schema-v3 allocation, it restores a
+missing recorded overlay with a same-directory atomic no-clobber publish. If
+an overlay already exists, CIU accepts it only when it is a regular file whose
+contents exactly match the recorded payload. A symlink, non-regular file, or
+different contents is preserved and reported as a refusal. A schema-v3 record
+with known `null` intent means no initial overlay was requested; `ensure` does
+not create one. A unique ignored staging file is linked into place only after
+its contents are complete; a hard interruption before publication leaves no
+partial destination file. CIU publishes this non-secret TOML at mode `0644`
+so a container process with a different uid can read it. Once the worktree is
+`ready`, the overlay is operator-owned: the checkpoint is recovery evidence
+for an interrupted allocation, not an ongoing policy that overwrites later
+operator edits. Later `ensure` calls do not check or restore the initial
+payload once the allocation has reached `ready`.
+
+`adopt` with no overlay flags records known `null` intent and preserves any
+pre-existing operator overlay. If adopt flags would create an overlay where
+one already exists, adoption refuses before writing either lifecycle record.
 
 ## S17 — Image provenance
 

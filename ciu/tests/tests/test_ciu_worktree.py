@@ -137,8 +137,10 @@ class TestCreateRemoveList:
 
     def test_create_profile_writes_durable_instance_override(self, tmp_repo, fake_generate_env):
         target = create_path(tmp_repo, "wt", base="main", profile="core,db")
-        overlay = (target / "ciu.global.instance.toml.j2").read_text(encoding="utf-8")
+        overlay_path = target / "ciu.global.instance.toml.j2"
+        overlay = overlay_path.read_text(encoding="utf-8")
         assert 'service_profiles = ["core", "db"]' in overlay
+        assert overlay_path.stat().st_mode & 0o777 == 0o644
         assert "CIU_SERVICES_PROFILE" not in (target / "ciu.env").read_text(encoding="utf-8")
 
     def test_create_generate_env_failure_raises(self, tmp_repo, monkeypatch):
@@ -264,7 +266,7 @@ class TestManagedIdentityLifecycle:
     def test_create_persists_atomic_ready_record(self, tmp_repo, fake_generate_env):
         record = worktree.create(tmp_repo, "logical-one", base="main")
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
-        assert stored["schema_version"] == 1
+        assert stored["schema_version"] == 3
         assert stored["logical_name"] == "logical-one"
         assert stored["state"] == "ready"
         assert stored["runtime"]["instance_id"] == record.instance_id
@@ -320,6 +322,104 @@ class TestManagedIdentityLifecycle:
         ensured = worktree.ensure(tmp_repo, "logical-one")
         assert ensured == created
         assert created.record_path.read_bytes() == before
+
+    def test_ready_ensure_does_not_restore_an_operator_deleted_overlay(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-missing", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        overlay.unlink()
+
+        ensured = worktree.ensure(tmp_repo, "overlay-ready-missing")
+
+        assert ensured.state == "ready"
+        assert not overlay.exists()
+
+    def test_ready_ensure_preserves_operator_edits_to_the_overlay(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-edited", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        edited = b'# operator edit\r\n[ciu.instance]\r\nservice_profiles = ["db"]\r\n'
+        overlay.write_bytes(edited)
+
+        ensured = worktree.ensure(tmp_repo, "overlay-ready-edited")
+
+        assert ensured.state == "ready"
+        assert overlay.read_bytes() == edited
+
+    def test_partial_ensure_refuses_crlf_normalized_overlay_bytes(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-crlf", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        expected = created.initial_overlay.encode("utf-8")
+        crlf = expected.replace(b"\n", b"\r\n")
+        overlay.write_bytes(crlf)
+        partial = replace(
+            created, state="recovery-required", recovery_status="env-generation-failed"
+        )
+        worktree._write_instance_record(partial)
+
+        with pytest.raises(
+            worktree.WorktreeError, match="differs from the recorded allocation intent"
+        ):
+            worktree.ensure(tmp_repo, "overlay-ready-crlf")
+
+        assert overlay.read_bytes() == crlf
+
+    def test_partial_ensure_refuses_symlink_overlay_without_following_it(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-symlink", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        target = tmp_repo / "operator-overlay.toml"
+        target.write_text("operator-owned\n", encoding="utf-8")
+        overlay.unlink()
+        overlay.symlink_to(target)
+        partial = replace(
+            created, state="recovery-required", recovery_status="env-generation-failed"
+        )
+        worktree._write_instance_record(partial)
+
+        with pytest.raises(worktree.WorktreeError, match="is a symlink"):
+            worktree.ensure(tmp_repo, "overlay-ready-symlink")
+
+        assert overlay.is_symlink()
+        assert target.read_text(encoding="utf-8") == "operator-owned\n"
+
+    def test_partial_ensure_refuses_nonregular_overlay_without_replacing_it(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "overlay-ready-directory", profile="core")
+        overlay = created.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        overlay.unlink()
+        overlay.mkdir()
+        partial = replace(
+            created, state="recovery-required", recovery_status="env-generation-failed"
+        )
+        worktree._write_instance_record(partial)
+
+        with pytest.raises(worktree.WorktreeError, match="not a regular file"):
+            worktree.ensure(tmp_repo, "overlay-ready-directory")
+
+        assert overlay.is_dir()
+
+    def test_ready_legacy_record_without_overlay_checkpoint_remains_usable(
+        self, tmp_repo, fake_generate_env
+    ):
+        created = worktree.create(tmp_repo, "legacy-ready")
+        legacy = replace(
+            created, schema_version=2, initial_overlay=None,
+            overlay_intent_known=False,
+        )
+        worktree._write_instance_record(legacy)
+        before = legacy.record_path.read_bytes()
+
+        ensured = worktree.ensure(tmp_repo, "legacy-ready")
+
+        assert ensured.schema_version == 2
+        assert legacy.record_path.read_bytes() == before
 
     def test_ensure_repairs_ready_record_while_its_network_exists(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -506,6 +606,89 @@ class TestManagedIdentityLifecycle:
             )
         with pytest.raises(worktree.WorktreeError, match="cannot be empty"):
             worktree.create(tmp_repo, "logical", branch="")
+
+    def test_create_invalid_overlay_refuses_before_any_allocation_side_effect(
+        self, tmp_repo
+    ):
+        common = worktree._git_common_dir(tmp_repo)
+        exclude = common / "info" / "exclude"
+        exclude_before = exclude.read_bytes() if exclude.exists() else None
+        shared = worktree._shared_worktree()
+
+        with pytest.raises(worktree.WorktreeError, match="blank items"):
+            worktree.create(tmp_repo, "invalid-overlay", profile="core,,db")
+
+        assert not (tmp_repo / ".worktrees" / "invalid-overlay").exists()
+        assert not worktree._branch_exists(tmp_repo, "invalid-overlay")
+        assert worktree.find_instance_record(tmp_repo, "invalid-overlay") is None
+        assert shared.list_workspaces(common) == []
+        assert (exclude.read_bytes() if exclude.exists() else None) == exclude_before
+
+    def test_create_resume_restores_exact_recorded_overlay_after_interruption(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        def interrupt_before_overlay(*_args, **_kwargs):
+            raise KeyboardInterrupt("simulated interruption")
+
+        monkeypatch.setattr(
+            worktree, "_write_worktree_overlay", interrupt_before_overlay
+        )
+        with pytest.raises(KeyboardInterrupt, match="simulated interruption"):
+            worktree.create(tmp_repo, "overlay-resume", profile="core,db")
+
+        partial = worktree.find_instance_record(tmp_repo, "overlay-resume")
+        assert partial is not None and partial.state == "allocating"
+        assert partial.overlay_intent_known is True
+        assert partial.initial_overlay is not None
+        overlay = partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        assert not overlay.exists()
+
+        resumed = worktree.ensure(tmp_repo, "overlay-resume")
+        assert resumed.state == "ready"
+        assert overlay.read_text(encoding="utf-8") == partial.initial_overlay
+
+    def test_create_resume_refuses_to_replace_conflicting_overlay(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        def interrupt_before_overlay(*_args, **_kwargs):
+            raise KeyboardInterrupt("simulated interruption")
+
+        real_writer = worktree._write_worktree_overlay
+        monkeypatch.setattr(worktree, "_write_worktree_overlay", interrupt_before_overlay)
+        with pytest.raises(KeyboardInterrupt):
+            worktree.create(tmp_repo, "overlay-conflict", profile="core")
+        partial = worktree.find_instance_record(tmp_repo, "overlay-conflict")
+        assert partial is not None
+        overlay = partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        overlay.write_text("operator-owned\n", encoding="utf-8")
+
+        monkeypatch.setattr(worktree, "_write_worktree_overlay", real_writer)
+        with pytest.raises(
+            worktree.WorktreeError, match="differs from the recorded allocation intent"
+        ):
+            worktree.ensure(tmp_repo, "overlay-conflict")
+        assert overlay.read_text(encoding="utf-8") == "operator-owned\n"
+
+    def test_legacy_partial_record_without_overlay_intent_refuses_resume(
+        self, tmp_repo, fake_generate_env
+    ):
+        record = worktree.create(tmp_repo, "legacy-overlay-intent")
+        partial = replace(
+            record,
+            state="recovery-required",
+            recovery_status="env-generation-failed",
+            initial_overlay=None,
+            overlay_intent_known=False,
+        )
+        worktree._write_instance_record(partial)
+
+        with pytest.raises(
+            worktree.WorktreeError, match="predates durable overlay intent"
+        ):
+            worktree.ensure(tmp_repo, "legacy-overlay-intent")
+        assert not (
+            partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).exists()
 
     def test_create_rejects_duplicate_logical_identity(self, tmp_repo, fake_generate_env):
         worktree.create(tmp_repo, "logical-one", display_name="first")
@@ -1469,11 +1652,26 @@ class TestManagedHelperRefusals:
             worktree._write_worktree_overlay(tmp_path, "core", None)
         path.unlink()
         monkeypatch.setattr(
-            worktree.os, "replace",
+            worktree.os, "link",
             lambda *_args: (_ for _ in ()).throw(PermissionError("denied")),
         )
         with pytest.raises(worktree.WorktreeError, match="could not write.*denied"):
             worktree._write_worktree_overlay(tmp_path, "core", None)
+
+    def test_overlay_publish_does_not_clobber_file_created_after_preflight(
+        self, tmp_path, monkeypatch
+    ):
+        path = tmp_path / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        real_link = worktree.os.link
+
+        def race_create(source, target):
+            Path(target).write_text("operator-owned\n", encoding="utf-8")
+            return real_link(source, target)
+
+        monkeypatch.setattr(worktree.os, "link", race_create)
+        with pytest.raises(worktree.WorktreeError, match="refusing to overwrite"):
+            worktree._write_worktree_overlay(tmp_path, "core", None)
+        assert path.read_text(encoding="utf-8") == "operator-owned\n"
 
     def test_overlay_can_hold_shared_intent_without_profile_at_helper_boundary(self):
         intent = worktree.SharedInfraIntent(
@@ -1575,6 +1773,33 @@ class TestManagedHelperRefusals:
 
 
 class TestAdoptRefusals:
+    def test_adopt_invalid_overlay_refuses_before_record_or_exclusion_write(
+        self, tmp_repo
+    ):
+        target = tmp_repo / ".worktrees" / "invalid-profile-adopt"
+        assert _git(
+            ["worktree", "add", "-b", "invalid-profile-adopt", str(target), "main"],
+            tmp_repo,
+        ).returncode == 0
+        before_head = _git(["rev-parse", "HEAD"], target).stdout.strip()
+        common = worktree._git_common_dir(tmp_repo)
+        exclude = common / "info" / "exclude"
+        exclude_before = exclude.read_bytes() if exclude.exists() else None
+        shared = worktree._shared_worktree()
+        shared_before = shared.list_workspaces(common)
+
+        with pytest.raises(worktree.WorktreeError, match="blank items"):
+            worktree.adopt(
+                tmp_repo, "invalid-profile-adopt", str(target), profile="core,,db"
+            )
+
+        assert _git(["rev-parse", "HEAD"], target).stdout.strip() == before_head
+        assert worktree.find_instance_record(tmp_repo, "invalid-profile-adopt") is None
+        assert worktree._shared_record_for_checkout(target) is None
+        assert not (target / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists()
+        assert shared.list_workspaces(common) == shared_before
+        assert (exclude.read_bytes() if exclude.exists() else None) == exclude_before
+
     def test_adopt_refuses_partial_options_unknown_primary_and_managed(
         self, tmp_repo, fake_generate_env
     ):
@@ -1880,10 +2105,22 @@ class TestBestEffortCleanupArcs:
 
     def test_overlay_write_unlink_failure_is_best_effort(self, tmp_path, monkeypatch):
         """Same double-failure arc for the worktree-overlay writer."""
-        self._replace_fails(monkeypatch)
+        monkeypatch.setattr(
+            worktree.os, "link",
+            lambda *_args: (_ for _ in ()).throw(PermissionError("denied")),
+        )
         self._unlink_fails(monkeypatch)
         with pytest.raises(worktree.WorktreeError, match="could not write"):
             worktree._write_worktree_overlay(tmp_path, "core", None)
+
+    def test_overlay_write_succeeds_when_post_publish_tmp_cleanup_fails(
+        self, tmp_path, monkeypatch
+    ):
+        self._unlink_fails(monkeypatch)
+        worktree._write_worktree_overlay(tmp_path, "core", None)
+        path = tmp_path / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        assert path.is_file()
+        assert 'service_profiles = ["core"]' in path.read_text(encoding="utf-8")
 
     def test_find_instance_record_ambiguous_constructed_duplicate(
         self, tmp_path, monkeypatch

@@ -21,6 +21,14 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Fixed
+- Managed worktree creation and adoption validate initial overlay options before lifecycle mutation and preserve the exact request for safe interrupted recovery.
+
+### Adoption / Migration Notes
+- New managed allocations use worktree record schema v3. Ready v1/v2 records remain readable; an incomplete legacy allocation without saved overlay intent now requires inspection because CIU cannot safely infer whether an overlay was requested.
+
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=5a9154b69c381545422c6f896f269a8f947b287b -->

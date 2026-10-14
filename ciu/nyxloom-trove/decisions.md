@@ -128,10 +128,19 @@ configuration authority.
 > `ciu migration-check`), and the CIU-owned `[ciu.instance.generated]` identity
 > facts CIU-60 later added to that file now live in their own
 > `ciu.instance.generated.toml`. That split is the ownership rule taken
-> literally: the overlay owns durable local configuration and CIU never writes
-> it; the generated file owns instance identity and only CIU writes it. Merge
-> order is unchanged (committed defaults → committed project override →
-> instance override → generated facts → rendered `ciu.global.toml`).
+> literally: the overlay owns durable local configuration and CIU never
+> rewrites it after an explicitly requested initial lifecycle write; the
+> generated file owns instance identity and only CIU writes it. Merge order is
+> unchanged (committed defaults → committed project override → instance
+> override → generated facts → rendered `ciu.global.toml`).
+
+> **Amended 2026-10-13 (CIU-135).** `create` and `adopt` validate and render
+> the complete initial overlay before allocation mutations, then persist the
+> exact payload in worktree record schema v3 before publishing it. `ensure`
+> restores that payload only for an interrupted allocation whose file is
+> missing. A conflicting, unsafe, or operator-edited file is preserved and
+> causes refusal. Once the worktree is ready, the overlay remains operator
+> state and the recovery checkpoint does not authorize further writes.
 
 ## D-012 — CIU-94/CIU-95 (per-container `memory.min` guaranteed-slice
 mechanism) ships in v7 now, not deferred to ciu8/v8 (2026-09-08)

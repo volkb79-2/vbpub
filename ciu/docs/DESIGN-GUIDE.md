@@ -17,9 +17,14 @@ paths, because choosing one would certify an ambiguous runtime owner.
 Worktree lifecycle uses committed `ciu.global.defaults.toml.j2` markers from
 the selected base commit. The optional, ignored
 `ciu.global.instance.toml.j2` overlay is deliberately not a discovery marker:
-it is user-owned state and may not exist in a newly created checkout. The
-workspace operation therefore prepares all committed roots, while ordinary
-stack verbs resolve the nearest root above their invocation directory.
+it is local state and may not exist in a newly created checkout. Explicit
+`create`/`adopt` options can create its initial profile/shared-infrastructure
+selection, but the allocation records the rendered bytes first. If setup is
+interrupted, `ensure` can restore only that exact missing payload; it refuses
+to replace a conflicting file. After the checkout is ready, the overlay is
+operator-owned and later edits are left alone. The workspace operation still
+prepares all committed roots, while ordinary stack verbs resolve the nearest
+root above their invocation directory.
 
 The family registry also records generic Git worktrees whose selected base
 contains no CIU root. Their ready record has null runtime values because there
@@ -355,10 +360,16 @@ would be mistaken for the header).
 ciu-P47 removed the shared ownership instead of hardening the scan. The
 CIU-owned facts moved to `ciu.instance.generated.toml`, a file nothing but CIU
 ever writes, so the writer became a full-file rewrite with no preservation
-logic at all, and the operator's own file — renamed
+logic at all. The operator's own file — renamed
 `ciu.global.instance.toml.j2` in the same change, because every checkout is an
-instance and not every checkout is a git worktree — gained a stronger
-guarantee than the surgical replace could give it: CIU has no writer for it.
+instance and not every checkout is a git worktree — no longer has an ongoing
+CIU writer. CIU-135 adds one narrow exception: an explicit managed lifecycle
+request may publish the initial overlay once, after persisting the exact
+payload in the schema-v3 lifecycle record. Resume can restore that payload
+only when the file is missing. A differing operator file is never replaced,
+and CIU does not check, restore, or rewrite the overlay after the allocation
+becomes ready. New overlays use mode `0644` because this is non-secret config
+that a container with a different uid may need to read.
 
 The general lesson, which outlives this file pair: when a mechanism exists to
 make two owners safe in one place, ask whether the two owners have to be in one

@@ -66,6 +66,27 @@ root set. If Git cannot provide that commit, creation leaves the allocated
 checkout `recovery-required` instead of reporting `ready`; after the Git
 problem is corrected, retry with `ciu worktree ensure NAME`.
 
+When you pass initial shared-infrastructure options, CIU validates and renders
+the local overlay before allocating the checkout, then saves the exact payload
+in the schema-v3 worktree record before writing the file. For example:
+
+```console
+$ ciu worktree create pkg-under-test --base main \
+    --shared-infra primary \
+    --shared-infra-services api,worker \
+    --shared-infra-ref-projects idp-dev-idp,vault-dev-vault
+```
+
+If that allocation is interrupted, `ensure` restores the recorded overlay if
+it is missing. It refuses a symlink, non-file, or different existing content
+without replacing it. Once creation reaches `ready`, the overlay is ordinary
+operator-owned configuration; later edits are preserved. A new CIU-written
+overlay has mode `0644`: it contains non-secret configuration and may need to
+be read by a test or application container running under a different uid. For
+an adopted checkout, omitting overlay options preserves any existing overlay.
+Passing options that would create an overlay where one already exists refuses
+before CIU records ownership.
+
 If root preparation fails, keep the checkout and retry through CIU:
 
 ```console
@@ -667,8 +688,9 @@ convenience — that is the path it renders, silently, into your bind mount.
 
 **That file is CIU's, not yours.** It is rewritten in full on every
 `env generate`, so any hand edit to it is gone on the next one. Your own
-tables and comments go in `ciu.global.instance.toml.j2` next to it — CIU never
-writes that file at all, so everything in it is safe forever. (Both roles
+tables and comments go in `ciu.global.instance.toml.j2` next to it. A managed
+`create`/`adopt` may write an explicitly requested initial selection before
+the worktree is ready; after that, CIU does not rewrite the file. (Both roles
 shared one file, `ciu.global.worktree.toml.j2`, before the split; see §21.)
 
 In a **shell**, `ciu env print` prints the existing `ciu.env` as `export`
@@ -1686,7 +1708,7 @@ two, and the one you hand-edit was renamed.
 
 | before (≤ 7.9.0) | after (7.10.0) | who owns it |
 |---|---|---|
-| `ciu.global.worktree.toml.j2` — your sparse overrides AND CIU's `[ciu.instance.generated]` table | `ciu.global.instance.toml.j2` | **you.** CIU never writes it |
+| `ciu.global.worktree.toml.j2` — your sparse overrides AND CIU's `[ciu.instance.generated]` table | `ciu.global.instance.toml.j2` | **you, after any initial managed selection.** CIU does not rewrite it once ready |
 | (same file) | `ciu.instance.generated.toml` | **CIU.** Plain TOML, rewritten in full by every `ciu env generate` |
 
 **Nothing changes for a template.** `{{ ciu.instance.generated.* }}` reads

@@ -35,13 +35,15 @@ container. This module refuses to remove a checkout it has not cleaned.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
 import re
-import subprocess
 import stat
+import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
@@ -64,12 +66,14 @@ from .workspace_env import GENERATED_FACT_ENV_KEYS
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
 WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
-# S16.9 (CIU-25 substrate): v2 == "this record carries a `lease` field".
-# v1 records (no lease concept at all) stay readable forever and are NEVER
-# rewritten by a read; only an explicit lease mutation writes v2.
+# S16.9 (CIU-25 substrate): v2 is the lease-only mutation target for legacy
+# records. CIU-135's v3 adds durable initial-overlay intent to allocation
+# records. Older v1/v2 records remain readable; an incomplete one without
+# that checkpoint is refused rather than guessed.
 WORKTREE_INSTANCE_SCHEMA_VERSION = 2
+WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION = 3
 WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
-WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2})
+WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2, 3})
 
 
 def _shared_worktree():
@@ -213,16 +217,15 @@ WorktreeLease = _shared_worktree().Lease
 
 @dataclass(frozen=True)
 class WorktreeInstanceRecord:
-    """Durable identity for one CIU-managed linked worktree (schema v1/v2).
+    """Durable identity for one CIU-managed linked worktree (schema v1/v2/v3).
 
     The record deliberately contains no current Git revision (derived during
     inspection) and no secret-bearing values.  It is written at the target
     CIU root, which can be below the Git worktree root in a monorepo.
 
-    ``schema_version`` is 1 until an explicit lease operation touches this
-    record; from then on it is 2 and the serialized form carries a ``lease``
-    key (``null`` after a release). A v1 record read from disk is a v1 record
-    in memory with ``lease=None`` — reading never upgrades it (S16.9).
+    ``schema_version`` is 1 for legacy records, 2 for lease-aware records, or
+    3 for records that also checkpoint the initial overlay intent. A v1/v2
+    record read from disk is never upgraded by inspection.
     """
 
     logical_name: str
@@ -256,6 +259,13 @@ class WorktreeInstanceRecord:
     #: FAIL CLOSED on absence — treat it as "cannot vouch for this record"
     #: — never as "no constraint".
     fork_point_sha: str | None = None
+    #: CIU-135 — the exact rendered instance-overlay payload requested when
+    #: this lifecycle allocation began.  ``None`` is a known request for no
+    #: CIU-generated overlay only when ``overlay_intent_known`` is true;
+    #: older records lack both fields and cannot be safely resumed if the
+    #: allocation is incomplete.
+    initial_overlay: str | None = None
+    overlay_intent_known: bool = False
 
     @property
     def ciu_root(self) -> Path:
@@ -266,6 +276,12 @@ class WorktreeInstanceRecord:
         return self.ciu_root / WORKTREE_INSTANCE_RECORD
 
     def to_dict(self) -> dict[str, Any]:
+        if self.schema_version < WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION and (
+            self.overlay_intent_known or self.initial_overlay is not None
+        ):
+            raise ValueError(
+                "initial overlay intent requires worktree record schema version 3"
+            )
         doc: dict[str, Any] = {
             "schema_version": self.schema_version,
             "logical_name": self.logical_name,
@@ -283,9 +299,7 @@ class WorktreeInstanceRecord:
             "recovery_status": self.recovery_status,
         }
         # A v1 record serializes EXACTLY as it always did — no `lease` key at
-        # all. That is what makes "a read never rewrites the record" a
-        # structural property rather than a promise: there is no v2 shape to
-        # accidentally emit until a lease operation has set schema_version.
+        # all. Only an explicit lease operation upgrades a legacy record.
         if self.schema_version >= 2:
             doc["lease"] = self.lease.to_dict() if self.lease is not None else None
         # CIU-106: emitted ONLY when there is one, for the same reason `lease`
@@ -298,6 +312,9 @@ class WorktreeInstanceRecord:
         # a record without it are both valid v1 (and both valid v2).
         if self.fork_point_sha is not None:
             doc["fork_point_sha"] = self.fork_point_sha
+        if self.schema_version >= WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION:
+            doc["initial_overlay"] = self.initial_overlay
+            doc["overlay_intent_known"] = self.overlay_intent_known
         return doc
 
 
@@ -415,12 +432,15 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         "git_worktree_path", "ciu_root_offset", "created_at_utc", "base_ref",
         "state", "runtime", "recovery_status",
     }
-    # S16.9: the key set is SCHEMA-DEPENDENT — a v2 record must carry `lease`,
-    # a v1 record must NOT. Anything else is checked against the v1 set and
-    # then rejected by the version check below.
+    # The key set is SCHEMA-DEPENDENT: v2/v3 records carry `lease`, and v3
+    # also carries the durable initial-overlay intent. Equality checks here
+    # deliberately avoid set membership so malformed unhashable JSON values
+    # reach the normal schema refusal below instead of leaking TypeError.
     declared_version = raw.get("schema_version")
-    if declared_version == 2:
+    if declared_version == 2 or declared_version == 3:
         required = required | {"lease"}
+    if declared_version == WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION:
+        required = required | {"initial_overlay", "overlay_intent_known"}
     # CIU-106: `fork_point_sha` is OPTIONAL in every schema version — present
     # on records `create()` wrote since CIU-106, absent on `adopt()`'s and on
     # every record written before it. Both shapes are valid, which is why
@@ -434,13 +454,19 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
             f"[S16] malformed {path} (schema_version {declared_version!r}): "
             f"missing={missing}, unknown={unknown}"
         )
-    if declared_version not in WORKTREE_INSTANCE_SCHEMA_VERSIONS:
+    if (
+        type(declared_version) is not int
+        or declared_version not in WORKTREE_INSTANCE_SCHEMA_VERSIONS
+    ):
         raise WorktreeError(
             f"[S16] unsupported worktree record schema_version "
             f"{raw['schema_version']!r} in {path}"
         )
     lease = None
-    if declared_version == 2 and raw["lease"] is not None:
+    if (
+        declared_version in (2, WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION)
+        and raw["lease"] is not None
+    ):
         lease = _lease_from_dict(raw["lease"], path)
     runtime = raw["runtime"]
     if not isinstance(runtime, dict) or set(runtime) != {"instance_id", "network"}:
@@ -492,6 +518,25 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
             f"[S16] fork_point_sha in {path} is not a full 40-hex object "
             f"name: {fork_point!r}"
         )
+    overlay_intent_known = False
+    initial_overlay = None
+    if declared_version == WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION:
+        if not isinstance(raw["overlay_intent_known"], bool):
+            raise WorktreeError(
+                f"[S16] malformed initial overlay intent in {path}: "
+                "overlay_intent_known must be boolean"
+            )
+        initial_overlay = raw["initial_overlay"]
+        if initial_overlay is not None and not isinstance(initial_overlay, str):
+            raise WorktreeError(
+                f"[S16] malformed initial_overlay in {path}: expected a string or null"
+            )
+        overlay_intent_known = raw["overlay_intent_known"]
+        if not overlay_intent_known and initial_overlay is not None:
+            raise WorktreeError(
+                f"[S16] malformed initial overlay intent in {path}: an unknown "
+                "intent cannot carry a payload"
+            )
     return WorktreeInstanceRecord(
         logical_name=raw["logical_name"], display_name=raw["display_name"],
         branch=raw["branch"], git_worktree_path=git_path,
@@ -501,6 +546,8 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         recovery_status=recovery, lease=lease,
         schema_version=declared_version,
         fork_point_sha=fork_point,
+        initial_overlay=initial_overlay,
+        overlay_intent_known=overlay_intent_known,
     )
 
 
@@ -607,7 +654,7 @@ def acquire_lease(
             holder=holder, acquired_at_utc=acquired, renewed_at_utc=stamp,
             expires_at_utc=expires, mode="held",
         ),
-        schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION,
+        schema_version=max(record.schema_version, WORKTREE_INSTANCE_SCHEMA_VERSION),
     )
 
 
@@ -627,20 +674,21 @@ def make_lease_perpetual(
             holder=holder, acquired_at_utc=acquired, renewed_at_utc=stamp,
             expires_at_utc=None, mode="perpetual",
         ),
-        schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION,
+        schema_version=max(record.schema_version, WORKTREE_INSTANCE_SCHEMA_VERSION),
     )
 
 
 def release_lease(record: WorktreeInstanceRecord) -> WorktreeInstanceRecord:
     """Return *record* with no lease at all (``lease: null``).
 
-    The record STAYS at schema v2: "this instance participates in leasing and
-    currently claims nothing" is a different, more informative fact than "this
-    record predates leasing entirely", and a reader must be able to tell them
-    apart.
+    A legacy record becomes v2; a v3 record stays v3 so its overlay-intent
+    checkpoint is not discarded. A null lease still distinguishes an explicit
+    release from a record that predates leasing.
     """
     return replace(
-        record, lease=None, schema_version=WORKTREE_INSTANCE_SCHEMA_VERSION
+        record,
+        lease=None,
+        schema_version=max(record.schema_version, WORKTREE_INSTANCE_SCHEMA_VERSION),
     )
 
 
@@ -1044,26 +1092,127 @@ def _write_worktree_overlay(
     ciu_root: Path, profile: str | None, shared_infra: SharedInfraIntent | None
 ) -> None:
     payload = _worktree_overlay_text(profile, shared_infra)
+    _write_rendered_worktree_overlay(ciu_root, payload)
+
+
+def _write_rendered_worktree_overlay(ciu_root: Path, payload: str | None) -> None:
+    """Atomically publish a prevalidated overlay without replacing user data."""
     if payload is None:
         return
     path = ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES
-    if path.exists():
+    if os.path.lexists(path):
         raise WorktreeError(
             f"[S16] refusing to overwrite existing instance override {path}"
         )
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp: Path | None = None
     try:
-        with tmp.open("x", encoding="utf-8") as fh:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=ciu_root,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as fh:
+            tmp = Path(fh.name)
+            # This is non-secret configuration consumed by containers whose
+            # uid differs from the CIU host process. Keep the established
+            # rendered-config read mode rather than NamedTemporaryFile's
+            # private 0600 default.
+            os.fchmod(fh.fileno(), 0o644)
             fh.write(payload)
             fh.flush()
             os.fsync(fh.fileno())
-        os.replace(tmp, path)
+        # A same-directory hard link publishes the complete, fsynced file
+        # without replacing an operator overlay created after the preflight.
+        os.link(tmp, path)
     except OSError as exc:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        if exc.errno == errno.EEXIST and os.path.lexists(path):
+            raise WorktreeError(
+                f"[S16] refusing to overwrite existing instance override {path}"
+            ) from exc
         raise WorktreeError(f"[S16] could not write {path}: {exc}") from exc
+    else:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                # The target is already published; a temp-file cleanup failure
+                # must not turn a successful overlay write into a false failure.
+                pass
+
+
+def _ensure_initial_overlay(record: WorktreeInstanceRecord) -> None:
+    """Prove or restore the exact overlay intent recorded before allocation."""
+    if not record.overlay_intent_known:
+        raise WorktreeError(
+            f"[S16] cannot safely resume {record.logical_name!r}: its instance "
+            "record predates durable overlay intent; inspect the checkout and "
+            "choose an operator-directed recovery"
+        )
+    payload = record.initial_overlay
+    if payload is None:
+        return
+
+    path = record.ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES
+    expected_bytes = payload.encode("utf-8")
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        try:
+            _write_rendered_worktree_overlay(record.ciu_root, payload)
+            return
+        except WorktreeError:
+            # The file may have appeared after the missing-path check. Read
+            # it without following links and accept only byte-identical data.
+            if not os.path.lexists(path):
+                raise
+            try:
+                fd = os.open(path, flags)
+            except OSError as exc:
+                if exc.errno == errno.ELOOP:
+                    raise WorktreeError(
+                        f"[S16] cannot safely resume {record.logical_name!r}: "
+                        f"initial instance override {path} is a symlink"
+                    ) from exc
+                raise WorktreeError(
+                    f"[S16] cannot verify initial instance override {path}: {exc}"
+                ) from exc
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise WorktreeError(
+                f"[S16] cannot safely resume {record.logical_name!r}: initial "
+                f"instance override {path} is a symlink"
+            ) from exc
+        raise WorktreeError(
+            f"[S16] cannot verify initial instance override {path}: {exc}"
+        ) from exc
+
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise WorktreeError(
+                f"[S16] cannot safely resume {record.logical_name!r}: initial "
+                f"instance override {path} is not a regular file"
+            )
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            existing_bytes = stream.read()
+    except OSError as exc:
+        raise WorktreeError(
+            f"[S16] cannot verify initial instance override {path}: {exc}"
+        ) from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if existing_bytes != expected_bytes:
+        raise WorktreeError(
+            f"[S16] cannot safely resume {record.logical_name!r}: initial "
+            f"instance override {path} differs from the recorded allocation "
+            "intent; refusing to replace it"
+        )
 
 
 def _check_reference_network_and_projects(network: str, ref_projects: tuple[str, ...]) -> None:
@@ -4276,6 +4425,12 @@ def create(
             shared_infra_ref_services=shared_infra_ref_services,
         )
 
+    # Validate and render the complete initial overlay before touching the
+    # Git family, its exclude file, or either lifecycle record. The same
+    # payload is then checkpointed in the CIU record so `ensure` can recover
+    # an interruption between record creation and overlay publication.
+    initial_overlay = _worktree_overlay_text(profile, shared_infra_intent)
+
     offset = _ciu_root_offset(repo_root)
     primary = primary_worktree_root(repo_root).resolve()
     instant = _utc_now()
@@ -4374,6 +4529,9 @@ def create(
             created_at_utc=instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             base_ref=base,
             state="allocating",
+            initial_overlay=initial_overlay,
+            overlay_intent_known=True,
+            schema_version=WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
         )
         _write_instance_record(record)
         try:
@@ -4439,6 +4597,7 @@ def ensure(
                         f"{actual!r}, caller requested {expected!r}"
                     )
             workspace_context = _ensure_shared_record(repo_root, record)
+            allocation_was_ready = record.state == "ready"
             if record.state == "ready":
                 if _ready_roots_are_complete(
                     repo_root, record, workspace_context
@@ -4457,6 +4616,12 @@ def ensure(
                     raise
                 allow_existing_network = True
             else:
+                if not record.overlay_intent_known:
+                    raise WorktreeError(
+                        f"[S16] cannot safely resume {record.logical_name!r}: its "
+                        "instance record predates durable overlay intent; inspect "
+                        "the checkout and choose an operator-directed recovery"
+                    )
                 try:
                     _allocated_commit_sha(record, workspace_context)
                 except WorktreeError:
@@ -4465,6 +4630,11 @@ def ensure(
                 allow_existing_network = (
                     record.recovery_status == "env-generation-failed"
                 )
+            # The checkpoint describes only the initial allocation. Once the
+            # worktree has reached ready, its overlay is operator state, even
+            # if ensure later repairs incomplete root metadata.
+            if not allocation_was_ready:
+                _ensure_initial_overlay(record)
             # The allocation target was proven from its record or the neutral
             # workspace record above. Re-resolving base_ref here could move a
             # partially initialized checkout and discard operator commits.
@@ -4508,6 +4678,7 @@ def adopt(
             shared_infra_ref_projects=shared_infra_ref_projects,
             shared_infra_ref_services=shared_infra_ref_services,
         )
+    initial_overlay = _worktree_overlay_text(profile, shared_infra_intent)
     with _allocation_lock(repo_root):
         wt = find_worktree(repo_root, target)
         if wt is None:
@@ -4520,6 +4691,12 @@ def adopt(
         record_path = wt.path / offset / WORKTREE_INSTANCE_RECORD
         if record_path.exists():
             raise WorktreeError(f"[S16] {wt.path} already has a managed instance record")
+        overlay_path = wt.path / offset / GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        if initial_overlay is not None and os.path.lexists(overlay_path):
+            raise WorktreeError(
+                f"[S16] {overlay_path} already has an instance override; "
+                "refusing to replace it with adopt flags"
+            )
         _ensure_record_is_excluded(repo_root, offset)
         head = _git(["rev-parse", "HEAD"], wt.path)
         if head.returncode != 0:
@@ -4530,17 +4707,12 @@ def adopt(
             created_at_utc=_utc_now().isoformat().replace("+00:00", "Z"),
             base_ref=head.stdout.strip(), state="recovery-required",
             recovery_status="env-generation-failed",
+            initial_overlay=initial_overlay,
+            overlay_intent_known=True,
+            schema_version=WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
         )
         _write_instance_record(record)
         workspace_context = _ensure_shared_record(repo_root, record)
-        if (record.ciu_root / GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists() and (
-            profile or shared_infra_intent is not None
-        ):
-            _mark_recovery(record, "env-generation-failed")
-            raise WorktreeError(
-                f"[S16] {record.ciu_root} already has an instance override; "
-                "refusing to replace it with adopt flags"
-            )
         # An adopt record carries a durable recovery marker from its first
         # write. `ensure` compares HEAD with this recorded target and resumes
         # without a checkout; it never resets an adopted tree. Keeping the
