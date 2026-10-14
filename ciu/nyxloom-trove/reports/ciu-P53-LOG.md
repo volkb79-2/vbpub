@@ -38,14 +38,24 @@ recovery phase was interrupted.
 - Update the CIU adopter documents and normative spec. Replace active
   checkout-relative `run-gate.py` instructions with the installed
   `run-gate <lane>` CLI and use it in the nyxloom gate argv.
+- The first independent Sol xhigh review found four additional CIU-135 defects:
+  a failed create could claim a later foreign network, interrupted legacy
+  ready-record repair could become stranded, CLI `--profile` was missing, and
+  `ensure` silently ignored explicit overlay requests. All four are folded into
+  this package with regression oracles; the review is preserved as
+  `ciu-P53-REVIEW-01.md`.
+- Corrected the CIU-135 backlog's schema statement and documented profile
+  selection and existing-record refusal across the CLI reference, README,
+  design guide, and consumer guide.
 
 ## Evidence status
 
-At 2026-10-14 03:38 UTC, implementation and documentation edits are in progress.
+At 2026-10-14 03:58 UTC, the follow-up implementation and documentation edits
+are in progress.
 Standard-library TOML parsing passed for `ciu/run-gate.toml`, `ciu/assay.toml`,
 and `ciu/nyxloom-trove/nyxloom.toml`; `git diff --check` is clean. The installed
 Run-Gate CLI certified the CIU nyxloom gate pointer:
 `run-gate validate-pointers ciu/nyxloom-trove/nyxloom.toml --root .` (one
-invocation, exit 0). No focused test suite or registered gate has run on these
-edits yet. Independent review and the final gate are pending; see
-`ciu-P53-REPORT.md` when complete.
+invocation, exit 0). No focused test suite or registered gate has run on the
+follow-up edits yet. A second independent review and the final gate are
+pending; see `ciu-P53-REPORT.md` when complete.

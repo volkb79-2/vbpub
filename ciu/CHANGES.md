@@ -24,7 +24,7 @@ restatement of the technical detail below it.
 ## [Unreleased]
 
 ### Fixed
-- Managed worktree creation and adoption validate initial overlay options before lifecycle mutation and preserve the exact request for safe interrupted recovery. A durable one-time marker is cleared with the first `ready` state, so an interrupted later root repair cannot replay the original overlay over operator edits or deletion.
+- Managed worktree creation and adoption validate initial overlay options before lifecycle mutation and preserve the exact request for safe interrupted recovery. Schema v4 records allocation origin and a durable one-time marker; an interrupted repair cannot replay the original overlay, claim a network after a failed create, or strand a legacy ready record. The CLI exposes `--profile` and refuses overlay options that `ensure` would otherwise ignore on an existing record.
 
 ### Adoption / Migration Notes
 - New managed allocations use worktree record schema v4. Ready v1-v3 records remain readable; incomplete v1/v2 records lack overlay intent, and incomplete v3 records lack the recovery-phase marker, so both require operator-directed inspection.

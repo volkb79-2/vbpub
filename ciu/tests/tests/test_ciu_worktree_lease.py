@@ -304,6 +304,7 @@ class TestReadingV1AndV2Records:
         assert record.initial_overlay == raw["initial_overlay"]
         assert record.overlay_intent_known is True
         assert record.initial_overlay_pending is False
+        assert record.adopted is None
         assert record.to_dict() == raw
 
     def test_v4_record_with_overlay_pending_marker_reads_and_round_trips(self, tmp_path):
@@ -314,6 +315,7 @@ class TestReadingV1AndV2Records:
             "initial_overlay": None,
             "overlay_intent_known": True,
             "initial_overlay_pending": True,
+            "adopted": True,
         }
 
         record = worktree._record_from_dict(raw, tmp_path / "r.json")
@@ -322,6 +324,7 @@ class TestReadingV1AndV2Records:
         assert record.initial_overlay is None
         assert record.overlay_intent_known is True
         assert record.initial_overlay_pending is True
+        assert record.adopted is True
         assert record.to_dict() == raw
 
     def test_v2_record_missing_the_lease_key_is_refused(self, tmp_path):

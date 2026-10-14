@@ -66,9 +66,24 @@ root set. If Git cannot provide that commit, creation leaves the allocated
 checkout `recovery-required` instead of reporting `ready`; after the Git
 problem is corrected, retry with `ciu worktree ensure NAME`.
 
-When you pass initial shared-infrastructure options, CIU validates and renders
-the local overlay before allocating the checkout, then saves the exact payload
+When you pass initial overlay options, CIU validates and renders the local
+overlay before allocating the checkout, then saves the exact payload
 in the schema-v4 worktree record before writing the file. For example:
+
+```console
+$ ciu worktree create pkg-under-test --base main \
+    --profile core,db
+```
+
+Use names declared by this project's profiles. An adopted checkout can receive
+the same initial selection with `ciu worktree adopt NAME PATH --profile P1,P2`.
+`ensure NAME --profile P1,P2` creates an absent worktree with that selection.
+When a record already exists, omit overlay options: the saved intent is used
+for interrupted recovery and a ready overlay remains operator-owned. CIU
+refuses explicit overlay options for an existing record instead of silently
+ignoring them.
+
+Shared-infrastructure selections use the same saved overlay:
 
 ```console
 $ ciu worktree create pkg-under-test --base main \
@@ -93,6 +108,10 @@ repairs generated facts but does not replay the original overlay, so operator
 edits and deletions remain in place. Ready schema-v3 records remain readable;
 an incomplete schema-v3 record is refused because it predates this marker and
 cannot prove whether it represents initial allocation or an interrupted repair.
+New schema-v4 allocations record whether the worktree was created or adopted;
+the origin of a migrated older ready record remains unknown. Only a confirmed
+adopted worktree may reuse an existing runtime network during initial recovery.
+A failed create alone never grants that permission.
 
 If root preparation fails, keep the checkout and retry through CIU:
 

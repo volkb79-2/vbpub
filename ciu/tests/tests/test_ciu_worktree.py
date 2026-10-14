@@ -175,7 +175,11 @@ class TestInitialCheckoutResetSafety:
                 "unknown initial overlay intent cannot carry a payload",
             ),
             (
-                {"schema_version": 4, "initial_overlay_pending": True},
+                {
+                    "schema_version": 4,
+                    "initial_overlay_pending": True,
+                    "adopted": False,
+                },
                 "pending initial overlay recovery requires known intent",
             ),
             (
@@ -184,6 +188,7 @@ class TestInitialCheckoutResetSafety:
                     "state": "ready",
                     "overlay_intent_known": True,
                     "initial_overlay_pending": True,
+                    "adopted": False,
                 },
                 "ready worktree record cannot have pending overlay recovery",
             ),
@@ -496,6 +501,7 @@ class TestManagedIdentityLifecycle:
         record = worktree.create(tmp_repo, "logical-one", base="main")
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
         assert stored["schema_version"] == 4
+        assert stored["adopted"] is False
         assert stored["logical_name"] == "logical-one"
         assert stored["state"] == "ready"
         assert stored["runtime"]["instance_id"] == record.instance_id
@@ -703,8 +709,8 @@ class TestManagedIdentityLifecycle:
 
         assert overlay.is_dir()
 
-    def test_ready_legacy_record_without_overlay_checkpoint_remains_usable(
-        self, tmp_repo, fake_generate_env
+    def test_ready_v2_repair_resumes_after_interruption_without_overlay_intent(
+        self, tmp_repo, fake_generate_env, monkeypatch
     ):
         created = worktree.create(tmp_repo, "legacy-ready")
         legacy = replace(
@@ -712,12 +718,35 @@ class TestManagedIdentityLifecycle:
             overlay_intent_known=False,
         )
         worktree._write_instance_record(legacy)
-        before = legacy.record_path.read_bytes()
+        generated = legacy.ciu_root / "ciu.instance.generated.toml"
+        generated.unlink()
+        monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: True)
+        real_finish = worktree._finish_allocation
+        monkeypatch.setattr(
+            worktree,
+            "_finish_allocation",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                KeyboardInterrupt("simulated interruption during legacy repair")
+            ),
+        )
+
+        with pytest.raises(KeyboardInterrupt, match="during legacy repair"):
+            worktree.ensure(tmp_repo, "legacy-ready")
+
+        interrupted = worktree.read_instance_record(legacy.record_path)
+        assert interrupted.state == "allocating"
+        assert interrupted.schema_version == 4
+        assert interrupted.overlay_intent_known is False
+        assert interrupted.initial_overlay_pending is False
+        assert interrupted.adopted is None
+        monkeypatch.setattr(worktree, "_finish_allocation", real_finish)
 
         ensured = worktree.ensure(tmp_repo, "legacy-ready")
 
-        assert ensured.schema_version == 2
-        assert legacy.record_path.read_bytes() == before
+        assert ensured.state == "ready"
+        assert ensured.schema_version == 4
+        assert ensured.overlay_intent_known is False
+        assert generated.is_file()
 
     def test_ensure_refuses_incomplete_v3_record_with_ambiguous_recovery_state(
         self, tmp_repo, fake_generate_env
@@ -779,6 +808,17 @@ class TestManagedIdentityLifecycle:
         worktree.create(tmp_repo, "logical-one", display_name="visible-one")
         with pytest.raises(worktree.WorktreeError, match="ensure mismatch"):
             worktree.ensure(tmp_repo, "logical-one", display_name="different")
+
+    def test_ensure_refuses_explicit_overlay_options_for_existing_worktree(
+        self, tmp_repo, fake_generate_env
+    ):
+        worktree.create(tmp_repo, "logical-one", profile="core")
+
+        with pytest.raises(
+            worktree.WorktreeError,
+            match="initial overlay options are not reapplied",
+        ):
+            worktree.ensure(tmp_repo, "logical-one", profile="db")
 
     def test_env_failure_is_inspectable_and_ensure_resumes(
         self, tmp_repo, fake_generate_env, monkeypatch, write_instance_facts
@@ -1165,6 +1205,33 @@ class TestManagedIdentityLifecycle:
         monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: True)
         with pytest.raises(worktree.WorktreeError, match="already exists"):
             worktree.create(tmp_repo, "logical-one")
+
+    def test_create_retry_does_not_claim_a_network_created_after_failure(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
+        monkeypatch.setattr(
+            worktree, "_generate_env_in",
+            lambda _root, *, identity_only=False: 0 if identity_only else 9,
+        )
+        with pytest.raises(worktree.WorktreeError, match="full.*failed"):
+            worktree.create(tmp_repo, "network-retry")
+
+        partial = worktree.find_instance_record(tmp_repo, "network-retry")
+        assert partial is not None
+        assert partial.adopted is False
+        assert partial.recovery_status == "env-generation-failed"
+        assert partial.initial_overlay_pending is True
+
+        monkeypatch.setattr(worktree, "_generate_env_in", fake_generate_env)
+        monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: True)
+        with pytest.raises(worktree.WorktreeError, match="host runtime network.*already exists"):
+            worktree.ensure(tmp_repo, "network-retry")
+
+        refused = worktree.read_instance_record(partial.record_path)
+        assert refused.state == "recovery-required"
+        assert refused.recovery_status == "runtime-collision"
+        assert refused.adopted is False
         failed = worktree.find_instance_record(tmp_repo, "logical-one")
         assert failed is not None and failed.recovery_status == "runtime-collision"
 
@@ -1247,6 +1314,7 @@ class TestForkPointProvenance:
                     tmp_repo).returncode == 0
         record = worktree.adopt(tmp_repo, "adopted-one", str(wt_path))
         assert record.fork_point_sha is None
+        assert record.adopted is True
         stored = json.loads(record.record_path.read_text(encoding="utf-8"))
         assert "fork_point_sha" not in stored
 
@@ -1635,6 +1703,11 @@ class TestManagedRecordValidation:
             (lambda raw: {**raw, "branch": ""}, "required string"),
             (lambda raw: {**raw, "state": "future"}, "lifecycle state"),
             (lambda raw: {**raw, "recovery_status": "future"}, "recovery status"),
+            (lambda raw: {
+                **raw, "schema_version": 4, "lease": None,
+                "initial_overlay": None, "overlay_intent_known": True,
+                "initial_overlay_pending": False, "adopted": 1,
+            }, "adopted must be boolean"),
             (lambda raw: {**raw, "runtime": {"instance_id": 3, "network": "n"}}, "runtime.instance_id"),
             (lambda raw: {**raw, "runtime": {"instance_id": None, "network": "n"}}, "incomplete runtime identity"),
             (lambda raw: {**raw, "state": "allocating", "runtime": {"instance_id": "i", "network": None}}, "incomplete runtime identity"),
@@ -1685,6 +1758,7 @@ class TestManagedRecordValidation:
             initial_overlay=None,
             overlay_intent_known=True,
             initial_overlay_pending=False,
+            adopted=False,
         )
         raw.update(updates)
         with pytest.raises(worktree.WorktreeError, match=message):
@@ -3395,16 +3469,17 @@ def test_generated_allocation_recovery_does_not_apply_adopt_head_guard(
 
 
 @pytest.mark.parametrize(
-    ("recovery_status", "fork_point", "base_ref"),
+    ("recovery_status", "fork_point", "base_ref", "adopted"),
     [
-        ("checkout-incomplete", None, "full-sha"),
-        ("env-generation-failed", "full-sha", "full-sha"),
-        ("env-generation-failed", None, "main"),
+        ("checkout-incomplete", None, "full-sha", False),
+        ("env-generation-failed", "full-sha", "full-sha", False),
+        ("env-generation-failed", None, "main", False),
+        ("env-generation-failed", None, "full-sha", True),
     ],
 )
-def test_only_adopt_shaped_recovery_records_keep_the_no_reset_marker(
+def test_adopted_record_fact_controls_the_no_reset_marker(
     tmp_repo, fake_generate_env, monkeypatch,
-    recovery_status, fork_point, base_ref,
+    recovery_status, fork_point, base_ref, adopted,
 ):
     base_sha = _git(["rev-parse", "HEAD"], tmp_repo).stdout.strip()
     record = worktree.create(tmp_repo, "recovery-shape", base=base_sha)
@@ -3414,6 +3489,7 @@ def test_only_adopt_shaped_recovery_records_keep_the_no_reset_marker(
         recovery_status=recovery_status,
         fork_point_sha=(base_sha if fork_point == "full-sha" else None),
         base_ref=(base_sha if base_ref == "full-sha" else base_ref),
+        adopted=adopted,
     )
     worktree._write_instance_record(edited)
 
@@ -3430,8 +3506,12 @@ def test_only_adopt_shaped_recovery_records_keep_the_no_reset_marker(
         worktree.ensure(tmp_repo, "recovery-shape")
 
     assert attempted
-    assert attempted[0].state == "allocating"
-    assert attempted[0].recovery_status is None
+    if adopted:
+        assert attempted[0].state == "recovery-required"
+        assert attempted[0].recovery_status == "env-generation-failed"
+    else:
+        assert attempted[0].state == "allocating"
+        assert attempted[0].recovery_status is None
 
 
 @pytest.mark.parametrize("resume", [False, True])

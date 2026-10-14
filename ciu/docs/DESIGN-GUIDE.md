@@ -32,6 +32,18 @@ write that first publishes `ready`. Root repair can later move a ready record
 through `allocating`; if that repair is interrupted, the false marker survives
 and a retry does not mistake the repair for unfinished first-time setup. This
 is why operator edits and deletions remain intact even across a failed repair.
+New schema-v4 allocations also record whether CIU created or adopted the
+checkout; a legacy ready record keeps an unknown origin during migration. A
+failed create does not authorize reuse of a network that appeared afterward;
+an adopted checkout may already have its network, and a previously ready
+record may keep its network through repair. The failure reason alone is never
+evidence of ownership.
+
+The CLI accepts `--profile` on create and adopt, and on `ensure` when creating
+an absent checkout, so consumers can request the same initial overlay that the
+API already supports. For an existing record, `ensure` refuses explicit
+overlay options rather than returning success while ignoring them; recovery
+reads the saved request, and ready overlays remain operator state.
 
 The family registry also records generic Git worktrees whose selected base
 contains no CIU root. Their ready record has null runtime values because there

@@ -63,7 +63,8 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     layouts                     list declared deploy layouts
 
   WORKTREE INSTANCES (S16)
-    worktree create LOGICAL [--base REF] [--name DISPLAY | --prefix P --feature F]
+    worktree create LOGICAL [--base REF] [--profile P1,P2]
+         [--name DISPLAY | --prefix P --feature F]
          [--branch BRANCH] [--path PATH] [--json]
                                 canonical managed checkout + CIU identity;
                                 --base may be a branch, tag, or exact commit
@@ -72,7 +73,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
     worktree ensure LOGICAL [create options] [--json]
                                 idempotently reuse a ready instance, or
                                 create/resume a CIU-owned partial allocation
-    worktree adopt LOGICAL PATH [--json]
+    worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
                                 adopt an existing unmanaged linked checkout
     worktree rm LOGICAL [-y] [--json]   clean, THEN remove the checkout
     worktree list [--json]      list linked checkouts
@@ -193,12 +194,12 @@ ciu exec [--root-folder PATH] [--profile NAME ...] <stack>[:<service>] -- ARGV..
   (S16.7 / CIU-118).
 """,
     "worktree": """\
-ciu worktree create LOGICAL [--base REF] [--up]
+ciu worktree create LOGICAL [--base REF] [--profile P1,P2] [--up]
                              [--name DISPLAY | --prefix P --feature F]
                              [--branch BRANCH] [--path PATH]
                              [--worktree-dir DIR] [--json]
-ciu worktree adopt LOGICAL PATH [--json]
-ciu worktree ensure LOGICAL [--base REF]
+ciu worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
+ciu worktree ensure LOGICAL [--base REF] [--profile P1,P2]
                              [--name DISPLAY | --prefix P --feature F]
                              [--branch BRANCH] [--path PATH]
                              [--worktree-dir DIR] [--json]
@@ -220,6 +221,9 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   `ensure` is the idempotent spelling for automation: it reuses an exact ready
   instance, creates one when absent, or resumes a mechanically recognized
   CIU-owned partial allocation. It does not rewrite a conflicting instance.
+  `--profile P1,P2` selects service profiles in the initial instance overlay.
+  On an existing record, omit initial-overlay options when resuming; the saved
+  intent is authoritative and a ready overlay is operator-owned.
   `adopt` is the only operation that takes ownership of an existing unmanaged
   linked checkout and prepares every committed CIU root in that checkout.
 
@@ -1751,6 +1755,10 @@ def _worktree(rest: list[str]) -> int:
 
     def add_create_options(parser) -> None:
         parser.add_argument("--base", default="main", metavar="REF")
+        parser.add_argument(
+            "--profile", default=None, metavar="P1,P2",
+            help="initial service-profile selection for the instance overlay",
+        )
         parser.add_argument("--worktree-dir", dest="worktree_dir",
                             default=wt_mod.DEFAULT_WORKTREE_DIR, metavar="DIR")
         parser.add_argument("--name", dest="display_name", default=None, metavar="DISPLAY")
@@ -1782,6 +1790,10 @@ def _worktree(rest: list[str]) -> int:
     p_adopt = sub.add_parser("adopt", add_help=False)
     p_adopt.add_argument("logical_name")
     p_adopt.add_argument("path")
+    p_adopt.add_argument(
+        "--profile", default=None, metavar="P1,P2",
+        help="initial service-profile selection for the instance overlay",
+    )
     p_adopt.add_argument("--shared-infra", dest="shared_infra", default=None, metavar="REF")
     p_adopt.add_argument("--shared-infra-services", dest="shared_infra_services",
                          default=None, metavar="S1,S2")
@@ -1882,6 +1894,7 @@ def _worktree(rest: list[str]) -> int:
             lifecycle = wt_mod.create if opts.action == "create" else wt_mod.ensure
             record = lifecycle(
                 repo_root, opts.logical_name, base=opts.base,
+                profile=opts.profile,
                 worktree_dir=opts.worktree_dir, display_name=opts.display_name,
                 prefix=opts.prefix, feature=opts.feature, branch=opts.branch,
                 path=opts.path, shared_infra=opts.shared_infra,
@@ -1906,6 +1919,7 @@ def _worktree(rest: list[str]) -> int:
         if opts.action == "adopt":
             record = wt_mod.adopt(
                 repo_root, opts.logical_name, opts.path,
+                profile=opts.profile,
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,

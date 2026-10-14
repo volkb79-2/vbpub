@@ -5051,7 +5051,7 @@ Severity: High (a lifecycle command can complete resource cleanup but leave a br
 
 **Disposition:** OPEN. The affected checkout was removed with the existing host root helper after preserving its remaining evidence. No code or Git identity records were edited as part of the manual recovery.
 
-## CIU-135 — worktree allocation can orphan or lose its initial overlay intent
+## CIU-135 — managed worktree overlay intent and recovery can be ambiguous
 
 Severity: Medium. Type: bugfix. Filed 2026-10-13 after reviewing the unmerged
 CIU-107/120 worktree branch family against current `main`. The old branch's
@@ -5076,8 +5076,9 @@ to restore it and can finish with the requested selection absent.
   branch or checkout, no shared or CIU record, and no Git exclude change.
 - Persist the exact rendered payload and a known/unknown marker in the CIU
   allocation record before publishing the overlay. This uses worktree record
-  schema v3; v1/v2 remain readable, but a partial legacy record without
-  overlay-intent evidence is refused rather than treated as an empty request.
+  schema v4; ready v1-v3 records remain readable, but incomplete legacy
+  records without enough overlay/recovery evidence are refused rather than
+  treated as an empty request.
 - Persist a separate `initial_overlay_pending` marker. It starts true and is
   cleared atomically with the first `ready` record. A later ready-root repair
   may temporarily set lifecycle state to `allocating`; retries must preserve
@@ -5085,6 +5086,15 @@ to restore it and can finish with the requested selection absent.
   operator edits or deletion. The marker is schema v4; ready v3 records remain
   readable, but incomplete v3 records are refused because their recovery
   phase cannot be inferred safely.
+- Persist whether the checkout was created or explicitly adopted. During
+  initial recovery, only adoption may reuse an already-existing runtime
+  network; a generic `env-generation-failed` status is not ownership evidence.
+  A durably cleared pending marker proves prior readiness and allows a repair
+  to keep that worktree's network.
+- Expose `--profile` through the create/adopt/ensure CLI. When `ensure` finds an
+  existing record, reject explicit profile/shared-infrastructure options rather
+  than silently ignoring them; option-free recovery uses the exact saved
+  request and ready overlays remain operator-owned.
 - When `ensure` resumes an incomplete allocation, restore a missing recorded
   payload atomically. Accept an existing regular file only when it matches the
   recorded payload exactly; refuse symlinks, non-regular files and conflicting
@@ -5104,17 +5114,24 @@ bytes are restored before the worktree becomes ready. (4) Edit or replace the mi
 before recovery `ensure`: CIU refuses and preserves the operator's file. (5) A
 partial v1/v2 record without saved overlay intent and an incomplete v3 record
 without a recovery-phase marker refuse before changing the checkout. (6) A file
-created between preflight and publish is never
-overwritten. (7) After readiness, `ensure` preserves operator edits and does
-not recreate an operator-deleted overlay. (8) Interrupt a ready-root repair
+created between preflight and publish is never overwritten. (7) After readiness,
+`ensure` preserves operator edits and does not recreate an operator-deleted
+overlay. (8) Interrupt a ready-root repair
 after it moves the record to `allocating`, then retry `ensure`: it repairs
 generated facts while preserving both an operator-edited overlay and an
 operator-deleted overlay, even if that worktree's recorded network remains
-live. Controlled wrong implementations that write the record first, guess an
-absent overlay, replay an initial overlay after readiness, or use `os.replace`
-must fail the corresponding oracle.
+live. (9) A failed create followed by a foreign network appearing before retry
+must refuse; adoption and repair of a previously-ready record may reuse their
+own network. (10) Interrupt a v2 ready-record repair after migration to v4;
+retry completes without inventing overlay intent. (11) CLI `--profile` reaches
+create/adopt, and `ensure` rejects explicit overlay options for an existing
+record. Controlled wrong implementations that write the record first, infer
+missing intent, replay an initial overlay after readiness, reuse a network
+based only on failure status, silently ignore `ensure` options, or use
+`os.replace` must fail the corresponding oracle.
 
-**File list.** `src/ciu/worktree.py`; the owning worktree lifecycle tests;
+**File list.** `src/ciu/worktree.py`, `src/ciu/cli.py`; the owning worktree
+lifecycle and CLI tests;
 the root `.gitignore`, `ciu/.gitignore`, and the shipped `.gitignored.ciu`
 rules for interrupted atomic-writer scratch;
 `docs/SPEC.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `docs/CONFIG.md`,

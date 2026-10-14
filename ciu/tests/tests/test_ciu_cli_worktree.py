@@ -28,6 +28,7 @@ class TestWorktreeCreateDispatch:
             name,
             *,
             base,
+            profile,
             worktree_dir,
             display_name,
             prefix,
@@ -43,6 +44,7 @@ class TestWorktreeCreateDispatch:
                 repo_root=repo_root,
                 name=name,
                 base=base,
+                profile=profile,
                 worktree_dir=worktree_dir,
                 display_name=display_name,
                 prefix=prefix,
@@ -63,6 +65,8 @@ class TestWorktreeCreateDispatch:
                 "mypkg",
                 "--base",
                 "develop",
+                "--profile",
+                "core,db",
                 "--worktree-dir",
                 ".wt",
                 "--name",
@@ -74,6 +78,7 @@ class TestWorktreeCreateDispatch:
             "repo_root": seen["repo_root"],
             "name": "mypkg",
             "base": "develop",
+            "profile": "core,db",
             "worktree_dir": ".wt",
             "display_name": "display",
             "prefix": None,
@@ -111,6 +116,7 @@ class TestWorktreeCreateSharedInfraDispatch:
             name,
             *,
             base,
+            profile,
             worktree_dir,
             display_name,
             prefix,
@@ -124,6 +130,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         ):
             seen.update(
                 shared_infra=shared_infra,
+                profile=profile,
                 shared_infra_services=shared_infra_services,
                 shared_infra_ref_projects=shared_infra_ref_projects,
                 shared_infra_ref_services=shared_infra_ref_services,
@@ -148,6 +155,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         assert code == 0
         assert seen == {
             "shared_infra": "primary",
+            "profile": None,
             "shared_infra_services": "api,worker",
             "shared_infra_ref_projects": "idp-dev-idp,vault-dev-vault",
             "shared_infra_ref_services": "vault,secrets=vault",
@@ -162,6 +170,7 @@ class TestWorktreeCreateSharedInfraDispatch:
             name,
             *,
             base,
+            profile,
             worktree_dir,
             display_name,
             prefix,
@@ -175,6 +184,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         ):
             seen.update(
                 shared_infra=shared_infra,
+                profile=profile,
                 shared_infra_services=shared_infra_services,
                 shared_infra_ref_projects=shared_infra_ref_projects,
                 shared_infra_ref_services=shared_infra_ref_services,
@@ -185,6 +195,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         cli._worktree(["create", "mypkg"])
         assert seen == {
             "shared_infra": None,
+            "profile": None,
             "shared_infra_services": None,
             "shared_infra_ref_projects": None,
             "shared_infra_ref_services": None,
@@ -436,6 +447,31 @@ class TestManagedLifecycleDispatch:
         assert cli._worktree(["adopt", "task-one", "/tmp/existing"]) == 0
         assert seen["logical_name"] == "task-one"
         assert seen["path"] == "/tmp/existing"
+
+    def test_profile_flag_forwards_on_create_ensure_and_adopt(
+        self, monkeypatch
+    ):
+        seen = {}
+
+        def fake_lifecycle(repo_root, logical_name, **kwargs):
+            seen.update(kwargs)
+            return _ready_record()
+
+        for verb in ("create", "ensure"):
+            monkeypatch.setattr(wt_mod, verb, fake_lifecycle)
+            assert cli._worktree([verb, "task-one", "--profile", "core,db"]) == 0
+            assert seen["profile"] == "core,db"
+            seen.clear()
+
+        def fake_adopt(repo_root, logical_name, path, **kwargs):
+            seen.update(kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "adopt", fake_adopt)
+        assert cli._worktree([
+            "adopt", "task-one", "/tmp/existing", "--profile", "core,db"
+        ]) == 0
+        assert seen["profile"] == "core,db"
 
     @pytest.mark.parametrize("verb", ["create", "ensure"])
     def test_ref_services_flag_forwards_on_create_and_ensure(

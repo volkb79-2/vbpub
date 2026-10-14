@@ -68,9 +68,9 @@ DEFAULT_WORKTREE_DIR = ".worktrees"
 WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
 # S16.9 (CIU-25 substrate): v2 is the lease-only mutation target for legacy
 # records. CIU-135's v3 adds durable initial-overlay intent; v4 adds the
-# one-time pending marker that distinguishes first-allocation recovery from a
-# later interrupted repair. Ready v1-v3 records remain readable, while
-# incomplete v1-v3 records without enough recovery evidence are refused.
+# one-time pending marker and create/adopt origin. Ready v1-v3 records remain
+# readable, while incomplete v1-v3 records without enough recovery evidence
+# are refused.
 WORKTREE_INSTANCE_SCHEMA_VERSION = 2
 WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION = 3
 WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION = 4
@@ -227,8 +227,8 @@ class WorktreeInstanceRecord:
 
     ``schema_version`` is 1 for legacy records, 2 for lease-aware records, 3
     for records that checkpoint the initial overlay intent, or 4 for records
-    that also track whether first-allocation recovery is still pending. A
-    legacy record read from disk is never upgraded by inspection.
+    that track pending first-allocation recovery and whether the target was
+    adopted. A legacy record read from disk is never upgraded by inspection.
     """
 
     logical_name: str
@@ -274,6 +274,10 @@ class WorktreeInstanceRecord:
     #: treating the original overlay as unfinished setup and replaying it over
     #: operator-owned edits or deletion.
     initial_overlay_pending: bool = False
+    #: True when explicitly adopted, false when newly created, and None when
+    #: a pre-v4 ready record did not retain its origin. Adoption may reuse an
+    #: existing network; ordinary creation recovery may not claim a new one.
+    adopted: bool | None = None
 
     @property
     def ciu_root(self) -> Path:
@@ -304,9 +308,15 @@ class WorktreeInstanceRecord:
         if self.schema_version >= WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION:
             if not isinstance(self.initial_overlay_pending, bool):
                 raise ValueError("initial overlay pending marker must be boolean")
+            if self.adopted is not None and not isinstance(self.adopted, bool):
+                raise ValueError("worktree adopted marker must be boolean or null")
             if self.initial_overlay_pending and not self.overlay_intent_known:
                 raise ValueError(
                     "pending initial overlay recovery requires known intent"
+                )
+            if self.initial_overlay_pending and self.adopted is None:
+                raise ValueError(
+                    "pending initial overlay recovery requires known allocation origin"
                 )
             if self.initial_overlay_pending and self.state == "ready":
                 raise ValueError(
@@ -347,6 +357,7 @@ class WorktreeInstanceRecord:
             doc["overlay_intent_known"] = self.overlay_intent_known
         if self.schema_version >= WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION:
             doc["initial_overlay_pending"] = self.initial_overlay_pending
+            doc["adopted"] = self.adopted
         return doc
 
 
@@ -465,7 +476,8 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         "state", "runtime", "recovery_status",
     }
     # The key set is SCHEMA-DEPENDENT: v2+ records carry `lease`, v3+ records
-    # carry initial-overlay intent, and v4 adds its durable pending marker.
+    # carry initial-overlay intent, and v4 adds its durable pending marker and
+    # explicit create/adopt origin.
     # Equality checks here deliberately avoid set membership so malformed
     # unhashable JSON values reach the normal schema refusal below instead of
     # leaking TypeError.
@@ -478,9 +490,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     ):
         required = required | {"initial_overlay", "overlay_intent_known"}
     if declared_version == WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION:
-        required = required | {
-            "initial_overlay_pending",
-        }
+        required = required | {"initial_overlay_pending", "adopted"}
     # CIU-106: `fork_point_sha` is OPTIONAL in every schema version — present
     # on records `create()` wrote since CIU-106, absent on `adopt()`'s and on
     # every record written before it. Both shapes are valid, which is why
@@ -565,6 +575,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     overlay_intent_known = False
     initial_overlay = None
     initial_overlay_pending = False
+    adopted = None
     if declared_version in (
         WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
         WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
@@ -592,6 +603,17 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
                     "initial_overlay_pending must be boolean"
                 )
             initial_overlay_pending = raw["initial_overlay_pending"]
+            if raw["adopted"] is not None and not isinstance(raw["adopted"], bool):
+                raise WorktreeError(
+                    f"[S16] malformed worktree origin in {path}: "
+                    "adopted must be boolean or null"
+                )
+            adopted = raw["adopted"]
+            if initial_overlay_pending and adopted is None:
+                raise WorktreeError(
+                    f"[S16] malformed worktree origin in {path}: pending "
+                    "initial overlay recovery requires known allocation origin"
+                )
             if initial_overlay_pending and not overlay_intent_known:
                 raise WorktreeError(
                     f"[S16] malformed initial overlay intent in {path}: pending "
@@ -614,6 +636,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         initial_overlay=initial_overlay,
         overlay_intent_known=overlay_intent_known,
         initial_overlay_pending=initial_overlay_pending,
+        adopted=adopted,
     )
 
 
@@ -4379,12 +4402,7 @@ def _finish_allocation(
 
     # An adopt record carries a durable no-reset marker from its first write.
     # Keep it through all initialization, including nested-root preparation.
-    adopting = (
-        record.state == "recovery-required"
-        and record.recovery_status == "env-generation-failed"
-        and record.fork_point_sha is None
-        and _FULL_SHA_RE.fullmatch(record.base_ref) is not None
-    )
+    adopting = record.adopted is True and record.fork_point_sha is None
     allocating = replace(
         record,
         state="recovery-required" if adopting else "allocating",
@@ -4703,6 +4721,7 @@ def create(
             initial_overlay=initial_overlay,
             overlay_intent_known=True,
             initial_overlay_pending=True,
+            adopted=False,
             schema_version=WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
         )
         _write_instance_record(record)
@@ -4723,6 +4742,17 @@ def ensure(
     with _allocation_lock(repo_root):
         record = find_instance_record(repo_root, logical_name)
         if record is not None:
+            overlay_options = (
+                "profile", "shared_infra", "shared_infra_services",
+                "shared_infra_ref_projects", "shared_infra_ref_services",
+            )
+            if any(create_kwargs.get(key) is not None for key in overlay_options):
+                raise WorktreeError(
+                    f"[S16] ensure found existing worktree {logical_name!r}; "
+                    "initial overlay options are not reapplied to an existing "
+                    "record. Omit them to resume from the saved allocation "
+                    "intent; after readiness, edit the operator-owned overlay directly."
+                )
             requested_prefix = create_kwargs.get("prefix")
             requested_feature = create_kwargs.get("feature")
             if bool(requested_prefix) != bool(requested_feature):
@@ -4802,7 +4832,15 @@ def ensure(
                         "an interrupted repair of a ready worktree; inspect the "
                         "checkout and choose an operator-directed recovery"
                     )
-                if not record.overlay_intent_known:
+                has_completed_allocation_marker = (
+                    record.schema_version
+                    >= WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION
+                    and not record.initial_overlay_pending
+                )
+                if (
+                    not record.overlay_intent_known
+                    and not has_completed_allocation_marker
+                ):
                     raise WorktreeError(
                         f"[S16] cannot safely resume {record.logical_name!r}: its "
                         "instance record predates durable overlay intent; inspect "
@@ -4814,7 +4852,7 @@ def ensure(
                     _mark_recovery(record, "env-generation-failed")
                     raise
                 allow_existing_network = (
-                    record.recovery_status == "env-generation-failed"
+                    record.adopted is True
                     # Schema-v4 clears this durable marker only after the
                     # first ready publication. A false marker on a later
                     # allocating record therefore identifies interrupted
@@ -4911,6 +4949,7 @@ def adopt(
             initial_overlay=initial_overlay,
             overlay_intent_known=True,
             initial_overlay_pending=True,
+            adopted=True,
             schema_version=WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
         )
         _write_instance_record(record)

@@ -4216,15 +4216,17 @@ fresh HEAD before preparing the environment; if it moved or cannot be read,
 CIU refuses and preserves the checkout and its commits. It MUST NOT reset an
 adopted checkout during resume.
 
-- **`worktree create LOGICAL [--name DISPLAY | --prefix PREFIX --feature FEATURE] [--branch BRANCH] [--path PATH] [...]`** — creates a new managed checkout and prepares every committed CIU root in it.
+- **`worktree create LOGICAL [--profile P1,P2] [--name DISPLAY | --prefix PREFIX --feature FEATURE] [--branch BRANCH] [--path PATH] [...]`** — creates a new managed checkout and prepares every committed CIU root in it.
   Generated names are UTC `<prefix>-<YYYYMMDD_HHMMSS>-<feature>`; generated
   branch and directory basename are identical, with a suffix only on an actual
   same-second collision under the Git-family allocation lock.
-- **`worktree ensure LOGICAL [...]`** — verifies the committed-root evidence
+- **`worktree ensure LOGICAL [--profile P1,P2] [...]`** — verifies the committed-root evidence
   before returning an exact ready match without rewriting it; it creates when
   absent, or resumes only a mechanically recognized CIU-owned partial
-  allocation. Any requested identity mismatch refuses.
-- **`worktree adopt LOGICAL PATH [...]`** — the sole operation allowed to take
+  allocation. Initial overlay options apply only when absent; with an existing
+  record, explicit overlay options are refused. Any requested identity
+  mismatch refuses.
+- **`worktree adopt LOGICAL PATH [--profile P1,P2] [...]`** — the sole operation allowed to take
   ownership of a registered unmanaged linked checkout.
 - There is no `worktree add` alias. `create` is the sole allocation verb; it
   does NOT deploy unless `--up` is explicitly supplied. A create operation
@@ -5149,13 +5151,21 @@ initial `ciu.global.instance.toml.j2` payload before mutating Git worktree
 state, the shared workspace record, the CIU instance record, or Git excludes.
 The CIU instance record is written as schema v4 and records the exact rendered
 payload (`initial_overlay`, or `null` when no overlay was requested),
-`overlay_intent_known: true`, and `initial_overlay_pending: true` before the
-overlay is published. Schema v3 added initial-overlay intent to the
-lease-aware schema-v2 record; schema v4 adds the pending marker. Ready v1-v3
+`overlay_intent_known: true`, `initial_overlay_pending: true`, and whether the
+checkout was adopted before the overlay is published. New records carry a
+boolean origin; a migrated ready record may carry `null` when its old schema
+did not preserve origin. Schema v3 added
+initial-overlay intent to the lease-aware schema-v2 record; schema v4 adds the
+pending marker and the explicit created/adopted origin. Ready v1-v3
 records remain readable. An incomplete v1/v2 record is refused because it
 cannot prove whether an initial overlay was requested. An incomplete v3 record
 is also refused because it cannot distinguish first-allocation recovery from
 an interrupted repair after readiness.
+The CLI exposes profile selection with `--profile P1,P2` on `create` and
+`adopt`. `ensure` forwards initial overlay options only when the named
+worktree does not exist; if a record already exists, any explicit profile or
+shared-infrastructure options MUST be refused instead of ignored. An
+option-free `ensure` resumes from the saved request.
 For a newly created worktree, CIU then checks out the requested base and
 persists the resulting fork point before publishing the overlay. If the process
 stops before publication, `ensure` resumes from that recorded checkout instead
@@ -5184,7 +5194,15 @@ original overlay. This keeps the overlay operator-owned after first readiness,
 including when a later repair is interrupted. A ready schema-v4 record with
 pending recovery is malformed and is refused. A ready schema-v3 record that
 needs root repair is upgraded to schema v4 with recovery already marked
-complete before its lifecycle state changes.
+complete before its lifecycle state changes; an origin absent from the legacy
+record remains `null` rather than being invented.
+
+During initial recovery, an existing runtime network is accepted only when
+the record proves the checkout was adopted. A previously ready record also
+retains permission to reuse its network while repairing roots, because its
+pending marker is durably false. A generic `env-generation-failed` status is
+not evidence that a newly created checkout owns a network that appeared after
+the failure.
 
 `adopt` with no overlay flags records known `null` intent and preserves any
 pre-existing operator overlay. If adopt flags would create an overlay where
