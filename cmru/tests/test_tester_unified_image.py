@@ -1221,7 +1221,7 @@ def test_dockerfile_installs_estate_internal_packages_only_offline_from_copied_s
         if "/tmp/run-gate-wheels/*.whl" in command
     ]
     assert run_gate_installs == [
-        "/opt/tester-venv/bin/pip install --no-cache-dir --no-index "
+        "RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index "
         "--no-deps /tmp/run-gate-wheels/*.whl"
     ]
     assert 'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_VERSION}"' in code
