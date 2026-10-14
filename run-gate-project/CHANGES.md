@@ -11,6 +11,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 - Documentation: state that the installed SemVer wheel is the only supported
   Run-Gate consumer; copied `run-gate.py` scripts are retired.
+- Fix: require Assay's verdict exit code to be a non-boolean integer matching
+  both the runner status and the closed outcome table, preventing a stale or
+  inconsistent PASS artifact from certifying a failed process (RG-95).
 
 <!-- cmru: release history -->
 

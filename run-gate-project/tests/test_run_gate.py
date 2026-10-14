@@ -1414,6 +1414,11 @@ class TestRG78ClosedExitTable:
             0, "PASS", verdict_exit_code=True, judge_provenance=provenance)
         assert boolean_exit.verdict == "ERROR"
         assert boolean_exit.reason == "missing-or-invalid-assay-verdict-exit-code"
+        malformed_runner_exit = run_gate.assay_lane_result(
+            True, "PASS", verdict_exit_code=1, judge_provenance=provenance)
+        assert malformed_runner_exit.verdict == "ERROR"
+        assert malformed_runner_exit.reason == \
+            "missing-or-invalid-assay-runner-exit-code"
         def claims_with_observer_refusal(**statuses):
             ordered = [
                 ("R0", statuses.get("R0", "PASS")),

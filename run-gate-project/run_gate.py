@@ -202,6 +202,14 @@ ASSAY_OUTCOMES = frozenset({
     "PASS", "FAIL", "ERROR", "NO_MEASUREMENT", "BUDGET_EXCEEDED",
     "INCONCLUSIVE",
 })
+ASSAY_OUTCOME_EXIT_CODES = {
+    "PASS": 0,
+    "FAIL": 1,
+    "ERROR": 2,
+    "NO_MEASUREMENT": 3,
+    "BUDGET_EXCEEDED": 4,
+    "INCONCLUSIVE": 5,
+}
 ASSAY_RIGORS = frozenset({"R0", "R1", "R2", "R3", "R4"})
 ASSAY_IDENTITY_MODES = frozenset({"source", "artifact"})
 DEFAULT_LOCK_WAIT = "10m"
@@ -267,7 +275,8 @@ def command_lane_result(exit_code: int, lane: dict | None = None,
 
 
 def assay_lane_result(exit_code: int, outcome: str | None,
-                      *, judge_provenance: object = None,
+                      *, verdict_exit_code: object = None,
+                      judge_provenance: object = None,
                       source_mode: bool = False,
                       source_version: object = None,
                       source_commit: object = None,
@@ -288,6 +297,21 @@ def assay_lane_result(exit_code: int, outcome: str | None,
                                       judge_provenance["digest"]) is not None)
     if not isinstance(outcome, str) or outcome not in ASSAY_OUTCOMES:
         return LaneResult("ERROR", exit_code, "invalid-assay-outcome", log_path,
+                          assay_outcome=outcome)
+    if type(verdict_exit_code) is not int:
+        return LaneResult("ERROR", exit_code,
+                          "missing-or-invalid-assay-verdict-exit-code",
+                          log_path, assay_outcome=outcome)
+    if type(exit_code) is not int:
+        return LaneResult("ERROR", exit_code,
+                          "missing-or-invalid-assay-runner-exit-code",
+                          log_path, assay_outcome=outcome)
+    if exit_code != verdict_exit_code:
+        return LaneResult("ERROR", exit_code, "assay-exit-code-mismatch",
+                          log_path, assay_outcome=outcome)
+    if verdict_exit_code != ASSAY_OUTCOME_EXIT_CODES[outcome]:
+        return LaneResult("ERROR", exit_code,
+                          "assay-outcome-exit-code-mismatch", log_path,
                           assay_outcome=outcome)
     if source_mode:
         source_commit_ok = (isinstance(source_commit, str)
@@ -14614,6 +14638,7 @@ def _dispatch(argv: list[str] | None = None, *,
                         provenance = verdict_doc.get("judge_provenance")
                         result = assay_lane_result(
                             code, verdict_doc.get("outcome"),
+                            verdict_exit_code=verdict_doc.get("exit_code"),
                             judge_provenance=provenance,
                             source_mode=identity_mode == "source",
                             source_version=verdict_doc.get("assay_version"),
