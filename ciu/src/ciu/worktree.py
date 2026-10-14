@@ -4090,10 +4090,15 @@ def _assert_allocation_checkout_reset_is_safe(
         else:
             unexpected.append(entry)
     if unexpected or missing_tracked != tracked_paths:
+        preview = ", ".join(repr(entry[:120]) for entry in entries[:4])
+        if len(entries) > 4:
+            preview += f", … ({len(entries)} total entries)"
         raise WorktreeError(
             f"[S16] cannot safely resume {record.logical_name!r}: the incomplete "
-            f"checkout at {checkout} contains local changes; inspect it before "
-            "retrying `ciu worktree ensure`"
+            f"checkout at {checkout} is not wholly unpopulated: "
+            f"{len(missing_tracked)}/{len(tracked_paths)} tracked paths are absent "
+            f"and git status reported {preview or 'no entries'}. Inspect it before "
+            "retrying `ciu worktree ensure`."
         )
 
 
