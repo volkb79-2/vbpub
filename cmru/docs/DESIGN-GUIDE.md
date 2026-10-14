@@ -540,7 +540,7 @@ commit, including older tag names that point to the same commit. It
 checks Assay's effective comparison commit too: if a merge's first parent is
 after the tag, CMRU source roots must be unchanged across that gap so the two
 lanes use the same source range. A missing tag or mismatch fails the gate. Run the
-registered `./run-gate.py gate` lane to generate fresh origin facts immediately
+registered `run-gate gate` lane to generate fresh origin facts immediately
 before mutation. The tester independently selects the highest-version
 published ancestor using Assay's sanitized ancestry API. If that source diff
 is empty, the mutation lane writes explicit
@@ -617,7 +617,7 @@ closure. It includes the Topos and nyxloom CMRU manifests read by the estate
 adoption contract test; otherwise the control could fail before exercising a
 mutant and provide no valid R2 or canary evidence.
 
-The full `run-gate.py gate` still covers R0 through R3: R0 runs the full test
+The full `run-gate gate` still covers R0 through R3: R0 runs the full test
 suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based
 changed-source campaign, and R3 runs an import-break canary. The gate also
 retains total-coverage and cause-sensitive canary lanes. (The real-enrollment lane moved to
