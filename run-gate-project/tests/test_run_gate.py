@@ -30032,3 +30032,422 @@ def test_rg87_fake_docker_dir_is_reused_for_later_shims(tmp_path, monkeypatch):
     fake_docker(tmp_path, monkeypatch)
     assert install_fake_assay(monkeypatch, "#!/bin/sh\nexit 0\n").parent == (
         tmp_path / "shim")
+
+
+class TestRunGateReleaseCoverageEdges:
+    def test_observer_refusal_rollup_checks_closed_claim_and_evidence_shapes(self):
+        refusal = {
+            "rigor": "R2", "source": "computed",
+            "status": "NO_MEASUREMENT", "verified_by_assay": True,
+            "reason_code": "CGROUP_OBSERVATION_UNAVAILABLE",
+        }
+        passing = {
+            "rigor": "R0", "source": "computed", "status": "PASS",
+            "verified_by_assay": True, "reason_code": None,
+        }
+        claims = [passing, refusal]
+        assert run_gate._observer_unavailable_rollup(claims, []) == (
+            "ERROR", None)
+        assert run_gate._observer_unavailable_rollup(None, []) == (
+            "ERROR", "invalid-assay-claims-for-observer-refusal")
+        assert run_gate._observer_unavailable_rollup([], []) == (
+            "ERROR", "invalid-assay-claims-for-observer-refusal")
+        assert run_gate._observer_unavailable_rollup([None], []) == (
+            "ERROR", "invalid-assay-claims-for-observer-refusal")
+        assert run_gate._observer_unavailable_rollup(claims, None) == (
+            "ERROR", "invalid-assay-evidence-for-observer-refusal")
+        assert run_gate._observer_unavailable_rollup(claims, [None]) == (
+            "ERROR", "invalid-assay-evidence-for-observer-refusal")
+
+        bad_reason = [dict(passing, reason_code=[]), refusal]
+        assert run_gate._observer_unavailable_rollup(bad_reason, []) == (
+            "ERROR", "invalid-assay-claims-for-observer-refusal")
+        wrong_rigor = [passing, dict(refusal, rigor="R4")]
+        assert run_gate._observer_unavailable_rollup(wrong_rigor, []) == (
+            "ERROR", "invalid-assay-observer-refusal-claim")
+        missing_refusal = [passing, dict(refusal, status="PASS",
+                                         reason_code=None)]
+        assert run_gate._observer_unavailable_rollup(missing_refusal, []) == (
+            "ERROR", "invalid-assay-observer-refusal-claim")
+
+        good_evidence = {"source": "attested", "key": "review",
+                         "status": "PASS", "verified_by_assay": True}
+        bad_evidence_reason = dict(good_evidence, reason_code=[])
+        assert run_gate._observer_unavailable_rollup(
+            claims, [bad_evidence_reason]) == (
+                "ERROR", "invalid-assay-evidence-for-observer-refusal")
+        for status, expected in (
+                ("BUDGET_EXCEEDED", "BUDGET_EXCEEDED"),
+                ("FAIL", "FAIL"), ("ERROR", "ERROR")):
+            actual, reason = run_gate._observer_unavailable_rollup(
+                claims, [dict(good_evidence, status=status)])
+            assert actual == expected
+            assert reason is not None
+
+    @pytest.mark.parametrize(("resources", "message"), [
+        ({"memory": 1024}, "'memory' must be a size"),
+        ({"memory_max": "not-a-size"}, "'memory_max' must be a size"),
+        ({"memory_swap": " "}, "'memory_swap' must be a size"),
+        ({"shared": "database"}, "'shared' must be a list"),
+        ({"shared": ["bad/name"]}, "'shared' must be a list"),
+    ])
+    def test_lane_resource_strings_and_shared_names_are_closed(
+            self, resources, message):
+        with pytest.raises(run_gate.GateError, match=message):
+            run_gate._validate_lane(
+                "probe", {"kind": "command", "environment": "runner",
+                          "argv": ["true"], "resources": resources},
+                "run-gate.toml")
+
+    @pytest.mark.parametrize("field", ["environments", "lanes"])
+    def test_config_rejects_non_table_lane_collections(self, field):
+        with pytest.raises(run_gate.GateError,
+                           match="'environments' and 'lanes' must be tables"):
+            run_gate._validate_config(
+                {"schema_version": 1, field: []}, Path("run-gate.toml"),
+                central=False)
+
+    def test_effective_observer_environment_inheritance_and_deferred_errors(self):
+        run_gate._validate_effective_resource_observers(
+            {"assay": {"environment": "runner"},
+             "environments": {"runner": {"mode": "ephemeral"}},
+             "lanes": {"r2": {"kind": "assay", "resource_observer": "cgprofile",
+                               "resources": {"memory": "1g", "pids": 8192}}}},
+            {}, Path("run-gate.toml"))
+        # The ordinary lane/environment validators own these missing-name
+        # diagnostics; this effective-policy pass must not invent a second one.
+        for project in (
+                {"lanes": {"probe": {"kind": "command",
+                                      "resource_observer": "cgprofile"}}},
+                {"lanes": {"probe": {"kind": "assay",
+                                      "environment": "missing",
+                                      "resource_observer": "cgprofile"}}}):
+            run_gate._validate_effective_resource_observers(
+                project, {}, Path("run-gate.toml"))
+
+    def test_environment_resolution_names_the_missing_source(self):
+        lane = {"environment": "runner"}
+        with pytest.raises(run_gate.GateError,
+                           match="nor in central config run-gate.root.toml"):
+            run_gate.resolve_environment(
+                lane, "suite", {}, {}, Path("run-gate.toml"),
+                Path("run-gate.root.toml"))
+        with pytest.raises(run_gate.GateError,
+                           match="no central run-gate.root.toml exists"):
+            run_gate.resolve_environment(
+                lane, "suite", {}, {}, Path("run-gate.toml"), None)
+
+    def test_physical_path_uses_the_longest_mount_and_rejects_unmapped_paths(
+            self, monkeypatch):
+        mountinfo = ("bad line\n"
+                     "1 0 0:1 / / rw - overlay overlay rw\n"
+                     "2 1 0:2 /repo /workspaces/vbpub rw - ext4 /dev/a rw\n"
+                     "3 1 0:3 /nested /workspaces/vbpub/wt rw - ext4 /dev/b rw\n")
+        actual = run_gate.physical_path(
+            Path("/workspaces/vbpub/wt/project"), container=True,
+            mountinfo_text=mountinfo)
+        assert actual == Path("/nested/project")
+        with pytest.raises(run_gate.GateInfraError, match="could not derive"):
+            run_gate.physical_path(
+                Path("/outside/project"), container=True,
+                mountinfo_text="bad line\n1 0 0:1 / / rw - overlay overlay rw\n")
+
+        original_read_text = Path.read_text
+        def fail_mountinfo(path, *args, **kwargs):
+            if path == Path("/proc/self/mountinfo"):
+                raise OSError("unreadable mount table")
+            return original_read_text(path, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", fail_mountinfo)
+        with pytest.raises(run_gate.GateInfraError, match="cannot read /proc/self/mountinfo"):
+            run_gate.physical_path(Path("/repo"), container=True)
+
+    def test_host_git_environment_disables_helpers_and_rejects_bad_count(
+            self, monkeypatch):
+        monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
+        env = run_gate.host_git_environment()
+        assert env["GIT_CONFIG_NOSYSTEM"] == "1"
+        assert env["GIT_CONFIG_GLOBAL"] == os.devnull
+        assert env["GIT_CONFIG_COUNT"] == "2"
+        assert env["GIT_CONFIG_KEY_0"] == "core.fsmonitor"
+        assert env["GIT_CONFIG_VALUE_1"] == os.devnull
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "not-a-count")
+        with pytest.raises(run_gate.GateInfraError,
+                           match="GIT_CONFIG_COUNT is malformed"):
+            run_gate.host_git_environment()
+
+    def test_slice_resolution_and_cgroupfs_path_derivation(self, monkeypatch):
+        assert run_gate.resolve_slice(
+            {"cgroup_slice": "dev-gates.slice"}, "fixture") == (
+                "dev-gates.slice", "declared fixture")
+        monkeypatch.setenv("CGROUP_TEST_SLICE", "dev.slice/dev-gates.slice")
+        assert run_gate.resolve_slice(
+            {"cgroup_slice_env": "CGROUP_TEST_SLICE"}, "fixture")[0] == \
+            "dev.slice/dev-gates.slice"
+        monkeypatch.delenv("CGROUP_TEST_SLICE")
+        with pytest.raises(run_gate.GateError, match="CGROUP_TEST_SLICE is unset"):
+            run_gate.resolve_slice(
+                {"cgroup_slice_env": "CGROUP_TEST_SLICE"}, "fixture")
+        monkeypatch.setenv(run_gate.CGROUP_ENV_VAR, "dev-gates.slice")
+        assert run_gate.resolve_slice({}, "fixture")[0] == "dev-gates.slice"
+        assert run_gate.slice_cgroupfs_dir("dev-gates.slice") == Path(
+            "dev-gates.slice")
+        assert run_gate.slice_cgroupfs_dir("dev-test-gates.slice") == Path(
+            "dev.slice/test.slice/dev-test-gates.slice")
+
+    def test_slice_memory_admission_warns_refuses_and_admits_from_cgroup_files(
+            self, tmp_path, monkeypatch, capsys):
+        root = tmp_path / "cgroup"
+        slice_dir = root / run_gate.slice_cgroupfs_dir("dev-gates.slice")
+        slice_dir.mkdir(parents=True)
+        monkeypatch.setenv(run_gate.CGROUPFS_ROOT_ENV_VAR, str(root))
+        lane = {"resources": {"memory": "1g"}}
+
+        (slice_dir / "memory.max").write_text("1500000000")
+        (slice_dir / "memory.current").write_text("200000000")
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "admission OK" in capsys.readouterr().out
+
+        (slice_dir / "memory.current").write_text("1000000000")
+        with pytest.raises(run_gate.GateError, match="resource admission REFUSED"):
+            run_gate.check_slice_memory_admission(
+                lane, "unit", "dev-gates.slice", "fixture")
+
+        (slice_dir / "memory.current").unlink()
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "current usage unreadable" in capsys.readouterr().out
+        (slice_dir / "memory.current").write_text("bad")
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "current usage unreadable" in capsys.readouterr().out
+
+        (slice_dir / "memory.max").write_text("max")
+        monkeypatch.setattr(run_gate, "cgroup_namespace_is_private",
+                            lambda: False)
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "no derivable memory ceiling" in capsys.readouterr().out
+        (slice_dir / "memory.max").unlink()
+        monkeypatch.setattr(run_gate, "cgroup_namespace_is_private",
+                            lambda: True)
+        run_gate.check_slice_memory_admission(
+            lane, "unit", "dev-gates.slice", "fixture")
+        assert "cgroupns=private" in capsys.readouterr().out
+
+    def test_clean_tree_reports_git_status_failure_and_run_record_keeps_config_identity(
+            self, tmp_path, monkeypatch):
+        with monkeypatch.context() as scoped:
+            scoped.setattr(run_gate.subprocess, "run", lambda *_a, **_kw:
+                           SimpleNamespace(returncode=1, stdout="",
+                                            stderr="fatal: unusable repo\n"))
+            with pytest.raises(run_gate.GateInfraError,
+                               match="git status failed"):
+                run_gate.check_clean_tree(tmp_path)
+
+        repo = make_repo(tmp_path)
+        central = repo / run_gate.ROOT_CONFIG_NAME
+        record = run_gate.start_run_record(
+            "suite", repo, repo, config_path=repo / run_gate.CONFIG_NAME,
+            config_sha256="a" * 64, central_config_path=central,
+            central_config_sha256="b" * 64)
+        assert record["config_path"] == str(repo / run_gate.CONFIG_NAME)
+        assert record["central_config_path"] == str(central)
+        assert record["central_config_sha256"] == "b" * 64
+
+    def test_required_environment_forwarding_and_disclosure_are_explicit(
+            self, monkeypatch, capsys):
+        run_gate.check_required_reaches_container(
+            {"required_env": ["CI"]}, "suite", {"forward_env": ["CI"]},
+            "runner", "fixture")
+        with pytest.raises(run_gate.GateError,
+                           match="CI, TOKEN.*not on environment.*forward_env"):
+            run_gate.check_required_reaches_container(
+                {"required_env": ["CI", "TOKEN"]}, "suite",
+                {"forward_env": ["CI"]}, "runner", "fixture")
+
+        monkeypatch.setenv("CI", "private-value")
+        monkeypatch.setenv("EMPTY_FORWARD", "")
+        run_gate.log_forwarded_env(
+            {"forward_env": ["CI", "EMPTY_FORWARD", "MISSING_FORWARD"]},
+            "container")
+        output = capsys.readouterr().out
+        assert "forwarded: CI" in output
+        assert "declared but ABSENT: EMPTY_FORWARD, MISSING_FORWARD" in output
+        assert "private-value" not in output
+        run_gate.log_forwarded_env({}, "container")
+        assert "nothing declared" in capsys.readouterr().out
+
+    def test_inflight_disown_and_event_comparison_boundaries(self):
+        assert run_gate.disown_run_record(None) is None
+        record = {}
+        assert run_gate.disown_run_record(record) is None
+        assert record == {"_flushed": True}
+
+        before = run_gate.CgroupEventSnapshot("/lane", 2, 4)
+        same = run_gate.CgroupEventSnapshot("/lane", 2, 4)
+        assert run_gate._cgroup_event_error(before, same, "suite", 0) is None
+        both = run_gate.CgroupEventSnapshot("/lane", 3, 5)
+        error = run_gate._cgroup_event_error(before, both, "suite", 0)
+        assert isinstance(error, run_gate.LaneCgroupEventError)
+        assert "pids.events max +1" in str(error)
+        assert "memory.events oom_kill +1" in str(error)
+        decreased = run_gate.CgroupEventSnapshot("/lane", 1, 4)
+        with pytest.raises(run_gate.LaneCgroupEventError,
+                           match="counters moved backwards"):
+            raise run_gate._cgroup_event_error(before, decreased, "suite", 0)
+
+    def test_history_policy_optional_keep_and_resolved_worktree_refusal(
+            self, tmp_path):
+        run_gate._validate_history_policy({}, "run-gate.toml")
+        run_gate._validate_history_policy({"keep": 5}, "run-gate.toml")
+        with pytest.raises(run_gate.GateError, match="keep.*integer >= 1"):
+            run_gate._validate_history_policy({"keep": True}, "run-gate.toml")
+        with pytest.raises(run_gate.GateError, match="not a directory"):
+            run_gate.resolve_worktree_scope(
+                tmp_path, str(tmp_path / "missing-worktree"), "doctor")
+
+    def test_container_name_resolution_uses_judged_worktree_and_closed_fallbacks(
+            self, tmp_path):
+        root = tmp_path / "checkout"
+        root.mkdir()
+        declared = run_gate.resolve_container_name(
+            "runner", {"container_name": "declared-runner"}, root, root,
+            "fixture")
+        assert declared[0] == "declared-runner"
+        assert "declared container_name" in declared[1]
+        with pytest.raises(run_gate.GateError, match="this worktree's rendered"):
+            run_gate.resolve_container_name("runner", {}, root, root, "fixture")
+
+        config = root / "ciu.global.toml"
+        config.write_text("[deploy]\nnetwork_name = 'project-network'\n")
+        derived = run_gate.resolve_container_name(
+            "runner", {}, root, root, "fixture")
+        assert derived[0] == "project-runner"
+        config.write_text("[deploy]\nproject_name = 'project'\n"
+                          "environment_tag = 'dev'\n")
+        assert run_gate.resolve_container_name("runner", {}, root, root,
+                                               "fixture")[0] == "project-dev-runner"
+        config.write_text("[deploy]\nnetwork_name = 'project'\n")
+        with pytest.raises(run_gate.GateError, match="cannot derive container name"):
+            run_gate.resolve_container_name("runner", {}, root, root, "fixture")
+        config.write_text("not [ valid TOML")
+        with pytest.raises(run_gate.GateError, match="invalid TOML"):
+            run_gate.resolve_container_name("runner", {}, root, root, "fixture")
+
+    def test_usage_and_project_discovery_cover_empty_and_declared_lanes(
+            self, tmp_path, monkeypatch):
+        empty = run_gate.usage({})
+        assert "(none defined)" in empty
+        lanes = {
+            "gate": {"kind": "sequence", "lanes": ["unit"],
+                     "description": "whole gate", "budget": "10m",
+                     "stall_timeout": "2m", "_imported": True,
+                     "resources": {"memory": "1g", "pids": 16,
+                                   "cpus": 2, "memory_swap": "2g",
+                                   "cpu_weight": 100, "io_weight": 200,
+                                   "shared": ["db"]}},
+            "unit": {"kind": "command", "environment": "runner",
+                     "description": "unit check", "memory": "512m"},
+        }
+        text = run_gate.usage(lanes, {"gate", "unit"})
+        for expected in ("gate*", "environment=runner", "imported=assay",
+                         "resources: memory=1g", "pids=16", "cpus=2",
+                         "swap=2g", "cpu_weight=100", "io_weight=200",
+                         "shared=[db]", "whole gate", "unit check"):
+            assert expected in text
+
+        monkeypatch.chdir(tmp_path)
+        assert run_gate.find_project_dir() is None
+        (tmp_path / run_gate.CONFIG_NAME).write_text("schema_version = 1\n")
+        assert run_gate.find_project_dir() == tmp_path.resolve()
+
+    def test_pointer_verification_command_and_resolution_failures(
+            self, tmp_path, capsys):
+        helper = TestPointerLinkage()
+        repo, project, document = helper._estate(
+            tmp_path, helper.CANONICAL)
+        assert run_gate.cmd_validate_pointers(document, None) == 0
+        assert "OK: 1 invocation(s)" in capsys.readouterr().out
+        assert run_gate.cmd_validate_pointers(document, str(repo)) == 0
+        assert "OK: 1 invocation(s)" in capsys.readouterr().out
+
+        clean = project / "clean.toml"
+        clean.write_text('[gates]\nlabel = "run-gate suite"\n')
+        assert run_gate.cmd_validate_pointers(clean, str(repo)) == 0
+        assert "no run-gate pointers" in capsys.readouterr().out
+
+        invalid = project / "bad-pointer.toml"
+        invalid.write_text('[gates]\ncommand = "cd $PWD && run-gate --worktree {worktree} missing"\n')
+        assert run_gate.cmd_validate_pointers(invalid, str(repo)) == 2
+        assert "DEFECT" in capsys.readouterr().out
+
+        with pytest.raises(run_gate.GateError, match="no such file"):
+            run_gate.cmd_validate_pointers(project / "absent.toml", str(repo))
+        with pytest.raises(run_gate.GateError, match="is not a directory"):
+            run_gate.cmd_validate_pointers(document, str(tmp_path / "absent-root"))
+
+    def test_pointer_project_targets_and_retired_invocations_are_explicit(
+            self, tmp_path):
+        helper = TestPointerLinkage()
+        repo, project, document = helper._estate(
+            tmp_path, helper.CANONICAL)
+        resolved, defects = run_gate._pointer_project_dir(
+            "cd {worktree}/proj && run-gate suite", document, repo,
+            "fixture.pointer")
+        assert resolved == project and defects == []
+        resolved, defects = run_gate._pointer_project_dir(
+            "cd {worktree}/one && cd {worktree}/two", document, repo,
+            "fixture.pointer")
+        assert resolved is None and any("exactly one project target" in d
+                                        for d in defects)
+        resolved, defects = run_gate._pointer_project_dir(
+            "cd $PWD", document, repo, "fixture.pointer")
+        assert resolved is None and any("no run-gate.toml" in d
+                                        for d in defects)
+        defects, checked = run_gate._pointer_defects(
+            "cd {worktree}/proj && ./run-gate.py --worktree {worktree} suite",
+            document, repo, "fixture.pointer", {})
+        assert checked == 1 and any("retired `run-gate.py`" in d
+                                   for d in defects)
+
+    def test_resource_and_mount_helper_failure_paths(self, tmp_path, monkeypatch):
+        with pytest.raises(run_gate.GateError, match="not on environment"):
+            run_gate.check_required_reaches_container(
+                {"required_env": ["TOKEN"]}, "suite", {}, "runner", "fixture")
+
+        common = tmp_path / "common"
+        common.mkdir()
+        (common / "hooks").mkdir()
+        (common / "info").mkdir()
+        plan = {"common": common}
+        private = tmp_path / "private"
+        private.mkdir()
+        monkeypatch.setattr(run_gate, "_make_private_dir",
+                            lambda _repo: (private, private))
+        monkeypatch.setattr(run_gate, "physical_path", lambda path: Path(path))
+        monkeypatch.setattr(run_gate, "_dual", lambda path, _repo:
+                            ["-v", f"{path}:{path}", "-v", f"{path}:{path}"])
+        flags = run_gate.git_hook_info_mount_flags(plan, tmp_path)
+        assert flags and all(item.endswith(":ro") for item in flags[1::2])
+        (common / "info").rmdir()
+        with pytest.raises(run_gate.GateInfraError,
+                           match="shared Git info directory is missing or unsafe"):
+            run_gate.git_hook_info_mount_flags(plan, tmp_path)
+
+        assert run_gate.git_worktree_pointer_mount_flags(
+            {"kind": "plain"}, tmp_path, tmp_path) == []
+        wt = tmp_path / "wt"
+        admin = tmp_path / "admin"
+        wt.mkdir()
+        admin.mkdir()
+        (wt / ".git").write_text("gitdir: ../admin\n")
+        (admin / "gitdir").write_text(str(wt / ".git") + "\n")
+        (admin / "commondir").write_text("../common\n")
+        linked = {"kind": "linked", "admin": admin}
+        assert run_gate.git_worktree_pointer_mount_flags(
+            linked, wt, tmp_path)
+        (admin / "gitdir").unlink()
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect Git worktree pointer"):
+            run_gate.git_worktree_pointer_mount_flags(linked, wt, tmp_path)

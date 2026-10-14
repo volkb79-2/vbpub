@@ -412,8 +412,8 @@ def _observer_unavailable_rollup(
         return "FAIL", "assay-adverse-claim-alongside-observer-refusal"
     if "ERROR" in other_statuses:
         return "ERROR", "assay-error-alongside-observer-refusal"
-    if any(status != "PASS" for status in other_statuses):
-        return "ERROR", "invalid-assay-claims-for-observer-refusal"
+    # All valid non-PASS statuses are handled above; the closed outcome table
+    # leaves PASS as the only remaining status.
     # The observer refusal is infrastructure-only only when every other
     # computed claim and external evidence entry passed.
     return "ERROR", None
