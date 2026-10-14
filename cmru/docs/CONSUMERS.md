@@ -677,12 +677,12 @@ placed under `CMRU_TESTER_CGROUP_PARENT`.
 
 ### The CMRU R0-R3 gate
 
-For the vbpub CMRU checkout, use the project entrypoint rather than a cockpit
-pytest command:
+For the vbpub CMRU checkout, from `cmru/` use the installed Run-Gate CLI
+rather than a cockpit pytest command:
 
 ```sh
-./run-gate.py --list
-./run-gate.py gate
+run-gate --list
+run-gate gate
 ```
 
 The `assay` lane installs Assay from the selected worktree, snapshots the
@@ -708,7 +708,7 @@ including older tag names that point to the same commit. It checks Assay's
 effective comparison commit: if Assay resolves a merge's first
 parent after the tag, CMRU source roots must be unchanged across
 that gap. A missing tag or mismatch fails the gate. Run the registered
-`./run-gate.py gate` lane to prepare fresh origin facts immediately before
+`run-gate gate` lane to prepare fresh origin facts immediately before
 mutation. When that source diff is empty,
 it records a skipped result bound to the candidate HEAD instead of claiming
 mutants ran. If rerun at a release-tagged HEAD, the checker excludes every
@@ -799,7 +799,7 @@ IDs, not credentials. Nested runner calls have publisher-token and
 extra-mount variables removed. See the
 [gate credential design](DESIGN-GUIDE.md#keeping-release-credentials-out-of-gate-containers).
 Running an individual tester component lane bypasses this boundary and should
-use a secret-free checkout. `./run-gate.py installed-wheel` stays runnable that
+use a secret-free checkout. `run-gate installed-wheel` stays runnable that
 way; `installed-wheel-live` is the aggregate gate's own variant and refuses unless
 it runs inside that gate's fresh snapshot manifest.
 

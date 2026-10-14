@@ -9,6 +9,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tomllib
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -494,6 +495,8 @@ def _fake_lane_process(project: Path, writer, returncode: int, monkeypatch):
             raise AssertionError("unexpected kill in successful lane fixture")
 
     def popen(argv, **_kwargs):
+        assert argv[0] == "run-gate"
+        assert argv[1:3] == ["--worktree", str(project.parent)]
         assert argv[-1] in {"assay", "coverage"}
         before = {p for p in project.rglob("*") if p.is_file()}
         writer(project)
@@ -813,6 +816,31 @@ def test_hash_object_mismatch_is_an_error_not_a_pass(tmp_path, monkeypatch):
 def test_git_failure_while_binding_helpers_is_reported(tmp_path):
     with pytest.raises(RuntimeError, match="cannot bind gate helper source to HEAD: git ls-tree"):
         run_release_gate._assert_no_untracked_gate_code(tmp_path)
+
+
+def test_registered_gate_entrypoint_uses_isolated_python_before_imports(tmp_path):
+    repo = tmp_path / "repo"
+    tools = repo / "cmru" / "tools"
+    tools.mkdir(parents=True)
+    script = tools / "run_release_gate.py"
+    shutil.copyfile(ROOT / "tools" / "run_release_gate.py", script)
+    marker = tmp_path / "shadow-json-ran"
+    (tools / "json.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('ran')\n"
+        "raise SystemExit(0)\n",
+        encoding="utf-8",
+    )
+
+    config = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    argv = config["lanes"]["gate"]["argv"]
+    assert argv[:3] == ["python3", "-I", "-B"]
+    command = [part.replace("{worktree}", str(repo)) for part in argv]
+    result = subprocess.run(command, cwd=repo, capture_output=True, text=True, check=False)
+
+    assert result.returncode != 0
+    assert "cmru-release-gate:" in result.stderr
+    assert not marker.exists()
 
 
 # --- C-2: only refs this gate owns are protected -----------------------------

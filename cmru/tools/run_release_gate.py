@@ -338,7 +338,7 @@ def _invoke_lane(
         worktree_root = repo_root
     started = time.time_ns()
     process = subprocess.Popen(
-        ["./run-gate.py", "--worktree", str(worktree_root), lane],
+        ["run-gate", "--worktree", str(worktree_root), lane],
         cwd=repo_root / "cmru",
         env=dict(environment),
     )

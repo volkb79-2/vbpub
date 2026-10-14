@@ -31,7 +31,7 @@ mutants** — one in the single line deciding whether a pinned version was stale
 From the repository root, run the registered release gate:
 
 ```bash
-./run-gate.py gate
+run-gate gate
 ```
 
 The gate prepares authenticated origin baseline facts on the host, then runs

@@ -735,10 +735,13 @@ shared Git directory must remain read-write for in-lane Git operations, so
 Run-Gate overlays its common `hooks/` directory with a private empty read-only
 directory and mounts `info/` read-only. This prevents a tester from planting a
 host hook for a later host commit or changing host exclude metadata. CMRU also
-disables host Git hooks while it prepares remote baseline facts. Nested
-`run-gate.py` processes receive neither publisher-token nor extra-mount
-variables (`RUN_GATE_EXTRA_MOUNTS`); origin facts passed to mutation contain
-tag names and commit IDs, not credentials.
+disables host Git hooks while it prepares remote baseline facts. CMRU starts its
+host release-gate driver with isolated Python (`-I -B`) so an untracked module
+beside `run_release_gate.py` cannot run before the source integrity check. The
+driver starts lane processes through the installed `run-gate` CLI, not a script
+from the mutable checkout. Nested `run-gate` processes receive neither
+publisher-token nor extra-mount variables (`RUN_GATE_EXTRA_MOUNTS`); origin
+facts passed to mutation contain tag names and commit IDs, not credentials.
 
 The host gate resolves the scoped Git auth from the caller through the private
 credential handoff described above; no secret file enters the sidecar. The
