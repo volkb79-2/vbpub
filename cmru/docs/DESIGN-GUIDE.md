@@ -784,10 +784,17 @@ The choices, and what was rejected:
   A dry run, a failed gate, build or publish, and `--no-build` all return before that
   commit, so the notes stay where the author put them and the next attempt publishes
   them. Rejected: clearing before the publish (a failed upload would lose the notes);
-  a second changelog file for pending notes (one more place to forget). The rule is
-  limited to files named `CHANGES.md`/`CHANGELOG.md` because only those are excluded
-  from change detection: the post-publish commit must not read as product work and
-  schedule the next release. Any other name keeps the KI-30 refusal.
+  a second changelog file for pending notes (one more place to forget).
+  "Until the complete transaction succeeds" is met structurally: the consume commit
+  sits on the release candidate and reaches `main` only through the promotion push, so
+  a failed gate, build, publish or promotion leaves `main`'s `[Unreleased]` as the
+  author wrote it (the retained candidate branch tip is the only place the move
+  exists). Projects release one after another, so an earlier project's completed
+  cycle stays consumed when a later project fails. The post-publish commit edits only
+  the project's changelog; change detection excludes the project's *configured*
+  changelog path (not just `CHANGES.md`/`CHANGELOG.md`), so the commit never reads as
+  product work and schedules the next release, and the feature serves every consumer
+  whatever it calls its changelog.
 - **No silent fallback.** A missing, undated (`UNRELEASED`), duplicated, wrong-version
   or empty section refuses. The alternative, publishing the generic body, is the
   exact failure this change exists to remove. A project that declares

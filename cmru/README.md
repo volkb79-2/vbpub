@@ -483,9 +483,12 @@ whatever the author left under `## [Unreleased]` (migration notes included), als
 verbatim and last. `[Unreleased]` never *replaces* the version section and no other
 version is included. Those pending notes stay in the file through a dry run or any
 failure and move into the released version's history in one commit **after a successful
-publish** (before promotion), so they are neither lost nor published twice; this needs
-the changelog to be named `CHANGES.md` or `CHANGELOG.md`, otherwise a non-empty
-`[Unreleased]` still refuses a tagged release. A project that opted out
+publish** (before promotion), so they are neither lost nor published twice. That commit
+reaches `main` only through the promotion push, so any failure (gate, build, publish or
+promotion) leaves `main`'s `[Unreleased]` exactly as written. It works for every
+consumer and every configured changelog path: wheel, tarball and variants publishers
+alike, because the changelog is excluded from change detection whatever it is called.
+A project that opted out
 (`changelog = false`) gets the generated body alone. A changelog without exactly one
 dated, non-empty section for that version **refuses before the gate, tag or upload**
 instead of publishing a body without notes. `cmru release --dry-run` prints the complete

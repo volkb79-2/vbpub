@@ -234,8 +234,8 @@ def test_ki78_tagged_release_carries_a_nonempty_unreleased_section_untouched(tmp
     assert "## [1.0.1]" in history
 
 
-def test_ki30_a_custom_named_changelog_still_refuses_unreleased_notes(tmp_path):
-    """Only CHANGES.md/CHANGELOG.md can be consumed after the publish (KI-78)."""
+def test_ki78_a_custom_named_changelog_carries_unreleased_notes_too(tmp_path):
+    """Every consumer: the configured changelog path, whatever its name, is carried."""
     _init_demo(
         tmp_path,
         "# Changelog\n\n## [Unreleased]\n\n### Added\n- hand-written entry\n\n"
@@ -243,18 +243,14 @@ def test_ki30_a_custom_named_changelog_still_refuses_unreleased_notes(tmp_path):
         name="HISTORY.md",
     )
     _commit(tmp_path, "fix(demo): a fix", "demo/core.py", "A = 1\n")
-    before = (tmp_path / "demo" / "HISTORY.md").read_bytes()
     project = _project()
     project.changelog = "HISTORY.md"
 
-    try:
-        generate_release_changelog(tmp_path, project)
-    except RuntimeError as exc:
-        assert "KI-30" in str(exc) and "KI-78" in str(exc)
-        assert "[Unreleased]" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("a custom-named changelog cannot carry [Unreleased] notes")
-    assert (tmp_path / "demo" / "HISTORY.md").read_bytes() == before
+    assert generate_release_changelog(tmp_path, project) is True
+
+    history = (tmp_path / "demo" / "HISTORY.md").read_text(encoding="utf-8")
+    assert "## [Unreleased]\n\n### Added\n- hand-written entry\n\n<!-- cmru: release history -->" in history
+    assert "## [1.0.1]" in history
 
 
 def test_rel10_cleared_unreleased_section_with_a_comment_is_accepted(tmp_path):

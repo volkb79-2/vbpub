@@ -48,11 +48,6 @@ _CONVENTIONAL_TYPE_RE = re.compile(r"^([a-z]+)(?:\([^)]+\))?!?:", re.IGNORECASE)
 
 
 _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
-#: Changelog file names CMRU's change detection already treats as release
-#: metadata (``version._RELEASE_CONTROL_EXCLUDES``). Only these may carry
-#: ``[Unreleased]`` notes through a release (KI-78): the consume commit that
-#: follows the publish must not look like product work to the NEXT release.
-_CONSUMABLE_CHANGELOG_NAMES = ("CHANGES.md", "CHANGELOG.md")
 
 
 def consume_unreleased_notes(markdown: str, version: str) -> str | None:
@@ -500,23 +495,10 @@ def generate_release_changelog(
             "same version -- fold it into the generated section by hand first, then rename "
             "its heading to match (or remove it)"
         )
-    if (
-        version is not None
-        and path.name not in _CONSUMABLE_CHANGELOG_NAMES
-        and unreleased_body(existing)
-    ):
-        # KI-78: for CHANGES.md / CHANGELOG.md the notes ride the release body and
-        # move into the version's history after the publish. Any other file name
-        # cannot (the post-publish commit would read as product work to the next
-        # release), so the original KI-30 refusal stands for it.
-        raise RefusedBeforeChange(
-            f"{project.name}: {path} has a non-empty hand-written `## [Unreleased]` "
-            "section (KI-30) and CMRU can only carry [Unreleased] notes through a "
-            "release for a changelog named CHANGES.md or CHANGELOG.md (KI-78); a "
-            "tagged release would leave it orphaned and describing already-shipped "
-            "work -- fold its content into the commit history / next section by "
-            "hand, then empty its body (keep a comment if you like) before releasing"
-        )
+    # KI-78: a non-empty `## [Unreleased]` is no longer refused (KI-30). Its text rides
+    # the GitHub Release body and moves into the version's history after a
+    # successful publish (`consume_published_notes`), for any configured changelog
+    # path; change detection excludes that path, so the move cannot schedule a release.
     existing_versions = set(_HEADING_RE.findall(existing))
     if heading in existing_versions:
         expected = f"## [{heading}]"

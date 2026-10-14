@@ -272,3 +272,94 @@ def test_a_failed_publish_keeps_the_notes_where_they_were(monkeypatch, tmp_path)
 def test_a_no_build_release_publishes_nothing_so_consumes_nothing(monkeypatch, tmp_path):
     calls = _drive(monkeypatch, tmp_path, no_build=True)
     assert calls == ["tag", "result", "promote"]
+
+
+# --- every consumer: custom changelog names and failed promotion ------------------
+
+
+def _tagged_repo(tmp_path: Path, changelog: str) -> Path:
+    _git(tmp_path, "init", "-q", "-b", "main")
+    _git(tmp_path, "config", "user.email", "t@t.invalid")
+    _git(tmp_path, "config", "user.name", "t")
+    for path, text in ((f"demo/{changelog}", "# Changelog\n"), ("demo/core.py", "A = 1\n")):
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text, encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-q", "-m", "feat(demo): first")
+    _git(tmp_path, "tag", "-a", "demo-v1.0.0", "-m", "demo-v1.0.0")
+    return tmp_path
+
+
+@pytest.mark.parametrize("name", ["CHANGES.md", "HISTORY.md", "docs/RELEASES.md"])
+def test_a_changelog_only_commit_never_schedules_a_release_whatever_it_is_called(tmp_path, name):
+    from cmru import version
+
+    repo = _tagged_repo(tmp_path, name.split("/")[-1])
+    project = _project()
+    project.changelog = name
+    project.version = SimpleNamespace(strategy="scm", bump="conventional")
+    target = repo / "demo" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("# Changelog\n\nmoved [Unreleased] notes\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "chore(demo): move [Unreleased] notes into demo-v1.0.0")
+
+    assert version.detect_changed_projects(repo, {"demo": project}) == []
+
+    (repo / "demo" / "core.py").write_text("A = 2\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "fix(demo): real work")
+    assert [item[0] for item in version.detect_changed_projects(repo, {"demo": project})] == ["demo"]
+
+
+@pytest.mark.real_release_notes_preflight
+def test_the_hook_works_for_a_custom_changelog_path(tmp_path):
+    repo = _release_repo(tmp_path)
+    project = _project()
+    project.changelog = "docs/RELEASES.md"
+    target = repo / "demo" / "docs" / "RELEASES.md"
+    target.parent.mkdir(parents=True)
+    target.write_text(DOCUMENT, encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "docs: pending notes")
+
+    assert cli._consume_published_unreleased_notes(repo, project, "demo-v2.0.0") is True
+
+    assert _git(repo, "show", "--name-only", "--format=", "HEAD") == "demo/docs/RELEASES.md"
+    assert release_notes.unreleased_body(target.read_text(encoding="utf-8")) == ""
+
+
+@pytest.mark.real_release_notes_preflight
+def test_a_failed_promotion_propagates_after_the_commit_that_only_promotion_can_land(
+    monkeypatch, tmp_path,
+):
+    """main is changed only by the promotion push, so its [Unreleased] survives this failure."""
+    calls: list[str] = []
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40)
+    monkeypatch.setattr(cli.transaction, "write_release_progress", lambda *a: None)
+    monkeypatch.setattr(cli.transaction, "write_release_result", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *a: None)
+    monkeypatch.setattr(cli, "_prepare_release_projects", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *a: None)
+    monkeypatch.setattr(cli.transaction, "push_backup_branch", lambda *_, **__: None)
+    monkeypatch.setattr(cli, "_git", lambda *_a, **_k: "b" * 40)
+    monkeypatch.setattr(cli, "_tag_on_head", lambda *_, **__: "demo-v1.2.3")
+    monkeypatch.setattr(cli, "_push_tags", lambda *_a, **_k: None)
+    monkeypatch.setattr("cmru.version.release_cmd", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_run_tagged_build_and_publish", lambda *a, **k: None)
+    monkeypatch.setattr(
+        cli, "_consume_published_unreleased_notes",
+        lambda *_a: calls.append("consume") or True,
+    )
+
+    def lost_race(*_args, **_kwargs):
+        calls.append("promote")
+        raise RuntimeError("release candidate was not promoted")
+
+    monkeypatch.setattr(cli.transaction, "promote_workspace", lost_race)
+    with pytest.raises(RuntimeError, match="not promoted"):
+        cli._release_projects_sequentially(
+            tmp_path, {"demo": _sequence_project()}, workspace, ["demo"],
+            github_config=SimpleNamespace(), env_config=SimpleNamespace(),
+        )
+    assert calls == ["consume", "promote"]

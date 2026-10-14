@@ -256,17 +256,17 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
 ### Release history behaviour changes (REL-02, REL-10)
 
 - **A non-empty plain `## [Unreleased]` section is carried, then consumed after the publish
-  (KI-78).** For a changelog named `CHANGES.md` or `CHANGELOG.md` the text is appended
-  verbatim to the GitHub Release body below the version section. After the tagged build and
-  publish succeeded, and before promotion, cmru commits one
+  (KI-78).** For any project with a configured changelog the text is appended verbatim to
+  the GitHub Release body below the version section (`--dry-run` prints that exact body).
+  After the tagged build and publish succeeded, and before promotion, cmru commits one
   `chore(<name>): move [Unreleased] notes into <tag>` change (trailer
   `Cmru-Release-Candidate`) that moves the text to the end of the released version's section
-  and empties `[Unreleased]`. The consume step is never reached by a dry run, a failed
-  gate/build/publish, or `--no-build`, so the notes survive for the next attempt. For any
-  other changelog file name the original rule stands (KI-30): the tagged release is refused,
-  because the text would otherwise be orphaned and the post-publish commit would look like
-  product work to the next release. Remedy: rename the file, move the text into the
-  generated notes, or empty the section (a comment may stay). A comment-only body is accepted.
+  and empties `[Unreleased]`. That commit reaches `main` only through the promotion push, so
+  a dry run, a failed gate, build, publish or promotion, and `--no-build` all leave `main`'s
+  `[Unreleased]` exactly as written (an earlier project in the same run that already
+  completed stays consumed). The project's configured changelog path is excluded from
+  change detection, so the commit never schedules the next release. This replaces the KI-30
+  refusal; a comment-only body is still just an empty section.
 - **Regenerating a stale generated section overwrites hand edits inside it.** When project
   commits landed after a generated section's `source-end` cursor (for example on `--resume`
   of a candidate that was prepared earlier), the section is rebuilt in place from the project

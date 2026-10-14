@@ -24,7 +24,11 @@ publish, keep them on dry-run or failure. **KI-75 did not cover this** (its orac
 
 - Body = generated block, exact version section, then the `[Unreleased]` text verbatim
   (`release_notes.compose_release_body`, through the one builder the publisher and `--dry-run` share).
-- KI-30's refusal is lifted for a changelog named `CHANGES.md`/`CHANGELOG.md` and kept for any other name.
+- KI-30's refusal is removed for every consumer: `version.detect_changed_projects` now excludes the project's
+  *configured* changelog path (not just the default names), so the post-publish commit cannot schedule a
+  release (follow-up commit, operator follow-up of 2026-10-14: "work for all CMRU consumers").
+- "Until the complete transaction succeeds": the consume commit reaches `main` only via the promotion push, so
+  a failed gate/build/publish/promotion leaves `main`'s `[Unreleased]` intact (backlog KI-78, oracle 7).
 - `cli._consume_published_unreleased_notes` commits the move (appended to the released section,
   `[Unreleased]` emptied) after the publish and before promotion; unreachable from dry-run, failed
   gate/build/publish and `--no-build`.
@@ -112,7 +116,7 @@ the canary: held by the operator. `pyflakes` is the only check the KI-78 code an
 - **KI-77** (Run-Gate revision floor D-2, container-level event evidence D-3): needs a Run-Gate-side revision API. Not done.
 - **D-4 host capacity record:** `dev-gates.slice`/`dev.slice` `memory.max` are not visible from the devcontainer (Run-Gate's own admission warning says the same: cgroupns=private). The operator or the host must supply the figure before the 7h R2 lane.
 - **No independent review.** The stored Opus review covered the starting candidate only.
-- **Process notes:** (1) a Python heredoc `write_text` edit of `gate_snapshot.py` early in the wave, and a small Python string-replace on `tests/test_release_notes.py` during KI-78, both against the "edits via Edit/apply_patch" rule; the content was reviewed afterwards but the rule was broken twice. (2) The mid-gate hold meant KI-78 could not be validated; treat its tests as unproven.
+- **Process notes:** (1) a Python heredoc `write_text` edit of `gate_snapshot.py` early in the wave, and a small Python string-replace on `tests/test_release_notes.py` during KI-78, both against the "edits via Edit/apply_patch" rule, plus (during the 2026-10-14 follow-up) one `sed -i` for a one-word typing import in `version.py` and a shell heredoc append to `tests/test_unreleased_notes.py`; the content was reviewed afterwards but the rule was broken four times. (2) The mid-gate hold meant KI-78 could not be validated; treat its tests as unproven.
 - **Known KI-78 limit:** if the post-publish consume commit fails, the release is already public; the tag/artifacts/candidate are retained and the operator moves the text by hand.
 
 ## Safe next release steps
