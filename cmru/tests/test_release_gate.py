@@ -1347,6 +1347,67 @@ def _closed_snapshot(source: Path):
     return snapshot
 
 
+def test_resuming_a_legacy_snapshot_upgrades_its_git_ref_digest(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from cmru import gate_snapshot as gs
+
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = _closed_snapshot(repo)
+    manifest = repo / "cmru" / ".assay" / "release-gate-snapshot.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document.pop("git_refs_sha256")
+    document.pop("refs_scope")
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    api = gs._worktree_api()
+    record = api.read_record(snapshot.context.record_path)
+    metadata = dict(record.metadata)
+    metadata.pop("refs_sha256")
+    metadata.pop("refs_scope")
+    api.write_record(replace(record, metadata=metadata))
+
+    resumed = gs.open_gate_snapshot(repo)
+    try:
+        expected = gs._protected_refs_sha256(
+            resumed.worktree_path, resumed.protected_refs,
+        )
+        assert resumed.refs_sha256 == expected
+        upgraded_record = api.read_record(resumed.context.record_path)
+        assert upgraded_record.metadata["refs_sha256"] == expected
+        assert upgraded_record.metadata["refs_scope"] == gs._REFS_SCOPE
+    finally:
+        gs.close_gate_snapshot(resumed)
+
+
+@pytest.mark.parametrize("lane_boundary", ["prepare_lane", "finish_lane"])
+def test_lane_boundary_preserves_unavailable_anchor_evidence(
+    tmp_path, monkeypatch, lane_boundary,
+):
+    from cmru import gate_snapshot as gs
+
+    snapshot = SimpleNamespace(
+        worktree_path=tmp_path / "snapshot",
+        source_root=tmp_path / "source",
+        commit="commit",
+        protected_refs=(),
+        refs_sha256="digest",
+        anchor_refs=None,
+        context=object(),
+        lane_evidence_sha256={},
+    )
+    monkeypatch.setattr(gs, "validate_lane_outputs", lambda *_a, **_kw: None)
+    monkeypatch.setattr(gs, "copy_evidence_to_source", lambda *_a, **_kw: None)
+    monkeypatch.setattr(gs, "_git", lambda *_a, **_kw: None)
+    monkeypatch.setattr(gs, "copy_evidence_to_snapshot", lambda *_a, **_kw: None)
+    monkeypatch.setattr(gs, "_verify_snapshot", lambda *_a, **_kw: None)
+    monkeypatch.setattr(gs, "_existing_evidence_hashes", lambda *_a, **_kw: {})
+
+    getattr(gs, lane_boundary)(snapshot, "assay")
+
+    assert snapshot.anchor_refs is None
+
+
 @pytest.mark.parametrize("identity", [
     None,
     {},
