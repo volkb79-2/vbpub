@@ -12,7 +12,13 @@ from typing import Any
 
 from cli_extended import CliFailure, LogLevel
 
-from .config import Config, ConfigError, load_config
+from .config import (
+    CLOUD_INIT_CLEANUP_MODES,
+    Config,
+    ConfigError,
+    load_config,
+    validate_authorized_key_line,
+)
 
 
 @dataclass(frozen=True)
@@ -41,6 +47,12 @@ WIZARD_SECTIONS = (
             WizardField("stage2_output", "Stage-two output log"),
             WizardField("auto_reboot_after_stage1", "Reboot automatically after stage one?", "boolean"),
             WizardField("never_reboot", "Forbid installer-scheduled reboots?", "boolean"),
+            WizardField(
+                "cloud_init_cleanup_mode",
+                "Cloud-init cache policy after successful install (clean modes run cloud-init again on next boot)",
+                "choice",
+                CLOUD_INIT_CLEANUP_MODES,
+            ),
         ),
     ),
     WizardSection(
@@ -59,15 +71,19 @@ WIZARD_SECTIONS = (
                 ("run_docker_cleanup", "Enable scheduled Docker image cleanup?"),
                 ("run_apt_auto_upgrade", "Enable unattended APT upgrades?"),
                 ("run_auto_reboot", "Enable scheduled reboot-window checks?"),
+                ("run_zswap_config", "Configure zswap and related memory tuning?"),
+                ("run_cgroup2_config", "Configure cgroup2 mount flags?"),
             )
         ),
     ),
     WizardSection(
         "swap-memory",
-        "Swap and memory policy",
+        "Root, swap, and memory policy",
         (
-            WizardField("swap_disk_total_gb", "Total swap capacity in GiB", "integer"),
-            WizardField("swap_file_count", "Number of swap partitions", "integer"),
+            WizardField("root_resize_policy", "Root partition policy", "choice", ("resize", "untouched", "grow-only")),
+            WizardField("swap_policy", "Swap policy", "choice", ("on", "off", "untouched")),
+            WizardField("swap_disk_total_gb", "Total swap capacity in GiB (blank or auto derives from disk and RAM)", "optional-integer"),
+            WizardField("swap_partition_count", "Number of swap partitions", "integer"),
             WizardField("swap_priority", "Linux swap priority", "integer"),
             WizardField("swap_discard", "Enable discard on swap?", "boolean"),
             WizardField("preserve_root_size_gb", "Root filesystem space to preserve (GiB)", "integer"),
@@ -120,6 +136,17 @@ WIZARD_SECTIONS = (
         ),
     ),
     WizardSection(
+        "persistent-ssh",
+        "Persistent root SSH access",
+        (
+            WizardField(
+                "ssh_authorized_keys",
+                "Persistent root SSH public keys (one authorized_keys line each)",
+                "ssh-keys",
+            ),
+        ),
+    ),
+    WizardSection(
         "controller-ssh",
         "Temporary controller SSH access",
         (
@@ -148,7 +175,7 @@ WIZARD_SECTIONS = (
 
 _FIXED_FIELDS = {"schema_version", "fresh_install"}
 _SECRET_FIELDS = {"telegram_bot_token", "mattermost_webhook_url"}
-_SUMMARY_HIDDEN_FIELDS = _SECRET_FIELDS | {"controller_ssh_pubkey"}
+_SUMMARY_HIDDEN_FIELDS = _SECRET_FIELDS | {"controller_ssh_pubkey", "ssh_authorized_keys"}
 _WIZARD_REQUIREMENTS = Path(__file__).resolve().parents[1] / "wizard-requirements.txt"
 
 
@@ -180,6 +207,35 @@ def _ask_field(questionary: Any, field: WizardField, current: Any, runtime: Any)
     elif field.name == "controller_ssh_pubkey":
         prompt += " (Enter keeps the current value)"
 
+    if field.kind == "ssh-keys":
+        replace_keys = questionary.confirm(
+            "Replace the configured persistent root SSH key list?",
+            default=False,
+        ).ask(kbi_msg="")
+        if replace_keys is None:
+            raise KeyboardInterrupt
+        if not replace_keys:
+            return list(current)
+        collected: list[str] = []
+        while True:
+            answer = questionary.text(
+                "SSH public-key line (blank finishes the list)", default=""
+            ).ask(kbi_msg="")
+            if answer is None:
+                raise KeyboardInterrupt
+            line = answer.strip()
+            if not line:
+                break
+            try:
+                validate_authorized_key_line(line, field=f"ssh_authorized_keys[{len(collected)}]")
+                if any(existing.split()[:2] == line.split()[:2] for existing in collected):
+                    raise ConfigError("this public key was already entered")
+            except ConfigError as exc:
+                runtime.output.warn(f"{exc}; please try again")
+                continue
+            collected.append(line)
+        return collected
+
     while True:
         if field.kind == "boolean":
             answer = questionary.confirm(prompt, default=bool(current)).ask(
@@ -196,6 +252,9 @@ def _ask_field(questionary: Any, field: WizardField, current: Any, runtime: Any)
             answer = questionary.password(prompt, default=str(current)).ask(
                 kbi_msg=""
             )
+        elif field.kind == "optional-integer":
+            default = "auto" if current is None else str(current)
+            answer = questionary.text(prompt, default=default).ask(kbi_msg="")
         else:
             default = json.dumps(current) if field.kind == "json" else str(current)
             answer = questionary.text(prompt, default=default).ask(kbi_msg="")
@@ -207,6 +266,15 @@ def _ask_field(questionary: Any, field: WizardField, current: Any, runtime: Any)
                 return json.loads(answer)
             except (TypeError, ValueError):
                 runtime.output.warn(f"{field.name} must be valid JSON; please try again")
+                continue
+        if field.kind == "optional-integer":
+            normalized = str(answer).strip().lower()
+            if normalized in {"", "auto"}:
+                return None
+            try:
+                return int(normalized)
+            except (TypeError, ValueError):
+                runtime.output.warn(f"{field.name} must be an integer, blank, or auto; please try again")
                 continue
         if field.kind != "integer":
             return answer.strip() if isinstance(answer, str) else answer
@@ -231,6 +299,8 @@ def _summary(config: Config) -> str:
                 shown = "<configured>" if value else "<not set>"
             elif isinstance(value, bool):
                 shown = "yes" if value else "no"
+            elif field.name == "swap_disk_total_gb" and value is None:
+                shown = "auto (disk and RAM)"
             else:
                 shown = str(value)
             lines.append(f"    {field.name}: {shown}")

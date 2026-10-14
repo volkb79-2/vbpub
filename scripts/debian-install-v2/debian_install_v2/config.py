@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import ipaddress
 import json
 import logging
 import os
 import re
+import struct
 import tempfile
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -21,6 +24,7 @@ REMOVED_KEYS = {
     "zswap_zpool": "the zswap zpool knob is absent on 7.x kernels; zsmalloc is the only backend",
 }
 SCHEMA_VERSION = 1
+CLOUD_INIT_CLEANUP_MODES = ("retain", "userdata-only", "clean", "clean-all")
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
     "SWAP_TOTAL_GB",
@@ -55,6 +59,9 @@ class Config:
     stage2_output: str = "/root/custom_script.output2"
     auto_reboot_after_stage1: bool = True
     never_reboot: bool = False
+    # Cloud-init keeps its fetched user-data under /var/lib/cloud/instance.
+    # Cleanup is opt-in and runs only after stage-two installation work succeeds.
+    cloud_init_cleanup_mode: Literal["retain", "userdata-only", "clean", "clean-all"] = "retain"
 
     run_user_config: bool = True
     run_apt_config: bool = True
@@ -66,9 +73,22 @@ class Config:
     run_docker_cleanup: bool = True
     run_apt_auto_upgrade: bool = True
     run_auto_reboot: bool = True
+    # These host-tuning bundles are on by default but independently disableable
+    # for the minimal `vanilla` profile. Disk and swap transactions remain core.
+    run_zswap_config: bool = True
+    run_cgroup2_config: bool = True
 
-    swap_disk_total_gb: int = 32
-    swap_file_count: int = 8
+    # Disk policy is explicit because stage two writes the root disk's GPT.
+    # `resize` may grow or shrink ext4 to leave the requested swap area;
+    # `grow-only` never shrinks; `untouched` leaves root geometry unchanged.
+    root_resize_policy: Literal["resize", "untouched", "grow-only"] = "resize"
+    # `on` lays out the configured partitions, `off` disables swap and removes
+    # root-disk swap partitions, and `untouched` preserves swap state verbatim.
+    swap_policy: Literal["on", "off", "untouched"] = "on"
+    # None means derive the total from disk size and guest RAM at plan time.
+    # An integer is a deliberate fixed-size override in GiB.
+    swap_disk_total_gb: int | None = None
+    swap_partition_count: int = 4
     swap_priority: int = 10
     swap_discard: bool = True
     preserve_root_size_gb: int = 10
@@ -134,6 +154,11 @@ class Config:
     # this feature is off; the operator's own persistent key (via sshKeyIds,
     # or however else it got there) is never touched either way.
     controller_ssh_pubkey: str = field(default="", repr=False)
+    # Persistent root login keys added to /root/.ssh/authorized_keys during
+    # stage one. Kept separate from the temporary controller key above, which
+    # may be removed after stage two. Public keys are per-host config and must
+    # not be placed in a published profile.
+    ssh_authorized_keys: list[str] = field(default_factory=list, repr=False)
     # Keep the temporary controller access line after successful stage2.
     # Failure paths always retain it for diagnosis.
     retain_controller_ssh_key: bool = False
@@ -169,6 +194,80 @@ class Config:
 _SIZE_RE = re.compile(r"^[0-9]+$")
 _DOCKER_LOG_MAX_SIZE_RE = re.compile(r"^[0-9]+[bkmg]?$", re.IGNORECASE)
 _HHMM_RE = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
+_SSH_KEY_TYPE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._+-]*$")
+MAX_SSH_AUTHORIZED_KEYS = 64
+
+
+def _ssh_string(blob: bytes, offset: int, *, field: str) -> tuple[bytes, int]:
+    if offset + 4 > len(blob):
+        raise ConfigError(f"{field} has a truncated SSH public-key blob")
+    length = struct.unpack_from(">I", blob, offset)[0]
+    start = offset + 4
+    end = start + length
+    if end > len(blob):
+        raise ConfigError(f"{field} has a truncated SSH public-key field")
+    return blob[start:end], end
+
+
+def validate_authorized_key_line(line: str, *, field: str = "ssh_authorized_keys") -> tuple[str, str]:
+    """Validate a plain OpenSSH public-key line and return (type, base64 blob).
+
+    This checks the authorized_keys line shape, strict base64, the embedded
+    wire-format key type, and common key-specific lengths. The ISO wizard adds
+    ssh-keygen's full parser as an independent check before embedding keys.
+    """
+    if not isinstance(line, str) or not line or line != line.strip():
+        raise ConfigError(f"{field} entries must be non-empty authorized_keys lines without surrounding whitespace")
+    if any(ord(char) < 0x20 or ord(char) == 0x7f for char in line):
+        raise ConfigError(f"{field} entries must each be one line without control characters")
+    parts = line.split()
+    if len(parts) < 2 or not _SSH_KEY_TYPE_RE.fullmatch(parts[0]):
+        raise ConfigError(f"{field} entry is not an OpenSSH public-key line")
+    key_type, encoded = parts[:2]
+    try:
+        blob = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise ConfigError(f"{field} entry has invalid base64 public-key data") from None
+    if not blob:
+        raise ConfigError(f"{field} entry has an empty public-key blob")
+    encoded_type, offset = _ssh_string(blob, 0, field=field)
+    try:
+        embedded_type = encoded_type.decode("ascii")
+    except UnicodeDecodeError:
+        raise ConfigError(f"{field} entry has a non-ASCII SSH key type") from None
+    if embedded_type != key_type:
+        raise ConfigError(f"{field} text key type does not match its encoded public-key type")
+
+    if key_type == "ssh-ed25519":
+        public_key, offset = _ssh_string(blob, offset, field=field)
+        if len(public_key) != 32 or offset != len(blob):
+            raise ConfigError(f"{field} ssh-ed25519 key must contain exactly 32 public-key bytes")
+    elif key_type == "ssh-rsa":
+        exponent, offset = _ssh_string(blob, offset, field=field)
+        modulus, offset = _ssh_string(blob, offset, field=field)
+        if (
+            offset != len(blob)
+            or not exponent or not modulus
+            or int.from_bytes(exponent, "big", signed=True) < 3
+            or int.from_bytes(exponent, "big", signed=True) % 2 == 0
+            or int.from_bytes(modulus, "big", signed=True) <= 0
+        ):
+            raise ConfigError(f"{field} ssh-rsa key has invalid public parameters")
+    elif key_type.startswith("ecdsa-sha2-"):
+        curve, offset = _ssh_string(blob, offset, field=field)
+        point, offset = _ssh_string(blob, offset, field=field)
+        curve_name = key_type.removeprefix("ecdsa-sha2-").encode("ascii")
+        expected_lengths = {b"nistp256": 65, b"nistp384": 97, b"nistp521": 133}
+        if (
+            curve != curve_name or len(point) != expected_lengths.get(curve, -1)
+            or not point.startswith(b"\x04") or offset != len(blob)
+        ):
+            raise ConfigError(f"{field} {key_type} key has an invalid curve or point encoding")
+    elif offset == len(blob):
+        raise ConfigError(f"{field} entry has no public-key material")
+    return key_type, encoded
+
+
 def _reject_obsolete(data: dict[str, Any]) -> None:
     obsolete = sorted(set(data) & OBSOLETE_VARIABLES)
     if obsolete:
@@ -233,7 +332,7 @@ def validate_config(config: Config) -> None:
         if not isinstance(getattr(config, name), bool):
             raise ConfigError(f"{name} must be a JSON boolean")
     integer_names = [
-        "schema_version", "swap_disk_total_gb", "swap_file_count", "swap_priority",
+        "schema_version", "swap_partition_count", "swap_priority",
         "preserve_root_size_gb", "zswap_pool_percent", "zswap_accept_threshold_percent", "vm_swappiness",
         "docker_cleanup_max_age_hours", "io_benchmark_duration_s", "io_benchmark_max_size_gb",
     ]
@@ -241,6 +340,10 @@ def validate_config(config: Config) -> None:
         value = getattr(config, name)
         if isinstance(value, bool) or not isinstance(value, int):
             raise ConfigError(f"{name} must be an integer")
+    if config.swap_disk_total_gb is not None and (
+        isinstance(config.swap_disk_total_gb, bool) or not isinstance(config.swap_disk_total_gb, int)
+    ):
+        raise ConfigError("swap_disk_total_gb must be an integer GiB value or null for auto")
     string_names = [
         "log_dir", "state_dir", "stage2_output",
         "telegram_bot_token", "telegram_chat_id",
@@ -255,6 +358,16 @@ def validate_config(config: Config) -> None:
         raise ConfigError(
             "controller_ssh_pubkey must be one authorized_keys line without CR, LF, or NUL"
         )
+    if not isinstance(config.ssh_authorized_keys, list):
+        raise ConfigError("ssh_authorized_keys must be a JSON array of authorized_keys lines")
+    if len(config.ssh_authorized_keys) > MAX_SSH_AUTHORIZED_KEYS:
+        raise ConfigError(f"ssh_authorized_keys supports at most {MAX_SSH_AUTHORIZED_KEYS} entries")
+    key_identities = set()
+    for index, line in enumerate(config.ssh_authorized_keys):
+        identity = validate_authorized_key_line(line, field=f"ssh_authorized_keys[{index}]")
+        if identity in key_identities:
+            raise ConfigError(f"ssh_authorized_keys[{index}] duplicates an earlier public key")
+        key_identities.add(identity)
     if not isinstance(config.zswap_compressor, str) or config.zswap_compressor not in {"zstd", "lz4", "lzo-rle"}:
         raise ConfigError("zswap_compressor must be zstd, lz4, or lzo-rle")
     validate_address_pools(config.docker_default_address_pools)
@@ -272,10 +385,19 @@ def validate_config(config: Config) -> None:
             raise ConfigError(f"{name} must not contain a NUL character")
         if not value.startswith("/") or value.endswith("/"):
             raise ConfigError(f"{name} must be an absolute path without a trailing slash")
-    if not _SIZE_RE.fullmatch(str(config.swap_disk_total_gb)) or not 1 <= config.swap_disk_total_gb <= 10240:
-        raise ConfigError("swap_disk_total_gb must be an integer from 1 to 10240")
-    if not _SIZE_RE.fullmatch(str(config.swap_file_count)) or not 1 <= config.swap_file_count <= 64:
-        raise ConfigError("swap_file_count must be an integer from 1 to 64")
+    if config.swap_disk_total_gb is not None and (
+        not _SIZE_RE.fullmatch(str(config.swap_disk_total_gb))
+        or not 1 <= config.swap_disk_total_gb <= 10240
+    ):
+        raise ConfigError("swap_disk_total_gb must be an integer from 1 to 10240 or null for auto")
+    if not _SIZE_RE.fullmatch(str(config.swap_partition_count)) or not 1 <= config.swap_partition_count <= 64:
+        raise ConfigError("swap_partition_count must be an integer from 1 to 64")
+    if not isinstance(config.root_resize_policy, str) or config.root_resize_policy not in {
+        "resize", "untouched", "grow-only"
+    }:
+        raise ConfigError("root_resize_policy must be resize, untouched, or grow-only")
+    if not isinstance(config.swap_policy, str) or config.swap_policy not in {"on", "off", "untouched"}:
+        raise ConfigError("swap_policy must be on, off, or untouched")
     for name in ("preserve_root_size_gb",):
         value = getattr(config, name)
         if not _SIZE_RE.fullmatch(str(value)) or not 1 <= value <= 10240:
@@ -315,6 +437,14 @@ def validate_config(config: Config) -> None:
         raise ConfigError(str(exc)) from None
     if not isinstance(config.credential_mode, str) or config.credential_mode not in {"root-storage", "systemd"}:
         raise ConfigError("credential_mode must be root-storage or systemd")
+    if (
+        not isinstance(config.cloud_init_cleanup_mode, str)
+        or config.cloud_init_cleanup_mode not in CLOUD_INIT_CLEANUP_MODES
+    ):
+        raise ConfigError(
+            "cloud_init_cleanup_mode must be one of: "
+            + ", ".join(CLOUD_INIT_CLEANUP_MODES)
+        )
     if config.credential_mode == "root-storage" and not (config.state_dir.startswith("/var/lib/") or config.state_dir == "/var/lib/vbpub/bootstrap"):
         raise ConfigError("credential_mode=root-storage requires state_dir under /var/lib")
 
@@ -368,6 +498,7 @@ def load_config(path: str | None = None, raw_json: str | None = None) -> Config:
         raise ConfigError("configuration root must be a JSON object")
     _reject_obsolete({str(key).upper() for key in data})
     data = drop_removed_keys(data)
+    data = _normalize_config_aliases(data)
     allowed = {item.name for item in fields(Config)}
     unknown = sorted(set(data) - allowed)
     if unknown:
@@ -386,7 +517,7 @@ def persisted_config_data(saved: dict[str, Any]) -> dict[str, Any]:
     keys are always dropped: they arrive through credential files. Operator
     supplied config still goes through the strict ``load_config``.
     """
-    saved = drop_removed_keys(saved)
+    saved = _normalize_config_aliases(drop_removed_keys(saved))
     allowed = {item.name for item in fields(Config)}
     secret = {"telegram_bot_token", "telegram_chat_id", "mattermost_webhook_url"}
     unknown = sorted(str(key) for key in saved if key not in allowed)
@@ -400,6 +531,22 @@ def persisted_config_data(saved: dict[str, Any]) -> dict[str, Any]:
             ", ".join(fresh),
         )
     return {key: value for key, value in saved.items() if key in allowed and key not in secret}
+
+
+def _normalize_config_aliases(data: dict[str, Any]) -> dict[str, Any]:
+    """Translate the old misleading swap_file_count spelling on input/state."""
+    normalized = dict(data)
+    has_legacy = "swap_file_count" in normalized
+    legacy = normalized.pop("swap_file_count", None)
+    if has_legacy:
+        if "swap_partition_count" in normalized:
+            if normalized["swap_partition_count"] != legacy:
+                raise ConfigError("swap_file_count and swap_partition_count conflict")
+            # Equal duplicate spellings are harmless; the explicit canonical
+            # spelling remains authoritative.
+        else:
+            normalized["swap_partition_count"] = legacy
+    return normalized
 
 
 def save_config(path: str, config: Config, *, overwrite: bool = False) -> None:

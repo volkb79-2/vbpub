@@ -7,8 +7,8 @@ supported commands and copyable recipes are in
 
 ## Verbs represent operations
 
-The CLI exposes `wizard`, `install`, `resume`, `status`, `verify`, `plan`,
-`disable-stage2`, and `build-customscript` as verbs rather than one `--action`
+The CLI exposes `wizard`, `build-iso`, `install`, `resume`, `status`, `verify`,
+`plan`, `disable-stage2`, and `build-customscript` as verbs rather than one `--action`
 option. Each operation has its own help, accepted options, risk declaration,
 examples, and handler. Shared parser behavior—identity/version output, grouped
 help, diagnostics, `--yes`, `--debug`, output modes, progress behavior, and
@@ -51,10 +51,165 @@ mutually-exclusive group in `cli-extended`, so parser enforcement, error help,
 and the displayed synopsis all come from the same metadata rather than a
 hand-maintained usage string.
 
+## Cloud-init cache cleanup policy
+
+`cloud_init_cleanup_mode` is part of the shared validated `Config`, not a
+separate command-line switch, so it travels with saved profiles and the
+provider-neutral custom-script bundle. `retain` is the default. The other
+modes run only after all stage-two install actions complete; earlier stage-two
+failures leave the cloud-init cache available for diagnosis. A failure in the
+cleanup action itself is reported as a stage-two failure and may have partially
+cleaned cloud-init state.
+
+The policy deliberately separates removing only raw `user-data.txt` from
+running `cloud-init clean`. A clean resets cloud-init's run state, so its
+stages run again on the next boot. `clean-all` adds `--logs --seed`, but not
+`--configs all`: cloud-init does not preserve a pristine copy of files for
+rollback. Its cleanup implementation removes specific paths it recognizes as
+cloud-init-generated, without comparing them to later edits; it does not
+restore a vanilla file. Removing those paths could therefore discard
+configuration changes made by this installer. The mode also omits
+`--machine-id` (intended for golden-image cloning) and `--reboot`.
+
+`--seed` clears only cloud-init's guest-side seed cache. It cannot detach an
+ISO from the VM, and a still-attached NoCloud ISO can supply the same
+user-data again after a clean. Operators should account for that before the
+next boot. `cloud-init clean` also executes any local cleanup hooks installed
+under `/etc/cloud/clean.d/`; these remain the host administrator's
+responsibility.
+
+## Root and swap policies
+
+Root sizing and swap activation are independent config decisions. Treating them
+as one “install swap” switch made two legitimate cases impossible: an operator
+could want swap configured without permitting root changes, or want root to
+grow while preserving the image's existing swap state. The four policies make
+those effects explicit in profiles and in the install plan.
+
+`root_resize_policy=resize` means “maximize root subject to the selected swap
+layout,” not “shrink root to a fixed preferred size.” This supports both an
+already-full cloud image (offline shrink in initramfs) and a small root image
+(partition and ext filesystem growth after the swap boundary is placed).
+`grow-only` retains the safe monotonic option for operators unwilling to risk
+a shrink. `untouched` is the strict no-partition-change choice. The existing
+`preserve_root_size_gb` remains a minimum root-capacity floor; it is not the
+resize target.
+
+Swap sizing is tied to both machine resources and disk capacity. A pure
+RAM-based rule can consume most of a small VM's disk, while a fixed GiB value
+does not scale across 20–512 GB images. The default is
+`min(ceil(2 × RAM in GiB), round-half-up(20% of disk capacity in GiB))`:
+twice guest RAM rounded up to GiB, capped by 20% of actual disk bytes rounded
+to the nearest GiB. The resulting values for common disk/RAM pairs are listed in the
+[feature overview](../README.md#disk-swap). The count is a separate setting,
+defaulting to four partitions; a fixed total is still available for workloads
+that need one. Automatic sizing uses actual block-device bytes and guest
+`MemTotal`, not provider labels or an invented RAM default.
+
+`swap_policy=on` makes the configured root-disk partitions the guest's swap
+configuration: it deactivates all active swap before the table transaction,
+removes configured swapfiles and swap logical volumes, replaces old root-disk
+swap partitions, then activates the planned partitions and replaces fstab
+swap entries with them. A pre-root swap partition (physically before root) is
+retained, and its size counts toward the requested total; the configured partition
+count includes that retained partition. `off` likewise deactivates all active
+swap and removes persistent fstab swap entries plus swap-type partitions from
+the root disk, without erasing swapfile or logical-volume data. `untouched`
+does not call `swapoff`, rewrite fstab, format devices, or change swap
+partitions. Root growth under that mode stops at the next existing partition
+boundary.
+
+The refusal paths are part of this policy contract, not best-effort fallback.
+When swap does not fit after an untouched/grow-only root, the installer reports
+requested and available space and stops. When shrinking, it checks live root
+usage and `resize2fs -P` plus 256 MiB before scheduling the offline hook; that
+hook recomputes the ext filesystem minimum after stage-one packages have
+changed the filesystem. If either estimate exceeds the target, the hook boots
+the original root without resizing and stage two reports the incomplete
+operation. Unknown non-swap partitions after root are not shifted to make the
+requested layout fit. This favors a clear refusal over a plausible but
+destructive guess.
+
+Root-shrink safety is checked before swapfile cleanup. Existing swapfile data
+is still part of the usage and filesystem-minimum checks; deleting the file
+first could understate the data occupying the root filesystem. After that
+pre-cleanup check approves the same target, configured swap backing is removed
+and the offline hook is installed.
+
+The accepted tradeoff is that `resize` is intentionally the default and can
+shrink a full cloud root. Hosts with locally added data should review the
+read-only plan and retain `grow-only` or `untouched` when shrink is not allowed.
+The plan's root target, swap policy, auto-resolved total, and partition list
+are included before confirmation. Copyable configurations and expected errors
+are in [CONSUMERS.md](CONSUMERS.md#root-and-swap-policy).
+
+## Private VM seed ISO and moving profiles
+
+`build-iso` is a local interactive operation because the final NoCloud seed
+must contain per-host notification credentials and one or more persistent
+root SSH public keys. A
+generic public ISO or a repository profile must never carry those values. The
+admin owns the resulting mode-0600 ISO; cloud-init also normally retains the
+raw user-data inside the guest, so the existing shared `cloud_init_cleanup_mode`
+config/profile key controls whether that cache is retained or cleaned after
+successful stage two.
+
+The ISO contains only the one-time launcher plus its private payload. It does
+not freeze a copy of the installer: it points to a moving repository branch
+and either a released profile ID, a locally embedded JSONC profile, or an
+HTTPS profile URL (optionally protected by origin-scoped Basic Auth). Built-in
+profile IDs are filenames under `profiles/`, validated as lowercase
+letters/digits/hyphens and resolved from the branch at VM boot. `default`
+intentionally consists of the schema version alone, so omitted values track
+the selected channel's current `Config()` defaults. `vanilla` explicitly
+disables optional configuration/services while retaining the core disk, swap,
+and stage machinery. `run_zswap_config` and `run_cgroup2_config` are explicit
+shared config/profile switches, default `true` to preserve current behavior;
+the vanilla profile sets both false. `run_zswap_config` also gates the zswap
+read-back health check. Required disk/swap transactions and stage orchestration
+are core behavior, not optional host features. The profile files carry comments
+explaining their use case; the identifier is a file lookup, not another
+mini-language.
+
+Python's stdlib JSON parser does not understand JSONC. Rather than add a
+runtime dependency or accept the much larger JSON5 grammar, `profiles.py`
+strips only `//` and `/* ... */` comments outside quoted strings and passes
+the result to strict `json.loads()` and the existing config validator. Trailing
+commas remain invalid. Profiles reject per-host notification credentials, the
+temporary controller key, and `ssh_authorized_keys`. Persistent SSH keys are
+collected as a list in the private ISO wizard, syntax-validated by the config
+loader, and each is checked with `ssh-keygen` before ISO creation. The installer
+adds them idempotently in stage one and never removes them during controller-key
+cleanup. The existing controller key remains a separate ephemeral/retained
+lifecycle.
+
+The remote bootstrap uses a shallow Git clone with `--filter=blob:none`, then
+sets a sparse path list before checkout and copies only those runtime files to
+the install directory. The blob filter is what avoids transferring unrelated
+file contents; sparse checkout alone only limits the worktree. Git tree/commit
+metadata is still needed. Git is not assumed to be installed on cloud images,
+so bootstrap preflight checks for it and installs it through the target's APT
+sources when missing, before resolving or downloading the cli-extended wheel.
+The repository fetch uses ordinary HTTPS Git smart transport and is not
+GitHub-specific, but the server must advertise partial-clone blob filtering;
+the bootstrap refuses if it would otherwise fall back to downloading all
+blobs. The initial raw-file URL for the bootstrap and the cli-extended wheel
+manifest are separate HTTPS endpoints. Their defaults use GitHub; the ISO
+wizard lets an operator point either at a compatible mirror. A non-GitHub
+repository URL by itself does not imply where those two HTTP artifacts live.
+
+Known issue accepted by design: the first launcher fetches
+`bootstrap-remote.py` from a floating branch before that script can fetch the
+branch's Git tree. If the branch moves in that interval, the bootstrap file
+and the checked-out installer/profile can come from adjacent commits. Once
+the Git fetch resolves, installer code and released profiles are taken from
+that one checkout. The release channel is intentionally moving, and this
+small bootstrap handoff race is documented rather than pinning old ISOs.
+
 ## Prompt library boundary
 
 The prompt package is an optional dependency and is imported only by the
-`wizard` verb. `questionary` supplies terminal interactions such as grouped
+`wizard` and `build-iso` verbs. `questionary` supplies terminal interactions such as grouped
 choices, confirmations, text fields, and hidden password entry. The installer
 does not depend on it for help, config loading, planning, installation, or
 remote execution. If it is absent, the wizard reports the precise optional
@@ -77,8 +232,8 @@ does not speak a hosting provider’s API. `install-host.py` and other provider
 clients can consume the generated JSON without learning Debian installer
 internals.
 
-The remote bootstrap downloads the installer tree from one repository archive
-and the **released** `cli_extended` wheel separately. The wheel is resolved from
+The remote bootstrap fetches the installer tree from a Git remote and the
+**released** `cli_extended` wheel separately. The wheel is resolved from
 the `cli-extended-latest/latest.json` release pointer (or pinned with
 `CLI_EXTENDED_WHEEL_URL` plus `CLI_EXTENDED_WHEEL_SHA256`), verified by sha256
 before anything is written, and kept beside the entrypoint as the only
@@ -88,9 +243,9 @@ and no live checkout of the controller’s repository. This replaced copying the
 library’s source subtree out of the same archive (decision CX-D3 of the unified
 cli-extended program): the library that runs on a host is now a released,
 checksummed artifact, never whatever the repository branch held at download
-time. The two-fetch design was chosen over bundling the library into the archive
-because the archive is a branch snapshot with no integrity manifest, while the
-release pointer carries the digest. Without a wheel beside the script the
+time. Keeping the library as a separately released artifact preserves its
+checksummed version boundary while the source branch remains a moving channel.
+Without a wheel beside the script the
 entrypoint falls back to an installed `cli_extended`, and otherwise refuses with
 exit status 2 and a pointer to the bootstrap; it never searches the repository
 source tree. Questionary

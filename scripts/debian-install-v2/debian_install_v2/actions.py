@@ -36,6 +36,10 @@ KILL_REAP_SECONDS = 10.0
 # Anything else (e.g. -o APT::Update::Pre-Invoke::=...) is arbitrary command
 # execution via apt config and is refused.
 _APT_LOCK_TIMEOUT_RE = re.compile(r"DPkg::Lock::Timeout=[0-9]{1,5}")
+_CLOUD_INIT_CLEAN_ARGV = {
+    ("clean",),
+    ("clean", "--logs", "--seed"),
+}
 
 
 _SAFE_COMMANDS = {
@@ -47,6 +51,7 @@ _SAFE_COMMANDS = {
     "blockdev": {"--getsize64", "--rereadpt"},
     "btrfs": {"filesystem"},
     "curl": set(),
+    "cloud-init": set(),
     "dd": set(),
     "df": {"-B1", "-h", "--output=used"},
     "dumpe2fs": {"-h"},
@@ -56,11 +61,15 @@ _SAFE_COMMANDS = {
     "sha256sum": set(),
     "free": {"-g"},
     "git": {"clone", "fetch", "reset"},
+    # Cloud-guest-utils expands an existing partition without changing its
+    # start; installer.py validates the resulting table before resize2fs.
+    "growpart": {"--fudge"},
     "hostname": {"-f", "-I"},
     "ip": {"-j"},
     # io.cost benchmark's throwaway partition (installer._run_io_benchmark).
     "iocost_coef_gen.py": {"--testfile", "--testfile-size-gb", "--duration", "--quiet"},
     "lsblk": {"-no", "-o"},
+    "lvremove": {"-y"},
     # LT-UPG: list an initrd's contents to verify the root-shrink hook is in it.
     "lsinitramfs": set(),
     "lspci": set(),
@@ -136,7 +145,13 @@ class HostActions:
         if command not in _SAFE_COMMANDS:
             raise ActionError(f"executable is not on the action allowlist: {command}")
         allowed = _SAFE_COMMANDS[command]
-        if allowed:
+        if command == "cloud-init":
+            if tuple(argv[1:]) not in _CLOUD_INIT_CLEAN_ARGV:
+                raise ActionError(
+                    "cloud-init invocation is not allowlisted: "
+                    f"{argv[1:]!r}"
+                )
+        elif allowed:
             if command == "apt-get":
                 args = argv[1:]
                 for index, arg in enumerate(args):
