@@ -11,6 +11,7 @@ persistence.
 
 from __future__ import annotations
 
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -181,6 +182,7 @@ def _build_repo(tmp_path: Path, monkeypatch) -> Path:
     repo_root = tmp_path / "repo"
     repo_root.mkdir(parents=True)
     shutil.copy2(TEST_REPO / GLOBAL_DEFAULTS, repo_root / GLOBAL_DEFAULTS)
+    monkeypatch.setenv("CONTAINER_UID", str(os.getuid()))
     monkeypatch.setenv("REPO_ROOT", str(repo_root))
     monkeypatch.setenv("PHYSICAL_REPO_ROOT", str(repo_root))
     # Scrub the rest of the identity family: under xdist a worker may carry
