@@ -71,7 +71,7 @@ def test_generated_bootstrap_warns_on_network_workspace_error(
     monkeypatch.setattr(
         workspace_env,
         "ensure_workspace_network",
-        lambda _name: (_ for _ in ()).throw(
+        lambda _name, **_kwargs: (_ for _ in ()).throw(
             workspace_env.WorkspaceEnvError("daemon unavailable")
         ),
     )

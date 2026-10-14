@@ -87,8 +87,12 @@ classify a state must preserve the refusal and leave the record in place.
 The internal library has a dedicated tester-unified lane. From this directory,
 run the complete R0-R3 qualification through the project launcher:
 
-```bash
-CGROUP_PARENT_DEV_GATES=dev-gates.slice run-gate worktree
+`run-gate` reads the gate tier from the host-provided
+`$CGROUP_PARENT_DEV_GATES` setting and validates that the systemd slice is
+loaded before starting a container.
+
+```console
+run-gate worktree
 ```
 
 This does not release a third package. It verifies the source that CIU and CMRU

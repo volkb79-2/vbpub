@@ -198,10 +198,11 @@ a slice name should verify it's actually a loaded unit first
 wheel and use `run-gate <lane>` from that project directory — the mechanics
 are tested code (`run-gate-project/SPEC.md`), not doctrine prose.** Copied
 scripts and consumer symlinks are retired; `run-gate --version` reports the
-installed wheel's SemVer identity. The manual recipe below is only a fallback for projects
-without a root runner or for a narrowly-scoped live acceptance probe that the
-registered lane cannot express; it is not a substitute for registered gate
-evidence. Adopted estate-wide
+installed wheel's SemVer identity. Use the project's owning workflow (such as
+`cmru run` or nyxloomd) when it supplies additional setup. The manual recipe
+below is only a fallback for projects without a registered lane or for a
+narrowly-scoped live acceptance probe that the registered lane cannot express;
+it is not a substitute for registered gate evidence. Adopted estate-wide
 2026-08-22 (ciu, cmru, assay, nyxloom, topos, pwmcp,
 shared-ramdisk-depot-manager, plesk-mailbox-create,
 modern-debian-tools-python-debug); projects without an executable test

@@ -1608,7 +1608,10 @@ def main_execution(
             print("[SUCCESS] Rendered CIU TOML files (ciu.global.toml, ciu.toml)", flush=True)
             return result
 
-        ensure_workspace_network(auto_connect=auto_connect_setting)
+        ensure_workspace_network(
+            auto_connect=auto_connect_setting,
+            verify_managed_instance=True,
+        )
 
         # ---- Step 4: merge (S3.3) ----
         print("[STEP 4/17] Merging configurations...", flush=True)
@@ -2141,7 +2144,10 @@ def run_shipped(
         auto_connect_setting = global_config.get("ciu", {}).get("auto_connect_network", True)
         if auto_connect_network is not None:
             auto_connect_setting = auto_connect_network
-        ensure_workspace_network(auto_connect=auto_connect_setting)
+        ensure_workspace_network(
+            auto_connect=auto_connect_setting,
+            verify_managed_instance=True,
+        )
 
         # ---- DooD preflight (S1.5) before the first daemon bind use ----
         _dood_preflight(to_physical_path(working_dir, repo_root=repo_root))

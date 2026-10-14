@@ -563,8 +563,10 @@ does not exist it refuses and names `ciu env generate`.
 CIU-60), so **templates** read these facts from the merged config chain —
 `{{ ciu.instance.generated.physical_repo_root }}` — rather than from ambient
 environment. The file is CIU's alone and is rewritten in full every time; your
-own per-checkout overrides go in `ciu.global.instance.toml.j2`, which CIU never
-writes. See [CONFIG.md](CONFIG.md) for both files and the ownership rules;
+own per-checkout overrides go in `ciu.global.instance.toml.j2`. Managed
+create/adopt may write its initial selection before the worktree is ready;
+afterward CIU does not rewrite it. See [CONFIG.md](CONFIG.md) for both files
+and the ownership rules;
 `ciu clean --vanilla` is the only command that removes them.
 
 Always-required keys [S2.2]:

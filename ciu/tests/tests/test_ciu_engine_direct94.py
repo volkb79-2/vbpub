@@ -54,7 +54,13 @@ def test_shipped_override_uses_scoped_project_guard_and_returns_interrupted(monk
     (stack / "vendor.yml").write_text("services: {}\n", encoding="utf-8")
     _prepare(monkeypatch, stack, {"ciu": {"auto_connect_network": True}, "deploy": {}})
     observed: dict[str, object] = {}
-    monkeypatch.setattr(engine, "ensure_workspace_network", lambda *, auto_connect: observed.setdefault("network", auto_connect))
+    monkeypatch.setattr(
+        engine,
+        "ensure_workspace_network",
+        lambda *, auto_connect, verify_managed_instance: observed.setdefault(
+            "network", (auto_connect, verify_managed_instance)
+        ),
+    )
     monkeypatch.setattr(engine.composefile, "compose_process_env", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(engine, "compose_project_name", lambda *_args: "project-prod-stack")
     monkeypatch.setattr(engine, "guard_legacy_compose_project", lambda workdir, project: observed.update(guard=(workdir, project)))
@@ -71,7 +77,10 @@ def test_shipped_override_uses_scoped_project_guard_and_returns_interrupted(monk
         auto_connect_network=False,
     )
 
-    assert observed == {"network": False, "guard": (stack.resolve(), "project-prod-stack")}
+    assert observed == {
+        "network": (False, True),
+        "guard": (stack.resolve(), "project-prod-stack"),
+    }
     assert result["status"] == "interrupted"
     assert result["message"] == "User aborted shipped deployment"
     assert result["stdout"] == "partial"

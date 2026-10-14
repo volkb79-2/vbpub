@@ -23,6 +23,15 @@ restatement of the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- Managed worktree creation and adoption validate initial overlay options before lifecycle mutation and preserve the exact request for safe interrupted recovery. Schema v5 records overlay recovery, the one-time checkout-reset boundary, and a verified Docker network object id. The requested base is snapshotted before allocation so marker validation, workspace creation, and reset use one commit. All worktree verbs use the selected nested CIU root for record lookup.
+- `ensure` refuses to repeat an uncheckpointed initial reset, verifies same-name networks on its ready path, and checks explicit base/directory constraints. Managed `up` also verifies network ownership before launching. A failed Docker permission probe is indeterminate rather than network absence; a failed allocation records `runtime-verification-failed`, reserving `runtime-collision` for proven conflicts. A one-time legacy claim cannot replace a saved object id. Lease updates serialize with lifecycle transitions, record writes sync the parent directory after replacement, and CIU's ignore rules cover interrupted record and overlay staging files.
+- CIU-created Docker networks carry an instance owner label. Reuse requires the saved Docker object id or a matching owner label; an explicit `--adopt-existing-network` claim is available only for an unlabelled legacy network before an object id is saved. Name equality alone is not ownership evidence.
+- Direct native and shipped `ciu up` now verify the managed worktree record and network before startup, then verify again after network creation before attaching the devcontainer. Unproven network replacement is `runtime-verification-failed`; only positive identity or owner-label conflicts are `runtime-collision`. Runtime identity admission refuses unreadable sibling records for CIU roots, while listing and rootless siblings remain best effort. An explicit `--root-folder` that names neither a CIU root nor its Git-family root now refuses instead of selecting another root, and `--adopt-existing-network` refuses when the named network is absent.
+
+### Adoption / Migration Notes
+- New managed allocations use worktree record schema v5. Ready v1-v4 records remain readable. Incomplete v1/v2 records lack overlay intent, incomplete v3 records lack overlay-recovery phase, and an initial reset whose exact result was not checkpointed requires operator-directed recovery. Existing unlabelled networks may need a one-time `ciu worktree adopt|ensure --adopt-existing-network` claim before CIU has saved an object id.
+
 ### Changed
 - Run the real-system enrollment lane as a required release gate, verify the installed Run-Gate wheel matches the selected checkout, and pin the disposable fixture image (CIU-131).
 
