@@ -116,7 +116,7 @@ CMRU_WHEEL_INSTALL_RUN_BODY = (
     + ' && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, '
     "scipy, numpy, ruptures; print('cgroup-profiler report tier OK')\""
 )
-CMRU_POST_INSTALL_VERSION_ASSERTION_RUN = '''RUN /opt/tester-venv/bin/python - <<'PY'
+CMRU_POST_INSTALL_VERSION_ASSERTION_RUN = r'''RUN /opt/tester-venv/bin/python - <<'PY'
 import importlib.metadata as metadata
 import os
 import subprocess
@@ -175,7 +175,7 @@ CMRU_POST_INSTALL_IDENTITY_RUN = (
     '&& chown -R 1003:1003 /home/tester && chown -R 1003:1003 /opt/tester-venv'
 )
 CMRU_POST_INSTALL_MUTATIONS = (
-    "RUN /opt/tester-venv/bin/python - <<'PY'",
+    CMRU_POST_INSTALL_VERSION_ASSERTION_RUN,
     CMRU_POST_INSTALL_IDENTITY_RUN,
     "RUN run-gate --version",
 )
@@ -1216,7 +1216,7 @@ def test_dockerfile_installs_estate_internal_packages_only_offline_from_copied_s
     # CMRU and Run-Gate are built from COPYed source; cli-extended is a release wheel.
     assert "/src/cmru" in wheels[0] and "/src/libraries/cli-extended" not in code
     assert "/src/run-gate-project" in code
-    assert "--no-index --no-deps /tmp/run-gate-wheels/*.whl" in code
+    assert "--no-cache-dir --no-index --no-deps /tmp/run-gate-wheels/*.whl" in code
     assert 'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_VERSION}"' in code
     assert "--no-index --no-deps /tmp/internal-wheels/*.whl" in code
     # The PyPI-bound requirements come from the refusing generator.
