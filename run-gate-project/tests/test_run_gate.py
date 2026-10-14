@@ -30184,7 +30184,8 @@ class TestRunGateReleaseCoverageEdges:
             {"cgroup_slice_env": "CGROUP_TEST_SLICE"}, "fixture")[0] == \
             "dev.slice/dev-gates.slice"
         monkeypatch.delenv("CGROUP_TEST_SLICE")
-        with pytest.raises(run_gate.GateError, match="CGROUP_TEST_SLICE is unset"):
+        with pytest.raises(run_gate.GateError,
+                           match=r"\$CGROUP_TEST_SLICE declared by fixture is unset"):
             run_gate.resolve_slice(
                 {"cgroup_slice_env": "CGROUP_TEST_SLICE"}, "fixture")
         monkeypatch.setenv(run_gate.CGROUP_ENV_VAR, "dev-gates.slice")
@@ -30261,7 +30262,7 @@ class TestRunGateReleaseCoverageEdges:
             {"required_env": ["CI"]}, "suite", {"forward_env": ["CI"]},
             "runner", "fixture")
         with pytest.raises(run_gate.GateError,
-                           match="CI, TOKEN.*not on environment.*forward_env"):
+                           match="requires TOKEN.*not on environment.*forward_env"):
             run_gate.check_required_reaches_container(
                 {"required_env": ["CI", "TOKEN"]}, "suite",
                 {"forward_env": ["CI"]}, "runner", "fixture")
@@ -30351,7 +30352,8 @@ class TestRunGateReleaseCoverageEdges:
                      "description": "unit check", "memory": "512m"},
         }
         text = run_gate.usage(lanes, {"gate", "unit"})
-        for expected in ("gate*", "environment=runner", "imported=assay",
+        assert re.search(r"^  gate\s+\*.*imported=assay", text, re.MULTILINE)
+        for expected in ("environment=runner", "imported=assay",
                          "resources: memory=1g", "pids=16", "cpus=2",
                          "swap=2g", "cpu_weight=100", "io_weight=200",
                          "shared=[db]", "whole gate", "unit check"):
