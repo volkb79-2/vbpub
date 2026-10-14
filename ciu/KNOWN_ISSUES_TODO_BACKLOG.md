@@ -583,7 +583,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-132 | Outdated-identity guard blocks a stopped stack's data-preserving migration and is not told ownership drift or stale persisted hostnames | High | OPEN |
 | CIU-133 | `ciu up` hangs forever at "STEP 10/17 Resolving and materializing secrets" for a stack that IS its own ciu root (stack files in the root directory, the `mattermost/` and `pwmcp/` layout) when any GEN_LOCAL secret is declared. **Observed (2026-10-07, `ciu up --dir mattermost -y`):** `/proc/locks` listed the same PID as both holder and waiter (`->`), wchan `locks_lock_inode_wait`. `secrets/materialize.py::materialize` took `_flock(stack_dir/.ciu/lock)` and then `_flock(repo_root/.ciu/lock)`; with `stack_dir == repo_root` both are one file, flock locks an open file description, so the second `os.open()` + `LOCK_EX` blocked on the process's own first lock | High | FIXED 2026-10-07 (`dca8e1f75`): the project lock is taken only when `realpath(stack_lock) != realpath(project_lock)`, so a symlinked stack dir that resolves to the root is also covered; the stack lock already serializes the project store in that layout. Order for distinct files is unchanged (stack, then project, S4.26). **Oracle:** `tests/tests/test_ciu_materialize_self_root_lock.py` — real-flock subprocess with an 8 s timeout for `stack_dir == repo_root` and for a symlink to the root (both FAIL by timeout with the fix reverted, PASS with it), plus a `_flock` spy asserting both locks, stack first, for distinct paths. Sweep of every other `.ciu/lock` / flock site (`persist_hook_secret`, `materialize_host_secrets`, `worktree._allocation_lock`, `worktree_budget_slot`, `workspace_lock`) found no other same-file nesting |
 | CIU-134 | Worktree removal can finish `ciu clean` and then fail deleting the checkout due to protected descendants, leaving a partial Git/CIU lifecycle state with no supported root-assisted retry | High | OPEN — add permission-specific, consented retry through the existing S6.5 helper and truthful partial-state reporting |
-| CIU-135 | Managed worktree overlay recovery, reset retries, network ownership, and explicit `ensure` constraints can be ambiguous or silently ignored | Medium | OPEN — preflight and persist overlay intent; refuse destructive/ownership ambiguity and mismatched requests |
+| CIU-135 | Managed worktree overlay recovery, reset retries, network ownership, and explicit `ensure` constraints can be ambiguous or silently ignored | Medium | OPEN — implementation now folds Review 05 recovery, startup, root-selection, and final-network-check findings; registered gate and final review remain |
 | CIU-136 | `ciu resolve` does not report live attached networks, aliases, derived URLs, or a nonzero status for an absent service | Medium | OPEN — extend the existing service-discovery follow-up from CIU-118 / nyxloom NL-38 |
 
 
@@ -5233,23 +5233,57 @@ implementations that bypass direct-start verification, mark an unproven
 network as a collision, silently accept a missing claim target, or ignore an
 unreadable CIU-root sibling must fail their oracles.
 
+(27) Interrupt creation after the neutral shared record is durable but before
+the CIU-local record is written; `ensure` restores the exact saved overlay
+intent and completes the same checkout without allocating another branch or
+path. (28) Remove a ready managed checkout's CIU-local record: direct startup
+refuses before Docker, then `ensure` restores the ready record from the shared
+snapshot without changing existing overlay bytes. A primary checkout without
+a managed shared record remains allowed. (29) Full `ciu env generate`
+verifies managed identity and ownership before creating or attaching a
+network; a foreign owner label prevents both side effects and any successful
+network-setup report, while allocation accepts only a matching checkpointed
+`allocating` record. (30) An explicit Git-family root from inside a nested
+CIU root selects that nearest nested root even when the family root has a
+marker; an arbitrary existing descendant refuses. (31) Corrupt a CIU-root
+sibling's record and delete its marker only in the working tree; runtime
+admission still refuses based on committed `HEAD` membership. (32) Corrupt or
+duplicate a CIU-root sibling after a managed instance is ready; direct native
+and shipped startup both refuse before Compose. (33) Change the generated
+identity between identity-only and full environment generation; recovery is
+recorded as `runtime-verification-failed`, not a proven `runtime-collision`.
+(34) The shared native/shipped Compose boundary performs a final ownership
+check immediately before process launch, refuses if the managed network
+disappeared or lost ownership proof, and never invokes Compose on that
+failure. The docs state that another Docker actor can still replace the
+network between the point-in-time check and Compose's later name lookup. No
+implementation may claim atomic object-id binding that Compose does not
+provide.
+
 **File list.** `src/ciu/worktree.py`, `src/ciu/workspace_env.py`,
 `src/ciu/engine.py`, `src/ciu/scaffold.py`,
 `src/ciu/cli.py`; the owning worktree lifecycle, workspace-network and CLI tests;
-`tests/test_init_scaffolding.py`, `tests/tests/test_ciu_documentation_contract.py`;
+`tests/test_init_scaffolding.py`, `tests/tests/test_ciu_documentation_contract.py`,
+`tests/tests/test_ciu_engine_execution_boundaries.py`;
 the root `.gitignore`, `ciu/.gitignore`, and the shipped `.gitignored.ciu`
 rules for interrupted atomic-writer scratch;
 `docs/SPEC.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `docs/CONFIG.md`,
 `docs/CIU.md`, and `README.md`; the root `AGENTS.md` Run-Gate invocation rule;
 `libraries/worktree/SPEC.md` and `libraries/worktree/CONSUMERS.md` CLI examples;
-this backlog entry; the P53 review reports; and the next CIU `CHANGES.md`
+this backlog entry; the P53 review reports including Review 05; and the next CIU `CHANGES.md`
 release-note section. The
 three adopter-facing documents (README, DESIGN-GUIDE, CONSUMERS) are required
 before merge, alongside the normative spec and configuration reference.
 
-**Disposition:** OPEN. The six findings from the second independent review,
-eight findings from the final broad design review, two adjacent gaps found
-while closing those findings, and five additional findings from the final
-follow-up review are folded into the isolated implementation and regression
-oracles. The exact candidate still needs its registered CIU gate and a final
-read-only review before merge.
+**Disposition:** OPEN pending the registered CIU gate and final read-only
+review. The seven findings from Review 05 are folded into the same package:
+missing local-record recovery from the shared snapshot, full env-generation
+ownership verification, exact root selection, committed sibling-root
+membership, direct-start family admission, a final network check at the shared
+Compose boundary with the external-Docker race documented, and truthful
+identity-drift classification. Earlier findings include the six findings from
+the second independent review, eight findings from the final broad design
+review, two adjacent gaps found while closing those findings, and five
+additional findings from the final follow-up review; all are folded into the
+isolated implementation and regression oracles. The exact candidate still
+needs its registered CIU gate and a final read-only review before merge.

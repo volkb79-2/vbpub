@@ -88,6 +88,7 @@ from .workspace_env import (  # P8 contract — relied on exactly, never edited 
     read_generated_facts,
     resolve_env_root,
     validate_required_certs,
+    verify_workspace_runtime_network,
 )
 
 # Global logger instance (configured after parsing config).
@@ -1117,12 +1118,24 @@ def execute_docker_compose_with_logs(
     Returns ``{'status': 'success'|'error'|'interrupted', 'message', 'stdout'}``.
     """
     result = {"status": "success", "message": "", "stdout": ""}
-    print("[INFO] Executing docker compose up...", flush=True)
     cmd = [
         "docker", "compose", "-p", project,
         "--project-directory", str(Path(repo_root).resolve()),
         *file_args, "up", "-d",
     ]
+
+    # Native and shipped startup share this process boundary. Recheck managed
+    # network ownership immediately before Compose resolves the configured
+    # network name; a separate Docker actor can still race after this check.
+    try:
+        verify_workspace_runtime_network(Path(repo_root))
+    except WorkspaceEnvError as exc:
+        result["status"] = "error"
+        result["message"] = str(exc)
+        print(f"[ERROR] {result['message']}", flush=True)
+        return result
+
+    print("[INFO] Executing docker compose up...", flush=True)
 
     proc = None
     try:

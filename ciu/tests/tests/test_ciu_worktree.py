@@ -1113,6 +1113,7 @@ class TestManagedIdentityLifecycle:
     ):
         damaged = worktree.create(tmp_repo, "damaged-ciu-sibling")
         damaged.record_path.write_text('{"logical_name":"damaged-ciu-sibling",\n', encoding="utf-8")
+        (damaged.ciu_root / worktree.GLOBAL_CONFIG_DEFAULTS).unlink()
 
         with pytest.raises(
             worktree.RuntimeNetworkVerificationError,
@@ -1124,6 +1125,68 @@ class TestManagedIdentityLifecycle:
         assert partial is not None
         assert partial.state == "recovery-required"
         assert partial.recovery_status == "runtime-verification-failed"
+
+    def test_missing_checkout_record_recovers_the_checkpointed_initial_overlay(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_write = worktree._write_instance_record
+
+        def interrupt_record_write(_record):
+            raise KeyboardInterrupt("stop between shared and CIU record writes")
+
+        monkeypatch.setattr(worktree, "_write_instance_record", interrupt_record_write)
+        with pytest.raises(KeyboardInterrupt, match="between shared and CIU"):
+            worktree.create(tmp_repo, "record-gap-recovery", profile="core,db")
+
+        shared_record = worktree._shared_record_for_logical_name(
+            tmp_repo, "record-gap-recovery"
+        )
+        assert shared_record is not None
+        recovered_intent = shared_record.metadata[worktree._CIU_WORKTREE_RECORD_METADATA]
+        assert recovered_intent["initial_overlay_pending"] is True
+        assert recovered_intent["initial_overlay"] is not None
+
+        monkeypatch.setattr(worktree, "_write_instance_record", real_write)
+        ready = worktree.ensure(tmp_repo, "record-gap-recovery")
+
+        assert ready.state == "ready"
+        assert ready.initial_overlay_pending is False
+        assert (
+            ready.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).read_text(encoding="utf-8") == recovered_intent["initial_overlay"]
+
+    def test_missing_ready_record_refuses_direct_up_then_restores_from_shared_snapshot(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "missing-ready-record", profile="core")
+        expected_overlay = (
+            record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).read_bytes()
+        record.record_path.unlink()
+        monkeypatch.setattr(
+            worktree,
+            "_docker_network_details",
+            lambda _network: pytest.fail("missing record must refuse before Docker"),
+        )
+
+        with pytest.raises(
+            worktree.RuntimeNetworkVerificationError,
+            match="has no CIU instance record.*worktree ensure",
+        ):
+            worktree.verify_own_runtime_network(
+                record.ciu_root,
+                expected_instance_id=record.instance_id,
+                expected_network=record.network,
+            )
+
+        monkeypatch.setattr(worktree, "_docker_network_details", lambda _network: None)
+        restored = worktree.ensure(tmp_repo, "missing-ready-record")
+        assert restored.state == "ready"
+        assert restored.initial_overlay is None
+        assert restored.initial_overlay_pending is False
+        assert (
+            restored.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).read_bytes() == expected_overlay
 
     def test_runtime_network_probe_failure_has_recoverable_status(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -1484,7 +1547,8 @@ class TestManagedIdentityLifecycle:
         with pytest.raises(worktree.WorktreeError, match="identity changed"):
             worktree.create(other, "logical-two")
         changed = worktree.find_instance_record(other, "logical-two")
-        assert changed is not None and changed.recovery_status == "runtime-collision"
+        assert changed is not None
+        assert changed.recovery_status == "runtime-verification-failed"
 
     def test_host_network_collision_refuses_before_full_bootstrap(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -4126,6 +4190,28 @@ def test_direct_managed_startup_verifies_and_saves_the_network_object_id(
     assert saved.network_id == docker_id
 
 
+def test_final_managed_startup_verification_requires_network_to_still_exist(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-network-disappeared")
+    monkeypatch.setattr(worktree, "_docker_network_details", lambda _network: None)
+
+    with pytest.raises(
+        worktree.RuntimeNetworkVerificationError,
+        match="disappeared before Compose startup",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id=record.instance_id,
+            expected_network=record.network,
+            require_network_present=True,
+        )
+
+    saved = worktree.read_instance_record(record.record_path)
+    assert saved.state == "ready"
+    assert saved.recovery_status is None
+
+
 def test_direct_managed_startup_records_unknown_network_as_verification_failure(
     tmp_repo, fake_generate_env, monkeypatch
 ):
@@ -4177,6 +4263,58 @@ def test_direct_managed_startup_refuses_generated_identity_mismatch_before_probe
     saved = worktree.read_instance_record(record.record_path)
     assert saved.state == "ready"
     assert saved.recovery_status is None
+
+
+def test_direct_managed_startup_refuses_duplicate_sibling_identity_before_probe(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-family-owner")
+    sibling = worktree.create(tmp_repo, "direct-startup-family-duplicate")
+    duplicate = replace(
+        worktree.read_instance_record(sibling.record_path),
+        instance_id=record.instance_id,
+        network=record.network,
+    )
+    worktree._write_instance_record(duplicate)
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: pytest.fail("family conflict must refuse before Docker"),
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkOwnershipError,
+        match="already belongs to logical instance",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id=record.instance_id,
+            expected_network=record.network,
+        )
+
+
+def test_direct_managed_startup_refuses_unreadable_committed_ciu_sibling(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-family-incomplete")
+    sibling = worktree.create(tmp_repo, "direct-startup-family-corrupt")
+    sibling.record_path.write_text('{"logical_name":', encoding="utf-8")
+    (sibling.ciu_root / worktree.GLOBAL_CONFIG_DEFAULTS).unlink()
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: pytest.fail("unreadable sibling must refuse before Docker"),
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkVerificationError,
+        match="cannot verify runtime identity uniqueness.*CIU-root sibling",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id=record.instance_id,
+            expected_network=record.network,
+        )
 
 
 def test_ready_ensure_refuses_same_name_replacement_network(

@@ -67,8 +67,42 @@ object id, so it cannot erase evidence after a same-name replacement.
 `worktree up` and direct native or shipped `ciu up` both verify the managed
 record and live network before startup. The direct path checks before network
 creation or attachment, then checks again after creation so the new object's
-id is saved. An unavailable Docker probe is indeterminate and refuses without
-being mistaken for an absent network.
+id is saved. Full `ciu env generate` uses the same ownership check before it
+creates or attaches the network; allocation may pass only after the generated
+identity has been checkpointed in its `allocating` record. The shared Compose
+runner performs one final check immediately before starting Compose, and
+refuses if the managed network disappeared or no longer has ownership proof.
+That check is deliberately point-in-time: Compose resolves the configured
+network by name after CIU's inspection, and the Docker API offers no atomic way
+to hand the inspected object id to Compose. An external Docker actor can still
+replace the name in that interval, so CIU does not claim race-free binding.
+A Docker permission or execution error is indeterminate and refuses without
+being mistaken for an absent network; a genuinely missing Docker executable or
+network remains a supported local-only state where the startup path permits it.
+
+The neutral Git-family record keeps a snapshot of CIU's allocation record so a
+crash between writing the shared record and the checkout-local record can be
+recovered. `ensure` validates the snapshot against the exact checkout,
+recorded branch, base commit, and nested-root offset before restoring it. A
+ready snapshot clears the initial overlay payload and pending marker: restoring
+a lost ready record must not replay the original overlay over later operator
+edits or recreate an operator-deleted file. Direct startup refuses when the
+shared record proves a checkout is managed but its CIU-local record is
+missing; the operator first runs `ciu worktree ensure NAME` to restore the
+record. A primary checkout with no managed shared record remains a valid
+unmanaged checkout.
+
+Unreadable sibling membership comes from the sibling's committed `HEAD` tree,
+not its mutable working-tree marker. Deleting a marker locally therefore
+cannot make an uncertain CIU-root sibling disappear from runtime identity
+admission. Direct startup repeats family admission as well as checking its own
+record and network, so a duplicate or unreadable CIU-root sibling blocks it.
+
+For worktree commands, an explicit `--root-folder` is either the exact CIU
+root or the Git-family root. When the family root is selected, the invocation
+directory chooses its nearest nested CIU root even if the family root itself
+also has a marker. An arbitrary descendant is refused instead of being walked
+up to a plausible root.
 During allocation, a proven duplicate or ownership conflict is recorded as
 `runtime-collision`; inability to read the worktree registry or inspect the
 network is recorded as `runtime-verification-failed`. This keeps a tool failure

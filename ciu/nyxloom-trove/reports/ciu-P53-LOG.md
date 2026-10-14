@@ -123,3 +123,34 @@ legacy claim requires an existing object; unproven replacements map to
 `runtime-verification-failed`; and unreadable CIU-root siblings block runtime
 identity admission while rootless records remain best effort. The registered
 gate and another read-only review remain pending.
+
+## Final follow-up review 05: findings and closure (2026-10-14)
+
+Sol xhigh's read-only review of `main...374d55f7d` found seven additional
+issues. The exact report is retained in `ciu-P53-REVIEW-05.md`; its source
+checksum was preserved when copied from `/tmp/ciu-P53-REVIEW-05.md`.
+
+- The neutral shared workspace record now carries a CIU allocation snapshot.
+  `ensure` validates the snapshot's logical name, checkout, branch, base
+  commit, and root offset before restoring a missing local record. Ready
+  snapshots clear initial overlay intent so restoration cannot overwrite or
+  recreate later operator state. Direct startup refuses a missing local
+  record when the shared record proves that the checkout is managed.
+- Full `ciu env generate` verifies managed ownership before network creation
+  or attachment and permits `allocating` only for the checkpointed allocation
+  phase. Direct startup also repeats family identity admission.
+- Explicit root selection now accepts the exact CIU root or Git-family root;
+  the family-root selector resolves the nearest nested root from the command
+  directory. Runtime sibling membership uses committed `HEAD` markers even if
+  a marker was removed from the working tree.
+- Native and shipped startup share one final managed-network check immediately
+  before Compose process launch. It refuses a missing or unproven network. The
+  docs explicitly preserve the remaining point-in-time limitation: Docker
+  Compose resolves by name, so an external actor can race a replacement after
+  CIU's final inspection. Identity drift between allocation preflight phases
+  is `runtime-verification-failed`, not `runtime-collision`.
+
+Regression coverage and the README, design guide, consumer guide, normative
+specification, backlog, and unreleased changelog now include these findings.
+Static checks and the registered gate have not yet run on this follow-up; a
+final read-only review remains pending.

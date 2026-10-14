@@ -28,6 +28,8 @@ class TestWorktreeCreateDispatch:
         nested.mkdir(parents=True)
         unrelated = git_root / "other"
         unrelated.mkdir()
+        mistyped_child = nested / "source"
+        mistyped_child.mkdir()
         (nested / "ciu.global.defaults.toml.j2").write_text(
             "[ciu]\n", encoding="utf-8"
         )
@@ -38,10 +40,22 @@ class TestWorktreeCreateDispatch:
         assert cli._resolve_worktree_ciu_root_cli(
             git_root, git_root, nested
         ) == nested
+        (git_root / "ciu.global.defaults.toml.j2").write_text(
+            "[ciu]\n", encoding="utf-8"
+        )
+        assert cli._resolve_worktree_ciu_root_cli(
+            git_root, git_root, nested
+        ) == nested
+        assert cli._resolve_worktree_ciu_root_cli(
+            git_root, git_root, git_root
+        ) == git_root
         with pytest.raises(SystemExit) as exc:
             cli._resolve_worktree_ciu_root_cli(git_root, unrelated, nested)
         assert exc.value.code == 2
         assert "neither a CIU root nor the Git-family root" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as exc:
+            cli._resolve_worktree_ciu_root_cli(git_root, mistyped_child, nested)
+        assert exc.value.code == 2
 
     def test_forwards_all_options(self, monkeypatch, capsys):
         seen = {}
@@ -819,3 +833,44 @@ def test_identity_only_env_generation_writes_facts_without_bootstrap(
     )
     assert cli._env_generate(["--identity-only"]) == 0
     assert seen == {"root": tmp_path, "generated": tmp_path / "ciu.env"}
+
+
+def test_allocation_env_generation_passes_private_lock_context(
+    tmp_path, monkeypatch
+):
+    from ciu import deploy
+
+    seen = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        deploy,
+        "action_generate_env",
+        lambda root, hint, **kwargs: seen.update(
+            root=root, hint=hint, **kwargs
+        ) or 0,
+    )
+
+    assert cli._env_generate(["--allocation-lock-held"]) == 0
+    assert seen == {
+        "root": None,
+        "hint": tmp_path,
+        "allocation_lock_held": True,
+    }
+
+
+def test_explicit_env_generate_returns_nonzero_on_managed_network_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    from ciu import deploy, workspace_env
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        deploy,
+        "action_generate_env",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            workspace_env.ManagedRuntimeVerificationError("foreign network owner")
+        ),
+    )
+
+    assert cli._env_generate([]) == 1
+    assert "[ERROR] foreign network owner" in capsys.readouterr().err

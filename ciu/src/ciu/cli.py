@@ -710,27 +710,36 @@ def _resolve_worktree_ciu_root_cli(
     selected = None
     if define_root is not None:
         explicit_root = Path(define_root).resolve()
-        try:
-            # Resolve a nested target root from the explicit path itself. This
-            # also accepts a directory below the root while refusing to
-            # silently substitute a different root from the caller's cwd.
-            selected = resolve_ciu_root(explicit_root)
-        except CiuWorkspaceError:
-            if explicit_root == Path(git_root).resolve():
-                # `--root-folder` is commonly the Git-family selector. When
-                # it names that family root, the invocation directory still
-                # selects which nested CIU root receives initial options.
+        family_root = Path(git_root).resolve()
+        if explicit_root == family_root:
+            # The family-root spelling is a selector for a nested CIU root.
+            # Prefer the invocation's nearest committed marker even when the
+            # family root itself is also a CIU root; otherwise it would mask
+            # a nested root and route records to the wrong offset.
+            start = Path(start_dir).resolve()
+            try:
+                start.relative_to(family_root)
+            except ValueError:
                 try:
-                    selected = resolve_ciu_root(start_dir)
+                    selected = resolve_ciu_root(explicit_root)
                 except CiuWorkspaceError:
                     return None
             else:
-                cli_error(
-                    f"[ERROR] [S16] explicit --root-folder {explicit_root} is "
-                    "neither a CIU root nor the Git-family root; refusing to "
-                    "look up worktree records at a different offset"
-                )
-                raise SystemExit(2)
+                try:
+                    selected = resolve_ciu_root(start)
+                except CiuWorkspaceError:
+                    return None
+        elif (explicit_root / GLOBAL_CONFIG_DEFAULTS).is_file():
+            # This CLI's selector accepts the CIU root itself, not an
+            # arbitrary descendant that happens to walk up to one.
+            selected = explicit_root
+        else:
+            cli_error(
+                f"[ERROR] [S16] explicit --root-folder {explicit_root} is "
+                "neither a CIU root nor the Git-family root; refusing to "
+                "look up worktree records at a different offset"
+            )
+            raise SystemExit(2)
     else:
         try:
             selected = resolve_ciu_root(start_dir)
@@ -1085,14 +1094,27 @@ def _env_generate(rest: list[str]) -> int:
                    help="Override repository root directory (no parent walking)")
     p.add_argument("--identity-only", action="store_true", default=False,
                    help=_ap.SUPPRESS)
+    p.add_argument("--allocation-lock-held", action="store_true", default=False,
+                   help=_ap.SUPPRESS)
     opts = p.parse_args(rest)
-    if opts.identity_only:
-        from .workspace_env import generate_ciu_env, resolve_env_root
-        root = resolve_env_root(Path.cwd(), opts.define_root, GLOBAL_CONFIG_DEFAULTS)
-        generate_ciu_env(root)
-        return 0
-    from .deploy import action_generate_env
-    return action_generate_env(opts.define_root, Path.cwd())
+    if opts.identity_only and opts.allocation_lock_held:
+        p.error("--allocation-lock-held cannot be combined with --identity-only")
+    from .workspace_env import WorkspaceEnvError
+    try:
+        if opts.identity_only:
+            from .workspace_env import generate_ciu_env, resolve_env_root
+            root = resolve_env_root(Path.cwd(), opts.define_root, GLOBAL_CONFIG_DEFAULTS)
+            generate_ciu_env(root)
+            return 0
+        from .deploy import action_generate_env
+        if opts.allocation_lock_held:
+            return action_generate_env(
+                opts.define_root, Path.cwd(), allocation_lock_held=True
+            )
+        return action_generate_env(opts.define_root, Path.cwd())
+    except WorkspaceEnvError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
 
 
 def _shell_export_value(value: str) -> str:

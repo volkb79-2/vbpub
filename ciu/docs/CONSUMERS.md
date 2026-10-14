@@ -148,25 +148,50 @@ $ ciu worktree ensure pkg-under-test --adopt-existing-network
 
 A conflicting owner label always refuses.
 After an object id is saved, this flag cannot replace it with a different
-unlabelled network. `worktree up` also checks a present network immediately
-before launching the managed `ciu up` child. Direct native and shipped `ciu up`
-also verify the managed record and network before accepting or creating the
-network, then verify again after creation before attaching the devcontainer.
+unlabelled network. `worktree up` checks a present network immediately before
+launching the managed `ciu up` child. Direct native and shipped `ciu up` verify
+the managed record and network before accepting or creating the network, then
+verify again after creation before attaching the devcontainer. Full
+`ciu env generate` also verifies ownership before creating or attaching a
+network. The shared Compose runner performs a final verification immediately
+before it starts Compose; if the managed network disappeared or no longer has
+ownership proof, Compose is not launched. This is a point-in-time check:
+Compose resolves the network by name afterward, so an external Docker actor can
+still replace that name in the short interval before Compose's lookup.
+
 A Docker permission or execution failure is an unknown result and refuses; it
 is not treated as proof that the network is absent. A same-name replacement
 without a matching object id or owner label is reported as
 `runtime-verification-failed`; a foreign owner label or duplicate readable
 identity is a proven `runtime-collision`. An unreadable sibling record under a
-CIU root at the selected root offset also blocks new runtime identity
-admission, while record listing remains best effort and malformed rootless
-siblings do not block it. A genuinely absent Docker executable or network
+CIU root at the selected root offset also blocks runtime identity admission,
+including during direct startup. Sibling root membership comes from its
+committed `HEAD` tree, so deleting the marker only in the working tree cannot
+hide the sibling. Listing remains best effort and malformed rootless siblings
+do not block admission. A genuinely absent Docker executable or network
 remains a supported local-only state.
 
+If direct startup says the CIU instance record is missing but its shared
+workspace record proves that the checkout is managed, restore it before
+starting:
+
+```console
+$ ciu worktree ensure pkg-under-test --json
+$ ciu up
+```
+
+`ensure` validates the shared snapshot against the checkout path, branch, base
+commit, and selected-root offset. A ready snapshot does not include initial
+overlay payload, so restoring a lost ready record cannot overwrite later
+operator edits or recreate a deleted overlay. A primary checkout without a
+managed shared workspace record is still allowed to start normally.
+
 When a worktree command needs a selected CIU root, `--root-folder` may name
-that CIU root or the Git-family root. If it names the family root, the current
-directory selects the nested CIU root. An existing path that is neither one
-of those roots is an error; CIU will not silently use a different root from
-the current directory.
+that exact CIU root or the Git-family root. If it names the family root, the
+current directory selects the nearest nested CIU root even when the family
+root also has a marker. An arbitrary existing descendant is an error; CIU
+will not walk up to a different root or silently use one from the caller's
+current directory.
 
 If root preparation fails, keep the checkout and retry through CIU:
 

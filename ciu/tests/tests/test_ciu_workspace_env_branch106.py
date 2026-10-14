@@ -156,8 +156,13 @@ def test_managed_startup_verifies_network_before_and_after_ensure(
 
     from ciu import worktree
 
-    def verify(root, *, expected_instance_id, expected_network):
-        events.append(("verify", root, expected_instance_id, expected_network))
+    def verify(
+        root, *, expected_instance_id, expected_network, allow_allocating_instance
+    ):
+        events.append((
+            "verify", root, expected_instance_id, expected_network,
+            allow_allocating_instance,
+        ))
 
     monkeypatch.setattr(worktree, "verify_own_runtime_network", verify)
     monkeypatch.setattr(
@@ -176,11 +181,38 @@ def test_managed_startup_verifies_network_before_and_after_ensure(
     )
 
     assert events == [
-        ("verify", tmp_path.resolve(), "managed-1", "managed-net"),
+        ("verify", tmp_path.resolve(), "managed-1", "managed-net", False),
         ("ensure", "managed-net"),
-        ("verify", tmp_path.resolve(), "managed-1", "managed-net"),
+        ("verify", tmp_path.resolve(), "managed-1", "managed-net", False),
         ("connect", "managed-net"),
     ]
+
+
+def test_final_compose_network_check_requires_present_managed_object(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from ciu import worktree
+
+    monkeypatch.delenv(workspace_env.CIU_TEST_SUITE_ENV, raising=False)
+    monkeypatch.setenv("INSTANCE_ID", "managed-1")
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "managed-net")
+    observed: list[tuple[Path, dict[str, object]]] = []
+
+    def verify(root: Path, **kwargs: object) -> None:
+        observed.append((root, kwargs))
+
+    monkeypatch.setattr(worktree, "verify_own_runtime_network", verify)
+
+    workspace_env.verify_workspace_runtime_network(tmp_path)
+
+    assert observed == [(
+        tmp_path.resolve(),
+        {
+            "expected_instance_id": "managed-1",
+            "expected_network": "managed-net",
+            "require_network_present": True,
+        },
+    )]
 
 
 def test_managed_startup_refuses_before_network_side_effect_on_unknown_owner(
@@ -215,6 +247,88 @@ def test_managed_startup_refuses_before_network_side_effect_on_unknown_owner(
         )
 
     assert events == ["verify"]
+
+
+def test_internal_allocation_env_generate_reuses_parent_allocation_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
+) -> None:
+    env_path = tmp_path / "ciu.env"
+    observed: list[tuple[str, dict[str, object]]] = []
+
+    def generate(root: Path) -> Path:
+        assert root == tmp_path
+        env_path.write_text(
+            'export INSTANCE_ID="managed-1"\n'
+            'export DOCKER_NETWORK_INTERNAL="managed-net"\n',
+            encoding="utf-8",
+        )
+        write_instance_facts(
+            root,
+            instance_id="managed-1",
+            network="managed-net",
+            repo_root=str(root),
+            physical_repo_root=str(root),
+        )
+        return env_path
+
+    monkeypatch.setattr(workspace_env, "generate_ciu_env", generate)
+    monkeypatch.setattr(
+        workspace_env,
+        "ensure_workspace_network",
+        lambda name, **kwargs: observed.append((name, kwargs)),
+    )
+    monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
+
+    assert workspace_env.bootstrap_env_init(
+        tmp_path, allocation_lock_held=True
+    ) == env_path
+    assert observed == [(
+        "managed-net",
+        {
+            "owner_instance_id": "managed-1",
+            "verify_managed_instance": True,
+            "allow_allocating_instance": True,
+            "allocation_lock_held": True,
+        },
+    )]
+
+
+def test_explicit_env_generate_does_not_accept_an_allocating_record_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write_instance_facts
+) -> None:
+    env_path = tmp_path / "ciu.env"
+    observed: list[dict[str, object]] = []
+
+    def generate(root: Path) -> Path:
+        env_path.write_text(
+            'export INSTANCE_ID="managed-1"\n'
+            'export DOCKER_NETWORK_INTERNAL="managed-net"\n',
+            encoding="utf-8",
+        )
+        write_instance_facts(
+            root,
+            instance_id="managed-1",
+            network="managed-net",
+            repo_root=str(root),
+            physical_repo_root=str(root),
+        )
+        return env_path
+
+    monkeypatch.setattr(workspace_env, "generate_ciu_env", generate)
+    monkeypatch.setattr(
+        workspace_env,
+        "ensure_workspace_network",
+        lambda _name, **kwargs: observed.append(kwargs),
+    )
+    monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
+
+    assert workspace_env.bootstrap_env_init(tmp_path) == env_path
+    assert observed == [{
+        "owner_instance_id": "managed-1",
+        "verify_managed_instance": True,
+        "allow_allocating_instance": False,
+        "allocation_lock_held": False,
+    }]
 
 
 def test_generated_bootstrap_without_network_still_runs_tls_probe(
