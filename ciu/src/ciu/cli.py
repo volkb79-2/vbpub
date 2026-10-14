@@ -78,7 +78,7 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
          [--adopt-existing-network] [--json]
                                 adopt an existing unmanaged linked checkout
     worktree rm LOGICAL [-y] [--force]
-         [--root-escalation {ask,yes,no}] [--json]
+         [--root-escalation {{ask,yes,no}}] [--json]
                                 clean, then remove; narrowly retry a confirmed
                                 permission blocker through CIU's S6.5 helper
     worktree list [--json]      list linked checkouts
