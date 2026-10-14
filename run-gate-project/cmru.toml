@@ -38,7 +38,7 @@ RUN_GATE_RELEASE_NOTES = "## run-gate 24.0.0\n\nRun-Gate is now supported as an 
 [project]
 id = "run-gate-project"
 description = "run-gate — the per-project gate entrypoint: declared lanes and reserved exit codes"
-template_revision = 4
+template_revision = 5
 prefix = "run-gate-v"
 artifacts = ["wheel"]
 scm_dist = "run_gate"
