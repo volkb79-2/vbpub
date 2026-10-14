@@ -21,19 +21,16 @@
 # The installed wheel's SemVer is the public identity and compatibility
 # floor. Internal revision fields remain only in persisted record provenance.
 #
-# Historical bootstrap note: the first semver release followed the bare
-# integer tag `run-gate-v22`, so it used `--set-version 23.0.0`. Semver tags
-# have existed since then; routine releases should omit `--set-version` and
-# let SCM apply the configured conventional bump. For a deliberate override,
-# pass a bare semver (never the `run-gate-v`-prefixed tag).
+# The next release deliberately crosses from the former revision-era 23.x
+# identity to the wheel-only SemVer 24.0.0 contract. Run it with
+# `cmru release run-gate-project --set-version 24.0.0`; later releases can use
+# the configured conventional bump. Release notes come from CHANGES.md, so the
+# published body uses the same versioned notes as the tagged changelog.
 # =============================================================================
 schema_version = 1
 
 [runtime]
 kind = "none"
-
-[env]
-RUN_GATE_RELEASE_NOTES = "## run-gate 24.0.0\n\nRun-Gate is now supported as an installed wheel with a SemVer identity. Check the installed version with `run-gate --version`; the reported version is read from wheel metadata.\n\n### Breaking change\n\nConsumer scripts and symlinks have been retired. Install the `run-gate` wheel, then invoke the `run-gate` console command from the project directory containing `run-gate.toml`. Config examples, release commands, and Buildkite generation use the installed CLI. `run-gate validate-pointers` reports legacy `run-gate.py` references.\n\nInternal revision fields remain only for saved-record provenance and do not act as an upgrade floor.\n\n**Install**\n```bash\npython -m pip install ./run_gate-24.0.0-py3-none-any.whl\n```"
 
 [project]
 id = "run-gate-project"
@@ -94,5 +91,5 @@ commands = [
 [steps.push]
 quiet = true
 commands = [
-  { label = "run-gate: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "run-gate", "--cwd", ".", "--notes-env", "RUN_GATE_RELEASE_NOTES"], cwd = "." },
+  { label = "run-gate: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "run-gate", "--cwd", "."], cwd = "." },
 ]

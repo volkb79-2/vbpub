@@ -9,6 +9,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Changed
+- Breaking: consumer scripts and symlinks are retired. Install the `run-gate`
+  wheel and invoke its console command from the project directory containing
+  `run-gate.toml`; `run-gate --version` is the public compatibility identity.
+  Internal revision fields remain only as saved-record provenance.
 - Documentation: state that the installed SemVer wheel is the only supported
   Run-Gate consumer; copied `run-gate.py` scripts are retired.
 - Fix: require Assay's verdict exit code to be a non-boolean integer matching
@@ -20,6 +25,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - Fix: name unreadable or undecodable Python files in `--check-env` and mark
   the scan `INCOMPLETE`, so skipped source cannot appear as a clean sweep
   (RG-97).
+- Fix: include unreadable source directories and environment-resolution
+  failures in the incomplete scan result, rather than silently reporting a
+  clean environment check.
+- Fix: recognize retired `run-gate.py` invocations when they use relative,
+  worktree-prefixed, or absolute paths, so pointer validation cannot certify a
+  call to a removed script.
 
 <!-- cmru: release history -->
 

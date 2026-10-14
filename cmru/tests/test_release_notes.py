@@ -90,6 +90,12 @@ def test_the_last_section_runs_to_the_end_of_the_document():
     assert notes.text == "## [1.0.0] - 2026-01-01\n- only"
 
 
+@pytest.mark.parametrize("indent", ["", " ", "  ", "   "])
+def test_unreleased_notes_accept_valid_commonmark_h2_indentation(indent):
+    source = f"# Changelog\n\n{indent}## [Unreleased]\n- migration\n"
+    assert release_notes.unreleased_body(source) == "- migration"
+
+
 # --- reading the declared source ----------------------------------------------
 
 

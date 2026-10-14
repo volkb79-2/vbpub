@@ -90,7 +90,13 @@ else
   owned_image_tag="tester-unified:mutation-audit-${sha:0:12}-${volume_suffix}"
   image_tag="$owned_image_tag"
   image_reference="locally-built:$owned_image_tag"
-  docker build -f "$checkout/tester-unified/Dockerfile" -t "$image_tag" "$checkout"
+  cmru handler wheel-build --cwd "$checkout/run-gate-project"
+  run_gate_test_version=$(python3 \
+    "$checkout/tester-unified/run-gate-wheel-version.py" \
+    "$checkout/run-gate-project/dist")
+  docker build -f "$checkout/tester-unified/Dockerfile" \
+    --build-arg "RUN_GATE_TESTER_VERSION=$run_gate_test_version" \
+    -t "$image_tag" "$checkout"
 fi
 image_id=$(docker image inspect --format '{{.Id}}' "$image_tag")
 manifest_sha256=$(sha256sum "$checkout/$manifest_rel" | awk '{print $1}')

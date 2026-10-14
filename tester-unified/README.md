@@ -5,25 +5,26 @@ cockpit used to launch it; pytest and the actual gate command run in the image.
 
 Build the Run-Gate wheel from the same checkout first, then use its metadata
 version to build the image. The image builds that exact source into a separate
-wheel so nested gate commands use the same Run-Gate release:
+wheel so nested gate commands use the same Run-Gate release.
+
+For a release candidate, set the exact planned SemVer before building the
+Run-Gate wheel. This 23.x-to-24.0.0 transition uses:
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.0.0 \
+  cmru handler wheel-build --cwd run-gate-project
+```
+
+For an ordinary local image, the wheel's scm-derived version is sufficient:
 
 ```bash
 cmru handler wheel-build --cwd run-gate-project
-run_gate_test_version="$(python3 - <<'PY'
-from email.parser import Parser
-from pathlib import Path
-from zipfile import ZipFile
+```
 
-wheels = sorted(Path("run-gate-project/dist").glob("run_gate-*.whl"))
-if len(wheels) != 1:
-    raise SystemExit(f"expected one Run-Gate wheel, found {len(wheels)}")
-with ZipFile(wheels[0]) as archive:
-    metadata_path = next(name for name in archive.namelist()
-                         if name.endswith(".dist-info/METADATA"))
-    metadata = Parser().parsestr(archive.read(metadata_path).decode("utf-8"))
-print(metadata["Version"])
-PY
-)"
+After either build, read the built wheel metadata and build the image:
+
+```bash
+run_gate_test_version="$(python3 tester-unified/run-gate-wheel-version.py run-gate-project/dist)"
 docker buildx build --load -f tester-unified/Dockerfile \
   --build-arg "RUN_GATE_TESTER_VERSION=$run_gate_test_version" \
   -t tester-unified:local .
@@ -90,6 +91,12 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   uses a separate build environment because it pins a different build backend
   from CMRU. The image contains no project-local `run-gate.py` CLI script or
   revision-marker compatibility shim; it uses the installed wheel.
+
+Inside the image, Run-Gate carries the non-release local version suffix
+`+tester.unified`. The build derives that identity from the public version of
+the exact wheel built from the same checkout. This lets CMRU distinguish the
+registered test image from a released wheel while enforcing the same SemVer
+floor.
 
 Run a gate through the canonical launcher:
 

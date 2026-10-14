@@ -115,6 +115,22 @@ class TestInitialCheckoutResetSafety:
         with pytest.raises(worktree.WorktreeError, match="tree unavailable"):
             worktree._assert_allocation_checkout_reset_is_safe(self._record(tmp_path))
 
+    def test_ignored_file_at_a_tracked_path_refuses_checkout_reset(
+        self, rootless_repo, tmp_path,
+    ):
+        checkout = tmp_path / "ignored-overlay"
+        _git(["worktree", "add", "--no-checkout", "-b", "ignored-overlay",
+              str(checkout), "main"], rootless_repo)
+        excludes = tmp_path / "global-excludes"
+        excludes.write_text("README.md\n", encoding="utf-8")
+        _git(["config", "core.excludesFile", str(excludes)], rootless_repo)
+        (checkout / "README.md").write_text("operator data\n", encoding="utf-8")
+
+        with pytest.raises(worktree.WorktreeError, match="README.md"):
+            worktree._assert_allocation_checkout_reset_is_safe(
+                self._record(checkout)
+            )
+
     def test_unexpected_files_are_reported_with_a_bounded_status_sample(
         self, tmp_path, monkeypatch
     ):
@@ -2912,6 +2928,23 @@ class TestWorktreeSubprocessEnvironment:
         monkeypatch.setattr(worktree.subprocess, "run", fake_run)
         assert worktree._generate_env_in(tmp_path, identity_only=True) == 0
         assert seen["argv"][-1] == "--identity-only"
+
+    def test_allocation_lock_generation_uses_private_direct_entrypoint(
+        self, tmp_path, monkeypatch,
+    ):
+        seen = {}
+
+        def fake_run(argv, **kwargs):
+            seen.update(argv=argv, **kwargs)
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        monkeypatch.setattr(worktree.subprocess, "run", fake_run)
+        assert worktree._generate_env_in(tmp_path, allocation_lock_held=True) == 0
+        argv = seen["argv"]
+        assert argv[1] == "-c"
+        assert "--allocation-lock-held" not in argv
+        assert "action_generate_env" in argv[2]
+        assert "allocation_lock_held=True" in argv[2]
 
     def test_clean_strips_the_callers_service_profile_selection(
         self, tmp_path, monkeypatch, write_instance_facts

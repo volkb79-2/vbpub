@@ -835,27 +835,10 @@ def test_identity_only_env_generation_writes_facts_without_bootstrap(
     assert seen == {"root": tmp_path, "generated": tmp_path / "ciu.env"}
 
 
-def test_allocation_env_generation_passes_private_lock_context(
-    tmp_path, monkeypatch
-):
-    from ciu import deploy
-
-    seen = {}
+def test_env_generate_does_not_offer_allocation_lock_bypass(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(
-        deploy,
-        "action_generate_env",
-        lambda root, hint, **kwargs: seen.update(
-            root=root, hint=hint, **kwargs
-        ) or 0,
-    )
-
-    assert cli._env_generate(["--allocation-lock-held"]) == 0
-    assert seen == {
-        "root": None,
-        "hint": tmp_path,
-        "allocation_lock_held": True,
-    }
+    with pytest.raises(SystemExit):
+        cli._env_generate(["--allocation-lock-held"])
 
 
 def test_explicit_env_generate_returns_nonzero_on_managed_network_refusal(

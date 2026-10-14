@@ -77,10 +77,10 @@ fi
 image="${CGPROFILE_GATE_IMAGE:-tester-unified:local}"
 if ! docker image inspect "$image" >/dev/null 2>&1; then
   if [ "$image" = "tester-unified:local" ]; then
-    printf -v repo_root_shell '%q' "$repo_root"
     die "gate image $image is not present.
-Build it from the repo root:
-  docker buildx build --load -f tester-unified/Dockerfile -t tester-unified:local $repo_root_shell"
+  Build and load it using the version-pinned procedure in
+  $repo_root/tester-unified/README.md
+The build requires RUN_GATE_TESTER_VERSION from the Run-Gate wheel built from that checkout."
   fi
   printf -v image_shell '%q' "$image"
   die "configured gate image $image_shell is not present. Build and load that selected image, or unset CGPROFILE_GATE_IMAGE to use tester-unified:local."

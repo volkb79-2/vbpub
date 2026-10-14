@@ -4022,7 +4022,9 @@ def _run_prepared_lane(
     # the installed CLI uses this wrapper around the real process boundary.
     lane_process_runner = process_runner
     if r2_declared and not r2_ingested and process_runner is default_process_runner:
-        lane_process_runner = ProcessTreeProcessRunner()
+        lane_process_runner = ProcessTreeProcessRunner(
+            sensitive_values=_plan_passthrough_values(plan)
+        )
     # (B091/D-23/RW-33) Liveness applies ONLY to a native (non-ingested) R2
     # python lane. `plan` is shadowed for the REST of this function -- the
     # baseline call below and the R2 dispatch further down both read this

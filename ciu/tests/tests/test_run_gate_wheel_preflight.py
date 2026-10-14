@@ -44,9 +44,8 @@ def test_byte_mismatch_is_rejected_with_module_name(tmp_path):
         check_run_gate_wheel.verify_module_file(
             "run_gate", installed, source, venv
         )
-    assert "docker build -f tester-unified/Dockerfile -t tester-unified:local ." in str(
-        exc.value
-    )
+    assert "tester-unified/README.md" in str(exc.value)
+    assert "RUN_GATE_TESTER_VERSION" in str(exc.value)
 
 
 def test_module_outside_installed_venv_is_rejected(tmp_path):

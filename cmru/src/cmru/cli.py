@@ -2871,6 +2871,24 @@ def _report_publication_started(
     )
 
 
+def _run_release_gates_on_exact_head(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    names: List[str],
+) -> str:
+    """Run the declared gate and return only the commit it actually judged."""
+    judged_sha = _git(repo_root, "rev-parse", "HEAD")
+    _run_release_gates(repo_root, configs, names)
+    current_sha = _git(repo_root, "rev-parse", "HEAD")
+    if current_sha != judged_sha:
+        raise RuntimeError(
+            "a release gate changed the candidate commit "
+            f"({judged_sha[:12]} -> {current_sha[:12]}); refusing to tag a commit "
+            "that the gate did not judge"
+        )
+    return judged_sha
+
+
 def _run_tagged_build_and_publish(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -2970,8 +2988,9 @@ def _release_projects_sequentially(
         # Keep the remote candidate branch current before the gate too. A gate
         # failure must leave the generated candidate available for inspection.
         transaction.push_backup_branch(workspace, git_auth=git_auth)
-        _run_release_gates(repo_root, configs, [name])
-        gated_sha = _git(repo_root, "rev-parse", "HEAD")
+        gated_sha = _run_release_gates_on_exact_head(
+            repo_root, configs, [name]
+        )
 
         strategy = _version_strategy(project)
         if not getattr(project, "git_tag", True):
@@ -2996,7 +3015,10 @@ def _release_projects_sequentially(
             )
             log_info(f"{name}: promoted release candidate to origin/main")
         else:
-            release_cmd(repo_root, {name: project}, minor=minor, major=major, set_version=set_version)
+            release_cmd(
+                repo_root, {name: project}, minor=minor, major=major,
+                set_version=set_version, known_projects=configs,
+            )
             # A file:-strategy tag commits a version bump here. Refresh the
             # durable candidate before tags or public publication are touched.
             transaction.push_backup_branch(workspace, git_auth=git_auth)
@@ -3007,7 +3029,15 @@ def _release_projects_sequentially(
                 # candidate so the commit that produces the artifact has passed
                 # the same acceptance contract before publication begins.
                 log_info(f"{name}: versioning changed the candidate; re-running release gate")
-                _run_release_gates(repo_root, configs, [name])
+                gated_sha = _run_release_gates_on_exact_head(
+                    repo_root, configs, [name]
+                )
+                candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+            if candidate_sha != gated_sha:
+                raise RuntimeError(
+                    f"{name}: refusing to tag candidate {candidate_sha[:12]} "
+                    f"because its gate receipt is for {gated_sha[:12]}"
+                )
             tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
             if tag:
                 _push_tags(repo_root, [tag], git_auth=git_auth, workspace=workspace)
@@ -5538,6 +5568,7 @@ def _release_child(
             check_tag_at_head=True,
             allow_tag_ahead_of_head=vargs.allow_tag_ahead_of_head,
             git_auth=git_auth,
+            known_projects=configs,
         )
     except ReleasePlanRefused as exc:
         log_error(str(exc))

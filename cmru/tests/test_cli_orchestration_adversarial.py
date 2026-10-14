@@ -87,6 +87,14 @@ def test_release_gate_refuses_missing_run_tests_before_runner(monkeypatch, tmp_p
     assert calls == ["run-tests"]
 
 
+def test_release_gate_refuses_when_candidate_head_moves_during_gate(monkeypatch, tmp_path):
+    heads = iter(("a" * 40, "b" * 40))
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: next(heads))
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *_args: None)
+    with pytest.raises(RuntimeError, match="gate changed the candidate commit"):
+        cli._run_release_gates_on_exact_head(tmp_path, {}, ["demo"])
+
+
 def test_child_release_args_removes_resume_but_rejects_no_obsolete_destructive_option(tmp_path):
     config = tmp_path / "cmru.toml"; config.write_text("x")
     args = cli._child_release_args(

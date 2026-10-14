@@ -1094,11 +1094,7 @@ def _env_generate(rest: list[str]) -> int:
                    help="Override repository root directory (no parent walking)")
     p.add_argument("--identity-only", action="store_true", default=False,
                    help=_ap.SUPPRESS)
-    p.add_argument("--allocation-lock-held", action="store_true", default=False,
-                   help=_ap.SUPPRESS)
     opts = p.parse_args(rest)
-    if opts.identity_only and opts.allocation_lock_held:
-        p.error("--allocation-lock-held cannot be combined with --identity-only")
     from .workspace_env import WorkspaceEnvError
     try:
         if opts.identity_only:
@@ -1107,10 +1103,6 @@ def _env_generate(rest: list[str]) -> int:
             generate_ciu_env(root)
             return 0
         from .deploy import action_generate_env
-        if opts.allocation_lock_held:
-            return action_generate_env(
-                opts.define_root, Path.cwd(), allocation_lock_held=True
-            )
         return action_generate_env(opts.define_root, Path.cwd())
     except WorkspaceEnvError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)

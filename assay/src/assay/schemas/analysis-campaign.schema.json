@@ -53,9 +53,7 @@
           "if": {"properties": {"qualifying": {"const": false}}, "required": ["qualifying"]},
           "then": {
             "properties": {
-              "status": {"const": "incomplete"},
-              "verdict": {"type": "null"},
-              "evidence": {"required": ["plan_json", "selection_file"]}
+              "status": {"const": "incomplete"}
             }
           }
         },

@@ -147,10 +147,11 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
 RUN rm -rf /src/cmru /src/libraries/worktree /src/run-gate-project
 
 # Run-Gate has a different pinned build backend from CMRU, so build it in its
-# own throwaway venv. The exact candidate/release version is supplied by the
-# caller and checked against the installed wheel below. Build and install it
-# before CMRU so CMRU's existing final-wheel oracle remains the last package
-# installation in this image.
+# own throwaway venv. The caller supplies the exact candidate/release wheel
+# version; the image appends +tester.unified and checks that local identity
+# against the installed wheel below. Build and install it before CMRU so CMRU's
+# existing final-wheel oracle remains the last package installation in this
+# image.
 COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
 COPY run-gate-project/README.md /src/run-gate-project/README.md
 COPY run-gate-project/run_gate.py /src/run-gate-project/run_gate.py
@@ -161,7 +162,8 @@ RUN rm -rf /tmp/run-gate-build-venv /tmp/run-gate-wheels \
  && /tmp/run-gate-build-venv/bin/pip install --no-cache-dir \
       -r /tmp/run-gate-build-requirements.txt \
  && mkdir -p /tmp/run-gate-wheels \
- && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_VERSION}" \
+ && RUN_GATE_TESTER_LOCAL_VERSION="${RUN_GATE_TESTER_VERSION%%+*}+tester.unified" \
+ && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_LOCAL_VERSION}" \
       /tmp/run-gate-build-venv/bin/pip wheel --no-index --no-deps \
         --no-build-isolation -w /tmp/run-gate-wheels /src/run-gate-project
 
@@ -226,9 +228,12 @@ assert version.endswith("+tester.unified"), (
     f"cmru {version} was not built from the COPYed source in this image"
 )
 run_gate_version = metadata.version("run-gate")
-assert run_gate_version == os.environ["RUN_GATE_TESTER_VERSION"], (
+expected_run_gate_version = (
+    os.environ["RUN_GATE_TESTER_VERSION"].split("+", 1)[0] + "+tester.unified"
+)
+assert run_gate_version == expected_run_gate_version, (
     f"Run-Gate wheel {run_gate_version} does not match the requested image version "
-    f"{os.environ['RUN_GATE_TESTER_VERSION']}"
+    f"{expected_run_gate_version}"
 )
 run_gate_location = str(Path(run_gate.__file__).resolve())
 assert run_gate_location.startswith(site), (

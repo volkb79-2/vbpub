@@ -4462,6 +4462,30 @@ class TestEnvReferenceScan:
         assert "fell back to a line regex" in out
         assert "$REGEX_ONLY_VAR" in out   # degraded, but not silent
 
+    def test_check_env_marks_directory_walk_and_environment_resolution_errors(
+            self, tmp_path, monkeypatch, capsys):
+        def broken_walk(_root, *, onerror):
+            onerror(PermissionError("cannot scan private source"))
+            yield str(tmp_path), [], []
+
+        monkeypatch.setattr(run_gate.os, "walk", broken_walk)
+        monkeypatch.setattr(
+            run_gate, "resolve_worktree_scope",
+            lambda *_args: (None, None, tmp_path, None))
+        monkeypatch.setattr(
+            run_gate, "resolve_environment",
+            lambda *_args: (_ for _ in ()).throw(
+                run_gate.GateError("fixture environment resolution failure")))
+        monkeypatch.setattr(run_gate, "assay_toolchain_findings", lambda *_args: [])
+
+        assert run_gate.cmd_check_env(
+            {"unit": {}}, tmp_path, {}, {}, tmp_path / run_gate.CONFIG_NAME,
+            None) == 0
+        out = capsys.readouterr().out
+        assert "fixture environment resolution failure" in out
+        assert "INCOMPLETE" in out
+        assert "directory traversal error" in out
+
 
 class TestEstateExecForwardEnvAudit:
     """RG-23 acceptance: the estate audit is a TEST, not a one-off note — a
@@ -5165,6 +5189,18 @@ class TestPointerLinkageEstate:
         assert matches, "run-gate-project is not registered in " \
                         "cmru.orchestration.toml at all"
         assert cmru_doc["project"]["id"] in matches
+
+    def test_cmru_release_body_uses_the_versioned_changelog(self):
+        cmru_doc = tomllib.loads((RUN_GATE_DIR / "cmru.toml").read_text())
+        push_commands = cmru_doc["steps"]["push"]["commands"]
+        assert len(push_commands) == 1
+        assert "--notes-env" not in push_commands[0]["argv"]
+        assert cmru_doc["project"]["release"].get("changelog", "CHANGES.md") == "CHANGES.md"
+        changes = (RUN_GATE_DIR / "CHANGES.md").read_text(encoding="utf-8")
+        unreleased = changes.split("## [Unreleased]", 1)[1].split(
+            "<!-- cmru: release history -->", 1,
+        )[0]
+        assert "consumer scripts and symlinks are retired" in unreleased
 
 
 # ---------------------------------------------------------------------------
@@ -27769,6 +27805,27 @@ class TestFinalChangedLineCoverageOracles:
         assert len(defects) == 1
         assert "retired `run-gate.py`" in defects[0]
         assert "install the Run-Gate wheel" in defects[0]
+
+    @pytest.mark.parametrize("command", [
+        "python3 {worktree}/run-gate-project/run-gate.py unit",
+        "../run-gate.py unit",
+        "/opt/run-gate/run-gate.py unit",
+    ])
+    def test_pointer_validation_rejects_path_prefixed_retired_script(
+            self, tmp_path, command):
+        repo = make_repo(tmp_path)
+        project = make_project(repo, """\
+            schema_version = 1
+            [lanes.unit]
+            kind = "command"
+            environment = "bare-host"
+            argv = ["true"]
+            clean_tree = false
+            """)
+        defects, _checked = run_gate._pointer_defects(
+            command, project / "consumer.toml", repo,
+            "fixture.pointer", {})
+        assert any("retired `run-gate.py`" in defect for defect in defects)
 
     def test_selective_base_requires_inventory(self, monkeypatch):
         monkeypatch.setattr(run_gate, "assay_inventory_entry",

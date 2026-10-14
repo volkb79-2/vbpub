@@ -371,6 +371,43 @@ def test_tag_head_relationship_behind_when_tag_is_a_strict_ancestor_of_head():
         assert _tag_head_relationship(repo.root, "demo-v1.0.0") == "behind"
 
 
+def test_tag_head_relationship_reports_diverged_histories():
+    with _Repo() as repo:
+        base = repo.head()
+        repo.commit("demo/x.py", "feat: tagged branch")
+        repo.tag("demo-v1.0.0", push=True)
+        _git(repo.root, "checkout", "-q", "-b", "mainline", base)
+        repo.commit("other/y.py", "fix: unrelated mainline")
+        assert _tag_head_relationship(repo.root, "demo-v1.0.0") == "diverged"
+
+
+def test_release_plan_refuses_diverged_tag_with_changelog_only_head_commit():
+    with _Repo() as repo:
+        base = repo.head()
+        repo.commit("demo/x.py", "feat: tagged branch")
+        repo.tag("demo-v1.0.0", push=True)
+        _git(repo.root, "checkout", "-q", "-b", "mainline", base)
+        repo.commit("other/y.py", "fix: unrelated mainline")
+        with pytest.raises(ReleasePlanRefused, match="have diverged"):
+            detect_changed_projects(
+                repo.root, {"demo": _proj("demo")}, check_tag_at_head=True
+            )
+
+
+def test_release_plan_refuses_diverged_tag_even_when_project_source_changed():
+    with _Repo() as repo:
+        base = repo.head()
+        repo.commit("demo/x.py", "feat: tagged branch")
+        repo.tag("demo-v1.0.0", push=True)
+        _git(repo.root, "checkout", "-q", "-b", "mainline", base)
+        repo.commit("demo/x.py", "fix: source changed on release branch")
+
+        with pytest.raises(ReleasePlanRefused, match="have diverged"):
+            detect_changed_projects(
+                repo.root, {"demo": _proj("demo")}, check_tag_at_head=True
+            )
+
+
 # ---------------------------------------------------------------------------
 # detect_changed_projects: check_tag_at_head / allow_tag_ahead_of_head /
 # require_pushed_baseline

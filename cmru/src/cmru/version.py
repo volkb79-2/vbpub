@@ -25,7 +25,7 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from cmru.config_names import PROJECT_CONFIG_FILENAME
 from cmru.git_auth import GitHubGitAuth, run_local_git, run_remote_git
@@ -504,8 +504,7 @@ def _tag_covers_head(repo_root: Path, tag: str) -> bool:
 
 
 def _tag_head_relationship(repo_root: Path, tag: str) -> str:
-    """Classify ``tag`` against HEAD once a path-scoped ``git log`` is already
-    known to be empty for it (S12.2b) — three states, not two:
+    """Classify a release tag against the current candidate HEAD (S12.2b):
 
     * ``"equal"``  — the tag's commit IS HEAD: the ordinary, benign state right
       after any successful release (nothing has landed anywhere since). Not an
@@ -518,6 +517,8 @@ def _tag_head_relationship(repo_root: Path, tag: str) -> str:
     * ``"behind"`` — the tag is a strict ancestor of HEAD: the ordinary
       genuinely-unchanged case (some other project's commits moved HEAD, this
       project's own paths didn't change). Not an error.
+    * ``"diverged"`` — neither commit is an ancestor of the other. This is
+      not a valid release baseline and must be inspected before planning.
 
     ``git merge-base --is-ancestor`` alone cannot separate "equal" from
     "ahead" (both make HEAD an ancestor-or-equal of the tag), so the commit
@@ -529,7 +530,29 @@ def _tag_head_relationship(repo_root: Path, tag: str) -> str:
         return "equal"
     if _tag_covers_head(repo_root, tag):
         return "ahead"
-    return "behind"
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", tag_commit, head_commit],
+        cwd=repo_root, capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        return "behind"
+    if result.returncode == 1:
+        return "diverged"
+    raise ReleasePlanRefused(
+        f"cannot compare tag {tag!r} with HEAD (git merge-base exited "
+        f"{result.returncode}): {result.stderr.strip() or result.stdout.strip()}"
+    )
+
+
+def _tag_diverged_error(repo_root: Path, name: str, tag: str) -> ReleasePlanRefused:
+    head = _git(repo_root, "rev-parse", "HEAD")
+    tag_commit = _git(repo_root, "rev-parse", f"{tag}^{{commit}}")
+    return ReleasePlanRefused(
+        f"{name}: latest tag {tag} and HEAD have diverged "
+        f"(tag {tag_commit[:8]}, HEAD {head[:8]}); the release baseline is "
+        "ambiguous. Reconcile the tagged commit into the release branch or "
+        "restore the intended source history, then rerun the release plan."
+    )
 
 
 def _tag_ahead_error(repo_root: Path, name: str, prefix: str, tag: str) -> ReleasePlanRefused:
@@ -575,6 +598,7 @@ def detect_changed_projects(
     allow_tag_ahead_of_head: bool = False,
     end_ref: str = "HEAD",
     git_auth: GitHubGitAuth | None = None,
+    known_projects: Mapping[str, Any] | None = None,
 ) -> List[Tuple[str, Any, Optional[str], str]]:
     """Return [(name, config, last_tag_or_None, bump)] for projects with changes.
 
@@ -617,9 +641,10 @@ def detect_changed_projects(
     there.
     """
     changed = []
+    scoped_projects = known_projects if known_projects is not None else projects
     known_project_names = frozenset(
         alias
-        for project_name, project in projects.items()
+        for project_name, project in scoped_projects.items()
         for alias in _project_scope_names(project_name, project)
     )
     for name, proj in projects.items():
@@ -630,6 +655,19 @@ def detect_changed_projects(
             git_auth=git_auth,
         )
         if last_tag:
+            relationship = None
+            if check_tag_at_head:
+                relationship = _tag_head_relationship(repo_root, last_tag)
+                if relationship == "diverged":
+                    raise _tag_diverged_error(repo_root, name, last_tag)
+                if relationship == "ahead":
+                    if not allow_tag_ahead_of_head:
+                        raise _tag_ahead_error(repo_root, name, prefix, last_tag)
+                    print(
+                        f"[INFO] Unchanged, skipping: {name} (tag {last_tag} is ahead "
+                        "of the snapshot commit; skipped via --allow-tag-ahead-of-head)"
+                    )
+                    continue
             # The project's own changelog is release metadata whatever it is called
             # (KI-78 stages pending notes there before publishing).
             changelog = getattr(proj, "changelog", None)
@@ -639,18 +677,10 @@ def detect_changed_projects(
             )
             if not messages:
                 if check_tag_at_head:
-                    relationship = _tag_head_relationship(repo_root, last_tag)
                     if relationship == "equal":
                         print(
                             f"[INFO] Unchanged, skipping: {name} (already released as "
                             f"{last_tag} at the snapshot commit; nothing new since)"
-                        )
-                    elif relationship == "ahead":
-                        if not allow_tag_ahead_of_head:
-                            raise _tag_ahead_error(repo_root, name, prefix, last_tag)
-                        print(
-                            f"[INFO] Unchanged, skipping: {name} (tag {last_tag} is ahead "
-                            "of the snapshot commit; skipped via --allow-tag-ahead-of-head)"
                         )
                     else:  # "behind" -- the ordinary, by-far-most-common skip reason
                         print(_unchanged_reason(repo_root, name, last_tag, paths))
@@ -789,6 +819,7 @@ def release_cmd(
     major: bool = False,
     set_version: Optional[str] = None,
     dry_run: bool = False,
+    known_projects: Mapping[str, Any] | None = None,
 ) -> List[str]:
     """Tag changed projects; return list of tags created (S12.7 release).
 
@@ -800,7 +831,9 @@ def release_cmd(
         print("[ERROR] Working tree is dirty — commit or stash changes before release.", file=sys.stderr)
         sys.exit(1)
 
-    changed = detect_changed_projects(repo_root, projects)
+    changed = detect_changed_projects(
+        repo_root, projects, known_projects=known_projects
+    )
     if project_filter:
         changed = [(n, p, lt, b) for n, p, lt, b in changed if n == project_filter]
 

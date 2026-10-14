@@ -58,12 +58,10 @@ records the runtime version and source commit.
 The image's installed Run-Gate CLI is built from the source copied at image
 build time. `tester-unified:local` is a mutable tag shared across worktrees, so
 a changed `run-gate-project/` checkout can otherwise be judged by an older
-wheel. From the repository root, rebuild the image from the selected checkout
-with:
-
-```bash
-docker build -f tester-unified/Dockerfile -t tester-unified:local .
-```
+wheel. From the repository root, rebuild the image using the version
+extraction and build command in the [tester-unified README](../README.md).
+The Dockerfile requires `RUN_GATE_TESTER_VERSION`; a bare build command would
+not identify the Run-Gate source it embeds.
 
 Alternatively, add a source-match preflight to the consumer's gate. CIU runs
 that preflight before its suite and enrollment commands; the failure message

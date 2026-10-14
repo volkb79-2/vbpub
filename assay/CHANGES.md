@@ -4,10 +4,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-<!-- Empty on purpose: CMRU rejects a tagged release while this section has
-     hand-written notes (KI-30). Versioned release history is generated from
-     project commits; feature and migration details live in README.md and
-     docs/CONSUMERS.md. -->
+### Breaking Changes
+- Verdict schema v16 is a hard cut from v15. `assay verify` rejects v15 and
+  older verdicts, and v12-v15 reuse state starts cold under the new judge
+  identity. Upgrade to Assay 10.0.0 and follow the
+  [v15-to-v16 migration notes](docs/CONSUMERS.md#migration-notes-v15-to-v16).
+
+### Added
+- Native R2 records process-tree evidence for executed candidates and
+  distinguishes candidate-local resource failures from events at enforcing
+  ancestors. When needed, an ephemeral Run-Gate lane can obtain contract-2
+  observations from cgprofile.
+
+### Fixed
+- Redact passed-through secrets from subprocess output before clipping verdict
+  tails, including secrets that cross the tail boundary.
+- Emit schema-valid non-qualifying campaign summaries for sharded analyses.
 
 <!-- cmru: release history -->
 

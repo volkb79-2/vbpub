@@ -400,13 +400,14 @@ implemented, and `collect` takes the build number for now.
 run-gate's central config names the environment image as `tester-unified:local`
 (`run-gate.root.toml` at the repo root). Two ways for a remote host to have it:
 
-- **Build from the checkout.** `docker build -f tester-unified/Dockerfile -t
-  tester-unified:local .` from the repo root, in an agent `pre-command` hook or
-  as the pipeline's first step on each host. This is what
-  `nyxloom/tools/remote-mutation-audit-host.sh` does today (line 93), and it
-  is fresh-clone safe: the base image is already on GHCR and the test closure
-  is derived from the projects' `pyproject.toml` files. Cost: minutes per
-  build; cache it by commit of `tester-unified/Dockerfile` plus the pyprojects.
+- **Build from the checkout.** Use the required Run-Gate wheel-version
+  extraction and image-build procedure in the
+  [tester-unified README](../tester-unified/README.md), in an agent
+  `pre-command` hook or as the pipeline's first step on each host. This is what
+  `nyxloom/tools/remote-mutation-audit-host.sh` does. The README procedure is
+  fresh-clone safe: the base image is already on GHCR and the test closure is
+  derived from the projects' `pyproject.toml` files. Cost: minutes per build;
+  cache it by commit of `tester-unified/Dockerfile` plus the pyprojects.
 - **Publish the image to GHCR and pull it.** cmru already has the verbs:
   `cmru.handlers oci-image-build` / `oci-image-push` run `docker buildx bake`
   against a bake HCL file and log in with `REGISTRY`, `GITHUB_USERNAME` and

@@ -10,6 +10,7 @@ import importlib.util
 import fnmatch
 import json
 import posixpath
+import os
 import re
 import shlex
 import subprocess
@@ -18,12 +19,14 @@ import textwrap
 import tomllib
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
+from zipfile import ZipFile
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "tester-unified" / "gen-requirements.py"
 DOCKERFILE = REPO_ROOT / "tester-unified" / "Dockerfile"
+RUN_GATE_WHEEL_VERSION_HELPER = REPO_ROOT / "tester-unified" / "run-gate-wheel-version.py"
 NYXLOOM_DOCKERFILE = REPO_ROOT / "nyxloom" / "nyxloomd" / "Dockerfile"
 CMRU_WHEEL_BUILD_COMMAND = (
     r"/tmp/internal-build-venv/bin/pip wheel[\s\S]*?/src/cmru"
@@ -43,7 +46,8 @@ RUN_GATE_WHEEL_BUILD_BODY = (
     '/tmp/run-gate-build-venv/bin/pip install --no-cache-dir '
     '-r /tmp/run-gate-build-requirements.txt && '
     'mkdir -p /tmp/run-gate-wheels && '
-    'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_VERSION}" '
+    'RUN_GATE_TESTER_LOCAL_VERSION="${RUN_GATE_TESTER_VERSION%%+*}+tester.unified" '
+    'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_LOCAL_VERSION}" '
     '/tmp/run-gate-build-venv/bin/pip wheel --no-index --no-deps '
     '--no-build-isolation -w /tmp/run-gate-wheels /src/run-gate-project'
 )
@@ -137,9 +141,12 @@ assert version.endswith("+tester.unified"), (
     f"cmru {version} was not built from the COPYed source in this image"
 )
 run_gate_version = metadata.version("run-gate")
-assert run_gate_version == os.environ["RUN_GATE_TESTER_VERSION"], (
+expected_run_gate_version = (
+    os.environ["RUN_GATE_TESTER_VERSION"].split("+", 1)[0] + "+tester.unified"
+)
+assert run_gate_version == expected_run_gate_version, (
     f"Run-Gate wheel {run_gate_version} does not match the requested image version "
-    f"{os.environ['RUN_GATE_TESTER_VERSION']}"
+    f"{expected_run_gate_version}"
 )
 run_gate_location = str(Path(run_gate.__file__).resolve())
 assert run_gate_location.startswith(site), (
@@ -1224,7 +1231,8 @@ def test_dockerfile_installs_estate_internal_packages_only_offline_from_copied_s
         "RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index "
         "--no-deps /tmp/run-gate-wheels/*.whl"
     ]
-    assert 'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_VERSION}"' in code
+    assert 'RUN_GATE_TESTER_LOCAL_VERSION="${RUN_GATE_TESTER_VERSION%%+*}+tester.unified"' in code
+    assert 'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_LOCAL_VERSION}"' in code
     assert "--no-index --no-deps /tmp/internal-wheels/*.whl" in code
     # The PyPI-bound requirements come from the refusing generator.
     assert "gen-requirements.py --root /src" in code
@@ -1233,6 +1241,75 @@ def test_dockerfile_installs_estate_internal_packages_only_offline_from_copied_s
     # cli-extended source is NOT copied (it is a wheel dependency).
     assert "COPY libraries/worktree/ /src/libraries/worktree/" in code
     assert not re.search(r"^COPY libraries/\s", code, re.MULTILINE)
+
+
+@pytest.mark.parametrize(
+    ("input_version", "expected"),
+    [
+        ("24.0.0", "24.0.0+tester.unified"),
+        ("24.1.2+g1234567", "24.1.2+tester.unified"),
+    ],
+)
+def test_tester_run_gate_version_suffix_is_derived_by_the_same_shell_rule(
+    input_version, expected,
+):
+    """Exercise the Dockerfile's shell expansion instead of only matching text."""
+    command = (
+        'RUN_GATE_TESTER_LOCAL_VERSION="${RUN_GATE_TESTER_VERSION%%+*}+tester.unified"; '
+        'printf "%s\\n" "$RUN_GATE_TESTER_LOCAL_VERSION"'
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-ec", command],
+        env={**os.environ, "RUN_GATE_TESTER_VERSION": input_version},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected + "\n"
+
+
+def test_run_gate_wheel_version_helper_reads_the_wheel_metadata(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    wheel = dist / "run_gate-24.0.0-py3-none-any.whl"
+    with ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "run_gate-24.0.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: run-gate\nVersion: 24.0.0\n\n",
+        )
+
+    result = subprocess.run(
+        [sys.executable, str(RUN_GATE_WHEEL_VERSION_HELPER), str(dist)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "24.0.0\n"
+
+
+def test_run_gate_wheel_version_helper_refuses_ambiguous_dist_directory(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    for version in ("24.0.0", "24.1.0"):
+        with ZipFile(dist / f"run_gate-{version}-py3-none-any.whl", "w") as archive:
+            archive.writestr(
+                f"run_gate-{version}.dist-info/METADATA",
+                f"Metadata-Version: 2.1\nName: run-gate\nVersion: {version}\n\n",
+            )
+
+    result = subprocess.run(
+        [sys.executable, str(RUN_GATE_WHEEL_VERSION_HELPER), str(dist)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "expected one Run-Gate wheel" in result.stderr
 
 
 def test_dockerfile_asserts_where_imports_come_from_and_that_cli_extended_is_the_release():
@@ -1244,7 +1321,8 @@ def test_dockerfile_asserts_where_imports_come_from_and_that_cli_extended_is_the
     assert '\nassert version.endswith("+tester.unified"), (' in text
     assert 'assert "+" not in released' in text
     assert 'metadata.version("run-gate")' in text
-    assert 'run_gate_version == os.environ["RUN_GATE_TESTER_VERSION"]' in text
+    assert 'os.environ["RUN_GATE_TESTER_VERSION"].split("+", 1)[0] + "+tester.unified"' in text
+    assert 'run_gate_version == expected_run_gate_version' in text
     assert 'Path(sys.executable).with_name("run-gate")' in text
     assert 'subprocess.run([str(entrypoint), "--version"]' in text
     assert 'RUN_GATE_TESTER_VERSION}"' in text
@@ -3309,6 +3387,26 @@ def test_tester_unified_build_instructions_load_the_remote_builder_output():
     assert "RUN_GATE_TESTER_VERSION is required" in dockerfile
     for document in (readme, dockerfile):
         assert "docker build -f tester-unified/Dockerfile" not in document
+
+    consumers = (REPO_ROOT / "tester-unified" / "docs" / "CONSUMERS.md").read_text(
+        encoding="utf-8",
+    )
+    remote_lanes = (REPO_ROOT / "run-gate-project" / "REMOTE-LANES-BUILDKITE.md").read_text(
+        encoding="utf-8",
+    )
+    profiler_gate = (REPO_ROOT / "scripts" / "cgroup-profiler" / "tools" / "gate.sh").read_text(
+        encoding="utf-8",
+    )
+    audit_launcher = (REPO_ROOT / "nyxloom" / "tools" / "remote-mutation-audit-host.sh").read_text(
+        encoding="utf-8",
+    )
+    for document in (consumers, remote_lanes):
+        assert "tester-unified README" in document
+    assert "RUN_GATE_TESTER_VERSION" in profiler_gate
+    assert '--build-arg "RUN_GATE_TESTER_VERSION=$run_gate_test_version"' in audit_launcher
+    assert 'cmru handler wheel-build --cwd "$checkout/run-gate-project"' in audit_launcher
+    assert "run-gate-wheel-version.py" in readme
+    assert "run-gate-wheel-version.py" in audit_launcher
 
 
 def test_tester_unified_venvs_are_cleared_before_creation():

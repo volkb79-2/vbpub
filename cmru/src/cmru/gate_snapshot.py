@@ -285,6 +285,95 @@ def _tracked_paths(root: Path, commit: str) -> list[bytes]:
     return [path for path in result.stdout.split(b"\0") if path]
 
 
+def _verify_tracked_files_match_commit(root: Path, commit: str) -> None:
+    """Compare working-tree bytes and modes directly with the judged commit.
+
+    ``git status`` is not an independent oracle: an adversarial lane can set
+    ``assume-unchanged`` on a file and hide its subsequent edits from status.
+    Hash each tracked file as a Git blob and compare it with the commit tree.
+    """
+    tree = _git(root, "ls-tree", "-rz", "--full-tree", commit).stdout
+    for entry in tree.split(b"\0"):
+        if not entry:
+            continue
+        header, separator, raw_path = entry.partition(b"\t")
+        fields = header.split()
+        if not separator or len(fields) != 3:
+            raise RuntimeError("cannot parse the exact release snapshot tree")
+        raw_mode, object_type, expected_oid = fields
+        relative = os.fsdecode(raw_path)
+        parts = PurePosixPath(relative).parts
+        if not parts or PurePosixPath(relative).is_absolute() or ".." in parts:
+            raise RuntimeError(f"release snapshot contains an unsafe tracked path: {relative!r}")
+        path = root.joinpath(*parts)
+        parent = root
+        for component in parts[:-1]:
+            parent = parent / component
+            try:
+                parent_mode = parent.lstat().st_mode
+            except OSError as exc:
+                raise RuntimeError(
+                    f"tracked snapshot path is missing: {relative} ({exc})"
+                ) from exc
+            if not stat.S_ISDIR(parent_mode):
+                raise RuntimeError(
+                    f"tracked snapshot path has a non-directory parent: {relative}"
+                )
+        try:
+            file_stat = path.lstat()
+        except OSError as exc:
+            raise RuntimeError(f"tracked snapshot file is missing: {relative}") from exc
+
+        if raw_mode == b"120000" and object_type == b"blob":
+            if not stat.S_ISLNK(file_stat.st_mode):
+                raise RuntimeError(f"tracked snapshot symlink changed type: {relative}")
+            payload = os.fsencode(os.readlink(path))
+            size = len(payload)
+            chunks = (payload,)
+        elif raw_mode in (b"100644", b"100755") and object_type == b"blob":
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise RuntimeError(f"tracked snapshot file changed type: {relative}")
+            expected_executable = raw_mode == b"100755"
+            actual_executable = bool(file_stat.st_mode & 0o111)
+            if actual_executable != expected_executable:
+                raise RuntimeError(f"tracked snapshot file mode changed: {relative}")
+            size = file_stat.st_size
+
+            def file_chunks():
+                with path.open("rb") as stream:
+                    while chunk := stream.read(1024 * 1024):
+                        yield chunk
+
+            chunks = file_chunks()
+        elif raw_mode == b"160000" and object_type == b"commit":
+            nested_result = subprocess.run(
+                ["git", "-C", str(path), "rev-parse", "HEAD"],
+                cwd=root, capture_output=True, text=True, check=False,
+            )
+            if nested_result.returncode != 0:
+                raise RuntimeError(f"cannot inspect tracked snapshot submodule: {relative}")
+            nested = nested_result.stdout.strip()
+            if nested.encode("ascii") != expected_oid:
+                raise RuntimeError(f"tracked snapshot submodule changed: {relative}")
+            continue
+        else:
+            raise RuntimeError(
+                f"unsupported tracked snapshot entry {raw_mode.decode()} "
+                f"{object_type.decode()} {relative}"
+            )
+
+        algorithm = "sha1" if len(expected_oid) == 40 else "sha256"
+        digest = hashlib.new(algorithm)
+        digest.update(f"blob {size}\0".encode("ascii"))
+        for chunk in chunks:
+            digest.update(chunk)
+        if digest.hexdigest().encode("ascii") != expected_oid:
+            raise RuntimeError(
+                f"tracked snapshot file differs from exact commit {commit[:12]}: "
+                f"{relative}"
+            )
+
+
 _REFS_SCOPE = "protected-refs/1"
 
 
@@ -368,11 +457,12 @@ def _verify_anchor_refs(root: Path, expected: dict[str, str]) -> dict[str, str]:
         if ref == "refs/heads/main":
             if actual is None or not _git_is_ancestor(root, oid, actual):
                 raise RuntimeError(
-                    "a release gate lane deleted or moved refs/heads/main non-fast-forward"
+                    "refs/heads/main changed to a non-fast-forward value during "
+                    "release-gate execution"
                 )
         elif actual != oid:
             raise RuntimeError(
-                f"a release gate lane moved or deleted existing release tag {ref}"
+                f"protected release ref {ref} changed during release-gate execution"
             )
     # Make a fast-forward main tip the next checkpoint. Comparing every lane
     # only with the initial tip would miss a lane that rewound main back to that
@@ -535,19 +625,24 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         stable_version = (
             isinstance(version, str)
             and re.fullmatch(
-                r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+                r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:\+tester\.unified)?",
                 version,
             ) is not None
         )
-        legacy_revision = (
-            candidate_keys == {"revision", "version"}
-            and type(candidate_judge.get("revision")) is int
-            and candidate_judge["revision"] >= 0
+        complete_identity = (
+            candidate_keys == {
+                "version", "executable", "launcher_sha256", "distribution_sha256"
+            }
+            and isinstance(candidate_judge.get("executable"), str)
+            and Path(candidate_judge["executable"]).is_absolute()
+            and all(
+                isinstance(candidate_judge.get(key), str)
+                and re.fullmatch(r"[0-9a-f]{64}", candidate_judge[key]) is not None
+                for key in ("launcher_sha256", "distribution_sha256")
+            )
         )
-        if stable_version and (candidate_keys == {"version"} or legacy_revision):
-            # Old retained snapshots included the script revision as a second
-            # identity. SemVer is now the sole supported Run-Gate identity.
-            manifest_judge = {"version": version}
+        if stable_version and complete_identity:
+            manifest_judge = dict(candidate_judge)
         else:
             raise RuntimeError(
                 "existing CMRU gate snapshot has no trusted Run-Gate identity; "
@@ -864,9 +959,17 @@ def validate_lane_outputs(
         and _protected_refs_sha256(snapshot_root, protected_refs) != expected_refs_sha256
     ):
         raise RuntimeError(
-            "a release gate lane changed protected Git refs "
+            "protected Git refs changed during release-gate execution "
             f"({', '.join(protected_refs)})"
         )
+    index = _git(snapshot_root, "ls-files", "-v", "-z")
+    for entry in index.stdout.split(b"\0"):
+        if entry and (entry[:1] == b"S" or entry[:1].islower()):
+            raise RuntimeError(
+                "a release gate lane set an assume-unchanged or skip-worktree "
+                "index flag; the judged snapshot must retain ordinary tracking"
+            )
+    _verify_tracked_files_match_commit(snapshot_root, commit)
     current_anchors = (
         _verify_anchor_refs(snapshot_root, anchor_refs)
         if anchor_refs is not None else None

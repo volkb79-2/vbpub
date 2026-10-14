@@ -53,7 +53,7 @@ the shipped loader; omitted fields receive that loader’s current defaults:
 }
 ```
 
-This example opts to remove only the cached raw user-data after successful
+This example opts to remove cloud-init's user-data copies after successful
 stage two. Omit `cloud_init_cleanup_mode` or set it to `retain` to keep all
 cloud-init cache data, including `/var/lib/cloud/instance/user-data.txt`.
 
@@ -133,17 +133,22 @@ and ordinary-file usage are both included in that check.
 
 The `cloud_init_cleanup_mode` value is shared by the wizard, config file, and
 generated custom-script bundle. Choose `retain` (the default) to keep all
-cloud-init cache data, `userdata-only` to delete only the raw cached user-data,
+cloud-init cache data, `userdata-only` to delete the raw user-data and its
+parsed/intermediate copies (`user-data.txt.i`, `cloud-config.txt`, and `obj.pkl`),
 `clean` to run plain `cloud-init clean`, or `clean-all` to add `--logs --seed`.
 Neither clean mode removes generated SSH/network/fstab configuration; the
 installer does not pass `--configs all`.
 
-Cloud-init stores raw user-data at
-`/var/lib/cloud/instance/user-data.txt` by default. Plain `clean` resets
+Cloud-init stores user-data at
+`/var/lib/cloud/instance/user-data.txt` and keeps parsed/intermediate copies in
+the same instance directory. Plain `clean` resets
 cloud-init state so its stages run again at the next boot; `clean-all` does the
 same and also removes cloud-init logs and the guest's cached seed. If the same
 NoCloud seed ISO remains attached, it may provide the same user-data again.
-Detach it before a later boot if that replay is not wanted. These cleanup modes
+Before cleanup the installer writes `/var/lib/vbpub/install-v2-complete`
+outside cloud-init's cache. A later fresh-install invocation detects the marker
+and refuses before it can start a new disk operation. Detach the seed ISO after
+installation as well. These cleanup modes
 run only after successful stage-two install work, leaving cache data intact if
 an earlier install step fails. See the [feature overview](../README.md#cloud-init-cache-cleanup-policy)
 and [design rationale](DESIGN-GUIDE.md#cloud-init-cache-cleanup-policy).

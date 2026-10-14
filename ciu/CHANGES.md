@@ -35,6 +35,10 @@ restatement of the technical detail below it.
 ### Changed
 - Run the real-system enrollment lane as a required release gate, verify the installed Run-Gate wheel matches the selected checkout, and pin the disposable fixture image (CIU-131).
 
+### Fixed
+- Detect ignored files placed over tracked worktree paths before a reset, so recovery cannot silently overwrite local data.
+- Keep the allocation-lock bypass private to CIU's internal call path instead of exposing it as a user-facing CLI option.
+
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=5a9154b69c381545422c6f896f269a8f947b287b -->

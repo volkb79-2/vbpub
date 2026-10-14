@@ -6893,18 +6893,40 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
               f"report describes THAT tree, not the invoking checkout",
               flush=True)
     covered = {CGROUP_ENV_VAR}
+    environment_resolution_errors = 0
     for name, lane in lanes.items():
         covered.update(lane.get("required_env", []))
         try:
             env, _ = resolve_environment(lane, name, cfg, central,
                                          cfg_path, central_path)
-        except GateError:
+        except GateError as exc:
+            environment_resolution_errors += 1
+            print(f"run-gate: env-drift: lane {name!r} environment could not "
+                  f"be resolved ({exc}) — coverage scan incomplete for this "
+                  "lane", flush=True)
             continue  # config errors surface elsewhere, louder
         if env:
             covered.update(env.get("forward_env", []))
     findings = []
     unreadable_files = 0
-    for path in sorted(scan_dir.rglob("*.py")):
+    traversal_errors: list[OSError] = []
+
+    def record_walk_error(exc: OSError) -> None:
+        traversal_errors.append(exc)
+        print(f"run-gate: env-drift: could not traverse "
+              f"{exc.filename or scan_dir} ({exc}) — scan incomplete for "
+              "this directory", flush=True)
+
+    python_sources: list[Path] = []
+    for directory, dirnames, filenames in os.walk(
+            scan_dir, onerror=record_walk_error):
+        dirnames.sort()
+        python_sources.extend(
+            Path(directory) / filename
+            for filename in sorted(filenames)
+            if filename.endswith(".py")
+        )
+    for path in python_sources:
         try:
             text = path.read_text()
         except (OSError, UnicodeError) as exc:
@@ -6941,9 +6963,19 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     scan_summary = f"run-gate: env-drift scan: {len(seen)} uncovered reference(s)"
     if seen:
         scan_summary += " — ADVISORY ONLY, the run was not affected"
+    incomplete_reasons = []
     if unreadable_files:
-        scan_summary += (f" — INCOMPLETE: {unreadable_files} Python source "
-                         "file(s) could not be read")
+        incomplete_reasons.append(
+            f"{unreadable_files} Python source file(s) could not be read")
+    if traversal_errors:
+        incomplete_reasons.append(
+            f"{len(traversal_errors)} source directory traversal error(s)")
+    if environment_resolution_errors:
+        incomplete_reasons.append(
+            f"{environment_resolution_errors} lane environment(s) could not "
+            "be resolved")
+    if incomplete_reasons:
+        scan_summary += " — INCOMPLETE: " + "; ".join(incomplete_reasons)
     print(scan_summary, flush=True)
     # RG-25: the env-drift half above stays ADVISORY (heuristic — a .get with
     # a default may be deliberately optional). The toolchain half is NOT a
@@ -7061,7 +7093,7 @@ def _pointer_defects(text: str, file_path: Path, root: Path, where: str,
     Returns (defects, invocations_checked)."""
     defects: list[str] = []
     checked = 0
-    if re.search(r"(?<![\w./-])(?:\./)?run-gate\.py(?![\w.-])", text):
+    if re.search(r"(?<![\w-])run-gate\.py(?![\w.-])", text):
         defects.append(
             f"{where}: invokes retired `run-gate.py`; install the Run-Gate "
             "wheel and invoke its `run-gate` console command")

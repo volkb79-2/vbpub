@@ -418,7 +418,7 @@ def _is_ancestor(repo: str, ancestor: str, descendant: str) -> bool:
 def _base_relation(repo: str, base_rev: str, head_rev: str) -> str:
     """Describe HEAD's relationship to the resolved base, for the 0/0
     notice (RW-5). "HEAD is on the base" when HEAD is an ancestor of (or
-equal to) the resolved base — the exact shape `run-gate selftest`
+    equal to) the resolved base — the exact shape `run-gate selftest`
     hits on `main` itself, where merge-base(main, HEAD) == HEAD. Otherwise
     HEAD is some N commits ahead of the base and none of those N commits
     touched an executable source line under `--source`.

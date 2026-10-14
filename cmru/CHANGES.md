@@ -8,6 +8,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - KI-78 stages pending notes inside every tagged candidate's dated section before the gate and tag; direct publishers read the matching tag rather than mutable changelog files. `--no-build` and image-only releases retain notes in the tagged changelog without creating a GitHub Release body.
 - CMRU's aggregate gate uses Run-Gate SemVer as its compatibility floor and retained judge identity; it no longer treats a source revision counter as a compatibility version.
 
+### Fixed
+- Bind release gates to the exact candidate commit and committed file contents. CMRU now refuses a release when a gate changes the candidate or hides tracked edits with Git index flags.
+- Recheck the pinned Run-Gate executable and wheel identity around each lane, including the local `+tester.unified` build identity.
+- Apply project-scope filtering against the full configured project set and refuse published-tag divergence even when only changelog files changed.
+- Parse valid indented level-two changelog headings when collecting pending release notes.
+
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
      KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file

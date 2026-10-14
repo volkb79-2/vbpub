@@ -46,6 +46,7 @@ _GATE_CODE_ROOTS = (
 )
 _CODE_SUFFIXES = {".py", ".pyc", ".pyo", ".so", ".pyd"}
 _HASH_CHUNK = 200
+_RUN_GATE_EXECUTABLE_ENV = "_CMRU_RUN_GATE_EXECUTABLE"
 
 
 class GateInterrupted(SystemExit):
@@ -95,7 +96,7 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
     executable = shutil.which("run-gate")
     if executable is None:
         raise RuntimeError("the registered CMRU gate requires the installed run-gate CLI")
-    command = Path(executable)
+    command = Path(executable).resolve(strict=True)
     try:
         with command.open(encoding="utf-8") as stream:
             first_line = stream.readline().strip()
@@ -134,7 +135,10 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
         raise RuntimeError(f"cannot read installed Run-Gate version: {detail}")
     cli_version_lines = cli_version_result.stdout.strip().splitlines()
     cli_match = (
-        re.fullmatch(r"run-gate ([0-9]+\.[0-9]+\.[0-9]+)", cli_version_lines[0])
+        re.fullmatch(
+            r"run-gate ((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:\+tester\.unified)?)",
+            cli_version_lines[0],
+        )
         if len(cli_version_lines) == 1 else None
     )
     if cli_match is None:
@@ -144,10 +148,27 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
         )
     cli_version = cli_match.group(1)
 
-    version_code = (
-        "from importlib.metadata import version; "
-        "print(version('run-gate'))"
-    )
+    version_code = """
+import hashlib
+import json
+from importlib.metadata import distribution
+
+dist = distribution("run-gate")
+files = dist.files
+if not files:
+    raise SystemExit("installed Run-Gate distribution has no file manifest")
+digest = hashlib.sha256()
+for item in sorted(files, key=str):
+    path = dist.locate_file(item)
+    if not path.is_file():
+        raise SystemExit(f"installed Run-Gate file is missing: {item}")
+    digest.update(str(item).encode("utf-8", "surrogateescape"))
+    digest.update(b"\\0")
+    with path.open("rb") as stream:
+        while chunk := stream.read(1024 * 1024):
+            digest.update(chunk)
+print(json.dumps({"version": dist.version, "distribution_sha256": digest.hexdigest()}))
+"""
     try:
         version_result = subprocess.run(
             [*interpreter, "-I", "-B", "-c", version_code],
@@ -162,9 +183,16 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
     if version_result.returncode != 0:
         detail = version_result.stderr.strip() or version_result.stdout.strip() or "no diagnostic output"
         raise RuntimeError(f"cannot read installed Run-Gate package version: {detail}")
-    package_version = version_result.stdout.strip()
+    try:
+        package_identity = json.loads(version_result.stdout)
+        package_version = package_identity["version"]
+        distribution_sha256 = package_identity["distribution_sha256"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError(
+            "cannot bind installed Run-Gate package identity to its wheel files"
+        ) from exc
     package_match = re.fullmatch(
-        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(\+tester\.unified)?",
         package_version,
     )
     if package_match is None:
@@ -177,14 +205,22 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
             "installed run-gate CLI version does not match its wheel metadata: "
             f"CLI reports {cli_version!r}, package metadata reports {package_version!r}"
         )
-    package_key = tuple(int(part) for part in package_match.groups())
+    package_key = tuple(int(part) for part in package_match.groups()[:3])
     minimum_key = tuple(int(part) for part in RUN_GATE_MIN_VERSION.split("."))
     if package_key < minimum_key:
         raise RuntimeError(
             f"CMRU's release gate requires Run-Gate {RUN_GATE_MIN_VERSION} or later "
             f"for read-only host hook/info mounts; installed version {package_version} is too old"
         )
-    return {"version": package_version}
+    distribution_sha256 = str(distribution_sha256)
+    if re.fullmatch(r"[0-9a-f]{64}", distribution_sha256) is None:
+        raise RuntimeError("installed Run-Gate distribution hash is malformed")
+    return {
+        "version": package_version,
+        "executable": str(command),
+        "launcher_sha256": hashlib.sha256(command.read_bytes()).hexdigest(),
+        "distribution_sha256": distribution_sha256,
+    }
 
 
 def _preflight_assay_source(repo_root: Path) -> None:
@@ -439,10 +475,12 @@ def _invoke_lane(
     if worktree_root is None:
         worktree_root = repo_root
     started = time.time_ns()
+    lane_environment = dict(environment)
+    executable = lane_environment.pop(_RUN_GATE_EXECUTABLE_ENV, "run-gate")
     process = subprocess.Popen(
-        ["run-gate", "--worktree", str(worktree_root), lane],
+        [executable, "--worktree", str(worktree_root), lane],
         cwd=repo_root / "cmru",
-        env=dict(environment),
+        env=lane_environment,
     )
     try:
         returncode = process.wait()
@@ -468,14 +506,33 @@ def _run_snapshot_lane(
         repo_root: Path, lane: str, environment: Mapping[str, str], snapshot,
         gate_snapshot, *, after_success=None) -> int:
     _assert_no_untracked_gate_code(repo_root)
+    expected_identity = snapshot.run_gate_identity
+    lane_environment = dict(environment)
+    if expected_identity is not None:
+        current_identity = _check_run_gate_identity(repo_root)
+        if current_identity != expected_identity:
+            raise RuntimeError(
+                "Run-Gate identity changed during the CMRU release gate; "
+                "refusing to run the next lane under a different judge"
+            )
+        executable_path = expected_identity.get("executable")
+        if isinstance(executable_path, str):
+            lane_environment[_RUN_GATE_EXECUTABLE_ENV] = executable_path
     # Refresh the host manifest FIRST: prepare_lane seeds the lane's copy from
     # it, and the live-snapshot check accepts only a manifest this recent.
     gate_snapshot.write_snapshot_manifest(snapshot, "running")
     gate_snapshot.prepare_lane(snapshot, lane)
     try:
         result = _invoke_lane(
-            repo_root, lane, environment, snapshot.worktree_path,
+            repo_root, lane, lane_environment, snapshot.worktree_path,
         )
+        if expected_identity is not None:
+            current_identity = _check_run_gate_identity(repo_root)
+            if current_identity != expected_identity:
+                raise RuntimeError(
+                    "Run-Gate identity changed while a CMRU release lane was "
+                    "running; its evidence cannot be combined with the other lanes"
+                )
         snapshot.lane_exit_codes[lane] = result
         if result == 0 and after_success is not None:
             after_success(snapshot)

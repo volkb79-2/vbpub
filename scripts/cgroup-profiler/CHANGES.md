@@ -8,6 +8,13 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+### Added
+- First SemVer release of the `cgprofile` CLI and host daemon, including the
+  separate read-only contract-2 observer for native Assay R2 lanes. The
+  observer reports event counters for the candidate cgroup and its enforcing
+  ancestors without exposing the daemon control socket.
+
+### Changed
 - Documentation: identify the installed Run-Gate SemVer wheel as the supported
   consumer of the CGProfile interface; copied `run-gate.py` scripts are retired.
 

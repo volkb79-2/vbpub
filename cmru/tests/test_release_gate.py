@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import importlib.util
 import json
 import os
@@ -51,6 +52,15 @@ def _git(root: Path, *args: str) -> str:
 LANES = [
     "ref-probe", "installed-wheel-live", "assay", "coverage", "mutation", "canary",
 ]
+
+
+def _gate_identity(version: str = "24.0.0") -> dict[str, str]:
+    return {
+        "version": version,
+        "executable": "/usr/bin/run-gate",
+        "launcher_sha256": "a" * 64,
+        "distribution_sha256": "b" * 64,
+    }
 
 
 def _probe_ref(worktree: Path) -> str:
@@ -127,7 +137,7 @@ def _fixture(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(run_release_gate, "_preflight_assay_source", lambda _root: None)
     monkeypatch.setattr(
         run_release_gate, "_check_run_gate_identity",
-        lambda _root: {"version": "24.0.0"},
+        lambda _root: _gate_identity(),
     )
     return repo, root_secret, project_secret, metadata, auth, calls
 
@@ -875,7 +885,8 @@ def test_isolated_component_loader_imports_real_gate_helpers_from_tools():
 
 
 @pytest.mark.parametrize("cli_version, version, expected", [
-    ("run-gate 24.0.0", "24.0.0", {"version": "24.0.0"}),
+    ("run-gate 24.0.0", "24.0.0", None),
+    ("run-gate 24.0.0+tester.unified", "24.0.0+tester.unified", None),
     ("run-gate 23.11.9", "23.11.9", "requires Run-Gate 24.0.0 or later"),
     ("run-gate 24.0.0", "24.0.0.dev4+g1234567", "stable released Run-Gate wheel"),
     ("run-gate 24.0.1", "24.0.0", "does not match its wheel metadata"),
@@ -894,7 +905,13 @@ def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
                 argv, 0, stdout=f"{cli_version}\n", stderr="",
             )
         assert argv[:3] == [sys.executable, "-I", "-B"]
-        return subprocess.CompletedProcess(argv, 0, stdout=f"{version}\n", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0,
+            stdout=json.dumps({
+                "version": version, "distribution_sha256": "b" * 64,
+            }),
+            stderr="",
+        )
 
     monkeypatch.setattr(run_release_gate.shutil, "which", lambda name: str(launcher))
     monkeypatch.setattr(run_release_gate.subprocess, "run", fake_run)
@@ -903,7 +920,13 @@ def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
         with pytest.raises(RuntimeError, match=expected):
             run_release_gate._check_run_gate_identity(tmp_path)
     else:
-        assert run_release_gate._check_run_gate_identity(tmp_path) == expected
+        identity = run_release_gate._check_run_gate_identity(tmp_path)
+        assert identity["version"] == version
+        assert identity["executable"] == str(launcher.resolve())
+        assert identity["launcher_sha256"] == hashlib.sha256(
+            launcher.read_bytes()
+        ).hexdigest()
+        assert identity["distribution_sha256"] == "b" * 64
 
 
 def test_release_gate_refuses_when_run_gate_is_missing(tmp_path, monkeypatch):
@@ -951,7 +974,7 @@ def test_a_lane_writing_a_protected_ref_fails_the_gate(tmp_path, monkeypatch):
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
-    with pytest.raises(RuntimeError, match="changed protected Git refs"):
+    with pytest.raises(RuntimeError, match="protected Git refs changed during"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
     assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage"]
 
@@ -1029,7 +1052,7 @@ def test_main_cannot_be_rewound_to_an_older_fast_forward_tip_between_lanes(
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
-    with pytest.raises(RuntimeError, match="moved refs/heads/main non-fast-forward"):
+    with pytest.raises(RuntimeError, match="refs/heads/main changed to a non-fast-forward"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
     assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage", "mutation"]
 
@@ -1055,7 +1078,7 @@ def test_main_non_fast_forward_during_a_lane_fails_the_gate(tmp_path, monkeypatc
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
-    with pytest.raises(RuntimeError, match="moved refs/heads/main non-fast-forward"):
+    with pytest.raises(RuntimeError, match="refs/heads/main changed to a non-fast-forward"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
     assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage"]
 
@@ -1069,7 +1092,7 @@ def test_resuming_a_snapshot_under_a_different_run_gate_identity_refuses(tmp_pat
 
     monkeypatch.setattr(
         run_release_gate, "_check_run_gate_identity",
-        lambda _root: {"version": "23.12.0"},
+        lambda _root: _gate_identity("23.12.0"),
     )
     with pytest.raises(RuntimeError, match="judged by a different Run-Gate identity"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
@@ -1343,7 +1366,7 @@ def _closed_snapshot(source: Path):
     from cmru import gate_snapshot
 
     snapshot = gate_snapshot.open_gate_snapshot(source)
-    snapshot.run_gate_identity = {"version": "24.0.0"}
+    snapshot.run_gate_identity = _gate_identity()
     gate_snapshot.write_snapshot_manifest(snapshot, "failed")
     gate_snapshot.close_gate_snapshot(snapshot)
     return snapshot
@@ -1680,18 +1703,18 @@ def test_stale_manifest_scope_is_upgraded_not_trusted(tmp_path, monkeypatch):
 
     repo, *_rest = _fixture(tmp_path, monkeypatch)
     snapshot = gs.open_gate_snapshot(repo)
-    snapshot.run_gate_identity = {"version": "24.0.0"}
+    snapshot.run_gate_identity = _gate_identity()
     gs.write_snapshot_manifest(snapshot, "running")
     manifest = repo / "cmru" / ".assay" / "release-gate-snapshot.json"
     document = json.loads(manifest.read_text(encoding="utf-8"))
     document.update(refs_scope="all-refs/0", git_refs_sha256="0" * 64)
-    document["run_gate_identity"] = {"revision": 68, "version": "24.0.0"}
+    document["run_gate_identity"] = _gate_identity()
     manifest.write_text(json.dumps(document), encoding="utf-8")
     gs.close_gate_snapshot(snapshot)
 
     reopened = gs.open_gate_snapshot(repo)  # the old whole-repository digest is ignored
     try:
         assert reopened.refs_sha256 == snapshot.refs_sha256 != "0" * 64
-        assert reopened.run_gate_identity == {"version": "24.0.0"}
+        assert reopened.run_gate_identity == _gate_identity()
     finally:
         gs.close_gate_snapshot(reopened)
