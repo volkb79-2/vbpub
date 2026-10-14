@@ -17,7 +17,7 @@ controller-driven netcup test. The design below was worked out 2026-09-09;
   `_validate_benchmark_plan()` (adds exactly one partition, changes nothing,
   stays clear of the swap region).
 - **Placement:** the throwaway partition sits at the TAIL of the disk, number
-  `root_number + swap_file_count + 1` (above every swap number), named
+  `root_number + swap_partition_count + 1` (above every swap number), named
   `vbpub-iobench`, so it cannot overlap swap and a leftover is identifiable.
 - **Sizing:** `min(io_benchmark_max_size_gb, tail free - swap requirement -
   1 GiB margin)`, 2048-sector aligned; under 2 GiB the step is `skipped`

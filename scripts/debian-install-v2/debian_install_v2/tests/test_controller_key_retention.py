@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import shlex
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from debian_install_v2.config import Config, ConfigError, load_config, validate_config
 from debian_install_v2.customscript import build_customscript_bundle
+from debian_install_v2.installer import Installer
 from debian_install_v2.tests import test_mattermost_notifications as mm
 from debian_install_v2.tests import test_r1_coverage as r1
 from debian_install_v2.tests.test_bootstrap_remote import load_module
@@ -16,6 +18,10 @@ from debian_install_v2.wizard import wizard_field_names
 
 PUBKEY = "ssh-ed25519 AAAAephemeral vbpub-controller-ephemeral"
 OPERATOR = "ssh-ed25519 AAAAoperator operator@laptop"
+PERSISTENT = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIcesQXRRI6R1benlU3hpLX712Iokf4htzSKpuk25Q2n "
+    "owner@example.test"
+)
 
 
 # --- config: the field exists (regression guard for e3cd117c1) ----------------
@@ -137,6 +143,32 @@ def test_remove_helper_still_strips_only_the_controller_line(tmp_path, monkeypat
     installer._remove_controller_ssh_key()
     content = actions.files[r1._AUTHORIZED_KEYS].decode()
     assert OPERATOR in content and PUBKEY not in content
+
+
+def test_persistent_key_is_added_idempotently_and_survives_controller_cleanup(tmp_path, monkeypatch):
+    installer, actions = r1._make_with_pubkey(tmp_path, PUBKEY)
+    installer.config = replace(installer.config, ssh_authorized_keys=[PERSISTENT])
+    existing = f"{OPERATOR}\n"
+    monkeypatch.setattr(Path, "is_file", r1._fake_is_file(True))
+    monkeypatch.setattr(Path, "read_text", r1._fake_read_text(existing))
+    installer._configure_persistent_ssh_keys()
+    content = actions.files[r1._AUTHORIZED_KEYS].decode()
+    assert OPERATOR in content and PERSISTENT in content
+    assert installer.state.load()["steps"]["persistent_ssh_keys"]["detail"].startswith(
+        "1 configured key(s); 1 added"
+    )
+
+    # Controller cleanup removes its own exact line but leaves persistent keys.
+    monkeypatch.setattr(Path, "read_text", r1._fake_read_text(f"{OPERATOR}\n{PERSISTENT}\n{PUBKEY}\n"))
+    installer._remove_controller_ssh_key()
+    cleaned = actions.files[r1._AUTHORIZED_KEYS].decode()
+    assert PERSISTENT in cleaned and PUBKEY not in cleaned
+
+
+def test_persistent_key_comment_containing_controller_marker_is_not_pruned():
+    line = "ssh-ed25519 AAAA operator vbpub-controller-ephemeral-keep"
+    line = line.replace("operator ", "operator owner ")
+    assert not Installer._is_ephemeral_controller_key(line)
 
 
 # --- install-complete message ---------------------------------------------------

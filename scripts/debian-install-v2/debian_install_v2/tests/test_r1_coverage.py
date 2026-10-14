@@ -19,7 +19,7 @@ BASE_CONFIG = {
     "schema_version": 1,
     "fresh_install": True,
     "swap_disk_total_gb": 32,
-    "swap_file_count": 8,
+    "swap_partition_count": 8,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
     "auto_reboot_after_stage1": False,
@@ -187,6 +187,11 @@ def test_cli_disable_and_show_plan(tmp_path, monkeypatch):
         "release": "trixie",
         "root_device": "/dev/vda3",
         "new_root_size_sectors": 1024,
+        "root_shrink_check": "not required",
+        "swap_policy": "off",
+        "swap_total_gb": None,
+        "swap_retained_before_root_gb": None,
+        "swap_after_root_gb": None,
         "swap_partitions": [],
         "sfdisk_plan": "label: gpt\n",
     }
@@ -246,8 +251,8 @@ def test_config_rejects_swap_size_out_of_range():
 
 
 def test_config_rejects_file_count_out_of_range():
-    data = dict(BASE_CONFIG, swap_file_count=0)
-    with pytest.raises(ConfigError, match="swap_file_count"):
+    data = dict(BASE_CONFIG, swap_partition_count=0)
+    with pytest.raises(ConfigError, match="swap_partition_count"):
         load_config(raw_json=json.dumps(data))
 
 
@@ -504,7 +509,7 @@ def test_verify_missing_manifest(tmp_path):
 def test_show_plan_returns_partitions(tmp_path):
     installer = _make_with_state(tmp_path)
     plan = installer.show_plan()
-    assert len(plan["swap_partitions"]) == 8
+    assert len(plan["swap_partitions"]) == 4
     assert plan["release"] == "trixie"
 
 

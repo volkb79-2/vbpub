@@ -34,6 +34,7 @@ def make_installer(tmp_path, *, dry_run=True, **config_overrides):
     actions = FakeHostActions() if not dry_run else HostActions(dry_run=True)
     if not dry_run:
         actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
+        actions.outputs[("/usr/sbin/blockdev", "--getsize64", "/dev/vda")] = str(512 * 1024 ** 3)
     installer = Installer(config, actions)
     StateStore(config.state_dir).save_new(StateStore.new(config))
     return installer
@@ -78,7 +79,7 @@ def test_cli_status_success(tmp_path, capsys):
     cfg = tmp_path / "config.json"
     cfg.write_text(json.dumps({
         "schema_version": 1, "fresh_install": True,
-        "swap_disk_total_gb": 32, "swap_file_count": 8,
+        "swap_disk_total_gb": 32, "swap_partition_count": 8,
         "telegram_bot_token": "", "telegram_chat_id": "",
         "auto_reboot_after_stage1": False, "never_reboot": True,
         "credential_mode": "systemd",
@@ -114,7 +115,7 @@ def test_show_plan_real_dump(tmp_path):
     )
     plan = installer.show_plan()
     assert plan["release"] == "trixie"
-    assert len(plan["swap_partitions"]) == 8
+    assert len(plan["swap_partitions"]) == 4
 
 
 def test_verify_missing_backup(tmp_path):
@@ -307,21 +308,24 @@ def test_geometry_bad_swap_numbering(tmp_path):
     current = {3: {"start": "100", "size": "100"}}
     plan = {
         3: {"start": "100", "size": "100"},
-        5: {"start": "250", "size": "100"},
+        5: {
+            "start": "250", "size": "100",
+            "type": SWAP_TYPE_GUID,
+        },
     }
     with pytest.raises(RuntimeError, match="unexpected swap numbering"):
         installer._validate_plan_geometry(current, plan, 100)
 
 
 def test_plan_too_small(tmp_path):
-    installer = make_installer(tmp_path, swap_disk_total_gb=1, swap_file_count=2048)
-    with pytest.raises(RuntimeError, match="too small"):
+    installer = make_installer(tmp_path, swap_disk_total_gb=1, swap_partition_count=2048)
+    with pytest.raises(RuntimeError, match="GPT partition-number limit"):
         installer._plan_swap_partitions()
 
 
 def test_plan_disk_too_small(tmp_path):
     installer = make_installer(tmp_path, swap_disk_total_gb=10240)
-    with pytest.raises(RuntimeError, match="lacks space"):
+    with pytest.raises(RuntimeError, match="no usable space for a positive-size root"):
         installer._plan_swap_partitions()
 
 
@@ -381,14 +385,14 @@ def test_health_gate_failures(tmp_path, monkeypatch):
 
     # present but not active
     installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
-    for num in range(5, 12):
+    for num in range(5, 8):
         installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
     with pytest.raises(RuntimeError, match="formatted but not active"):
         installer._health_gate_swap_devices()
 
     # active but not in fstab
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = (
-        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 12))
+        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 8))
     )
     with pytest.raises(RuntimeError, match="absent from fstab"):
         installer._health_gate_swap_devices()
@@ -398,14 +402,14 @@ def test_activate_swap_partitions_real(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    for num in range(4, 12):
+    for num in range(4, 8):
         p = f"/dev/vda{num}"
         installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", p)] = f"uuid{num}"
         installer.actions.outputs[("/usr/sbin/mkswap", p)] = ""
         installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", p)] = ""
     installer._activate_swap_partitions()
     fstab = installer.actions.files["/etc/fstab"].decode()
-    assert fstab.count(" none swap sw,pri=10,discard=once 0 0") == 8
+    assert fstab.count(" none swap sw,pri=10,discard=once 0 0") == 4
     # Regression, 2026-09-08: confirmed live against real Debian 13 trixie
     # (`which partx` / `which blkid` / `which swapon` on v1001.vxxu.de) --
     # partx lives at /usr/bin/partx (not /usr/sbin), while blkid and swapon
@@ -539,13 +543,14 @@ def test_configure_zswap_starts_units_this_boot_not_just_enables_them(tmp_path):
 
 def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
+    monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 8 * 1024 ** 3)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = (
-        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 12))
+        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 8))
     )
-    for num in range(4, 12):
+    for num in range(4, 8):
         installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
-    fstab_content = "\n".join(f"PARTUUID=uuid{num} none swap sw,pri=10 0 0" for num in range(4, 12))
+    fstab_content = "\n".join(f"PARTUUID=uuid{num} none swap sw,pri=10 0 0" for num in range(4, 8))
     real_read = Path.read_text
     real_is_file = Path.is_file
 

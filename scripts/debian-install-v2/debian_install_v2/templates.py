@@ -827,9 +827,10 @@ DEVICE=""
 DISK=""
 TARGET_BLOCKS=""
 TARGET_SECTORS=""
+SAFETY_BLOCKS=""
 SFDISK_PLAN=""
 . "$PLAN_ENV"
-[ -n "$DEVICE" ] && [ -n "$DISK" ] && [ -n "$TARGET_BLOCKS" ] && [ -n "$TARGET_SECTORS" ] && [ -n "$SFDISK_PLAN" ] || exit 0
+[ -n "$DEVICE" ] && [ -n "$DISK" ] && [ -n "$TARGET_BLOCKS" ] && [ -n "$TARGET_SECTORS" ] && [ -n "$SAFETY_BLOCKS" ] && [ -n "$SFDISK_PLAN" ] || exit 0
 [ -f "$SFDISK_PLAN" ] || exit 0
 [ -b "$DEVICE" ] || exit 0
 [ -b "$DISK" ] || exit 0
@@ -846,7 +847,10 @@ MIN_BLOCKS=$(resize2fs -P "$DEVICE" 2>&1 | sed -n 's/^Estimated minimum size of 
 case "$MIN_BLOCKS" in
   ''|*[!0-9]*) log_failure_msg "vbpub-root-shrink: could not read minimum filesystem size, skipping"; exit 0 ;;
 esac
-[ "$MIN_BLOCKS" -le "$TARGET_BLOCKS" ] || { log_failure_msg "vbpub-root-shrink: target too small (min=$MIN_BLOCKS target=$TARGET_BLOCKS)"; exit 0; }
+[ "$((MIN_BLOCKS + SAFETY_BLOCKS))" -le "$TARGET_BLOCKS" ] || {
+  log_failure_msg "vbpub-root-shrink: target too small for filesystem minimum plus safety margin (min=$MIN_BLOCKS margin=$SAFETY_BLOCKS target=$TARGET_BLOCKS)"
+  exit 0
+}
 
 resize2fs "$DEVICE" "$TARGET_BLOCKS" || { log_failure_msg "vbpub-root-shrink: resize2fs shrink failed"; exit 0; }
 e2fsck -f -y "$DEVICE" || { log_failure_msg "vbpub-root-shrink: post-shrink fsck failed"; exit 0; }

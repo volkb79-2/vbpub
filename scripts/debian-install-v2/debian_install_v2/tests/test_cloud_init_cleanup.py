@@ -89,6 +89,9 @@ def _stage2_harness(*, fail_before_cleanup: bool = False):
     installer._packages = lambda *args: events.append("packages")
     installer._verify_and_apply_root_shrink = lambda: True
     installer._run_io_benchmark = lambda **kwargs: events.append("benchmark")
+    installer._disable_active_swap = lambda: events.append("swap-disable")
+    installer._ensure_disk_transaction_manifest = lambda: events.append("disk-manifest")
+    installer._grow_root_to_plan = lambda: events.append("root-grow")
 
     def configure_zswap():
         events.append("zswap")

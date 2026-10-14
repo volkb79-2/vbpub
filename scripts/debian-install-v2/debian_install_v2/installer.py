@@ -16,10 +16,12 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from collections.abc import Iterable
 
 from . import inuse_partition_editor
 from .actions import ActionError, ActionUnreapable, HostActions
 from .config import Config, ConfigError, load_config, persisted_config_data, resolve_notify_backend
+from .disk_layout import GIB, automatic_swap_size_gb
 from .host_facts import _code, collect_host_facts, format_facts_html
 from .notify import NotifyConfigError, format_mattermost_message, post_webhook, redact_text
 from .state import StateError, StateStore
@@ -285,11 +287,29 @@ class Installer:
     def _initial_report_message(self) -> str:
         facts_html = format_facts_html(collect_host_facts(self))
         plan = self.show_plan()
+        swap_total = (
+            f"{plan['swap_total_gb']} GiB"
+            if plan["swap_total_gb"] is not None
+            else "disabled" if plan["swap_policy"] == "off" else "unchanged"
+        )
+        retained_swap = ""
+        tail_swap = ""
+        if plan["swap_policy"] == "on":
+            retained_swap = f"{plan['swap_retained_before_root_gb']:.2f} GiB kept before root"
+            tail_swap = f"{plan['swap_after_root_gb']:.2f} GiB after root"
         plan_lines = [
             "<b>Install plan</b>",
             f"Release: {_code(self.release)} | Root: {_code(plan['root_device'])} "
             f"-> {plan['new_root_size_sectors']} sectors",
+            f"Disk policy: root={_code(str(plan['root_resize_policy']))}, "
+            f"swap={_code(str(plan['swap_policy']))}, "
+            f"swap total={_code(swap_total)}",
         ]
+        if plan["swap_policy"] == "on":
+            plan_lines.append(
+                f"Swap allocation: {_code(retained_swap)}, {_code(tail_swap)} "
+                f"({plan['swap_partition_count']} partitions)"
+            )
         for swap in plan["swap_partitions"]:
             plan_lines.append(f"Swap partition: {_code(swap['device'])} ({swap['sectors']} sectors)")
         plan_lines.append(f"sfdisk plan:\n<pre>{plan['sfdisk_plan']}</pre>")
@@ -594,29 +614,78 @@ class Installer:
         }
 
     def show_plan(self) -> dict[str, object]:
-        partitions, new_root_size, _shrink_needed = self._resolve_swap_plan()
+        partitions, new_root_size, shrink_needed = self._resolve_swap_plan()
         plan_path = Path(self.config.state_dir) / "partition-plan.sfdisk"
         if plan_path.is_file():
             plan_text = plan_path.read_text(encoding="utf-8")
         else:
             if self.actions.dry_run:
-                current_dump = "\n".join([
-                    "label: gpt",
-                    f"device: /dev/{self.root_disk}",
-                    "",
-                    f"{self._partition_base}{self.root_number} : start=2500608, size={new_root_size}, type=0fc63daf-8483-4772-8e79-3d69d8477de4",
-                ])
+                _disk_sectors, root_start, root_size = self._disk_facts()
+                current_dump = self._current_partition_dump(root_start, root_size)
             else:
                 current_dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
-            plan_text = self._write_sfdisk_plan(partitions, new_root_size)
+            plan_text = (
+                current_dump
+                if self.config.swap_policy == "untouched"
+                else self._write_sfdisk_plan(partitions, new_root_size)
+            )
+        if self.config.swap_policy == "on":
+            disk_sectors, root_start, root_size = self._disk_facts()
+            live = self._live_partition_entries(disk_sectors, root_start, root_size)
+            retained = self._swap_partitions_before_root(live, root_start)
+            planned_swaps = [
+                (number, int(entry["start"]), int(entry["size"]))
+                for number, entry in sorted(retained.items())
+            ]
+            tail_numbers = self._tail_swap_numbers(len(partitions), retained)
+            planned_swaps.extend(
+                (number, start, size)
+                for number, (start, size) in zip(tail_numbers, partitions)
+            )
+        elif self.config.swap_policy == "untouched":
+            _disk_sectors, root_start, root_size = self._disk_facts()
+            live = self._live_partition_entries(_disk_sectors, root_start, root_size)
+            planned_swaps = [
+                (number, int(entry["start"]), int(entry["size"]))
+                for number, entry in sorted(live.items())
+                if self._is_swap_partition(entry) and "start" in entry and "size" in entry
+            ]
+        else:
+            planned_swaps = []
+        swap_total = (
+            self._effective_swap_total_gb()
+            if self.config.swap_policy == "on"
+            else None
+        )
+        retained_total_gb = (
+            sum(size for number, _start, size in planned_swaps if number in retained) * 512 / GIB
+            if self.config.swap_policy == "on"
+            else None
+        )
+        tail_total_gb = (
+            sum(size for number, _start, size in planned_swaps if number not in retained) * 512 / GIB
+            if self.config.swap_policy == "on"
+            else None
+        )
         return {
             "run_id": self.state.load().get("run_id") if (Path(self.config.state_dir) / "state.json").is_file() else "",
             "release": self.release,
             "root_device": self.root_partition_path,
             "new_root_size_sectors": new_root_size,
+            "root_shrink_check": (
+                "validated"
+                if shrink_needed
+                else "not required"
+            ),
+            "root_resize_policy": self.config.root_resize_policy,
+            "swap_policy": self.config.swap_policy,
+            "swap_total_gb": swap_total,
+            "swap_retained_before_root_gb": retained_total_gb,
+            "swap_after_root_gb": tail_total_gb,
+            "swap_partition_count": len(planned_swaps),
             "swap_partitions": [
                 {"device": f"{self._partition_base}{number}", "start": start, "sectors": size}
-                for number, (start, size) in enumerate(partitions, start=self.root_number + 1)
+                for number, start, size in planned_swaps
             ],
             "sfdisk_plan": plan_text,
         }
@@ -1265,9 +1334,10 @@ MaxFileSec=1month
             _LOG.warning("install failed and apt timers could not be re-enabled: %s", exc)
 
     def _configure_cgroup2_flags(self) -> None:
-        # Default ON, no config flag — memory_recursiveprot missing silently
-        # defeats every slice's MemoryLow/MemoryMin with no other symptom
-        # (systemctl show keeps reporting the value you set). Applied
+        # Default ON, but disableable for minimal profiles —
+        # memory_recursiveprot missing silently defeats every slice's
+        # MemoryLow/MemoryMin with no other symptom (systemctl show keeps
+        # reporting the value you set). Applied
         # immediately (enable --now), unlike zswap/thp's enable-only: those
         # write to sysfs knobs ordered before swap.target/sysinit.target
         # hasn't been reached yet in this stage1/stage2 split; a cgroup2
@@ -1660,6 +1730,22 @@ MaxFileSec=1month
             "type": (attrs.get("type") or "").upper(),
         }
 
+    @staticmethod
+    def _partition_number_ranges(numbers: Iterable[int]) -> list[str]:
+        """Return disjoint ``partx --nr`` ranges without spanning other numbers."""
+        ordered = sorted(set(int(number) for number in numbers))
+        if not ordered:
+            return []
+        groups: list[tuple[int, int]] = []
+        start = previous = ordered[0]
+        for number in ordered[1:]:
+            if number != previous + 1:
+                groups.append((start, previous))
+                start = number
+            previous = number
+        groups.append((start, previous))
+        return [f"{start}:{end}" for start, end in groups]
+
     def _validate_plan_geometry(
         self,
         current: dict[int, dict[str, str]],
@@ -1675,12 +1761,23 @@ MaxFileSec=1month
         if after_end > before_end:
             raise InstallerError("partition plan unexpectedly grows the root partition")
         for number, entry in current.items():
-            if number > self.root_number:
+            if number != self.root_number and ("start" not in entry or "size" not in entry):
                 raise InstallerError(
-                    f"fresh-install contract violated: existing partition {number} follows root and would be dropped"
+                    f"cannot validate partition-table transaction: partition {number} has incomplete geometry"
                 )
-        ordered = sorted(plan.items())
-        previous_start = -1
+            physically_after_root = (
+                "start" in entry and int(entry["start"]) >= before_end
+            )
+            if (number > self.root_number or physically_after_root) and not self._is_swap_partition(entry):
+                raise InstallerError(
+                    f"unsupported disk layout: non-swap partition {number} follows root"
+                )
+        # Partition numbers are identifiers, not a promise of physical order.
+        # SFDISK/GPT tables may number two disjoint pre-root partitions in the
+        # opposite order to their on-disk starts; overlap validation must sort
+        # by geometry or it rejects a valid table (or reasons about the wrong
+        # neighbor).
+        ordered = sorted(plan.items(), key=lambda item: int(item[1]["start"]))
         previous_end = -1
         for number, entry in ordered:
             start = int(entry["start"])
@@ -1688,44 +1785,349 @@ MaxFileSec=1month
             end = start + size
             if previous_end >= 0 and start < previous_end:
                 raise InstallerError(f"partition plan overlap detected at partition {number}")
-            previous_start, previous_end = start, end
-        swap_numbers = [number for number in plan if number > self.root_number]
-        expected_numbers = list(range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1))
-        if swap_numbers != expected_numbers:
-            raise InstallerError(f"partition plan has unexpected swap numbering: {swap_numbers!r}")
+            previous_end = end
+        if self.config.swap_policy == "on":
+            retained = self._swap_partitions_before_root(current, int(root_current["start"]))
+            root_end_after = int(root_plan["start"]) + int(root_plan["size"])
+            tail_numbers = sorted(
+                number for number, entry in plan.items()
+                if number != self.root_number
+                and self._is_swap_partition(entry)
+                and int(entry["start"]) >= root_end_after
+            )
+            expected_numbers = self._tail_swap_numbers(len(tail_numbers), retained)
+            if tail_numbers != expected_numbers:
+                raise InstallerError(f"partition plan has unexpected swap numbering: {tail_numbers!r}")
 
-    def _plan_swap_partitions(self) -> tuple[list[tuple[int, int]], int]:
+    def _plan_swap_partitions(
+        self,
+        *,
+        extra_tail_sectors: int = 0,
+        validate_shrink_safety: bool = True,
+        root_safety_facts: tuple[int, int, int] | None = None,
+    ) -> tuple[list[tuple[int, int]], int]:
         disk_sectors, root_start, root_size = self._disk_facts()
-        total_sectors = self.config.swap_disk_total_gb * 1024 * 1024 * 1024 // 512
-        per_device = total_sectors // self.config.swap_file_count
+        entries = self._live_partition_entries(disk_sectors, root_start, root_size)
         alignment = 2048
-        per_device -= per_device % alignment
-        if per_device <= 0:
-            raise InstallerError(f"swap target too small for {self.config.swap_file_count} devices")
-        actual_total = per_device * self.config.swap_file_count
         end_buffer = 2048
-        # Case A never resizes root -- it stays exactly its current size,
-        # full stop. Confirmed live 2026-09-08: this used to be
-        # max(root_size, preserve_root_size_gb-in-sectors), which on a real
-        # host whose default-image root partition is SMALLER than the
-        # configured preserve_root_size_gb (v1001's actual root was ~8.81
-        # GiB against a configured preserve_root_size_gb of 10) inflated
-        # new_root_size past the real root_size -- producing a plan that
-        # tried to GROW root, correctly refused by _validate_plan_geometry()
-        # ("partition plan unexpectedly grows the root partition"), but only
-        # after a real live install got that far. preserve_root_size_gb is
-        # exclusively a Case B concept (the floor _plan_root_shrink() will
-        # not shrink root below) and has no business influencing Case A's
-        # swap-placement math at all.
-        new_root_size = root_size
-        first_swap_start = ((root_start + new_root_size + alignment - 1) // alignment) * alignment
-        required_end = first_swap_start + actual_total + end_buffer
-        if required_end > disk_sectors:
-            needed_gib = (required_end - disk_sectors + 1024 ** 3 - 1) // 1024 ** 3
-            raise InstallerError(f"disk lacks space for known swap shape; reduce swap by about {needed_gib} GiB")
-        start = first_swap_start
-        partitions = [(start + index * per_device, per_device) for index in range(self.config.swap_file_count)]
-        return partitions, new_root_size
+        swap_entries = {
+            number: entry for number, entry in entries.items()
+            if self._is_swap_partition(entry)
+        }
+        root_end = root_start + root_size
+        if self.config.swap_policy == "on":
+            incomplete_swap = [
+                number for number, entry in swap_entries.items()
+                if "start" not in entry or "size" not in entry
+            ]
+            if incomplete_swap:
+                raise InstallerError(
+                    "cannot safely retain or replace swap partition(s) with incomplete geometry: "
+                    + ", ".join(map(str, sorted(incomplete_swap)))
+                )
+        if self.config.root_resize_policy != "untouched":
+            unknown_geometry = [
+                number for number, entry in entries.items()
+                if number != self.root_number
+                and ("start" not in entry or "size" not in entry)
+            ]
+            if unknown_geometry:
+                raise InstallerError(
+                    "cannot safely resize root because partition geometry is missing for "
+                    + ", ".join(map(str, sorted(unknown_geometry)))
+                )
+        after_root = [
+            (number, entry)
+            for number, entry in entries.items()
+            if number != self.root_number
+            and "start" in entry
+            and int(entry["start"]) >= root_end
+        ]
+        unknown_after_root = [
+            number for number, entry in entries.items()
+            if number != self.root_number
+            and not self._is_swap_partition(entry)
+            and (
+                number > self.root_number
+                or ("start" in entry and int(entry["start"]) >= root_end)
+            )
+        ]
+        if self.config.swap_policy in {"on", "off"} and unknown_after_root:
+            raise InstallerError(
+                "unsupported disk layout: non-swap partition(s) follow root "
+                f"({', '.join(map(str, sorted(unknown_after_root)))}); refusing to move or overwrite them"
+            )
+
+        retained_before_root = (
+            self._swap_partitions_before_root(entries, root_start)
+            if self.config.swap_policy == "on" else {}
+        )
+        # With swap untouched, root can grow only to the first existing
+        # partition boundary. Managed swap keeps pre-root swap partitions and
+        # replaces only the root-disk swap partitions after root; reserve a
+        # 1 MiB tail after the new layout. With swap off, reclaim that tail.
+        boundary = (
+            disk_sectors - end_buffer - extra_tail_sectors
+            if self.config.swap_policy == "on"
+            else disk_sectors - extra_tail_sectors
+        )
+        if self.config.swap_policy == "untouched":
+            next_starts = [int(entry["start"]) for _number, entry in after_root]
+            if next_starts:
+                boundary = min(boundary, min(next_starts))
+        if self.config.swap_policy == "on":
+            boundary = (boundary // alignment) * alignment
+
+        partitions: list[tuple[int, int]] = []
+        actual_swap_sectors = 0
+        tail_partition_count = 0
+        if self.config.swap_policy == "on":
+            total_gb = self._effective_swap_total_gb(disk_sectors * 512)
+            total_sectors = total_gb * GIB // 512
+            retained_sectors = sum(int(entry["size"]) for entry in retained_before_root.values())
+            tail_target_sectors = max(0, total_sectors - retained_sectors)
+            remaining_partition_slots = max(0, self.config.swap_partition_count - len(retained_before_root))
+            if tail_target_sectors < alignment:
+                # There is less than one aligned MiB of requested swap left;
+                # the retained pre-root partition already supplies the
+                # configured target to partition-table precision.
+                tail_target_sectors = 0
+            elif not remaining_partition_slots:
+                if retained_before_root:
+                    raise InstallerError(
+                        "pre-root swap partitions use all configured swap_partition_count slots, "
+                        "but do not meet swap_disk_total_gb; increase the configured count or total"
+                    )
+                raise InstallerError("swap_partition_count must be at least one when swap_policy=on")
+            else:
+                tail_partition_count = min(
+                    remaining_partition_slots,
+                    tail_target_sectors // alignment,
+                )
+            self._tail_swap_numbers(tail_partition_count, retained_before_root)
+            per_partition = (
+                tail_target_sectors // tail_partition_count
+                if tail_partition_count else 0
+            )
+            per_partition -= per_partition % alignment
+            if tail_partition_count and per_partition <= 0:
+                raise InstallerError(
+                    f"remaining swap target is too small for {tail_partition_count} aligned partitions"
+                )
+            actual_swap_sectors = per_partition * tail_partition_count
+            current_swap_start = (
+                (root_start + root_size + alignment - 1) // alignment
+            ) * alignment
+            available_after_current_root = max(0, boundary - current_swap_start)
+            if (
+                actual_swap_sectors > available_after_current_root
+                and self.config.root_resize_policy in {"untouched", "grow-only"}
+            ):
+                available_gib = available_after_current_root * 512 / GIB
+                requested_gib = tail_target_sectors * 512 / GIB
+                raise InstallerError(
+                    f"swap_policy=on requests {requested_gib:.2f} GiB, but only "
+                    f"{available_gib:.2f} GiB is free after the current root; "
+                    f"root_resize_policy={self.config.root_resize_policy} forbids the shrink needed "
+                    "to make room. Reduce swap_disk_total_gb or choose root_resize_policy=resize."
+                )
+
+        # Align the final root end (rather than only its length) so the swap
+        # start is exactly adjacent and growpart sees the same boundary.
+        max_root_end = (
+            ((boundary - actual_swap_sectors) // alignment) * alignment
+            if self.config.swap_policy == "on"
+            else boundary
+        )
+        max_root_size = max_root_end - root_start
+        if max_root_size <= 0:
+            raise InstallerError(
+                "requested swap leaves no usable space for a positive-size root partition; "
+                "reduce swap_disk_total_gb or increase the disk size"
+            )
+
+        policy = self.config.root_resize_policy
+        if policy == "untouched":
+            target_root_size = root_size
+        elif policy == "grow-only":
+            target_root_size = max(root_size, max_root_size)
+        else:  # resize
+            target_root_size = max_root_size
+
+        if self.config.swap_policy == "on":
+            root_end = root_start + target_root_size
+            first_swap_start = ((root_end + alignment - 1) // alignment) * alignment
+            required_end = first_swap_start + actual_swap_sectors
+            if required_end > boundary:
+                available_sectors = max(0, boundary - first_swap_start)
+                available_gib = available_sectors * 512 / GIB
+                wanted_gib = actual_swap_sectors * 512 / GIB
+                if policy == "untouched":
+                    reason = "root_resize_policy=untouched forbids changing the root"
+                elif policy == "grow-only":
+                    reason = "root_resize_policy=grow-only will not shrink the root"
+                else:
+                    reason = "the requested swap layout does not fit after resizing root"
+                raise InstallerError(
+                    f"swap_policy=on needs {wanted_gib:.2f} GiB, but only {available_gib:.2f} GiB "
+                    f"is available after the current root; {reason}; reduce swap_disk_total_gb "
+                    "or allow root_resize_policy=resize"
+                )
+            partitions = [
+                (first_swap_start + index * per_partition, per_partition)
+                for index in range(tail_partition_count)
+            ]
+        elif self.config.swap_policy == "untouched":
+            partitions = [
+                (int(entry["start"]), int(entry["size"]))
+                for _number, entry in sorted(swap_entries.items())
+                if "start" in entry and "size" in entry
+            ]
+
+        if target_root_size < root_size and policy != "resize":
+            raise InstallerError(f"root_resize_policy={policy} cannot shrink root")
+        if target_root_size < root_size:
+            if self.config.swap_policy == "untouched":
+                raise InstallerError(
+                    "root geometry cannot be safely reduced while swap_policy=untouched; "
+                    "preserve the existing layout or choose swap_policy=on/off"
+                )
+            if validate_shrink_safety:
+                self._validate_root_shrink_target(
+                    root_start,
+                    target_root_size,
+                    safety_facts=root_safety_facts,
+                )
+        return partitions, target_root_size
+
+    def _memory_total_bytes(self) -> int:
+        if self.actions.dry_run:
+            return 8 * GIB
+        text = Path("/proc/meminfo").read_text(encoding="utf-8")
+        match = re.search(r"^MemTotal:\s+(\d+)\s+kB$", text, re.MULTILINE)
+        if not match:
+            raise InstallerError("cannot determine guest RAM from /proc/meminfo for automatic swap sizing")
+        return int(match.group(1)) * 1024
+
+    def _effective_swap_total_gb(self, disk_bytes: int | None = None) -> int:
+        if self.config.swap_disk_total_gb is not None:
+            return self.config.swap_disk_total_gb
+        if disk_bytes is None:
+            disk_sectors, _root_start, _root_size = self._disk_facts()
+            disk_bytes = disk_sectors * 512
+        try:
+            return automatic_swap_size_gb(
+                disk_bytes=disk_bytes,
+                memory_bytes=self._memory_total_bytes(),
+            )
+        except ValueError as exc:
+            raise InstallerError(f"cannot derive automatic swap size: {exc}") from exc
+
+    def _live_partition_entries(
+        self, disk_sectors: int, root_start: int, root_size: int
+    ) -> dict[int, dict[str, str]]:
+        if self.actions.dry_run:
+            return {
+                self.root_number: {
+                    "start": str(root_start), "size": str(root_size),
+                    "type": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+                }
+            }
+        dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"])
+        return self._parse_partition_entries(dump)
+
+    @staticmethod
+    def _is_swap_partition(entry: dict[str, str]) -> bool:
+        partition_type = (entry.get("type") or "").lower()
+        return partition_type in {SWAP_TYPE_GUID, "82"}
+
+    def _swap_partitions_before_root(
+        self,
+        entries: dict[int, dict[str, str]],
+        root_start: int,
+    ) -> dict[int, dict[str, str]]:
+        """Return swap partitions wholly before root, keyed by partition number."""
+        retained: dict[int, dict[str, str]] = {}
+        for number, entry in entries.items():
+            if not self._is_swap_partition(entry):
+                continue
+            if "start" not in entry or "size" not in entry:
+                if self.config.swap_policy == "on":
+                    raise InstallerError(
+                        f"cannot preserve pre-root swap partition {number}: geometry is incomplete"
+                    )
+                continue
+            start = int(entry["start"])
+            end = start + int(entry["size"])
+            if end <= root_start:
+                retained[number] = entry
+            elif start < root_start:
+                raise InstallerError(
+                    f"swap partition {number} overlaps the root partition boundary; refusing disk changes"
+                )
+        return retained
+
+    def _tail_swap_numbers(self, count: int, retained_numbers: Iterable[int]) -> list[int]:
+        """Choose tail partition IDs without renumbering retained pre-root swap."""
+        retained = set(retained_numbers)
+        available = [
+            number for number in range(self.root_number + 1, 129)
+            if number not in retained
+        ]
+        if count > len(available):
+            raise InstallerError(
+                f"cannot allocate {count} swap partitions after root: GPT partition-number limit reached"
+            )
+        return available[:count]
+
+    def _validate_root_shrink_target(
+        self,
+        root_start: int,
+        target_sectors: int,
+        *,
+        safety_facts: tuple[int, int, int] | None = None,
+    ) -> None:
+        sector = 512
+        target_bytes = target_sectors * sector
+        minimum_root_bytes = self.config.preserve_root_size_gb * GIB
+        if target_bytes < minimum_root_bytes:
+            raise InstallerError(
+                f"planned root size {target_bytes / GIB:.2f} GiB is below preserve_root_size_gb "
+                f"({self.config.preserve_root_size_gb} GiB); reduce the swap target or lower the configured floor"
+            )
+        block_size, minimum_blocks, used_bytes = (
+            safety_facts if safety_facts is not None else self._root_shrink_safety_facts()
+        )
+        filesystem_minimum = minimum_blocks * block_size
+        safety_bytes = 256 * 1024 * 1024
+        if filesystem_minimum + safety_bytes > target_bytes:
+            raise InstallerError(
+                f"root filesystem minimum plus 256 MiB safety margin is "
+                f"{(filesystem_minimum + safety_bytes) / GIB:.2f} GiB, above the planned "
+                f"{target_bytes / GIB:.2f} GiB root size; reduce swap or increase disk size"
+            )
+        if self.actions.dry_run:
+            return
+        if used_bytes + safety_bytes > target_bytes:
+            raise InstallerError(
+                f"root currently uses {used_bytes / GIB:.2f} GiB of files/metadata, but the planned "
+                f"root size is {target_bytes / GIB:.2f} GiB (including a 256 MiB safety margin); "
+                "remove data or reduce the swap target"
+            )
+
+    def _root_shrink_safety_facts(self) -> tuple[int, int, int]:
+        """Snapshot filesystem minimum and used bytes for one shrink decision."""
+        block_size, minimum_blocks = self._root_filesystem_facts()
+        used_bytes = 0 if self.actions.dry_run else self._root_used_bytes()
+        return block_size, minimum_blocks, used_bytes
+
+    @staticmethod
+    def _root_used_bytes() -> int:
+        try:
+            stats = os.statvfs("/")
+        except OSError as exc:
+            raise InstallerError(f"cannot inspect current root filesystem usage: {exc}") from exc
+        return (stats.f_blocks - stats.f_bfree) * stats.f_frsize
 
     def _root_filesystem_facts(self) -> tuple[int, int]:
         """(block_size_bytes, minimum_blocks) for the live, mounted root filesystem.
@@ -1761,86 +2163,56 @@ MaxFileSec=1month
             raise InstallerError("could not determine minimum root filesystem size from resize2fs -P")
         return block_size, minimum_blocks
 
-    def _resolve_swap_plan(self) -> tuple[list[tuple[int, int]], int, bool]:
-        """Resolve (swap partitions, new root size, shrink_needed).
+    def _resolve_swap_plan(
+        self,
+        *,
+        extra_tail_sectors: int = 0,
+        validate_shrink_safety: bool = True,
+        root_safety_facts: tuple[int, int, int] | None = None,
+    ) -> tuple[list[tuple[int, int]], int, bool]:
+        """Resolve final root/swap geometry without making any disk changes."""
+        partitions, target_root_size = self._plan_swap_partitions(
+            extra_tail_sectors=extra_tail_sectors,
+            validate_shrink_safety=validate_shrink_safety,
+            root_safety_facts=root_safety_facts,
+        )
+        _disk_sectors, _root_start, current_root_size = self._disk_facts()
+        return partitions, target_root_size, target_root_size < current_root_size
 
-        Tries the free-space-already-covers-it plan first (Case A). Falls
-        back to a root-shrink-based plan when the disk lacks space for that
-        (Case B) -- the only difference between the two cases is whether
-        root itself must first shrink to (about) its filesystem minimum to
-        make room. Shared by _plan_root_shrink() (which also installs the
-        actual shrink hook when shrink_needed) and show_plan() (a pure,
-        no-side-effect preview) so both agree on what will actually happen,
-        instead of show_plan() calling _plan_swap_partitions() directly and
-        crashing unguarded on Case B (adversarial review finding,
-        2026-09-08: that crash happened inside _initial_report_message(),
-        called by install() BEFORE its own try/except around _stage1() --
-        so it produced no "Install FAILED" notification and no recorded
-        failure state at all, just a bare, silent process exit).
-        """
-        try:
-            partitions, new_root_size = self._plan_swap_partitions()
-        except RuntimeError as exc:
-            if "disk lacks space for known swap shape" not in str(exc):
-                raise
-        else:
-            return partitions, new_root_size, False
+    def _resolve_root_shrink_plan(
+        self,
+        *,
+        validate_shrink_safety: bool = True,
+        root_safety_facts: tuple[int, int, int] | None = None,
+    ) -> tuple[list[tuple[int, int]], int, bool]:
+        """Resolve the exact base/benchmark layout that the offline hook will apply."""
+        plan = self._resolve_swap_plan(
+            validate_shrink_safety=validate_shrink_safety,
+            root_safety_facts=root_safety_facts,
+        )
+        if self.config.run_io_benchmark and self.config.swap_policy != "untouched":
+            reserve_sectors = (
+                self.config.io_benchmark_max_size_gb + IOBENCH_SAFETY_MARGIN_GIB
+            ) * GIB // 512
+            try:
+                benchmark_plan = self._resolve_swap_plan(
+                    extra_tail_sectors=reserve_sectors,
+                    validate_shrink_safety=validate_shrink_safety,
+                    root_safety_facts=root_safety_facts,
+                )
+            except InstallerError as exc:
+                self._mark_step(
+                    "io_benchmark", "skipped",
+                    f"could not safely reserve a temporary partition: {exc}",
+                )
+            else:
+                plan = benchmark_plan
+        return plan
 
-        disk_sectors, root_start, root_size = self._disk_facts()
-        sector = 512
-        block_size, minimum_blocks = self._root_filesystem_facts()
-        minimum_sectors = (minimum_blocks * block_size + sector - 1) // sector
-        # Headroom above the filesystem's own reported minimum: resize2fs -P
-        # is an estimate, and shrinking to the exact byte-for-byte minimum
-        # leaves zero room for anything the live system wrote between that
-        # estimate and the offline shrink actually running.
-        safety_margin_sectors = (256 * 1024 * 1024) // sector
-        requested_sectors = self.config.preserve_root_size_gb * 1024 * 1024 * 1024 // sector
-        alignment = 2048
-        # Refuse outright rather than silently target a larger size than
-        # configured -- CASE-B-ROOT-SHRINK-DESIGN.md's explicit "always
-        # verify at runtime, refuse if it doesn't fit" rule. Clamping up via
-        # max() here would mean preserve_root_size_gb quietly stops being
-        # the number that governs the shrink the moment it's too small,
-        # with nothing telling the operator their configured value was
-        # overridden.
-        if requested_sectors < minimum_sectors + safety_margin_sectors:
-            raise InstallerError(
-                f"preserve_root_size_gb ({self.config.preserve_root_size_gb} GiB) is smaller than the "
-                f"root filesystem's own minimum plus margin ({(minimum_sectors + safety_margin_sectors) * sector / 1024**3:.2f} GiB); "
-                f"raise preserve_root_size_gb rather than shrinking further than configured"
-            )
-        target_root_sectors = ((requested_sectors + alignment - 1) // alignment) * alignment
-        if target_root_sectors >= root_size:
-            raise InstallerError(
-                f"root shrink target ({target_root_sectors} sectors) is not smaller than the current "
-                f"root ({root_size} sectors); refusing to plan a no-op or growing shrink"
-            )
-
-        # per_device is the identical computation _plan_swap_partitions() just
-        # did with these same config values -- reaching this line already
-        # proves it raised "lacks space", not "too small for N devices", so
-        # per_device > 0 here is an established invariant, not something to
-        # re-check.
-        total_swap_sectors = self.config.swap_disk_total_gb * 1024 * 1024 * 1024 // sector
-        per_device = total_swap_sectors // self.config.swap_file_count
-        per_device -= per_device % alignment
-        actual_total = per_device * self.config.swap_file_count
-        end_buffer = 2048
-        first_swap_start = ((root_start + target_root_sectors + alignment - 1) // alignment) * alignment
-        required_end = first_swap_start + actual_total + end_buffer
-        if required_end > disk_sectors:
-            needed_gib = (required_end - disk_sectors + 1024 ** 3 - 1) // 1024 ** 3
-            raise InstallerError(
-                f"disk still lacks space for the known swap shape even after shrinking root to its "
-                f"filesystem minimum; reduce swap by about {needed_gib} GiB"
-            )
-        swap_partitions = [
-            (first_swap_start + index * per_device, per_device) for index in range(self.config.swap_file_count)
-        ]
-        return swap_partitions, target_root_sectors, True
-
-    def _plan_root_shrink(self) -> None:
+    def _plan_root_shrink(
+        self,
+        resolved_plan: tuple[list[tuple[int, int]], int, bool] | None = None,
+    ) -> None:
         """Case B: install an initramfs hook to shrink root offline, pre-mount.
 
         Called late in _stage1(), before _install_stage2()/_reboot() -- an
@@ -1851,10 +2223,14 @@ MaxFileSec=1month
         _apply_known_swap_shape() handles it exactly as today) unless the
         disk lacks space for the known swap shape as-is.
         """
-        swap_partitions, target_root_sectors, shrink_needed = self._resolve_swap_plan()
+        swap_partitions, target_root_sectors, shrink_needed = (
+            resolved_plan if resolved_plan is not None else self._resolve_root_shrink_plan()
+        )
         if not shrink_needed:
             self._mark_step("root_shrink", "not_needed", "existing free space already covers the planned swap shape")
             return
+        if self.config.swap_policy == "untouched":
+            raise InstallerError("refusing to shrink root while swap_policy=untouched")
 
         self._packages(["e2fsprogs"], "stage1")
         _, _, root_size = self._disk_facts()
@@ -1868,6 +2244,7 @@ MaxFileSec=1month
             f"DISK=/dev/{self.root_disk}\n",
             f"TARGET_BLOCKS={target_blocks}\n",
             f"TARGET_SECTORS={target_root_sectors}\n",
+            f"SAFETY_BLOCKS={(256 * 1024 * 1024 + block_size - 1) // block_size}\n",
             "SFDISK_PLAN=/etc/vbpub/root-shrink-plan.sfdisk\n",
         ])
         self.actions.write_file("/etc/vbpub/root-shrink-plan.sfdisk", plan_text, 0o600)
@@ -2002,12 +2379,8 @@ MaxFileSec=1month
     def _write_sfdisk_plan(self, partitions: list[tuple[int, int]], new_root_size: int) -> str:
         prefix = self._partition_base
         if self.actions.dry_run:
-            dump = "\n".join([
-                "label: gpt",
-                f"device: /dev/{self.root_disk}",
-                "",
-                f"{prefix}{self.root_number} : start=2500608, size={new_root_size}, type=0fc63daf-8483-4772-8e79-3d69d8477de4",
-            ])
+            _disk_sectors, root_start, root_size = self._disk_facts()
+            dump = self._current_partition_dump(root_start, root_size)
         else:
             dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
         # Excludes ANY partition line (not just root's own) -- the `kept`
@@ -2020,6 +2393,10 @@ MaxFileSec=1month
             line for line in dump.splitlines()
             if ":" in line and not line.startswith(prefix)
         ]
+        current_entries = self._parse_partition_entries(dump)
+        root_entry = current_entries.get(self.root_number, {})
+        root_start = int(root_entry.get("start", "0"))
+        retained_before_root = self._swap_partitions_before_root(current_entries, root_start)
         kept: list[str] = []
         for line in dump.splitlines():
             columns = line.split()
@@ -2029,7 +2406,14 @@ MaxFileSec=1month
                 number = int(columns[0][len(prefix):])
             except ValueError:
                 continue
-            if number < self.root_number:
+            is_managed_swap = (
+                self.config.swap_policy in {"on", "off"}
+                and self._is_swap_partition(current_entries.get(number, {}))
+            )
+            is_retained_pre_root_swap = (
+                self.config.swap_policy == "on" and number in retained_before_root
+            )
+            if (number < self.root_number and not is_managed_swap) or is_retained_pre_root_swap:
                 kept.append(line)
         lines = [*header_lines, ""]
         for line in kept:
@@ -2062,26 +2446,37 @@ MaxFileSec=1month
         if not inserted:
             rebuilt.append(f"size={new_root_size}")
         lines.append(f"{prefix}{self.root_number} : " + ", ".join(rebuilt))
-        for index, (start, size) in enumerate(partitions, start=self.root_number + 1):
-            lines.append(f"{prefix}{index} : start={start}, size={size}, type={SWAP_TYPE_GUID}")
+        for number, (start, size) in zip(
+            self._tail_swap_numbers(len(partitions), retained_before_root), partitions
+        ):
+            lines.append(f"{prefix}{number} : start={start}, size={size}, type={SWAP_TYPE_GUID}")
         return "\n".join(lines) + "\n"
 
     def _apply_known_swap_shape(self) -> None:
+        if self.config.swap_policy == "untouched":
+            self._mark_step("partitions", "skipped", "swap_policy=untouched; disk layout is preserved")
+            return
         partitions, new_root_size = self._plan_swap_partitions()
+        _disk_sectors, _root_start, current_root_size = self._disk_facts()
+        if not self.actions.dry_run and new_root_size < current_root_size:
+            raise InstallerError(
+                "root shrink was required but the initramfs resize step did not apply it; "
+                "refusing to write swap partitions"
+            )
+        # Root growth is applied after the free-space/swap boundary exists,
+        # through growpart. Never publish a larger mounted-root partition in
+        # this raw full-table write.
+        write_root_size = min(new_root_size, current_root_size)
         preflight = self._preflight_disk_transaction()
         if self.actions.dry_run:
-            current_dump = "\n".join([
-                "label: gpt",
-                f"device: /dev/{self.root_disk}",
-                "",
-                f"{self._partition_base}{self.root_number} : start=2500608, size={new_root_size}, type=0fc63daf-8483-4772-8e79-3d69d8477de4",
-            ])
+            _disk_sectors, root_start, root_size = self._disk_facts()
+            current_dump = self._current_partition_dump(root_start, current_root_size)
         else:
             current_dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
         current_entries = self._parse_partition_entries(current_dump)
-        plan_text = self._write_sfdisk_plan(partitions, new_root_size)
+        plan_text = self._write_sfdisk_plan(partitions, write_root_size)
         plan_entries = self._parse_partition_entries(plan_text)
-        self._validate_plan_geometry(current_entries, plan_entries, new_root_size)
+        self._validate_plan_geometry(current_entries, plan_entries, write_root_size)
         backup_dir = Path(self.config.state_dir) / "backups"
         timestamp = int(time.time())
         backup_name = f"ptable-{timestamp}.sfdisk"
@@ -2090,17 +2485,43 @@ MaxFileSec=1month
         if self.actions.dry_run:
             self.actions.write_file(plan_path, plan_text)
         else:
-            self.actions.write_file(str(backup_dir / backup_name), current_dump, 0o600)
-            backup_digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
-            self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
-            self.actions.write_file(plan_path, plan_text)
-            self._write_and_verify_partition_plan(
-                current_dump=current_dump,
-                plan_text=plan_text,
-                plan_entries=plan_entries,
-                new_numbers=range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1),
-                backup_path=str(backup_dir / backup_name),
-            )
+            current_geometry = {
+                number: self._geometry_for_comparison(entry)
+                for number, entry in current_entries.items()
+            }
+            plan_geometry = {
+                number: self._geometry_for_comparison(entry)
+                for number, entry in plan_entries.items()
+            }
+            if current_geometry != plan_geometry:
+                self.actions.write_file(str(backup_dir / backup_name), current_dump, 0o600)
+                backup_digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
+                self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
+                self.actions.write_file(plan_path, plan_text)
+                old_numbers = {
+                    number for number, entry in current_entries.items()
+                    if self._is_swap_partition(entry)
+                }
+                new_numbers = {
+                    number for number, entry in plan_entries.items()
+                    if self._is_swap_partition(entry)
+                }
+                changed_numbers = {
+                    number for number in old_numbers & new_numbers
+                    if self._geometry_for_comparison(current_entries[number])
+                    != self._geometry_for_comparison(plan_entries[number])
+                }
+                self._write_and_verify_partition_plan(
+                    current_dump=current_dump,
+                    plan_text=plan_text,
+                    plan_entries=plan_entries,
+                    new_numbers=new_numbers - old_numbers,
+                    delete_numbers=old_numbers - new_numbers,
+                    update_numbers=changed_numbers,
+                    backup_path=str(backup_dir / backup_name),
+                )
+            else:
+                self._mark_step("partitions", "success", "disk partition layout already matches the requested swap policy")
         manifest = {
             "preflight": preflight,
             "plan": plan_text,
@@ -2122,8 +2543,10 @@ MaxFileSec=1month
         current_dump: str,
         plan_text: str,
         plan_entries: dict[int, dict[str, str]],
-        new_numbers: range,
+        new_numbers: Iterable[int],
         backup_path: str,
+        delete_numbers: Iterable[int] = (),
+        update_numbers: Iterable[int] = (),
         record_in_dry_run: bool = False,
     ) -> None:
         """Forward sfdisk write + partx -a + udevadm settle + readback verify.
@@ -2139,6 +2562,9 @@ MaxFileSec=1month
         wants its action sequence in the plan); then actions are recorded, but
         no readback comparison and no device-node wait happen.
         """
+        new_numbers = tuple(new_numbers)
+        delete_numbers = tuple(delete_numbers)
+        update_numbers = tuple(update_numbers)
         if not self.actions.dry_run or record_in_dry_run:
             # input=plan_text is REQUIRED -- sfdisk with no positional script
             # argument reads its new table from stdin (this is exactly how
@@ -2184,14 +2610,21 @@ MaxFileSec=1month
             # partitions 1-3"). inuse_partition_editor.Table.write() itself
             # already scopes this correctly (`partx --add --nr min:max`);
             # the port here had dropped that scoping.
-            self._run(
-                [
-                    "/usr/bin/partx", "-a", "--nr",
-                    f"{new_numbers[0]}:{new_numbers[-1]}",
-                    f"/dev/{self.root_disk}",
-                ],
-                "register new partitions with the kernel", dangerous=True,
-            )
+            for number_range in self._partition_number_ranges(delete_numbers):
+                self._run_with_retries(
+                    ["/usr/bin/partx", "-d", "--nr", number_range, f"/dev/{self.root_disk}"],
+                    "remove obsolete swap partitions from the kernel",
+                )
+            for number_range in self._partition_number_ranges(update_numbers):
+                self._run_with_retries(
+                    ["/usr/bin/partx", "-u", "--nr", number_range, f"/dev/{self.root_disk}"],
+                    "update resized swap partitions in the kernel",
+                )
+            for number_range in self._partition_number_ranges(new_numbers):
+                self._run_with_retries(
+                    ["/usr/bin/partx", "-a", "--nr", number_range, f"/dev/{self.root_disk}"],
+                    "register new partitions with the kernel",
+                )
             self._run(["/usr/bin/udevadm", "settle"], "wait for udev to create new device nodes")
             readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
             readback_entries = self._parse_partition_entries(readback)
@@ -2218,7 +2651,13 @@ MaxFileSec=1month
                     if expected != actual:
                         diff_parts.append(f"p{number}: expected={expected} actual={actual}")
                 mismatch_detail = "; ".join(diff_parts) or "(dicts differ but no per-number diff found)"
-                self._restore_partition_table(current_dump, new_numbers, "rollback failed partition write")
+                self._restore_partition_table(
+                    current_dump,
+                    new_numbers,
+                    "rollback failed partition write",
+                    add_numbers=delete_numbers,
+                    update_numbers=update_numbers,
+                )
                 raise InstallerError(
                     f"partition table verification failed; restored backup {backup_path}; "
                     f"diff: {mismatch_detail}"
@@ -2244,7 +2683,15 @@ MaxFileSec=1month
                 time.sleep(backoff)
         raise AssertionError("unreachable")  # pragma: no cover
 
-    def _restore_partition_table(self, dump: str, drop_numbers: range, why: str) -> None:
+    def _restore_partition_table(
+        self,
+        dump: str,
+        drop_numbers: Iterable[int],
+        why: str,
+        *,
+        add_numbers: Iterable[int] = (),
+        update_numbers: Iterable[int] = (),
+    ) -> None:
         """Write ``dump`` back with sfdisk and retract ``drop_numbers`` from the kernel.
 
         The single rollback primitive: used by _write_and_verify_partition_plan()
@@ -2271,6 +2718,9 @@ MaxFileSec=1month
         # unterminated line fine, but an unintentional divergence
         # from the reference inuse_partition_editor.py, which
         # never strips at all).
+        drop_numbers = tuple(drop_numbers)
+        add_numbers = tuple(add_numbers)
+        update_numbers = tuple(update_numbers)
         # udevadm settle FIRST: right after a mkfs/umount udev may still be
         # probing the device, which makes the partx -d below fail EBUSY.
         self._run(["/usr/bin/udevadm", "settle"], "wait for udev before restoring the partition table")
@@ -2302,17 +2752,21 @@ MaxFileSec=1month
         # treats an already-absent partition as success (ENXIO), so
         # this is safe/idempotent even if the forward path never got
         # as far as registering them.
-        self._run_with_retries(
-            [
-                "/usr/bin/partx", "-d", "--nr",
-                f"{drop_numbers[0]}:{drop_numbers[-1]}",
-                f"/dev/{self.root_disk}",
-            ],
-            "retract stale partitions after rollback",
-        )
-        self._run_with_retries(
-            ["/usr/bin/partx", "-u", f"/dev/{self.root_disk}"], "refresh kernel view after rollback"
-        )
+        for number_range in self._partition_number_ranges(drop_numbers):
+            self._run_with_retries(
+                ["/usr/bin/partx", "-d", "--nr", number_range, f"/dev/{self.root_disk}"],
+                "retract stale partitions after rollback",
+            )
+        for number_range in self._partition_number_ranges(update_numbers):
+            self._run_with_retries(
+                ["/usr/bin/partx", "-u", "--nr", number_range, f"/dev/{self.root_disk}"],
+                "restore changed partition geometry after rollback",
+            )
+        for number_range in self._partition_number_ranges(add_numbers):
+            self._run_with_retries(
+                ["/usr/bin/partx", "-a", "--nr", number_range, f"/dev/{self.root_disk}"],
+                "restore deleted partitions after rollback",
+            )
         self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
 
     # ------------------------------------------------------------------
@@ -2325,28 +2779,47 @@ MaxFileSec=1month
     # ------------------------------------------------------------------
 
     def _benchmark_partition_number(self) -> int:
-        # Above every swap partition number (root+1 .. root+swap_file_count):
+        # Above every swap partition number (root+1 .. root+swap_partition_count):
         # never collides with the swap shape's own numbering, and "present
         # with our name" unambiguously identifies a leftover.
-        return self.root_number + self.config.swap_file_count + 1
+        return self.root_number + self.config.swap_partition_count + 1
 
     def _current_partition_dump(self, root_start: int, root_size: int) -> str:
         if self.actions.dry_run:
-            return "\n".join([
+            disk_sectors = max(1, root_start + root_size)
+            entries = self._live_partition_entries(disk_sectors, root_start, root_size)
+            lines = [
                 "label: gpt",
                 f"device: /dev/{self.root_disk}",
                 "",
-                f"{self._partition_base}{self.root_number} : start={root_start}, size={root_size}, "
-                f"type={IOBENCH_FS_TYPE_GUID}",
-            ])
+            ]
+            entries.setdefault(
+                self.root_number,
+                {
+                    "start": str(root_start), "size": str(root_size),
+                    "type": IOBENCH_FS_TYPE_GUID,
+                },
+            )
+            for number, entry in sorted(entries.items()):
+                if "start" not in entry or "size" not in entry:
+                    raise InstallerError(
+                        f"dry-run partition {number} has incomplete geometry"
+                    )
+                partition_type = entry.get("type") or IOBENCH_FS_TYPE_GUID
+                lines.append(
+                    f"{self._partition_base}{number} : start={entry['start']}, "
+                    f"size={entry['size']}, type={partition_type}"
+                )
+            return "\n".join(lines)
         return self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
 
     def _plan_benchmark_partition(self, disk_sectors: int, swap_required_end: int) -> tuple[int, int] | None:
         """(start, size) in sectors of the throwaway partition, or None if too small.
 
-        Placed at the TAIL of the disk, so it can never overlap the region the
-        swap shape will occupy. size = min(io_benchmark_max_size_gb,
-        tail free - swap requirement - safety margin), 2048-sector aligned.
+        Placed at the TAIL of the disk beyond every live partition plus a
+        safety margin. The final root/swap shape is applied only after this
+        partition is removed, so it may reuse free space occupied temporarily
+        by the benchmark. Size is capped by the configured maximum and aligned.
         """
         alignment = 2048
         end_buffer = 2048
@@ -2593,12 +3066,15 @@ MaxFileSec=1month
         previous = state.get("steps", {}).get("io_benchmark")
         if previous and previous.get("status") in IOBENCH_FINAL_STATUSES:
             return
-        number = self._benchmark_partition_number()
-        device = f"{self._partition_base}{number}"
         disk_sectors, root_start, root_size = self._disk_facts()
         self._mark_step("io_benchmark", "started", "")
         current_dump = self._current_partition_dump(root_start, root_size)
         current_entries = self._parse_partition_entries(current_dump)
+        number = self._benchmark_partition_number()
+        device = f"{self._partition_base}{number}"
+        if number > 128:
+            self._mark_step("io_benchmark", "skipped", "no available GPT partition number for the scratch partition")
+            return
         if number in current_entries:
             if current_entries[number].get("name") != IOBENCH_PARTITION_NAME:
                 self._mark_step("io_benchmark", "skipped", f"partition {number} already exists and is not ours")
@@ -2626,13 +3102,20 @@ MaxFileSec=1month
         summary = ""
         try:
             try:
-                if swap_written:
-                    swap_required_end = max(
-                        (int(a["start"]) + int(a["size"]) for a in current_entries.values()), default=0
-                    )
-                else:
-                    swap_partitions, _ = self._plan_swap_partitions()
-                    swap_required_end = swap_partitions[-1][0] + swap_partitions[-1][1]
+                # ``swap_written`` describes the caller's stage-two path, but
+                # the live partition table is authoritative in either case:
+                # never place scratch storage over any partition already there.
+                # Protect the actual table, not the future final layout. The
+                # benchmark partition is fully removed and verified before
+                # any managed root/swap geometry is applied, so reserving the
+                # final swap extent here would needlessly skip small disks.
+                swap_required_end = max(
+                    root_start + root_size,
+                    max(
+                        (int(a["start"]) + int(a["size"]) for a in current_entries.values()),
+                        default=0,
+                    ),
+                )
                 geometry = self._plan_benchmark_partition(disk_sectors, swap_required_end)
                 if geometry is None:
                     skip_reason = (
@@ -2781,45 +3264,99 @@ MaxFileSec=1month
                 raise InstallerError(f"health gate failed: zswap {name} is {actual!r}, expected {want!r}")
 
     def _health_gate_swap_devices(self, *, mark_step: bool = True) -> None:
-        expected_numbers = range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
-        prefix = self._partition_base
-        swaps_output = self._run(["/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings"], dangerous=False) if not self.actions.dry_run else ""
-        active_names = {line.split()[0] for line in swaps_output.splitlines() if line.strip()}
         fstab_path = Path("/etc/fstab")
         fstab_lines = fstab_path.read_text(encoding="utf-8").splitlines() if fstab_path.is_file() else []
-        fstab_partuuids = {
-            line.split()[0].removeprefix("PARTUUID=")
-            for line in fstab_lines
-            if len(line.split()) >= 3 and line.split()[2].lower() == "swap" and line.split()[0].startswith("PARTUUID=")
-        }
-        for number in expected_numbers:
-            path = f"{prefix}{number}"
-            partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
-            if not partuuid:
-                raise InstallerError(f"health gate failed: missing PARTUUID on {path}")
-            if not self.actions.dry_run and path not in active_names:
-                raise InstallerError(f"health gate failed: {path} is formatted but not active")
-            if not self.actions.dry_run and partuuid not in fstab_partuuids:
-                raise InstallerError(f"health gate failed: {path} PARTUUID is absent from fstab")
-        self._health_gate_zswap()
+        fstab_swap_lines = [
+            line for line in fstab_lines
+            if line.strip() and len(line.split()) >= 3 and line.split()[2].lower() == "swap"
+        ]
+        if self.config.swap_policy == "on":
+            disk_sectors, root_start, root_size = self._disk_facts()
+            live = self._live_partition_entries(disk_sectors, root_start, root_size)
+            retained = self._swap_partitions_before_root(live, root_start)
+            tail_partitions, _target_root_size = self._plan_swap_partitions()
+            expected_numbers = sorted({
+                *retained,
+                *self._tail_swap_numbers(len(tail_partitions), retained),
+            })
+            prefix = self._partition_base
+            swaps_output = self._run(
+                ["/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings"], dangerous=False
+            ) if not self.actions.dry_run else ""
+            active_names = {line.split()[0] for line in swaps_output.splitlines() if line.strip()}
+            fstab_partuuids = {
+                line.split()[0].removeprefix("PARTUUID=")
+                for line in fstab_swap_lines
+                if line.split()[0].startswith("PARTUUID=")
+            }
+            for number in expected_numbers:
+                path = f"{prefix}{number}"
+                partuuid = "dry-run" if self.actions.dry_run else self._run(
+                    ["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path]
+                )
+                if not partuuid:
+                    raise InstallerError(f"health gate failed: missing PARTUUID on {path}")
+                if not self.actions.dry_run and path not in active_names:
+                    raise InstallerError(f"health gate failed: {path} is formatted but not active")
+                if not self.actions.dry_run and partuuid not in fstab_partuuids:
+                    raise InstallerError(f"health gate failed: {path} PARTUUID is absent from fstab")
+            swap_detail = f"{len(expected_numbers)} swaps verified ({len(retained)} retained before root)"
+        elif self.config.swap_policy == "off":
+            swaps_output = self._run(
+                ["/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings"], dangerous=False
+            ) if not self.actions.dry_run else ""
+            if not self.actions.dry_run and swaps_output.strip():
+                raise InstallerError("health gate failed: swap_policy=off but active swap remains")
+            if not self.actions.dry_run and fstab_swap_lines:
+                raise InstallerError("health gate failed: swap_policy=off but /etc/fstab still enables swap")
+            swap_detail = "swap disabled and persistent fstab entries removed"
+        else:
+            swap_detail = "swap_policy=untouched; swap state was not modified"
+        if self.config.run_zswap_config:
+            self._health_gate_zswap()
         self._health_gate_iocost()
         output_file = Path(self.config.stage2_output)
         if not self.actions.dry_run and not (output_file.is_file() and output_file.stat().st_size >= 0):
             raise InstallerError(f"health gate failed: stage2 log does not exist: {output_file}")
         if mark_step:
-            self._mark_step("health_gate", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} swaps verified")
+            self._mark_step("health_gate", "planned" if self.actions.dry_run else "success", swap_detail)
+
+    def _disable_active_swap(self) -> None:
+        if self.config.swap_policy == "untouched":
+            return
+        if self.config.swap_policy == "on":
+            self._remove_managed_swap_backings()
+            return
+        self._run(["/usr/sbin/swapoff", "-a"], "disable active swap before applying the configured swap policy", True)
+        if not self.actions.dry_run and self._active_swap_sources():
+            raise InstallerError("swapoff returned successfully but active swap remains")
+        if self.config.swap_policy == "off":
+            self._persist_fstab([])
+            self._mark_step("swap_partitions", "success" if not self.actions.dry_run else "planned", "swap disabled; existing backing files/LVs are not deleted")
 
     def _activate_swap_partitions(self) -> None:
+        if self.config.swap_policy != "on":
+            return
         prefix = self._partition_base
-        first_number = self.root_number + 1
-        last_number = self.root_number + self.config.swap_file_count
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        retained = self._swap_partitions_before_root(live, root_start)
+        tail_partitions, _target_root_size = self._plan_swap_partitions()
+        tail_numbers = self._tail_swap_numbers(len(tail_partitions), retained)
+        layout = [
+            (number, int(entry["start"]), int(entry["size"]), True)
+            for number, entry in retained.items()
+        ]
+        layout.extend(
+            (number, start, size, False)
+            for number, (start, size) in zip(tail_numbers, tail_partitions)
+        )
+        layout.sort(key=lambda item: item[1])
         fstab_entries = []
-        if not self.actions.dry_run:
-            self._run(["/usr/sbin/swapoff", "-a"], "disable existing swap before formatting fresh devices", True)
         discard = ",discard=once" if self.config.swap_discard else ""
-        for offset, number in enumerate(range(first_number, last_number + 1), start=1):
+        for offset, (number, _start, _size, was_retained) in enumerate(layout, start=1):
             path = f"{prefix}{number}"
-            label = f"vbpub-swap{offset}"
+            label = f"vbpub-swap-pre{offset}" if was_retained else f"vbpub-swap{offset}"
             partuuid = "dry-run" if self.actions.dry_run else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", path])
             if not self.actions.dry_run and not partuuid:
                 raise InstallerError(f"expected swap partition has no PARTUUID after partitioning: {path}")
@@ -2830,11 +3367,317 @@ MaxFileSec=1month
                 raise InstallerError(f"PARTUUID disappeared after mkswap: {path}")
             fstab_entries.append(f"PARTUUID={refreshed} none swap sw,pri={self.config.swap_priority}{discard} 0 0")
         self._persist_fstab(fstab_entries)
-        self._mark_step("swap_partitions", "planned" if self.actions.dry_run else "success", f"{self.config.swap_file_count} native GPT swaps, labeled vbpub-swapN")
+        self._mark_step(
+            "swap_partitions",
+            "planned" if self.actions.dry_run else "success",
+            f"{len(layout)} native GPT swaps activated ({len(retained)} retained before root)",
+        )
+
+    def _grow_root_to_plan(self) -> None:
+        """Grow the root partition/filesystem after its final boundary is present."""
+        _disk_sectors, root_start, current_size = self._disk_facts()
+        _partitions, target_size, _shrink_needed = self._resolve_swap_plan()
+        if self.config.root_resize_policy == "untouched":
+            self._mark_step("root_resize", "not_needed", "root_resize_policy=untouched")
+            return
+        if current_size > target_size:
+            raise InstallerError(
+                f"root partition is {current_size} sectors, larger than the planned {target_size}; "
+                "the offline shrink step did not complete"
+            )
+        prior_status = ""
+        state_path = Path(self.config.state_dir) / "state.json"
+        if state_path.is_file():
+            prior_status = self.state.load().get("steps", {}).get("root_resize", {}).get("status", "")
+        if current_size == target_size and prior_status in {"success", "not_needed"}:
+            return
+        # The planner only grows supported ext filesystems. This read-only
+        # probe also refuses unknown root filesystems before growpart edits GPT.
+        self._root_filesystem_facts()
+        self._mark_step("root_resize", "started", f"current={current_size} target={target_size}")
+        if target_size > current_size:
+            self._packages(["cloud-guest-utils"], "stage2")
+            growpart = "/usr/bin/growpart" if self.actions.dry_run else shutil.which("growpart")
+            if not growpart:
+                raise InstallerError("cloud-guest-utils installed but growpart is still not on PATH")
+            self._run(
+                [growpart, "--fudge", "0", f"/dev/{self.root_disk}", str(self.root_number)],
+                "grow root partition up to the planned swap/partition boundary",
+                dangerous=True,
+            )
+        if self.actions.dry_run:
+            self._run(
+                ["/usr/sbin/resize2fs", self.root_partition_path],
+                "grow root filesystem to the enlarged partition",
+                dangerous=True,
+            )
+            self._mark_step("root_resize", "planned", f"grow root partition/filesystem to {target_size} sectors")
+            return
+        if target_size > current_size:
+            disk_sectors, _root_start, grown_size = self._disk_facts()
+            entries = self._live_partition_entries(disk_sectors, root_start, grown_size)
+            original_root_end = root_start + current_size
+            following_starts = []
+            for number, entry in entries.items():
+                if number == self.root_number:
+                    continue
+                if "start" not in entry or "size" not in entry:
+                    raise InstallerError(
+                        f"cannot verify root growth boundary: partition {number} has incomplete geometry"
+                    )
+                start = int(entry["start"])
+                size = int(entry["size"])
+                if start < original_root_end and start + size > root_start:
+                    raise InstallerError(
+                        f"partition {number} overlaps the original root extent; refusing root growth"
+                    )
+                if start >= original_root_end:
+                    following_starts.append(start)
+            permitted_end = min(following_starts) if following_starts else disk_sectors
+            maximum_size = permitted_end - root_start
+            if grown_size < target_size or grown_size > maximum_size:
+                raise InstallerError(
+                    f"growpart produced root size {grown_size} sectors; the plan requires at least "
+                    f"{target_size} and the next partition/disk boundary permits at most {maximum_size}; "
+                    "refusing to resize the filesystem to an unexpected boundary"
+                )
+        else:
+            grown_size = current_size
+        self._run(
+            ["/usr/sbin/resize2fs", self.root_partition_path],
+            "grow root filesystem to fill its partition",
+            dangerous=True,
+        )
+        self._mark_step("root_resize", "success", f"root partition/filesystem grown to {grown_size} sectors")
+
+    def _ensure_disk_transaction_manifest(self) -> None:
+        """Persist a checksummed pre-change table even when the policy is a no-op."""
+        manifest_path = Path(self.config.state_dir) / "disk-transaction.json"
+        if self.actions.dry_run:
+            if str(manifest_path) in self.actions.dry_run_writes:
+                return
+        elif manifest_path.is_file():
+            return
+        disk_sectors, root_start, root_size = self._disk_facts()
+        current_dump = self._current_partition_dump(root_start, root_size)
+        preflight = self._preflight_disk_transaction()
+        timestamp = int(time.time())
+        backup_dir = Path(self.config.state_dir) / "backups"
+        backup_name = f"ptable-{timestamp}.sfdisk"
+        checksum_name = f"{backup_name}.sha256"
+        backup_path = backup_dir / backup_name
+        checksum_path = backup_dir / checksum_name
+        digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
+        self.actions.write_file(str(backup_path), current_dump + "\n", 0o600)
+        self.actions.write_file(str(checksum_path), f"{digest}  {backup_name}\n", 0o644)
+        _partitions, target_root, _shrink = self._resolve_swap_plan()
+        manifest = {
+            "preflight": preflight,
+            "operation": "layout-snapshot-before-root-resize",
+            "plan": current_dump,
+            "current": current_dump,
+            "backup": str(backup_path),
+            "checksum": str(checksum_path),
+            "new_root_size_sectors": target_root,
+        }
+        self.actions.write_file(
+            str(manifest_path), json.dumps(manifest, indent=2, sort_keys=True) + "\n", 0o600
+        )
+
+    def _read_fstab_lines(self) -> list[str]:
+        fstab_path = Path("/etc/fstab")
+        if self.actions.dry_run or not fstab_path.is_file():
+            return []
+        return fstab_path.read_text(encoding="utf-8").splitlines()
+
+    @staticmethod
+    def _decode_fstab_field(value: str) -> str:
+        return re.sub(
+            r"\\([0-7]{3})",
+            lambda match: chr(int(match.group(1), 8)),
+            value,
+        )
+
+    def _fstab_swap_sources(self) -> list[str]:
+        sources: list[str] = []
+        for line in self._read_fstab_lines():
+            fields = line.split()
+            if fields and not fields[0].startswith("#") and len(fields) >= 3 and fields[2].lower() == "swap":
+                sources.append(self._decode_fstab_field(fields[0]))
+        return list(dict.fromkeys(sources))
+
+    def _active_swap_sources(self) -> dict[str, str]:
+        output = self._run(
+            ["/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings"],
+            "inspect active swap sources",
+            dangerous=False,
+        )
+        sources: dict[str, str] = {}
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) >= 2:
+                sources[self._decode_fstab_field(fields[0])] = fields[1].lower()
+        return sources
+
+    def _resolve_swap_block_source(self, source: str) -> str | None:
+        if source.startswith("/dev/"):
+            return source
+        if "=" not in source:
+            return None
+        kind, value = source.split("=", 1)
+        if not value:
+            return None
+        if kind == "UUID":
+            argv = ["/usr/sbin/blkid", "-U", value]
+        elif kind == "LABEL":
+            argv = ["/usr/sbin/blkid", "-L", value]
+        elif kind in {"PARTUUID", "PARTLABEL"}:
+            argv = ["/usr/sbin/blkid", "-t", f"{kind}={value}", "-o", "device"]
+        else:
+            return None
+        try:
+            output = self._run(argv, "resolve configured swap source", dangerous=False)
+        except ActionError:
+            return None
+        matches = [line.strip() for line in output.splitlines() if line.strip()]
+        if len(matches) > 1:
+            raise InstallerError(f"swap source {source!r} resolves to multiple block devices")
+        return matches[0] if matches else None
+
+    def _swap_backing_removal_targets(
+        self,
+        active: dict[str, str],
+        fstab_sources: list[str],
+    ) -> tuple[list[str], list[str]]:
+        """Identify only configured swapfiles and LVs; leave ordinary partitions intact."""
+        files: set[str] = set()
+        logical_volumes: set[str] = set()
+        configured_sources = set(fstab_sources)
+        for source in dict.fromkeys([*active, *fstab_sources]):
+            active_type = active.get(source)
+            configured = source in configured_sources
+            if source.startswith("/") and not source.startswith("/dev/"):
+                path = Path(source)
+                if path.is_symlink():
+                    if active_type == "file" or configured:
+                        raise InstallerError(
+                            f"configured swapfile is a symlink; refusing to delete its target: {source}"
+                        )
+                    continue
+                if not path.is_file():
+                    if active_type == "file":
+                        raise InstallerError(f"active swapfile is not a regular file: {source}")
+                    if configured and path.exists():
+                        raise InstallerError(
+                            f"fstab declares {source} as swap but it is not a regular file; refusing cleanup"
+                        )
+                    continue
+                if active_type == "file":
+                    files.add(source)
+                    continue
+                try:
+                    signature = self._run(
+                        ["/usr/sbin/blkid", "-p", "-s", "TYPE", "-o", "value", source],
+                        "verify configured swapfile signature",
+                        dangerous=False,
+                    )
+                except ActionError as exc:
+                    if configured:
+                        raise InstallerError(
+                            f"cannot verify configured swapfile {source}; refusing to remove it"
+                        ) from exc
+                    continue
+                if signature.strip().lower() == "swap":
+                    files.add(source)
+                elif configured:
+                    raise InstallerError(
+                        f"fstab declares {source} as swap but it has no swap signature; refusing to delete it"
+                    )
+                continue
+
+            device = self._resolve_swap_block_source(source)
+            if not device:
+                continue
+            try:
+                details = self._run(
+                    ["/usr/bin/lsblk", "-no", "TYPE,PATH", device],
+                    "classify configured swap block source",
+                    dangerous=False,
+                )
+            except ActionError as exc:
+                if active_type:
+                    raise InstallerError(f"cannot classify active swap source {source}: {exc}") from exc
+                continue
+            rows = [line.split(None, 1) for line in details.splitlines() if line.strip()]
+            if len(rows) != 1 or len(rows[0]) != 2:
+                if active_type:
+                    raise InstallerError(f"cannot uniquely classify active swap block source {source}")
+                continue
+            device_type, device_path = rows[0]
+            if device_type.lower() == "lvm":
+                if configured and not active_type:
+                    try:
+                        signature = self._run(
+                            ["/usr/sbin/blkid", "-p", "-s", "TYPE", "-o", "value", device_path],
+                            "verify configured swap logical-volume signature",
+                            dangerous=False,
+                        )
+                    except ActionError as exc:
+                        raise InstallerError(
+                            f"cannot verify configured swap logical volume {device_path}; "
+                            "refusing to delete it"
+                        ) from exc
+                    if signature.strip().lower() != "swap":
+                        raise InstallerError(
+                            f"fstab declares {device_path} as swap but it has no swap signature; "
+                            "refusing to delete it"
+                        )
+                logical_volumes.add(device_path)
+        return sorted(files), sorted(logical_volumes)
+
+    def _remove_managed_swap_backings(self) -> None:
+        """Disable swap, remove configured files/LVs, and clear stale fstab entries."""
+        if self.actions.dry_run:
+            self._run(["/usr/sbin/swapoff", "-a"], "disable active swap before replacement", dangerous=True)
+            self._persist_fstab([])
+            self._mark_step("swap_backing_cleanup", "planned", "remove configured swapfiles and swap logical volumes")
+            return
+
+        active = self._active_swap_sources()
+        fstab_sources = self._fstab_swap_sources()
+        files, logical_volumes = self._swap_backing_removal_targets(active, fstab_sources)
+        lvremove = shutil.which("lvremove") if logical_volumes else None
+        if logical_volumes and not lvremove:
+            raise InstallerError(
+                "swap logical volume(s) were found but lvremove is unavailable; install lvm2 or remove them manually"
+            )
+        if active:
+            self._run(
+                ["/usr/sbin/swapoff", "-a"],
+                "disable active swap before replacing its backing",
+                dangerous=True,
+            )
+            if self._active_swap_sources():
+                raise InstallerError("swapoff returned successfully but active swap remains; refusing to remove backing")
+        self._persist_fstab([])
+        for path in files:
+            self.actions.remove_file(path)
+        for path in logical_volumes:
+            if lvremove is None:
+                raise InstallerError(
+                    "lvremove became unavailable after swap cleanup preflight; refusing to continue"
+                )
+            self._run(
+                [lvremove, "-y", path],
+                f"remove swap logical volume {path}",
+                dangerous=True,
+                timeout=120,
+            )
+        detail = f"removed {len(files)} swapfile(s) and {len(logical_volumes)} swap logical volume(s)"
+        self._mark_step("swap_backing_cleanup", "success", detail)
 
     def _persist_fstab(self, entries: list[str]) -> None:
-        fstab_path = Path("/etc/fstab")
-        existing_lines = fstab_path.read_text(encoding="utf-8").splitlines() if fstab_path.is_file() else []
+        existing_lines = self._read_fstab_lines()
         retained = [
             line for line in existing_lines
             if not (line.strip() and len(line.split()) >= 3 and line.split()[2].lower() == "swap")
@@ -3116,6 +3959,30 @@ MaxFileSec=1month
         self.actions.write_file(str(authorized_keys), combined + pubkey_line + "\n", 0o600)
         self._mark_step("controller_ssh_key", "success", "controller pubkey installed for stage1/stage2 SSH monitoring")
 
+    def _configure_persistent_ssh_keys(self) -> None:
+        """Add configured root login keys without tying them to controller cleanup."""
+        keys = self.config.ssh_authorized_keys
+        if not keys:
+            self._mark_step("persistent_ssh_keys", "skipped", "no persistent root SSH keys configured")
+            return
+        self.actions.mkdir("/root/.ssh")
+        authorized_keys = Path("/root/.ssh/authorized_keys")
+        existing = (
+            "" if self.actions.dry_run or not authorized_keys.is_file()
+            else authorized_keys.read_text(encoding="utf-8")
+        )
+        existing_lines = existing.splitlines()
+        added = [line for line in keys if line not in existing_lines]
+        if added:
+            combined = existing if (not existing or existing.endswith("\n")) else existing + "\n"
+            self.actions.write_file(
+                str(authorized_keys), combined + "".join(f"{line}\n" for line in added), 0o600
+            )
+        self._mark_step(
+            "persistent_ssh_keys", "success",
+            f"{len(keys)} configured key(s); {len(added)} added; retained after stage two",
+        )
+
     def _controller_key_retained(self) -> bool:
         return bool(
             self.config.controller_ssh_pubkey.strip()
@@ -3169,12 +4036,12 @@ MaxFileSec=1month
     def _is_ephemeral_controller_key(line: str) -> bool:
         """An authorized_keys line carrying the installer's comment marker.
 
-        Matched on a whole whitespace-separated field starting with the marker
-        (the comment), so a key that merely mentions it in its options or blob
-        position, or an unrelated key, is never matched.
+        The reserved marker must be the first comment token. A later comment
+        word that happens to start with it is not enough to classify or remove
+        an otherwise user-owned persistent key.
         """
         fields = line.split()
-        return len(fields) >= 3 and any(field.startswith(CONTROLLER_KEY_MARKER) for field in fields[2:])
+        return len(fields) >= 3 and fields[2].startswith(CONTROLLER_KEY_MARKER)
 
     def _prune_stale_controller_keys(self) -> None:
         """retain_controller_ssh_key=true: keep ONLY this run's key, drop stale
@@ -3229,6 +4096,7 @@ MaxFileSec=1month
 
     def _stage1(self) -> None:
         self._secure_bootstrap_files()
+        self._configure_persistent_ssh_keys()
         self._configure_controller_ssh_key()
         # LT-F-v1001-13: persistent journald FIRST (right after the controller
         # key, which is what keeps a failed host reachable), so the rest of
@@ -3255,36 +4123,80 @@ MaxFileSec=1month
             self._configure_apt_auto_upgrade()
         # LT-UPG: upgrade BEFORE the root-shrink hook install and the reboot.
         self._upgrade_at_install()
-        self._plan_root_shrink()
+        # First validate any root shrink while the old swap backing is still
+        # present. In particular, do not let deleting a swapfile lower the
+        # measured filesystem usage and hide blocks that may be interleaved
+        # with ordinary data. Only after this conservative check may we remove
+        # configured files/LVs; the retained pre-root partition is preserved.
+        root_shrink_plan = None
+        if self.config.swap_policy == "on":
+            candidate_plan = self._resolve_root_shrink_plan(validate_shrink_safety=False)
+            safety_facts = (
+                self._root_shrink_safety_facts()
+                if candidate_plan[2]
+                else None
+            )
+            # Validate the same base/benchmark layout before deleting swapfiles
+            # can change the filesystem-usage evidence used by shrink safety.
+            root_shrink_plan = self._resolve_root_shrink_plan(
+                root_safety_facts=safety_facts
+            )
+            self._remove_managed_swap_backings()
+        self._plan_root_shrink(root_shrink_plan)
         self._install_stage2()
         self._reboot()
 
     def _swap_partitions_already_planned_in_table(self) -> bool:
-        """True iff ALL planned swap partitions are in the live table, exactly (start, size, type).
-
-        None present, or any partial/mismatching presence -> False, so
-        _apply_known_swap_shape() runs and its _validate_plan_geometry()
-        refuses a partial/mismatching table exactly as before (that function
-        is untouched). Dry-run never sees a real table -> False.
-        """
+        """Whether the configured swap policy already matches live disk geometry."""
+        if self.config.swap_policy == "untouched":
+            return True
         if self.actions.dry_run:
             return False
-        partitions, _ = self._plan_swap_partitions()
-        live = self._parse_partition_entries(
-            self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
-        )
-        numbers = range(self.root_number + 1, self.root_number + self.config.swap_file_count + 1)
-        if len(partitions) != len(numbers) or not all(number in live for number in numbers):
-            return False
-        for number, (start, size) in zip(numbers, partitions):
-            entry = live[number]
-            if (
-                entry.get("start") != str(start)
-                or entry.get("size") != str(size)
-                or (entry.get("type") or "").lower() != SWAP_TYPE_GUID
-            ):
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        existing_swap = {
+            number: entry for number, entry in live.items()
+            if self._is_swap_partition(entry)
+        }
+        if self.config.run_io_benchmark:
+            benchmark_entry = live.get(self._benchmark_partition_number())
+            if benchmark_entry and benchmark_entry.get("name") == IOBENCH_PARTITION_NAME:
+                # Let the benchmark's own recovery remove this one known
+                # temporary partition before the managed swap planner runs.
                 return False
-        self._mark_step("partitions", "success", "swap partitions already present in the live table, matching the plan")
+        if self.config.swap_policy == "off":
+            if existing_swap:
+                return False
+            self._mark_step("partitions", "success", "no swap-type partitions remain on the root disk")
+            return True
+
+        planned_partitions, _target_root_size = self._plan_swap_partitions()
+        retained = self._swap_partitions_before_root(live, root_start)
+        expected = {
+            number: {
+                "start": str(entry["start"]), "size": str(entry["size"]),
+                "type": (entry.get("type") or "").lower(),
+            }
+            for number, entry in retained.items()
+        }
+        expected.update({
+            number: {
+                "start": str(start), "size": str(size), "type": SWAP_TYPE_GUID,
+            }
+            for number, (start, size) in zip(
+                self._tail_swap_numbers(len(planned_partitions), retained), planned_partitions
+            )
+        })
+        actual = {
+            number: {
+                "start": entry.get("start"), "size": entry.get("size"),
+                "type": (entry.get("type") or "").lower(),
+            }
+            for number, entry in existing_swap.items()
+        }
+        if actual != expected:
+            return False
+        self._mark_step("partitions", "success", "swap partitions already match the requested count and geometry")
         return True
 
     def _cleanup_cloud_init_cache(self) -> None:
@@ -3324,14 +4236,26 @@ MaxFileSec=1month
         # partitions are already in the live table. Derive it from the table.
         if not swap_partitions_already_written:
             swap_partitions_already_written = self._swap_partitions_already_planned_in_table()
+        elif self.config.run_io_benchmark:
+            # A Case-B initramfs plan may deliberately reserve tail space for
+            # the optional throwaway benchmark. That intermediate table is
+            # not the final swap geometry; after benchmarking, stage two
+            # writes the final layout and lets root grow into the released gap.
+            swap_partitions_already_written = self._swap_partitions_already_planned_in_table()
         # Must precede _apply_known_swap_shape(): the throwaway partition is
         # created, measured, deleted and read back before the real swap
         # layout is planned. Failure to benchmark is advisory; failure to
         # clean up raises and stops the install here.
         self._run_io_benchmark(swap_written=swap_partitions_already_written)
-        self._configure_zswap()
+        # Never rewrite a partition table that still backs active swap. The
+        # untouched policy deliberately skips this: both kernel activation
+        # and fstab remain exactly as the image supplied them.
+        self._disable_active_swap()
+        if self.config.run_zswap_config:
+            self._configure_zswap()
         self._configure_iocost()
-        self._configure_cgroup2_flags()
+        if self.config.run_cgroup2_config:
+            self._configure_cgroup2_flags()
         if self.config.run_ksm:
             self._configure_ksm()
         if self.config.run_oomd_config:
@@ -3342,6 +4266,8 @@ MaxFileSec=1month
             self._configure_auto_reboot()
         if not swap_partitions_already_written:
             self._apply_known_swap_shape()
+        self._ensure_disk_transaction_manifest()
+        self._grow_root_to_plan()
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
         self._release_apt_timers()

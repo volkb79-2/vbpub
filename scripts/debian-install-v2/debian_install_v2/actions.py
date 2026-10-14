@@ -61,11 +61,15 @@ _SAFE_COMMANDS = {
     "sha256sum": set(),
     "free": {"-g"},
     "git": {"clone", "fetch", "reset"},
+    # Cloud-guest-utils expands an existing partition without changing its
+    # start; installer.py validates the resulting table before resize2fs.
+    "growpart": {"--fudge"},
     "hostname": {"-f", "-I"},
     "ip": {"-j"},
     # io.cost benchmark's throwaway partition (installer._run_io_benchmark).
     "iocost_coef_gen.py": {"--testfile", "--testfile-size-gb", "--duration", "--quiet"},
     "lsblk": {"-no", "-o"},
+    "lvremove": {"-y"},
     # LT-UPG: list an initrd's contents to verify the root-shrink hook is in it.
     "lsinitramfs": set(),
     "lspci": set(),

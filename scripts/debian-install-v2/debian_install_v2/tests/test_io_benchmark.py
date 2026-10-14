@@ -55,6 +55,7 @@ class SimDisk(HostActions):
         self.flaky: dict[tuple[str, str], int] = {}  # (command, argv[1]) -> failures left before success
         self.partial_write_fails = False  # forward benchmark write lands, then sfdisk errors
         self.label_id = "SIM-LABEL-ID"
+        self.fstab_content = ""
         self.timeouts: list[tuple[str, float | None]] = []
         self.sysfs: dict[str, str] = {}
         self.tool_changes_sysfs = True
@@ -168,6 +169,10 @@ class SimDisk(HostActions):
         return ""
 
     def write_file(self, path: str, content: str, mode: int = 0o644) -> None:
+        if path == "/etc/fstab":
+            self.fstab_content = content
+            self.planned.append(PlannedAction(("/usr/bin/tee", path), f"write {path}", True))
+            return
         # Safety net: a stage2 step that forgot to be stubbed must never write
         # outside the test's tmp dir (these tests may run as root).
         assert path.startswith(self.allowed_root), f"test would write outside tmp: {path}"
@@ -184,8 +189,9 @@ def make(tmp_path: Path, *, disk_gib: int = 100, **overrides) -> tuple[Installer
         telegram_bot_token="",
         telegram_chat_id="",
         auto_reboot_after_stage1=False,
+        root_resize_policy="untouched",
         swap_disk_total_gb=32,
-        swap_file_count=8,
+        swap_partition_count=8,
         run_io_benchmark=True,
         io_benchmark_duration_s=5,
         run_ksm=False,
@@ -209,6 +215,7 @@ def make(tmp_path: Path, *, disk_gib: int = 100, **overrides) -> tuple[Installer
     StateStore(config.state_dir).save_new(StateStore.new(config))
     for hook in ("_configure_zswap", "_configure_iocost", "_configure_cgroup2_flags", "_activate_swap_partitions", "_health_gate_swap_devices"):
         setattr(installer, hook, lambda *a, **k: None)
+    installer._read_fstab_lines = lambda: []
     return installer, disk
 
 
@@ -310,6 +317,16 @@ def test_terminal_marker_skips_rerun(tmp_path):
 
 def test_too_small_free_space_skips_cleanly_and_swap_still_applied(tmp_path):
     installer, disk = make(tmp_path, disk_gib=44)
+    planned, _root_size = installer._plan_swap_partitions()
+    planned_end = planned[-1][0] + planned[-1][1]
+    tail_end = disk.disk_bytes // 512 - 2048
+    shift = tail_end - planned_end
+    for number, (start, size) in enumerate(planned, start=4):
+        disk.table[number] = {
+            "start": str(start + shift), "size": str(size),
+            "type": "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F", "uuid": f"S{number}",
+        }
+        disk.kernel.add(number)
     installer._stage2()
     state = step(installer)
     assert state["status"] == "skipped" and "under 2 GiB" in state["detail"]
@@ -321,6 +338,12 @@ def test_too_small_free_space_skips_cleanly_and_swap_still_applied(tmp_path):
 def test_size_is_capped_by_swap_requirement(tmp_path):
     installer, disk = make(tmp_path, disk_gib=50)
     partitions, _ = installer._plan_swap_partitions()
+    for number, (start, size) in enumerate(partitions, start=4):
+        disk.table[number] = {
+            "start": str(start), "size": str(size),
+            "type": "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F", "uuid": f"S{number}",
+        }
+        disk.kernel.add(number)
     swap_end = partitions[-1][0] + partitions[-1][1]
     installer._run_io_benchmark(swap_written=False)
     create_input = next(i for argv, i in disk.inputs if "--no-reread" in argv)
@@ -893,31 +916,45 @@ def test_resume_after_benchmark_cleanup_stop_continues_to_swap_activation(tmp_pa
     assert StateStore(installer.config.state_dir).load()["phase"] == "done"
 
 
-def test_partial_swap_presence_still_refuses(tmp_path):
+def test_partial_swap_presence_is_reconciled_to_the_requested_layout(tmp_path):
     installer, disk = make(tmp_path)
     installer.config = replace(installer.config, run_io_benchmark=False)
     put_swap_partitions(installer, disk, count=3)
-    with pytest.raises(InstallerError, match="existing partition"):
-        installer._stage2()
+    expected, _ = installer._plan_swap_partitions()
+    installer._stage2()
+    assert {
+        number: (disk.table[number]["start"], disk.table[number]["size"])
+        for number in range(4, 12)
+    } == {
+        number: (str(start), str(size))
+        for number, (start, size) in enumerate(expected, start=4)
+    }
 
 
-def test_mismatching_swap_presence_still_refuses(tmp_path):
+def test_mismatching_swap_presence_is_reconciled_but_data_partition_is_refused(tmp_path):
     installer, disk = make(tmp_path)
     installer.config = replace(installer.config, run_io_benchmark=False)
     put_swap_partitions(installer, disk, shift=2048)
-    with pytest.raises(InstallerError, match="existing partition"):
-        installer._stage2()
+    expected, _ = installer._plan_swap_partitions()
+    installer._stage2()
+    assert {
+        number: (disk.table[number]["start"], disk.table[number]["size"])
+        for number in range(4, 12)
+    } == {
+        number: (str(start), str(size))
+        for number, (start, size) in enumerate(expected, start=4)
+    }
     wrong_type = make(tmp_path / "b")
     installer2, disk2 = wrong_type
     installer2.config = replace(installer2.config, run_io_benchmark=False)
     put_swap_partitions(installer2, disk2)
     disk2.table[6]["type"] = LINUX.upper()
-    with pytest.raises(InstallerError, match="existing partition"):
+    with pytest.raises(InstallerError, match="non-swap partition"):
         installer2._stage2()
 
 
-def test_swap_written_flag_decides_the_requirement(tmp_path):
-    """Discriminating: with swap_written=True the requirement is the existing partitions' END."""
+def test_benchmark_respects_live_partition_extent_regardless_of_stage2_flag(tmp_path):
+    """The live table is authoritative; the stage2 flag cannot permit overlap."""
     installer, disk = make(tmp_path, disk_gib=60)
     partitions, _ = installer._plan_swap_partitions()
     # swap on disk sits LATER than the plan would put it (a hook layout): it leaves < 2 GiB tail
@@ -925,7 +962,7 @@ def test_swap_written_flag_decides_the_requirement(tmp_path):
     put_swap_partitions(installer, disk, shift=tail_shift)
     installer._run_io_benchmark(swap_written=True)
     assert step(installer)["status"] == "skipped" and disk.tags().count("write") == 0
-    # the same table, swap_written=False: the plan-derived requirement leaves room, so it runs
+    # A fresh table has no such late partitions, so scratch can use its free tail.
     installer2, disk2 = make(tmp_path / "b", disk_gib=60)
     installer2._mark_step("io_benchmark", "started", "")
     installer2._run_io_benchmark(swap_written=False)
@@ -960,10 +997,10 @@ def test_cleanup_partx_retries_then_succeeds(tmp_path, monkeypatch):
     installer, disk = make(tmp_path)
     sleeps = settle_sleeps(monkeypatch)
     disk.flaky[("partx", "-d")] = 2
-    disk.flaky[("partx", "-u")] = 1
+    disk.flaky[("partx", "-a")] = 1
     installer._run_io_benchmark(swap_written=False)
     assert step(installer)["status"] == "success" and bench_lines(disk) == []
-    assert disk.tags().count("partx-d") == 3 and disk.tags().count("partx-u") == 2
+    assert disk.tags().count("partx-d") == 3 and disk.tags().count("partx-a") == 2
     assert sleeps.count(1.0) == 3
 
 

@@ -133,13 +133,13 @@ id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling
 state = "active"
 decision = "accept"
 reviewed_signature = "sha256:8d5fc07fa49e97c9c67c09c846060a1458a314089a57fd2761918cf49318b072"
-rationale = "A branch selects both the archive bootstrap-remote.py downloads and, for the canonical repository, the raw script URL."
+rationale = "The branch selects the bootstrap source URL and is exported for the provider-neutral sparse Git checkout performed by bootstrap-remote.py."
 invocation = ["build-customscript", "--config", "install.json", "--repo-branch", "feature/install-v2"]
 expected_exit_status = 0
 expected_stdout_contains = "REPO_BRANCH=feature/install-v2"
 expected_stderr_contains = ""
 effects = ["customScript exports REPO_BRANCH and downloads the script from that branch"]
-test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_repo_branch_selects_the_archive_and_the_default_bootstrap_url"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_repo_branch_selects_the_default_bootstrap_url_and_git_branch"]
 
 [[cases]]
 id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-url/--repo-url"
@@ -151,7 +151,7 @@ invocation = ["build-customscript", "--config", "install.json", "--repo-url", "h
 expected_exit_status = 0
 expected_stdout_contains = "REPO_URL=https://git.example.test/ops/vbpub"
 expected_stderr_contains = ""
-effects = ["customScript exports REPO_URL so bootstrap-remote.py downloads the archive from that repository"]
+effects = ["customScript exports REPO_URL so bootstrap-remote.py fetches the sparse runtime subtree from that Git remote"]
 test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_custom_repository_with_its_bootstrap_url_is_rendered"]
 
 # ---------------------------------------------------------------- disable-stage2
@@ -826,3 +826,57 @@ expected_stdout_contains = ""
 expected_stderr_contains = "Confirmation accepted via --yes."
 effects = ["Skips the default-no write prompt; writes the validated settings mode 0600; without it a non-TTY stdin refuses with exit 2 and writes nothing"]
 test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_wizard_yes_writes_the_validated_file_and_without_it_refuses"]
+
+# ---------------------------------------------------------------- build-iso
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-iso/minimum"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:aad9df3e9ee585cf0de03396ed72682d010043ec50b165614149f9e5774ba901"
+rationale = "The seed carries per-host credentials and persistent SSH keys, so its wizard must refuse headless use before prompting or creating an artifact."
+invocation = ["build-iso", "--output", "./private.iso"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "build-iso requires an interactive terminal"
+effects = ["No prompt, secret collection, or ISO write occurs without an interactive terminal"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_build_iso_requires_interactive_terminal"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-iso/option-spelling/option:route:entrypoint:debian-install-v2/build-iso/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d7816ae1f38afa0f92394f8200f88a65d0aa66dcbf7d5002687484878e0fb77b"
+rationale = "Library-owned warning control; debug-raw must not bypass the mandatory interactive credential-collection boundary."
+invocation = ["build-iso", "--output", "./private.iso", "--debug-raw"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Adds the standard warning, then refuses without a terminal; no secret is collected or artifact written"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_build_iso_debug_raw_only_warns_before_terminal_refusal"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-iso/option-spelling/option:route:entrypoint:debian-install-v2/build-iso/--output/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9652334e5eb9d4cfe3093dee5504a0b3c0f30695fdf39230f128f60b491cc965"
+rationale = "The sensitive output location is explicit; the builder also refuses to overwrite any existing artifact."
+invocation = ["build-iso", "--output", "./private.iso"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "build-iso requires an interactive terminal"
+effects = ["Accepts the required output option, then refuses before any write because this invocation is headless"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_build_iso_requires_interactive_terminal"]
+
+[[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-iso/option-spelling/option:route:entrypoint:debian-install-v2/build-iso/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b36a2d478fc81304af3a2cc13cb6bef884ef0e8dea882ebef23d175842c3c32c"
+rationale = "--yes confirms the final ISO write only; it must not turn a credential wizard into a headless operation."
+invocation = ["build-iso", "--output", "./private.iso", "--yes"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "build-iso requires an interactive terminal"
+effects = ["Does not bypass host-specific credential/key collection; refuses without writing an ISO"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_build_iso_yes_does_not_bypass_interactive_secret_collection"]
