@@ -9,11 +9,13 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
-### Changed
-- Breaking: consumer scripts and symlinks are retired. Install the `run-gate`
+### Breaking Changes
+- **24.0.0:** consumer scripts and symlinks are retired. Install the `run-gate`
   wheel and invoke its console command from the project directory containing
   `run-gate.toml`; `run-gate --version` is the public compatibility identity.
-  Internal revision fields remain only as saved-record provenance.
+  Integer revisions and persisted revision fields remain only as provenance.
+
+### Changed
 - Documentation: state that the installed SemVer wheel is the only supported
   Run-Gate consumer; copied `run-gate.py` scripts are retired.
 - Fix: require Assay's verdict exit code to be a non-boolean integer matching

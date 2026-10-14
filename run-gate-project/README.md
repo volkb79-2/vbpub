@@ -603,6 +603,14 @@ identity. There is no consumer script to copy, symlink, or synchronize.
 The [design guide](docs/DESIGN-GUIDE.md#semver-names-the-installed-tool)
 explains why release SemVer replaces the old copied-script revision marker.
 
+#### Breaking migration in 24.0.0
+
+Replace any copied `run-gate.py` file or symlink with the released Run-Gate
+wheel. Invoke `run-gate <lane>` from the project directory that owns
+`run-gate.toml`, and use `run-gate --version` to check the installed SemVer
+floor. Integer `__revision__` values and saved `revision` fields remain only
+as provenance; they are not compatibility versions.
+
 Project lane declarations remain in `run-gate.toml`; the installed command
 loads that file from the current project directory. Internal revision values
 may appear in persisted history records to identify their writer, but they do

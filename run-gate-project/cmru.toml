@@ -22,10 +22,11 @@
 # floor. Internal revision fields remain only in persisted record provenance.
 #
 # The next release deliberately crosses from the former revision-era 23.x
-# identity to the wheel-only SemVer 24.0.0 contract. Run it with
-# `cmru release run-gate-project --set-version 24.0.0`; later releases can use
-# the configured conventional bump. Release notes come from CHANGES.md, so the
-# published body uses the same versioned notes as the tagged changelog.
+# identity to the wheel-only SemVer 24.0.0 contract. Its breaking Conventional
+# Commit in the pending source history makes the configured conventional bump
+# choose 24.0.0; inspect the release plan and refuse the release if it does not.
+# Release notes come from CHANGES.md, so the published body uses the same
+# versioned notes as the tagged changelog.
 # =============================================================================
 schema_version = 1
 
