@@ -3485,6 +3485,24 @@ def test_ctl_fails_closed_on_invalid_version_payloads(monkeypatch, capsys, respo
     assert "invalid response" in captured.err
 
 
+@pytest.mark.parametrize("observer", [
+    {"contract": 0, "path": "/run/observer.sock", "listening": True},
+    {"contract": True, "path": "/run/observer.sock", "listening": True},
+    {"contract": 2, "path": "/run/observer.sock", "listening": "yes"},
+])
+def test_ctl_fails_closed_on_invalid_resource_observer_metadata(
+    monkeypatch, capsys, observer,
+):
+    response = _ctl_response_fixture("version")
+    response["resource_observer"] = observer
+
+    rc, captured = _run_ctl_with_response(monkeypatch, capsys, "version", response)
+
+    assert rc == 3
+    assert captured.out == ""
+    assert "invalid response" in captured.err
+
+
 def test_ctl_validator_falls_through_only_for_an_unknown_internal_verb():
     # `build_parser()` exposes only the closed ctl vocabulary, but this
     # direct envelope check keeps the validator's final dispatch branch
