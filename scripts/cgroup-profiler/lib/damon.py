@@ -491,8 +491,11 @@ class KdamondPool:
             raise DamonSessionError(
                 "cannot reconcile DAMON pool ownership from negative nr_kdamonds"
             )
-        if self._owned and current > max(self._owned) + 1:
-            self._foreign_growth = True
+        # ``acquire`` performs the authoritative foreign-growth checks after
+        # reconciliation: a free slot compares the current count with the
+        # owned range, and a new reservation compares it with the captured
+        # baseline. Keeping a second, earlier flag write here did not protect
+        # any additional state and made the R2 comparison ambiguous.
         for idx in tuple(self._live):
             if current <= idx:
                 self._live.remove(idx)
@@ -633,12 +636,11 @@ class KdamondPool:
             if current == baseline:
                 self._clear_if_restored()
                 return True
-            if (
-                self._foreign_growth
-                or current != expected_end
-                or current <= baseline
-                or any(not self.owns_slot(idx) for idx in self._owned)
-            ):
+            if self._foreign_growth:
+                return False
+            if current != expected_end:
+                return False
+            if any(not self.owns_slot(idx) for idx in self._owned):
                 return False
             # The kernel rejects *any* nr_kdamonds resize while any monitor
             # is running, not only when one of this pool's indices is live.
@@ -675,8 +677,7 @@ class KdamondPool:
                         return False
                     self._quarantined.discard(idx)
                     self._free.add(idx)
-                    if not self._live and not self._quarantined:
-                        self._restore_baseline()
+                    self._restore_baseline()
                     return True
             except DamonSessionError:
                 self._live.discard(idx)

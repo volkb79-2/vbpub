@@ -94,6 +94,7 @@ from typing import Any, TextIO
 
 from .candidate_identity import candidate_id_from_fields
 from .mutation import judge_mutation
+from .process_tree import ProcessTreeEvidence
 from .r2_command import R2_APPENDED, R2_TRANSFORM_ID, UnrecognizedCoverageOption, transform_argv
 from .verdict import (
     CLAIM_DETAIL_BYTES,
@@ -1778,6 +1779,7 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
         )
         _check_v15_evidence(bucket, entry, policy, failures)
         _check_b145_resource_limit_evidence(bucket, entry, failures)
+        _check_b162_process_tree_evidence(bucket, entry, failures)
 
     if len(outcome_ids) != len(set(outcome_ids)):
         failures.append("native mutation outcomes contain a duplicate candidate ID")
@@ -2132,7 +2134,11 @@ def _check_v15_r2_command(document: dict[str, Any], failures: list[str]) -> None
             execution = entry.get("execution") if isinstance(entry, dict) else None
             if not isinstance(execution, dict) or execution.get("mode") != "ledger":
                 failures.append("every equivalence-ledger outcome must use ledger execution")
-            if isinstance(entry, dict) and ("evidence" in entry or "resource_limit_evidence" in entry):
+            if isinstance(entry, dict) and (
+                "evidence" in entry
+                or "resource_limit_evidence" in entry
+                or "process_tree_evidence" in entry
+            ):
                 failures.append("ledger outcomes cannot carry candidate or resource evidence")
     elif raw_ledger is not None:
         failures.append("equivalence_ledger requires an R2 mutation payload")
@@ -2249,6 +2255,105 @@ def _check_b145_resource_limit_evidence(
         failures.append(
             f"native mutation.{bucket} entry has a positive cgroup resource-limit "
             "counter delta; it cannot be classified as a test kill or survival"
+        )
+
+
+def _check_b162_process_tree_evidence(
+    bucket: str, entry: dict[str, Any], failures: list[str]
+) -> None:
+    """Require process cleanup proof before accepting a functional outcome."""
+    execution = entry.get("execution")
+    if isinstance(execution, dict) and execution.get("mode") == "ledger":
+        if "process_tree_evidence" in entry:
+            failures.append("ledger execution cannot carry process_tree_evidence")
+        return
+    raw = entry.get("process_tree_evidence")
+    if not isinstance(raw, dict):
+        failures.append(
+            f"native mutation.{bucket} entry requires process_tree_evidence"
+        )
+        return
+    required = {
+        "protocol", "leader_status", "group_signalled_before_reap",
+        "outliving_descendants", "descendants_signalled", "cleanup_seconds", "clean",
+    }
+    if set(raw) != required:
+        failures.append(
+            f"native mutation.{bucket} entry has invalid process_tree_evidence fields"
+        )
+        return
+    if raw.get("protocol") != "assay-process-tree/1":
+        failures.append(
+            f"native mutation.{bucket} entry has an unsupported process-tree protocol"
+        )
+    if raw.get("leader_status") not in {
+        "exited", "signaled", "timeout-killed", "not-started"
+    }:
+        failures.append(
+            f"native mutation.{bucket} entry has an invalid process-tree leader status"
+        )
+    if type(raw.get("group_signalled_before_reap")) is not bool:
+        failures.append(
+            f"native mutation.{bucket} entry has invalid process-tree group-signal evidence"
+        )
+    for name in ("outliving_descendants", "descendants_signalled"):
+        if not _is_int(raw.get(name)) or raw[name] < 0:
+            failures.append(
+                f"native mutation.{bucket} entry has invalid process-tree {name}"
+            )
+    if (
+        _is_int(raw.get("outliving_descendants"))
+        and _is_int(raw.get("descendants_signalled"))
+        and raw["descendants_signalled"] > raw["outliving_descendants"]
+    ):
+        failures.append(
+            f"native mutation.{bucket} entry has more signalled descendants "
+            "than outliving descendants"
+        )
+    cleanup = raw.get("cleanup_seconds")
+    if (
+        isinstance(cleanup, bool)
+        or not isinstance(cleanup, (int, float))
+        or not math.isfinite(cleanup)
+        or cleanup < 0
+    ):
+        failures.append(
+            f"native mutation.{bucket} entry has invalid process-tree cleanup_seconds"
+        )
+    if raw.get("clean") is not True:
+        failures.append(
+            f"native mutation.{bucket} entry does not prove a clean process tree"
+        )
+    if bucket in {"killed", "survived", "equivalent"} and (
+        raw.get("leader_status") != "exited"
+        or raw.get("outliving_descendants") != 0
+    ):
+        failures.append(
+            f"native mutation.{bucket} has a functional outcome without a clean "
+            "leader exit and zero outliving descendants"
+        )
+    if (
+        _is_int(raw.get("outliving_descendants"))
+        and raw["outliving_descendants"] > 0
+        and bucket != "crashed"
+        and not (
+            raw.get("leader_status") == "timeout-killed"
+            and bucket in {"hung", "budget_exceeded"}
+        )
+    ):
+        failures.append(
+            f"native mutation.{bucket} has outliving descendants without a "
+            "timeout classification and must be crashed"
+        )
+    if bucket == "hung" and raw.get("leader_status") != "timeout-killed":
+        failures.append(
+            "native mutation.hung requires a timeout-killed process-tree leader"
+        )
+    if bucket == "budget_exceeded" and raw.get("leader_status") not in {
+        "timeout-killed", "not-started"
+    }:
+        failures.append(
+            "native mutation.budget_exceeded requires a timed-out or unstarted leader"
         )
 
 
@@ -2733,6 +2838,11 @@ def _reconstruct_mutant_outcome(raw: dict) -> MutantOutcome:
             if isinstance(raw.get("resource_limit_evidence"), dict)
             else None
         ),
+        process_tree_evidence=(
+            ProcessTreeEvidence.from_dict(raw["process_tree_evidence"])
+            if isinstance(raw.get("process_tree_evidence"), dict)
+            else None
+        ),
         evidence=(
             MutantEvidence(**raw["evidence"])
             if isinstance(raw.get("evidence"), dict)
@@ -2992,11 +3102,11 @@ _BASELINE_NEVER_READ = object()
 #: ``judge_mutation``'s ``mutation is None`` branch propagates the baseline's
 #: own ``(outcome, reason_code)`` verbatim, which is correct for exactly one
 #: cause: mutation testing never began because the lane's command did not
-#: PASS (A-116). But ``run_lane`` renders SEVEN other payload-free R2 claims
+#: PASS (A-116). But ``run_lane`` renders EIGHT other payload-free R2 claims
 #: from a caught :class:`~assay.errors.AssayError` while R0 passed, and each
 #: must be distinguished from that passing baseline -- otherwise ``assay run``
-#: emits artifacts its own ``assay verify`` refuses. The earlier independent
-#: terminals were:
+#: emits artifacts its own ``assay verify`` refuses. The independent
+#: terminals are:
 #:
 #: * ``MUTATION_DISCOVERY_FAILED`` -- ``run_mutation``'s discovery boundary
 #:   (P21 work item 4 / A-171), reachable today for unparseable Python.
@@ -3006,8 +3116,10 @@ _BASELINE_NEVER_READ = object()
 #: * ``GIT_FAILED`` -- the diff R2 resolves its targets from.
 #: * ``UNREADABLE_ARTIFACT`` -- the bounded source read during target
 #:   resolution (P20 work item 5).
-#: * ``EXEC_FAILED`` -- B145's required cgroup counters are unavailable before
-#:   native candidates start, or a resource-limit event aborts witness replay.
+#: * ``EXEC_FAILED`` -- a cgroup resource-limit event aborts candidate or
+#:   witness execution.
+#: * ``CGROUP_OBSERVATION_UNAVAILABLE`` -- B148/A-494's complete observer is
+#:   unavailable after R0/R1 and before native candidates start.
 #:
 #: This is NOT a licence to accept any pairing: the STATUS is re-derived from
 #: the closed vocabulary below rather than taken from the artifact, so a
@@ -3039,6 +3151,7 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
         ReasonCode.GIT_FAILED,
         ReasonCode.UNREADABLE_ARTIFACT,
         ReasonCode.EXEC_FAILED,
+        ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
     }
 )
 
@@ -3046,13 +3159,13 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
 #: baseline's REASON but not of whether the baseline PASSED at all.
 #:
 #: ``_INDEPENDENT_R2_TERMINALS`` stopped after re-deriving the OUTCOME, so a
-#: payload-free R2 claim could name any of the seven beside any baseline -- and
-#: four of them are producible only on a branch ``run_lane`` reaches after
+#: payload-free R2 claim could name any of the eight beside any baseline -- and
+#: five of them are producible only on a branch ``run_lane`` reaches after
 #: the command PASSED, because target resolution and mutation discovery are
 #: both inside ``if r2_declared and result.outcome is Outcome.PASS``
 #: (``runner.py``); the not-PASS arm renders
 #: ``build_mutation_claim(result, None)``, which propagates the baseline's own
-#: pair verbatim (A-116). So one of these four beside a non-passing baseline
+#: pair verbatim (A-116). So one of these five beside a non-passing baseline
 #: is a misreported reason code, and that was accepted.
 #:
 #: The other three are deliberately NOT here, each with a producer path that
@@ -3068,15 +3181,16 @@ _INDEPENDENT_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
 #:   ``R0 = FAIL/COMMAND_FAILED`` beside ``R2 = NO_MEASUREMENT/DIRTY_TREE`` is
 #:   a truthful artifact.
 #:
-#: ``EXEC_FAILED`` joins this subset under B145: native R2 either refuses
-#: before candidate execution when required counters are unavailable, or
-#: stops on a resource-limit event during candidate/witness execution. Both
-#: paths are reached only after R0 passes; when R0 does not pass, the producer
-#: propagates its pair and never starts native R2.
+#: ``CGROUP_OBSERVATION_UNAVAILABLE`` joins this subset under B148/A-494:
+#: native R2 reaches its full observer check after R0/R1 and before candidate
+#: execution, so this reason is only emitted after a passing R0. ``EXEC_FAILED``
+#: remains valid here when a resource-limit event invalidates candidate or
+#: witness execution. When R0 does not pass, the producer propagates its own
+#: pair and never starts native R2.
 #:
 #: A-241's own headline example was ``ERROR``/``GIT_FAILED`` against an
 #: ``ERROR``/``EXEC_FAILED`` baseline. That example is WRONG -- it is exactly
-#: the cleanup path above and is legitimate; the gap is real for the four
+#: the cleanup path above and is legitimate; the gap is real for the five
 #: post-baseline-only terminals. Recorded here because the wrong example is
 #: the more memorable half.
 _POST_BASELINE_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
@@ -3085,6 +3199,7 @@ _POST_BASELINE_R2_TERMINALS: frozenset[ReasonCode] = frozenset(
         ReasonCode.BASE_IS_HEAD,
         ReasonCode.UNREADABLE_ARTIFACT,
         ReasonCode.EXEC_FAILED,
+        ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
     }
 )
 
@@ -3240,7 +3355,7 @@ def _check_r2_rederivation(verdict: Verdict, failures: list[str]) -> None:
             )
         # (A-245, closing A-241; B145) "Independent of the baseline's REASON"
         # is not "independent of whether the baseline ran". A non-passing R0
-        # sibling cannot accompany these four post-baseline-only terminals,
+        # sibling cannot accompany these five post-baseline-only terminals,
         # the producer would have propagated ITS pair verbatim instead
         # (A-116) -- so the recorded reason code is a misreport, and only the
         # OUTCOME agreeing was hiding it.

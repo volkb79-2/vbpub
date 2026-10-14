@@ -14,7 +14,10 @@ Judgment policy is NOT here: assay lanes reference assay.toml by name.
 See run-gate-project/README.md (design authority) and CONSUMERS.md (adoption).
 """
 # stdlib only — this launcher must run on a fresh clone with zero installs.
-__revision__ = 64  # rev 64: refuse failed ctl carriers and foreign watch verdicts
+# rev 65: send single-line JSON over the newline-framed cgprofile control socket
+__revision__ = 68  # rev 68: pin worktree Git pointers and harden host Git readers
+# rev 66: preflight observer contract before private R2 lanes
+# rev 64: refuse failed ctl carriers and foreign watch verdicts
 # Rev 63 holds requested exec/bare-host children behind a ready/continue
 # handshake until daemon placement is read back; explicit refusal is an
 # infrastructure refusal before the body, not an unplaced candidate run.
@@ -139,6 +142,7 @@ import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
 import fcntl
+import grp
 import hashlib
 import io
 import json
@@ -195,6 +199,7 @@ ASSAY_OUTCOMES = frozenset({
     "PASS", "FAIL", "ERROR", "NO_MEASUREMENT", "BUDGET_EXCEEDED",
     "INCONCLUSIVE",
 })
+ASSAY_RIGORS = frozenset({"R0", "R1", "R2", "R3", "R4"})
 ASSAY_IDENTITY_MODES = frozenset({"source", "artifact"})
 DEFAULT_LOCK_WAIT = "10m"
 DEFAULT_ADMISSION_WAIT = "10m"
@@ -265,6 +270,8 @@ def assay_lane_result(exit_code: int, outcome: str | None,
                       source_commit: object = None,
                       expected_source_commit: object = None,
                       reason: str | None = None,
+                      claims: object = None,
+                      evidence: object = None,
                       log_path: str | None = None) -> LaneResult:
     """Map Assay's verdict only when its configured judge identity is verified."""
     provenance_keys = {"name", "version", "artifact", "digest_algorithm", "digest"}
@@ -307,8 +314,82 @@ def assay_lane_result(exit_code: int, outcome: str | None,
         "NO_MEASUREMENT": "FAIL",
         "INCONCLUSIVE": "FAIL",
     }[outcome]
+    if outcome == "NO_MEASUREMENT" and reason == "CGROUP_OBSERVATION_UNAVAILABLE":
+        # The top-level rollup can hide an independent R1/R3 failure because
+        # NO_MEASUREMENT outranks FAIL. Preserve adverse claims instead of
+        # treating every observer refusal as infrastructure-only.
+        verdict, mapped_reason = _observer_unavailable_rollup(claims, evidence)
+        if mapped_reason is not None:
+            reason = mapped_reason
     return LaneResult(verdict, exit_code, reason, log_path,
                       assay_outcome=outcome)
+
+
+def _observer_unavailable_rollup(
+        claims: object, evidence: object) -> tuple[str, str | None]:
+    """Map observer unavailability without masking another failed claim."""
+    if not isinstance(claims, list) or not claims:
+        return "ERROR", "invalid-assay-claims-for-observer-refusal"
+    if not isinstance(evidence, list):
+        return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+
+    matching_refusals = 0
+    seen_rigors: set[str] = set()
+    other_statuses: list[str] = []
+    for claim in claims:
+        if not isinstance(claim, dict):
+            return "ERROR", "invalid-assay-claims-for-observer-refusal"
+        rigor = claim.get("rigor")
+        status = claim.get("status")
+        reason_code = claim.get("reason_code")
+        if (not isinstance(rigor, str) or rigor not in ASSAY_RIGORS
+                or rigor in seen_rigors
+                or claim.get("source") != "computed"
+                or claim.get("verified_by_assay") is not True
+                or not isinstance(status, str) or status not in ASSAY_OUTCOMES):
+            return "ERROR", "invalid-assay-claims-for-observer-refusal"
+        seen_rigors.add(rigor)
+        if reason_code is not None and not isinstance(reason_code, str):
+            return "ERROR", "invalid-assay-claims-for-observer-refusal"
+        if (status == "NO_MEASUREMENT"
+                and reason_code == "CGROUP_OBSERVATION_UNAVAILABLE"):
+            if rigor != "R2":
+                return "ERROR", "invalid-assay-observer-refusal-claim"
+            matching_refusals += 1
+        else:
+            other_statuses.append(status)
+
+    for item in evidence:
+        if not isinstance(item, dict):
+            return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+        source = item.get("source")
+        status = item.get("status")
+        if (not isinstance(source, str)
+                or source not in {"adjudicated", "attested"}
+                or not isinstance(item.get("key"), str)
+                or not item.get("key")
+                or not isinstance(item.get("verified_by_assay"), bool)
+                or not isinstance(status, str) or status not in ASSAY_OUTCOMES):
+            return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+        reason_code = item.get("reason_code")
+        if reason_code is not None and not isinstance(reason_code, str):
+            return "ERROR", "invalid-assay-evidence-for-observer-refusal"
+        other_statuses.append(status)
+
+    if matching_refusals != 1:
+        return "ERROR", "invalid-assay-observer-refusal-claim"
+    if "BUDGET_EXCEEDED" in other_statuses:
+        return "BUDGET_EXCEEDED", "assay-budget-exceeded-alongside-observer-refusal"
+    if any(status in {"FAIL", "INCONCLUSIVE", "NO_MEASUREMENT"}
+           for status in other_statuses):
+        return "FAIL", "assay-adverse-claim-alongside-observer-refusal"
+    if "ERROR" in other_statuses:
+        return "ERROR", "assay-error-alongside-observer-refusal"
+    if any(status != "PASS" for status in other_statuses):
+        return "ERROR", "invalid-assay-claims-for-observer-refusal"
+    # The observer refusal is infrastructure-only only when every other
+    # computed claim and external evidence entry passed.
+    return "ERROR", None
 
 
 def finish(result: LaneResult) -> int:
@@ -367,8 +448,14 @@ class RunGateArgumentParser(argparse.ArgumentParser):
 
 
 CGROUP_ENV_VAR = "CGROUP_PARENT_DEV_GATES"
-CGPROFILE_RESOURCE_OBSERVER_SOURCE = "/run/cgprofile/resource-observer.sock"
-CGPROFILE_RESOURCE_OBSERVER_TARGET = "/tmp/cgprofile-resource-observer.sock"
+CGPROFILE_RESOURCE_OBSERVER_DIRECTORY = "/run/cgprofile/observer"
+CGPROFILE_RESOURCE_OBSERVER_SOURCE = (
+    f"{CGPROFILE_RESOURCE_OBSERVER_DIRECTORY}/resource-observer.sock"
+)
+CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY = "/run/cgprofile-observer"
+CGPROFILE_RESOURCE_OBSERVER_TARGET = (
+    f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY}/resource-observer.sock"
+)
 ASSAY_RESOURCE_OBSERVER_ENV = "ASSAY_RESOURCE_OBSERVER_SOCKET"
 # `host` (default) and `bare-host` (opt-out) swapped roles in the
 # host/bare-host flip (RG-43) — `host`
@@ -905,6 +992,12 @@ def _validate_cpus(value: object, where: str) -> None:
              f"or '1.5' (docker's own --cpus grammar; got {value!r})")
 
 
+def _validate_pids(value: object, where: str) -> None:
+    if type(value) is not int or value <= 0:
+        fail(f"{where}: 'pids' must be a positive integer Docker PID limit "
+             f"(got {value!r})")
+
+
 def host_mode_stall_timeout_inert_reason(lane_name: str) -> str:
     """RG-58 (RW-27a: WARN, never refuse — D5's option 2). The ONE wording
     both the load-time WARNING (`_validate_lane`) and `doctor`'s matching
@@ -945,9 +1038,6 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         if kind not in ("assay", "command"):
             fail(f"{where} [lanes.{name}]: 'resource_observer' is supported "
                  "only for assay or command lanes")
-        if table.get("environment") != "tester-unified":
-            fail(f"{where} [lanes.{name}]: 'resource_observer' requires "
-                 "environment = \"tester-unified\"")
     if kind == "sequence":
         members = table.get("lanes")
         if not isinstance(members, list) or not members or not all(
@@ -1030,10 +1120,12 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         if not isinstance(res, dict):
             fail(f"{where} [lanes.{name}]: 'resources' must be a table")
         _check_keys(res, {"memory", "memory_max", "memory_swap", "cpu_weight",
-                          "io_weight", "shared", "cpus"},
+                          "io_weight", "shared", "cpus", "pids"},
                     f"{where} [lanes.{name}.resources]")
         if "cpus" in res:
             _validate_cpus(res["cpus"], f"{where} [lanes.{name}.resources]")
+        if "pids" in res:
+            _validate_pids(res["pids"], f"{where} [lanes.{name}.resources]")
         if "memory" in res and table.get("memory"):
             fail(f"{where} [lanes.{name}]: declare RAM once — top-level 'memory' "
                  f"and 'resources.memory' are the same knob; use 'resources.memory'")
@@ -1677,6 +1769,7 @@ def load_config_snapshot(project_dir: Path
             break
         if git_root is not None and parent == git_root:
             break
+    _validate_effective_resource_observers(project, central, project_path)
     _validate_effective_assay_pins(project, central, project_path,
                                    central_path)
     return (project, project_path, central, central_path,
@@ -1725,6 +1818,47 @@ def _validate_effective_assay_pins(project: dict, central: dict,
                  f"'assay_command' — pins verify an external judge artifact; "
                  f"declare the command on the lane or in [assay], or remove "
                  f"the pins for a source-backed Assay lane")
+
+
+def _validate_effective_resource_observers(project: dict, central: dict,
+                                           project_path: Path) -> None:
+    """Observer-backed lanes must resolve to an ephemeral container at load.
+
+    The runtime Docker-flag check remains defense in depth, but a host or exec
+    lane must not appear valid in ``lanes`` or ``doctor``. Resolve project
+    shadows and Assay's inherited environment default after both configs load.
+    """
+    lanes = dict(central.get("lanes", {}))
+    lanes.update(project.get("lanes", {}))
+    environments = dict(central.get("environments", {}))
+    environments.update(project.get("environments", {}))
+    defaults = project.get("assay", central.get("assay", {}))
+    for name, lane in lanes.items():
+        if lane.get("resource_observer") is None:
+            continue
+        environment_name = lane.get("environment")
+        if environment_name is None and lane.get("kind") == "assay":
+            environment_name = defaults.get("environment")
+        if not isinstance(environment_name, str) or not environment_name.strip():
+            # The established lane/default validator reports the missing
+            # environment during effective-lane construction.
+            continue
+        environment = environments.get(environment_name)
+        if not isinstance(environment, dict):
+            # Keep resolve_environment's source-specific missing-name error.
+            continue
+        if environment.get("mode") != "ephemeral":
+            fail(f"{project_path} [lanes.{name}]: resource_observer="
+                 f"'cgprofile' requires the resolved environment "
+                 f"{environment_name!r} to have mode = 'ephemeral' "
+                 f"(got {environment.get('mode')!r})")
+        resources = lane.get("resources", {})
+        if not isinstance(resources, dict) or not isinstance(
+            resources.get("memory"), str
+        ) or "pids" not in resources:
+            fail(f"{project_path} [lanes.{name}]: resource_observer='cgprofile' "
+                 "requires explicit resources.memory and resources.pids so "
+                 "candidate-local memory and PID limit events are attributable")
 
 
 def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
@@ -2227,7 +2361,9 @@ class ProfilerClient:
     def _socket_request(self, verb: str, args: tuple[str, ...]) -> str:
         payload = {"verb": verb, "args": self._wire_args(verb, args),
                    "contract": PROFILE_CONTRACT}
-        request = (json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        request = json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":")
+        ) + "\n"
         timeout = PROFILE_CTL_TIMEOUTS.get(verb, PROFILE_CTL_TIMEOUTS["status"])
         chunks: list[bytes] = []
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as carrier:
@@ -2377,8 +2513,9 @@ class ProfilerWatch:
                     "session": self.session,
                     "watch_interval": self.watch_interval},
                     "contract": PROFILE_CONTRACT}
-                request = json.dumps(payload, indent=2,
-                                     ensure_ascii=False) + "\n"
+                request = json.dumps(
+                    payload, ensure_ascii=False, separators=(",", ":")
+                ) + "\n"
                 sock.sendall(request.encode("utf-8"))
                 sock.shutdown(socket.SHUT_WR)
                 stream = sock.makefile("rb")
@@ -3722,12 +3859,38 @@ def physical_path(path: Path, mountinfo_text: str | None = None,
 
 
 def git_out(*args: str, cwd: Path) -> str:
-    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                          text=True, env=host_git_environment())
     if proc.returncode != 0:
         detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() \
             else f"exit {proc.returncode}"
         fail_infra(f"git {' '.join(args)} failed in {cwd}: {detail}")
     return proc.stdout.strip()
+
+
+def host_git_environment() -> dict[str, str]:
+    """Keep host-side Git readers from executing worktree supplied helpers.
+
+    A lane needs a writable index and shared refs to support the documented
+    in-container commit behavior. Its worktree pointers are separately mounted
+    read-only, while every host Git reader disables fsmonitor and hooks so a
+    config file created through some other path cannot run code on the host.
+    """
+    environment = os.environ.copy()
+    raw_count = environment.get("GIT_CONFIG_COUNT", "0")
+    if not raw_count.isdecimal():
+        fail_infra("GIT_CONFIG_COUNT is malformed; cannot harden host Git")
+    index = int(raw_count)
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_COUNT": str(index + 2),
+        f"GIT_CONFIG_KEY_{index}": "core.fsmonitor",
+        f"GIT_CONFIG_VALUE_{index}": "false",
+        f"GIT_CONFIG_KEY_{index + 1}": "core.hooksPath",
+        f"GIT_CONFIG_VALUE_{index + 1}": os.devnull,
+    })
+    return environment
 
 
 def resolve_repo_and_worktree(project_dir: Path, worktree_override: str | None
@@ -4097,7 +4260,8 @@ def acquire_exec_lock(container_name: str, lane_name: str,
 
 def check_clean_tree(worktree: Path) -> None:
     proc = subprocess.run(["git", "-C", str(worktree), "status", "--porcelain"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True,
+                          env=host_git_environment())
     if proc.returncode != 0:
         detail = proc.stderr.strip().splitlines()[-1] if proc.stderr.strip() \
             else proc.returncode
@@ -4177,7 +4341,8 @@ def paths_are_git_ignored(worktree: Path, targets: list[Path]) -> bool | None:
     wanted = [str(t) for t in targets]
     try:
         proc = subprocess.run(["git", "-C", str(worktree), "check-ignore",
-                               "--", *wanted], capture_output=True, text=True)
+                               "--", *wanted], capture_output=True, text=True,
+                              env=host_git_environment())
     except OSError:
         return None
     if proc.returncode not in (0, 1):
@@ -4194,7 +4359,8 @@ def git_operation_in_progress(worktree: Path) -> str | None:
     caller pairs this with a separate 'could we even determine it' flag."""
     try:
         proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
-                               "--git-dir"], capture_output=True, text=True)
+                               "--git-dir"], capture_output=True, text=True,
+                              env=host_git_environment())
     except OSError:
         return None
     if proc.returncode != 0 or not proc.stdout.strip():
@@ -4213,7 +4379,7 @@ def head_commit(worktree: Path) -> str | None:
     try:
         proc = subprocess.run(["git", "-C", str(worktree), "rev-parse",
                                "--verify", "HEAD"], capture_output=True,
-                              text=True)
+                              text=True, env=host_git_environment())
     except OSError:
         return None
     sha = proc.stdout.strip()
@@ -4229,7 +4395,8 @@ def worktree_is_dirty(worktree: Path) -> bool | None:
     tree produces a perfectly good measurement and must not be excluded."""
     try:
         proc = subprocess.run(["git", "-C", str(worktree), "status",
-                               "--porcelain"], capture_output=True, text=True)
+                               "--porcelain"], capture_output=True, text=True,
+                              env=host_git_environment())
     except OSError:
         return None
     if proc.returncode != 0:
@@ -6950,7 +7117,7 @@ def extra_mount_flags() -> list[str]:
     return flags
 
 
-def resource_observer_docker_flags(lane: dict) -> list[str]:
+def resource_observer_docker_flags(lane: dict, environment: dict) -> list[str]:
     """Mount only cgprofile's read-only resource-observer socket.
 
     The observer protocol is a separate daemon listener; never mount the
@@ -6961,38 +7128,99 @@ def resource_observer_docker_flags(lane: dict) -> list[str]:
         return []
     if lane.get("resource_observer") != "cgprofile":
         fail("lane resource_observer must be 'cgprofile'")
-    if lane.get("kind") not in ("assay", "command") \
-            or lane.get("environment") != "tester-unified":
+    if lane.get("kind") not in ("assay", "command"):
         fail("resource_observer='cgprofile' requires an assay or command lane "
-             "in tester-unified")
+             "in an ephemeral environment")
+    if environment.get("mode") != "ephemeral":
+        fail("resource_observer='cgprofile' requires the lane's resolved "
+             "environment to have mode = 'ephemeral'")
+    if os.environ.get(EXTRA_MOUNT_ENV_VAR):
+        fail_infra(f"${EXTRA_MOUNT_ENV_VAR} is incompatible with an observer lane; "
+                   "extra mounts could expose host control interfaces")
     socket_path = Path(CGPROFILE_RESOURCE_OBSERVER_SOURCE)
+    directory_path = socket_path.parent
+    docker_group_directory = directory_path.parent
     try:
-        parent = os.lstat(socket_path.parent)
+        parent = os.lstat(directory_path)
         observed = os.lstat(socket_path)
     except OSError as exc:
-        fail_infra(f"cgprofile resource observer socket is unavailable at "
-                   f"{socket_path}: {exc}")
-    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != 0 \
-            or parent.st_mode & 0o002:
+        fail_infra(f"cgprofile resource observer directory or socket is unavailable: "
+                   f"{directory_path}, {socket_path}: {exc}")
+    try:
+        docker_group_source = os.lstat(docker_group_directory)
+    except OSError as exc:
+        fail_infra("cannot inspect the host Docker group source "
+                   f"{docker_group_directory}: {exc}")
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != 0
+        or parent.st_mode & 0o022
+        or not parent.st_mode & 0o010
+    ):
         fail_infra(f"cgprofile resource observer directory is not a safe "
-                   f"root-owned directory: {socket_path.parent}")
+                   f"root-owned, group-searchable directory: {directory_path}")
     if not stat.S_ISSOCK(observed.st_mode):
         fail_infra(f"cgprofile resource observer path is not a Unix socket: "
                    f"{socket_path}")
     if observed.st_uid != 0 or observed.st_gid != parent.st_gid:
         fail_infra("cgprofile resource observer socket ownership does not "
                    "match its root-owned socket directory")
+    if (
+        not stat.S_ISDIR(docker_group_source.st_mode)
+        or docker_group_source.st_uid != 0
+    ):
+        fail_infra("cannot determine the host Docker group from the root-owned "
+                   f"cgprofile control directory: {docker_group_directory}")
+    if (
+        docker_group_source.st_gid == 0
+        or stat.S_IMODE(docker_group_source.st_mode) != 0o770
+    ):
+        fail_infra("host Docker group source must be root-owned, have a "
+                   "non-root group, and mode 0770: "
+                   f"{docker_group_directory}")
     if observed.st_mode & 0o007 or not observed.st_mode & 0o020:
         fail_infra("cgprofile resource observer socket must be group-connectable "
                    "and not accessible to other users")
+    # `/run/cgprofile` is provisioned root:docker by the host setup unit, so
+    # its numeric GID is the host fact. `grp.getgrnam()` reads this container's
+    # group table, which can map the name to another numeric GID or omit it.
+    if observed.st_gid == docker_group_source.st_gid:
+        fail_infra("cgprofile observer must use its dedicated group, not the "
+                   "host docker group")
     return [
         "--mount",
-        f"type=bind,source={socket_path},target="
-        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",
+        f"type=bind,source={directory_path},target="
+        f"{CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly",
         "--group-add", str(observed.st_gid),
         "-e", f"{ASSAY_RESOURCE_OBSERVER_ENV}="
         f"{CGPROFILE_RESOURCE_OBSERVER_TARGET}",
     ]
+
+
+def resource_observer_version_preflight(docker: str, daemon: str) -> None:
+    """Require a live cgprofile daemon that advertises observer contract 2.
+
+    The host socket's presence alone cannot distinguish a current observer
+    from an old daemon or a listener that failed to bind. Query the daemon's
+    control version before launching the judged lane, and refuse any response
+    that cannot establish the exact read-only observer capability Run-Gate
+    will mount.
+    """
+    version, reason = ProfilerClient(docker, daemon).version()
+    if version is None:
+        fail_infra(f"cgprofile resource-observer preflight failed: {reason}")
+    observer = version.get("resource_observer")
+    if not isinstance(observer, dict):
+        fail_infra("cgprofile daemon does not advertise a resource observer")
+    contract = observer.get("contract")
+    if type(contract) is not int or contract != 2:
+        fail_infra("cgprofile resource observer contract must be 2 "
+                   f"(got {contract!r})")
+    if observer.get("path") != CGPROFILE_RESOURCE_OBSERVER_SOURCE:
+        fail_infra("cgprofile resource observer advertises an unexpected "
+                   f"socket path: {observer.get('path')!r}")
+    if observer.get("listening") is not True:
+        fail_infra("cgprofile resource observer is not listening")
 
 
 def build_env_probe_argv(docker: str, env: dict, env_name: str, repo: Path,
@@ -7576,7 +7804,8 @@ def merge_base_of(worktree: Path, ref: str) -> str | None:
     try:
         proc = subprocess.run(
             ["git", "merge-base", "--end-of-options", ref, "HEAD"],
-            cwd=str(worktree), capture_output=True, text=True)
+            cwd=str(worktree), capture_output=True, text=True,
+            env=host_git_environment())
     except (OSError, ValueError):
         return None
     if proc.returncode != 0:
@@ -7594,7 +7823,7 @@ def current_branch_ref(worktree: Path) -> str | None:
     try:
         proc = subprocess.run(["git", "symbolic-ref", "--quiet", "HEAD"],
                               cwd=str(worktree), capture_output=True,
-                              text=True)
+                              text=True, env=host_git_environment())
     except (OSError, ValueError):
         return None
     if proc.returncode != 0:
@@ -7811,7 +8040,8 @@ def derive_upstream_base(worktree: Path) -> str | None:
     an ordinary state this function must report, not an infrastructure
     failure it should abort on."""
     proc = subprocess.run(["git", "merge-base", "HEAD", "@{upstream}"],
-                          cwd=str(worktree), capture_output=True, text=True)
+                          cwd=str(worktree), capture_output=True, text=True,
+                          env=host_git_environment())
     if proc.returncode != 0:
         return None
     return proc.stdout.strip() or None
@@ -10028,7 +10258,8 @@ def render_git_config(entries: list[tuple[str, str | None]]) -> str:
 
 def read_git_config_entries(path: Path) -> list[tuple[str, str | None]]:
     proc = subprocess.run(["git", "config", "--file", str(path), "--list", "-z"],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True,
+                          env=host_git_environment())
     if proc.returncode != 0:
         fail_infra(f"cannot read git config {path} to sanitize it: "
                    f"{(proc.stderr.strip().splitlines() or ['git failed'])[-1]}")
@@ -10179,6 +10410,63 @@ def git_worktrees_mount_flags(plan: dict, repo: Path) -> list[str]:
     return flags
 
 
+def git_hook_info_mount_flags(plan: dict, repo: Path) -> list[str]:
+    """Keep tester containers from planting host Git hooks or editing info.
+
+    The common Git directory itself stays read-write because lanes need object
+    writes and in-container commits. Its hooks directory is overlaid with one
+    private, empty, read-only directory, and its info directory is mounted
+    read-only with its real contents. Both paths are dual-mounted wherever the
+    common directory is dual-mounted.
+    """
+    common = plan["common"]
+    hooks = common / "hooks"
+    info = common / "info"
+    for path in (hooks, info):
+        if path.is_symlink() or not path.is_dir():
+            fail_infra(f"shared Git {path.name} directory is missing or unsafe: {path}")
+
+    private, _physical = _make_private_dir(repo)
+    empty_hooks = private / "hooks-empty"
+    empty_hooks.mkdir(mode=0o755)
+    empty_hooks.chmod(0o755)
+    empty_source = physical_path(empty_hooks)
+
+    flags: list[str] = []
+    for destination in _dual(hooks, repo)[1::2]:
+        flags += ["-v", f"{empty_source}:{destination.split(':', 1)[1]}:ro"]
+    for destination in _dual(info, repo)[1::2]:
+        flags += ["-v", f"{physical_path(info)}:{destination.split(':', 1)[1]}:ro"]
+    return flags
+
+
+def git_worktree_pointer_mount_flags(
+        plan: dict, worktree: Path, repo: Path) -> list[str]:
+    """Protect the linked worktree pointers that host Git must later follow.
+
+    The worktree marker and admin ``gitdir``/``commondir`` files identify the
+    host-side Git directory. A tester may update the judged branch and index,
+    but it must not redirect the checkout to a Git directory it controls.
+    ``config.worktree`` is already mounted as a sanitized read-only config
+    overlay when it exists; host Git readers also disable fsmonitor and hooks.
+    """
+    if plan["kind"] != "linked":
+        return []
+    files = (worktree / ".git", plan["admin"] / "gitdir",
+             plan["admin"] / "commondir")
+    flags: list[str] = []
+    for path in files:
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            fail_infra(f"cannot inspect Git worktree pointer {path}: {exc}")
+        if not stat.S_ISREG(metadata.st_mode):
+            fail_infra(f"Git worktree pointer is not a regular file: {path}")
+        for destination in _dual(path, repo)[1::2]:
+            flags += ["-v", f"{physical_path(path)}:{destination.split(':', 1)[1]}:ro"]
+    return flags
+
+
 _MAIN_CHECKOUT_WARNED: set[str] = set()
 
 
@@ -10228,6 +10516,8 @@ def container_mount_flags(repo: Path, worktree: Path, env: dict | None = None,
     # `<common>/worktrees` read-only with its real contents, own admin dir rw
     mounts += git_worktrees_mount_flags(plan, repo)
     mounts += git_config_overlay_flags(plan, repo)
+    mounts += git_hook_info_mount_flags(plan, repo)
+    mounts += git_worktree_pointer_mount_flags(plan, worktree, repo)
     if with_state and (env or {}).get("state_root") is None:
         state = repo / ".run-gate"
         if create_state:
@@ -11707,6 +11997,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                                 worktree, fresh, dry_run, run_record)
     if attached is not None:
         return attached
+    if not dry_run and lane.get("resource_observer") is not None:
+        resource_observer_version_preflight(
+            docker,
+            (profile_plan or {}).get("daemon", PROFILE_DAEMON_DEFAULT),
+        )
     if not dry_run:
         clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     # RG-NARROW: only the judged worktree + the git metadata it needs (dual,
@@ -11717,7 +12012,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         create_state=lane["kind"] == "assay" and not dry_run,
         plan_missing_state=lane["kind"] == "assay" and dry_run),
         *extra_mount_flags(),
-        *resource_observer_docker_flags(lane)]
+        *resource_observer_docker_flags(lane, env)]
     verify_slice_loaded(slice_name)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
@@ -11759,6 +12054,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         # cmru pattern (RG-20): tight RAM cap + ample swap absorbs bursts
         # without OOM-killing the lane mid-campaign.
         argv += ["--memory-swap", lane["resources"]["memory_swap"]]
+    pids_cap = lane.get("resources", {}).get("pids")
+    if pids_cap is not None:
+        argv += ["--pids-limit", str(pids_cap)]
     # RG-48/R-29: lane wins over environment (the same precedence
     # `resources.memory` already has over nothing — there is no
     # environment-level memory fallback, only cpus has one, because a
@@ -12969,6 +13267,10 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
             bits.append(f"memory={mem}")
         res = lane.get("resources", {})
         res_bits = []
+        if res.get("memory"):
+            res_bits.append(f"memory={res['memory']}")
+        if res.get("pids"):
+            res_bits.append(f"pids={res['pids']}")
         if res.get("cpus"):
             res_bits.append(f"cpus={res['cpus']}")
         if res.get("memory_swap"):
@@ -14289,7 +14591,9 @@ def _dispatch(argv: list[str] | None = None, *,
                             source_commit=verdict_doc.get("commit"),
                             expected_source_commit=(record.get("commit")
                                                     if record else None),
-                            reason=verdict_doc.get("reason_code"))
+                            reason=verdict_doc.get("reason_code"),
+                            claims=verdict_doc.get("claims"),
+                            evidence=verdict_doc.get("evidence"))
         elif lane["kind"] == "assay":
             result = LaneResult("PASS" if code == 0 else "FAIL", code)
         else:

@@ -18,5 +18,10 @@ budget = "15m"
 kind = "assay"
 assay_lane = "r2"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 clean_tree = true
 budget = "4h"
+
+[lanes.r2.resources]
+memory = "2g"
+pids = 8192

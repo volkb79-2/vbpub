@@ -503,9 +503,12 @@ MAX_SHARD_COUNT = 10_000
 @positional_record
 class MutationConfig:
     """``[lanes.X.judge.mutation]`` (P18) -- the closed R2 execution policy:
-    a required positive ``jobs`` worker count (A-082/A-122: never derived
-    from the running machine, so this loader is the one place a value for
-    it can come from at all) and a non-empty, duplicate-free, ORDER-
+    a required native-R2 ``jobs = 1`` worker count (A-082/A-122: never
+    derived from the running machine, so this loader is the one place a value
+    for it can come from at all). Candidate cgroup-event windows cannot
+    overlap without losing per-candidate attribution. Ingested reports take
+    their separate early-return path. The policy also requires a non-empty,
+    duplicate-free, ORDER-
     preserving ``operators`` list, cross-checked at LOAD time against
     :data:`assay.mutation.MUTATION_OPERATORS` -- the same "vocabulary
     imported from its own owner, never duplicated" discipline
@@ -3116,6 +3119,11 @@ def _load_mutation(
     if jobs < 1:
         raise LaneConfigError(
             f"{where}: 'judge.mutation.jobs' must be a positive integer, got {jobs}"
+        )
+    if jobs != 1:
+        raise LaneConfigError(
+            f"{where}: 'judge.mutation.jobs' must be 1 for native R2 because "
+            "candidate cgroup event windows must not overlap"
         )
     max_mutants = value["max_mutants"]
     if not is_strict_int(max_mutants):

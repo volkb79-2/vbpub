@@ -394,6 +394,22 @@ sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — qu
 sudo mdt-host-check.sh
 ```
 
+On a host that already has `/run/cgprofile` configured, provision only
+cgroup-profiler's read-only resource-observer directory with
+`sudo host-setup/install.sh --observer-only`. It creates the dedicated
+`cgprofile-observer` group and applies `/run/cgprofile/observer` permissions;
+the host checker verifies the group is distinct from `docker`, the directory
+is `root:<observer-gid> 0751`, and both required sysusers/tmpfiles rules are
+installed as the complete active rule sets (blank lines and comments are
+ignored; extra active directives fail the check):
+
+```bash
+sudo mdt-host-check.sh
+```
+
+see the [observer design](docs/DESIGN-GUIDE.md#narrow-cgprofile-observer-provisioning)
+and [consumer steps](docs/CONSUMERS.md#cgprofile-resource-observer-host-setup).
+
 For host inspection from an MDT devcontainer, `host-escape -- <command>` runs
 the command in the host's namespaces with host-root authority; `host-escape`
 opens a host shell. Review commands before running them. The helper runs
@@ -678,7 +694,7 @@ production-quality. Windows as of June 2026:
 |---|---|
 | [USAGE.md](USAGE.md) | Consuming the image day to day |
 | [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) | Build → create → start ordering, what runs when, host resource governance |
-| [host-setup/README.md](host-setup/README.md) | Installing the host cgroup tiers |
+| [host-setup/README.md](host-setup/README.md) | Installing the host cgroup tiers and narrow cgprofile observer setup |
 | [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
 | [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) | Which concerns belong to the image, the orchestration, and the host |
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |

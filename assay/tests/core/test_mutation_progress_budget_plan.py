@@ -3,15 +3,13 @@ from __future__ import annotations
 import json
 import io
 import os
-import select
-import signal
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 import pytest
 
+from conftest import completed_process, isolated_process_runner, timeout_expired
 from conftest import (
     GitRepo,
     Project,
@@ -35,7 +33,7 @@ from assay.mutation import (
     run_mutation,
 )
 from assay import mutation as mutation_module
-from assay.runner import CommandResult, default_process_runner, execute_command
+from assay.runner import CommandResult, execute_command
 
 
 _TEXT = (
@@ -68,12 +66,12 @@ def test_progress_events_are_emitted_for_baseline_and_every_candidate(tmp_path):
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=1)
+            return completed_process(list(argv), returncode=1)
         if "b = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         raise AssertionError(f"unexpected content: {text!r}")
 
     lane = make_lane(argv=("pytest", "-q"))
@@ -183,7 +181,7 @@ def test_plan_event_reports_slowest_test_s_and_expect_next_event_within_s(
     progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
 
     def decide(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -238,7 +236,7 @@ def test_baseline_test_events_are_forwarded_right_after_plan_never_per_candidate
     )
 
     def decide(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -305,7 +303,7 @@ def test_forwarded_baseline_test_events_carry_setup_and_teardown_durations(tmp_p
     )
 
     def decide(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -368,7 +366,7 @@ def test_candidate_progress_event_gains_tests_completed_from_its_own_events_file
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         killed = "a = False" in text
         events_path = liveness.candidate_events_path(events_dir, Path(cwd))
@@ -388,7 +386,7 @@ def test_candidate_progress_event_gains_tests_completed_from_its_own_events_file
                     + "\n"
                 )
             stream.write(json.dumps({"event": "session_finish", "exitstatus": 0}) + "\n")
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv), returncode=1 if killed else 0
         )
 
@@ -467,7 +465,7 @@ def test_tests_completed_is_read_from_the_resolved_run_cwd_on_a_lane_declaring_c
     def decide(argv, *, env, cwd, timeout):
         seen_cwds.append(Path(cwd))
         if Path(cwd) == repo.path / "sub":
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         killed = "a = False" in text
         events_path = liveness.candidate_events_path(events_dir, Path(cwd))
@@ -486,7 +484,7 @@ def test_tests_completed_is_read_from_the_resolved_run_cwd_on_a_lane_declaring_c
                     + "\n"
                 )
             stream.write(json.dumps({"event": "session_finish", "exitstatus": 0}) + "\n")
-        return subprocess.CompletedProcess(list(argv), returncode=1 if killed else 0)
+        return completed_process(list(argv), returncode=1 if killed else 0)
 
     lane = make_lane(argv=("pytest", "-q"), cwd="sub")
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -584,12 +582,12 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         calls.append(text)
         if "a = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=1)
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=1)
+        return completed_process(list(argv), returncode=0)
 
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
@@ -623,7 +621,7 @@ def test_resume_reuses_completed_records_without_rerunning(tmp_path):
             deadline=make_deadline(),
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=10,
             operators=("python:bool-const-flip",),
             process_runner=lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -662,11 +660,11 @@ def _seed_resumed_state(tmp_path, state_root, progress_path=None):
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=1)
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=1)
+        return completed_process(list(argv), returncode=0)
 
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
@@ -725,13 +723,13 @@ def test_rejudge_ids_drops_only_the_named_record_and_reexecutes_it(tmp_path):
 
     def strengthened(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         calls.append(text)
         # A genuine test-suite strengthening: BOTH mutants would now be
         # killed if actually re-executed -- proving this is real execution,
         # never a replayed stale verdict.
-        return subprocess.CompletedProcess(list(argv), returncode=1)
+        return completed_process(list(argv), returncode=1)
 
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
         rejudged = run_mutation(
@@ -776,10 +774,10 @@ def test_rejudge_outcome_drops_records_matching_the_named_bucket(tmp_path):
 
     def strengthened(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         calls.append(text)
-        return subprocess.CompletedProcess(list(argv), returncode=1)
+        return completed_process(list(argv), returncode=1)
 
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
         rejudged = run_mutation(
@@ -819,9 +817,9 @@ def test_rejudge_ids_and_rejudge_outcomes_are_a_union(tmp_path):
 
     def strengthened(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         calls.append(str(cwd))
-        return subprocess.CompletedProcess(list(argv), returncode=1)
+        return completed_process(list(argv), returncode=1)
 
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
         rejudged = run_mutation(
@@ -892,8 +890,8 @@ def test_resume_progress_event_gains_rejudged_total(tmp_path):
 
     def strengthened(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
-        return subprocess.CompletedProcess(list(argv), returncode=1)
+            return completed_process(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=1)
 
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
         run_mutation(
@@ -930,7 +928,7 @@ def test_run_mutation_refuses_rejudge_ids_without_resume(tmp_path):
     scratch.mkdir()
 
     def decide(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -960,7 +958,7 @@ def test_run_mutation_refuses_an_unknown_rejudge_outcome_bucket_name(tmp_path):
     state_root.mkdir()
 
     def decide(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -1007,11 +1005,11 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=1)
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=1)
+        return completed_process(list(argv), returncode=0)
 
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
@@ -1022,7 +1020,7 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
             deadline=make_deadline(),
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=10,
             operators=("python:bool-const-flip",),
             process_runner=decide,
@@ -1045,7 +1043,7 @@ def test_resume_raises_on_a_state_record_whose_source_hash_contradicts_its_own_f
                 deadline=make_deadline(),
                 targets=_TARGETS,
                 adapter=PythonAdapter(),
-                jobs=2,
+                jobs=1,
                 max_mutants=10,
                 operators=("python:bool-const-flip",),
                 process_runner=decide,
@@ -1075,11 +1073,11 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=1)
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=1)
+        return completed_process(list(argv), returncode=0)
 
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
@@ -1090,7 +1088,7 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
             deadline=make_deadline(),
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=10,
             operators=("python:bool-const-flip",),
             process_runner=decide,
@@ -1119,7 +1117,7 @@ def test_resume_reruns_a_state_record_after_a_routine_schema_version_bump(tmp_pa
             deadline=make_deadline(),
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=10,
             operators=("python:bool-const-flip",),
             process_runner=deciding_recorder,
@@ -1300,11 +1298,11 @@ def test_per_candidate_budget_marks_one_mutant_and_continues(tmp_path):
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
-            raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+            raise timeout_expired(cmd=list(argv), timeout=timeout)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -1372,12 +1370,12 @@ def test_run_mutation_auto_budget_is_derived_and_drives_enforcement(tmp_path):
 
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         candidate_timeouts.append(timeout)
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
-            raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+            raise timeout_expired(cmd=list(argv), timeout=timeout)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -1421,46 +1419,42 @@ def test_run_mutation_auto_budget_is_derived_and_drives_enforcement(tmp_path):
 
 
 def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeypatch):
-    """The auto-derived timeout bounds a real child and kills its process group.
+    """The auto-derived timeout bounds a real child process tree.
 
     Keep the derived value short in this boundary test; the independent
-    formula test above pins the shipped derivation. Synchronize on the child's
-    output before calling the real ``Popen.communicate(timeout=...)`` so the
-    test proves that the derived bound reaches the actual wait. The blocked
-    candidate also starts a same-group descendant; timeout cleanup must stop
-    both. The 60-second guards are hang failsafes only; the lane deadline is
-    deliberately much longer than the 0.15-second candidate bound.
+    formula test above pins the shipped derivation. The blocked candidate
+    starts a detached descendant and records its PID before waiting forever;
+    the isolated runner must time out the leader, then kill and reap that
+    descendant before returning. A five-second candidate bound gives the
+    child interpreter time to start under host load.
     """
     repo = _repo(tmp_path)
     scratch = tmp_path / "scratch"
     scratch.mkdir()
     progress_path = tmp_path / ".assay" / "real-child.progress.jsonl"
-    derived_timeout = 0.15
+    derived_timeout = 5.0
     monkeypatch.setattr(
         mutation_module,
         "auto_budget_per_candidate_seconds",
         lambda baseline_s: derived_timeout,
     )
+    pid_file = tmp_path / "detached-child.pid"
     script = (
         "from pathlib import Path\n"
-        "import signal, subprocess\n"
+        "import signal, subprocess, sys\n"
         "source = Path('pkg/flags.py').read_text(encoding='utf-8')\n"
         "if 'a = False' in source:\n"
         "    signal.alarm(60)\n"
-        "    descendant = subprocess.Popen(['/bin/sleep', '600'], "
+        "    descendant = subprocess.Popen([sys.executable, '-c', "
+        "'import os,time; os.setsid(); time.sleep(600)'], "
         "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-        "    print(f'BLOCKED {descendant.pid}', flush=True)\n"
+        f"    Path({str(pid_file)!r}).write_text(str(descendant.pid))\n"
         "    signal.pause()\n"
         "else:\n"
         "    print('FAST', flush=True)\n"
     )
     lane = make_lane(argv=(sys.executable, "-c", script))
     candidate_timeouts: list[float | None] = []
-    wait_timeouts: list[float | None] = []
-    timed_out_children: list[subprocess.Popen[str]] = []
-    descendant_pids: list[int] = []
-    real_communicate = subprocess.Popen.communicate
-
     def still_running(pid: int) -> bool:
         try:
             stat = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
@@ -1469,87 +1463,46 @@ def test_auto_budget_timeout_terminates_a_real_candidate_child(tmp_path, monkeyp
         # A zombie has exited and cannot consume CPU or block the gate.
         return stat.rsplit(")", 1)[1].lstrip()[0] != "Z"
 
-    def synchronized_communicate(proc, input=None, timeout=None):
-        if tuple(proc.args) != lane.argv:
-            return real_communicate(proc, input=input, timeout=timeout)
-        wait_timeouts.append(timeout)
-        assert timeout == derived_timeout
-        assert proc.stdout is not None
-        readable, _, _ = select.select([proc.stdout], [], [], 60.0)
-        if not readable:
-            pytest.fail(
-                "HANG: candidate child did not report readiness within the "
-                "60-second wait guard"
-            )
-        state = proc.stdout.readline().rstrip("\r\n")
-        if state.startswith("BLOCKED "):
-            descendant_pid = int(state.split()[1])
-            descendant_pids.append(descendant_pid)
-            assert os.getpgid(descendant_pid) == proc.pid
-        elif state != "FAST":
-            raise AssertionError(f"unexpected candidate state: {state!r}")
-        try:
-            return real_communicate(proc, input=input, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            timed_out_children.append(proc)
-            raise
-
-    monkeypatch.setattr(subprocess.Popen, "communicate", synchronized_communicate)
-
     def run_real_candidate(argv, *, env, cwd, timeout):
         if Path(cwd) == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0)
+            return completed_process(list(argv), returncode=0)
         candidate_timeouts.append(timeout)
-        return default_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
+        return isolated_process_runner(argv, env=env, cwd=cwd, timeout=timeout)
 
-    try:
-        baseline = execute_command(
-            lane, cwd=repo.path, process_runner=run_real_candidate
+    baseline = execute_command(
+        lane, cwd=repo.path, process_runner=run_real_candidate
+    )
+    assert baseline.outcome is Outcome.PASS
+    with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+        result = run_mutation(
+            baseline=baseline,
+            prepared=prepared,
+            plan=make_plan(lane),
+            deadline=make_deadline(budget_seconds=120.0),
+            targets=_TARGETS,
+            adapter=PythonAdapter(),
+            jobs=1,
+            max_mutants=10,
+            operators=("python:bool-const-flip",),
+            process_runner=run_real_candidate,
+            clock=lambda: datetime.now(timezone.utc),
+            budget_per_candidate_auto=True,
+            progress_artifact=progress_path,
         )
-        assert baseline.outcome is Outcome.PASS
-        with prepared_snapshot(repo, scratch_root=scratch) as prepared:
-            result = run_mutation(
-                baseline=baseline,
-                prepared=prepared,
-                plan=make_plan(lane),
-                deadline=make_deadline(budget_seconds=120.0),
-                targets=_TARGETS,
-                adapter=PythonAdapter(),
-                jobs=1,
-                max_mutants=10,
-                operators=("python:bool-const-flip",),
-                process_runner=run_real_candidate,
-                clock=lambda: datetime.now(timezone.utc),
-                budget_per_candidate_auto=True,
-                progress_artifact=progress_path,
-            )
 
-        assert result is not None and not isinstance(result, str)
-        assert len(result.budget_exceeded) == 1
-        assert len(result.survived) == 1
-        assert result.budget_per_candidate_derived_s == derived_timeout
-        assert candidate_timeouts == [derived_timeout, derived_timeout]
-        assert wait_timeouts == [derived_timeout, derived_timeout]
-        assert len(timed_out_children) == 1
-        assert timed_out_children[0].returncode == -signal.SIGKILL
-        assert len(descendant_pids) == 1
-
-        blocked_descendant = descendant_pids[0]
-        deadline = time.monotonic() + 60.0
-        while still_running(blocked_descendant) and time.monotonic() < deadline:
-            time.sleep(0.01)
-        if still_running(blocked_descendant):
-            pytest.fail(
-                "HANG: same-group descendant did not stop within the "
-                "60-second cleanup guard"
-            )
-    finally:
-        for descendant_pid in descendant_pids:
-            if still_running(descendant_pid):
-                try:
-                    os.kill(descendant_pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+    assert result is not None and not isinstance(result, str)
+    assert len(result.budget_exceeded) == 1
+    assert len(result.survived) == 1
+    assert result.budget_per_candidate_derived_s == derived_timeout
+    assert candidate_timeouts == [derived_timeout, derived_timeout]
+    assert pid_file.is_file(), "candidate did not start its detached child"
+    descendant_pid = int(pid_file.read_text(encoding="ascii"))
+    assert not still_running(descendant_pid), (
+        "isolated runner returned while a detached candidate descendant lived"
+    )
+    assert result.budget_exceeded[0].process_tree_evidence is not None
+    assert result.budget_exceeded[0].process_tree_evidence.leader_status == "timeout-killed"
+    assert result.budget_exceeded[0].process_tree_evidence.outliving_descendants >= 1
 
 
 def test_run_mutation_refuses_auto_and_an_explicit_seconds_together(tmp_path):
@@ -1561,7 +1514,7 @@ def test_run_mutation_refuses_auto_and_an_explicit_seconds_together(tmp_path):
     scratch.mkdir()
 
     def decide(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -1590,7 +1543,7 @@ def test_run_mutation_refuses_a_non_boolean_auto_flag(tmp_path):
     scratch.mkdir()
 
     def decide(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -1658,7 +1611,7 @@ def test_plan_event_reports_none_derived_false_when_budget_per_candidate_is_unse
     progress_path = tmp_path / ".assay" / "lane.progress.jsonl"
 
     def decide(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     lane = make_lane(argv=("pytest", "-q"))
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
@@ -1721,7 +1674,7 @@ source_roots = ["pkg"]
 base = "base"
 
 [lanes.package.judge.mutation]
-jobs = 2
+jobs = 1
 max_mutants = 10
 operators = ["python:bool-const-flip"]
 budget_per_candidate = "30s"
@@ -1740,7 +1693,7 @@ budget_per_candidate = "30s"
     from assay.cli import main
 
     out = io.StringIO()
-    exit_code = main(["plan", "package", "--file", str(project.root / "assay.toml")], stdout=out)
+    exit_code = main(["plan", "--json", "package", "--file", str(project.root / "assay.toml")], stdout=out)
     payload = json.loads(out.getvalue())
 
     # B030/A-319. This fixture genuinely yields ONE `python:bool-const-flip`
@@ -1756,7 +1709,7 @@ budget_per_candidate = "30s"
     assert payload["by_operator"] == {"python:bool-const-flip": 1}
     assert payload["by_file"] == {"pkg/flags.py": 1}
     assert payload["estimated_serial_seconds"] == 30.0
-    assert payload["estimated_wall_seconds"] == 15.0
+    assert payload["estimated_wall_seconds"] == 30.0
     assert [candidate["path"] for candidate in payload["candidates"]] == ["pkg/flags.py"]
     assert [candidate["operator"] for candidate in payload["candidates"]] == [
         "python:bool-const-flip"
@@ -1849,7 +1802,7 @@ operators = ["python:bool-const-flip"]
     from assay.cli import main
 
     out = io.StringIO()
-    exit_code = main(["plan", "whole", "--file", str(project.root / "assay.toml")], stdout=out)
+    exit_code = main(["plan", "--json", "whole", "--file", str(project.root / "assay.toml")], stdout=out)
     payload = json.loads(out.getvalue())
 
     assert exit_code == 0
@@ -1936,7 +1889,7 @@ operators = ["python:bool-const-flip"]
     out = io.StringIO()
     err = io.StringIO()
     exit_code = main(
-        ["plan", "whole", "--file", str(project.root / "assay.toml")],
+        ["plan", "--json", "whole", "--file", str(project.root / "assay.toml")],
         stdout=out,
         stderr=err,
     )
@@ -1992,7 +1945,7 @@ source_roots = ["pkg"]
 base = "base"
 
 [lanes.package.judge.mutation]
-jobs = 2
+jobs = 1
 max_mutants = 10
 operators = ["python:bool-const-flip"]
 """
@@ -2018,7 +1971,7 @@ def test_plan_accepts_a_valid_shard(tmp_path):
 
     path = _write_plan_fixture(tmp_path)
     out = io.StringIO()
-    exit_code = main(["plan", "package", "--shard", "0/2", "--file", str(path)], stdout=out)
+    exit_code = main(["plan", "--json", "package", "--shard", "0/2", "--file", str(path)], stdout=out)
     payload = json.loads(out.getvalue())
     assert exit_code == 0
     assert payload["shard"] == "0/2"
@@ -2055,7 +2008,7 @@ def test_plan_refuses_an_out_of_range_shard_with_a_clean_exit_not_a_crash(tmp_pa
 
     path = _write_plan_fixture(tmp_path)
     out, err = io.StringIO(), io.StringIO()
-    exit_code = main(["plan", "package", "--shard", "5/2", "--file", str(path)], stdout=out, stderr=err)
+    exit_code = main(["plan", "--json", "package", "--shard", "5/2", "--file", str(path)], stdout=out, stderr=err)
     assert exit_code != 0
     assert "shard index 5 is outside" in err.getvalue()
     assert out.getvalue() == ""
@@ -2066,7 +2019,7 @@ def test_plan_refuses_a_malformed_shard_spelling(tmp_path):
 
     path = _write_plan_fixture(tmp_path)
     out, err = io.StringIO(), io.StringIO()
-    exit_code = main(["plan", "package", "--shard", "not-a-shard", "--file", str(path)], stdout=out, stderr=err)
+    exit_code = main(["plan", "--json", "package", "--shard", "not-a-shard", "--file", str(path)], stdout=out, stderr=err)
     assert exit_code != 0
     assert "--shard must have the form INDEX/COUNT" in err.getvalue()
 
@@ -2080,7 +2033,7 @@ def test_plan_refuses_an_unknown_operator_with_a_clean_exit_not_a_crash(tmp_path
     path = _write_plan_fixture(tmp_path)
     out, err = io.StringIO(), io.StringIO()
     exit_code = main(
-        ["plan", "package", "--operators", "bogus:does-not-exist", "--file", str(path)],
+        ["plan", "--json", "package", "--operators", "bogus:does-not-exist", "--file", str(path)],
         stdout=out,
         stderr=err,
     )
@@ -2146,10 +2099,10 @@ def test_plan_estimates_with_the_60s_fallback_for_every_non_duration_spelling(
         tmp_path, budget_per_candidate_line=budget_per_candidate_line
     )
     out = io.StringIO()
-    exit_code = main(["plan", "package", "--file", str(path)], stdout=out)
+    exit_code = main(["plan", "--json", "package", "--file", str(path)], stdout=out)
     assert exit_code == 0
     payload = json.loads(out.getvalue())
     assert payload["status"] == "ok"
-    # 1 candidate x 60s fallback, / 2 jobs for the wall estimate.
+    # 1 candidate x 60s fallback, / 1 native-R2 worker for the wall estimate.
     assert payload["estimated_serial_seconds"] == 60.0
-    assert payload["estimated_wall_seconds"] == 30.0
+    assert payload["estimated_wall_seconds"] == 60.0

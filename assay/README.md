@@ -73,7 +73,7 @@ an installed wheel or zipapp needs nothing extra:
   verdicts and progress to the current clean worktree's exact HEAD and tree.
 - `launcher` inspects an existing `tester-unified/run` evidence directory,
   including historical runs, at its explicitly expected commit.
-- `plan-estimate` projects a campaign's hours from an `assay plan` JSON file
+- `plan-estimate` projects a campaign's hours from an `assay plan --json` file
   and a progress stream that holds a completed baseline (a preflight or an R0/R1
   run at the same commit and lane). Its JSON names that lane, and it refuses a
   plan/progress lane mismatch. It is a measured, advisory projection: it never
@@ -89,8 +89,11 @@ an installed wheel or zipapp needs nothing extra:
   adverse candidates by id, path and operator, names why a campaign is not
   complete, and exits 0 (complete PASS), 1 (complete, not PASS), 2 (evidence
   error) or 3 (incomplete). Timing, ETA and `--project` estimates are
-  diagnostic: they never change the status or the exit code. See the
-  [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108).
+  diagnostic: they never change the status or the exit code. Native R2
+  projections use the lane's declared worker count and separate the first
+  candidate's runtime from fixed overhead. See the
+  [workflow](docs/CONSUMERS.md#close-out-a-mutation-campaign-with-assay-analyze-campaign-b108)
+  and [design](docs/DESIGN-GUIDE.md#mutation-campaign-closeout-b108-phase-1).
 
 <!-- assay-analysis-example -->
 ```bash
@@ -114,7 +117,7 @@ remains FAIL or ERROR. Receipts do not decide ACCEPT or REJECT. See the
 Machine consumers can validate manifests and receipts against the packaged
 `schemas/analysis-archive.schema.json`, `schemas/analysis-receipt.schema.json`,
 and `schemas/analysis-report.schema.json`.
-Receipt verdicts are checked against the current v15 verdict schema; a receipt
+Receipt verdicts are checked against the current v16 verdict schema; a receipt
 with an `--allow-dirty` override is refused by default.
 
 ## Why use it
@@ -209,8 +212,9 @@ assay exists to close that gap mechanically, not by policy:
   `assay run --reuse-from` always re-runs R0 first, then replays eligible prior
   kill witnesses against the current sequential pytest suite. Any uncertainty
   runs the candidate's full suite; a nonempty `PYTEST_ADDOPTS` disables witness
-  replay because it can override configured addopts. A v12, v13, or v14 verdict
-  is a cold start under v15, and `assay verify` rejects all three. See the
+  replay because it can override configured addopts. A v12, v13, v14, or v15
+  verdict is a cold start under v16, and `assay verify` rejects all four. Assay
+  10.0.0 is the release carrying this v16 hard cut. See the
   [B106 design](docs/DESIGN-GUIDE.md#selective-reuse-replays-a-current-failure-witness-b106)
   and [worked consumer example](docs/CONSUMERS.md#reusing-killed-native-mutants-after-the-baseline-b106).
 - **Refusals name the usable cause and keep unrelated failures distinct.** A
@@ -264,21 +268,46 @@ assay exists to close that gap mechanically, not by policy:
   These counters are an execution-validity guard, not a CPU or memory usage
   profile: R2 still measures whether tests detect code mutations. Assay checks
   ancestors because their limits can affect a container whose own limits say
-  `max`. For a private cgroup namespace, the observer-only cgprofile socket
+  `max`. A positive `memory.events:max` remains a conservative infrastructure
+  refusal even when reclaim prevented OOM and the command exited normally. For
+  each active controller, native R2 requires a local event file or a verified
+  mount option that makes the regular event file local. Availability is
+  capability-based: Assay probes the files and mount options instead of
+  treating a kernel version as proof. If neither local interface is available,
+  only R2 is unmeasured; R0/R1 remain and independent R3 can still run. Inspect
+  this with `assay plan --json` or `assay lanes --json`. See the
+  [consumer requirements](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  For a private cgroup namespace, the observer-only cgprofile socket
   must implement resource-observer contract 2, which reports the regular
   counters' scope and supplies effective local counters. Contract 1 is refused
-  because it cannot distinguish sibling events from events enforced at a shared ancestor. See B155 in the
+  because it cannot distinguish sibling events from events enforced at a shared ancestor;
+  use cgroup-profiler 1.0.0 or later. See B155 in the
   [Assay backlog](nyxloom-trove/4-backlog.md), the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145),
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
-  When native candidates are selected, Assay checks the same complete
-  hierarchy before R0 starts. If its private cgroup view hides ancestors, it
-  may use the explicitly configured observer-only socket; without a usable
-  local view or observer it returns
-  `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. `assay plan` and
-  `assay lanes --json` report current availability. See the
-  [preflight design](docs/DESIGN-GUIDE.md#native-r2-cgroup-visibility-preflight-b148)
-  and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-visibility-preflight-b148).
+  Native R2 executes one candidate at a time (`judge.mutation.jobs = 1`) so
+  each cgroup-event window has one owner. Bounded native pilots also require
+  `--pilot-jobs 1`; the config loader, CLI, and public `run_mutation` entry
+  point refuse larger values because overlapping windows cannot attribute
+  shared counter changes. This execution-validity rule is separate from
+  runtime profiling.
+  See the [serial-window rationale](docs/DESIGN-GUIDE.md#native-r2-candidate-event-windows-are-serial)
+  and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
+  After R0/R1, Assay checks the complete hierarchy before any native R2
+  candidate starts. If its private cgroup view hides ancestors, it may use
+  the explicitly configured observer-only socket; without a usable local view
+  or observer, only the R2 claim is
+  `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. R0/R1 evidence is retained
+  and independent R3 can still run. `assay plan --json` and `assay lanes --json`
+  report current availability. See the
+  [design](docs/DESIGN-GUIDE.md#native-r2-cgroup-observation-b148-a-494)
+  and [consumer guidance](docs/CONSUMERS.md#native-r2-cgroup-observation-b148-a-494).
+  If observation is lost or becomes ambiguous after the pre-candidate check,
+  Assay stops R2 with `ERROR/EXEC_FAILED`; it never records that attempt as a
+  product failure or mutation kill. Run-Gate reports the pre-candidate
+  `CGROUP_OBSERVATION_UNAVAILABLE` refusal as infrastructure `ERROR` when all
+  other claims and evidence pass; it preserves any independent budget or
+  product failure.
 - **Assay's own Git children cannot launch detached automatic maintenance (B147).**
   Assay pins automatic maintenance and both detach settings off, independent
   of system or image configuration. See the
@@ -297,20 +326,22 @@ assay exists to close that gap mechanically, not by policy:
   for the receipts.
 
 **Compatibility, read before upgrading.** The verdict artifact is schema
-`VERDICT_SCHEMA_VERSION = 15` and the lane file is `LANE_SCHEMA_VERSION = 2`.
-The verdict is a hard cut: `assay verify` refuses v14 and earlier verdicts
+`VERDICT_SCHEMA_VERSION = 16` and the lane file is `LANE_SCHEMA_VERSION = 2`.
+The verdict is a hard cut: `assay verify` refuses v15 and earlier verdicts
 (no dual-version verifier, no upgrade-in-place). Lane schema stays at v2;
 the 8.0.0 release extended it with the explicit project-level
-`[defaults].env_passthrough` option. Existing v2 lane files still load, and a
-lane may omit its own `env_passthrough` only when that project table is
-present. A v2 assay
+`[defaults].env_passthrough` option. Current v2 semantic constraints still
+apply: native R2 lanes must declare `judge.mutation.jobs = 1`; a higher value
+refuses during load. A lane may omit its own `env_passthrough` only when that
+project table is present. A v2 assay
 refuses a v1 `assay.toml`'s `[isolation]`-less R1+ lane while a v1-pinned
 assay cannot parse a v2 file's `[isolation]` table at all. Repin the release
 and bump `schema_version` **in the same commit** — see
 [the consumer guide's ordered adoption step](docs/CONSUMERS.md#adopting-a-v2-capable-release)
 for why the order matters and what breaks if you split it across two commits.
 For the verdict-field addition and the effect on old verdicts and reuse, see
-the [v14-to-v15 migration notes](docs/CONSUMERS.md#migration-notes-v14-to-v15).
+the [v15-to-v16 migration notes](docs/CONSUMERS.md#migration-notes-v15-to-v16)
+and the earlier [v14-to-v15 migration notes](docs/CONSUMERS.md#migration-notes-v14-to-v15).
 The previous cut has its own [v12-to-v13 migration notes](docs/CONSUMERS.md#migration-notes-v12-to-v13).
 In v15, present `env_passthrough` values appear in `env_effective` as
 `"<passthrough>"`; their full SHA-256 fingerprints are in
@@ -391,15 +422,36 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | Language | R0 | R1 — line coverage | R1 — branch coverage | R2 — mutation | R3 — canary/parity |
 |---|---|---|---|---|---|
 | *(any)* | ✅ language-agnostic | — | — | — | — |
-| **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native mutant generator | ✅ registered |
-| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — assay judges mutation evidence an external producer already generated; no native JS mutant generator | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); both current dstdns canaries passed with retained v15 verdicts and verifier transcripts; integrated release evidence is separate |
+| **Python** | ✅ | ✅ registered, both scope modes | ✅ **available** — real `coverage.py` branch arcs | ✅ registered, native; Assay owns candidate generation, execution, resumable state, survivor rejudge, progress and candidate-local resource-event checks | ✅ registered |
+| **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 checks import-break and uncovered-line causes (B087); both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
-| **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered — SQL's only rigor level | ❌ not registered |
+| **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, progress and resource-event path as Python | ❌ not registered |
+
+#### Cross-cutting capabilities beyond language adapters
+
+| Capability | Current support | Limit |
+|---|---|---|
+| Native R2 resource-event attribution | Assay checks candidate-local counters and relevant enforcing ancestors. When a private cgroup namespace hides ancestors, Run-Gate can opt an ephemeral native R2 lane into cgprofile's read-only observer contract 2. | If required observation is unavailable before candidate execution, R2 is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`. A process-limit or OOM event during a candidate is `ERROR/EXEC_FAILED` and never a mutant kill. R0/R1 evidence remains valid. The observer does not expose the daemon control socket. |
+| Per-test liveness and process measurements | Native R2 only, when the declared command activates a supported liveness monitor. Pytest test events and `tests_completed` are command-shape-specific; otherwise candidate progress remains available but those fields can be `null`. | These are execution features, not language-wide guarantees; see the [campaign lifecycle comparison](docs/DESIGN-GUIDE.md#native-and-ingested-r2-campaign-features) and [consumer guidance](docs/CONSUMERS.md#r2-for-javascript-by-ingesting-strykers-report-b046). |
+| Bounded native R2 pilots | B118 provides a plan-bound candidate selector and report checks. | A bounded pilot measures a selected subset; it does not qualify the full lane. |
+| Analysis-package R2 | B131 has a dedicated whole-target lane and bounded pilot path. | The analysis package is not qualified for a full R2 campaign until the full plan is completed and reviewed. |
+| Campaign closeout | `assay analyze campaign` implements the phase-1 analysis of plan, progress, verdict, and supplied coverage inputs. | B108 remains open: phase-1 acceptance and documentation have residuals, and phase 2—Run-Gate's automatic post-lane closeout and SPEC wiring—is not implemented. |
+
+For the rationale and pasteable lane configuration, see the
+[resource-observation design](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145)
+and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
 
 The matrix describes language capability, not a qualification claim for every
 package. B131 declares a separate whole-target `analysis-r2` lane, but its
 registered gate currently runs only the bounded non-qualifying pilot. The
 analysis package is not yet qualified over its full R2 plan.
+
+Native campaign lifecycle follows the R2 producer, not the source language:
+Python and SQL currently use Assay's native runner and share resume/rejudge,
+candidate progress, and cgroup event checks. JavaScript/TypeScript R2 ingests
+an external report, so the producer owns its execution and retry state. Assay's
+cgroup event checks decide whether native mutation results are valid; they are
+not a resource-use profile. `cgprofile` provides the separate lane profile.
 
 Three genuinely different states, worth keeping distinct:
 
@@ -411,9 +463,10 @@ Three genuinely different states, worth keeping distinct:
   - **Implemented but unregistered** — code may exist without being
   callable through the CLI until it is wired and proven. JavaScript R3
   used to be this state; B087 registers it and adds local real-Vitest
-  oracles. Both current dstdns canaries passed with retained v15 verdicts and
-  verifier transcripts; the [report](nyxloom-trove/reports/B087-js-r3-qualification.md)
-  records the canary scope and evidence.
+  oracles. Both dstdns canaries were qualified under Assay 9.0.0/schema v15;
+  their retained verdicts and verifier transcripts document that release. The
+  [report](nyxloom-trove/reports/B087-js-r3-qualification.md) records the
+  canary scope and evidence.
 
 Source for every claim above: `src/assay/cli.py`'s `_built_in_registry()`
 (the single authority for what's registered — its own docstring notes this
@@ -496,8 +549,15 @@ An early xdist worker finish does not expire a candidate still emitting
 events or output: the post-finish grace requires 30 s without either.
 See the [design rationale](docs/DESIGN-GUIDE.md#liveness-session-finish-grace)
 and the consumer section's xdist identity rules. The candidate process group
-is cleaned up even when its leader exits first, so descendants cannot
-accumulate across mutants and exhaust the gate cgroup's PID budget. Every
+is cleaned up even when its leader exits first, and Linux child-subreaper
+cleanup catches descendants that call `setsid()` or double-fork. A candidate
+that otherwise completes with leftover descendants is recorded as `crashed`
+after Assay cleans and reaps them; it cannot count as killed or survived, and
+the campaign can continue. Timeout and `hung` classifications remain intact
+when cleanup succeeds. A baseline leak or any cleanup failure refuses the
+lane. Native R2 verdicts retain process-tree evidence for each attempt.
+`assay verify` also rejects impossible evidence where more descendants were
+signalled than were observed outliving the leader. Every
 materialized-plugin record carries its positive producer `pid` and, when
 present, the descriptive `PYTEST_XDIST_WORKER` value. Stamped xdist test
 records are read
@@ -507,6 +567,20 @@ each pid timeline and the largest per-process gap is used. The monitor's own
 candidate pid is the only stamped `session_finish` that arms the finish grace.
 Old, malformed, or mixed records retain the merged legacy interpretation, and
 the worker label is never used as identity.
+
+Native R2 temporarily changes Linux's process-wide child-subreaper state. It
+refuses to start when the Assay process already has child processes. An
+embedding caller must also prevent unrelated threads from spawning children
+during a candidate window; use the normal isolated CLI path when that cannot
+be guaranteed. The CLI resets an inherited ignored `SIGCHLD` disposition before
+spawning commands; the native window also checks the kernel's `SigIgn` mask and
+refuses if child exit statuses cannot be reaped reliably. Linux `execve` resets
+caught signal handlers and their flags, so the supported fresh CLI process
+cannot inherit `SA_NOCLDWAIT`. In-process embedders must not ignore `SIGCHLD`,
+enable `SA_NOCLDWAIT`, or reap children with `waitpid(-1)` during a native R2
+window. If cleanup cannot prove the child set empty, Assay keeps subreaper mode
+enabled and refuses later native R2 windows in that process. See the
+[process-tree boundary](docs/DESIGN-GUIDE.md#native-r2-process-tree-isolation-is-process-wide).
 
 RG-55/B107 also makes the `hung` decision resource-aware: it records
 time-aligned process-tree CPU, host/cgroup PSI, and cgroup-throttle evidence.
@@ -754,10 +828,11 @@ producer contract are in the
 [JavaScript consumer guide](docs/CONSUMERS.md#javascripttypescript-lanes-r1-r2-by-ingestion-and-r3-canary).
 R3 (the cause-sensitive canary) is registered for JavaScript through B087.
 The two adapter transforms are judged by the existing isolated canary runner;
-local real-Vitest tests exercise the current code, and both current dstdns
-canaries passed with retained v15 verdicts and verifier transcripts. Those
-canaries are distinct from the integrated Assay release gate. The verdict
-schema is unchanged.
+  local real-Vitest tests exercise the current code, and both dstdns canaries
+  were qualified under Assay 9.0.0/schema v15; their retained verdicts and
+  verifier transcripts document that release. Those canaries are distinct from
+  the integrated Assay release gate. B087 did not add verdict fields; the
+  current verdict schema is v16, with the migration described below.
 
 **Branch coverage depends on the declared producer.** istanbul's `branchMap`
 means different things under different producers (real per-arm arcs under the
@@ -975,16 +1050,27 @@ run of the same lane refuse `NO_MEASUREMENT`/`DIRTY_TREE`. The verdict does not
 record the destination, exactly as it does not record `--verdict-json`'s.
 
 **Non-qualifying pilot runs** can use `assay run LANE --candidates-file PATH`
-to execute a bounded selection from a native R2 plan; `--pilot-jobs` can set
-1–8 workers for that run. A pilot skips R3, writes no verdict, and returns exit
+to execute a bounded selection from a native R2 plan; `--pilot-jobs 1` is
+required for native R2 event attribution. A pilot skips R3, writes no verdict, and returns exit
 code 6 only when every selected candidate has a completed disposition. Exit 6
 means “pilot measurement completed,” never “the lane passed”; use the JSON
 summary and its mutation buckets to read the result. Pilot summaries use schema
 `assay-pilot-summary/2` and include the recorded R2 command when a cold-witness
-baseline ran. Pilot state is tied to one selection and lane and must stay
-separate from qualifying campaign state. See
+baseline ran. An incomplete summary's `claim_diagnostics` preserves bounded
+non-pass claim details, including a recognized first failing test;
+`detail_dropped_bytes` records any truncation. These diagnostics add context to
+the claim outcome without changing the summary's statuses or reason code. Pilot
+state is tied to one selection and lane and must stay separate from qualifying
+campaign state. See
 [why pilots cannot qualify](docs/DESIGN-GUIDE.md#non-qualifying-candidate-pilots-b118)
 and the [worked pilot command](docs/CONSUMERS.md#run-a-non-qualifying-native-r2-pilot-b118).
+
+`assay analyze campaign` can summarize a completed B110 or B131 sample when
+given the exact JSON output from `assay plan --json` and its selector report. It checks that
+the selected IDs and progress digest match those inputs; the result remains
+`incomplete` with `qualifying: false` and exit code 3. See the
+[pilot-analysis design](docs/DESIGN-GUIDE.md#analyze-a-bounded-pilot) and
+[worked commands](docs/CONSUMERS.md#analyze-a-bounded-pilot).
 
 The registered B110 pilot retains a host-verified evidence snapshot at
 `.assay/b110-pilot-evidence/`, with a separate receipt at
@@ -1273,9 +1359,13 @@ Two more CLI verbs round out the surface:
   result because the foreign report does not expose Assay's candidate
   inventory; it cannot be used with `plan-estimate`. A successful native plan
   carries the lane, `commit` and `tree` it was made at, and its estimate is the
-  declared budget (a placeholder when none is numeric), not a measurement; save
-  that JSON and pass it to `assay analyze plan-estimate` for a measured
-  projection. The B105 R2 driver plans first and its checker refuses a report
+  declared budget (a placeholder when none is numeric), not a measurement. The
+  default output is a concise human summary; add `--json` for candidate rows
+  consumed by scripts. This follows `assay lanes`' human default and explicit
+  JSON mode; see the [output design](docs/DESIGN-GUIDE.md#17-cli-output-is-human-by-default-and-json-is-explicit)
+  and [consumer examples](docs/CONSUMERS.md#size-a-native-mutation-lane-before-running-it).
+  Save `assay plan --json` output and pass it to `assay analyze plan-estimate`
+  for a measured projection. The B105 R2 driver plans first and its checker refuses a report
   whose campaign is not exactly that complete, unsharded plan at the expected
   commit and tree.
 - `assay verify <verdict.json>` independently re-checks that a verdict
@@ -1486,7 +1576,7 @@ you're changing assay itself:
   command. Each baseline must finish its complete suite with both the pytest
   session and process exit status equal to zero; a hook cannot mask a baseline
   failure. Hook trust is pinned to
-  Hypothesis 6.156.6 and, for the declared
+  Hypothesis 6.169.0 and, for the declared
   fallback, pytest-cov 7.1.0 by version, source digest, exact callable identity,
   and hook flags. Their code objects are pinned too. Pytest's built-in
   HookImpl callables and Assay's generated receipt hooks are captured before
@@ -1500,7 +1590,9 @@ you're changing assay itself:
   `ASSAY_B105_COVERAGE_SOURCE`, `ASSAY_B105_COVERAGE_ARCHIVE_DIR`,
   `ASSAY_B105_SOURCE_COMMIT`, and `ASSAY_B105_SOURCE_TREE` are all absent; that
   hook must preserve the session exit status or its receipt cannot prove a
-  result. The exact command transform,
+  result. Unsupported-hook diagnostics use only a validated closed-vocabulary
+  name list, even when other receipt facts are incomplete; hook names stay out
+  of verdict data. The exact command transform,
   collection and hook checks, and persisted campaign deadline are documented
   in the [design guide](docs/DESIGN-GUIDE.md#cold-witness-r2-b114) and
   [consumer guide](docs/CONSUMERS.md#cold-witness-r2-b114). This feature does

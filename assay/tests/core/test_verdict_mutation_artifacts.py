@@ -52,6 +52,7 @@ from jsonschema import Draft202012Validator
 
 from assay.errors import Outcome, ReasonCode
 from assay import verify
+from assay.process_tree import ProcessTreeEvidence
 from assay.verdict import (
     Claim,
     Judgment,
@@ -190,7 +191,7 @@ def test_mutants_survived_matches_the_hand_written_fixture(validator: Draft20201
         judgment=Judgment(
             resolved=RESOLVED,
             r2=JudgmentR2(
-                jobs=2,
+                jobs=1,
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 **UNATTRIBUTED,
@@ -236,6 +237,14 @@ def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012
     stopped = native_outcome(
         path="pkg/slow.py", lineno=9, start_byte=96, end_byte=99,
         replacement_sha256=SHA_OR, operator="python:boolop-swap", description="And->Or",
+        process_tree_evidence=ProcessTreeEvidence(
+            leader_status="not-started",
+            group_signalled_before_reap=False,
+            outliving_descendants=0,
+            descendants_signalled=0,
+            cleanup_seconds=0.001,
+            clean=True,
+        ),
     )
     killed = native_outcome(
         path="pkg/slow.py", lineno=5, start_byte=40, end_byte=41,
@@ -259,7 +268,7 @@ def test_budget_exceeded_matches_the_hand_written_fixture(validator: Draft202012
         judgment=Judgment(
             resolved=RESOLVED,
             r2=JudgmentR2(
-                jobs=2,
+                jobs=1,
                 max_mutants=50,
                 operators=("python:boolop-swap", "python:compare-swap"),
                 **UNATTRIBUTED,
@@ -303,7 +312,7 @@ def test_a_crashed_mutant_matches_the_hand_written_fixture(validator: Draft20201
         judgment=Judgment(
             resolved=RESOLVED,
             r2=JudgmentR2(
-                jobs=2,
+                jobs=1,
                 max_mutants=50,
                 operators=("python:bool-const-flip", "python:compare-swap"),
                 **UNATTRIBUTED,

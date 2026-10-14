@@ -453,13 +453,13 @@ def test_judgment_resolved_refuses_malformed_fields(overrides: dict, match: str)
 
 def test_judgment_r2_untouched_form_builds():
     r2 = JudgmentR2(
-        jobs=4,
+        jobs=1,
         max_mutants=50,
         operators=("python:compare-swap", "python:boolop-swap"),
         **BASE_R2_POLICY,
     )
     assert r2.to_dict() == {
-        "jobs": 4,
+        "jobs": 1,
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:boolop-swap"],
         "kill_attribution": "unattributed",
@@ -675,20 +675,21 @@ def test_judgment_r2_refuses_an_unknown_kill_attribution():
         ({"jobs": "4", "max_mutants": 50, "operators": ("python:compare-swap",)}, "must be an integer"),
         ({"jobs": True, "max_mutants": 50, "operators": ("python:compare-swap",)}, "must be an integer"),
         ({"jobs": 0, "max_mutants": 50, "operators": ("python:compare-swap",)}, ">= 1"),
-        ({"jobs": 4, "max_mutants": 50, "operators": []}, "non-empty tuple"),
-        ({"jobs": 4, "max_mutants": 50, "operators": ()}, "non-empty tuple"),
+        ({"jobs": 2, "max_mutants": 50, "operators": ("python:compare-swap",)}, "must be 1"),
+        ({"jobs": 1, "max_mutants": 50, "operators": []}, "non-empty tuple"),
+        ({"jobs": 1, "max_mutants": 50, "operators": ()}, "non-empty tuple"),
         # P21 work item 2: the vocabulary is CLOSED in the model now, so an
         # empty string is refused as an unknown operator rather than merely
         # as an empty one -- v3 accepted any non-empty string here while the
         # shipped schema's own enum rejected it.
-        ({"jobs": 4, "max_mutants": 50, "operators": ("",)}, "unknown operator"),
-        ({"jobs": 4, "max_mutants": 50, "operators": ("invented-swap",)}, "unknown operator"),
-        ({"jobs": 4, "max_mutants": 50, "operators": ("python:compare-swap", "python:compare-swap")}, "duplicate"),
+        ({"jobs": 1, "max_mutants": 50, "operators": ("",)}, "unknown operator"),
+        ({"jobs": 1, "max_mutants": 50, "operators": ("invented-swap",)}, "unknown operator"),
+        ({"jobs": 1, "max_mutants": 50, "operators": ("python:compare-swap", "python:compare-swap")}, "duplicate"),
         # P21/A-163: the declared ceiling is bounded at both ends.
-        ({"jobs": 4, "max_mutants": "50", "operators": ("python:compare-swap",)}, "must be an integer"),
-        ({"jobs": 4, "max_mutants": True, "operators": ("python:compare-swap",)}, "must be an integer"),
-        ({"jobs": 4, "max_mutants": 0, "operators": ("python:compare-swap",)}, "1..10,000"),
-        ({"jobs": 4, "max_mutants": 10_001, "operators": ("python:compare-swap",)}, "1..10,000"),
+        ({"jobs": 1, "max_mutants": "50", "operators": ("python:compare-swap",)}, "must be an integer"),
+        ({"jobs": 1, "max_mutants": True, "operators": ("python:compare-swap",)}, "must be an integer"),
+        ({"jobs": 1, "max_mutants": 0, "operators": ("python:compare-swap",)}, "1..10,000"),
+        ({"jobs": 1, "max_mutants": 10_001, "operators": ("python:compare-swap",)}, "1..10,000"),
     ],
 )
 def test_judgment_r2_refuses_malformed_fields(kwargs: dict, match: str):
@@ -798,7 +799,7 @@ def test_judgment_refuses_when_none_of_r1_r2_r3_are_given():
 def test_judgment_to_dict_includes_only_the_populated_members():
     resolved = JudgmentResolved(**BASE_RESOLVED)
     r2 = JudgmentR2(
-        jobs=2, max_mutants=50, operators=("python:compare-swap",), **BASE_R2_POLICY
+        jobs=1, max_mutants=50, operators=("python:compare-swap",), **BASE_R2_POLICY
     )
     r3 = JudgmentR3(mechanism="uncovered-line", targets=("pkg/mod.py",))
     r3_only = JudgmentResolved(language="python", source_roots=("src",))

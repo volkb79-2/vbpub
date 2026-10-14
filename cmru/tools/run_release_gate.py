@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Run CMRU's registered release lanes without exposing publisher secrets."""
+"""Run CMRU's registered release lanes from an exact, secret-free snapshot."""
 from __future__ import annotations
 
 import argparse
 import fcntl
 import json
 import os
-import secrets
-import shutil
+import re
+import shlex
 import signal
+import shutil
 import stat
 import subprocess
 import sys
@@ -16,9 +17,8 @@ import tempfile
 import time
 from xml.etree import ElementTree
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator, Mapping
 
 
@@ -27,27 +27,58 @@ REPOSITORY_ROOT = PROJECT_ROOT.parent
 SECRET_ENV_KEYS = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN")
 FACTS_ENV_KEY = "CMRU_ASSAY_BASELINE_FACTS"
 EXTRA_MOUNTS_ENV_KEY = "RUN_GATE_EXTRA_MOUNTS"
+REF_PROBE_LANE = "ref-probe"
+RUN_GATE_MIN_VERSION = "23.11.0"  # First SemVer release with the hook/info mount protections.
+# The gate-only variant of installed-wheel: it refuses to run unless it is
+# inside this gate's fresh, snapshot-bound manifest. The plain `installed-wheel`
+# lane stays runnable directly (it bypasses the secret boundary, as documented).
+LIVE_WHEEL_LANE = "installed-wheel-live"
+# Every directory the gate puts on ``sys.path`` (or whose scripts it runs), so a
+# stray top-level module such as ``cmru/src/json.py`` is as visible as a
+# package helper.
+_GATE_CODE_ROOTS = (
+    "cmru/src",
+    "cmru/tools",
+    "assay/src",
+    "assay/analysis/src",
+    "assay/tools",
+    "libraries/worktree/src",
+)
+_CODE_SUFFIXES = {".py", ".pyc", ".pyo", ".so", ".pyd"}
+_HASH_CHUNK = 200
 
 
-@dataclass(frozen=True)
-class _SecretBackup:
-    path: Path
-    backup: Path
-    device: int
-    inode: int
-    mode: int
-    uid: int
-    gid: int
-    atime_ns: int
-    mtime_ns: int
-    overlay_device: int
-    overlay_inode: int
+class GateInterrupted(SystemExit):
+    def __init__(self, signum: int):
+        self.signum = signum
+        super().__init__(128 + signum)
+
+
+@contextmanager
+def _gate_signal_handlers():
+    """Turn termination into normal unwinding so lane and lease cleanup runs."""
+    previous = {}
+
+    def interrupt(signum, _frame):
+        for handled in previous:
+            signal.signal(handled, signal.SIG_IGN)
+        raise GateInterrupted(signum)
+
+    try:
+        for handled in (signal.SIGTERM, signal.SIGHUP):
+            previous[handled] = signal.getsignal(handled)
+            signal.signal(handled, interrupt)
+        yield
+    finally:
+        for handled, handler in previous.items():
+            signal.signal(handled, handler)
 
 
 def _load_components():
     """Load the selected worktree's CMRU, Assay and baseline helper sources."""
     for source in (
         PROJECT_ROOT / "src",
+        PROJECT_ROOT / "tools",
         REPOSITORY_ROOT / "assay" / "src",
         # cli_extended is the INSTALLED released wheel (CX-D1), never a source root.
         REPOSITORY_ROOT / "libraries" / "worktree" / "src",
@@ -59,278 +90,139 @@ def _load_components():
     return assay_git, prepare_assay_baseline
 
 
-def _common_mount_root(repo_root: Path, assay_git) -> Path:
-    raw = assay_git.run(
-        repo_root, "rev-parse", "--path-format=absolute", "--git-common-dir",
-    ).strip()
-    if not raw:
-        raise RuntimeError("Assay could not resolve the Git common directory")
-    common_dir = Path(raw).resolve()
-    # run-gate mounts the repository containing this common directory. This
-    # also covers worktrees whose .git file points back to the primary checkout.
-    if common_dir.name == ".git":
-        return common_dir.parent
-    return repo_root.resolve()
-
-
-def _read_secret(path: Path) -> tuple[bytes, os.stat_result] | None:
+def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
+    """Require and identify the stable Run-Gate judge used by this gate."""
+    executable = shutil.which("run-gate")
+    if executable is None:
+        raise RuntimeError("the registered CMRU gate requires the installed run-gate CLI")
+    command = Path(executable)
     try:
-        before = path.lstat()
-    except FileNotFoundError:
-        return None
-    if not stat.S_ISREG(before.st_mode):
-        raise RuntimeError(f"publisher secret must be a regular file: {path}")
-    if before.st_uid != os.geteuid():
-        raise RuntimeError(f"publisher secret owner cannot be preserved by this process: {path}")
-    if before.st_gid != os.getegid() and before.st_gid not in os.getgroups():
-        raise RuntimeError(f"publisher secret group cannot be preserved by this process: {path}")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
+        with command.open(encoding="utf-8") as stream:
+            first_line = stream.readline().strip()
+    except (OSError, UnicodeError) as exc:
+        raise RuntimeError(f"cannot read the installed run-gate launcher: {command}: {exc}") from exc
+    if not first_line.startswith("#!"):
+        raise RuntimeError(f"installed run-gate launcher has no Python shebang: {command}")
+    interpreter = shlex.split(first_line[2:])
+    if not interpreter:
+        raise RuntimeError(f"installed run-gate launcher has an empty Python shebang: {command}")
+    if interpreter[0] == "/usr/bin/env":
+        if len(interpreter) < 2 or interpreter[1].startswith("-"):
+            raise RuntimeError(f"installed run-gate launcher has an unsupported env shebang: {command}")
+        resolved = shutil.which(interpreter[1])
+        if resolved is None:
+            raise RuntimeError(
+                f"cannot resolve the Python interpreter named by run-gate: {interpreter[1]}"
+            )
+        interpreter = [resolved, *interpreter[2:]]
+    elif not Path(interpreter[0]).is_absolute():
+        raise RuntimeError(f"installed run-gate launcher has a non-absolute interpreter: {command}")
+
     try:
-        opened = os.fstat(descriptor)
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise RuntimeError(f"publisher secret changed while being opened: {path}")
-        with os.fdopen(descriptor, "rb", closefd=False) as stream:
-            data = stream.read()
-    finally:
-        os.close(descriptor)
-    return data, before
+        cli_version_result = subprocess.run(
+            [executable, "--version"],
+            cwd=repo_root / "cmru",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not run installed Run-Gate `--version`: {exc}") from exc
+    if cli_version_result.returncode != 0:
+        detail = cli_version_result.stderr.strip() or cli_version_result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot read installed Run-Gate version: {detail}")
+    cli_version_lines = cli_version_result.stdout.strip().splitlines()
+    cli_match = (
+        re.fullmatch(r"run-gate ([0-9]+\.[0-9]+\.[0-9]+)", cli_version_lines[0])
+        if len(cli_version_lines) == 1 else None
+    )
+    if cli_match is None:
+        raise RuntimeError(
+            "installed run-gate --version returned an unrecognized SemVer identity: "
+            f"{cli_version_result.stdout.strip()!r}"
+        )
+    cli_version = cli_match.group(1)
+
+    version_code = (
+        "from importlib.metadata import version; "
+        "print(version('run-gate'))"
+    )
+    try:
+        version_result = subprocess.run(
+            [*interpreter, "-I", "-B", "-c", version_code],
+            cwd=repo_root / "cmru",
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not inspect the installed Run-Gate package version: {exc}") from exc
+    if version_result.returncode != 0:
+        detail = version_result.stderr.strip() or version_result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot read installed Run-Gate package version: {detail}")
+    package_version = version_result.stdout.strip()
+    package_match = re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+        package_version,
+    )
+    if package_match is None:
+        raise RuntimeError(
+            "CMRU's release gate requires a stable released Run-Gate wheel; "
+            f"installed package version is {package_version!r}"
+        )
+    if cli_version != package_version:
+        raise RuntimeError(
+            "installed run-gate CLI version does not match its wheel metadata: "
+            f"CLI reports {cli_version!r}, package metadata reports {package_version!r}"
+        )
+    package_key = tuple(int(part) for part in package_match.groups())
+    minimum_key = tuple(int(part) for part in RUN_GATE_MIN_VERSION.split("."))
+    if package_key < minimum_key:
+        raise RuntimeError(
+            f"CMRU's release gate requires Run-Gate {RUN_GATE_MIN_VERSION} or later "
+            f"for read-only host hook/info mounts; installed version {package_version} is too old"
+        )
+    return {"version": package_version}
 
 
-def _write_private_backup(path: Path, data: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+def _preflight_assay_source(repo_root: Path) -> None:
+    """Check the source tree before any registered lane can install it."""
+    script = PROJECT_ROOT / "tools" / "check_assay_source.py"
+    assay_source = repo_root / "assay"
+    if script.is_symlink() or not script.is_file():
+        raise RuntimeError(f"Assay source preflight is missing or unsafe: {script}")
     try:
-        with os.fdopen(descriptor, "wb", closefd=False) as stream:
-            stream.write(data)
-            stream.flush()
-            os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        result = subprocess.run(
+            [sys.executable, str(script), "--assay-source", str(assay_source)],
+            cwd=repo_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("could not run the Assay editable-install source preflight") from exc
+    if result.returncode != 0 or "CMRU_ASSAY_SOURCE_PREFLIGHT=clean" not in result.stdout.splitlines():
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise RuntimeError(f"Assay editable-install source preflight refused: {detail}")
 
 
 @contextmanager
-def _secret_overlay_lock(temp_parent: Path) -> Iterator[None]:
-    """Serialize CMRU gates that mask shared checkout credentials."""
-    lock_path = temp_parent / ".cmru-gate-secret-mask.lock"
+def _release_gate_lock(temp_parent: Path) -> Iterator[None]:
+    """Serialize snapshot allocation and nested release-gate lanes."""
+    lock_path = temp_parent / ".cmru-release-gate.lock"
     flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     descriptor = os.open(lock_path, flags, 0o600)
     try:
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            raise RuntimeError("publisher-secret gate lock is not a regular file")
+            raise RuntimeError("CMRU release-gate lock is not a regular file")
         os.fchmod(descriptor, 0o600)
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         yield
     finally:
         os.close(descriptor)
-
-
-def _restore(backups: list[_SecretBackup]) -> None:
-    errors: list[str] = []
-    for item in reversed(backups):
-        try:
-            try:
-                current = item.path.lstat()
-            except FileNotFoundError:
-                current = None
-            if current is not None and (current.st_dev, current.st_ino) == (
-                item.device, item.inode,
-            ):
-                continue
-            if current is not None:
-                displaced = item.path.with_name(
-                    f".{item.path.name}.restore-{secrets.token_hex(16)}"
-                )
-                # Move the current directory entry atomically before deciding
-                # whether it is our overlay. A prior lstat followed by unlink
-                # could erase a credential atomically rotated into this path
-                # between those operations.
-                os.replace(item.path, displaced)
-                displaced_metadata = displaced.lstat()
-                displaced_identity = (displaced_metadata.st_dev, displaced_metadata.st_ino)
-                if displaced_identity == (item.device, item.inode):
-                    try:
-                        os.link(displaced, item.path, follow_symlinks=False)
-                    except OSError as exc:
-                        raise RuntimeError(
-                            f"the original publisher secret was moved during restoration; "
-                            f"it is preserved at {displaced}: {exc}"
-                        ) from exc
-                    displaced.unlink()
-                    continue
-                if displaced_identity != (item.overlay_device, item.overlay_inode):
-                    try:
-                        # link() is atomic and fails if a newer entry has
-                        # appeared, preserving both versions instead of
-                        # replacing either one.
-                        os.link(displaced, item.path, follow_symlinks=False)
-                    except OSError as exc:
-                        raise RuntimeError(
-                            "publisher secret changed while the gate was running; "
-                            f"preserving the replacement at {displaced} and any newer path entry: {exc}"
-                        ) from exc
-                    displaced.unlink()
-                    raise RuntimeError(
-                        "publisher secret changed while the gate was running; "
-                        "preserving the replacement"
-                    )
-                displaced.unlink()
-            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-            descriptor = os.open(item.path, flags, item.mode)
-            try:
-                with os.fdopen(descriptor, "wb", closefd=False) as stream:
-                    with item.backup.open("rb") as source:
-                        shutil.copyfileobj(source, stream)
-                    stream.flush()
-                    os.fchown(descriptor, item.uid, item.gid)
-                    os.fchmod(descriptor, item.mode)
-                    os.fsync(descriptor)
-                os.utime(descriptor, ns=(item.atime_ns, item.mtime_ns))
-            finally:
-                os.close(descriptor)
-        except Exception as exc:  # restore all files before reporting any failure
-            errors.append(f"{item.path}: {exc}")
-    if errors:
-        raise RuntimeError("could not restore publisher secret overlay(s): " + "; ".join(errors))
-
-
-@contextmanager
-def _mask_secret_overlays(
-    paths: list[Path],
-    *,
-    mount_root: Path,
-    temp_parent: Path = Path("/tmp"),
-) -> Iterator[None]:
-    """Point secret paths at private host files outside repo mounts while gated.
-
-    The symlinks keep host-side CMRU consumers able to read the overlays. In a
-    tester container, their absolute /tmp targets name the container's private
-    tmpfs, not the host backup directory, which is not mounted. If restoration
-    fails, the backup directory is retained and named in the raised error.
-    """
-    mount_root = mount_root.resolve()
-    temp_parent = temp_parent.resolve(strict=True)
-    if temp_parent == mount_root or temp_parent.is_relative_to(mount_root):
-        raise RuntimeError(
-            "private publisher-secret backup directory is inside the mounted repository"
-        )
-    backup_root = Path(tempfile.mkdtemp(prefix="cmru-gate-secrets-", dir=temp_parent))
-    if backup_root == mount_root or backup_root.is_relative_to(mount_root):
-        shutil.rmtree(backup_root)
-        raise RuntimeError(
-            "private publisher-secret backup directory is inside the mounted repository"
-        )
-    backups: list[_SecretBackup] = []
-    restoring = False
-    previous_signal_handlers = {}
-
-    def _restore_on_termination_signal(signum, _frame) -> None:
-        if restoring:
-            return
-        raise SystemExit(128 + signum)
-
-    try:
-        for signum in (signal.SIGTERM, signal.SIGHUP):
-            previous_signal_handlers[signum] = signal.signal(
-                signum, _restore_on_termination_signal,
-            )
-        for index, path in enumerate(dict.fromkeys(paths)):
-            saved = _read_secret(path)
-            if saved is None:
-                continue
-            data, metadata = saved
-            backup = backup_root / f"overlay-{index}.bin"
-            _write_private_backup(backup, data)
-            current = path.lstat()
-            if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
-                raise RuntimeError(f"publisher secret changed before masking: {path}")
-            temporary_link = path.with_name(
-                f".{path.name}.mask-{secrets.token_hex(16)}"
-            )
-            displaced = path.with_name(
-                f".{path.name}.mask-displaced-{secrets.token_hex(16)}"
-            )
-            os.symlink(backup, temporary_link)
-            try:
-                overlay_metadata = temporary_link.lstat()
-                record = _SecretBackup(
-                    path=path,
-                    backup=backup,
-                    device=metadata.st_dev,
-                    inode=metadata.st_ino,
-                    mode=stat.S_IMODE(metadata.st_mode),
-                    uid=metadata.st_uid,
-                    gid=metadata.st_gid,
-                    atime_ns=metadata.st_atime_ns,
-                    mtime_ns=metadata.st_mtime_ns,
-                    overlay_device=overlay_metadata.st_dev,
-                    overlay_inode=overlay_metadata.st_ino,
-                )
-                backups.append(record)
-                # Move the visible entry first, then inspect the inode that was
-                # actually moved. Replacing the path with the overlay directly
-                # could erase a credential rotated in after the lstat above.
-                os.replace(path, displaced)
-                moved = displaced.lstat()
-                if (moved.st_dev, moved.st_ino) != (metadata.st_dev, metadata.st_ino):
-                    backups.pop()
-                    try:
-                        os.link(displaced, path, follow_symlinks=False)
-                    except OSError as exc:
-                        raise RuntimeError(
-                            "publisher secret changed while masking; "
-                            f"preserving the moved entry at {displaced}: {exc}"
-                        ) from exc
-                    displaced.unlink()
-                    raise RuntimeError(f"publisher secret changed before masking: {path}")
-                try:
-                    # Hard-linking the symlink itself is an exclusive install:
-                    # it fails if another writer has created a new path entry.
-                    os.link(temporary_link, path, follow_symlinks=False)
-                except OSError as exc:
-                    backups.pop()
-                    try:
-                        path.lstat()
-                    except FileNotFoundError:
-                        try:
-                            os.link(displaced, path, follow_symlinks=False)
-                        except OSError as restore_exc:
-                            raise RuntimeError(
-                                "could not install the publisher-secret overlay; "
-                                f"the original is preserved at {displaced}: {restore_exc}"
-                            ) from exc
-                        displaced.unlink()
-                    else:
-                        raise RuntimeError(
-                            "could not install the publisher-secret overlay without "
-                            "replacing a concurrent path entry; "
-                            f"the original is preserved at {displaced}: {exc}"
-                        ) from exc
-                    raise RuntimeError(
-                        f"could not install the publisher-secret overlay at {path}: {exc}"
-                    ) from exc
-                displaced.unlink()
-            finally:
-                temporary_link.unlink(missing_ok=True)
-        yield
-    finally:
-        restoring = True
-        try:
-            try:
-                _restore(backups)
-            except Exception as exc:
-                raise RuntimeError(
-                    f"{exc}; private publisher-secret backups retained at {backup_root}"
-                ) from exc
-            try:
-                shutil.rmtree(backup_root)
-            except OSError as exc:
-                raise RuntimeError(
-                    "publisher secret overlays were restored, but private backups "
-                    f"could not be removed at {backup_root}: {exc}"
-                ) from exc
-        finally:
-            for signum, previous_handler in previous_signal_handlers.items():
-                signal.signal(signum, previous_handler)
 
 
 def _lane_environment() -> dict[str, str]:
@@ -340,66 +232,126 @@ def _lane_environment() -> dict[str, str]:
     return environment
 
 
-def _secret_overlay_paths(
-    mount_root: Path,
-    repo_root: Path,
-    project_root: Path,
-) -> list[Path]:
-    """Find CMRU credential overlays visible through the repository mounts."""
-    candidates = {
-        mount_root / "cmru.secret.toml",
-        mount_root / "cmru" / "cmru.secret.toml",
-        repo_root / "cmru.secret.toml",
-        project_root / "cmru.secret.toml",
-    }
-
-    def traversal_failed(error: OSError) -> None:
-        # A credential overlay must be a regular file owned by the effective
-        # uid (`_read_secret` refuses anything else). A directory owned by
-        # another uid that we cannot list is equally unlistable for the gate
-        # container's mapped uid, so it can neither hold an overlay we would
-        # use nor expose one to the container: skip it (e.g. a live service
-        # data dir such as a postgres volume). Everything else fails closed,
-        # including PermissionError on a directory we own and an unknown path.
-        # A path that vanished between listing and scanning (worktrees come
-        # and go on the shared tree) cannot expose an overlay either: skip it.
-        if (
-            isinstance(error, (PermissionError, FileNotFoundError))
-            and error.filename is not None
-        ):
-            if isinstance(error, FileNotFoundError):
-                foreign = True
-            else:
-                try:
-                    foreign = os.lstat(error.filename).st_uid != os.geteuid()
-                except FileNotFoundError:
-                    foreign = True  # vanished mid-walk: nothing left to inventory
-                except OSError:
-                    foreign = False
-            if foreign:
-                print(
-                    "cmru-release-gate: WARN: skipping vanished or other-uid "
-                    f"unreadable directory during secret-overlay inventory: {error.filename}",
-                    file=sys.stderr,
-                )
-                return
-        raise RuntimeError(f"cannot inventory CMRU secret overlays: {error}") from error
-
-    pruned = {
-        ".git", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".tox",
-        ".venv", "__pycache__", "node_modules", "venv",
-    }
-    for current, directories, files in os.walk(
-        mount_root, topdown=True, followlinks=False, onerror=traversal_failed,
+def _hardened_git_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_COUNT": "0",
+        "GIT_OPTIONAL_LOCKS": "0",
+    })
+    for key in (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     ):
-        current_path = Path(current)
-        directories[:] = [
-            name for name in directories
-            if name not in pruned and not (current_path / name).is_symlink()
-        ]
-        if "cmru.secret.toml" in files:
-            candidates.add(current_path / "cmru.secret.toml")
-    return sorted(candidates)
+        environment.pop(key, None)
+    for key in tuple(environment):
+        if key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_"):
+            environment.pop(key, None)
+    return environment
+
+
+def _git_output(repo_root: Path, *args: str) -> bytes:
+    result = subprocess.run(
+        ["git", *args], cwd=repo_root, env=_hardened_git_environment(),
+        capture_output=True, check=False,
+    )
+    if result.returncode:
+        detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
+        raise RuntimeError(f"cannot bind gate helper source to HEAD: git {args[0]}: {detail}")
+    return result.stdout
+
+
+def _tracked_gate_code(repo_root: Path) -> dict[str, str]:
+    """Map each gate-code path in HEAD to its blob id."""
+    listing = _git_output(
+        repo_root, "ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", *_GATE_CODE_ROOTS,
+    )
+    tracked: dict[str, str] = {}
+    for entry in listing.split(b"\0"):
+        if entry:
+            meta, _separator, raw_path = entry.partition(b"\t")
+            tracked[os.fsdecode(raw_path)] = meta.split(b" ")[2].decode("ascii")
+    return tracked
+
+
+def _disk_gate_code(repo_root: Path, tracked: Mapping[str, str]):
+    """Return ``(untracked_code, symlinks, present_tracked)`` found under the roots."""
+    untracked: list[str] = []
+    symlinks: list[str] = []
+    present: list[str] = []
+    for root in _GATE_CODE_ROOTS:
+        for current, directories, files in os.walk(repo_root / root, followlinks=False):
+            # A private PYTHONPYCACHEPREFIX makes checkout-local bytecode irrelevant.
+            directories[:] = [name for name in directories if name != "__pycache__"]
+            current_path = Path(current)
+            for name in directories:
+                if (current_path / name).is_symlink():
+                    symlinks.append((current_path / name).relative_to(repo_root).as_posix())
+            for name in files:
+                path = current_path / name
+                relative = path.relative_to(repo_root).as_posix()
+                if stat.S_ISLNK(path.lstat().st_mode):
+                    symlinks.append(relative)
+                elif relative in tracked:
+                    present.append(relative)
+                elif PurePosixPath(relative).suffix in _CODE_SUFFIXES:
+                    untracked.append(relative)
+    return untracked, symlinks, present
+
+
+def _assert_no_untracked_gate_code(repo_root: Path) -> None:
+    """Refuse gate code that is not byte-identical to the claimed HEAD.
+
+    The gate claims to judge one exact commit, yet its own helpers are imported
+    from the caller's mutable tree. Every file under each import root must
+    therefore be (a) tracked in HEAD, or non-code (b) with a working-tree blob
+    equal to HEAD's, and (c) free of symlinks. Plain untracked and ignored
+    helpers are both refused, as is a tracked helper edited, replaced or deleted
+    since HEAD, before anything imports or executes it.
+    """
+    tracked = _tracked_gate_code(repo_root)
+    untracked, symlinks, present = _disk_gate_code(repo_root, tracked)
+    modified = sorted(set(tracked) - set(present) - set(symlinks))
+    for start in range(0, len(present), _HASH_CHUNK):
+        chunk = present[start:start + _HASH_CHUNK]
+        digests = _git_output(
+            repo_root, "hash-object", "--no-filters", "--", *chunk,
+        ).decode("ascii").split()
+        if len(digests) != len(chunk):
+            raise RuntimeError("cannot bind gate helper source to HEAD: hash-object mismatch")
+        modified.extend(
+            path for path, digest in zip(chunk, digests) if digest != tracked[path]
+        )
+    problems = []
+    if untracked:
+        problems.append("untracked or ignored executable source: " + ", ".join(untracked[:8]))
+    if symlinks:
+        problems.append("symlinks: " + ", ".join(symlinks[:8]))
+    if modified:
+        problems.append("tracked source changed from HEAD: " + ", ".join(sorted(modified)[:8]))
+    if problems:
+        raise RuntimeError(
+            "release gate code is not bound to the selected HEAD; " + "; ".join(problems)
+        )
+
+
+@contextmanager
+def _private_gate_bytecode_cache():
+    """Keep Python from importing or writing checkout-local bytecode caches."""
+    previous_prefix = sys.pycache_prefix
+    previous_environment = os.environ.get("PYTHONPYCACHEPREFIX")
+    with tempfile.TemporaryDirectory(prefix="cmru-release-gate-pycache-") as cache:
+        sys.pycache_prefix = cache
+        os.environ["PYTHONPYCACHEPREFIX"] = cache
+        try:
+            yield
+        finally:
+            sys.pycache_prefix = previous_prefix
+            if previous_environment is None:
+                os.environ.pop("PYTHONPYCACHEPREFIX", None)
+            else:
+                os.environ["PYTHONPYCACHEPREFIX"] = previous_environment
 
 
 def _is_failure_line(line: str) -> bool:
@@ -478,20 +430,85 @@ def _record_postponement(project_root: Path, tracking_id: str) -> Path:
     return marker
 
 
-def _invoke_lane(repo_root: Path, lane: str, environment: Mapping[str, str]) -> int:
+def _invoke_lane(
+    repo_root: Path,
+    lane: str,
+    environment: Mapping[str, str],
+    worktree_root: Path | None = None,
+) -> int:
+    if worktree_root is None:
+        worktree_root = repo_root
     started = time.time_ns()
-    result = subprocess.run(
-        ["./run-gate.py", "--worktree", str(repo_root), lane],
+    process = subprocess.Popen(
+        ["run-gate", "--worktree", str(worktree_root), lane],
         cwd=repo_root / "cmru",
         env=dict(environment),
-        check=False,
     )
-    if result.returncode:
-        _report_lane_failure(repo_root / "cmru", lane, started)
-    return result.returncode
+    try:
+        returncode = process.wait()
+    except (GateInterrupted, KeyboardInterrupt) as exc:
+        signum = exc.signum if isinstance(exc, GateInterrupted) else signal.SIGTERM
+        if process.poll() is None:
+            try:
+                process.send_signal(signum)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=35)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        raise
+    if returncode:
+        _report_lane_failure(worktree_root / "cmru", lane, started)
+    return returncode
+
+
+def _run_snapshot_lane(
+        repo_root: Path, lane: str, environment: Mapping[str, str], snapshot,
+        gate_snapshot, *, after_success=None) -> int:
+    _assert_no_untracked_gate_code(repo_root)
+    # Refresh the host manifest FIRST: prepare_lane seeds the lane's copy from
+    # it, and the live-snapshot check accepts only a manifest this recent.
+    gate_snapshot.write_snapshot_manifest(snapshot, "running")
+    gate_snapshot.prepare_lane(snapshot, lane)
+    try:
+        result = _invoke_lane(
+            repo_root, lane, environment, snapshot.worktree_path,
+        )
+        snapshot.lane_exit_codes[lane] = result
+        if result == 0 and after_success is not None:
+            after_success(snapshot)
+        return result
+    except GateInterrupted as exc:
+        snapshot.lane_exit_codes[lane] = 128 + exc.signum
+        raise
+    except BaseException:
+        snapshot.lane_exit_codes[lane] = None
+        raise
+    finally:
+        try:
+            if lane == REF_PROBE_LANE:
+                gate_snapshot.delete_probe_refs(snapshot)
+            gate_snapshot.finish_lane(snapshot, lane)
+        finally:
+            gate_snapshot.write_snapshot_manifest(snapshot, "running")
 
 
 def run_release_gate(
+    repo_root: Path,
+    *,
+    temp_parent: Path = Path("/tmp"),
+    postpone_mutation: str | None = None,
+) -> int:
+    with _private_gate_bytecode_cache():
+        return _run_release_gate_with_private_cache(
+            repo_root, temp_parent=temp_parent,
+            postpone_mutation=postpone_mutation,
+        )
+
+
+def _run_release_gate_with_private_cache(
     repo_root: Path,
     *,
     temp_parent: Path = Path("/tmp"),
@@ -507,74 +524,119 @@ def run_release_gate(
         raise RuntimeError(
             f"release gate helper is not running from the selected worktree: {PROJECT_ROOT}"
         )
-
+    _assert_no_untracked_gate_code(repo_root)
+    _preflight_assay_source(repo_root)
+    run_gate_identity = _check_run_gate_identity(repo_root)
     assay_git, baseline = _load_components()
     if assay_git.repo_top(project_root).resolve() != repo_root:
         raise RuntimeError("selected CMRU project does not belong to the requested worktree")
-    mount_root = _common_mount_root(repo_root, assay_git)
     temp_parent = temp_parent.resolve(strict=True)
-    if temp_parent == mount_root or temp_parent.is_relative_to(mount_root):
-        raise RuntimeError("private publisher-secret directory is inside the mounted repository")
-    with _secret_overlay_lock(temp_parent):
-        return _run_locked_gate(
-            repo_root,
-            project_root,
-            mount_root,
-            baseline,
-            assay_git,
-            temp_parent,
-            postpone_mutation,
-        )
+    if temp_parent == repo_root or temp_parent.is_relative_to(repo_root):
+        raise RuntimeError("private CMRU gate lock directory is inside the judged worktree")
+    with _release_gate_lock(temp_parent), _gate_signal_handlers():
+        _assert_no_untracked_gate_code(repo_root)
+        from cmru import gate_snapshot
+
+        snapshot = gate_snapshot.open_gate_snapshot(repo_root)
+        state = "incomplete"
+        try:
+            if snapshot.run_gate_identity and snapshot.run_gate_identity != run_gate_identity:
+                raise RuntimeError(
+                    "resumed CMRU gate snapshot was judged by a different Run-Gate identity; "
+                    "remove the finished snapshot and start a fresh gate"
+                )
+            snapshot.run_gate_identity = run_gate_identity
+            gate_snapshot.plant_source_canary(snapshot)
+            gate_snapshot.write_snapshot_manifest(snapshot, "running")
+            try:
+                result = _run_locked_gate(
+                    repo_root,
+                    project_root,
+                    baseline,
+                    assay_git,
+                    snapshot,
+                    postpone_mutation,
+                )
+            except (GateInterrupted, KeyboardInterrupt):
+                state = "interrupted"
+                raise
+            except BaseException:
+                state = "failed"
+                raise
+            state = "passed" if result == 0 else "failed"
+            return result
+        finally:
+            try:
+                try:
+                    gate_snapshot.remove_source_canary(snapshot)
+                finally:
+                    gate_snapshot.write_snapshot_manifest(snapshot, state)
+            finally:
+                gate_snapshot.close_gate_snapshot(snapshot)
 
 
 def _run_locked_gate(
     repo_root: Path,
     project_root: Path,
-    mount_root: Path,
     baseline,
     assay_git,
-    temp_parent: Path,
+    snapshot,
     postpone_mutation: str | None = None,
 ) -> int:
+    _assert_no_untracked_gate_code(repo_root)
     auth = baseline._repository_git_auth(repo_root)
     lane_environment = _lane_environment()
-    secret_paths = _secret_overlay_paths(mount_root, repo_root, project_root)
+    from cmru import gate_snapshot
 
-    with _mask_secret_overlays(
-        secret_paths,
-        mount_root=mount_root,
-        temp_parent=temp_parent,
-    ):
-        for lane in ("installed-wheel", "assay", "coverage"):
-            result = _invoke_lane(repo_root, lane, lane_environment)
-            if result:
-                return result
+    # Live detector probe first: a lane that writes a protected ref from inside
+    # the real tester container must be seen by the gate, or no later lane's
+    # silence about refs means anything.
+    result = _run_snapshot_lane(
+        repo_root, REF_PROBE_LANE, lane_environment, snapshot, gate_snapshot,
+        after_success=gate_snapshot.verify_ref_probe_detected,
+    )
+    if result:
+        return result
+    for lane in (LIVE_WHEEL_LANE, "assay", "coverage"):
+        result = _run_snapshot_lane(
+            repo_root, lane, lane_environment, snapshot, gate_snapshot,
+        )
+        if result:
+            return result
 
-        if postpone_mutation is not None:
-            # Provisional gate: ONLY the mutation lane (and its remote-facts
-            # preparation) is skipped; the postponement is recorded as evidence.
-            _record_postponement(project_root, postpone_mutation)
-        else:
-            # A full gate never leaves an earlier provisional marker behind.
-            (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
+    if postpone_mutation is not None:
+        # Provisional gate: ONLY the mutation lane (and its remote-facts
+        # preparation) is skipped; the postponement is recorded as evidence.
+        _record_postponement(project_root, postpone_mutation)
+    else:
+        # A full gate never leaves an earlier provisional marker behind.
+        (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
+        _assert_no_untracked_gate_code(repo_root)
+        gate_snapshot.assert_source_head(snapshot)
+        with gate_snapshot.host_git_hooks_disabled(repo_root):
             facts = baseline.build_facts(
                 repo_root,
                 project_root,
                 git_auth=auth,
                 assay_git=assay_git,
             )
-            facts_json = json.dumps(facts, separators=(",", ":"), sort_keys=True)
-            if auth.token and auth.token in facts_json:
-                raise RuntimeError("remote baseline facts unexpectedly contain publisher credentials")
-            mutation_environment = dict(lane_environment)
-            mutation_environment[FACTS_ENV_KEY] = facts_json
-            result = _invoke_lane(repo_root, "mutation", mutation_environment)
-            if result:
-                return result
-
-        result = _invoke_lane(repo_root, "canary", lane_environment)
+        facts_json = json.dumps(facts, separators=(",", ":"), sort_keys=True)
+        if auth.token and auth.token in facts_json:
+            raise RuntimeError("remote baseline facts unexpectedly contain publisher credentials")
+        mutation_environment = dict(lane_environment)
+        mutation_environment[FACTS_ENV_KEY] = facts_json
+        result = _run_snapshot_lane(
+            repo_root, "mutation", mutation_environment, snapshot, gate_snapshot,
+        )
         if result:
             return result
+
+    result = _run_snapshot_lane(
+        repo_root, "canary", lane_environment, snapshot, gate_snapshot,
+    )
+    if result:
+        return result
+    gate_snapshot.assert_source_head(snapshot)
     return 0
 
 

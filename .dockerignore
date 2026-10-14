@@ -59,9 +59,25 @@ run-gate-project/*
 !run-gate-project/run_gate.py
 !run-gate-project/run_gate_admission.py
 
-# Drop heavy/generated content within the whitelisted projects.
+# Drop generated content and the top-level test suites from the whitelisted
+# projects. Keep package-data paths named `tests` (for example a CLI skill) in
+# the build context; Docker's package-data patterns can include them in wheels.
+ciu/tests
+cmru/tests
+assay/tests
+assay/gate/tests
+assay/analysis/tests
+assay/gate/python/fixtures/sql/tests
+topos/tests
+nyxloom/tests
+scripts/cgroup-profiler/tests
+libraries/worktree/tests
 **/.git
 **/.venv
+**/.tox
+**/.nox
+**/.assay
+**/.run-gate
 **/__pycache__
 **/*.pyc
 **/.pytest_cache

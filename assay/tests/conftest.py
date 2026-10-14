@@ -58,6 +58,51 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
 TESTS_ROOT = PROJECT_ROOT / "tests"
 
 
+def process_tree_evidence_dict(*, leader_status: str = "exited") -> dict[str, object]:
+    """Return a synthetic clean process-tree proof for injected runner tests."""
+    return {
+        "protocol": "assay-process-tree/1",
+        "leader_status": leader_status,
+        "group_signalled_before_reap": False,
+        "outliving_descendants": 0,
+        "descendants_signalled": 0,
+        "cleanup_seconds": 0.001,
+        "clean": True,
+    }
+
+
+def completed_process(*args, **kwargs) -> subprocess.CompletedProcess:
+    """Build an injected process result with explicit clean-tree evidence."""
+    result = subprocess.CompletedProcess(*args, **kwargs)
+    result.process_tree_evidence = process_tree_evidence_dict()
+    return result
+
+
+def timeout_expired(*args, **kwargs) -> subprocess.TimeoutExpired:
+    """Build an injected timeout with the proof a real isolated runner emits."""
+    error = subprocess.TimeoutExpired(*args, **kwargs)
+    error.process_tree_evidence = process_tree_evidence_dict(
+        leader_status="timeout-killed"
+    )
+    return error
+
+
+def file_not_found(*args, **kwargs) -> FileNotFoundError:
+    """Build an injected spawn failure with proof that no child started."""
+    error = FileNotFoundError(*args, **kwargs)
+    error.process_tree_evidence = process_tree_evidence_dict(
+        leader_status="not-started"
+    )
+    return error
+
+
+def isolated_process_runner(argv, *, env, cwd, timeout):
+    """Run a real test command under Assay's candidate process-tree boundary."""
+    from assay.process_tree import ProcessTreeProcessRunner
+
+    return ProcessTreeProcessRunner()(argv, env=env, cwd=Path(cwd), timeout=timeout)
+
+
 @pytest.fixture(autouse=True)
 def isolate_mutation_tests_from_the_host_cgroup(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give behavior tests stable zero-delta resource counters.
@@ -266,6 +311,7 @@ def native_outcome(**fields):
     independent checks of candidate identity derivation and reuse semantics.
     """
     from assay.candidate_identity import candidate_id_from_fields
+    from assay.process_tree import ProcessTreeEvidence
     from assay.resource_limits import CounterDelta, ResourceLimitEvidence
     from assay.verdict import MutantOutcome, MutationExecution
 
@@ -291,6 +337,23 @@ def native_outcome(**fields):
         mutated_file_sha256=mutated_file_sha256,
         operator=operator,
     )
+    process_tree_evidence = fields.pop(
+        "process_tree_evidence",
+        ProcessTreeEvidence(
+            leader_status=(
+                "timeout-killed"
+                if fields.get("outcome_bucket") == "hung"
+                else "not-started"
+                if fields.get("outcome_bucket") == "budget_exceeded"
+                else "exited"
+            ),
+            group_signalled_before_reap=False,
+            outliving_descendants=0,
+            descendants_signalled=0,
+            cleanup_seconds=0.001,
+            clean=True,
+        ),
+    )
     return MutantOutcome(
         **fields,
         candidate_id=candidate_id,
@@ -304,6 +367,7 @@ def native_outcome(**fields):
             memory_events_oom_kill=CounterDelta(before=0, after=0, delta=0),
             memory_events_oom_group_kill=CounterDelta(before=0, after=0, delta=0),
         ),
+        process_tree_evidence=process_tree_evidence,
     )
 
 

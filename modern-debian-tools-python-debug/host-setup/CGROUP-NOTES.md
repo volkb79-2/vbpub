@@ -767,6 +767,15 @@ records the two cgroup v2 facts that placement design depends on, since they
 belong in this directory's "what a slice unit can/cannot express" catalogue
 regardless of which package implements the daemon side).
 
+The sample gate-slice ceiling is deliberately conservative, not a promise that
+every lane profile fits on every host. Contract-2 mutation lanes declare `2G`
+per container, so the shipped `1.5G` example cannot admit them. Operators must
+size `dev-gates.slice` and its ancestors for the lane caps they intend to run,
+including concurrent siblings and overhead; otherwise Run-Gate refuses the
+launch, or cgprofile reports a shared-ancestor limit event as inconclusive.
+Keeping this host-wide default small avoids silently turning a test profile
+into a larger memory allowance on production hosts.
+
 **The memory.min-on-leaf fact.** Exactly like `dev-memory_min_guaranteed.slice`
 above: if a lane leaf (`dev-gates.slice/rg-<token>/`) ever gets its own
 `memory.min`/`memory.high` (D-20's `ctl start --place --memory-high <request>

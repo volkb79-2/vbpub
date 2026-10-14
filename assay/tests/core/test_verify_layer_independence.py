@@ -39,6 +39,7 @@ import pytest
 from conftest import (
     TESTS_ROOT,
     GitRepo,
+    process_tree_evidence_dict,
     write_coverage_json,
     zero_resource_limit_evidence_dict,
 )
@@ -57,7 +58,12 @@ from assay.verdict import VERDICT_SCHEMA_VERSION
 _BUCKETS = ("killed", "survived", "crashed", "budget_exceeded", "equivalent")
 
 
-def _mutant(operator: str = "python:compare-swap", start: int = 25) -> dict:
+def _mutant(
+    operator: str = "python:compare-swap",
+    start: int = 25,
+    *,
+    bucket: str = "killed",
+) -> dict:
     item = {
         "path": "src/m.py",
         "lineno": 2,
@@ -85,6 +91,15 @@ def _mutant(operator: str = "python:compare-swap", start: int = 25) -> dict:
             "mutated_file_sha256": mutated_file_sha256,
             "execution": {"mode": "full"},
             "resource_limit_evidence": zero_resource_limit_evidence_dict(),
+            "process_tree_evidence": process_tree_evidence_dict(
+                leader_status=(
+                    "timeout-killed"
+                    if bucket == "hung"
+                    else "not-started"
+                    if bucket == "budget_exceeded"
+                    else "exited"
+                )
+            ),
         }
     )
     return item
@@ -95,7 +110,7 @@ def _r2_document(*, bucket: str, operator: str) -> dict:
     *bucket*, produced by *operator*, against a policy declaring only
     ``compare-swap``."""
     payload = {"candidate_count": 1, "total": 1, **{name: [] for name in _BUCKETS}}
-    payload[bucket] = [_mutant(operator)]
+    payload[bucket] = [_mutant(operator, bucket=bucket)]
     payload["candidate_ids"] = [payload[bucket][0]["candidate_id"]]
     status, reason = {
         "killed": ("PASS", None),
@@ -637,6 +652,9 @@ def _sql_r2_document(*, language: str = "sql", **overrides) -> dict:
             "mutated_file_sha256": mutated_file_sha256,
             "execution": {"mode": "full"},
             "resource_limit_evidence": zero_resource_limit_evidence_dict(),
+            "process_tree_evidence": process_tree_evidence_dict(
+                leader_status="exited"
+            ),
         }
     )
     document = {

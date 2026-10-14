@@ -6,7 +6,7 @@ cockpit used to launch it; pytest and the actual gate command run in the image.
 Build the image from the repository root:
 
 ```bash
-docker build -f tester-unified/Dockerfile -t tester-unified:local .
+docker buildx build --load -f tester-unified/Dockerfile -t tester-unified:local .
 ```
 
 Image contents worth knowing (KI-52 / BG-05, 2026-10):

@@ -1348,6 +1348,98 @@ class TestRG78ClosedExitTable:
         assert missing.verdict == "ERROR"
         assert missing.reason == "missing-or-invalid-judge-provenance"
         assert missing.gate_exit_code == 2
+        def claims_with_observer_refusal(**statuses):
+            ordered = [
+                ("R0", statuses.get("R0", "PASS")),
+                ("R1", statuses.get("R1", "PASS")),
+                ("R2", "NO_MEASUREMENT"),
+                ("R3", statuses.get("R3", "PASS")),
+            ]
+            return [
+                {
+                    "rigor": rigor,
+                    "source": "computed",
+                    "status": status,
+                    "verified_by_assay": True,
+                    "reason_code": (
+                        "CGROUP_OBSERVATION_UNAVAILABLE"
+                        if rigor == "R2" else None
+                    ),
+                }
+                for rigor, status in ordered
+            ]
+
+        unavailable = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(), evidence=[])
+        assert unavailable.verdict == "ERROR"
+        assert unavailable.assay_outcome == "NO_MEASUREMENT"
+        assert unavailable.reason == "CGROUP_OBSERVATION_UNAVAILABLE"
+        r1_failed = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(R1="FAIL"), evidence=[])
+        assert r1_failed.verdict == "FAIL"
+        assert r1_failed.reason == "assay-adverse-claim-alongside-observer-refusal"
+        r3_failed = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(R3="FAIL"), evidence=[])
+        assert r3_failed.verdict == "FAIL"
+        budget_exceeded = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(R1="BUDGET_EXCEEDED"), evidence=[])
+        assert budget_exceeded.verdict == "BUDGET_EXCEEDED"
+        malformed_claims = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE", claims=[{}], evidence=[])
+        assert malformed_claims.verdict == "ERROR"
+        assert malformed_claims.reason == "invalid-assay-claims-for-observer-refusal"
+        wrong_rigor = claims_with_observer_refusal()
+        wrong_rigor[2]["rigor"] = "R4"
+        malformed_observer_claim = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=wrong_rigor, evidence=[])
+        assert malformed_observer_claim.verdict == "ERROR"
+        assert malformed_observer_claim.reason == "invalid-assay-observer-refusal-claim"
+        malformed_evidence = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(), evidence=[{}])
+        assert malformed_evidence.verdict == "ERROR"
+        assert malformed_evidence.reason == "invalid-assay-evidence-for-observer-refusal"
+        malformed_evidence_source = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(),
+            evidence=[{"source": [], "key": "review", "status": "PASS",
+                       "verified_by_assay": True}])
+        assert malformed_evidence_source.verdict == "ERROR"
+        assert malformed_evidence_source.reason == \
+            "invalid-assay-evidence-for-observer-refusal"
+        unverified_passing_evidence = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(),
+            evidence=[{"source": "attested", "key": "review", "status": "PASS",
+                       "verified_by_assay": False}])
+        assert unverified_passing_evidence.verdict == "ERROR"
+        assert unverified_passing_evidence.reason == \
+            "CGROUP_OBSERVATION_UNAVAILABLE"
+        failed_evidence = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="CGROUP_OBSERVATION_UNAVAILABLE",
+            claims=claims_with_observer_refusal(),
+            evidence=[{"source": "adjudicated", "key": "review",
+                       "status": "FAIL", "verified_by_assay": True}])
+        assert failed_evidence.verdict == "FAIL"
+        ordinary_no_measurement = run_gate.assay_lane_result(
+            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            reason="EMPTY_COVERAGE")
+        assert ordinary_no_measurement.verdict == "FAIL"
         missing_source = run_gate.assay_lane_result(
             0, "PASS", source_mode=True, source_version="8.0.0.dev1",
             source_commit=selected_commit, expected_source_commit=None)
@@ -3466,11 +3558,13 @@ def test_unreleased_changelog_matches_revision_and_recovery_contract():
 
     # The tagged release remains source rev 55. RG-90's telemetry change is
     # historical at rev 60; the P5 transport and placement launch gate are
-    # current at rev 64.
-    # RG-89 stays at the revision that introduced its observer contract.
+    # historical at rev 64; RG-91's framing fix is at rev 65; RG-89's
+    # contract-2 preflight is current at rev 66.
     assert "This section describes released source rev 55." in changes
     assert "RG-90, rev 60" in changes
-    assert f"RG-55/P5, rev {run_gate.__revision__}" in changes
+    assert "RG-55/P5, rev 64" in changes
+    assert "RG-91, rev 65" in changes
+    assert f"RG-89, rev {run_gate.__revision__}" in changes
     assert "RG-89, rev 58" in changes
     assert "RG-81, rev 54" in changes
     assert "Older schemas refuse rather than being guessed or overwritten" \
@@ -7895,7 +7989,9 @@ class TestShippedGateFullDeclaration:
         assert lanes["assay-r2"]["assay_lane"] == "r2"
         assert lanes["assay-r2"]["environment"] == "tester-unified"
         assert lanes["assay-r2"]["resource_observer"] == "cgprofile"
-        assert lanes["assay-r2"]["resources"] == {"cpus": "3"}
+        assert lanes["assay-r2"]["resources"] == {
+            "cpus": "3", "memory": "2g", "pids": 8192,
+        }
         # Two scratch worktrees still share one tester-cgroup event counter.
         # Concurrent candidate windows cannot safely attribute a limit hit.
         assay_cfg = tomllib.loads((RUN_GATE_DIR / "assay.toml").read_text())
@@ -7911,9 +8007,14 @@ class TestResourceObserverLane:
                                parent_mode=None, parent_uid=0,
                                parent_gid=994, socket_mode=None,
                                socket_uid=0, socket_gid=994,
+                               docker_group_mode=None, docker_group_uid=0,
+                               docker_gid=994, docker_group_missing=False,
                                missing=None):
-        parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o770
+        parent_mode = parent_mode or run_gate.stat.S_IFDIR | 0o751
         socket_mode = socket_mode or run_gate.stat.S_IFSOCK | 0o660
+        docker_group_mode = (
+            docker_group_mode or run_gate.stat.S_IFDIR | 0o770
+        )
 
         def fake_lstat(path):
             path = Path(path)
@@ -7923,6 +8024,12 @@ class TestResourceObserverLane:
                 if missing:
                     raise OSError("socket path missing")
                 return self._stat(socket_mode, socket_uid, socket_gid)
+            if path == socket_path.parent.parent:
+                if docker_group_missing:
+                    raise OSError("host cgprofile control directory missing")
+                return self._stat(
+                    docker_group_mode, docker_group_uid, docker_gid
+                )
             raise AssertionError(f"unexpected lstat path: {path}")
 
         real_os = run_gate.os
@@ -7935,61 +8042,223 @@ class TestResourceObserverLane:
 
     def test_disabled_observer_adds_no_docker_flags(self):
         assert run_gate.resource_observer_docker_flags(
-            {"kind": "assay", "environment": "tester-unified"}) == []
+            {"kind": "assay"}, {"mode": "ephemeral"}) == []
 
     @pytest.mark.parametrize("lane, message", [
         ({"kind": "assay", "environment": "tester-unified",
          "resource_observer": "other"}, "must be 'cgprofile'"),
-        ({"kind": "command", "environment": "bare-host",
-         "resource_observer": "cgprofile"},
-         "requires an assay or command lane in tester-unified"),
         ({"kind": "sequence", "environment": "tester-unified",
           "resource_observer": "cgprofile"},
-         "requires an assay or command lane in tester-unified"),
-        ({"kind": "assay", "environment": "bare-host",
-          "resource_observer": "cgprofile"},
-         "requires an assay or command lane in tester-unified"),
+         "requires an assay or command lane"),
     ])
     def test_invalid_observer_lane_refuses(self, lane, message):
         with pytest.raises(run_gate.GateError, match=message):
-            run_gate.resource_observer_docker_flags(lane)
+            run_gate.resource_observer_docker_flags(lane, {"mode": "ephemeral"})
+
+    def test_observer_refuses_non_ephemeral_environment(self):
+        with pytest.raises(run_gate.GateError, match="mode = 'ephemeral'"):
+            run_gate.resource_observer_docker_flags(
+                {"kind": "assay", "resource_observer": "cgprofile"},
+                {"mode": "exec"},
+            )
 
     def test_load_validation_accepts_command_wrapper_and_closes_other_kinds(self):
         run_gate._validate_lane(
             "probe", {"kind": "command", "environment": "tester-unified",
-                      "argv": ["true"], "resource_observer": "cgprofile"},
+                      "argv": ["true"], "resource_observer": "cgprofile",
+                      "resources": {"memory": "2g", "pids": 8192}},
             "fixture")
         with pytest.raises(run_gate.GateError,
                            match="only for assay or command lanes"):
             run_gate._validate_lane(
                 "probe", {"kind": "sequence", "lanes": ["inner"],
                           "resource_observer": "cgprofile"}, "fixture")
-        with pytest.raises(run_gate.GateError,
-                           match="environment = \\\"tester-unified\\\""):
-            run_gate._validate_lane(
-                "r2", {"kind": "assay", "environment": "bare-host",
-                       "assay_lane": "r2", "resource_observer": "cgprofile"},
-                "fixture")
+        run_gate._validate_lane(
+            "r2", {"kind": "assay", "environment": "custom-ephemeral",
+                   "assay_lane": "r2", "resource_observer": "cgprofile",
+                   "resources": {"memory": "2g", "pids": 8192}},
+            "fixture")
         with pytest.raises(run_gate.GateError, match="must be 'cgprofile'"):
             run_gate._validate_lane(
                 "r2", {"kind": "assay", "environment": "tester-unified",
                        "assay_lane": "r2", "resource_observer": "anything"},
                 "fixture")
 
+    @pytest.mark.parametrize("pids", [0, -1, True, "8192", 1.5])
+    def test_pids_resource_requires_a_positive_integer(self, pids):
+        with pytest.raises(run_gate.GateError, match="positive integer Docker PID limit"):
+            run_gate._validate_lane(
+                "probe",
+                {"kind": "command", "environment": "tester-unified",
+                 "argv": ["true"], "resources": {"pids": pids}},
+                "fixture",
+            )
+
+    def test_effective_observer_lane_requires_local_memory_and_pid_ceilings(self):
+        project = {
+            "lanes": {
+                "r2": {
+                    "kind": "assay", "environment": "runner",
+                    "assay_lane": "r2", "resource_observer": "cgprofile",
+                    "resources": {"pids": 8192},
+                },
+            },
+            "environments": {"runner": {"mode": "ephemeral"}},
+        }
+        with pytest.raises(run_gate.GateError, match="requires explicit resources.memory and resources.pids"):
+            run_gate._validate_effective_resource_observers(project, {}, Path("run-gate.toml"))
+
+    @pytest.mark.parametrize("mode", ["host", "exec"])
+    def test_config_load_refuses_observer_on_non_ephemeral_environment(
+            self, tmp_path, mode):
+        repo = make_repo(tmp_path)
+        image = '\nimage = "runner:local"' if mode == "exec" else ""
+        project = make_project(repo, textwrap.dedent(f'''\
+            schema_version = 1
+            [environments.runner]
+            mode = "{mode}"{image}
+            [lanes.r2]
+            kind = "assay"
+            environment = "runner"
+            assay_lane = "r2"
+            resource_observer = "cgprofile"
+        '''))
+        with pytest.raises(run_gate.GateError,
+                           match="requires the resolved environment.*ephemeral"):
+            run_gate.load_config(project)
+
+    def test_inherited_observer_uses_project_shadowed_environment_mode(self,
+                                                                       tmp_path):
+        repo = make_repo(tmp_path)
+        (repo / run_gate.ROOT_CONFIG_NAME).write_text(textwrap.dedent("""\
+            schema_version = 1
+            [environments.runner]
+            mode = "ephemeral"
+            image = "runner:local"
+            [lanes.shared]
+            kind = "command"
+            environment = "runner"
+            argv = ["true"]
+            resource_observer = "cgprofile"
+        """))
+        commit_all(repo, "shared observer lane")
+        project = make_project(repo, textwrap.dedent("""\
+            schema_version = 1
+            [environments.runner]
+            mode = "host"
+        """))
+
+        with pytest.raises(run_gate.GateError,
+                           match="requires the resolved environment.*ephemeral"):
+            run_gate.load_config(project)
+
+    def test_observer_version_preflight_requires_contract2_path_and_listener(
+            self, monkeypatch):
+        valid = {
+            "resource_observer": {
+                "contract": 2,
+                "path": run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE,
+                "listening": True,
+            },
+        }
+        monkeypatch.setattr(
+            run_gate.ProfilerClient, "version", lambda self: (valid, None),
+        )
+        run_gate.resource_observer_version_preflight("docker", "cgprofile")
+
+        for bad, message in [
+            ({}, "does not advertise"),
+            ({"resource_observer": {"contract": 1}}, "contract must be 2"),
+            ({"resource_observer": {"contract": True}}, "contract must be 2"),
+            ({"resource_observer": {"contract": 2, "path": "/wrong",
+                                     "listening": True}}, "unexpected socket path"),
+            ({"resource_observer": {
+                "contract": 2,
+                "path": run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE,
+                "listening": False,
+            }}, "not listening"),
+        ]:
+            monkeypatch.setattr(
+                run_gate.ProfilerClient, "version", lambda self, bad=bad: (bad, None),
+            )
+            with pytest.raises(run_gate.GateInfraError, match=message):
+                run_gate.resource_observer_version_preflight("docker", "cgprofile")
+
+    def test_observer_version_preflight_reports_daemon_query_failure(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.ProfilerClient, "version",
+            lambda self: (None, "control socket unavailable"),
+        )
+        with pytest.raises(run_gate.GateInfraError, match="control socket unavailable"):
+            run_gate.resource_observer_version_preflight("docker", "cgprofile")
+
+    def test_live_observer_lane_preflights_before_clearing_or_launching(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        events = []
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            run_gate, "resource_observer_version_preflight",
+            lambda docker, daemon: events.append(("version", docker, daemon)),
+        )
+        monkeypatch.setattr(
+            run_gate, "clear_previous_assay_verdict",
+            lambda *_a, **_k: events.append(("clear",)),
+        )
+        monkeypatch.setattr(run_gate, "container_mount_flags", lambda *_a, **_k: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a, **_k: "true")
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a: "a" * 40)
+        monkeypatch.setattr(run_gate, "write_inflight_record", lambda *_a, **_k: True)
+        monkeypatch.setattr(run_gate, "await_container", lambda *_a, **_k: 0)
+        monkeypatch.setattr(run_gate, "make_progress_watch", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "print_lane_bounds", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "log_forwarded_env", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "print_profile_plan_dry_run", lambda *_a: None)
+
+        def docker_run(argv, **_kwargs):
+            events.append(("docker-run", argv[1]))
+            return subprocess.CompletedProcess(argv, 0, "container-id\n", "")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", docker_run)
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "private-test",
+             "argv": ["true"], "resource_observer": "cgprofile"},
+            "observer", repo, repo, repo,
+            {"mode": "ephemeral", "image": "tester:local"},
+            "fixture", "dev-gates.slice", "fixture",
+            profile_plan={"enabled": False, "daemon": "cgprofile-host-daemon",
+                          "disabled_reason": "test"},
+        ) == 0
+        assert events == [
+            ("version", "/usr/bin/docker", "cgprofile-host-daemon"),
+            ("clear",),
+            ("docker-run", "run"),
+        ]
+
     def test_missing_socket_is_infrastructure_error(self, tmp_path, monkeypatch):
         socket_path = tmp_path / "resource-observer.sock"
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
         self._patch_socket_metadata(monkeypatch, socket_path, missing=True)
-        with pytest.raises(run_gate.GateInfraError, match="unavailable"):
+        with pytest.raises(run_gate.GateInfraError, match="host Docker group source"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
-                "resource_observer": "cgprofile"})
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("parent_mode, parent_uid, socket_mode, socket_uid, socket_gid, message", [
-        (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 994, "root-owned directory"),
-        (run_gate.stat.S_IFDIR | 0o772, 0, None, 0, 994, "root-owned directory"),
-        (run_gate.stat.S_IFDIR | 0o770, 1000, None, 0, 994, "root-owned directory"),
+        (run_gate.stat.S_IFLNK | 0o777, 0, None, 0, 994, "not a safe root-owned"),
+        (run_gate.stat.S_IFDIR | 0o772, 0, None, 0, 994, "root-owned"),
+        (run_gate.stat.S_IFDIR | 0o771, 0, None, 0, 994, "root-owned"),
+        (run_gate.stat.S_IFDIR | 0o750, 1000, None, 0, 994, "root-owned"),
         (None, 0, run_gate.stat.S_IFREG | 0o660, 0, 994, "not a Unix socket"),
         (None, 0, None, 1000, 994, "ownership does not match"),
         (None, 0, None, 0, 995, "ownership does not match"),
@@ -8009,7 +8278,7 @@ class TestResourceObserverLane:
         with pytest.raises(run_gate.GateInfraError, match=message):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
-                "resource_observer": "cgprofile"})
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("kind", ["assay", "command"])
     def test_observer_flags_mount_only_readonly_socket_and_forward_gid(
@@ -8021,15 +8290,66 @@ class TestResourceObserverLane:
             monkeypatch, socket_path, parent_gid=1234, socket_gid=1234)
         assert run_gate.resource_observer_docker_flags({
             "kind": kind, "environment": "tester-unified",
-            "resource_observer": "cgprofile"}) == [
+            "resource_observer": "cgprofile"}, {"mode": "ephemeral"}) == [
                 "--mount",
-                f"type=bind,source={socket_path},target="
-                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly",
+                f"type=bind,source={socket_path.parent},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly",
                 "--group-add", "1234",
                 "-e", "ASSAY_RESOURCE_OBSERVER_SOCKET="
                 f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET}",
             ]
         assert "ctl.sock" not in run_gate.CGPROFILE_RESOURCE_OBSERVER_SOURCE
+
+    def test_observer_refuses_docker_group_socket(self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
+            docker_gid=1234)
+        with pytest.raises(run_gate.GateInfraError, match="dedicated group"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_observer_refuses_when_host_docker_group_source_is_unavailable(
+            self, tmp_path, monkeypatch):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
+            docker_group_missing=True)
+        with pytest.raises(run_gate.GateInfraError, match="unavailable"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    @pytest.mark.parametrize("mode, uid, gid", [
+        (run_gate.stat.S_IFREG | 0o660, 0, 994),
+        (run_gate.stat.S_IFDIR | 0o770, 1000, 994),
+        (run_gate.stat.S_IFDIR | 0o770, 0, 0),
+        (run_gate.stat.S_IFDIR | 0o750, 0, 994),
+    ])
+    def test_observer_refuses_untrusted_host_docker_group_source(
+            self, tmp_path, monkeypatch, mode, uid, gid):
+        socket_path = tmp_path / "resource-observer.sock"
+        monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
+                            str(socket_path))
+        self._patch_socket_metadata(
+            monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
+            docker_group_mode=mode, docker_group_uid=uid, docker_gid=gid)
+        with pytest.raises(run_gate.GateInfraError, match="host Docker group|non-root group"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
+
+    def test_observer_refuses_extra_mounts(self, monkeypatch):
+        monkeypatch.setenv(run_gate.EXTRA_MOUNT_ENV_VAR, "/var/run/docker.sock=/docker.sock")
+        with pytest.raises(run_gate.GateInfraError, match="incompatible with an observer lane"):
+            run_gate.resource_observer_docker_flags({
+                "kind": "assay", "environment": "tester-unified",
+                "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
 
     @pytest.mark.parametrize("kind", ["assay", "command"])
     def test_container_argv_wires_the_opted_in_observer(
@@ -8046,7 +8366,7 @@ class TestResourceObserverLane:
             "environment": "tester-unified",
             "resource_observer": "cgprofile",
             "budget": "4h",
-            "resources": {"cpus": "3"},
+            "resources": {"cpus": "3", "memory": "2g", "pids": 8192},
         }
         if kind == "assay":
             lane["assay_lane"] = "r2"
@@ -8080,8 +8400,10 @@ class TestResourceObserverLane:
         argv, = assembled
         assert "--cgroup-parent" in argv
         assert "--cpus" in argv and argv[argv.index("--cpus") + 1] == "3"
-        assert ["--mount", f"type=bind,source={socket_path},target="
-                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET},readonly"] == argv[
+        assert "--memory" in argv and argv[argv.index("--memory") + 1] == "2g"
+        assert "--pids-limit" in argv and argv[argv.index("--pids-limit") + 1] == "8192"
+        assert ["--mount", f"type=bind,source={socket_path.parent},target="
+                f"{run_gate.CGPROFILE_RESOURCE_OBSERVER_TARGET_DIRECTORY},readonly"] == argv[
                     argv.index("--mount"):argv.index("--mount") + 2]
         assert ["--group-add", "1234"] == argv[
             argv.index("--group-add"):argv.index("--group-add") + 2]
@@ -18129,13 +18451,16 @@ class TestProfilerClient:
             with listener:
                 conn, _ = listener.accept()
                 with conn:
-                    chunks = []
-                    while True:
-                        chunk = conn.recv(65536)
+                    # Match the daemon's newline-delimited request reader. A
+                    # pretty-printed JSON request is truncated at its first
+                    # line and fails to parse even though the socket is valid.
+                    line = bytearray()
+                    while b"\n" not in line:
+                        chunk = conn.recv(1)
                         if not chunk:
                             break
-                        chunks.append(chunk)
-                    received.append(b"".join(chunks).decode())
+                        line.extend(chunk)
+                    received.append(bytes(line).decode())
                     conn.sendall(response.encode())
 
         thread = threading.Thread(target=serve)
@@ -18257,7 +18582,10 @@ class TestProfilerClient:
             },
             "contract": 1,
         }
-        assert received == [json.dumps(expected, indent=2) + "\n"]
+        assert received == [
+            json.dumps(expected, ensure_ascii=False, separators=(",", ":"))
+            + "\n"
+        ]
 
     @pytest.mark.parametrize("verb, args, body", [
         ("version", (), '{"ok": true, "contract": 1}\n'),
@@ -28843,11 +29171,10 @@ class TestRgNarrowMounts:
         assert values[:4] == [f"{ph(wt)}:{ph(wt)}", f"{ph(wt)}:{wt}",
                               f"{ph(repo / '.git')}:{ph(repo / '.git')}",
                               f"{ph(repo / '.git')}:{repo / '.git'}"]
-        # exactly the dual worktree + dual git dir (read-write: ciu v8 SPEC
-        # S16.4.9) + `worktrees/` read-only (real contents) + the judged admin
-        # dir read-write on top + the two read-only config overlays: TWO
-        # worktrees mounts however many siblings there are (round 4)
-        assert len(values) == 10
+        # The worktree and common dir remain read-write for in-lane commits.
+        # Sibling admins are visible read-only, the judged admin is read-write,
+        # configs are sanitized overlays, and hooks/info cannot be changed.
+        assert len(values) == 20
         admin = repo / ".git" / "worktrees" / wt.name
         assert values[4:6] == [f"{ph(repo / '.git' / 'worktrees')}:"
                                f"{ph(repo / '.git' / 'worktrees')}:ro",
@@ -28856,6 +29183,28 @@ class TestRgNarrowMounts:
         assert values[6:8] == [f"{ph(admin)}:{ph(admin)}",
                                f"{ph(admin)}:{admin}"]
         assert all(v.endswith(":ro") for v in values[8:])
+        hook_mounts = values[10:12]
+        info_mounts = values[12:14]
+        hook_sources = {v.split(":", 1)[0] for v in hook_mounts}
+        assert len(hook_sources) == 1
+        empty_hooks = Path(next(iter(hook_sources)).removeprefix("/phys"))
+        assert empty_hooks.name == "hooks-empty"
+        assert {v.split(":")[1] for v in hook_mounts} == {
+            ph(repo / ".git" / "hooks"), str(repo / ".git" / "hooks"),
+        }
+        assert all(v.endswith(":ro") for v in info_mounts)
+        assert {v.split(":")[1] for v in info_mounts} == {
+            ph(repo / ".git" / "info"), str(repo / ".git" / "info"),
+        }
+        pointer_mounts = values[14:20]
+        expected_pointers = (wt / ".git", admin / "gitdir", admin / "commondir")
+        assert len(pointer_mounts) == 6
+        for index, pointer in enumerate(expected_pointers):
+            pair = pointer_mounts[index * 2:index * 2 + 2]
+            assert pair == [f"{ph(pointer)}:{ph(pointer)}:ro",
+                            f"{ph(pointer)}:{pointer}:ro"]
+        assert empty_hooks.is_dir() and not list(empty_hooks.iterdir())
+        assert empty_hooks.stat().st_mode & 0o777 == 0o755
         assert not any(v.endswith(":rw") or ":ro" in v
                        for v in (*values[:4], *values[6:8]))
         destinations = [v.split(":")[1] for v in values]
@@ -28937,8 +29286,12 @@ class TestRgNarrowMounts:
         root = repo / ".git" / "worktrees"
         flags = run_gate.container_mount_flags(repo, wt, {})
         under = [v for v in flags[1::2]
-                 if v.split(":")[1].removeprefix("/phys").startswith(str(root))]
-        # two mounts per path-view, independent of the 3 siblings
+                 if v.split(":")[1].removeprefix("/phys").startswith(str(root))
+                 and Path(v.split(":")[1].removeprefix("/phys")).name
+                 not in {"gitdir", "commondir", "config.worktree"}]
+        # The worktrees directory and judged admin are each dual-mounted,
+        # independent of the 3 siblings. Pointer/config overlays are asserted
+        # separately by the focused narrow-mount test.
         assert len(under) == 4
         ro = [v for v in under if v.endswith(":ro")]
         rw = [v for v in under if not v.endswith(":ro")]
@@ -29282,6 +29635,30 @@ class TestRgNarrowRealContainer:
             pytest.skip(f"real container smoke needs ${CGROUP_VAR}")
         monkeypatch.delenv(run_gate.ALLOW_MAIN_CHECKOUT_ENV_VAR, raising=False)
         repo = _narrow_repo(tmp_path)
+        wt = make_worktree(repo, repo / ".worktrees", "w1")
+        hook_dir = repo / ".git" / "hooks"
+        info_dir = repo / ".git" / "info"
+        hook_dir.mkdir(exist_ok=True)
+        info_dir.mkdir(exist_ok=True)
+        post_commit = hook_dir / "post-commit"
+        post_commit.write_text(
+            "#!/bin/sh\n"
+            "root=$(git rev-parse --show-toplevel)\n"
+            "printf host-hook-ran > \"$root/host-hook-fired\"\n",
+            encoding="utf-8",
+        )
+        post_commit.chmod(0o755)
+        exclude = info_dir / "exclude"
+        exclude.write_text("# host info must remain unchanged\n", encoding="utf-8")
+        original_exclude = exclude.read_bytes()
+        admin = repo / ".git" / "worktrees" / "w1"
+        worktree_config = admin / "config.worktree"
+        worktree_config.write_text("", encoding="utf-8")
+        original_pointers = {
+            path: path.read_bytes()
+            for path in (wt / ".git", admin / "gitdir", admin / "commondir",
+                         worktree_config)
+        }
         # state only a SIBLING worktree's admin dir keeps alive (round-4
         # B-NEW-2): a detached-HEAD commit, and a blob staged only in its index
         other_wt = make_worktree(repo, repo / ".worktrees", "other")
@@ -29318,12 +29695,21 @@ class TestRgNarrowRealContainer:
             f"test ! -e {repo}/README.md; "
             f"test ! -e {repo}/.worktrees/other; "
             f"test ! -e {repo}/.worktrees/other/other.secret; "
+            "common=$(cd \"$(git rev-parse --git-common-dir)\" && pwd); "
+            "admin=$(git rev-parse --absolute-git-dir); "
             "test \"$(git log -1 --format=%s)\" = 'lane config proj'; "
             "git rev-parse HEAD >/dev/null; git status --porcelain >/dev/null; "
             "git diff --stat >/dev/null; git rev-parse --git-common-dir; "
+            f"no sh -c 'printf redirected > \"$1\"' sh {wt / '.git'}; "
+            "no sh -c 'printf redirected > \"$1\"' sh \"$admin/gitdir\"; "
+            "no sh -c 'printf redirected > \"$1\"' sh \"$admin/commondir\"; "
+            "no sh -c 'printf redirected >> \"$1\"' sh \"$admin/config.worktree\"; "
             "git -c user.name=a -c user.email=a@b.invalid commit --allow-empty "
             "-qm in-container; "
             "test \"$(git log -1 --format=%s)\" = in-container; "
+            "test ! -e host-hook-fired; "
+            "no touch $common/hooks/post-commit; "
+            "no sh -c 'printf compromised >> \"$1/info/exclude\"' sh $common; "
             # gc sees the siblings' HEAD and index and keeps their objects
             # (FIRST, so only the gc check can fail a lane that hides them)
             "git gc --prune=now -q; "
@@ -29333,7 +29719,6 @@ class TestRgNarrowRealContainer:
             "git clone -q --no-local {worktree} /tmp/narrow-clone; "
             "git -C /tmp/narrow-clone log -1 >/dev/null; "
             "no git worktree add -q --detach /tmp/narrow-snap HEAD; "
-            "common=$(cd \"$(git rev-parse --git-common-dir)\" && pwd); "
             # siblings are VISIBLE (real HEAD/index) but read-only
             "test -f $common/worktrees/other/HEAD; "
             "test -f $common/worktrees/other/index; "
@@ -29366,12 +29751,43 @@ class TestRgNarrowRealContainer:
             clean_tree = false
         """)
         proj = make_project(repo, config)
-        wt = make_worktree(repo, repo / ".worktrees", "w1")
         (other_wt / "other.secret").write_text("FAKE-OTHER-SECRET\n")
         (wt / "proj" / ".local-overlay").write_text("ignored but mine\n")
         proc = run_tool(proj, "suite", "--worktree", str(wt))
         assert proc.returncode == 0, proc.stdout + proc.stderr
         assert "NARROW-OK" in proc.stdout, proc.stdout
+        for path, contents in original_pointers.items():
+            assert path.read_bytes() == contents, path
+        assert not (wt / "proj" / "host-hook-fired").exists()
+        assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
+        assert exclude.read_bytes() == original_exclude
+        fsmonitor_marker = tmp_path / "host-fsmonitor-fired"
+        fsmonitor = tmp_path / "host-fsmonitor"
+        fsmonitor.write_text(
+            "#!/bin/sh\n"
+            f"printf executed > {shlex.quote(str(fsmonitor_marker))}\n"
+            "printf '2\\0token\\0'\n",
+            encoding="utf-8",
+        )
+        fsmonitor.chmod(0o755)
+        common_config = repo / ".git" / "config"
+        original_config = common_config.read_bytes()
+        common_config.write_bytes(
+            original_config + b"\n[core]\n\tfsmonitor = "
+            + shlex.quote(str(fsmonitor)).encode() + b"\n"
+        )
+        run_gate.git_out("status", "--porcelain", cwd=wt / "proj")
+        assert not fsmonitor_marker.exists()
+        common_config.write_bytes(original_config)
+        host_commit = subprocess.run(
+            ["git", "-C", str(wt / "proj"), "-c", "user.name=host",
+             "-c", "user.email=host@example.invalid", "commit",
+             "--allow-empty", "-qm", "host-after-lane"],
+            capture_output=True, text=True,
+        )
+        assert host_commit.returncode == 0, host_commit.stderr
+        assert (wt / "proj" / "host-hook-fired").read_text() == "host-hook-ran"
+        assert post_commit.read_text(encoding="utf-8").startswith("#!/bin/sh\n")
         # the in-container prune and gc left every host admin dir and every
         # sibling-only object intact
         for name in ("w1", "other", "held", "gone"):

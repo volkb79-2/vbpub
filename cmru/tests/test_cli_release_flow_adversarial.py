@@ -133,6 +133,29 @@ def test_run_project_steps_rejects_missing_declared_step(tmp_path, monkeypatch):
         cli._run_project_steps(root, {"demo": project}, ["demo"], ["build"])
 
 
+def test_run_project_steps_forwards_protected_release_identity(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    project = _project(root, steps={"build": object()})
+    identity = {
+        "CMRU_RELEASE_COMMIT": "a" * 40,
+        "CMRU_RELEASE_TAG": "demo-v1.2.3",
+    }
+    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_a, **_k: None)
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "run_project_step",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    cli._run_project_steps(
+        root, {"demo": project}, ["demo"], ["build"], protected_env=identity,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1]["protected_env"] == identity
+
+
 def test_release_gates_require_run_tests_and_dispatch_declared_gate(tmp_path, monkeypatch):
     missing = _project(tmp_path)
     with pytest.raises(RuntimeError, match="no release gate"):

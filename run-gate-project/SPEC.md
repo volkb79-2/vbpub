@@ -103,6 +103,10 @@ Rev 20 (run-gate rev 58): RG-89 also permits that explicit read-only observer
 mount on `tester-unified` command lanes, so nested qualification drivers can
 receive the endpoint without hand-rolling mounts. The lane declaration is
 the opt-in; Run-Gate does not infer command semantics from argv.
+Rev 21 (run-gate rev 66): RG-89 permits the observer on any Assay or command
+lane whose resolved environment is ephemeral. Before launching such a lane,
+Run-Gate requires cgprofile's version response to advertise observer contract
+2 at the configured socket path with `listening = true`.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -217,8 +221,13 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `[lanes.<name>.exit_map]` to map individual integer statuses to PASS, FAIL,
   or ERROR. A pytest status 5 is FAIL with reason `pytest-collected-no-tests`.
   An assay lane uses the verdict artifact's closed outcome vocabulary;
-  `NO_MEASUREMENT` and `INCONCLUSIVE` map to FAIL, and the raw outcome is
-  retained as `assay_outcome`. Missing/invalid judge provenance is ERROR.
+  `NO_MEASUREMENT` and `INCONCLUSIVE` map to FAIL except
+  `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`, which maps to infrastructure
+  ERROR when it is the only non-passing claim/evidence result. Preserve
+  `BUDGET_EXCEEDED` if another result has that status, and FAIL if another has
+  `FAIL`, `INCONCLUSIVE`, or `NO_MEASUREMENT`; malformed claim/evidence records
+  map to ERROR. The raw outcome is retained as `assay_outcome`. Missing/invalid
+  judge provenance is ERROR.
   `--json` lane results contain `verdict`, raw `exit_code`, `reason`,
   `log_path`, `assay_outcome`, and `admission`. The human lane summary names
   verdict, raw code when present, reason when present, and log path when one
@@ -310,7 +319,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   profiling for this lane outright, or a table `{enabled, damon}`
   overriding `[profile]`'s own defaults — `R-43h`),
   `resource_observer` (RG-89: only `"cgprofile"`, only on an Assay or command
-  lane explicitly using `environment = "tester-unified"`; command wrappers
+  lane whose resolved environment has `mode = "ephemeral"`; command wrappers
   that launch Assay preserve the endpoint variable for that process; it mounts a separate
   observer-only Unix socket read-only, grants its observed GID, and fails
   closed if that host socket or its ownership/mode is not safe), `description` (optional
@@ -826,7 +835,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   pattern), `cpu_weight`/`io_weight` (integers 1..10000 — VALIDATED and
   PRINTED as advisory; `docker run` has no portable cgroup-v2 flag for
   them, and pretending otherwise would be enforcement theater), `shared`
-  (list of service names), **`cpus`** (RG-48: a decimal string matching
+  (list of service names), **`pids`** (positive integer → Docker
+  `--pids-limit`; observer-backed lanes require this and `memory` so local
+  event counters are attributable), **`cpus`** (RG-48: a decimal string matching
   docker's own `--cpus` grammar, `^\d+(\.\d+)?$`, strictly > 0 — `--cpus 0`
   is a Docker refusal, not "no limit"). `cpus` ALSO has an
   environment-level fallback, `[environments.<name>.resources] cpus = …`
@@ -2435,24 +2446,39 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     --no-local` and is unaffected. A sibling `config.worktree` that exists
     gets the `R-45b` sanitized read-only overlay; module plus sibling
     config files are capped at 256 (infrastructure error beyond).
+  - **`R-45f` Host Git hooks and info metadata are not writable in a lane.**
+    For linked and opted-in plain-checkout ephemeral runs, `<common>/hooks`
+    MUST be a real directory and is overlaid at both mount paths by a private,
+    empty directory mounted READ-ONLY. `<common>/info` MUST also be a real
+    directory and is mounted READ-ONLY with its real contents. Missing,
+    symlinked, or non-directory paths are infrastructure errors before lane
+    launch. The common Git directory remains read-write for the behaviors in
+    `R-45a`, but a tester cannot plant a common `post-commit` hook for later
+    host Git commands or change host `info/exclude`. The registered real-container
+    oracle plants a host hook, attempts both in-container writes, verifies both
+    are refused, and then verifies a host commit did not execute the hook.
 
 - `R-46` **Private-namespace Assay R2 resource observer (RG-89).**
   `resource_observer = "cgprofile"` is an optional, closed lane key. It is
-  legal only when `kind = "assay"` or `kind = "command"` and the lane
-  explicitly names `environment = "tester-unified"`. The lane declaration
+  legal only when `kind = "assay"` or `kind = "command"` and the lane's
+  resolved environment has `mode = "ephemeral"`. The lane declaration
   is the opt-in; command wrappers that launch Assay R2 must preserve the
   inherited endpoint variable for that process. The endpoint remains a
-  read-only query bound to the command's own peer. Before building Docker argv, Run-Gate
-  lstat-checks the fixed source
-  `/run/cgprofile/resource-observer.sock`: it must be a Unix socket, root
-  owned, in the root-owned socket directory with matching GID, group
-  connectable, and not accessible to other users. Missing or unsafe state is
-  infrastructure ERROR; Docker must not invent a bind source. The container
-  receives only that socket file at
-  `/tmp/cgprofile-resource-observer.sock`, via a read-only bind; Run-Gate
-  supplies the observed socket GID as a supplementary group and sets
-  `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container target. It does not
-  mount `ctl.sock`, grant the Docker socket, or change the container's
+  read-only query bound to the command's own peer. Before launching the lane,
+  Run-Gate queries the daemon's control version response and requires observer
+  contract 2, the fixed socket path, and `listening = true`. Before building Docker argv, Run-Gate
+  validates `/run/cgprofile/observer` as a root-owned directory with no group
+  or world write access and group search permission; other users may traverse
+  the known socket path but cannot list or connect. Its socket must be root-owned, match the directory GID, be
+  group-connectable, and grant no access to other users. Missing or unsafe
+  state is infrastructure ERROR; Docker must not invent a bind source. The
+  lane must declare `resources.memory` and positive-integer `resources.pids`,
+  which become `--memory` and `--pids-limit`; observer lanes refuse
+  `RUN_GATE_EXTRA_MOUNTS`. The container receives that observer directory at
+  `/run/cgprofile-observer` via a read-only directory bind; Run-Gate supplies
+  the dedicated directory GID as a supplementary group and sets
+  `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container socket path. It does
+  not mount `ctl.sock`, grant the Docker socket, or change the container's
   private PID/cgroup/network namespaces.
   - The observer listener belongs to the existing cgprofile daemon and accepts
     exactly one `resource-limits` request with a positive native thread ID.

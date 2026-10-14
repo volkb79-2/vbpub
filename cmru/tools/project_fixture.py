@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import shutil
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -30,6 +32,66 @@ ESTATE_CONFIG_FIXTURES = (
 )
 
 
+def tracked_paths(repo_root: Path, pathspecs: tuple[str, ...] | list[str]) -> list[str]:
+    """List committed inputs with Git configuration and index paths sanitized."""
+    git_executable = shutil.which("git")
+    if not git_executable:
+        raise RuntimeError("Git is required to assemble the CMRU test fixture")
+    repo_root = repo_root.resolve(strict=True)
+    env = {
+        "PATH": os.path.dirname(git_executable),
+        "HOME": "/nonexistent",
+        "XDG_CONFIG_HOME": "/nonexistent",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LC_ALL": "C",
+        "LANG": "C",
+    }
+    common = [
+        git_executable,
+        "-c", "core.fsmonitor=false",
+        "-c", "core.excludesFile=/dev/null",
+        "-c", "maintenance.auto=false",
+        "-c", "gc.auto=0",
+        "-c", "gc.autoDetach=false",
+    ]
+    try:
+        top = subprocess.run(
+            [*common, "-C", str(repo_root), "rev-parse", "--show-toplevel"],
+            check=False, capture_output=True, env=env, timeout=10,
+        )
+        git_dir_result = subprocess.run(
+            [*common, "-C", str(repo_root), "rev-parse", "--absolute-git-dir"],
+            check=False, capture_output=True, env=env, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(f"could not resolve the fixture Git worktree: {repo_root}") from exc
+    if top.returncode or git_dir_result.returncode:
+        detail = (top.stderr or git_dir_result.stderr).decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"could not resolve the fixture Git worktree: {detail}")
+    resolved_top = Path(os.fsdecode(top.stdout.rstrip(b"\n"))).resolve(strict=True)
+    git_dir = Path(os.fsdecode(git_dir_result.stdout.rstrip(b"\n"))).resolve(strict=True)
+    if resolved_top != repo_root:
+        raise RuntimeError(f"fixture root is not the Git worktree root: {repo_root}")
+    try:
+        listed = subprocess.run(
+            [
+                *common, f"--git-dir={git_dir}", f"--work-tree={resolved_top}",
+                "ls-files", "-z", "--", *pathspecs,
+            ],
+            cwd=resolved_top, check=False, capture_output=True, env=env, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("could not list committed mutation fixture inputs") from exc
+    if listed.returncode:
+        detail = listed.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"could not list committed mutation fixture inputs: {detail}")
+    return [os.fsdecode(raw) for raw in listed.stdout.split(b"\0") if raw]
+
+
 def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path) -> Path:
     """Copy CMRU and the external files its full test suite reads.
 
@@ -38,38 +100,42 @@ def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path
     the libraries and configs must be present in the known-good control and
     every mutated candidate.
     """
-    for name in ROOT_CMRU_ARTIFACTS:
-        artifact = repo_root / name
-        if not artifact.is_file() or artifact.is_symlink():
-            raise ValueError(f"required root CMRU artifact is not a real file: {artifact}")
-        shutil.copy2(artifact, workspace / artifact.name)
+    repo_root = repo_root.resolve(strict=True)
+    project_root = project_root.resolve(strict=True)
+    workspace.mkdir(parents=True, exist_ok=True)
+    try:
+        project_prefix = project_root.relative_to(repo_root).as_posix()
+    except ValueError as exc:
+        raise ValueError("CMRU fixture project must be inside the selected Git worktree") from exc
+    pathspecs = [project_prefix]
+    pathspecs.extend(ROOT_CMRU_ARTIFACTS)
+    pathspecs.extend(path.as_posix() for path in EXTERNAL_DOC_ARTIFACTS)
+    pathspecs.extend(path.as_posix() for path in SHARED_LIBRARIES)
+    pathspecs.extend(path.as_posix() for path in ESTATE_CONFIG_FIXTURES)
+    files = tracked_paths(repo_root, pathspecs)
+    if not any(path == project_prefix or path.startswith(project_prefix + "/") for path in files):
+        raise ValueError(f"CMRU fixture has no tracked project files: {project_root}")
 
-    for relative in EXTERNAL_DOC_ARTIFACTS:
-        artifact = repo_root / relative
-        if not artifact.is_file() or artifact.is_symlink():
-            raise ValueError(f"required linked CMRU document is not a real file: {artifact}")
-        destination = workspace / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(artifact, destination)
-
+    required_files = {
+        *ROOT_CMRU_ARTIFACTS,
+        *(path.as_posix() for path in EXTERNAL_DOC_ARTIFACTS),
+        *(path.as_posix() for path in ESTATE_CONFIG_FIXTURES),
+    }
+    missing = sorted(required_files - set(files))
+    if missing:
+        raise ValueError(f"required tracked CMRU fixture inputs are missing: {', '.join(missing)}")
     for relative in SHARED_LIBRARIES:
-        library_source = repo_root / relative
-        if not library_source.is_dir() or library_source.is_symlink():
-            raise ValueError(
-                f"required shared CMRU library is not a real directory: {library_source}"
-            )
+        if not any(path == relative.as_posix() or path.startswith(relative.as_posix() + "/") for path in files):
+            raise ValueError(f"required shared CMRU library has no tracked files: {relative}")
+
+    for relative in files:
+        source = repo_root / relative
         destination = workspace / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(library_source, destination, symlinks=True)
-
-    for relative in ESTATE_CONFIG_FIXTURES:
-        artifact = repo_root / relative
-        if not artifact.is_file() or artifact.is_symlink():
-            raise ValueError(f"required estate config is not a real file: {artifact}")
-        destination = workspace / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(artifact, destination)
-
-    copied = workspace / project_root.name
-    shutil.copytree(project_root, copied, symlinks=True)
-    return copied
+        if source.is_symlink():
+            destination.symlink_to(os.readlink(source))
+        elif source.is_file():
+            shutil.copy2(source, destination)
+        else:
+            raise ValueError(f"tracked CMRU fixture input is not a file or symlink: {source}")
+    return workspace / project_prefix

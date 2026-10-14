@@ -21,6 +21,8 @@ independently re-derive.
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -58,7 +60,7 @@ class _RecordingProcessRunner:
 
     def __call__(self, argv, *, env, cwd, timeout):
         self.calls.append(_Call(argv=tuple(argv), cwd=Path(cwd)))
-        return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+        return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
 
 def _seed_repo(tmp_path: Path) -> GitRepo:
@@ -91,7 +93,7 @@ def test_baseline_and_every_mutant_receive_byte_identical_argv(tmp_path: Path):
             deadline=deadline,
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=50,
             operators=("python:compare-swap",),
             process_runner=recorder,
@@ -134,7 +136,7 @@ def test_each_mutant_runs_in_its_own_snapshot(tmp_path: Path):
             deadline=deadline,
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=50,
             operators=("python:compare-swap",),
             process_runner=recorder,

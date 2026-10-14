@@ -1,5 +1,13 @@
 # B110-P8 — Campaign analysis core (`assay analyze campaign`, B108 phase 1)
 
+**Controller amendment (2026-10-13; A-490):** selected pilot summaries now
+require both the exact JSON output from `assay plan` and the B110/B131 selector
+report. The report binds plan bytes and selected IDs; the progress selection
+digest must agree. Such output is schema v2, always incomplete and
+non-qualifying. This supersedes the earlier shorthand that only named
+`--candidates-file`; the analyzer does not infer the selected set from partial
+progress.
+
 *Revised 2026-09-28 after round-1, round-2 and round-3 reviews (see REVIEW-2026-09-28-round{1,2,3}.md). Round-1: P8-1..P8-10 and carver decisions C13–C15. Round-2: P8R2-1..P8R2-5 and carver decisions C25, C26, C29. Round-3 minors: O15 passes `--coverage`; `_cmd_plan` shares one row builder over P6's `_discover_plan_jobs` output (no second discovery); a forward note that P10's `superseded_by_ledger` joins the reconciliation target.*
 
 | Field | Value |

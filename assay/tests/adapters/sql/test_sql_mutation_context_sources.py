@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from pathlib import PurePosixPath
 
@@ -87,6 +88,102 @@ def test_sql_context_ignores_malformed_test_sources_but_keeps_ddl_candidates(
 
     assert len(jobs) == 1
     assert jobs[0].site.lineno == 1
+
+
+def test_sql_context_enumerates_many_roots_with_deadline_checks_in_one_manifest_pass(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    for index in range(130):
+        git_repo.write(f"src/migrations/{index:03d}.sql", "SELECT 1;\n")
+    head = git_repo.commit_all("add many SQL context paths")
+    scratch = tmp_path / "snapshot-seed"
+    scratch.mkdir()
+    calls = 0
+
+    def monotonic() -> float:
+        nonlocal calls
+        calls += 1
+        return 2.0 if calls >= 6 else 0.0
+
+    deadline = runner.LaneDeadline(
+        expires_at=1.0, monotonic=monotonic, honors_termination=False
+    )
+
+    with prepared_snapshot(git_repo, commit=head, scratch_root=scratch) as prepared:
+        blob_reads = 0
+        original_read_regular_file = prepared.read_regular_file
+
+        def tracked_read_regular_file(path, *, timeout):
+            nonlocal blob_reads
+            blob_reads += 1
+            return original_read_regular_file(path, timeout=timeout)
+
+        monkeypatch.setattr(prepared, "read_regular_file", tracked_read_regular_file)
+        with pytest.raises(AssayError) as caught:
+            runner._mutation_context_sources(
+                prepared=prepared,
+                snapshot_repo_top=prepared.spec.repo_top,
+                source_root_paths=(
+                    git_repo.path / "src",
+                    git_repo.path / "src" / "migrations",
+                ),
+                adapter=SqlAdapter(),
+                deadline=deadline,
+            )
+
+    assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+    assert calls == 6
+    assert blob_reads == 0
+
+
+def test_sql_context_union_of_overlapping_roots_reads_each_manifest_path_once(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch
+):
+    git_repo.write("src/root.sql", "SELECT 0;\n")
+    git_repo.write("src/migrations/one.sql", "SELECT 1;\n")
+    git_repo.write("src/migrations/two.sql", "SELECT 2;\n")
+    head = git_repo.commit_all("add overlapping SQL source roots")
+    scratch = tmp_path / "snapshot-seed"
+    scratch.mkdir()
+
+    class CountingEntries:
+        def __init__(self, entries):
+            self.entries = entries
+            self.iterations = 0
+
+        def __iter__(self):
+            self.iterations += 1
+            assert self.iterations == 1
+            return iter(self.entries)
+
+    with prepared_snapshot(git_repo, commit=head, scratch_root=scratch) as prepared:
+        counting_entries = CountingEntries(prepared._manifest.entries)
+        original_manifest = prepared._manifest
+
+        class CountingManifest:
+            entries = counting_entries
+
+            def by_path(self):
+                return original_manifest.by_path()
+
+        monkeypatch.setattr(prepared, "_manifest", CountingManifest())
+        context = runner._mutation_context_sources(
+            prepared=prepared,
+            snapshot_repo_top=prepared.spec.repo_top,
+            source_root_paths=(
+                git_repo.path / "src",
+                git_repo.path / "src" / "migrations",
+            ),
+            adapter=SqlAdapter(),
+            deadline=runner.LaneDeadline(expires_at=60.0, monotonic=lambda: 0.0),
+        )
+        assert context is not None
+        assert counting_entries.iterations == 1
+        assert tuple(path for path, _ in context) == (
+            "src/migrations/one.sql",
+            "src/migrations/two.sql",
+            "src/root.sql",
+        )
 
 
 def test_sql_context_invalidates_type_after_cross_file_column_drop_and_readd():
@@ -183,6 +280,53 @@ def test_sql_context_checks_lane_deadline_while_resolving_dependencies():
     assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
 
 
+def test_sql_context_releases_each_non_target_lex_mask_before_the_next_source(
+    monkeypatch,
+):
+    class TrackedMask(bytes):
+        next_marker = 0
+        live_markers: dict[int, int] = {}
+        released_markers: set[int] = set()
+
+        def __new__(cls, value):
+            instance = super().__new__(cls, value)
+            marker = cls.next_marker
+            cls.next_marker += 1
+            cls.live_markers[id(instance)] = marker
+            return instance
+
+        def __del__(self):
+            marker = type(self).live_markers.pop(id(self), None)
+            if marker is not None:
+                type(self).released_markers.add(marker)
+
+    original = sql_adapter_module.lex_sql
+    markers: list[int] = []
+
+    def tracked(source, *, check_deadline=None):
+        if len(markers) == 2:
+            assert markers[0] in TrackedMask.released_markers
+        result = original(source, check_deadline=check_deadline)
+        mask = TrackedMask(result.mask)
+        markers.append(TrackedMask.next_marker - 1)
+        return replace(result, mask=mask)
+
+    monkeypatch.setattr(sql_adapter_module, "lex_sql", tracked)
+    sources = (
+        (f"context-{index}.sql", "SELECT 1;\n") for index in range(3)
+    )
+    deadline = runner.LaneDeadline(
+        expires_at=60.0, monotonic=lambda: 0.0, honors_termination=False
+    )
+
+    SqlAdapter().prepare_mutation_context_with_sources_bounded(
+        sources, remaining=deadline.remaining
+    )
+
+    assert len(markers) == 3
+    assert markers[0] in TrackedMask.released_markers
+
+
 def test_search_path_schema_reader_honors_the_lane_deadline(monkeypatch):
     source = 'SET search_path TO "' + ("schema" * 2000) + '";\n'
     original = sql_adapter_module._read_search_path_schemas
@@ -225,6 +369,61 @@ def test_search_path_schema_reader_honors_the_lane_deadline(monkeypatch):
     assert entered_reader
     assert reader_checks == 4
     assert caught.value.reason_code is ReasonCode.LANE_TIMEOUT
+
+
+def test_set_config_search_path_scan_honors_the_lane_deadline():
+    source = b"SELECT set_config('" + b"x" * 8192 + b"', 'value', false);"
+    checks = 0
+
+    def check_deadline():
+        nonlocal checks
+        checks += 1
+        if checks == 5:
+            raise RuntimeError("deadline expired")
+        return 1.0
+
+    with pytest.raises(RuntimeError, match="deadline expired"):
+        sql_adapter_module._set_config_search_path_writes(
+            source, source, check_deadline=check_deadline
+        )
+
+    assert checks == 5
+
+
+def test_set_config_deadline_checks_progress_when_escaped_quotes_advance_by_two():
+    class TrackingBytes(bytes):
+        def __new__(cls, value):
+            instance = super().__new__(cls, value)
+            instance.max_index = -1
+            return instance
+
+        def __getitem__(self, key):
+            if isinstance(key, int):
+                self.max_index = max(self.max_index, key)
+            return super().__getitem__(key)
+
+    source = TrackingBytes(
+        b" " + b"set_config('" + b"''" * 4096 + b"', 'value', false);"
+    )
+    closing_quote_index = source.index(b"', 'value'")
+    checks = 0
+
+    def check_deadline():
+        nonlocal checks
+        checks += 1
+        if checks == 5:
+            assert source.max_index < closing_quote_index
+            raise RuntimeError("deadline expired during escaped quote scan")
+        return 1.0
+
+    with pytest.raises(
+        RuntimeError, match="deadline expired during escaped quote scan"
+    ):
+        sql_adapter_module._set_config_search_path_writes(
+            source, source, check_deadline=check_deadline
+        )
+
+    assert checks == 5
 
 
 def test_transaction_keyword_reads_receive_the_lane_deadline(monkeypatch):
@@ -271,7 +470,7 @@ def test_remaining_sql_candidate_scanners_check_the_deadline(scanner, source, ex
         raise RuntimeError("deadline expired")
 
     with pytest.raises(RuntimeError, match="deadline expired"):
-        scanner(source, source, *extra, check_deadline=expired)
+        list(scanner(source, source, *extra, check_deadline=expired))
 
 
 @pytest.mark.parametrize(
@@ -356,7 +555,7 @@ def test_bounded_sql_context_reuses_lexed_ranges_for_statement_events(monkeypatc
     assert callbacks[0].__func__ is runner.LaneDeadline.remaining
 
 
-def test_sql_target_reuses_its_context_lex_result_for_site_generation(monkeypatch):
+def test_sql_target_mask_is_not_retained_between_context_scan_and_generation(monkeypatch):
     source = "CREATE TABLE item (value integer CHECK (value > 0));\n"
     target = mutation.MutationTarget(
         path="src/item.sql",
@@ -381,10 +580,69 @@ def test_sql_target_reuses_its_context_lex_result_for_site_generation(monkeypatc
     )
 
     assert len(jobs) == 1
-    assert lexed_sources.count(source.encode("utf-8")) == 1
+    assert lexed_sources.count(source.encode("utf-8")) == 2
 
 
-def test_sql_target_does_not_reuse_context_lex_for_conflicting_same_path(monkeypatch):
+def test_sql_whole_target_context_does_not_retain_masks_across_targets(monkeypatch):
+    class TrackedMask(bytes):
+        next_marker = 0
+        live_markers: dict[int, int] = {}
+        released_markers: set[int] = set()
+
+        def __new__(cls, value):
+            instance = super().__new__(cls, value)
+            marker = cls.next_marker
+            cls.next_marker += 1
+            cls.live_markers[id(instance)] = marker
+            return instance
+
+        def __del__(self):
+            marker = type(self).live_markers.pop(id(self), None)
+            if marker is not None:
+                type(self).released_markers.add(marker)
+
+    sources = tuple(
+        (
+            f"src/{index}.sql",
+            f"CREATE TABLE item_{index} (value integer CHECK (value > {index}));\n",
+        )
+        for index in range(3)
+    )
+    targets = tuple(
+        mutation.MutationTarget(
+            path=path,
+            text=text,
+            lines=frozenset({1}),
+        )
+        for path, text in sources
+    )
+    original = sql_adapter_module.lex_sql
+    markers: list[int] = []
+
+    def tracked(source, *, check_deadline=None):
+        assert all(
+            marker in TrackedMask.released_markers for marker in markers[:-1]
+        )
+        result = original(source, check_deadline=check_deadline)
+        mask = TrackedMask(result.mask)
+        markers.append(TrackedMask.next_marker - 1)
+        return replace(result, mask=mask)
+
+    monkeypatch.setattr(sql_adapter_module, "lex_sql", tracked)
+    jobs = mutation.collect_mutation_sites(
+        targets,
+        adapter=SqlAdapter(),
+        operators=("sql:drop-check",),
+        limit=100,
+        context_sources=sources,
+        deadline_check=lambda: 1.0,
+    )
+
+    assert len(jobs) == 3
+    assert len(markers) == 6
+
+
+def test_sql_target_ignores_conflicting_context_text_and_relexes_target(monkeypatch):
     context_source = "CREATE TABLE item (value integer CHECK (value < 0));\n"
     target_source = "CREATE TABLE item (value integer CHECK (value > 0));\n"
     target = mutation.MutationTarget(
@@ -411,7 +669,7 @@ def test_sql_target_does_not_reuse_context_lex_for_conflicting_same_path(monkeyp
 
     assert len(jobs) == 1
     assert lexed_sources.count(context_source.encode("utf-8")) == 0
-    assert lexed_sources.count(target_source.encode("utf-8")) == 1
+    assert lexed_sources.count(target_source.encode("utf-8")) == 2
 
 
 def test_sql_context_table_column_matcher_honors_lane_deadline(monkeypatch):

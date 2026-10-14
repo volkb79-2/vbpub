@@ -73,6 +73,10 @@ META = {
 PROD_SESSIONS_DIR = "/var/lib/cgprofile/sessions"
 PROD_SOCKET = "/run/cgprofile/ctl.sock"
 REGEN_ENV = "CGPROFILE_REGEN_SOCKET_GOLDENS"
+# The frozen wire documents include a daemon version. Pin it here so the
+# protocol oracle does not depend on whether this checkout is tagged or an
+# untagged development build (whose runtime identity is 0.0.0-dev).
+FIXTURE_CGPROFILE_VERSION = "1.0.0"
 VERBS = ("version", "host", "start", "status", "stop", "report", "gc")
 # §8.2's streaming verb answers MANY lines on one connection, so its
 # response golden is the ARRAY of those lines rather than one object —
@@ -483,6 +487,7 @@ def _rewrite_second_session(doc: Any) -> Any:
 
 @pytest.fixture
 def scenario(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(serve, "CGPROFILE_VERSION", FIXTURE_CGPROFILE_VERSION)
     with _Scenario(tmp_path, monkeypatch, capsys) as sc:
         sc.run()
         yield sc
@@ -1260,6 +1265,10 @@ def _check_golden(name: str, doc: Any) -> None:
         return
     assert path.is_file(), f"missing golden {path} (regenerate with {REGEN_ENV}=1)"
     assert path.read_text() == text, f"{path} differs from the live document"
+
+
+def test_socket_goldens_pin_the_combined_first_release_version():
+    assert FIXTURE_CGPROFILE_VERSION == "1.0.0"
 
 
 def test_socket_goldens_are_the_live_documents(scenario):

@@ -43,6 +43,7 @@ budget = "5m"
 # [lanes.r2].
 [lanes.r2]
 kind = "command"
+resource_observer = "cgprofile"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
@@ -79,3 +80,7 @@ argv = [
 ]
 clean_tree = false
 budget = "1h"
+
+[lanes.r2.resources]
+memory = "2g"
+pids = 8192

@@ -38,6 +38,33 @@ until `--wizard` explicitly confirms that policy again; it leaves the host
 config available for review. During `--wizard`, accepting the default answer
 changes `terminate` to `report-only`.
 
+### cgprofile resource-observer host setup
+
+For an existing MDT host with a valid `/run/cgprofile` control directory,
+provision the contract-2 observer path with this focused host command:
+
+```bash
+sudo ./host-setup/install.sh --observer-only
+stat -c '%u:%g %a %n' /run/cgprofile/observer
+getent group cgprofile-observer
+sudo mdt-host-check.sh
+```
+
+The command installs the dedicated `cgprofile-observer` group and its separate
+tmpfiles rule, then checks for a real `root:<observer-gid>` directory with mode
+`0751`. It refuses a pre-existing observer group that shares Docker's GID
+before changing units or creating the directory. It also refuses a pre-existing
+observer path whose type, owner, group, or mode has drifted; inspect and repair
+that path before retrying rather than relying on tmpfiles to re-own it. The
+host checker independently verifies the observer group, directory metadata,
+and the complete active sysusers/tmpfiles rule sets. Blank lines and comments
+are ignored; additional active directives fail the check. It points back to
+this command when provisioning is missing. It also refuses if
+`/run/cgprofile` is missing, a symlink, or not `root:docker 0770`. Run it from the Docker host; the
+[host-escape consumer guidance](#host-commands-from-an-mdt-devcontainer)
+shows how to run host commands from the cockpit. Deploy the daemon through the
+supported CIU consumer workflow after the observer directory exists.
+
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount
 facts. It walks `dev.slice`, the guaranteed sibling,

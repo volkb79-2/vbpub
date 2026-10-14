@@ -15,7 +15,7 @@
 # fork-scoped, so 3.14 is green.
 #
 # Build from the REPO ROOT so the project sources are in context:
-#   docker build -f tester-unified/Dockerfile -t tester-unified:local /workspaces/vbpub
+#   docker buildx build --load -f tester-unified/Dockerfile -t tester-unified:local .
 # (see the repo-root .dockerignore, which whitelists only these projects.)
 FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
 
@@ -33,35 +33,20 @@ RUN git config --system maintenance.autoDetach false \
  && test "$(git config --system --get maintenance.autoDetach)" = false \
  && test "$(git config --system --get gc.autoDetach)" = false
 
-# Copy the Python sources used to derive/install the image's internal command
-# wheels and dependency closure. Gate runs execute against the BOUND worktree
-# via PYTHONPATH, so the copied CIU/Assay sources seed dependencies rather than
-# replace the code under test. Run-Gate is installed as a console script in
-# /opt/tester-venv so the tester user need not traverse /home/vscode in the
-# base image to invoke it.
+# Copy dependency metadata first. The generator reads only these pyprojects, so
+# this layer stays stable when source files change.
 COPY tester-unified/gen-requirements.py /usr/local/lib/tester-unified/gen-requirements.py
 COPY tester-unified/fetch-cli-extended.py /usr/local/lib/tester-unified/fetch-cli-extended.py
-COPY ciu/         /src/ciu/
-COPY cmru/        /src/cmru/
-COPY run-gate-project/ /src/run-gate-project/
-COPY assay/       /src/assay/
-COPY topos/       /src/topos/
-COPY nyxloom/ /src/nyxloom/
-# The one estate-internal library cmru still packages itself, at the path cmru's
-# pyproject expects relative to /src/cmru (`../libraries/worktree/src`). It is
-# built ONLY from this copied source, never from an index. cli-extended is NOT
-# copied: it is a real wheel dependency of cmru (KI-51 / CX-D1) and is installed
-# from its RELEASE below.
-COPY libraries/worktree/ /src/libraries/worktree/
+COPY ciu/pyproject.toml /src/ciu/pyproject.toml
+COPY cmru/pyproject.toml /src/cmru/pyproject.toml
+COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
+COPY assay/pyproject.toml /src/assay/pyproject.toml
+COPY topos/pyproject.toml /src/topos/pyproject.toml
+COPY nyxloom/pyproject.toml /src/nyxloom/pyproject.toml
+COPY scripts/cgroup-profiler/pyproject.toml /src/cgroup-profiler/pyproject.toml
 # ZERO-RELEASE INPUT: empty (a .gitkeep) unless the operator dropped a locally
 # built cli_extended-*.whl here for CLI_EXTENDED_RESOLVE=local (see below).
 COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
-# scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
-# scipy/ruptures) that no other project here pulls in. It is NOT a fork
-# candidate the way srdm was: its suite uses fake cgroup trees, injected
-# clocks and stubbed sysfs by design, so it needs no Go toolchain, no
-# privilege, no systemd and no Docker socket — only this closure.
-COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 
 # One COPIES venv on python 3.14 under /opt (a real interpreter binary, so a
 # runtime home bind at /home/vscode cannot shadow it).  The build context omits
@@ -138,25 +123,59 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
       /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
         --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; \
     fi
+
+# `venv` preserves existing contents. Start with empty environments so files
+# or `.pth` configuration inherited from a changed base image cannot affect
+# dependency installation or the offline internal wheel builds.
+RUN rm -rf /opt/tester-venv /tmp/cmru-build-venv /tmp/run-gate-build-venv
+
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt \
  && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/cli-extended-release/*.whl \
- && mkdir -p /tmp/internal-wheels \
  && /usr/local/bin/python3.14 -m venv /tmp/cmru-build-venv \
  && /tmp/cmru-build-venv/bin/pip install --no-cache-dir -r /tmp/cmru-build-requirements.txt \
+ && /usr/local/bin/python3.14 -m venv /tmp/run-gate-build-venv \
+ && /tmp/run-gate-build-venv/bin/pip install --no-cache-dir -r /tmp/run-gate-build-requirements.txt
+
+# Build tooling is ready before package sources enter the image. Start from
+# empty roots so the base image or metadata layer cannot contribute sources.
+RUN rm -rf /src/cmru /src/libraries/worktree /src/run-gate-project
+
+# Gate runs execute against the BOUND worktree via PYTHONPATH. These copied
+# sources seed the image's internal wheels and test dependency closure.
+COPY ciu/ /src/ciu/
+COPY cmru/ /src/cmru/
+COPY run-gate-project/ /src/run-gate-project/
+COPY assay/ /src/assay/
+COPY topos/ /src/topos/
+COPY nyxloom/ /src/nyxloom/
+# The one estate-internal library cmru still packages itself, at the path cmru's
+# pyproject expects relative to /src/cmru (`../libraries/worktree/src`). It is
+# built ONLY from this copied source, never from an index. cli-extended is NOT
+# copied: it is a real wheel dependency of cmru (KI-51 / CX-D1) and is installed
+# from its RELEASE below.
+COPY libraries/worktree/ /src/libraries/worktree/
+# scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
+# scipy/ruptures) that no other project here pulls in. It is NOT a fork
+# candidate the way srdm was: its suite uses fake cgroup trees, injected
+# clocks and stubbed sysfs by design, so it needs no Go toolchain, no
+# privilege, no systemd and no Docker socket — only this closure.
+COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
+
+RUN rm -rf /tmp/internal-wheels \
+ && mkdir -p /tmp/internal-wheels \
  && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified \
     /tmp/cmru-build-venv/bin/pip wheel --no-index --no-deps --no-build-isolation \
       -w /tmp/internal-wheels /src/cmru \
- && /usr/local/bin/python3.14 -m venv /tmp/run-gate-build-venv \
- && /tmp/run-gate-build-venv/bin/pip install --no-cache-dir -r /tmp/run-gate-build-requirements.txt \
  && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=0.0.0+tester.unified \
     /tmp/run-gate-build-venv/bin/pip wheel --no-index --no-deps --no-build-isolation \
-      -w /tmp/internal-wheels /src/run-gate-project \
- && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
+      -w /tmp/internal-wheels /src/run-gate-project
+
+RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
  && rm -rf /tmp/cmru-build-venv /tmp/run-gate-build-venv /tmp/internal-wheels \
       /tmp/cmru-build-requirements.txt /tmp/run-gate-build-requirements.txt /tmp/cli-extended-release \
- && /opt/tester-venv/bin/python -c "import build, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')" \
+ && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog, markdown_it, linkify_it; print('tester-unified closure OK')" \
  && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgroup-profiler report tier OK')"
 
 # Build-time assertion (BG-05): `worktree`, cmru and run-gate resolve from THIS
@@ -169,11 +188,12 @@ import os
 from pathlib import Path
 
 import cli_extended
+import cmru
 import run_gate
 import worktree
 
 site = "/opt/tester-venv/"
-for module in (cli_extended, worktree, run_gate):
+for module in (cli_extended, cmru, worktree, run_gate):
     location = str(Path(module.__file__).resolve())
     assert location.startswith(site), f"{module.__name__} imports from {location}, not {site}"
 version = metadata.version("cmru")
@@ -205,11 +225,17 @@ PY
 # writable HOME with XDG dirs, so suites that read/write $HOME/.config or
 # $HOME/.cache (e.g. topos config/record) don't hit PermissionError on the
 # image's root-owned /home/vscode. A gate must give the run-uid a real HOME.
-RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd \
- && echo "docker:x:994:tester" >> /etc/group \
+RUN if getent group 1003 >/dev/null; then \
+      test "$(getent group 1003 | cut -d: -f1)" != docker; \
+    else \
+      groupadd --gid 1003 tester; \
+    fi \
+ && ! getent passwd 1003 >/dev/null \
+ && ! getent passwd tester >/dev/null \
+ && echo "tester:x:1003:1003:tester:/home/tester:/bin/bash" >> /etc/passwd \
  && mkdir -p /home/tester/.config /home/tester/.cache /home/tester/.local/state \
- && chown -R 1003:994 /home/tester \
- && chown -R 1003:994 /opt/tester-venv
+ && chown -R 1003:1003 /home/tester \
+ && chown -R 1003:1003 /opt/tester-venv
 
 USER 1003
 ENV PATH=/opt/tester-venv/bin:${PATH} \

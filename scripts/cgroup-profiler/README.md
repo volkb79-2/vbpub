@@ -32,6 +32,28 @@ matching `CGPROFILE <version> — cgroup resource profiler` headline. Normal
 profiling output is unchanged. The shell shim and `cgprofile.py` therefore
 expose the same top-level compatibility option.
 
+The Dockerfile requires explicit `CGPROFILE_VERSION` and `GIT_REVISION` build
+arguments and fails before package installation when either is absent. The
+Bake file uses a literal development version and tag, but has no fabricated
+revision fallback. `build-push.py` resolves version and commit together and
+supplies both as per-target overrides. For release, version
+and commit come from CMRU's exact candidate tag and commit pair. An ambient
+`CGPROFILE_VERSION` cannot label an untagged checkout as a release. The tagged working tree must also be
+clean so the image source matches that tag. During `cmru release`, CMRU passes
+protected `CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` values to the build and
+push steps; it clears ambient values from other project steps. The wrapper
+verifies that `HEAD` and the local tag both match that commit, then builds from
+a temporary worktree at the verified commit. The pair proves source
+consistency; it is not an authentication token or proof of CMRU provenance.
+Invoke `cmru release` for publication and do not hand-write the pair. An
+untagged local build through `build-push.py --build` requires clean cgprofile
+and DAMON source contexts, uses `0.0.0-dev` with its checked revision, and
+builds from a temporary tree at that commit. A bare Bake invocation has no
+revision value and the Dockerfile refuses before installing packages. See the
+[release identity design](docs/DESIGN-GUIDE.md#release-identity), then verify a
+deployed image's version and OCI source revision against the release tag using
+the [CIU deployment guide](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
+
 - **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
   Start there if you want to use it.
 - **`DESIGN.md`** — architecture and module contracts. Start there if you want
@@ -159,10 +181,17 @@ host `pid_target` values; it keeps a private cgroup namespace, has no network,
 and receives no Docker socket. Workload, helper, gate, and test containers
 remain private. The daemon exposes its existing control protocol on
 `/run/cgprofile/ctl.sock` and a distinct, observer-only
-`/run/cgprofile/resource-observer.sock` for explicitly opted-in native R2
-lanes. That second listener accepts only a peer-bound resource-counter query;
-it is not a broker and provides no control or placement operation. Run-Gate
-mounts only that socket into the selected tester container, never `ctl.sock`.
+`/run/cgprofile/observer/resource-observer.sock` for explicitly opted-in native R2
+lanes. Host setup provisions its parent as `root:cgprofile-observer` mode
+`0751`; this dedicated group is separate from `docker`. Other users can
+traverse the known socket path for preflight but cannot list or connect to it.
+That second listener
+accepts only a peer-bound resource-counter query; it is not a broker and
+provides no control or placement operation. Run-Gate mounts the observer
+directory read-only into the selected tester container, never `ctl.sock`.
+The directory bind keeps the socket reachable across daemon restarts. Observer
+lanes declare their own memory and PID ceilings and cannot add arbitrary host
+mounts.
 It verifies that all peer threads share capability state and cannot bypass
 cgroup control permissions. It accepts one newline-terminated JSON request
 of at most 4096 bytes including the newline, with a five-second absolute deadline.
@@ -170,9 +199,9 @@ See [the observer protocol](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89
 and [adoption steps](docs/CONSUMERS.md#native-r2-resource-observer).
 Observer contract 2 returns regular event counters, effective local event
 counters, and the cgroup2 mount's `pids_localevents` and `memory_localevents` modes;
-the daemon's general control protocol remains contract 1. Contract 1 observer
-responses remain available for existing clients, but cannot support Assay's
-scope-aware R2 attribution.
+the daemon's general control protocol remains contract 1. The resource
+observer requires contract 2; contract-1 observer requests receive an explicit
+unsupported-contract refusal.
 It also receives a read-only host `/proc` bind and an
 explicitly writable host cgroup-v2 view for opt-in P6 placement. The host
 system-bus socket is mounted only into the daemon; the read-only bind does not
@@ -195,18 +224,24 @@ the deployment authority: it selects `pid: "host"` and binds the host's
 `/proc` at `/hostproc`. Its Compose configuration lives in the
 `scripts/cgroup-profiler/` standalone CIU root;
 `RG55-INTERFACE-CONTRACT.md` is the full wire contract.
-The default stack uses the local development image; to deploy a versioned GHCR
-release, pin the complete image coordinate in `ciu.toml.j2` and verify the
-daemon identity as shown in the
-[consumer guide](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
+Before the first CMRU release, the managed CIU root has no image override and
+uses the local development default. Build it and start the stack for
+pre-release checks. From the repository root, run:
 
 ```bash
-python3 build-push.py --build      # -> local-only cgprofile:local (needs buildx)
-ciu up --dir .                     # starts cgprofile-host-daemon
+cd scripts/cgroup-profiler
+python3 build-push.py --build
+ciu up --profile host
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 docker exec cgprofile-host-daemon cgprofile ctl status --json
-ciu down                           # stops it (run from this dir); the volume survives
 ```
+
+After CMRU publishes `cgprofile-v1.0.0`, add the published image pin to
+`ciu.toml.j2` as shown in the
+[published-image deployment steps](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu),
+then, from that same project directory, run `ciu up --profile host` and verify the
+daemon identity.
+The release pin is not usable before its GHCR manifest exists.
 
 The daemon's version response is contract major 1:
 
@@ -222,9 +257,18 @@ The daemon's version response is contract major 1:
     "damon_default": "on",
     "sessions_live": 0,
     "max_sessions": 16
+  },
+  "resource_observer": {
+    "contract": 2,
+    "path": "/run/cgprofile/observer/resource-observer.sock",
+    "listening": true
   }
 }
 ```
+
+The observer field identifies the separate contract-2 endpoint used by opted-
+in native R2 lanes. Its version is independent of the control protocol's
+contract major 1.
 
 In this response, `damon: "available"` is a capability probe: the DAMON
 analysis library loaded and its admin sysfs interface is visible. It does not
@@ -284,11 +328,15 @@ see the consumer note for the live probe and safe host procedure.
     (`d /run/cgprofile 0770 root docker -`). The daemon Compose service
     refuses a missing bind source rather than creating an empty directory.
     **That entry decides who may
-    use the socket carrier: members of the `docker` group** — the same
+    use the control socket carrier: members of the `docker` group** — the same
     principals who can already `docker exec` into the daemon, which is why
     the two carriers have the same trust boundary. The daemon re-asserts
     `0770` on the directory and `root:<the directory's own gid>` `0660` on
-    the socket at every start; it never picks the group itself.
+    the socket at every start; it never picks the group itself. Host setup
+    separately creates `/run/cgprofile/observer` as `0751
+    root:cgprofile-observer` with systemd-sysusers; other users can traverse
+    its known socket path for preflight but cannot list or connect. The daemon sets only the
+    observer socket to that group's GID and does not widen this directory.
   - **Without host-setup** the directory is `root:root`, the socket ends up
     root-only, and the daemon logs one INFO line saying so (`docker logs
     cgprofile-host-daemon`). Nothing breaks: the exec carrier is unaffected

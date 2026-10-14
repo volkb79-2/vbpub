@@ -223,6 +223,10 @@ environment = "tester-unified"
 assay_lane = "r2"
 resource_observer = "cgprofile"
 clean_tree = true
+
+[lanes.native-r2.resources]
+memory = "2g"                       # required local ceiling for memory.events attribution
+pids = 8192                          # required local ceiling for pids.events attribution
 ```
 
 The `native-r2` lane demonstrates the opt-in observer-only socket integration:
@@ -232,6 +236,18 @@ Internal Assay lanes omit `assay_command` and `pins`, so run-gate installs the
 selected worktree's `assay/` source. Explicit command plus immutable pin
 sidecars remain available for external consumers. Lane options belong on the
 lane itself, and the target `assay.toml` owns the mutation budget.
+
+The host's shipped `dev-gates.slice` example has a `1.5G` memory maximum, so it
+cannot admit this `2G` R2 lane. Before running it, configure the gate slice and
+its `dev.slice` ancestor for the requested lane caps plus overhead. Two
+concurrent `2G` lanes need more than `4G` of gate-slice headroom; the full MDT
+assay lane declares `6G`. Run-Gate refuses a request when it can read the
+declared slice's `memory.max` and `memory.current` and the request exceeds that
+slice's remaining budget. If those files are hidden or unreadable, it warns and
+continues under the other shared-infrastructure checks; it does not prove
+ancestor or whole-host headroom. Check and record those limits and current use
+before a high-memory campaign, and serialize campaigns when capacity is tight.
+See the [host sizing guidance](../modern-debian-tools-python-debug/host-setup/README.md).
 
 For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
 optional placement ceiling, not a second Docker memory limit. Without it,
@@ -247,10 +263,10 @@ any placement result follows the disclosed R-36h fallback instead.
 Native Assay R2 must inspect the candidate cgroup and every enforcing
 ancestor; a private cgroup namespace hides that ancestry, and Assay refuses
 instead of guessing. When the existing cgprofile daemon is available, an
-Assay or command lane in `tester-unified` may explicitly opt in with
-`resource_observer = "cgprofile"` as shown above. This value is closed and
-legal only for `kind = "assay"` or `kind = "command"` with the explicit
-`tester-unified` environment. It exposes a read-only query about that lane's
+Assay or command lane whose resolved environment has `mode = "ephemeral"` may
+explicitly opt in with `resource_observer = "cgprofile"` as shown above. This
+value is closed and legal only for `kind = "assay"` or `kind = "command"` in
+an ephemeral environment. It exposes a read-only query about that lane's
 own cgroup ancestry; it is intended for native Assay R2 or a command wrapper
 that launches it. Such a wrapper must preserve the inherited
 `ASSAY_RESOURCE_OBSERVER_SOCKET` variable for the Assay process. Opting in
@@ -268,16 +284,25 @@ resource_observer = "cgprofile"
 clean_tree = true
 ```
 
-Run-Gate checks the fixed
-`/run/cgprofile/resource-observer.sock` source and mounts only that socket
-read-only at `/tmp/cgprofile-resource-observer.sock`. It grants the socket's
-observed GID to the tester container and sets
-`ASSAY_RESOURCE_OBSERVER_SOCKET` to that target. It does not mount
+Before starting the lane, Run-Gate queries cgprofile's control `version`
+response and requires observer contract 2, the fixed observer socket path,
+and `listening = true`. It checks the root-owned, non-writable observer
+directory and mounts that directory read-only at `/run/cgprofile-observer`.
+The daemon owns only the socket name inside this host-setup-owned directory,
+so a daemon restart rebinds a path an already-running lane can still resolve.
+Run-Gate grants the dedicated observer GID and sets
+`ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container socket path. Observer
+lanes require explicit per-container `resources.memory` and `resources.pids`
+ceilings so candidate-local `memory.events` and `pids.events` can support
+attribution. `RUN_GATE_EXTRA_MOUNTS` is refused for these lanes. It does not mount
 `/run/cgprofile/ctl.sock`, the Docker socket, or any host namespace. The
 existing daemon's separate observer listener accepts only a resource-limit
 query bound to the caller's peer credentials and native thread ID; it returns
 the caller cgroup's ancestry under the configured gates slice, without PIDs or
-sibling cgroups.
+sibling cgroups. The launch guard compares the observer GID with the numeric
+GID of the root-owned `/run/cgprofile` control directory (provisioned as
+`root:docker` by host setup); it does not trust the devcontainer's group-name
+table and refuses when that host path is unavailable.
 
 Assay uses local counters when its own hierarchy view is complete. Remote
 observation is used only when the local error specifically indicates hidden
@@ -292,6 +317,19 @@ in `assay.toml`: workers in the same tester container share cgroup event
 counters even with separate scratch trees. After a budget stop, rerun the
 registered lane on the same exact tree so Assay resumes its saved campaign.
 
+#### Native R2 resource observation refusals
+
+Run-Gate maps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` to gate
+`ERROR` only when the R2 refusal is the sole non-passing result: every other
+claim and external evidence entry must be `PASS`. If another claim or evidence
+entry is `BUDGET_EXCEEDED`, the gate preserves `BUDGET_EXCEEDED`; another
+`FAIL`, `INCONCLUSIVE`, or `NO_MEASUREMENT` remains `FAIL`. Malformed claim or
+evidence records are `ERROR`. Other Assay `NO_MEASUREMENT` and `INCONCLUSIVE`
+outcomes remain FAIL. If an observer read or event comparison fails after a
+candidate starts, Assay returns `ERROR/EXEC_FAILED` and does not assign that
+candidate a mutation bucket. The JSON result keeps the raw Assay outcome and
+reason code. This v16 rollup contract requires Assay 10.0.0 or newer.
+
 ## Closed results and runner mode migration
 
 Every invocation returns one of five statuses: **PASS 0**, **FAIL 1**,
@@ -299,7 +337,8 @@ Every invocation returns one of five statuses: **PASS 0**, **FAIL 1**,
 `./run-gate.py <lane> --json` retain the lane's raw `exit_code`; command
 statuses map to PASS only at zero, and pytest 5 is FAIL with reason
 `pytest-collected-no-tests`. Assay's `NO_MEASUREMENT` and `INCONCLUSIVE`
-outcomes are FAIL. Use verdict plus the raw code; never infer that run-gate
+outcomes are FAIL except `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE`,
+which is gate ERROR. Use verdict plus the raw code; never infer that run-gate
 itself returned an ERROR from a raw lane code of 2.
 
 ### Init reaping and resource events
@@ -391,8 +430,19 @@ read-write on top: a `git worktree prune` inside the container fails
 (EROFS) instead of deleting other worktrees' admin dirs on the host, `git
 gc` still sees every other worktree's HEAD and index, and `git branch -D` of
 a branch checked out elsewhere is refused. `git worktree add` inside the
-container cannot create a new admin dir (assay's snapshot uses `clone
---no-local` and is unaffected).
+  container cannot create a new admin dir (assay's snapshot uses `clone
+  --no-local` and is unaffected).
+
+The shared Git directory remains read-write for object and in-lane commit
+operations, but its host hook path is not available to the tester: Run-Gate
+overlays `<common>/hooks` with a private empty read-only directory and mounts
+`<common>/info` read-only. A lane can therefore commit inside its worktree
+without installing a hook that a later host Git command could execute or
+changing host `info/exclude`. The container acceptance test plants a host
+`post-commit` hook, attempts both writes from the lane, and verifies the
+in-container commit cannot run or change it. A later host commit still runs
+the original hook unchanged. See the
+[shared Git mount design](docs/DESIGN-GUIDE.md#shared-git-metadata-keeps-host-hooks-inert).
 
 **Main checkout.** An ephemeral lane or probe whose judged tree is a plain
 checkout (not a linked worktree) is REFUSED: the whole checkout, including

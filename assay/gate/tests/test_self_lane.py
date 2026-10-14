@@ -106,15 +106,16 @@ def test_b105_run_gate_lanes_use_the_observer_enabled_bare_host_wrapper():
     assert "--cgroupns=private" in wrapper
     assert "--cgroupns=host" not in wrapper
     assert 'ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET' in wrapper
-    assert 'RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET="/run/cgprofile-observer/resource-observer.sock"' in wrapper
     assert 'dst=$RESOURCE_OBSERVER_TARGET,readonly' in wrapper
     assay_lanes = load_lane_file(SELF_LANE_FILE)
     for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
         assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in assay_lanes.lane(lane_id).env_passthrough
 
 
-def test_analysis_lane_forwards_observer_to_real_nested_r2_tests():
-    lane = load_lane_file(SELF_LANE_FILE).lane("analysis")
+@pytest.mark.parametrize("lane_id", ("analysis", "analysis-r2"))
+def test_analysis_lanes_forward_observer_to_real_nested_r2_tests(lane_id):
+    lane = load_lane_file(SELF_LANE_FILE).lane(lane_id)
 
     assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in lane.env_passthrough
 
@@ -682,7 +683,7 @@ def test_b105_wheel_mismatch_stops_before_plan_or_run(
         "die() { printf 'self-qualification-gate: %s\\n' \"$*\" >&2; exit 2; }\n"
         "assay() { printf '%s\\n' \"$*\" >> \"$calls\"; }\n"
         f"{guard}"
-        "assay plan\nassay run\n"
+        "assay plan --json\nassay run\n"
     )
     result = subprocess.run(
         [
@@ -1173,7 +1174,7 @@ def test_b110_gate_functions_pin_init_plan_and_screen_verification_order():
     assert pilot.index("campaign_remaining_after_run_s=") < pilot.index('if (( pilot_status != 6 ))')
     assert pilot.index("b110_pilot_report_check.py") < pilot.index('echo "B110_PILOT_COMPLETED=1"')
     assert pilot.index("ensure_source_unchanged") < pilot.index("campaign_remaining_after_check_s=")
-    assert "--pilot-jobs 3" in pilot
+    assert "--pilot-jobs 1" in pilot
     for marker in (
         "B110_PILOT_EXIT=", "B110_PILOT_TIMEOUT_FAILSAFE=1",
         "B110_PILOT_INIT_REFUSED=1", "-ge 124", "B110_PILOT_COMPLETED=1",

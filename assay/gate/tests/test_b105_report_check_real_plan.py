@@ -113,7 +113,7 @@ def test_o14_the_real_plan_agrees_with_the_real_unsharded_run_and_not_with_a_sha
     head = git_repo.head()
     tree = git_repo.git("rev-parse", "HEAD^{tree}").strip()
 
-    code, out, err = _assay(["plan", "package", "--file", str(toml)])
+    code, out, err = _assay(["plan", "--json", "package", "--file", str(toml)])
     assert code == 0, err
     plan = json.loads(out)
     assert plan["status"] == "ok" and plan["candidate_count"] == 2

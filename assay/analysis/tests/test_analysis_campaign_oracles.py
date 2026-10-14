@@ -228,7 +228,7 @@ def test_o12_a_torn_final_record_is_an_evidence_error_with_a_verdict(tmp_path, m
 
 def test_o13_the_schema_rejects_documents_that_break_its_closed_shape(tmp_path, monkeypatch):
     root, head, verdict, progress = _complete_fixture(tmp_path / "v", monkeypatch, "r2_pass")
-    code, out, _err = _invoke(root, head, verdict, progress, command_exit=0, extra=("--project", "--project-jobs", "2"))
+    code, out, _err = _invoke(root, head, verdict, progress, command_exit=0, extra=("--project", "--project-jobs", "1"))
     assert code == 0
     complete = json.loads(out)
     _validate(complete)
@@ -316,7 +316,7 @@ def test_o24_a_pilot_selection_in_the_progress_stream_is_an_evidence_error(tmp_p
     code, _err, document = _analyze(root, head, progress)
     assert code == 2
     assert document["errors"] == [
-        {"source": "progress", "message": "pilot selection unsupported before P7"}
+        {"source": "progress", "message": "pilot progress requires --plan-json and --selection-file"}
     ]
 
 

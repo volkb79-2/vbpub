@@ -45,7 +45,7 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
 4. **Lane schema final:** `memory` (docker `--memory`, per-lane RAM
    overrides; superseded by `resources.memory`), `resources` (`R-29`: a
    table — `memory`, optional `memory_max` placement ceiling for daemon-backed
-   exec/bare-host lanes, `memory_swap`, `cpu_weight`/`io_weight` advisory,
+   exec/bare-host lanes, `memory_swap`, `pids` (`--pids-limit`), `cpu_weight`/`io_weight` advisory,
    `shared`, and — RG-48, `R-29` amended — `cpus`, a decimal string →
    `docker run --cpus`, with an environment-level fallback
    `[environments.<e>.resources] cpus = …`), `clean_tree` (default TRUE —
@@ -66,8 +66,11 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    `false` to opt a lane out of profiling entirely, or a table
    `{enabled, damon}` overriding `[profile]`'s own defaults — SPEC
    `R-43h`); and `resource_observer = "cgprofile"` for an Assay or command
-   lane in `tester-unified`, which exposes only the read-only observer socket
-   to recover hidden cgroup ancestors for native R2. A command wrapper that
+   lane in any resolved `mode = "ephemeral"` environment, which exposes only
+   the read-only observer directory to recover hidden cgroup ancestors for native
+   R2. These lanes declare local memory and PID ceilings and cannot add arbitrary
+   host mounts. Before launch, Run-Gate requires the daemon to advertise observer
+   contract 2, the configured socket path, and `listening = true`. A command wrapper that
    invokes Assay must preserve the inherited observer-path variable for its
    Assay process. It does not expose
    `ctl.sock` or change the lane's private cgroup namespace. See the
@@ -139,6 +142,18 @@ raw status already known remains in the result, including when the post-lane
 counters are unavailable or cannot be compared safely. The standalone
 `--version` operation remains available. See the [design rationale](docs/DESIGN-GUIDE.md#pid-1-and-cgroup-resource-events)
 and the [consumer setup](CONSUMERS.md#init-reaping-and-resource-events).
+
+For Assay lanes, `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` maps to gate
+`ERROR`: the R2 measurement could not be made safely, so the gate must not
+report a product failure. Before applying that mapping, run-gate checks the
+claims and external evidence in the verdict: an independent `BUDGET_EXCEEDED`
+remains `BUDGET_EXCEEDED`, and an independent `FAIL`, `INCONCLUSIVE`, or other
+`NO_MEASUREMENT` remains `FAIL`. Only an R2 observer refusal alongside passing
+claims and evidence becomes infrastructure `ERROR`; malformed claim or
+evidence records also become `ERROR`. Other Assay `NO_MEASUREMENT` and
+`INCONCLUSIVE` outcomes retain their existing FAIL mapping. See the
+[Assay result rationale](docs/DESIGN-GUIDE.md#assay-unavailable-observation-is-an-infrastructure-error).
+This v16 reason-code contract requires Assay 10.0.0 or newer.
 
 ### Native sequences and imported assay lanes
 
@@ -268,7 +283,8 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    `tester-unified` container, capped at 3 CPUs with one mutant worker.
    The worker count is one because concurrent candidates would share the
    tester cgroup's resource-event counters. Its `resource_observer = "cgprofile"` opt-in mounts only the
-   daemon's read-only resource-observer socket; the control socket is not
+   daemon's read-only resource-observer directory after checking the daemon's
+   contract-2 version advertisement; the control socket is not
    exposed, and the lane never uses `--cgroupns=host`. This lets Assay read
    the complete host cgroup ancestry required by B145 while keeping the
    mutation campaign inside its own container. The 4h budget is a lane-level
@@ -448,7 +464,11 @@ the tool's reason to exist and MUST be implemented + tested:
   judged worktree's own admin dir read-write on top, so an in-container `git
   worktree prune` fails (EROFS), `gc` keeps every sibling's objects and
   `branch -D` of a sibling's branch is refused; `git worktree add` cannot
-  create a new admin dir inside the container. A plain (main) checkout is refused unless `--allow-main-checkout` /
+  create a new admin dir inside the container. The common `hooks/` directory
+  is overlaid with an empty read-only directory and common `info/` is mounted
+  read-only, so a tester cannot plant a host hook or edit host exclude metadata.
+  See the [shared Git mount design](docs/DESIGN-GUIDE.md#shared-git-metadata-keeps-host-hooks-inert).
+  A plain (main) checkout is refused unless `--allow-main-checkout` /
   `RUN_GATE_ALLOW_MAIN_CHECKOUT=1` (WARNs). `mode = "exec"` lanes are
   unaffected. Isolation comes from mounting less; run-gate knows no
   project's secret file names.

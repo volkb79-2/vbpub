@@ -16,48 +16,25 @@ die() {
   exit "$exit_status"
 }
 
-RESOURCE_OBSERVER_SOURCE=/run/cgprofile/resource-observer.sock
+RESOURCE_OBSERVER_SOURCE=/run/cgprofile/observer/resource-observer.sock
 # This override names Docker's host-side bind source, not a translated target
 # path. Production uses the canonical host socket; the registered gate tests
 # inject the already-mounted observer source while substituting Docker.
 if [[ -v ASSAY_GATE_RESOURCE_OBSERVER_SOURCE ]]; then
   RESOURCE_OBSERVER_SOURCE="$ASSAY_GATE_RESOURCE_OBSERVER_SOURCE"
 fi
-RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"
+RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
+RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
+RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"
+source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {
-  local parent
-  local parent_uid parent_gid parent_mode socket_uid socket_gid socket_mode
   case "$RESOURCE_OBSERVER_SOURCE" in
-    /run/cgprofile/resource-observer.sock) parent=/run/cgprofile ;;
-    /tmp/cgprofile-resource-observer.sock) parent=/tmp ;;
+    /run/cgprofile/observer/resource-observer.sock|/run/cgprofile-observer/resource-observer.sock) ;;
     *) die "unsupported cgprofile observer source path: $RESOURCE_OBSERVER_SOURCE" ;;
   esac
-  [[ -d "$parent" && ! -L "$parent" ]] \
-    || die "cgprofile observer directory is absent, not a directory, or a symlink: $parent"
-  read -r parent_uid parent_gid parent_mode < <(stat -Lc '%u %g %a' "$parent") \
-    || die 'could not inspect the cgprofile observer directory'
-  [[ "$parent_uid" == 0 ]] \
-    || die 'cgprofile observer directory is not root-owned'
-  if [[ "$parent" == /tmp ]]; then
-    (( (8#$parent_mode & 01000) != 0 )) \
-      || die 'the mounted cgprofile observer socket in /tmp is not protected by the sticky bit'
-  else
-    (( (8#$parent_mode & 0002) == 0 )) \
-      || die 'cgprofile observer directory is world-writable'
-  fi
-  [[ -S "$RESOURCE_OBSERVER_SOURCE" && ! -L "$RESOURCE_OBSERVER_SOURCE" ]] \
-    || die "cgprofile observer endpoint is not a Unix socket: $RESOURCE_OBSERVER_SOURCE"
-  read -r socket_uid socket_gid socket_mode < <(stat -Lc '%u %g %a' "$RESOURCE_OBSERVER_SOURCE") \
-    || die 'could not inspect the cgprofile observer socket'
-  [[ "$socket_uid" == 0 ]] \
-    || die 'cgprofile observer socket is not root-owned'
-  if [[ "$parent" == /run/cgprofile && "$socket_gid" != "$parent_gid" ]]; then
-    die 'cgprofile observer socket group does not match its root-owned directory'
-  fi
-  (( (8#$socket_mode & 0007) == 0 && (8#$socket_mode & 0020) != 0 )) \
-    || die 'cgprofile observer socket must be group-connectable and not accessible to other users'
-  printf '%s\n' "$socket_gid"
+  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" /run/cgprofile \
+    || die 'host observer group identity check failed'
 }
 
 assay_git() {
@@ -334,6 +311,8 @@ docker_bounded image inspect tester-unified:local >/dev/null 2>&1 \
 b105_memory_limit=2g
 b105_memory_reserve_bytes=2147483648
 observer_gid="$(resource_observer_gid)"
+host_docker_gid="$(assay_host_docker_gid /run/cgprofile)" \
+  || die 'could not resolve the host Docker GID from the verified host setup'
 cgroup_parent="$("$project/tools/cgroup-parent.sh" \
   --memory-reserve-bytes "$b105_memory_reserve_bytes")" \
   || die 'the host gates cgroup tier or its 2 GiB RAM headroom is absent or unverified'
@@ -477,7 +456,7 @@ mount_args=(--mount "type=bind,src=$host_workspace_root,dst=$host_workspace_root
 if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
   mount_args+=(--mount "type=bind,src=$host_workspace_root,dst=/workspaces/vbpub")
 fi
-mount_args+=(--mount "type=bind,src=$RESOURCE_OBSERVER_SOURCE,dst=$RESOURCE_OBSERVER_TARGET,readonly")
+  mount_args+=(--mount "type=bind,src=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,dst=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly")
 
 case "$lane" in
   self-qualification)
@@ -535,9 +514,11 @@ setsid timeout --signal=TERM --kill-after=5s 60s docker run -d \
   --cpus=3 \
   --memory="$b105_memory_limit" \
   --memory-swap=8g \
+  --pids-limit=8192 \
   --group-add "$observer_gid" \
   --network=none \
   -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+  -e "ASSAY_GATE_HOST_DOCKER_GID=$host_docker_gid" \
   -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
   -e "ASSAY_B105_GATE_EXPECTED_COMMIT=$source_commit" \
   -e "ASSAY_B105_GATE_EXPECTED_TREE=$source_tree" \
@@ -546,7 +527,7 @@ setsid timeout --signal=TERM --kill-after=5s 60s docker run -d \
   "${mount_args[@]}" \
   -w "$worktree" \
   tester-unified:local \
-  bash -lc 'git config --global --replace-all safe.directory "*" && exec "$@"' \
+  bash -lc 'git config --global --replace-all safe.directory "*" && groups=" $(id -G) " && observer_gid="$(stat -c %g /run/cgprofile-observer)" && [[ "$ASSAY_GATE_HOST_DOCKER_GID" =~ ^[1-9][0-9]*$ ]] && [[ "$groups" == *" $observer_gid "* ]] && [[ "$groups" != *" $ASSAY_GATE_HOST_DOCKER_GID "* ]] || { echo "tester identity must include only the observer access group, not the host Docker group" >&2; exit 2; } && exec "$@"' \
   assay-b105-inner "${inner_argv[@]}" >"$launch_output" 2>"$launch_error" &
 launch_pid=$!
 if wait "$launch_pid"; then
@@ -583,9 +564,9 @@ if [[ "$ownership_identity" != "$container_id|/$container_name|$ownership_token"
 fi
 
 identity="$(docker_bounded inspect "$container_id" \
-  --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "assay.b105-gate.owner"}}|{{.Config.User}}|{{.HostConfig.CgroupParent}}|{{.HostConfig.CgroupnsMode}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.NetworkMode}}')" \
+  --format '{{.Id}}|{{.Name}}|{{index .Config.Labels "assay.b105-gate.owner"}}|{{.Config.User}}|{{.HostConfig.CgroupParent}}|{{.HostConfig.CgroupnsMode}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.MemorySwap}}|{{.HostConfig.PidsLimit}}|{{.HostConfig.NetworkMode}}')" \
   || die 'could not inspect the launched B105 container'
-expected_identity="$container_id|/$container_name|$ownership_token|1003|$cgroup_parent|private|3000000000|2147483648|8589934592|none"
+expected_identity="$container_id|/$container_name|$ownership_token|1003|$cgroup_parent|private|3000000000|2147483648|8589934592|8192|none"
 if [[ "$identity" != "$expected_identity" ]]; then
   die "B105 container launch verification mismatch: $identity"
 fi
@@ -597,7 +578,7 @@ expected_mounts="$host_workspace_root"$'\t'"$host_workspace_root"
 if [[ "$host_workspace_root" != "/workspaces/vbpub" ]]; then
   expected_mounts+=$'\n'"$host_workspace_root"$'\t'"/workspaces/vbpub"
 fi
-expected_mounts+=$'\n'"$RESOURCE_OBSERVER_SOURCE"$'\t'"$RESOURCE_OBSERVER_TARGET"
+expected_mounts+=$'\n'"$RESOURCE_OBSERVER_DIRECTORY_SOURCE"$'\t'"$RESOURCE_OBSERVER_TARGET_DIRECTORY"
 if [[ "$(printf '%s\n' "$mounts" | sed '/^$/d' | sort)" != \
       "$(printf '%s\n' "$expected_mounts" | sort)" ]] \
   || printf '%s\n' "$mounts" | grep -Fq '/var/run/docker.sock'; then

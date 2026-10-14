@@ -27,14 +27,72 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from cmru import exit_codes
 from cmru.release import (
     GitHubReleases,
     find_artifact,
     find_built_wheel,
+    is_release_version,
     publish_versioned,
     read_wheel_version,
     validate_latest_release,
 )
+from cmru.release_notes import (
+    NO_NOTES,
+    ReleaseNotes,
+    ReleaseNotesError,
+    declared_source,
+    load_release_notes,
+)
+
+
+def _notes_kwargs(release_notes: Optional[ReleaseNotes]) -> dict:
+    """A project without curated notes publishes through the unchanged call shape."""
+    return {} if release_notes is None else {"release_notes": release_notes}
+
+
+def _curated_release_notes(
+    cwd: Path, prefix: str, version: str, build_output: Optional[dict],
+) -> Optional[ReleaseNotes]:
+    """Resolve the curated section a release body must carry, before any network call.
+
+    A release version REQUIRES its exact section when the project declares a
+    changelog; a refusal here happens before authentication or upload, so a
+    missing or malformed section can never publish a notes-less body. The text
+    is read from the commit the artifact was built from (the tagged candidate
+    or retained build source). An explicit ``publish --from-checkout`` resolves
+    that source from the matching local release tag instead of mutable files.
+    """
+    if not is_release_version(version):
+        return None  # a dev build publishes no immutable release body
+    try:
+        declaration = declared_source()
+        if declaration == NO_NOTES:
+            return None
+        commit = os.environ.get("CMRU_RELEASE_COMMIT") or (
+            build_output["manifest"]["source_commit"] if build_output else None
+        )
+        expected_tag = f"{prefix}-v{version}"
+        declared_tag = os.environ.get("CMRU_RELEASE_TAG")
+        if declared_tag and declared_tag != expected_tag:
+            raise ReleaseNotesError(
+                f"CMRU_RELEASE_TAG={declared_tag!r} does not match {expected_tag!r}"
+            )
+        if commit is None:
+            tagged = subprocess.run(
+                ["git", "rev-parse", f"{expected_tag}^{{commit}}"],
+                cwd=cwd, capture_output=True, text=True, check=False,
+            )
+            if tagged.returncode:
+                detail = tagged.stderr.strip() or "tag is absent from this checkout"
+                raise ReleaseNotesError(
+                    f"cannot bind release notes to {expected_tag}: {detail}"
+                )
+            commit = tagged.stdout.strip()
+        return load_release_notes(cwd, declaration, version, commit=commit)
+    except ReleaseNotesError as exc:
+        print(f"[ERROR] release notes: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.REFUSED) from None
 
 
 def _require_env(name: str) -> str:
@@ -105,12 +163,17 @@ def _publish_versioned_artifacts(
     notes: Optional[str],
     extra_assets: Optional[list[Path]],
     build_output: Optional[dict],
+    release_notes: Optional[ReleaseNotes] = None,
 ) -> dict:
     """Publish selected files, isolating retained records from publisher byproducts."""
+    # A project that declares no curated notes publishes exactly the generated
+    # body, so the keystone is called without the argument.
+    curated = _notes_kwargs(release_notes)
     if build_output is None:
         return publish_versioned(
             gh, prefix=prefix, version=version, asset_path=asset_path,
             notes=notes, extra_assets=extra_assets, latest_pointer=True,
+            **curated,
         )
 
     # The keystone writes checksum sidecars and latest.json beside its inputs.
@@ -135,6 +198,7 @@ def _publish_versioned_artifacts(
             notes=notes, extra_assets=staged_extras or None, latest_pointer=True,
             require_existing_targets=True, latest_pointer_recreate=False,
             expected_tag_commit=build_output["manifest"]["source_commit"],
+            **curated,
         )
 
 
@@ -419,7 +483,10 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     else:
         wheel = find_built_wheel(cwd / "dist", pattern)
     version = read_wheel_version(wheel)
+    # Supplementary opening text only; the curated section below is mandatory
+    # for a project that declares a changelog and cannot be bypassed by it.
     notes = (os.getenv(args.notes_env) if args.notes_env else None) or f"{args.prefix} {version}"
+    release_notes = _curated_release_notes(cwd, args.prefix, version, build_output)
 
     # `--extra-asset` (repeatable, default none): additional files to attach to
     # the SAME release. `publish_versioned` has always accepted `extra_assets`;
@@ -449,6 +516,7 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=wheel,
         notes=notes, extra_assets=extras or None, build_output=build_output,
+        **_notes_kwargs(release_notes),
     )
     print(f"[INFO] Published {args.prefix} {version}")
     for item in extras:
@@ -508,11 +576,13 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
     else:
         art = find_artifact(cwd / "dist", args.glob)
     notes = (os.getenv(args.notes_env) if args.notes_env else None) or None
+    release_notes = _curated_release_notes(cwd, args.prefix, version, build_output)
 
     gh = GitHubReleases(owner, repo, token)
     result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=art,
         notes=notes, extra_assets=None, build_output=build_output,
+        **_notes_kwargs(release_notes),
     )
     print(f"[INFO] Published {args.prefix} {version}")
     print(result)

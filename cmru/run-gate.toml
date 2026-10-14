@@ -1,5 +1,5 @@
 # =============================================================================
-# cmru project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# cmru project gate lanes — parsed ONLY by the installed run-gate CLI (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml; judgment
 # Assay owns R0/R1/R3 in assay.toml [lanes.cmru]; the release-specific
 # mutation lane owns R2 using the highest-version published cmru-v* tag in
@@ -35,6 +35,10 @@ memory_swap = "16g"
 # into a fresh venv with no system packages, and runs its cmru console script
 # from outside the source checkout. This proves both packaged cli-extended
 # imports and the importlib.resources get.py template.
+# Runnable directly as a component lane. A direct run bypasses the aggregate
+# gate's secret boundary (the checkout it mounts is whatever you point it at),
+# so use a secret-free checkout; only `installed-wheel-live` below proves the
+# exact-HEAD snapshot boundary.
 [lanes.installed-wheel]
 kind = "command"
 environment = "tester-unified"
@@ -42,6 +46,47 @@ argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python to
 budget = "10m"
 
 [lanes.installed-wheel.resources]
+memory = "2g"
+memory_swap = "16g"
+
+# The aggregate gate's variant of the lane above: the same acceptance plus the
+# live-snapshot proof. It refuses unless the checkout it runs in is the CURRENT
+# gate's snapshot (fresh manifest bound to that checkout, host canary invisible),
+# so a retained manifest from a killed gate cannot satisfy it. Not for direct use.
+[lanes.installed-wheel-live]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py --require-live-snapshot"]
+budget = "10m"
+
+[lanes.installed-wheel-live.resources]
+memory = "2g"
+memory_swap = "16g"
+
+# Live acceptance probe for the aggregate gate's protected-ref check: from inside
+# the real tester container this writes a ref in the gate-owned
+# `refs/cmru-gate/<id>/` namespace, and the gate must DETECT it (then removes
+# it). It refuses to run in any checkout that is not a gate snapshot branch.
+[lanes.ref-probe]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}
+branch=$(git symbolic-ref --short HEAD)
+case "$branch" in
+  cmru-gate-*) ;;
+  *) echo "ref-probe runs only inside a CMRU gate snapshot (branch: $branch)" >&2; exit 2 ;;
+esac
+exec git update-ref "refs/cmru-gate/${branch#cmru-gate-}/ref-probe" HEAD
+''',
+]
+budget = "5m"
+
+[lanes.ref-probe.resources]
 memory = "2g"
 memory_swap = "16g"
 
@@ -54,6 +99,8 @@ argv = [
   '''
 set -euo pipefail
 cd {worktree}/cmru
+rm -f coverage.json junit-coverage.xml
+/opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 exec env PYTHONPATH=src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json --junitxml=junit-coverage.xml
 ''',
@@ -65,16 +112,22 @@ artifacts = ["coverage.json", "junit-coverage.xml"]     # disclosed after every 
 memory = "2g"
 memory_swap = "16g"
 
-# The mutation lane receives token-free remote facts generated immediately
-# before it starts. CMRU's host-side gate uses its configured secret through
-# CMRU's scoped Git transport; the tester container receives tag names and
-# commit IDs only, never publisher credentials.
+# Dedicated ephemeral environment for CMRU's mutation lane. Inheriting the
+# central tester-unified definition preserves its shared image/cgroup policy;
+# this name adds only CMRU-specific release-baseline facts.
 [environments.cmru-mutation]
 mode = "ephemeral"
 image = "tester-unified:local"
 cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
 
+[environments.cmru-mutation.resources]
+cpus = "3"
+
+# The mutation lane receives token-free remote facts generated immediately
+# before it starts. CMRU's host-side gate uses its configured secret through
+# CMRU's scoped Git transport; the tester container receives tag names and
+# commit IDs only, never publisher credentials.
 # Mutation and Assay R1 must use the same PREVIOUS cmru release tag, never
 # origin/main (KI-18): at release time the tree IS origin/main, so that base
 # leaves zero candidates and the campaign fails --require-candidates. The
@@ -92,6 +145,7 @@ forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
 [lanes.mutation]
 kind = "command"
 environment = "cmru-mutation"
+resource_observer = "cgprofile"
 required_env = ["CMRU_ASSAY_BASELINE_FACTS"]
 argv = [
   "bash",
@@ -99,6 +153,7 @@ argv = [
   '''
 set -euo pipefail
 cd {worktree}/cmru
+/opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 /opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
 BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --skip-evidence)
@@ -121,6 +176,7 @@ budget = "7h"
 artifacts = [".assay/mutation-cmru.json"]
 
 [lanes.mutation.resources]
+pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
@@ -133,6 +189,8 @@ argv = [
   '''
 set -euo pipefail
 cd {worktree}/cmru
+rm -f coverage.json junit-coverage.xml
+/opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 mkdir -p .assay
 exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
@@ -154,7 +212,7 @@ memory_swap = "16g"
 # not "host" (run-gate RG-43 estate-wide sweep, 2026-09-03): as of rev 36,
 # plain "host" is a CONTAINER default with no docker-socket mount (verified
 # live via --dry-run), and each sub-lane below launches its OWN gated
-# tester-unified container via a nested `./run-gate.py <lane>` — this
+# tester-unified container via the installed `run-gate <lane>` CLI — this
 # orchestrator needs real docker access to start those, the same trap
 # debian-install-v2's own [lanes.gate] hit and was fixed the same way
 # (scripts/debian-install-v2/run-gate.toml). RG-1: every sub-invocation
@@ -164,26 +222,9 @@ memory_swap = "16g"
 [lanes.gate]
 kind = "command"
 environment = "bare-host"
-argv = ["python3", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}"]
+argv = ["python3", "-I", "-B", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 # The conjunction includes the 20m Assay R0/R1/R3 lane plus the retained
 # total-coverage, 7h tag-based R2 mutation, and cause-sensitive canary
 # lanes; this is advisory but must not understate the declared work.
 budget = "14h"
-
-# PROVISIONAL gate (KI-62, operator decision 2026-10-06): identical to `gate`
-# except the R2 mutation lane is skipped and the postponement is recorded in
-# the retained evidence (.assay/mutation-postponed-cmru.json) plus one WARN
-# line. Used ONLY by cmru.toml [steps.run-tests] for the cmru 6.0.0 release;
-# the full `gate` is then run against the cmru-v6.0.0 tag and fixes backported.
-# TODO(cmru-6.0 post-release): delete this lane once KI-62 is closed.
-[lanes.gate-provisional]
-kind = "command"
-environment = "bare-host"
-argv = [
-  "python3", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}",
-  "--postpone-mutation", "KI-62",
-]
-clean_tree = false   # sub-lanes each enforce their own clean-tree check
-# The conjunction minus the 7h mutation lane (see `gate` for the rest).
-budget = "3h"

@@ -173,13 +173,15 @@ def test_projection_fixed_overhead_reads_the_baseline_spans_and_the_first_candid
     root, head, _rows, progress = _stream(
         tmp_path, monkeypatch,
         extra_events=[_command_finished("baseline", 1, 4), _command_finished("r2-baseline", 4, 6)],
+        elapsed=lambda _index: 2.5,
     )
-    code, err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "2"))
+    code, err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "1"))
     assert (code, err) == (3, "")
     components, measured, missing = _fixed(document)
-    # The first candidate is emitted 10 s after the run started: 10 - 3 - 2 is "other".
-    assert components == {"coverage_baseline": 3.0, "r2_baseline": 2.0, "other": 5.0}
-    assert measured == 10.0
+    # The first candidate is emitted 10 s after start; subtract its own 2.5 s
+    # execution before attributing the remainder to fixed overhead.
+    assert components == {"coverage_baseline": 3.0, "r2_baseline": 2.0, "other": 2.5}
+    assert measured == 7.5
     assert missing == ["r3"]
 
 
@@ -188,10 +190,10 @@ def test_projection_falls_back_to_the_direct_span_and_the_plan_events_r2_baselin
     root, head, _rows, progress = _stream(
         tmp_path, monkeypatch, extra_events=[_command_finished("direct", 2, 4), plan],
     )
-    _code, _err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "2"))
+    _code, _err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "1"))
     components, measured, missing = _fixed(document)
-    assert components == {"coverage_baseline": 2.0, "r2_baseline": 4.5, "other": 3.5}
-    assert measured == 10.0
+    assert components == {"coverage_baseline": 2.0, "r2_baseline": 4.5, "other": 2.5}
+    assert measured == 9.0
     assert missing == ["r3"]
 
 
@@ -200,15 +202,15 @@ def test_projection_prefers_the_baseline_span_over_the_direct_span(tmp_path, mon
         tmp_path, monkeypatch,
         extra_events=[_command_finished("direct", 2, 4), _command_finished("baseline", 1, 6)],
     )
-    _code, _err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "2"))
+    _code, _err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "1"))
     components, _measured, missing = _fixed(document)
-    assert components == {"coverage_baseline": 5.0, "r2_baseline": None, "other": 5.0}
+    assert components == {"coverage_baseline": 5.0, "r2_baseline": None, "other": 4.0}
     assert missing == ["r2_baseline", "r3"]
 
 
 def test_projection_names_every_fixed_component_it_could_not_measure(tmp_path, monkeypatch):
     root, head, _rows, progress = _stream(tmp_path, monkeypatch, executed=[], end=False)
-    _code, _err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "2"))
+    _code, _err, document = _analyze(root, head, progress, extra=("--project", "--project-jobs", "1"))
     components, measured, missing = _fixed(document)
     assert components == {"coverage_baseline": None, "r2_baseline": None, "other": None}
     assert measured == 0.0
@@ -218,11 +220,11 @@ def test_projection_names_every_fixed_component_it_could_not_measure(tmp_path, m
 def test_the_text_format_prints_the_projection_line_only_with_project(tmp_path, monkeypatch):
     root, head, _rows, progress = _stream(tmp_path, monkeypatch)
     code, text, err = _invoke(
-        root, head, None, progress, output_format="text", extra=("--project", "--project-jobs", "2")
+        root, head, None, progress, output_format="text", extra=("--project", "--project-jobs", "1")
     )
     assert (code, err) == (3, "")
     line = next(line for line in text.splitlines() if line.startswith("  projection (diagnostic): "))
-    assert json.loads(line.split(": ", 1)[1])["jobs"] == 2
+    assert json.loads(line.split(": ", 1)[1])["jobs"] == 1
     _code, plain, _err = _invoke(root, head, None, progress, output_format="text")
     assert "projection (diagnostic)" not in plain
 

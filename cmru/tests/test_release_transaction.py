@@ -214,6 +214,11 @@ def test_prepare_generates_and_commits_declared_changelog(tmp_path, monkeypatch)
         lambda *args, **kwargs: generated.append((args, kwargs)) or True,
     )
     monkeypatch.setattr(cli, "_commit_prepared_generated", lambda *_args: committed.append(True) or True)
+    monkeypatch.setattr(
+        cli, "_pending_release_notes_or_refuse",
+        lambda *_args, **_kwargs: SimpleNamespace(version="1.0.0"),
+    )
+    monkeypatch.setattr(cli, "_fold_pending_release_notes", lambda *_args, **_kwargs: False)
 
     cli._prepare_release_projects(tmp_path, {"alpha": project}, ["alpha"], minor=True)
 

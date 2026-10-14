@@ -15,6 +15,8 @@ wall-clock wait: both are exercised here only through the INJECTED
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -122,11 +124,38 @@ def test_any_os_error_starting_the_process_is_also_exec_failed(tmp_path: Path):
     assert result.reason_code is ReasonCode.EXEC_FAILED
 
 
+def test_process_tree_oserror_is_lane_fatal_not_a_candidate_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Only the typed spawn error is candidate-level for native R2.
+
+    An unexpected OSError from the process-tree runner indicates a failure in
+    Assay's execution/cleanup boundary. It must not become a reusable
+    ``crashed`` candidate record.
+    """
+    from assay.errors import AssayError
+    from assay.process_tree import ProcessTreeProcessRunner
+
+    def raise_monitor_error(self, argv, *, env, cwd, timeout):
+        raise OSError("procfs monitor failed")
+
+    monkeypatch.setattr(ProcessTreeProcessRunner, "__call__", raise_monitor_error)
+    lane = make_lane(argv=("/bin/true",))
+
+    with pytest.raises(AssayError, match="native R2 process execution infrastructure failed"):
+        runner.execute_command(
+            lane,
+            cwd=tmp_path,
+            process_runner=ProcessTreeProcessRunner(),
+            clock=fixed_clock(MOMENT_A, MOMENT_B),
+        )
+
+
 # --- an expired budget is BUDGET_EXCEEDED/LANE_TIMEOUT, no real wait ---------
 
 
 def _raise_timeout(argv, *, env, cwd, timeout):
-    raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+    raise timeout_expired(cmd=list(argv), timeout=timeout)
 
 
 def test_budget_expiry_is_budget_exceeded_lane_timeout_via_injection(tmp_path: Path):
@@ -208,7 +237,7 @@ def _raise_timeout_with_bytes_output(argv, *, env, cwd, timeout):
     # though the real `default_process_runner` passes `text=True` --
     # CPython's timeout path does not run through the same text-decode step
     # a normal `CompletedProcess` return does.
-    raise subprocess.TimeoutExpired(
+    raise timeout_expired(
         cmd=list(argv),
         timeout=timeout,
         output=b"partial stdout before the hang\n",
@@ -291,7 +320,7 @@ def test_the_declared_budget_seconds_is_what_is_passed_as_the_timeout(tmp_path: 
 
     def spy_runner(argv, *, env, cwd, timeout):
         seen["timeout"] = timeout
-        raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+        raise timeout_expired(cmd=list(argv), timeout=timeout)
 
     runner.execute_command(
         lane, cwd=tmp_path, process_runner=spy_runner, clock=fixed_clock(MOMENT_A, MOMENT_B)

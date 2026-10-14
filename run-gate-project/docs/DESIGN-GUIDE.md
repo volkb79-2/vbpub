@@ -22,6 +22,30 @@ This rule preserves nested projects in a monorepo: a project at
 `packages/service` in the invoking checkout maps to
 `W/packages/service`, while the worktree root stays the Git judgment root.
 
+## Shared Git metadata keeps host hooks inert
+
+Linked-worktree container lanes need the common Git directory read-write for
+object writes and in-lane commits. Making that entire mount read-only would
+break supported lane behavior, while masking only Git config still leaves
+`<common>/hooks` writable. A tester could write `post-commit` there and have a
+later host commit execute tester-controlled code.
+
+Run-Gate keeps the shared directory writable, but overlays its common `hooks/`
+directory with a private empty directory mounted read-only. It mounts the real
+common `info/` directory read-only as well, protecting host exclude metadata.
+Both overlays follow the physical and namespace mount paths. Missing, symlinked,
+or non-directory hook/info paths refuse as infrastructure before the lane
+starts. The real-container oracle plants a host hook, proves the tester cannot
+create a hook or edit `info/exclude`, and verifies the in-container commit
+does not execute the host hook. A subsequent host commit runs the original hook
+unchanged. This preserves normal in-container commits while keeping the host's
+later Git operations outside the tester's hook-writing authority.
+
+CMRU independently disables hooks around its own host Git calls while it
+prepares release-baseline facts. That protects the aggregate controller's
+credential-bearing Git operation; the Run-Gate mount protects later host Git
+operations after a tester lane.
+
 ## The runner belongs to the judged worktree
 
 An exec lane uses a persistent runner managed by that project's deployment
@@ -161,32 +185,50 @@ The existing cgprofile daemon already has the host proc and cgroup view
 required for its measurement and placement duties. Run-Gate's explicit
 resource_observer = "cgprofile" lane setting mounts a separate
 observer-only Unix socket, not ctl.sock, into the opted-in tester container.
-It is supported on native Assay lanes and on any explicitly opted-in
-`tester-unified` command lane. Its intended command use is a wrapper that
+It is supported on native Assay lanes and command lanes whose resolved
+environment has `mode = "ephemeral"`. Its intended command use is a wrapper that
 launches an Assay campaign (such as Assay's B105 self-qualification driver).
 Run-Gate cannot establish from arbitrary command argv whether a script will
 launch Assay, so the opt-in is defined by the declared lane rather than a
 fragile command-string heuristic. This keeps the observer available across
 the wrapper boundary without asking the wrapper to recreate Docker mount or
 credential logic; the inherited endpoint variable must reach its Assay
-process.
+process. Before launching the lane, Run-Gate queries the daemon's control
+`version` response and requires an observer advertisement with contract 2,
+the fixed socket path, and `listening = true`. This catches stale daemons and
+failed socket binds before test code starts. The advertisement is a startup
+capability check; it does not prove the listener will remain healthy for the
+whole lane.
+Observer-backed container lanes also require explicit local memory and PID
+ceilings. These put memory and process-count rejection events on the candidate
+container's own cgroup, where Assay can distinguish them from an event caused
+by a sibling. The observer uses a dedicated group and a stable directory bind,
+so a daemon restart does not pin an already-running lane to an unlinked socket
+inode. Observer lanes refuse extra mounts because they could expose the Docker
+API to test code that receives the observer group.
 The first cut restricted the setting to native Assay lanes, but that excluded
 B105's qualification wrapper: it builds and installs the exact source wheel,
 then runs Assay in a private venv, so replacing it with the ordinary lane
-driver would discard its deadline and receipt guarantees. The extension is
-limited to an explicit opt-in on `tester-unified` command lanes. It broadens
-which runner may receive the same read-only endpoint, not what the endpoint
-can do: the daemon still binds each query to that peer's native thread and
-returns only that peer's gates-slice ancestry, never a caller-selected path,
-sibling cgroup, or control operation. The explicit lane declaration is the
-grant; the command process is trusted with the same narrow query capability
-whether or not it passes the endpoint onward to Assay.
+driver would discard its deadline and receipt guarantees. The initial command
+lane extension allowed only `tester-unified`; revision 66 generalized it to
+any command lane whose resolved environment is ephemeral. The environment name
+does not grant the capability: the lane must still opt in explicitly. This
+broadens which runner may receive the same read-only endpoint, not what the
+endpoint can do: the daemon still binds each query to that peer's native thread
+and returns only that peer's gates-slice ancestry, never a caller-selected
+path, sibling cgroup, or control operation. The explicit lane declaration is
+the grant; the command process is trusted with the same narrow query
+capability whether or not it passes the endpoint onward to Assay.
 The observer accepts only a resource-counter request; filesystem read-only
 alone would not constrain the existing control socket's verbs. Docker also
 receives the socket's observed GID as a supplementary group, and the socket
 path, type, owner, group, and mode are checked before launch. Missing service
 or unsafe socket state is an infrastructure refusal, never a reason to
-silently run without B145.
+silently run without B145. To reject a socket that uses Docker's powerful
+group, Run-Gate reads the numeric GID from the root-owned `/run/cgprofile`
+control directory provisioned as `root:docker` by host setup. It does not use
+`getgrnam("docker")` from the devcontainer's potentially different group
+table, and it refuses when that host path cannot be verified.
 
 The client sends only its native thread ID. The daemon binds that request to
 SO_PEERCRED, checks the thread's host/namespace PID mapping, verifies that
@@ -216,6 +258,25 @@ inside worker A's before/after window and look like A's own limit hit.
 The shipped R2 declaration therefore uses `jobs = 1`; `--resume` continues a
 budget-limited campaign on the same tree. Parallel workers require separate
 cgroups and counter bindings before they can be classified independently.
+
+### Assay unavailable observation is an infrastructure error
+
+Assay's `NO_MEASUREMENT` has several causes. Most describe a judged claim that
+cannot be made and keep run-gate's established FAIL mapping. The specific
+`CGROUP_OBSERVATION_UNAVAILABLE` reason means native R2 could not start because
+its required counters were unavailable before the first candidate. The gate
+maps that reason to `ERROR` only after validating the claim and evidence
+records and confirming every other result passed. This preserves the outcome
+precedence that the top-level `NO_MEASUREMENT` rollup can otherwise hide: an
+independent budget stop remains `BUDGET_EXCEEDED`, and an independent failure
+or inconclusive claim remains `FAIL`. A malformed claim or evidence record is
+`ERROR`. The gate preserves the raw Assay outcome and reason. It does not say
+that the tested code failed. If observation is lost after a candidate starts,
+Assay itself returns `ERROR/EXEC_FAILED`; the candidate is withheld because
+its event window cannot be attributed. See the
+[consumer example](../CONSUMERS.md#native-r2-resource-observation-refusals).
+The v16 reason-code mapping requires Assay 10.0.0 or newer because older
+versions do not provide the independent claim and evidence rollup it inspects.
 
 ## Preflight probes preserve lane context
 

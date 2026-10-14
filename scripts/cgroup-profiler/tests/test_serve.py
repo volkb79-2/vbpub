@@ -136,6 +136,30 @@ def test_damon_write_nr_kdamonds_writes_when_inside_the_admin_root(tmp_path, mon
     assert written == {"path": str(admin / "nr_kdamonds"), "value": 7}
 
 
+def test_damon_write_nr_kdamonds_refuses_target_equal_to_admin_root(
+    tmp_path, monkeypatch,
+):
+    admin = tmp_path / "admin"
+    kdamonds = admin / "kdamonds"
+    kdamonds.mkdir(parents=True)
+    (kdamonds / "nr_kdamonds").symlink_to(admin, target_is_directory=True)
+    monkeypatch.setattr(damon_mod, "KDAMONDS_DIR", str(kdamonds))
+
+    writes = []
+
+    class Fake:
+        @classmethod
+        def _write_int(cls, path, value):
+            writes.append((path, value))
+
+    monkeypatch.setattr(damon_mod, "SysfsInterface", Fake)
+
+    with pytest.raises(damon_mod.HostWriteError, match="outside the DAMON admin root"):
+        damon_mod._write_nr_kdamonds(3)
+
+    assert writes == []
+
+
 # ── session id ───────────────────────────────────────────────────────────
 
 def test_default_session_id_matches_the_contract_format(tmp_path):
@@ -1476,6 +1500,10 @@ def _frame_paths(n: int):
 
 
 def _run_full_lifecycle(scope: str, monkeypatch, tmp_path) -> Dict[str, Any]:
+    # The frozen source-era summary predates the untagged development identity.
+    # Pin the release identity this fixture reproduces instead of inheriting
+    # whichever CMRU build environment happens to run the unit suite.
+    monkeypatch.setattr(serve, "CGPROFILE_VERSION", "1.1.0")
     n_frames = 5
     frame_box = {"n": 0}
     root_link = tmp_path / "cgroup_root"
@@ -3641,6 +3669,11 @@ def _wait_for_socket(socket_path: str) -> None:
 
 
 def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, capsys):
+    # This fixture is a frozen daemon response, not a source-checkout identity
+    # test. Keep its historical release version explicit while
+    # test_untagged_source_daemon_reports_development_identity covers the
+    # current source default.
+    monkeypatch.setattr(serve, "CGPROFILE_VERSION", "1.1.0")
     n_frames = 5
     frame_box = {"n": 0}
     root_link = tmp_path / "cgroup_root"
@@ -3714,7 +3747,13 @@ def test_cli_golden_round_trip_version_start_status_stop(monkeypatch, tmp_path, 
             "socket": {"path": socket_path, "listening": True,
                        "allow_uids": [], "peer_cred": True},
         }
+        assert version_out["resource_observer"] == {
+            "contract": 2,
+            "path": str(Path(socket_path).with_name("resource-observer.sock")),
+            "listening": True,
+        }
         version_out.pop("transports")
+        version_out.pop("resource_observer")
         assert _canon(version_out) == _canon(json.loads((FIXTURES / "version-v1.json").read_text()))
 
         # -- status, paused mid-session at frame 2 --

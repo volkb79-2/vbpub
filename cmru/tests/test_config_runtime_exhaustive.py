@@ -62,7 +62,7 @@ def test_declared_environment_rejects_publisher_credential_names(name, capsys):
 def test_declared_environment_rejects_internal_launch_state(name, capsys):
     with pytest.raises(SystemExit):
         config._scalar_env({name: "injected"}, "env", reject_credentials=True)
-    assert "reserved for CMRU internal launch state" in capsys.readouterr().err
+    assert "reserved for CMRU-managed protected context" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

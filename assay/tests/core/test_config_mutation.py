@@ -217,16 +217,28 @@ def test_an_unknown_mutation_key_is_rejected(project: Project):
 
 def test_mutation_as_declared_round_trips_exactly(project: Project):
     lane = _lane_with_mutation(
-        "\n[lanes.package.judge.mutation]\njobs = 3\nmax_mutants = 50\n"
+        "\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n"
         'operators = ["python:compare-swap", "python:falsy-swap"]\n'
     )
     loaded = load_lane_file(project.write(lane)).lane("package")
 
     assert loaded.as_declared()["judge"]["mutation"] == {
-        "jobs": 3,
+        "jobs": 1,
         "max_mutants": 50,
         "operators": ["python:compare-swap", "python:falsy-swap"],
     }
+
+
+def test_native_mutation_rejects_overlapping_cgroup_event_windows(project: Project):
+    lane = _lane_with_mutation(
+        "\n[lanes.package.judge.mutation]\njobs = 2\nmax_mutants = 50\n"
+        'operators = ["python:compare-swap"]\n'
+    )
+    with pytest.raises(
+        LaneConfigError,
+        match="jobs.*must be 1.*event windows must not overlap",
+    ):
+        load_lane_file(project.write(lane))
 
 
 def test_identity_exclude_is_normalized_and_round_trips_explicitly(project: Project):

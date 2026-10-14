@@ -9394,3 +9394,28 @@ is about 48.3 seconds/candidate. Linear projection for 1,077 remaining is
 about 14h 27m, around 2026-10-12 14:26Z, with roughly 4h 10m before the 24h
 lane budget. This is an estimate, not a completion promise; candidate cost
 and host activity vary.
+
+### RW-569 — 2026-10-12 — retire resource-observer contract 1
+
+The operator approved contract 2 as the sole supported resource-observer
+version. This is a hard cut for the observer-only socket: a request carrying
+contract 1 receives an explicit unsupported-contract refusal, and contract 2
+returns both hierarchical and effective local event evidence. The daemon's
+separate control socket and its contract-1 verbs remain unchanged. Assay
+already requests contract 2 and refuses an old daemon response; the minimum
+daemon release for B155 is cgroup-profiler 1.0.0, the combined RG-55 first
+release. Untagged source must identify itself as `0.0.0-dev`; a stale
+`1.1.0` fallback must not imply a release exists.
+
+The in-flight contract-1 R2 campaign in
+`.worktrees/rg55-cgprofile-cap-20261011/scripts/cgroup-profiler` was stopped
+after the operator superseded that observer contract. Its progress file has
+581 saved candidate records (573 killed, 8 survived) and the latest completed
+candidate index is 460 of the resumed 1,473-candidate plan. The termination
+signal produced an incomplete `BUDGET_EXCEEDED/LANE_TIMEOUT` receipt; that is
+not a mutation verdict. Preserve the records for audit, do not reuse them to
+qualify contract 2, and do not call the campaign PASS or FAIL. The new exact
+tree must run the registered contract-2 R2 lane. Before that run, the two
+survivor-specific oracle additions cover a forbidden root target and a
+counter/path disagreement while the other six dispositions remain
+masked/equivalent pending fresh R2 confirmation.

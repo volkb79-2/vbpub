@@ -1184,6 +1184,105 @@ def remove_workspace(
         current.record_path.unlink(missing_ok=True)
 
 
+def remove_orphan_workspace(
+    record_or_path: WorkspaceRecord | WorkspaceContext | Path | str,
+    *,
+    executor_git_root: Path | str,
+    force: bool = False,
+    delete_branch: bool = True,
+) -> None:
+    """Remove a linked workspace whose recorded source checkout is gone.
+
+    The caller must supply another checkout in the same Git family. The
+    target's fresh Git facts and the durable record are checked before removal;
+    this API does not guess or repair a missing source path.
+    """
+    record = _coerce_record(record_or_path)
+    executor = canonical_path(executor_git_root)
+    with _workspace_lock(record.git_common_dir):
+        current = read_record(record.record_path)
+        if _path_exists(current.source_git_root):
+            raise WorkspaceError(
+                f"recorded source checkout still exists: {current.source_git_root}",
+                category="cleanup-refusal",
+            )
+        if not _is_directory(executor):
+            raise WorkspaceError(
+                f"orphan cleanup executor is not a directory: {executor}",
+                category="cleanup-refusal",
+            )
+        _executor_top, executor_common, _executor_branch, _executor_head = \
+            discover_git_context(executor)
+        if executor_common != current.git_common_dir:
+            raise WorkspaceError(
+                "orphan cleanup executor belongs to a different Git family",
+                category="cleanup-refusal",
+            )
+        # A path this process cannot see is not an orphan: it may live in
+        # another mount/PID namespace. Positive evidence comes from Git's own
+        # registry: the source is no longer registered, or Git reports it
+        # prunable. A registered entry Git still treats as live (locked, or
+        # not prunable) is refused, never inferred gone from a local stat.
+        source_entry = next(
+            (item for item in list_git_worktrees(executor)
+             if item.path == current.source_git_root),
+            None,
+        )
+        if source_entry is not None and (
+            source_entry.is_locked or not source_entry.is_prunable
+        ):
+            raise WorkspaceError(
+                f"recorded source checkout {current.source_git_root} is still "
+                "registered with Git and is not prunable; refusing to infer "
+                "that it is gone from a local path probe",
+                category="cleanup-refusal",
+            )
+        if not _is_directory(current.worktree_path):
+            raise WorkspaceError(
+                f"orphan workspace checkout is missing: {current.worktree_path}",
+                category="cleanup-refusal",
+            )
+        top, common, branch, _head = discover_git_context(current.worktree_path)
+        if (
+            top != current.worktree_path
+            or common != current.git_common_dir
+            or branch != current.branch
+        ):
+            raise WorkspaceError(
+                f"orphan workspace Git checkout does not match record {current.record_path}",
+                category="cleanup-refusal",
+            )
+        if current.lease and not force and not _lease_expired(current.lease, _utc_now()):
+            raise WorkspaceError(
+                f"workspace {current.workspace_id} has an active lease held by "
+                f"{current.lease.holder!r}",
+                category="cleanup-refusal",
+            )
+        result = subprocess.run(
+            ["git", "worktree", "remove", "--force", str(current.worktree_path)],
+            cwd=executor, text=True, capture_output=True, check=False,
+        )
+        if result.returncode:
+            raise WorkspaceError(
+                f"git worktree remove failed ({result.returncode}): "
+                f"{(result.stderr or result.stdout).strip()}",
+                category="cleanup-refusal",
+            )
+        if delete_branch and current.branch != "HEAD":
+            branch_result = subprocess.run(
+                ["git", "branch", "-D", current.branch],
+                cwd=executor, text=True, capture_output=True, check=False,
+            )
+            if branch_result.returncode:
+                raise WorkspaceError(
+                    f"git branch -D {current.branch} failed "
+                    f"({branch_result.returncode}): "
+                    f"{(branch_result.stderr or branch_result.stdout).strip()}",
+                    category="cleanup-refusal",
+                )
+        current.record_path.unlink(missing_ok=True)
+
+
 def acquire_lease(
     record_or_path: WorkspaceRecord | WorkspaceContext | Path | str,
     *,

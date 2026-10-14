@@ -169,6 +169,8 @@ Wants=docker.service
 [Service]
 Type=simple
 RuntimeDirectory=mdt-buildkitd
+RuntimeDirectoryMode=01777
+RuntimeDirectoryPreserve=yes
 ExecStartPre=-/usr/bin/docker rm -f mdt-buildkitd
 ExecStartPre=-/usr/bin/docker pull @DEV_BUILDKITD_IMAGE@
 ExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \
@@ -189,9 +191,12 @@ WantedBy=multi-user.target
 ```
 
 `RuntimeDirectory=mdt-buildkitd` is systemd's own mechanism for
-`/run/mdt-buildkitd` — created with correct ownership before `ExecStart`,
-cleaned up after, no manual `mkdir` in `install.sh` (which would need to
-repeat itself every boot anyway, since `/run` is tmpfs).
+`/run/mdt-buildkitd` — created with correct ownership before `ExecStart`.
+`RuntimeDirectoryPreserve=yes` keeps its inode stable across service restarts
+and stops because existing devcontainers bind-mount this exact host directory.
+The host reboot recreates it because `/run` is tmpfs. Start-time permission
+repair and stale-socket removal operate inside the directory; they never
+replace the directory itself.
 
 Note the service unit itself carries no `Slice=` — it's a thin supervisor
 around the `docker` CLI client, negligible resource use; only the

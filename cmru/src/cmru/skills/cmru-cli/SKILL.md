@@ -23,7 +23,7 @@ orchestrated project at the estate root.
 
 Controls on every verb: `--log-level`, `--quiet`, `--debug`, `--debug-raw`,
 `--color`/`--no-color`, `--log-prefix-time-short`. `--json` exists only on
-verbs that say so (`status`, `worktrees`, `dependencies`, `standards`,
+verbs that say so (`status`, `worktrees`, `gate-snapshots`, `dependencies`, `standards`,
 `tool-deps`, `versions check`, `doctor`, `skills list`, `skills check`).
 `--dry-run` exists only on verbs that mutate.
 
@@ -33,6 +33,7 @@ verbs that say so (`status`, `worktrees`, `dependencies`, `standards`,
 cmru status                          # changed projects and their next versions
 cmru status ciu --minor --json       # preview a minor bump for one project as JSON
 cmru worktrees --json                # retained build/release worktrees
+cmru gate-snapshots --json           # retained release-gate snapshots, removable or retained (read-only without --remove)
 cmru dependencies --json             # the dependency graph and preflight
 cmru versions check                  # recorded vs currently eligible versions
 cmru resolve ciu --format url        # latest published artifact of a project
@@ -96,6 +97,7 @@ publication or promotion evidence.
 ## Writing verbs that take `--dry-run`
 
 ```bash
+cmru gate-snapshots --remove --dry-run   # preview which retained gate snapshots would be removed
 cmru dependencies --write --dry-run  # preview the generated block; without --write nothing is written
 cmru standards --update --dry-run    # refresh CMRU-owned revision markers
 cmru tool-deps --refresh ciu --dry-run   # re-vendor a provider's latest artifact

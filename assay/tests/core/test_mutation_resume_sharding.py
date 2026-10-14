@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import json
 import subprocess
 from datetime import datetime, timezone
@@ -48,14 +50,14 @@ def _run(repo, tmp_path, *, state_root):
     baseline = execute_command(
         make_lane(argv=("pytest", "-q")),
         cwd=repo.path,
-        process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(list(argv), returncode=0),
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(list(argv), returncode=0),
     )
     assert baseline.outcome is Outcome.PASS
 
     def decide(argv, *, env, cwd, timeout):
         text = (Path(cwd) / "pkg/flags.py").read_text(encoding="utf-8")
         returncode = 1 if "a = False" in text else 0
-        return subprocess.CompletedProcess(list(argv), returncode=returncode)
+        return completed_process(list(argv), returncode=returncode)
 
     with prepared_snapshot(repo, scratch_root=scratch) as prepared:
         return run_mutation(
@@ -87,7 +89,7 @@ def test_completed_candidates_are_resumed_without_reexecution(tmp_path):
     def counting_runner(argv, *, env, cwd, timeout):
         if Path(cwd) != repo.path:
             executed.append((Path(cwd) / "pkg/flags.py").read_text(encoding="utf-8"))
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     baseline = execute_command(
         make_lane(argv=("pytest", "-q")),
