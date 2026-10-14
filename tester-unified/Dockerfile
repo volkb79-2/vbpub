@@ -14,9 +14,9 @@
 # that relied on the pre-3.14 multiprocessing "fork" default is now explicitly
 # fork-scoped, so 3.14 is green.
 #
-# Build from the REPO ROOT so the project sources are in context:
-#   docker buildx build --load -f tester-unified/Dockerfile -t tester-unified:local .
-# (see the repo-root .dockerignore, which whitelists only these projects.)
+# Build from the repo root using the complete command in README. That command
+# supplies the required exact Run-Gate wheel version as RUN_GATE_TESTER_VERSION.
+# The repo-root .dockerignore whitelists the project sources in this context.
 FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
 
 USER root
