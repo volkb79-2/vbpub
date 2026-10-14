@@ -1216,7 +1216,14 @@ def test_dockerfile_installs_estate_internal_packages_only_offline_from_copied_s
     # CMRU and Run-Gate are built from COPYed source; cli-extended is a release wheel.
     assert "/src/cmru" in wheels[0] and "/src/libraries/cli-extended" not in code
     assert "/src/run-gate-project" in code
-    assert "--no-cache-dir --no-index --no-deps /tmp/run-gate-wheels/*.whl" in code
+    run_gate_installs = [
+        command for command in _pip_commands(code)
+        if "/tmp/run-gate-wheels/*.whl" in command
+    ]
+    assert run_gate_installs == [
+        "/opt/tester-venv/bin/pip install --no-cache-dir --no-index "
+        "--no-deps /tmp/run-gate-wheels/*.whl"
+    ]
     assert 'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_VERSION}"' in code
     assert "--no-index --no-deps /tmp/internal-wheels/*.whl" in code
     # The PyPI-bound requirements come from the refusing generator.
