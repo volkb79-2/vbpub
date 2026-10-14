@@ -158,6 +158,15 @@ When installing a locally built wheel for inspection, use the estate venv:
 not the wheel installation environment. Any test of that wheel still runs
 through a registered tester-unified gate.
 
+**Never restart or rebuild a cockpit while an agent or user is working in it.**
+This includes restarting the current task's own devcontainer: doing so kills
+its active shell, tools, and unsaved session state. Before any host or service
+change that could restart a cockpit, identify the exact target and coordinate
+with its current owner; proceed only after they have finished or explicitly
+arranged a safe handoff. If ownership or activity is unclear, do not restart
+it. Prefer a targeted repair that leaves the cockpit process alone, then
+verify the result without disrupting its session.
+
 ## Host cgroup placement for spawned containers
 This host runs real production workloads (game servers, edge/site infra)
 alongside dev/test/build work, so any container you or a tool starts must be
