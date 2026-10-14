@@ -96,6 +96,11 @@ class TestWorktreeCreateDispatch:
             return _ready_record()
 
         monkeypatch.setattr(wt_mod, "create", fake_create)
+        # This test owns dispatch forwarding, not root discovery. Supply the
+        # selected-root precondition required for initial overlay options.
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_ciu_root_cli", lambda *_args: Path.cwd()
+        )
         code = cli._worktree(
             [
                 "create",
