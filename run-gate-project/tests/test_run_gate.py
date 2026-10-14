@@ -3685,9 +3685,11 @@ def test_selftest_lane_uses_bind_mounted_pytest_scratch_root():
 
     assert argv[:2] == ["bash", "-c"] and len(argv) == 3
     script = argv[2]
-    assert script.startswith(
-        "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && "
-        "RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && ")
+    assert script.startswith("cd {worktree}/run-gate-project && mkdir -p .run-gate/ && ")
+    verify = 'verify-running --receipt "$RUN_GATE_RELEASE_WHEEL_RECEIPT"'
+    scratch = "RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX)"
+    assert verify in script
+    assert script.index(verify) < script.index(scratch)
     assert 'RUN_GATE_ABS="$(realpath "$RUN_GATE_TMP")"' in script
     assert 'GIT_CEILING_DIRECTORIES="$RUN_GATE_ABS"' in script
     assert '--basetemp "$RUN_GATE_ABS"' in script
@@ -5169,8 +5171,12 @@ class TestPointerLinkageEstate:
             "memory": "1g", "memory_swap": "16g", "cpus": "3",
         }
         commands = cmru_doc["steps"]["run-tests"]["commands"]
-        assert len(commands) == 1
-        assert commands[0]["argv"] == ["run-gate", "selftest"]
+        assert len(commands) == 2
+        assert commands[0]["argv"] == ["python", "tools/release_candidate.py", "prepare"]
+        assert commands[1]["argv"] == [
+            "env", "RUN_GATE_RELEASE_WHEEL_RECEIPT=.assay/run-gate-release-wheel.json",
+            "run-gate", "selftest",
+        ]
         selftest_argv = gate_doc["lanes"]["selftest"]["argv"]
         assert selftest_argv[2].startswith(
             "cd {worktree}/run-gate-project && mkdir -p .run-gate/")

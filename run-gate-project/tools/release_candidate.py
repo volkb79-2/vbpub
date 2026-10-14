@@ -141,8 +141,9 @@ def _image_identity(image_tag: str) -> dict[str, str]:
 def _require_same_wheel(identity: dict[str, str], expected: dict[str, str], where: str) -> None:
     for field in ("version", "sha256"):
         if identity.get(field) != expected.get(field):
+            label = "wheel SHA-256" if field == "sha256" else "version"
             raise ReleaseCandidateError(
-                f"{where} Run-Gate {field} {identity.get(field)!r} does not match "
+                f"{where} Run-Gate {label} {identity.get(field)!r} does not match "
                 f"the gated wheel {expected.get(field)!r}"
             )
 
