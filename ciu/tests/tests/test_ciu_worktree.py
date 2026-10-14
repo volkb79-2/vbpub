@@ -763,12 +763,13 @@ class TestManagedIdentityLifecycle:
 
         monkeypatch.undo()
         monkeypatch.setattr(worktree, "_clean_in", lambda *_a, **_kw: 0)
+        monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
         monkeypatch.setattr(
             worktree, "_write_rendered_worktree_overlay",
             lambda *_a, **_kw: (_ for _ in ()).throw(worktree.WorktreeError("overlay failed")),
         )
         with pytest.raises(worktree.WorktreeError, match="overlay failed"):
-            worktree.create(tmp_repo, "overlay-fails")
+            worktree.create(tmp_repo, "overlay-fails", profile="core")
         record = worktree.find_instance_record(tmp_repo, "overlay-fails")
         assert record is not None and record.recovery_status == "env-generation-failed"
         assert record.fork_point_sha == _git(
