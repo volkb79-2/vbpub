@@ -484,7 +484,8 @@ in the disposable release candidate before its gate and tag. The publisher reads
 section from the exact tagged commit, so the tag and release body carry the same notes.
 The candidate reaches `main` only after a successful publish; gate, build, publish, and
 promotion failures leave the source branch's `[Unreleased]` unchanged. A dry run prints
-the complete body and restores the changelog bytes. `--no-build` and push steps without
+the complete body between `----- begin release body -----` and `----- end release body -----`
+and restores the changelog bytes. `--no-build` and push steps without
 a CMRU GitHub Release-body handler leave pending notes in `[Unreleased]` because no body
 is published. This works for every configured changelog path, and those paths remain
 excluded from change detection. A project that opted out (`changelog = false`) gets the

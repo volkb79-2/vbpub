@@ -294,6 +294,7 @@ def test_the_dry_run_shows_the_unreleased_notes_and_keeps_them_in_the_file(tmp_p
     assert changes.read_bytes() == before  # a dry run consumes nothing
 
 
+@pytest.mark.real_release_notes_preflight
 def test_dry_run_does_not_claim_a_body_for_an_image_only_or_no_build_publisher(tmp_path, capsys):
     repo = _release_repo(tmp_path)
     project = _project()

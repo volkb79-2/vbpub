@@ -422,6 +422,9 @@ def _project() -> SimpleNamespace:
     return SimpleNamespace(
         name="demo", cwd="demo", paths=["demo"], prefix="demo-v", git_tag=True,
         changelog="CHANGES.md", commit_generated=(), steps={},
+        runner_steps={"push": SimpleNamespace(commands=[{"argv": [
+            "cmru", "handler", "wheel-publish",
+        ]}])},
         version=SimpleNamespace(strategy="scm", bump="conventional"),
     )
 
