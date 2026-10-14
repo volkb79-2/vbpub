@@ -206,6 +206,8 @@ def test_fetch_subtree_uses_provider_neutral_blobless_sparse_git(mod, monkeypatc
     assert "--filter=blob:none" in clone
     assert "--depth=1" in clone
     assert clone[-2] == "https://git.example.test/team/vbpub.git"
+    checkout = next(call for call in calls if "checkout" in call)
+    assert checkout[-3:] == ["checkout", "--detach", "refs/remotes/origin/main"]
     assert "/scripts/debian-install-v2/profiles/*.jsonc" in patterns
     assert (install_dir / "debian-install-v2.py").read_bytes() == files[
         "scripts/debian-install-v2/debian-install-v2.py"

@@ -529,7 +529,16 @@ def fetch_subtree(
             what="sparse path selection",
             debug=debug,
         )
-        _git_run(git, ["-C", str(checkout), "checkout", "--detach", "FETCH_HEAD"], what="sparse checkout", debug=debug)
+        # `git clone` does not leave a FETCH_HEAD pseudo-ref in the new
+        # repository. Its fetched branch is recorded as the remote-tracking
+        # ref; use that exact ref for the detached sparse checkout.
+        remote_ref = f"refs/remotes/origin/{branch}"
+        _git_run(
+            git,
+            ["-C", str(checkout), "checkout", "--detach", remote_ref],
+            what="sparse checkout",
+            debug=debug,
+        )
 
         source_root = checkout.joinpath(*SUBTREE)
         entrypoint = source_root / "debian-install-v2.py"
