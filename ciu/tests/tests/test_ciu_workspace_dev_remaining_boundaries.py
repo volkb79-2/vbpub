@@ -58,10 +58,15 @@ class TestWorkspaceDockerBoundaries:
         monkeypatch.setattr(workspace_env.subprocess, "run", fake_run)
 
         with pytest.raises(WorkspaceEnvError, match=r"failed-net: permission denied"):
-            workspace_env.ensure_workspace_network("failed-net", auto_connect=False)
+            workspace_env.ensure_workspace_network(
+                "failed-net", auto_connect=False, owner_instance_id="instance-7"
+            )
         assert calls == [
             ["docker", "network", "inspect", "failed-net"],
-            ["docker", "network", "create", "failed-net"],
+            [
+                "docker", "network", "create", "--label",
+                f"{workspace_env.NETWORK_OWNER_LABEL}=instance-7", "failed-net",
+            ],
         ]
 
     @pytest.mark.usefixtures("real_network_side_effects")  # CIU-87 gate opt-out
@@ -69,7 +74,9 @@ class TestWorkspaceDockerBoundaries:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("ENV_TYPE", "native")
-        monkeypatch.setattr(workspace_env, "_ensure_network_exists", lambda name: None)
+        monkeypatch.setattr(
+            workspace_env, "_ensure_network_exists", lambda name, **_kwargs: None
+        )
         monkeypatch.setattr(workspace_env.subprocess, "run", lambda *_args, **_kwargs: pytest.fail("native must not attach"))
 
         workspace_env.ensure_workspace_network("native-net")

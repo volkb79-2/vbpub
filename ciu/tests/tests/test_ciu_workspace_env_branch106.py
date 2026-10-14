@@ -133,7 +133,7 @@ def test_ensure_workspace_network_without_auto_connect_only_ensures_network(
     monkeypatch.setattr(
         workspace_env,
         "_ensure_network_exists",
-        lambda name: events.append(("ensure", name)),
+        lambda name, **_kwargs: events.append(("ensure", name)),
     )
     monkeypatch.setattr(
         workspace_env,

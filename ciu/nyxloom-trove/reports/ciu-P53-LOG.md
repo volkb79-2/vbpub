@@ -44,18 +44,29 @@ recovery phase was interrupted.
   `ensure` silently ignored explicit overlay requests. All four are folded into
   this package with regression oracles; the review is preserved as
   `ciu-P53-REVIEW-01.md`.
+- The second independent Sol xhigh review found six more issues, now folded
+  into the implementation and docs: an ambiguous initial reset could be
+  repeated over staged deletions; CLI overlays could target a rootless Git
+  root instead of a selected nested CIU root; same-name networks needed durable
+  ownership proof; the network-retry oracle itself was invalid; `ensure`
+  ignored explicit base/worktree-directory constraints; and an empty profile
+  was treated as no request. The review is preserved as
+  `ciu-P53-REVIEW-02.md`. The retry oracle now writes identity facts through
+  its fixture, targets `network-retry`, and asserts the replacement network
+  remains unclaimed.
 - Corrected the CIU-135 backlog's schema statement and documented profile
   selection and existing-record refusal across the CLI reference, README,
   design guide, and consumer guide.
 
 ## Evidence status
 
-At 2026-10-14 03:58 UTC, the follow-up implementation and documentation edits
-are in progress.
+At 2026-10-14 UTC, the follow-up implementation and documentation edits are in
+progress.
 Standard-library TOML parsing passed for `ciu/run-gate.toml`, `ciu/assay.toml`,
 and `ciu/nyxloom-trove/nyxloom.toml`; `git diff --check` is clean. The installed
 Run-Gate CLI certified the CIU nyxloom gate pointer:
 `run-gate validate-pointers ciu/nyxloom-trove/nyxloom.toml --root .` (one
 invocation, exit 0). No focused test suite or registered gate has run on the
-follow-up edits yet. A second independent review and the final gate are
-pending; see `ciu-P53-REPORT.md` when complete.
+follow-up edits yet. Review 02 is complete and all six findings are addressed
+in the candidate; the final gate and read-only review are pending. See
+`ciu-P53-REPORT.md` when complete.

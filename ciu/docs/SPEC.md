@@ -4220,13 +4220,14 @@ adopted checkout during resume.
   Generated names are UTC `<prefix>-<YYYYMMDD_HHMMSS>-<feature>`; generated
   branch and directory basename are identical, with a suffix only on an actual
   same-second collision under the Git-family allocation lock.
-- **`worktree ensure LOGICAL [--profile P1,P2] [...]`** — verifies the committed-root evidence
+- **`worktree ensure LOGICAL [--base REF] [--worktree-dir DIR] [--profile P1,P2] [--adopt-existing-network] [...]`** — verifies the committed-root evidence
   before returning an exact ready match without rewriting it; it creates when
   absent, or resumes only a mechanically recognized CIU-owned partial
   allocation. Initial overlay options apply only when absent; with an existing
-  record, explicit overlay options are refused. Any requested identity
-  mismatch refuses.
-- **`worktree adopt LOGICAL PATH [--profile P1,P2] [...]`** — the sole operation allowed to take
+  record, explicit overlay options are refused. An explicit base must resolve
+  to the saved allocation commit and an explicit directory must match the
+  recorded checkout path. Any requested identity mismatch refuses.
+- **`worktree adopt LOGICAL PATH [--profile P1,P2] [--adopt-existing-network] [...]`** — the sole operation allowed to take
   ownership of a registered unmanaged linked checkout.
 - There is no `worktree add` alias. `create` is the sole allocation verb; it
   does NOT deploy unless `--up` is explicitly supplied. A create operation
@@ -4294,11 +4295,18 @@ generated-facts file is silently treated as a fresh identity. A full-SHA
 recorded target is used directly; when a legacy record has only a symbolic
 base and no fork-point SHA, the neutral workspace's `base_commit` may stand in
 only while checkout HEAD still equals it. `ensure` MUST never reset an existing
-checkout during resume. If an older `ready` claim cannot be verified, CIU
-first demotes it to `recovery-required`. A partial record with a saved
-fork-point SHA resumes against that exact commit while preserving later
-checkout commits; when no fork point exists, a moved HEAD makes the target
-unprovable, so CIU refuses rather than leaving a false `ready` status.
+checkout during resume. The first reset attempt is represented by a durable
+schema-v5 pending marker written before `reset --hard`; until the exact result
+is saved as `fork_point_sha`, `ensure` MUST refuse to repeat the reset. A
+pristine `--no-checkout` index and a populated checkout whose tracked files
+were staged for deletion have the same Git status, so status inspection is not
+proof that replaying the reset is harmless. If an older `ready` claim cannot
+be verified, CIU first demotes it to `recovery-required`. A partial record with
+a saved fork-point SHA resumes against that exact commit while preserving later
+checkout commits; when no fork point exists and the allocation target cannot
+be proven, CIU refuses rather than leaving a false `ready` status. An explicit
+`ensure --base REF` MUST resolve to the saved allocation commit; an explicit
+`--worktree-dir DIR` MUST resolve to the recorded checkout path.
 Root-entry persistence and lease mirroring MUST re-read and merge the shared
 workspace record under its Git-family lock so concurrent updates preserve both
 metadata fields.
@@ -4317,11 +4325,14 @@ rootless record as a possible owner of CIU-labelled resources.
 
 Environment generation and clean run as subprocesses at the exact target CIU
 root (which may be nested below the Git worktree root). `--root-folder` selects
-the containing Git family for the worktree operation; it is not a nested-root
-selector. Each root's identity record is read by exact path, never via a search
-that consults `$REPO_ROOT` or a sibling `ciu.env`. Runtime start may regenerate
-missing facts from physical path facts; inspection and read-only operations
-refuse until `ciu env generate` has produced the current schema.
+the containing Git family for the worktree operation. For create/adopt/ensure
+overlay or network-claim options, CIU also requires one selected CIU root: it
+uses the nearest root above the current directory, or an explicit `--root-folder`
+that names the nested root. If none can be selected, CIU refuses before
+allocation. Each root's identity record is read by exact path, never via a
+search that consults `$REPO_ROOT` or a sibling `ciu.env`. Runtime start may
+regenerate missing facts from physical path facts; inspection and read-only
+operations refuse until `ciu env generate` has produced the current schema.
 
 ### S16.1 — Shared-infra join for worktree instances (CIU-22)
 
@@ -5144,20 +5155,20 @@ exactly when it is most needed). The CLI exits 0 on `survey`/`dry-run`/
 Capability id: `worktree.reap.v1` (shipped alongside `worktree.lease.v1` —
 reaping is only ever as safe as the ownership signal it consults).
 
-### S16.11 — Durable initial overlay intent (CIU-135)
+### S16.11 — Durable initial overlay intent and recovery (CIU-135)
 
 Managed `create` and `adopt` validate and render their complete requested
 initial `ciu.global.instance.toml.j2` payload before mutating Git worktree
 state, the shared workspace record, the CIU instance record, or Git excludes.
-The CIU instance record is written as schema v4 and records the exact rendered
+The CIU instance record is written as schema v5 and records the exact rendered
 payload (`initial_overlay`, or `null` when no overlay was requested),
 `overlay_intent_known: true`, `initial_overlay_pending: true`, and whether the
 checkout was adopted before the overlay is published. New records carry a
 boolean origin; a migrated ready record may carry `null` when its old schema
-did not preserve origin. Schema v3 added
-initial-overlay intent to the lease-aware schema-v2 record; schema v4 adds the
-pending marker and the explicit created/adopted origin. Ready v1-v3
-records remain readable. An incomplete v1/v2 record is refused because it
+did not preserve origin. Schema v3 added initial-overlay intent to the
+lease-aware schema-v2 record; schema v4 added the pending marker and the
+explicit created/adopted origin. Ready v1-v4 records remain readable. An
+incomplete v1/v2 record is refused because it
 cannot prove whether an initial overlay was requested. An incomplete v3 record
 is also refused because it cannot distinguish first-allocation recovery from
 an interrupted repair after readiness.
@@ -5168,14 +5179,15 @@ shared-infrastructure options MUST be refused instead of ignored. An
 option-free `ensure` resumes from the saved request.
 For a newly created worktree, CIU then checks out the requested base and
 persists the resulting fork point before publishing the overlay. If the process
-stops before publication, `ensure` resumes from that recorded checkout instead
-of resolving a moving base reference again. Adoption keeps its existing
-checkout and never resets it. If a process stops before the first checkout,
-`ensure` repeats that checkout only when the recorded allocation commit still
-matches and the worktree is clean or wholly unpopulated; local changes or an
-ambiguous checkout are preserved and refused.
+stops before publication after the fork point is saved, `ensure` resumes from
+that recorded checkout instead of resolving a moving base reference again.
+Adoption keeps its existing checkout and never resets it. A durable reset-pending
+marker is written before the first `reset --hard`; if its exact resulting commit
+is not saved, `ensure` refuses to repeat the reset. A pristine `--no-checkout`
+tree and an operator-staged deletion of every tracked file have the same Git
+status, so status inspection cannot prove that a replay is safe.
 
-When `ensure` resumes an incomplete schema-v4 allocation with
+When `ensure` resumes an incomplete schema-v4 or v5 allocation with
 `initial_overlay_pending: true`, it restores a missing recorded overlay with a
 same-directory atomic no-clobber publish. If an overlay already exists, CIU
 accepts it only when it is a regular file whose contents exactly match the
@@ -5187,22 +5199,43 @@ complete; a hard interruption before publication leaves no partial destination
 file. CIU publishes this non-secret TOML at mode `0644` so a container process
 with a different uid can read it.
 
-The pending marker is cleared in the same record write that first publishes
-the allocation as `ready`. It remains clear if a later repair moves the record
+Schema v5 adds `checkout_reset_pending` and `network_id`. The reset marker is
+true for a newly created checkout until CIU has saved the exact `HEAD` produced
+by its first reset; `ensure` MUST refuse to repeat that reset while the result
+is uncertain. It never infers safety from Git status because the pristine
+`--no-checkout` shape and staged deletion of every tracked path are identical.
+Adopted records and completed allocations carry a false marker. Schema v5
+`network_id` is the full immutable Docker object id of the last verified
+network, or null when none has been verified.
+
+The initial-overlay pending marker is cleared in the same record write that
+first publishes the allocation as `ready`. It remains clear if a later repair moves the record
 through `allocating`; a retry repairs generated facts but does not replay the
 original overlay. This keeps the overlay operator-owned after first readiness,
-including when a later repair is interrupted. A ready schema-v4 record with
-pending recovery is malformed and is refused. A ready schema-v3 record that
-needs root repair is upgraded to schema v4 with recovery already marked
-complete before its lifecycle state changes; an origin absent from the legacy
-record remains `null` rather than being invented.
+including when a later repair is interrupted. A ready schema-v4 or v5 record
+with pending recovery is malformed and is refused. A ready schema-v3 or v4
+record that needs root repair is upgraded to schema v5 with recovery already
+marked complete before its lifecycle state changes; an origin absent from the
+legacy record remains `null` rather than being invented.
 
-During initial recovery, an existing runtime network is accepted only when
-the record proves the checkout was adopted. A previously ready record also
-retains permission to reuse its network while repairing roots, because its
-pending marker is durably false. A generic `env-generation-failed` status is
-not evidence that a newly created checkout owns a network that appeared after
-the failure.
+CIU creates its runtime network with owner label
+`io.ciu.instance-id=<INSTANCE_ID>`. Whenever a present network is used to
+complete or verify a managed worktree, CIU MUST inspect the exact network name,
+full object id, and owner label. Reuse is permitted only when the object's id
+matches the saved `network_id` or the label matches the recorded instance id.
+An absent network does not erase the last saved id. A replacement object with
+the same name but no matching owner proof MUST be refused and the instance
+demoted to `recovery-required`. For an existing unlabelled legacy network, the
+operator may explicitly assert ownership with `--adopt-existing-network` on
+`adopt` or `ensure`; this records that exact object id. A conflicting owner
+label always refuses. Neither `adopted` origin nor a generic
+`env-generation-failed` status alone is network ownership evidence.
+
+When `ensure` finds a ready record whose root evidence is complete, it MUST
+still verify a present runtime network before returning `ready`; a same-name
+replacement is not hidden by the ready fast path. If Docker or the network is
+absent, the ready record remains usable, but its last verified object id stays
+available to detect a later replacement.
 
 `adopt` with no overlay flags records known `null` intent and preserves any
 pre-existing operator overlay. If adopt flags would create an overlay where

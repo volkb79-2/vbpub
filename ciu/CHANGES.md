@@ -24,10 +24,11 @@ restatement of the technical detail below it.
 ## [Unreleased]
 
 ### Fixed
-- Managed worktree creation and adoption validate initial overlay options before lifecycle mutation and preserve the exact request for safe interrupted recovery. Schema v4 records allocation origin and a durable one-time marker; an interrupted repair cannot replay the original overlay, claim a network after a failed create, or strand a legacy ready record. The CLI exposes `--profile` and refuses overlay options that `ensure` would otherwise ignore on an existing record.
+- Managed worktree creation and adoption validate initial overlay options before lifecycle mutation and preserve the exact request for safe interrupted recovery. Schema v5 records overlay recovery, the one-time checkout-reset boundary, and a verified Docker network object id. `ensure` refuses to repeat an uncheckpointed initial reset, verifies same-name networks on its ready path, and checks explicit base/directory constraints. The CLI targets overlays at a selected committed CIU root and refuses empty profiles or ignored options.
+- CIU-created Docker networks carry an instance owner label. Reuse now requires the saved Docker object id, a matching owner label, or an explicit `--adopt-existing-network` claim for an unlabelled legacy network; name equality alone is not ownership evidence.
 
 ### Adoption / Migration Notes
-- New managed allocations use worktree record schema v4. Ready v1-v3 records remain readable; incomplete v1/v2 records lack overlay intent, and incomplete v3 records lack the recovery-phase marker, so both require operator-directed inspection.
+- New managed allocations use worktree record schema v5. Ready v1-v4 records remain readable. Incomplete v1/v2 records lack overlay intent, incomplete v3 records lack overlay-recovery phase, and an initial reset whose exact result was not checkpointed requires operator-directed recovery. Existing unlabelled networks may need a one-time `ciu worktree adopt|ensure --adopt-existing-network` claim.
 
 ### Changed
 - Run the real-system enrollment lane as a required release gate, verify the installed Run-Gate wheel matches the selected checkout, and pin the disposable fixture image (CIU-131).

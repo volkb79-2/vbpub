@@ -68,7 +68,10 @@ problem is corrected, retry with `ciu worktree ensure NAME`.
 
 When you pass initial overlay options, CIU validates and renders the local
 overlay before allocating the checkout, then saves the exact payload
-in the schema-v4 worktree record before writing the file. For example:
+in the schema-v5 worktree record before writing the file. In a monorepo, run
+the command from the CIU root whose overlay you want, or pass that root with
+`--root-folder`; CIU refuses overlay options when it cannot identify a
+committed target root. For example:
 
 ```console
 $ ciu worktree create pkg-under-test --base main \
@@ -105,13 +108,30 @@ before CIU records ownership.
 The one-time recovery marker is cleared when the first allocation becomes
 `ready`. If a later root repair is itself interrupted, the next `ensure` still
 repairs generated facts but does not replay the original overlay, so operator
-edits and deletions remain in place. Ready schema-v3 records remain readable;
-an incomplete schema-v3 record is refused because it predates this marker and
-cannot prove whether it represents initial allocation or an interrupted repair.
-New schema-v4 allocations record whether the worktree was created or adopted;
-the origin of a migrated older ready record remains unknown. Only a confirmed
-adopted worktree may reuse an existing runtime network during initial recovery.
-A failed create alone never grants that permission.
+edits and deletions remain in place. Ready records from schemas 1 through 4
+remain readable; an incomplete schema-v3 record is refused because it predates the overlay
+recovery marker and cannot prove whether it represents initial allocation or an
+interrupted repair.
+New schema-v5 allocations record whether the worktree was created or adopted;
+the origin of a migrated older ready record remains unknown. Allocation origin
+or failure status alone never proves network ownership: CIU needs a saved Docker
+object id, a matching `io.ciu.instance-id` owner label, or an explicit claim for
+a known unlabelled legacy network.
+
+CIU labels each network it creates with its instance id and records the
+verified Docker network object id in schema v5. `ensure` checks a present
+network against that saved id or the CIU owner label, including on its ready
+fast path. A same-name replacement with no matching owner proof changes the
+record to `recovery-required`; a network outage does not erase the last saved
+object id. For a known legacy network with no CIU owner label, explicitly
+claim the exact object once with `--adopt-existing-network` on `adopt` or
+`ensure`:
+
+```console
+$ ciu worktree ensure pkg-under-test --adopt-existing-network
+```
+
+A conflicting owner label always refuses.
 
 If root preparation fails, keep the checkout and retry through CIU:
 
@@ -130,7 +150,13 @@ for older records with only a symbolic base, it uses the neutral workspace's
 checkout moved or the allocation target cannot be proven, `ensure` marks the
 record `recovery-required` and refuses. If a fork point was saved before the
 interruption, `ensure` repairs against that exact commit and preserves later
-commits. It never resets an existing checkout during resume.
+commits. If the first `reset --hard` may have run but CIU could not save its
+exact resulting commit, `ensure` refuses to repeat that reset; inspect and
+recover the checkout manually so staged deletions or other operator work are
+not erased. It never resets an existing checkout during resume. For an
+existing record, an explicit `--base REF` must resolve to its saved allocation
+commit, and an explicit `--worktree-dir DIR` must resolve to its recorded
+checkout path. Omit those options to resume from the saved allocation.
 
 A Git family with no committed `ciu.global.defaults.toml.j2` is also valid.
 CIU records the Git worktree as ready with null runtime identity, because no

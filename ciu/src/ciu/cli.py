@@ -70,10 +70,12 @@ Exit codes: 0 success · 1 runtime failure · 2 configuration/validation error
                                 --base may be a branch, tag, or exact commit
                                 SHA (default: main); creation does NOT deploy
                                 or start containers
-    worktree ensure LOGICAL [create options] [--json]
+    worktree ensure LOGICAL [--base REF] [--worktree-dir DIR]
+         [--adopt-existing-network] [create options] [--json]
                                 idempotently reuse a ready instance, or
-                                create/resume a CIU-owned partial allocation
-    worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
+                                create/resume a safe, checkpointed allocation
+    worktree adopt LOGICAL PATH [--profile P1,P2]
+         [--adopt-existing-network] [--json]
                                 adopt an existing unmanaged linked checkout
     worktree rm LOGICAL [-y] [--json]   clean, THEN remove the checkout
     worktree list [--json]      list linked checkouts
@@ -198,11 +200,11 @@ ciu worktree create LOGICAL [--base REF] [--profile P1,P2] [--up]
                              [--name DISPLAY | --prefix P --feature F]
                              [--branch BRANCH] [--path PATH]
                              [--worktree-dir DIR] [--json]
-ciu worktree adopt LOGICAL PATH [--profile P1,P2] [--json]
+ciu worktree adopt LOGICAL PATH [--profile P1,P2] [--adopt-existing-network] [--json]
 ciu worktree ensure LOGICAL [--base REF] [--profile P1,P2]
                              [--name DISPLAY | --prefix P --feature F]
                              [--branch BRANCH] [--path PATH]
-                             [--worktree-dir DIR] [--json]
+                             [--worktree-dir DIR] [--adopt-existing-network] [--json]
 ciu worktree rm LOGICAL [-y] [--force] [--json]
 ciu worktree list [--json]
 ciu worktree inspect LOGICAL [--json]
@@ -219,11 +221,20 @@ ciu worktree exec LOGICAL [--target ALIAS] -- ARGV...
   branch/directory names are identical.
 
   `ensure` is the idempotent spelling for automation: it reuses an exact ready
-  instance, creates one when absent, or resumes a mechanically recognized
-  CIU-owned partial allocation. It does not rewrite a conflicting instance.
-  `--profile P1,P2` selects service profiles in the initial instance overlay.
+  instance, creates one when absent, or resumes a checkpointed CIU-owned
+  partial allocation. It refuses an interrupted initial checkout whose exact
+  post-reset commit was not saved, because repeating that reset could discard
+  operator work. It does not rewrite a conflicting instance. `--profile P1,P2`
+  selects service profiles in the selected CIU root's initial instance overlay;
+  run from that root or select it with `--root-folder`. The root must be
+  committed at the selected base, and an empty profile is invalid.
   On an existing record, omit initial-overlay options when resuming; the saved
   intent is authoritative and a ready overlay is operator-owned.
+  An existing Docker network must match its recorded object id or carry the
+  CIU owner label. `--adopt-existing-network` explicitly claims one unlabelled
+  legacy network and saves its exact Docker object id.
+  With an existing record, an explicit `--base` must resolve to its saved
+  allocation commit and `--worktree-dir` must resolve to its recorded path.
   `adopt` is the only operation that takes ownership of an existing unmanaged
   linked checkout and prepares every committed CIU root in that checkout.
 
@@ -680,6 +691,51 @@ def _resolve_worktree_git_root_cli(
     except CiuWorkspaceError as exc:
         cli_error(f"[ERROR] {exc}")
         raise SystemExit(2)
+
+
+def _resolve_worktree_ciu_root_cli(
+    git_root: Path,
+    define_root: Path | str | None,
+    start_dir: Path,
+) -> Path | None:
+    """Resolve the selected nested CIU root for worktree allocation metadata.
+
+    Worktree operations remain family-wide, but allocation overlays belong to
+    one CIU root. A Git-family selector may itself be rootless, so absence of a
+    CIU marker returns None and callers decide whether the operation requires
+    an explicit target.
+    """
+    from .workspace import CiuWorkspaceError, resolve_ciu_root
+
+    selected = None
+    if define_root is not None:
+        explicit_root = Path(define_root).resolve()
+        try:
+            # Resolve a nested target root from the explicit path itself. This
+            # also accepts a directory below the root while refusing to
+            # silently substitute a different root from the caller's cwd.
+            selected = resolve_ciu_root(explicit_root)
+        except CiuWorkspaceError:
+            if explicit_root == Path(git_root).resolve():
+                # `--root-folder` is commonly the Git-family selector. When
+                # it names that family root, the invocation directory still
+                # selects which nested CIU root receives initial options.
+                try:
+                    selected = resolve_ciu_root(start_dir)
+                except CiuWorkspaceError:
+                    return None
+            else:
+                return None
+    else:
+        try:
+            selected = resolve_ciu_root(start_dir)
+        except CiuWorkspaceError:
+            return None
+    try:
+        Path(selected).resolve().relative_to(Path(git_root).resolve())
+    except ValueError:
+        return None
+    return Path(selected).resolve()
 
 
 def _extract_define_root(rest: list[str]) -> tuple[Path | None, list[str]]:
@@ -1753,14 +1809,20 @@ def _worktree(rest: list[str]) -> int:
     p = CiuArgumentParser(prog="ciu worktree", add_help=False)
     sub = p.add_subparsers(dest="action", required=True)
 
-    def add_create_options(parser) -> None:
-        parser.add_argument("--base", default="main", metavar="REF")
+    def add_create_options(
+        parser,
+        *,
+        base_default="main",
+        worktree_dir_default=wt_mod.DEFAULT_WORKTREE_DIR,
+        allow_network_adoption=False,
+    ) -> None:
+        parser.add_argument("--base", default=base_default, metavar="REF")
         parser.add_argument(
             "--profile", default=None, metavar="P1,P2",
             help="initial service-profile selection for the instance overlay",
         )
         parser.add_argument("--worktree-dir", dest="worktree_dir",
-                            default=wt_mod.DEFAULT_WORKTREE_DIR, metavar="DIR")
+                            default=worktree_dir_default, metavar="DIR")
         parser.add_argument("--name", dest="display_name", default=None, metavar="DISPLAY")
         parser.add_argument("--prefix", default=None, metavar="PROJECT_OR_COMPONENT")
         parser.add_argument("--feature", default=None, metavar="FEATURE")
@@ -1773,6 +1835,11 @@ def _worktree(rest: list[str]) -> int:
                             default=None, metavar="R1,R2")
         parser.add_argument("--shared-infra-ref-services", dest="shared_infra_ref_services",
                             default=None, metavar="A1,A2=S2")
+        if allow_network_adoption:
+            parser.add_argument(
+                "--adopt-existing-network", action="store_true", default=False,
+                help="explicitly claim an unlabelled existing network and record its Docker id",
+            )
         parser.add_argument("--json", action="store_true", default=False)
 
     p_create = sub.add_parser("create", add_help=False)
@@ -1785,7 +1852,10 @@ def _worktree(rest: list[str]) -> int:
 
     p_ensure = sub.add_parser("ensure", add_help=False)
     p_ensure.add_argument("logical_name")
-    add_create_options(p_ensure)
+    add_create_options(
+        p_ensure, base_default=None, worktree_dir_default=None,
+        allow_network_adoption=True,
+    )
 
     p_adopt = sub.add_parser("adopt", add_help=False)
     p_adopt.add_argument("logical_name")
@@ -1793,6 +1863,10 @@ def _worktree(rest: list[str]) -> int:
     p_adopt.add_argument(
         "--profile", default=None, metavar="P1,P2",
         help="initial service-profile selection for the instance overlay",
+    )
+    p_adopt.add_argument(
+        "--adopt-existing-network", action="store_true", default=False,
+        help="explicitly claim an unlabelled existing network and record its Docker id",
     )
     p_adopt.add_argument("--shared-infra", dest="shared_infra", default=None, metavar="REF")
     p_adopt.add_argument("--shared-infra-services", dest="shared_infra_services",
@@ -1878,6 +1952,30 @@ def _worktree(rest: list[str]) -> int:
     )
 
     try:
+        lifecycle_root = repo_root
+        if opts.action in ("create", "ensure", "adopt"):
+            selected_ciu_root = _resolve_worktree_ciu_root_cli(
+                repo_root, getattr(opts, "define_root", None), Path.cwd()
+            )
+            overlay_requested = any(
+                getattr(opts, key, None) is not None
+                for key in (
+                    "profile", "shared_infra", "shared_infra_services",
+                    "shared_infra_ref_projects", "shared_infra_ref_services",
+                )
+            )
+            network_claim_requested = bool(
+                getattr(opts, "adopt_existing_network", False)
+            )
+            if (overlay_requested or network_claim_requested) and selected_ciu_root is None:
+                raise wt_mod.WorktreeError(
+                    "[S16] initial overlay and existing-network options require a "
+                    "selected CIU root; run from that root or pass its path with "
+                    "--root-folder"
+                )
+            if selected_ciu_root is not None:
+                lifecycle_root = selected_ciu_root
+
         def emit_record(operation: str, record) -> None:
             if getattr(opts, "json", False):
                 print(json.dumps(
@@ -1893,7 +1991,7 @@ def _worktree(rest: list[str]) -> int:
         if opts.action in ("create", "ensure"):
             lifecycle = wt_mod.create if opts.action == "create" else wt_mod.ensure
             record = lifecycle(
-                repo_root, opts.logical_name, base=opts.base,
+                lifecycle_root, opts.logical_name, base=opts.base,
                 profile=opts.profile,
                 worktree_dir=opts.worktree_dir, display_name=opts.display_name,
                 prefix=opts.prefix, feature=opts.feature, branch=opts.branch,
@@ -1901,6 +1999,10 @@ def _worktree(rest: list[str]) -> int:
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,
                 shared_infra_ref_services=opts.shared_infra_ref_services,
+                **(
+                    {"adopt_existing_network": opts.adopt_existing_network}
+                    if opts.action == "ensure" else {}
+                ),
             )
             emit_record(opts.action, record)
             if opts.action == "create" and opts.up:
@@ -1918,8 +2020,9 @@ def _worktree(rest: list[str]) -> int:
 
         if opts.action == "adopt":
             record = wt_mod.adopt(
-                repo_root, opts.logical_name, opts.path,
+                lifecycle_root, opts.logical_name, opts.path,
                 profile=opts.profile,
+                adopt_existing_network=opts.adopt_existing_network,
                 shared_infra=opts.shared_infra,
                 shared_infra_services=opts.shared_infra_services,
                 shared_infra_ref_projects=opts.shared_infra_ref_projects,

@@ -70,7 +70,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import pytest
 
@@ -442,13 +442,13 @@ class NetworkSideEffectTracker:
         self.created: list[str] = []
         self.joined: list[str] = []
 
-    def wrap_ensure(self, original: Callable[[str], None]) -> Callable[[str], None]:
-        def _ensure(network_name: str) -> None:
+    def wrap_ensure(self, original: Callable[..., None]) -> Callable[..., None]:
+        def _ensure(network_name: str, **kwargs: Any) -> None:
             if self._suppressed():
-                return original(network_name)
+                return original(network_name, **kwargs)
             existed = self._exists(network_name)
             try:
-                return original(network_name)
+                return original(network_name, **kwargs)
             finally:
                 # A network that was already there belongs to whoever made it —
                 # possibly another agent's live work on this shared host.

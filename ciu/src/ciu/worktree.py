@@ -62,20 +62,24 @@ from .paths import to_physical_path
 # imports `worktree.py` (verified — no cycle), so this is a safe top-level
 # import, unlike the rest of this module's `workspace_env` uses, which stay
 # local/deferred by established convention.
-from .workspace_env import GENERATED_FACT_ENV_KEYS
+from .workspace_env import GENERATED_FACT_ENV_KEYS, NETWORK_OWNER_LABEL
 
 DEFAULT_WORKTREE_DIR = ".worktrees"
 WORKTREE_INSTANCE_RECORD = "ciu.worktree-instance.json"
 # S16.9 (CIU-25 substrate): v2 is the lease-only mutation target for legacy
 # records. CIU-135's v3 adds durable initial-overlay intent; v4 adds the
-# one-time pending marker and create/adopt origin. Ready v1-v3 records remain
-# readable, while incomplete v1-v3 records without enough recovery evidence
-# are refused.
+# one-time pending marker and create/adopt origin; v5 adds checkout-reset
+# recovery state and the identity of a verified runtime network. Ready v1-v4
+# records remain readable, while incomplete records without enough recovery
+# evidence are refused.
 WORKTREE_INSTANCE_SCHEMA_VERSION = 2
 WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION = 3
 WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION = 4
+WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION = 5
 WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
-WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4})
+WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4, 5})
+_NETWORK_OWNER_LABEL = NETWORK_OWNER_LABEL
+_NETWORK_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _shared_worktree():
@@ -219,16 +223,18 @@ WorktreeLease = _shared_worktree().Lease
 
 @dataclass(frozen=True)
 class WorktreeInstanceRecord:
-    """Durable identity for one CIU-managed linked worktree (schema v1-v4).
+    """Durable identity for one CIU-managed linked worktree (schema v1-v5).
 
     The record deliberately contains no current Git revision (derived during
     inspection) and no secret-bearing values.  It is written at the target
     CIU root, which can be below the Git worktree root in a monorepo.
 
     ``schema_version`` is 1 for legacy records, 2 for lease-aware records, 3
-    for records that checkpoint the initial overlay intent, or 4 for records
+    for records that checkpoint the initial overlay intent, 4 for records
     that track pending first-allocation recovery and whether the target was
-    adopted. A legacy record read from disk is never upgraded by inspection.
+    adopted, and 5 for records that track reset uncertainty and a verified
+    runtime-network object id. A legacy record read from disk is never
+    upgraded by inspection.
     """
 
     logical_name: str
@@ -278,6 +284,12 @@ class WorktreeInstanceRecord:
     #: a pre-v4 ready record did not retain its origin. Adoption may reuse an
     #: existing network; ordinary creation recovery may not claim a new one.
     adopted: bool | None = None
+    #: True while the initial Git reset may have run but its resulting commit
+    #: has not been checkpointed. ensure never repeats that destructive reset.
+    checkout_reset_pending: bool | None = None
+    #: Docker's immutable network object id, recorded after ownership is
+    #: verified. A missing id is allowed for gate runs where Docker is absent.
+    network_id: str | None = None
 
     @property
     def ciu_root(self) -> Path:
@@ -322,6 +334,31 @@ class WorktreeInstanceRecord:
                 raise ValueError(
                     "a ready worktree record cannot have pending overlay recovery"
                 )
+        if self.schema_version < WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION and (
+            self.checkout_reset_pending is not None or self.network_id is not None
+        ):
+            raise ValueError(
+                "checkout-reset and network-id fields require worktree record "
+                "schema version 5"
+            )
+        if self.schema_version >= WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION:
+            if not isinstance(self.checkout_reset_pending, bool):
+                raise ValueError("checkout reset pending marker must be boolean")
+            if self.network_id is not None and not _NETWORK_ID_RE.fullmatch(
+                self.network_id if isinstance(self.network_id, str) else ""
+            ):
+                raise ValueError("runtime network id must be a full 64-hex Docker id or null")
+            if self.network_id is not None and self.network is None:
+                raise ValueError("runtime network id requires a runtime network name")
+            if self.checkout_reset_pending and (
+                self.adopted is not False
+                or self.state == "ready"
+                or self.fork_point_sha is not None
+            ):
+                raise ValueError(
+                    "a pending checkout reset requires a created allocation with "
+                    "no ready state or saved fork point"
+                )
         doc: dict[str, Any] = {
             "schema_version": self.schema_version,
             "logical_name": self.logical_name,
@@ -358,6 +395,9 @@ class WorktreeInstanceRecord:
         if self.schema_version >= WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION:
             doc["initial_overlay_pending"] = self.initial_overlay_pending
             doc["adopted"] = self.adopted
+        if self.schema_version >= WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION:
+            doc["checkout_reset_pending"] = self.checkout_reset_pending
+            doc["network_id"] = self.network_id
         return doc
 
 
@@ -476,21 +516,27 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         "state", "runtime", "recovery_status",
     }
     # The key set is SCHEMA-DEPENDENT: v2+ records carry `lease`, v3+ records
-    # carry initial-overlay intent, and v4 adds its durable pending marker and
-    # explicit create/adopt origin.
+    # carry initial-overlay intent, v4 adds its durable pending marker and
+    # explicit create/adopt origin, and v5 adds reset phase and network id.
     # Equality checks here deliberately avoid set membership so malformed
     # unhashable JSON values reach the normal schema refusal below instead of
     # leaking TypeError.
     declared_version = raw.get("schema_version")
-    if declared_version in (2, 3, 4):
+    if declared_version in (2, 3, 4, 5):
         required = required | {"lease"}
     if declared_version in (
         WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
         WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
+        WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
     ):
         required = required | {"initial_overlay", "overlay_intent_known"}
-    if declared_version == WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION:
+    if declared_version in (
+        WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
+        WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+    ):
         required = required | {"initial_overlay_pending", "adopted"}
+    if declared_version == WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION:
+        required = required | {"checkout_reset_pending", "network_id"}
     # CIU-106: `fork_point_sha` is OPTIONAL in every schema version — present
     # on records `create()` wrote since CIU-106, absent on `adopt()`'s and on
     # every record written before it. Both shapes are valid, which is why
@@ -518,6 +564,7 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
             2,
             WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
             WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
+            WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
         )
         and raw["lease"] is not None
     ):
@@ -576,9 +623,12 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
     initial_overlay = None
     initial_overlay_pending = False
     adopted = None
+    checkout_reset_pending = None
+    network_id = None
     if declared_version in (
         WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION,
         WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
+        WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
     ):
         if not isinstance(raw["overlay_intent_known"], bool):
             raise WorktreeError(
@@ -596,7 +646,10 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
                 f"[S16] malformed initial overlay intent in {path}: an unknown "
                 "intent cannot carry a payload"
             )
-        if declared_version == WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION:
+        if declared_version in (
+            WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
+            WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+        ):
             if not isinstance(raw["initial_overlay_pending"], bool):
                 raise WorktreeError(
                     f"[S16] malformed initial overlay intent in {path}: "
@@ -624,6 +677,35 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
                     f"[S16] malformed initial overlay intent in {path}: a ready "
                     "record cannot have pending recovery"
                 )
+        if declared_version == WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION:
+            if not isinstance(raw["checkout_reset_pending"], bool):
+                raise WorktreeError(
+                    f"[S16] malformed checkout phase in {path}: "
+                    "checkout_reset_pending must be boolean"
+                )
+            checkout_reset_pending = raw["checkout_reset_pending"]
+            raw_network_id = raw["network_id"]
+            if raw_network_id is not None and not _NETWORK_ID_RE.fullmatch(
+                raw_network_id if isinstance(raw_network_id, str) else ""
+            ):
+                raise WorktreeError(
+                    f"[S16] malformed runtime network id in {path}: expected "
+                    "a full 64-hex Docker id or null"
+                )
+            network_id = raw_network_id
+            if network_id is not None and runtime["network"] is None:
+                raise WorktreeError(
+                    f"[S16] malformed runtime network id in {path}: "
+                    "network_id requires a runtime network name"
+                )
+            if checkout_reset_pending and (
+                adopted is not False or state == "ready" or fork_point is not None
+            ):
+                raise WorktreeError(
+                    f"[S16] malformed checkout phase in {path}: pending reset "
+                    "requires a created allocation with no ready state or saved "
+                    "fork point"
+                )
     return WorktreeInstanceRecord(
         logical_name=raw["logical_name"], display_name=raw["display_name"],
         branch=raw["branch"], git_worktree_path=git_path,
@@ -637,6 +719,8 @@ def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
         overlay_intent_known=overlay_intent_known,
         initial_overlay_pending=initial_overlay_pending,
         adopted=adopted,
+        checkout_reset_pending=checkout_reset_pending,
+        network_id=network_id,
     )
 
 
@@ -1128,7 +1212,10 @@ def _worktree_overlay_text(
     profile: str | None, shared_infra: SharedInfraIntent | None
 ) -> str | None:
     """Render CIU-owned initial local settings as a sparse TOML template."""
-    profiles = _split_unique_list(profile, label="--profile") if profile else ()
+    profiles = (
+        _split_unique_list(profile, label="--profile")
+        if profile is not None else ()
+    )
     if not profiles and shared_infra is None:
         return None
     lines = [
@@ -1175,6 +1262,25 @@ def _worktree_overlay_text(
                 if entry.port is not None:
                     lines.append(f"internal_port = {entry.port}")
     return "\n".join(lines) + "\n"
+
+
+def _assert_overlay_root_in_commit(
+    repo_root: Path,
+    commit: str,
+    offset: Path,
+) -> None:
+    """Refuse a requested overlay unless its target root is in the selected tree."""
+    git_root = git_toplevel(repo_root)
+    expected_root = (git_root / offset).resolve()
+    from .workspace import discover_committed_roots
+
+    roots = discover_committed_roots(git_root, commit)
+    if expected_root not in roots:
+        raise WorktreeError(
+            f"[S16] initial overlay options target {expected_root}, which is not "
+            f"a committed CIU root at {commit}; select a committed CIU root "
+            "before requesting --profile or shared-infrastructure settings"
+        )
 
 
 def _write_worktree_overlay(
@@ -4062,6 +4168,117 @@ def _docker_network_exists(network: str) -> bool:
     return network in {line.strip() for line in (result.stdout or "").splitlines()}
 
 
+def _docker_network_details(network: str) -> dict[str, Any] | None:
+    """Return the exact Docker network object and labels, or None if absent."""
+    if not _docker_network_exists(network):
+        return None
+    try:
+        result = procutil.docker(
+            ["network", "inspect", network], capture=True, check=False,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        raise WorktreeError(
+            f"[S16] could not inspect existing runtime network {network!r}: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        raise WorktreeError(
+            f"[S16] could not inspect existing runtime network {network!r}: "
+            f"{(result.stderr or result.stdout or '').strip()}"
+        )
+    try:
+        inspected = json.loads(result.stdout or "")
+    except json.JSONDecodeError as exc:
+        raise WorktreeError(
+            f"[S16] docker network inspect {network!r} returned invalid JSON"
+        ) from exc
+    if (
+        not isinstance(inspected, list)
+        or len(inspected) != 1
+        or not isinstance(inspected[0], dict)
+        or inspected[0].get("Name") != network
+    ):
+        raise WorktreeError(
+            f"[S16] docker network inspect {network!r} did not return exactly "
+            "that network"
+        )
+    details = inspected[0]
+    network_id = details.get("Id")
+    labels = details.get("Labels")
+    if not isinstance(network_id, str) or not _NETWORK_ID_RE.fullmatch(network_id):
+        raise WorktreeError(
+            f"[S16] docker network inspect {network!r} returned no full object id"
+        )
+    if labels is None:
+        labels = {}
+    if not isinstance(labels, dict) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in labels.items()
+    ):
+        raise WorktreeError(
+            f"[S16] docker network inspect {network!r} returned malformed labels"
+        )
+    return {"id": network_id, "labels": labels}
+
+
+def _verify_and_record_network(
+    record: WorktreeInstanceRecord,
+    instance_id: str,
+    network: str,
+    *,
+    claim_unlabeled_network: bool,
+) -> WorktreeInstanceRecord:
+    """Accept only the recorded Docker object or a network labeled for this ID.
+
+    `claim_unlabeled_network` is a deliberate one-time operator assertion used
+    by `worktree adopt` and recovery. It never overrides a conflicting owner
+    label and its exact Docker object id is persisted for later comparisons.
+    """
+    details = _docker_network_details(network)
+    if details is None:
+        # Keep the last verified object id across an outage/removal. Clearing
+        # it here would make a later same-name replacement look like a first
+        # observation and erase the evidence needed to reject it.
+        return record
+
+    labels = details["labels"]
+    labeled_owner = labels.get(_NETWORK_OWNER_LABEL)
+    if labeled_owner is not None and labeled_owner != instance_id:
+        raise WorktreeError(
+            f"[S16] runtime network {network!r} carries owner instance "
+            f"{labeled_owner!r}, expected {instance_id!r}"
+        )
+    if record.network_id is not None and details["id"] == record.network_id:
+        return record
+    if labeled_owner == instance_id:
+        return _record_with_verified_network_id(record, details["id"])
+    if claim_unlabeled_network and labeled_owner is None:
+        return _record_with_verified_network_id(record, details["id"])
+
+    previous = record.network_id or "not recorded"
+    raise WorktreeError(
+        f"[S16] cannot prove ownership of existing runtime network {network!r}: "
+        f"Docker object id is {details['id']!r} (recorded {previous!r}) and it "
+        f"does not carry {_NETWORK_OWNER_LABEL}={instance_id!r}; for a known "
+        "legacy network, explicitly use `--adopt-existing-network` to record "
+        "this exact object"
+    )
+
+
+def _record_with_verified_network_id(
+    record: WorktreeInstanceRecord,
+    network_id: str,
+) -> WorktreeInstanceRecord:
+    """Persist network evidence using the current record schema."""
+    return replace(
+        record,
+        schema_version=max(
+            record.schema_version, WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION
+        ),
+        checkout_reset_pending=False,
+        network_id=network_id,
+    )
+
+
 def _mark_recovery(record: WorktreeInstanceRecord, status: str) -> WorktreeInstanceRecord:
     failed = replace(record, state="recovery-required", recovery_status=status)
     _write_instance_record(failed)
@@ -4130,18 +4347,68 @@ def _allocated_commit_sha(
     return commit
 
 
+def _assert_explicit_ensure_base_matches(
+    repo_root: Path,
+    record: WorktreeInstanceRecord,
+    requested_base: str,
+) -> None:
+    """Require an explicit ensure base to name the saved allocation commit."""
+    resolved = _git(
+        ["rev-parse", "--verify", "--quiet", "--end-of-options",
+         f"{requested_base}^{{commit}}"],
+        repo_root,
+    )
+    requested = resolved.stdout.strip() if resolved.returncode == 0 else ""
+    if not _FULL_SHA_RE.fullmatch(requested):
+        raise WorktreeError(
+            f"[S16] ensure --base {requested_base!r} does not "
+            "resolve to a commit in the selected Git family"
+        )
+
+    saved = record.fork_point_sha
+    if saved is None and _FULL_SHA_RE.fullmatch(record.base_ref):
+        saved = record.base_ref
+    if saved is None:
+        workspace_context = _shared_record_for_checkout(record.git_worktree_path)
+        workspace_base = getattr(workspace_context, "base_commit", None)
+        head = _git(
+            ["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
+            record.git_worktree_path,
+        )
+        current = head.stdout.strip() if head.returncode == 0 else ""
+        if (
+            isinstance(workspace_base, str)
+            and _FULL_SHA_RE.fullmatch(workspace_base)
+            and current == workspace_base
+        ):
+            saved = workspace_base
+    if saved is None or not _FULL_SHA_RE.fullmatch(saved):
+        raise WorktreeError(
+            f"[S16] cannot compare ensure --base {requested_base!r} "
+            f"with {record.logical_name!r}: the allocation commit is not recorded "
+            "or provable; omit --base to resume this existing worktree"
+        )
+    if requested != saved:
+        raise WorktreeError(
+            f"[S16] ensure base mismatch for {record.logical_name!r}: requested "
+            f"{requested_base!r} resolves to {requested}, but the "
+            f"recorded allocation commit is {saved}"
+        )
+
+
 def _assert_allocation_checkout_reset_is_safe(
     record: WorktreeInstanceRecord,
 ) -> None:
     """Refuse to repeat an uncheckpointed checkout over any local work.
 
     `create_workspace()` deliberately adds a linked checkout with
-    `--no-checkout`. A process can stop after CIU's first record write and
-    before `_finish_allocation()` resets that checkout. On resume, repeating
-    the reset is safe only while the worktree is clean or every tracked path
-    is still absent from that no-checkout allocation. Mixed deletions,
-    modifications, staged changes, and untracked files are ambiguous and are
-    preserved for operator inspection.
+    `--no-checkout`. This check is used only by the synchronous first
+    allocation, before its one reset attempt. The durable
+    `checkout_reset_pending` marker is written first; if the reset may have
+    run but its exact HEAD was not checkpointed, `ensure()` refuses instead
+    of calling this helper again. This is important because a pristine
+    no-checkout index and a populated checkout whose tracked files were all
+    staged for deletion have the same Git status.
     """
     checkout = record.git_worktree_path
     status = _git(
@@ -4355,7 +4622,7 @@ def _finish_allocation(
     record: WorktreeInstanceRecord,
     *,
     checkout_required: bool,
-    allow_existing_network: bool = False,
+    claim_unlabeled_network: bool = False,
     workspace_context: object | None = None,
     recover_initial_overlay: bool = False,
 ) -> WorktreeInstanceRecord:
@@ -4366,6 +4633,17 @@ def _finish_allocation(
             "workspace record"
         )
     if checkout_required:
+        if (
+            record.schema_version < WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION
+            or record.checkout_reset_pending is not True
+        ):
+            raise WorktreeError(
+                f"[S16] cannot perform the initial checkout reset for "
+                f"{record.logical_name!r}: its durable reset phase is missing"
+            )
+        # The pending marker is durable before this first attempt. A later
+        # ensure never repeats the reset while the result is uncheckpointed.
+        _assert_allocation_checkout_reset_is_safe(record)
         checkout = _git(["reset", "--hard", record.base_ref], record.git_worktree_path)
         if checkout.returncode != 0:
             _mark_recovery(record, "checkout-incomplete")
@@ -4394,11 +4672,22 @@ def _finish_allocation(
         head = _git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
                     record.git_worktree_path)
         candidate = head.stdout.strip() if head.returncode == 0 else ""
-        # Record only a verified object id. Root discovery below must use the
-        # exact allocated tree; if neither this value nor a checked legacy
-        # target proves it, preparation leaves the record recovery-required.
-        if _FULL_SHA_RE.fullmatch(candidate):
-            record = replace(record, fork_point_sha=candidate)
+        if not _FULL_SHA_RE.fullmatch(candidate):
+            _mark_recovery(record, "checkout-incomplete")
+            raise WorktreeError(
+                f"[S16] checkout of {record.base_ref!r} completed for "
+                f"{record.git_worktree_path}, but CIU could not checkpoint its "
+                "exact HEAD. The initial reset will not be repeated automatically."
+            )
+        # The reset result and cleared pending marker are published together.
+        # A crash before this write leaves the true marker and ensure refuses
+        # to run another destructive reset over an ambiguous checkout.
+        record = replace(
+            record,
+            fork_point_sha=candidate,
+            checkout_reset_pending=False,
+        )
+        _write_instance_record(record)
 
     # An adopt record carries a durable no-reset marker from its first write.
     # Keep it through all initialization, including nested-root preparation.
@@ -4443,11 +4732,12 @@ def _finish_allocation(
             instance_id, network = _runtime_identity(record.ciu_root)
             try:
                 _check_runtime_collision(repo_root, allocating, instance_id, network)
-                if not allow_existing_network and _docker_network_exists(network):
-                    raise WorktreeError(
-                        f"[S16] host runtime network {network!r} already exists before "
-                        "this allocation; refusing a possible independent-clone collision"
-                    )
+                allocating = _verify_and_record_network(
+                    allocating,
+                    instance_id,
+                    network,
+                    claim_unlabeled_network=claim_unlabeled_network,
+                )
             except WorktreeError:
                 recovery_status = "runtime-collision"
                 raise
@@ -4459,7 +4749,7 @@ def _finish_allocation(
             selected_root_identity = (instance_id, network)
 
         def prepare_selected_root() -> None:
-            nonlocal recovery_status
+            nonlocal allocating, recovery_status
             if selected_root_identity is None:
                 raise WorktreeError(
                     "[S16] selected root identity preflight did not complete"
@@ -4478,6 +4768,17 @@ def _finish_allocation(
                 raise WorktreeError(
                     "[S16] runtime identity changed between identity-only and full env generation"
                 )
+            try:
+                allocating = _verify_and_record_network(
+                    allocating,
+                    instance_id,
+                    network,
+                    claim_unlabeled_network=claim_unlabeled_network,
+                )
+            except WorktreeError:
+                recovery_status = "runtime-collision"
+                raise
+            _write_instance_record(allocating)
 
         _committed_root_entries(
             repo_root, allocating, workspace_context, prepare=True, persist=True,
@@ -4621,6 +4922,18 @@ def create(
     initial_overlay = _worktree_overlay_text(profile, shared_infra_intent)
 
     offset = _ciu_root_offset(repo_root)
+    if initial_overlay is not None:
+        resolved_base = _git(
+            ["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
+            repo_root,
+        )
+        commit = resolved_base.stdout.strip() if resolved_base.returncode == 0 else ""
+        if not _FULL_SHA_RE.fullmatch(commit):
+            raise WorktreeError(
+                f"[S16] cannot verify the selected base {base!r} as a commit "
+                "for the requested initial overlay"
+            )
+        _assert_overlay_root_in_commit(repo_root, commit, offset)
     primary = primary_worktree_root(repo_root).resolve()
     instant = _utc_now()
     generated_base = (
@@ -4722,7 +5035,8 @@ def create(
             overlay_intent_known=True,
             initial_overlay_pending=True,
             adopted=False,
-            schema_version=WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
+            checkout_reset_pending=True,
+            schema_version=WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
         )
         _write_instance_record(record)
         return _finish_allocation(
@@ -4741,6 +5055,11 @@ def ensure(
     _validate_name(logical_name, label="logical name")
     with _allocation_lock(repo_root):
         record = find_instance_record(repo_root, logical_name)
+        claim_unlabeled_network = create_kwargs.pop(
+            "adopt_existing_network", False
+        )
+        if type(claim_unlabeled_network) is not bool:
+            raise WorktreeError("[S16] adopt_existing_network must be boolean")
         if record is not None:
             overlay_options = (
                 "profile", "shared_infra", "shared_infra_services",
@@ -4793,7 +5112,24 @@ def ensure(
                     raise WorktreeError(
                         f"[S16] ensure mismatch for {field}: record has "
                         f"{actual!r}, caller requested {expected!r}"
-            )
+                    )
+            requested_base = create_kwargs.get("base")
+            if requested_base is not None:
+                _assert_explicit_ensure_base_matches(
+                    repo_root, record, requested_base
+                )
+            requested_worktree_dir = create_kwargs.get("worktree_dir")
+            if requested_worktree_dir is not None and create_kwargs.get("path") is None:
+                requested_dir = Path(requested_worktree_dir)
+                requested_path = (
+                    primary_worktree_root(repo_root) / requested_dir / record.display_name
+                ).resolve()
+                actual_path = Path(record.git_worktree_path).resolve()
+                if actual_path != requested_path:
+                    raise WorktreeError(
+                        f"[S16] ensure mismatch for worktree_dir: record path is "
+                        f"{actual_path!r}, caller requested {requested_path!r}"
+                    )
             workspace_context = _ensure_shared_record(repo_root, record)
             allocation_was_ready = record.state == "ready"
             checkout_required = False
@@ -4801,6 +5137,30 @@ def ensure(
                 if _ready_roots_are_complete(
                     repo_root, record, workspace_context
                 ):
+                    if record.instance_id is not None and record.network is not None:
+                        try:
+                            verified = _verify_and_record_network(
+                                record,
+                                record.instance_id,
+                                record.network,
+                                claim_unlabeled_network=claim_unlabeled_network,
+                            )
+                        except WorktreeError:
+                            _mark_recovery(record, "runtime-collision")
+                            raise
+                        if claim_unlabeled_network and verified.network_id is None:
+                            raise WorktreeError(
+                                f"[S16] no existing runtime network {record.network!r} "
+                                "is available to adopt"
+                            )
+                        if verified != record:
+                            _write_instance_record(verified)
+                        return verified
+                    if claim_unlabeled_network:
+                        raise WorktreeError(
+                            "[S16] cannot adopt a runtime network for a "
+                            "record without runtime identity"
+                        )
                     return record
                 # Do not leave an unverified historical ready claim visible if
                 # its saved allocation target or generated root evidence is
@@ -4810,11 +5170,12 @@ def ensure(
                     record,
                     schema_version=max(
                         record.schema_version,
-                        WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
+                        WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
                     ),
                     state="allocating",
                     recovery_status=None,
                     initial_overlay_pending=False,
+                    checkout_reset_pending=False,
                 )
                 _write_instance_record(record)
                 try:
@@ -4822,7 +5183,6 @@ def ensure(
                 except WorktreeError:
                     _mark_recovery(record, "env-generation-failed")
                     raise
-                allow_existing_network = True
             else:
                 if record.schema_version == WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION:
                     raise WorktreeError(
@@ -4846,23 +5206,6 @@ def ensure(
                         "instance record predates durable overlay intent; inspect "
                         "the checkout and choose an operator-directed recovery"
                     )
-                try:
-                    _allocated_commit_sha(record, workspace_context)
-                except WorktreeError:
-                    _mark_recovery(record, "env-generation-failed")
-                    raise
-                allow_existing_network = (
-                    record.adopted is True
-                    # Schema-v4 clears this durable marker only after the
-                    # first ready publication. A false marker on a later
-                    # allocating record therefore identifies interrupted
-                    # repair, whose own network is expected to remain live.
-                    or (
-                        record.schema_version
-                        >= WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION
-                        and not record.initial_overlay_pending
-                    )
-                )
                 checkout_required = (
                     record.fork_point_sha is None
                     and (
@@ -4871,18 +5214,47 @@ def ensure(
                     )
                 )
                 if checkout_required:
-                    _assert_allocation_checkout_reset_is_safe(record)
+                    raise WorktreeError(
+                        f"[S16] cannot safely resume {record.logical_name!r}: the "
+                        "initial checkout reset may already have run, but its exact "
+                        "commit was not checkpointed. CIU will not repeat that "
+                        "destructive reset; inspect the checkout and choose an "
+                        "operator-directed recovery."
+                    )
+                try:
+                    _allocated_commit_sha(record, workspace_context)
+                except WorktreeError:
+                    _mark_recovery(record, "env-generation-failed")
+                    raise
+            if record.schema_version < WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION:
+                # A completed checkout can safely migrate to the recovery
+                # schema before any further runtime preparation. Incomplete
+                # reset state is refused above and is never inferred here.
+                record = replace(
+                    record,
+                    schema_version=WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
+                    checkout_reset_pending=False,
+                )
+                _write_instance_record(record)
             # The allocation target was proven from its record or the neutral
-            # workspace record above. An uncheckpointed initial create repeats
-            # reset only after proving the checkout is still clean or
-            # completely unpopulated; all later recovery preserves its HEAD.
+            # workspace record above. Automatic recovery never repeats an
+            # initial reset whose resulting commit was not checkpointed.
             return _finish_allocation(
                 repo_root, record, checkout_required=checkout_required,
-                allow_existing_network=allow_existing_network,
+                claim_unlabeled_network=claim_unlabeled_network,
                 workspace_context=workspace_context,
                 recover_initial_overlay=not allocation_was_ready,
             )
-    return create(repo_root, logical_name, **create_kwargs)
+        if claim_unlabeled_network:
+            raise WorktreeError(
+                f"[S16] cannot adopt a runtime network for absent worktree "
+                f"{logical_name!r}; create/adopt the worktree first"
+            )
+    absent_kwargs = dict(create_kwargs)
+    for optional_default in ("base", "worktree_dir"):
+        if absent_kwargs.get(optional_default) is None:
+            absent_kwargs.pop(optional_default, None)
+    return create(repo_root, logical_name, **absent_kwargs)
 
 
 def adopt(
@@ -4891,6 +5263,7 @@ def adopt(
     target: str,
     *,
     profile: str | None = None,
+    adopt_existing_network: bool = False,
     shared_infra: str | None = None,
     shared_infra_services: str | None = None,
     shared_infra_ref_projects: str | None = None,
@@ -4899,6 +5272,8 @@ def adopt(
     """Explicitly take ownership of one registered, unmanaged linked checkout."""
     repo_root = Path(repo_root).resolve()
     _validate_name(logical_name, label="logical name")
+    if type(adopt_existing_network) is not bool:
+        raise WorktreeError("[S16] adopt_existing_network must be boolean")
     shared_infra_intent: SharedInfraIntent | None = None
     if (
         shared_infra is not None or shared_infra_services is not None
@@ -4936,10 +5311,18 @@ def adopt(
                 f"[S16] {overlay_path} already has an instance override; "
                 "refusing to replace it with adopt flags"
             )
-        _ensure_record_is_excluded(repo_root, offset)
         head = _git(["rev-parse", "HEAD"], wt.path)
         if head.returncode != 0:
             raise WorktreeError(f"[S16] cannot derive adopted checkout HEAD: {head.stderr.strip()}")
+        if initial_overlay is not None:
+            commit = head.stdout.strip()
+            if not _FULL_SHA_RE.fullmatch(commit):
+                raise WorktreeError(
+                    "[S16] cannot verify the adopted checkout's exact HEAD for "
+                    "the requested initial overlay"
+                )
+            _assert_overlay_root_in_commit(wt.path, commit, offset)
+        _ensure_record_is_excluded(repo_root, offset)
         record = WorktreeInstanceRecord(
             logical_name=logical_name, display_name=wt.path.name, branch=wt.branch,
             git_worktree_path=wt.path.resolve(), ciu_root_offset=offset,
@@ -4950,7 +5333,8 @@ def adopt(
             overlay_intent_known=True,
             initial_overlay_pending=True,
             adopted=True,
-            schema_version=WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION,
+            checkout_reset_pending=False,
+            schema_version=WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
         )
         _write_instance_record(record)
         workspace_context = _ensure_shared_record(repo_root, record)
@@ -4960,7 +5344,8 @@ def adopt(
         # marker through `_finish_allocation` also covers a hard interruption
         # after identity generation has started.
         return _finish_allocation(
-            repo_root, record, checkout_required=False, allow_existing_network=True,
+            repo_root, record, checkout_required=False,
+            claim_unlabeled_network=adopt_existing_network,
             workspace_context=workspace_context,
             recover_initial_overlay=True,
         )

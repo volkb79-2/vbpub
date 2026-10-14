@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-10-14 — **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` made the real-system lane fail on key-duplication assertions, then the source was restored byte-for-byte. The release flow invokes the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. **CIU-134 remains OPEN** for a permission-specific, consented worktree-removal retry with exact-state reporting. **CIU-135 remains OPEN** for preflight and durable recovery of managed-worktree overlay intent. **CIU-129 FIXED** for the hidden-failure diagnostic by Assay B146 (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). CIU-128's registered gate passed on 2026-10-05. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
+Last updated: 2026-10-14 — **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` made the real-system lane fail on key-duplication assertions, then the source was restored byte-for-byte. The release flow invokes the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. **CIU-134 remains OPEN** for a permission-specific, consented worktree-removal retry with exact-state reporting. **CIU-135 remains OPEN** pending its registered gate and final review; its package now also covers reset-retry ambiguity, network ownership proof, nested-root profile targeting, explicit `ensure` constraints, and empty-profile refusal (P53 review 02). **CIU-129 FIXED** for the hidden-failure diagnostic by Assay B146 (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). CIU-128's registered gate passed on 2026-10-05. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -583,7 +583,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-132 | Outdated-identity guard blocks a stopped stack's data-preserving migration and is not told ownership drift or stale persisted hostnames | High | OPEN |
 | CIU-133 | `ciu up` hangs forever at "STEP 10/17 Resolving and materializing secrets" for a stack that IS its own ciu root (stack files in the root directory, the `mattermost/` and `pwmcp/` layout) when any GEN_LOCAL secret is declared. **Observed (2026-10-07, `ciu up --dir mattermost -y`):** `/proc/locks` listed the same PID as both holder and waiter (`->`), wchan `locks_lock_inode_wait`. `secrets/materialize.py::materialize` took `_flock(stack_dir/.ciu/lock)` and then `_flock(repo_root/.ciu/lock)`; with `stack_dir == repo_root` both are one file, flock locks an open file description, so the second `os.open()` + `LOCK_EX` blocked on the process's own first lock | High | FIXED 2026-10-07 (`dca8e1f75`): the project lock is taken only when `realpath(stack_lock) != realpath(project_lock)`, so a symlinked stack dir that resolves to the root is also covered; the stack lock already serializes the project store in that layout. Order for distinct files is unchanged (stack, then project, S4.26). **Oracle:** `tests/tests/test_ciu_materialize_self_root_lock.py` — real-flock subprocess with an 8 s timeout for `stack_dir == repo_root` and for a symlink to the root (both FAIL by timeout with the fix reverted, PASS with it), plus a `_flock` spy asserting both locks, stack first, for distinct paths. Sweep of every other `.ciu/lock` / flock site (`persist_hook_secret`, `materialize_host_secrets`, `worktree._allocation_lock`, `worktree_budget_slot`, `workspace_lock`) found no other same-file nesting |
 | CIU-134 | Worktree removal can finish `ciu clean` and then fail deleting the checkout due to protected descendants, leaving a partial Git/CIU lifecycle state with no supported root-assisted retry | High | OPEN — add permission-specific, consented retry through the existing S6.5 helper and truthful partial-state reporting |
-| CIU-135 | `worktree create`/`adopt` can allocate records before validating their overlay, and interrupted creation can lose the requested profile/shared-infra overlay before `ensure` resumes | Medium | OPEN — preflight and persist exact overlay intent; recovery must refuse unknown or conflicting state |
+| CIU-135 | Managed worktree overlay recovery, reset retries, network ownership, and explicit `ensure` constraints can be ambiguous or silently ignored | Medium | OPEN — preflight and persist overlay intent; refuse destructive/ownership ambiguity and mismatched requests |
 | CIU-136 | `ciu resolve` does not report live attached networks, aliases, derived URLs, or a nonzero status for an absent service | Medium | OPEN — extend the existing service-discovery follow-up from CIU-118 / nyxloom NL-38 |
 
 
@@ -5075,10 +5075,11 @@ to restore it and can finish with the requested selection absent.
   mutation. Invalid profile/shared-infrastructure syntax leaves no new Git
   branch or checkout, no shared or CIU record, and no Git exclude change.
 - Persist the exact rendered payload and a known/unknown marker in the CIU
-  allocation record before publishing the overlay. This uses worktree record
-  schema v4; ready v1-v3 records remain readable, but incomplete legacy
-  records without enough overlay/recovery evidence are refused rather than
-  treated as an empty request.
+  allocation record before publishing the overlay. Schema v4 introduced the
+  pending overlay marker and created/adopted origin; schema v5 adds the
+  checkout-reset checkpoint and verified Docker network id. Ready v1-v4
+  records remain readable, but incomplete legacy records without enough
+  overlay/recovery evidence are refused rather than treated as an empty request.
 - Persist a separate `initial_overlay_pending` marker. It starts true and is
   cleared atomically with the first `ready` record. A later ready-root repair
   may temporarily set lifecycle state to `allocating`; retries must preserve
@@ -5087,14 +5088,26 @@ to restore it and can finish with the requested selection absent.
   readable, but incomplete v3 records are refused because their recovery
   phase cannot be inferred safely.
 - Persist whether the checkout was created or explicitly adopted. During
-  initial recovery, only adoption may reuse an already-existing runtime
-  network; a generic `env-generation-failed` status is not ownership evidence.
-  A durably cleared pending marker proves prior readiness and allows a repair
-  to keep that worktree's network.
+  initial recovery, origin or a generic `env-generation-failed` status alone
+  must not authorize network reuse. Require the saved Docker object id or a
+  matching `io.ciu.instance-id` label. An unlabelled legacy network needs the
+  explicit `--adopt-existing-network` assertion, which records its object id;
+  a conflicting owner label always refuses. Check a present network on the
+  ready fast path and retain its last id through an outage.
 - Expose `--profile` through the create/adopt/ensure CLI. When `ensure` finds an
   existing record, reject explicit profile/shared-infrastructure options rather
   than silently ignoring them; option-free recovery uses the exact saved
-  request and ready overlays remain operator-owned.
+  request and ready overlays remain operator-owned. Reject an explicitly empty
+  profile before mutation, and require the profile to resolve to a committed
+  target CIU root in the selected base.
+- Persist the initial checkout-reset phase before `reset --hard`. If CIU cannot
+  checkpoint the exact resulting HEAD, `ensure` refuses to reset again. A
+  pristine `--no-checkout` tree and a tree whose tracked files were staged for
+  deletion have the same Git status, so status alone is not a safe retry proof.
+- Treat explicit `ensure --base` and `--worktree-dir` as constraints on an
+  existing allocation: the base must resolve to its recorded allocation
+  commit, and the directory must resolve to the recorded checkout path. Refuse
+  when either comparison cannot be proven.
 - When `ensure` resumes an incomplete allocation, restore a missing recorded
   payload atomically. Accept an existing regular file only when it matches the
   recorded payload exactly; refuse symlinks, non-regular files and conflicting
@@ -5120,18 +5133,25 @@ overlay. (8) Interrupt a ready-root repair
 after it moves the record to `allocating`, then retry `ensure`: it repairs
 generated facts while preserving both an operator-edited overlay and an
 operator-deleted overlay, even if that worktree's recorded network remains
-live. (9) A failed create followed by a foreign network appearing before retry
-must refuse; adoption and repair of a previously-ready record may reuse their
-own network. (10) Interrupt a v2 ready-record repair after migration to v4;
+live. (9) A failed create followed by a network appearing before retry must
+refuse unless its object id or matching owner label proves ownership; an
+unlabelled network requires the explicit claim. A same-name replacement must
+be detected on a ready `ensure`, while a missing network retains the last
+recorded id. (10) Interrupt a v2 ready-record repair after migration to v5;
 retry completes without inventing overlay intent. (11) CLI `--profile` reaches
-create/adopt, and `ensure` rejects explicit overlay options for an existing
-record. Controlled wrong implementations that write the record first, infer
+create/adopt, targets the selected committed nested root, and refuses without
+one; an empty profile leaves allocation state unchanged. `ensure` rejects
+explicit overlay options for an existing record, a base resolving to another
+commit, and a worktree directory resolving to another path. (12) After reset
+succeeds but before its fork point is saved, stage deletions of all tracked
+paths and retry `ensure`: it refuses without another reset and preserves the
+staged deletions. Controlled wrong implementations that write the record first, infer
 missing intent, replay an initial overlay after readiness, reuse a network
 based only on failure status, silently ignore `ensure` options, or use
 `os.replace` must fail the corresponding oracle.
 
-**File list.** `src/ciu/worktree.py`, `src/ciu/cli.py`; the owning worktree
-lifecycle and CLI tests;
+**File list.** `src/ciu/worktree.py`, `src/ciu/workspace_env.py`,
+`src/ciu/cli.py`; the owning worktree lifecycle, workspace-network and CLI tests;
 the root `.gitignore`, `ciu/.gitignore`, and the shipped `.gitignored.ciu`
 rules for interrupted atomic-writer scratch;
 `docs/SPEC.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `docs/CONFIG.md`,
@@ -5141,5 +5161,7 @@ this backlog entry; and the next CIU `CHANGES.md` release-note section. The
 three adopter-facing documents (README, DESIGN-GUIDE, CONSUMERS) are required
 before merge, alongside the normative spec and configuration reference.
 
-**Disposition:** OPEN. Implementation is in a fresh CIU-managed worktree and
-has not yet passed its registered gate or independent review.
+**Disposition:** OPEN. The six findings from the second independent review are
+folded into the isolated implementation and regression oracles. The exact
+candidate still needs its registered CIU gate and a final read-only review
+before merge.

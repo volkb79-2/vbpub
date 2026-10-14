@@ -26,24 +26,31 @@ operator-owned and later edits are left alone. The workspace operation still
 prepares all committed roots, while ordinary stack verbs resolve the nearest
 root above their invocation directory.
 
-The schema-v4 record keeps `initial_overlay_pending` separate from the
+The schema-v5 record keeps `initial_overlay_pending` separate from the
 worktree's lifecycle state. It starts true and is cleared in the same record
 write that first publishes `ready`. Root repair can later move a ready record
 through `allocating`; if that repair is interrupted, the false marker survives
 and a retry does not mistake the repair for unfinished first-time setup. This
 is why operator edits and deletions remain intact even across a failed repair.
-New schema-v4 allocations also record whether CIU created or adopted the
+New schema-v5 allocations also record whether CIU created or adopted the
 checkout; a legacy ready record keeps an unknown origin during migration. A
-failed create does not authorize reuse of a network that appeared afterward;
-an adopted checkout may already have its network, and a previously ready
-record may keep its network through repair. The failure reason alone is never
-evidence of ownership.
+network name alone does not prove ownership: CIU records the Docker object id
+after verification and labels networks it creates with the instance id. Every
+ready `ensure` checks a present network against that id or matching label. If
+the network is absent, CIU keeps the last id so a later same-name replacement
+cannot erase the evidence. A legacy unlabelled network can be claimed only by
+an explicit `--adopt-existing-network`; a conflicting owner label always
+refuses.
 
 The CLI accepts `--profile` on create and adopt, and on `ensure` when creating
 an absent checkout, so consumers can request the same initial overlay that the
 API already supports. For an existing record, `ensure` refuses explicit
 overlay options rather than returning success while ignoring them; recovery
 reads the saved request, and ready overlays remain operator state.
+The profile is written to the selected committed CIU root. The command derives
+that root from the current directory or an explicit `--root-folder` that names
+the nested root; if no root is selected, overlay and network-claim options
+refuse instead of creating an unused overlay at the Git root.
 
 The family registry also records generic Git worktrees whose selected base
 contains no CIU root. Their ready record has null runtime values because there
@@ -237,6 +244,14 @@ instead of selecting roots from a later `HEAD`. Resume never runs
 be verified, CIU demotes it before refusing so inspection does not continue to
 certify incomplete state. This adds no runtime identity to a generic family
 root and requires no record-schema change.
+
+An explicit `ensure --base REF` is a constraint on the existing allocation,
+not a request to move it: `REF` must resolve to the saved allocation commit.
+An explicit `--worktree-dir` must resolve to the recorded checkout path. When
+the first `reset --hard` may have run but the exact resulting commit was not
+saved, CIU refuses to repeat it. A pristine `--no-checkout` tree and a tree
+whose tracked files were staged for deletion have the same Git status, so
+status inspection cannot safely distinguish them during recovery.
 
 The writer already emits this generic shape when the exact root marker is
 absent. The old reader then contradicted it by demanding a complete runtime

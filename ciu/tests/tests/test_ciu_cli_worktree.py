@@ -20,6 +20,24 @@ def _patch_repo_root(monkeypatch, tmp_path):
 
 
 class TestWorktreeCreateDispatch:
+    def test_selected_ciu_root_resolves_from_cwd_or_explicit_target(self, tmp_path):
+        git_root = tmp_path / "mono"
+        nested = git_root / "component"
+        nested.mkdir(parents=True)
+        (nested / "ciu.global.defaults.toml.j2").write_text(
+            "[ciu]\n", encoding="utf-8"
+        )
+
+        assert cli._resolve_worktree_ciu_root_cli(
+            git_root, None, nested / "src"
+        ) == nested
+        assert cli._resolve_worktree_ciu_root_cli(
+            git_root, git_root, nested
+        ) == nested
+        assert cli._resolve_worktree_ciu_root_cli(
+            git_root, git_root / "other", nested
+        ) is None
+
     def test_forwards_all_options(self, monkeypatch, capsys):
         seen = {}
 
@@ -472,6 +490,88 @@ class TestManagedLifecycleDispatch:
             "adopt", "task-one", "/tmp/existing", "--profile", "core,db"
         ]) == 0
         assert seen["profile"] == "core,db"
+
+    def test_create_ensure_and_adopt_use_the_selected_nested_ciu_root(
+        self, monkeypatch
+    ):
+        git_root = Path("/tmp/mono")
+        nested_root = git_root / "component"
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_git_root_cli", lambda *_a: git_root
+        )
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_ciu_root_cli", lambda *_a: nested_root
+        )
+        seen = {}
+
+        def fake_lifecycle(root, logical_name, **kwargs):
+            seen.update(root=root, logical_name=logical_name, kwargs=kwargs)
+            return _ready_record()
+
+        for verb in ("create", "ensure"):
+            seen.clear()
+            monkeypatch.setattr(wt_mod, verb, fake_lifecycle)
+            assert cli._worktree([verb, "nested-task", "--profile", "core"]) == 0
+            assert seen["root"] == nested_root
+
+        seen.clear()
+
+        def fake_adopt(root, logical_name, path, **kwargs):
+            seen.update(root=root, logical_name=logical_name, path=path, kwargs=kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "adopt", fake_adopt)
+        assert cli._worktree([
+            "adopt", "nested-task", "/tmp/existing", "--profile", "core"
+        ]) == 0
+        assert seen["root"] == nested_root
+
+    def test_overlay_options_refuse_without_a_selected_ciu_root(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_git_root_cli", lambda *_a: Path("/tmp/mono")
+        )
+        monkeypatch.setattr(cli, "_resolve_worktree_ciu_root_cli", lambda *_a: None)
+        monkeypatch.setattr(
+            wt_mod, "create",
+            lambda *_a, **_kw: pytest.fail("allocation must not run without a CIU root"),
+        )
+
+        assert cli._worktree(["create", "rootless", "--profile", "core"]) == 2
+        assert "require a selected CIU root" in capsys.readouterr().err
+
+    def test_existing_network_claim_flag_forwards_only_to_supported_verbs(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_git_root_cli", lambda *_a: Path("/tmp/mono")
+        )
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_ciu_root_cli", lambda *_a: Path("/tmp/mono/ciu")
+        )
+        seen = {}
+
+        def fake_ensure(_root, _name, **kwargs):
+            seen.update(kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "ensure", fake_ensure)
+        assert cli._worktree([
+            "ensure", "legacy", "--adopt-existing-network"
+        ]) == 0
+        assert seen["adopt_existing_network"] is True
+
+        def fake_adopt(_root, _name, _path, **kwargs):
+            seen.clear()
+            seen.update(kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "adopt", fake_adopt)
+        assert cli._worktree([
+            "adopt", "legacy", "/tmp/existing", "--adopt-existing-network"
+        ]) == 0
+        assert seen["adopt_existing_network"] is True
 
     @pytest.mark.parametrize("verb", ["create", "ensure"])
     def test_ref_services_flag_forwards_on_create_and_ensure(
