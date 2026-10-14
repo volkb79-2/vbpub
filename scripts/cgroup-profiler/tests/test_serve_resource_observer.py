@@ -797,6 +797,84 @@ def test_observer_socket_permission_check_skips_root_only_warning_for_custom_gro
     assert not any("root-only until host-setup" in message for message in messages)
 
 
+def test_observer_socket_permission_check_refuses_unsafe_host_directory(
+    tmp_path, monkeypatch,
+):
+    socket_dir = tmp_path / "observer"
+    socket_path = socket_dir / "resource-observer.sock"
+
+    def metadata(candidate):
+        if str(candidate) == str(socket_dir):
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o771, st_uid=0, st_gid=1234,
+            )
+        return SimpleNamespace(
+            st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=1234,
+        )
+
+    monkeypatch.setattr(serve.os, "lstat", metadata)
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    with pytest.raises(OSError, match="unsafe host resource observer directory"):
+        server._assert_observer_socket_permissions(
+            str(socket_dir), str(socket_path), require_host_identity=True,
+        )
+
+
+def test_observer_socket_permission_check_reports_host_socket_chown_failure(
+    tmp_path, monkeypatch,
+):
+    socket_dir = tmp_path / "observer"
+    socket_path = socket_dir / "resource-observer.sock"
+
+    def metadata(candidate):
+        if str(candidate) == str(socket_dir):
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=1234,
+            )
+        return SimpleNamespace(
+            st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=1234,
+        )
+
+    monkeypatch.setattr(serve.os, "lstat", metadata)
+    monkeypatch.setattr(
+        serve.os, "chown",
+        lambda *_args: (_ for _ in ()).throw(PermissionError("chown denied")),
+    )
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    with pytest.raises(OSError, match="could not set observer socket owner root:gid=1234"):
+        server._assert_observer_socket_permissions(
+            str(socket_dir), str(socket_path), require_host_identity=True,
+        )
+
+
+def test_observer_socket_permission_check_refuses_wrong_final_socket_identity(
+    tmp_path, monkeypatch,
+):
+    socket_dir = tmp_path / "observer"
+    socket_path = socket_dir / "resource-observer.sock"
+
+    def metadata(candidate):
+        if str(candidate) == str(socket_dir):
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=1234,
+            )
+        return SimpleNamespace(
+            st_mode=stat.S_IFSOCK | 0o660, st_uid=1000, st_gid=1234,
+        )
+
+    monkeypatch.setattr(serve.os, "lstat", metadata)
+    monkeypatch.setattr(serve.os, "chown", lambda *_args: None)
+    monkeypatch.setattr(serve.os, "chmod", lambda *_args: None)
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    with pytest.raises(OSError, match="permissions do not match its directory"):
+        server._assert_observer_socket_permissions(
+            str(socket_dir), str(socket_path), require_host_identity=True,
+        )
+
+
 @pytest.mark.parametrize("failure", [OSError("getsockopt"), struct.error("short credentials")])
 def test_peer_credentials_refuse_unreadable_kernel_identity(tmp_path, failure):
     class Connection:
@@ -833,6 +911,7 @@ def test_observer_accept_loop_handles_absent_socket_timeout_and_close(tmp_path):
 
     class Closed:
         def accept(self):
+            server._stopping = True
             raise OSError("closed")
 
         def close(self):
