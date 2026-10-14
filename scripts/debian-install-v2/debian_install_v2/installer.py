@@ -70,6 +70,7 @@ SWAP_TYPE_GUID = "0657fd6d-a4ab-43c4-84e5-0933c84b4f4f"
 _LOG = logging.getLogger("debian_install_v2.installer")
 
 TELEGRAM_MESSAGE_LIMIT = 4096
+CLOUD_INIT_USER_DATA_CACHE = "/var/lib/cloud/instance/user-data.txt"
 
 # LT-F-r1002-01: stage2's apt-get exited 100 because unattended-upgrade (started
 # by apt-daily-upgrade.service 4 s earlier) held the dpkg lock. Every apt-get the
@@ -3286,6 +3287,30 @@ MaxFileSec=1month
         self._mark_step("partitions", "success", "swap partitions already present in the live table, matching the plan")
         return True
 
+    def _cleanup_cloud_init_cache(self) -> None:
+        """Apply the configured cloud-init cache policy after install work succeeds."""
+        mode = self.config.cloud_init_cleanup_mode
+        if mode == "retain":
+            return
+
+        step = "cloud_init_cache_cleanup"
+        self._mark_step(step, "run", mode)
+        try:
+            if mode == "userdata-only":
+                self.actions.remove_file(CLOUD_INIT_USER_DATA_CACHE)
+            else:
+                argv = ["/usr/bin/cloud-init", "clean"]
+                if mode == "clean-all":
+                    # Preserve generated SSH/network/fstab configuration and
+                    # machine identity; --seed only clears the guest-side cache,
+                    # not an attached NoCloud ISO.
+                    argv.extend(["--logs", "--seed"])
+                self._run(argv, f"cloud-init clean ({mode})", dangerous=True)
+        except Exception:
+            self._mark_step(step, "failed", mode)
+            raise
+        self._mark_step(step, "success", mode)
+
     def _stage2(self) -> None:
         self._packages(["e2fsprogs", "util-linux"], "stage2")
         # True iff Case B's own hook already wrote the swap partitions as
@@ -3320,6 +3345,9 @@ MaxFileSec=1month
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
         self._release_apt_timers()
+        # Run last so failures in the install work above retain cloud-init's
+        # user-data and cache for diagnosis.
+        self._cleanup_cloud_init_cache()
         self.state.save(phase="done", status="success")
         # _remove_controller_ssh_key() deliberately does NOT happen here --
         # see resume(), which calls it only after the stage2_done marker
