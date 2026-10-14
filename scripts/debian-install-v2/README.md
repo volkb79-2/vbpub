@@ -223,6 +223,13 @@ not moved or overwritten; that layout is refused when swap is managed.
 Root-shrink safety is checked before swapfile cleanup, so the original file
 usage and filesystem minimum remain part of the safety check.
 
+Partition order is determined from on-disk sector extents, never partition
+numbers. This supports Debian genericcloud's GPT layout, where BIOS/EFI
+partitions 14 and 15 sit before root partition 1; those pre-root partitions
+are retained unchanged. Unknown non-swap partitions physically after root,
+overlaps, or incomplete geometry still fail closed. See the
+[root/swap design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies).
+
 Every managed partition-table write is planned, backed up, applied, read back,
 and rolled back on a mismatch. Kernel partition refreshes target only the exact
 added/removed/changed partition-number ranges. See the

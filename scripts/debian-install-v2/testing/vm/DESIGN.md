@@ -201,7 +201,7 @@ while building this:
 
 A test (or a human) never constructs a `qemu-system-x86_64` command line
 directly. `vmctl` exposes: `prepare-base <case>`, `start <run> [--case
-case-b] [--ssh-port N] [--mem MB] [--smp N] [--seed-iso PATH]`, `wait <run> [--timeout-s
+case-b] [--ssh-port N] [--mem MB] [--smp N] [--disk-gb N] [--seed-iso PATH]`, `wait <run> [--timeout-s
 N]`, `ssh <run> [-- cmd...]`, `copy <run> <src> <dst>`, `console <run>`,
 `status <run>`, `stop <run>`, `destroy <run>`. This mirrors a pattern from
 an independent design discussion the operator had in parallel (compared
@@ -220,6 +220,18 @@ unchanged. Its user-data must provision the harness's `tester` account and SSH
 key or the normal SSH-based wait/control path cannot connect. Keeping this as a
 per-run input avoids changing the default deterministic seed or the immutable
 base image.
+
+`--disk-gb N` grows only the new per-run qcow2 overlay before boot. This is
+needed when a test profile has a larger minimum root or swap target than the
+downloaded cloud image's original virtual size (the stock Debian image staged
+here is about 3 GiB, while the installer's default root floor is 10 GiB). A
+20 GiB first-boot disk gives the default 2 GiB test VM a 4 GiB automatic swap
+target and enough capacity for the default profile. The raw image's cloud-init
+then grows its root into the larger disk before the installer starts. The
+operation omits QEMU's explicit shrink option, so a size smaller than the base
+is refused; the immutable base is never modified. A `*-ready` base has already
+disabled cloud-init and is not appropriate when testing that first-boot growth
+path.
 
 ## 3. Base images and copy-on-write resets
 

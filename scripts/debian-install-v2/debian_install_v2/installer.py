@@ -632,12 +632,13 @@ class Installer:
         if self.config.swap_policy == "on":
             disk_sectors, root_start, root_size = self._disk_facts()
             live = self._live_partition_entries(disk_sectors, root_start, root_size)
+            before_root = self._partitions_before_root(live, root_start)
             retained = self._swap_partitions_before_root(live, root_start)
             planned_swaps = [
                 (number, int(entry["start"]), int(entry["size"]))
                 for number, entry in sorted(retained.items())
             ]
-            tail_numbers = self._tail_swap_numbers(len(partitions), retained)
+            tail_numbers = self._tail_swap_numbers(len(partitions), before_root)
             planned_swaps.extend(
                 (number, start, size)
                 for number, (start, size) in zip(tail_numbers, partitions)
@@ -1667,21 +1668,20 @@ MaxFileSec=1month
                 forbidden.append(line)
         allowed = {self.root_partition_path}
         unexpected_mounts = []
+        disk_sectors, root_start, root_size = self._disk_facts()
+        entries = self._live_partition_entries(disk_sectors, root_start, root_size)
         for line in forbidden:
             source = line.split()[0]
             if source in allowed:
                 continue
             suffix = source[len(prefix):] if source.startswith(prefix) else ""
-            # Partitions numbered below root_number (e.g. the ESP and a
-            # separate /boot on a standard UEFI/GPT layout) are left
-            # byte-for-byte unchanged by _write_sfdisk_plan()'s own `kept`
-            # pass -- their being mounted is normal on every real host this
-            # tool targets and poses no risk to this transaction. Confirmed
-            # live 2026-09-08: this check's original allowlist-only-root
-            # form refused every run on a stock netcup trixie host, which
-            # always mounts vda1 (/boot/efi) and vda2 (/boot) alongside root.
-            if suffix.isdigit() and int(suffix) < self.root_number:
-                continue
+            if suffix.isdigit():
+                number = int(suffix)
+                entry = entries.get(number, {})
+                if "start" in entry and "size" in entry:
+                    end = int(entry["start"]) + int(entry["size"])
+                    if end <= root_start:
+                        continue
             unexpected_mounts.append(line)
         if unexpected_mounts:
             raise InstallerError("refusing disk transaction: partitions are mounted:\n" + "\n".join(unexpected_mounts))
@@ -1760,15 +1760,31 @@ MaxFileSec=1month
         after_end = int(root_plan["start"]) + int(root_plan["size"])
         if after_end > before_end:
             raise InstallerError("partition plan unexpectedly grows the root partition")
+        before_root = self._partitions_before_root(current, int(root_current["start"]))
+        preserved = {
+            number: entry for number, entry in before_root.items()
+            if not self._is_swap_partition(entry) or self.config.swap_policy == "on"
+        }
+        for number, entry in preserved.items():
+            planned = plan.get(number)
+            if planned is None or any(
+                planned.get(field) != entry.get(field)
+                for field in ("start", "size", "type")
+                if field in entry
+            ):
+                raise InstallerError(
+                    f"partition plan does not preserve pre-root partition {number}"
+                )
         for number, entry in current.items():
             if number != self.root_number and ("start" not in entry or "size" not in entry):
                 raise InstallerError(
                     f"cannot validate partition-table transaction: partition {number} has incomplete geometry"
                 )
-            physically_after_root = (
-                "start" in entry and int(entry["start"]) >= before_end
-            )
-            if (number > self.root_number or physically_after_root) and not self._is_swap_partition(entry):
+            start = int(entry["start"]) if "start" in entry else 0
+            end = start + int(entry["size"]) if "size" in entry else 0
+            if number != self.root_number and start < before_end and end > int(root_current["start"]):
+                raise InstallerError(f"partition {number} overlaps the current root partition")
+            if number != self.root_number and start >= before_end and not self._is_swap_partition(entry):
                 raise InstallerError(
                     f"unsupported disk layout: non-swap partition {number} follows root"
                 )
@@ -1795,7 +1811,7 @@ MaxFileSec=1month
                 and self._is_swap_partition(entry)
                 and int(entry["start"]) >= root_end_after
             )
-            expected_numbers = self._tail_swap_numbers(len(tail_numbers), retained)
+            expected_numbers = self._tail_swap_numbers(len(tail_numbers), before_root)
             if tail_numbers != expected_numbers:
                 raise InstallerError(f"partition plan has unexpected swap numbering: {tail_numbers!r}")
 
@@ -1825,7 +1841,7 @@ MaxFileSec=1month
                     "cannot safely retain or replace swap partition(s) with incomplete geometry: "
                     + ", ".join(map(str, sorted(incomplete_swap)))
                 )
-        if self.config.root_resize_policy != "untouched":
+        if self.config.root_resize_policy != "untouched" or self.config.swap_policy in {"on", "off"}:
             unknown_geometry = [
                 number for number, entry in entries.items()
                 if number != self.root_number
@@ -1843,14 +1859,23 @@ MaxFileSec=1month
             and "start" in entry
             and int(entry["start"]) >= root_end
         ]
+        overlapping_root = [
+            number for number, entry in entries.items()
+            if number != self.root_number
+            and "start" in entry and "size" in entry
+            and int(entry["start"]) < root_end
+            and int(entry["start"]) + int(entry["size"]) > root_start
+        ]
+        if overlapping_root:
+            raise InstallerError(
+                "partition(s) overlap the current root extent "
+                f"({', '.join(map(str, sorted(overlapping_root)))}); refusing disk changes"
+            )
         unknown_after_root = [
             number for number, entry in entries.items()
             if number != self.root_number
             and not self._is_swap_partition(entry)
-            and (
-                number > self.root_number
-                or ("start" in entry and int(entry["start"]) >= root_end)
-            )
+            and "start" in entry and int(entry["start"]) >= root_end
         ]
         if self.config.swap_policy in {"on", "off"} and unknown_after_root:
             raise InstallerError(
@@ -1860,6 +1885,10 @@ MaxFileSec=1month
 
         retained_before_root = (
             self._swap_partitions_before_root(entries, root_start)
+            if self.config.swap_policy == "on" else {}
+        )
+        preserved_before_root = (
+            self._partitions_before_root(entries, root_start)
             if self.config.swap_policy == "on" else {}
         )
         # With swap untouched, root can grow only to the first existing
@@ -1904,7 +1933,7 @@ MaxFileSec=1month
                     remaining_partition_slots,
                     tail_target_sectors // alignment,
                 )
-            self._tail_swap_numbers(tail_partition_count, retained_before_root)
+            self._tail_swap_numbers(tail_partition_count, preserved_before_root)
             per_partition = (
                 tail_target_sectors // tail_partition_count
                 if tail_partition_count else 0
@@ -2041,38 +2070,53 @@ MaxFileSec=1month
         partition_type = (entry.get("type") or "").lower()
         return partition_type in {SWAP_TYPE_GUID, "82"}
 
+    def _partitions_before_root(
+        self,
+        entries: dict[int, dict[str, str]],
+        root_start: int,
+    ) -> dict[int, dict[str, str]]:
+        """Return all partitions wholly before root, independent of their IDs."""
+        before_root: dict[int, dict[str, str]] = {}
+        for number, entry in entries.items():
+            if number == self.root_number:
+                continue
+            if "start" not in entry or "size" not in entry:
+                raise InstallerError(
+                    f"cannot determine physical order: partition {number} has incomplete geometry"
+                )
+            start = int(entry["start"])
+            size = int(entry["size"])
+            if start < 0 or size <= 0:
+                raise InstallerError(
+                    f"cannot determine physical order: partition {number} has invalid geometry"
+                )
+            end = start + size
+            if start < root_start < end:
+                raise InstallerError(
+                    f"partition {number} overlaps the root partition boundary; refusing disk changes"
+                )
+            if end <= root_start:
+                before_root[number] = entry
+        return before_root
+
     def _swap_partitions_before_root(
         self,
         entries: dict[int, dict[str, str]],
         root_start: int,
     ) -> dict[int, dict[str, str]]:
         """Return swap partitions wholly before root, keyed by partition number."""
-        retained: dict[int, dict[str, str]] = {}
-        for number, entry in entries.items():
-            if not self._is_swap_partition(entry):
-                continue
-            if "start" not in entry or "size" not in entry:
-                if self.config.swap_policy == "on":
-                    raise InstallerError(
-                        f"cannot preserve pre-root swap partition {number}: geometry is incomplete"
-                    )
-                continue
-            start = int(entry["start"])
-            end = start + int(entry["size"])
-            if end <= root_start:
-                retained[number] = entry
-            elif start < root_start:
-                raise InstallerError(
-                    f"swap partition {number} overlaps the root partition boundary; refusing disk changes"
-                )
-        return retained
+        return {
+            number: entry
+            for number, entry in self._partitions_before_root(entries, root_start).items()
+            if self._is_swap_partition(entry)
+        }
 
-    def _tail_swap_numbers(self, count: int, retained_numbers: Iterable[int]) -> list[int]:
-        """Choose tail partition IDs without renumbering retained pre-root swap."""
-        retained = set(retained_numbers)
+    def _tail_swap_numbers(self, count: int, reserved_numbers: Iterable[int]) -> list[int]:
+        """Choose swap IDs that do not collide with root or preserved partitions."""
+        reserved = {*reserved_numbers, self.root_number}
         available = [
             number for number in range(self.root_number + 1, 129)
-            if number not in retained
+            if number not in reserved
         ]
         if count > len(available):
             raise InstallerError(
@@ -2396,7 +2440,11 @@ MaxFileSec=1month
         current_entries = self._parse_partition_entries(dump)
         root_entry = current_entries.get(self.root_number, {})
         root_start = int(root_entry.get("start", "0"))
-        retained_before_root = self._swap_partitions_before_root(current_entries, root_start)
+        preserved_before_root = self._partitions_before_root(current_entries, root_start)
+        retained_before_root = {
+            number: entry for number, entry in preserved_before_root.items()
+            if self._is_swap_partition(entry)
+        }
         kept: list[str] = []
         for line in dump.splitlines():
             columns = line.split()
@@ -2413,7 +2461,7 @@ MaxFileSec=1month
             is_retained_pre_root_swap = (
                 self.config.swap_policy == "on" and number in retained_before_root
             )
-            if (number < self.root_number and not is_managed_swap) or is_retained_pre_root_swap:
+            if (number in preserved_before_root and not is_managed_swap) or is_retained_pre_root_swap:
                 kept.append(line)
         lines = [*header_lines, ""]
         for line in kept:
@@ -2447,7 +2495,7 @@ MaxFileSec=1month
             rebuilt.append(f"size={new_root_size}")
         lines.append(f"{prefix}{self.root_number} : " + ", ".join(rebuilt))
         for number, (start, size) in zip(
-            self._tail_swap_numbers(len(partitions), retained_before_root), partitions
+            self._tail_swap_numbers(len(partitions), preserved_before_root), partitions
         ):
             lines.append(f"{prefix}{number} : start={start}, size={size}, type={SWAP_TYPE_GUID}")
         return "\n".join(lines) + "\n"
@@ -3273,11 +3321,12 @@ MaxFileSec=1month
         if self.config.swap_policy == "on":
             disk_sectors, root_start, root_size = self._disk_facts()
             live = self._live_partition_entries(disk_sectors, root_start, root_size)
+            before_root = self._partitions_before_root(live, root_start)
             retained = self._swap_partitions_before_root(live, root_start)
             tail_partitions, _target_root_size = self._plan_swap_partitions()
             expected_numbers = sorted({
                 *retained,
-                *self._tail_swap_numbers(len(tail_partitions), retained),
+                *self._tail_swap_numbers(len(tail_partitions), before_root),
             })
             prefix = self._partition_base
             swaps_output = self._run(
@@ -3340,9 +3389,10 @@ MaxFileSec=1month
         prefix = self._partition_base
         disk_sectors, root_start, root_size = self._disk_facts()
         live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        before_root = self._partitions_before_root(live, root_start)
         retained = self._swap_partitions_before_root(live, root_start)
         tail_partitions, _target_root_size = self._plan_swap_partitions()
-        tail_numbers = self._tail_swap_numbers(len(tail_partitions), retained)
+        tail_numbers = self._tail_swap_numbers(len(tail_partitions), before_root)
         layout = [
             (number, int(entry["start"]), int(entry["size"]), True)
             for number, entry in retained.items()
@@ -4171,6 +4221,7 @@ MaxFileSec=1month
             return True
 
         planned_partitions, _target_root_size = self._plan_swap_partitions()
+        before_root = self._partitions_before_root(live, root_start)
         retained = self._swap_partitions_before_root(live, root_start)
         expected = {
             number: {
@@ -4184,7 +4235,7 @@ MaxFileSec=1month
                 "start": str(start), "size": str(size), "type": SWAP_TYPE_GUID,
             }
             for number, (start, size) in zip(
-                self._tail_swap_numbers(len(planned_partitions), retained), planned_partitions
+                self._tail_swap_numbers(len(planned_partitions), before_root), planned_partitions
             )
         })
         actual = {

@@ -282,6 +282,70 @@ def test_managed_swap_refuses_non_swap_partition_physically_after_root_even_if_n
         installer._plan_swap_partitions()
 
 
+def test_debian_cloud_image_high_numbered_boot_partitions_before_root_are_preserved(tmp_path):
+    disk_sectors = 20 * GIB // 512
+    root_start = 262144
+    root_size = disk_sectors - root_start
+    live = {
+        14: {
+            "start": "2048", "size": "6144",
+            "type": "21686148-6449-6e6f-744e-656564454649",
+        },
+        15: {
+            "start": "8192", "size": "253952",
+            "type": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+        },
+        1: {
+            "start": str(root_start), "size": str(root_size),
+            "type": "0fc63daf-8483-4772-8e79-3d69d8477de4",
+        },
+    }
+    installer = make_planner(
+        tmp_path,
+        disk_gib=20,
+        root_gib=None,
+        root_resize_policy="resize",
+        swap_disk_total_gb=4,
+        preserve_root_size_gb=2,
+        root_used_gib=1,
+        entries=live,
+    )
+    installer.root_number = 1
+    installer.root_partition_path = "/dev/vda1"
+    installer._disk_facts = lambda: (disk_sectors, root_start, root_size)
+    disk_dump = """label: gpt
+device: /dev/vda
+unit: sectors
+sector-size: 512
+
+/dev/vda14 : start=2048, size=6144, type=21686148-6449-6e6f-744e-656564454649
+/dev/vda15 : start=8192, size=253952, type=c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+/dev/vda1 : start=262144, size={root_size}, type=0fc63daf-8483-4772-8e79-3d69d8477de4
+""".format(root_size=root_size)
+    installer._current_partition_dump = lambda *_args: disk_dump
+
+    partitions, target_root = installer._plan_swap_partitions()
+    plan_text = installer._write_sfdisk_plan(partitions, target_root)
+    plan = installer._parse_partition_entries(plan_text)
+    current = installer._parse_partition_entries(disk_dump)
+    installer._validate_plan_geometry(current, plan, target_root)
+
+    assert plan[14] == live[14]
+    assert plan[15] == live[15]
+    assert target_root < root_size
+    assert sorted(
+        number for number, entry in plan.items()
+        if installer._is_swap_partition(entry)
+    ) == [2, 3, 4, 5]
+
+
+def test_tail_swap_numbers_skip_any_preserved_pre_root_partition(tmp_path):
+    installer = make_planner(tmp_path)
+    installer.root_number = 1
+
+    assert installer._tail_swap_numbers(3, {2, 14, 15}) == [3, 4, 5]
+
+
 def test_swap_off_leaves_no_planned_swap_and_uses_reclaimed_disk_space(tmp_path):
     root_start = 2048
     current_root = 8 * GIB // 512
@@ -326,7 +390,9 @@ def test_show_plan_reports_untouched_swap_count_and_off_as_disabled(tmp_path):
     untouched_plan = untouched.show_plan()
     assert untouched_plan["swap_partition_count"] == 1
 
-    disabled = make_planner(tmp_path / "off", swap_policy="off", entries=live)
+    disabled = make_planner(
+        tmp_path / "off", root_gib=8, swap_policy="off", entries=live
+    )
     disabled_plan = disabled.show_plan()
     assert disabled_plan["swap_partition_count"] == 0
 

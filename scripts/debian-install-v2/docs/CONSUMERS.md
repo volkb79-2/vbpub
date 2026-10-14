@@ -114,6 +114,13 @@ examples and the reasons for this sizing rule are in the
 [feature overview](../README.md#disk-swap) and
 [design rationale](DESIGN-GUIDE.md#root-and-swap-policies).
 
+Partition order is read from sector extents, not partition numbers. The
+Debian genericcloud GPT layout with BIOS/EFI partitions 14 and 15 before root
+partition 1 is supported; those pre-root partitions are retained unchanged.
+Managed swap refuses partitions that overlap root, incomplete geometry, or an
+unknown non-swap partition physically after root. Review `plan` before
+confirming if the image has a custom partition layout.
+
 If `swap=on` needs more tail space than exists and root policy is `untouched`
 or `grow-only`, planning refuses with the available/requested sizes. A
 `resize` shrink is refused if root data usage or the ext filesystem's minimum

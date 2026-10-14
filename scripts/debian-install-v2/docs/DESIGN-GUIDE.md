@@ -130,6 +130,16 @@ operation. Unknown non-swap partitions after root are not shifted to make the
 requested layout fit. This favors a clear refusal over a plausible but
 destructive guess.
 
+Partition IDs are labels, not physical order. Every layout decision uses the
+partition's sector start and size. In particular, Debian genericcloud can put
+the BIOS boot and EFI system partitions at IDs 14 and 15 before root partition
+1. The transaction preserves all complete partitions wholly before root,
+regardless of ID, and reserves their IDs when allocating new swap partitions.
+It refuses any partition overlapping root, incomplete geometry needed for the
+transaction, or an unknown non-swap partition physically after root. This
+avoids both a false refusal of the stock cloud image and silently dropping its
+boot partitions when rewriting the table.
+
 Root-shrink safety is checked before swapfile cleanup. Existing swapfile data
 is still part of the usage and filesystem-minimum checks; deleting the file
 first could understate the data occupying the root filesystem. After that
