@@ -4066,11 +4066,11 @@ def _assert_allocation_checkout_reset_is_safe(
     if not entries:
         return
 
-    tracked = _git(["ls-files", "-z"], checkout)
+    tracked = _git(["ls-tree", "-r", "--name-only", "-z", "HEAD"], checkout)
     if tracked.returncode != 0:
         raise WorktreeError(
             f"[S16] cannot safely resume {record.logical_name!r}: could not inspect "
-            f"tracked checkout paths at {checkout}: "
+            f"the allocated tree at {checkout}: "
             f"{(tracked.stderr or tracked.stdout).strip()}"
         )
     tracked_paths = {path for path in tracked.stdout.split("\0") if path}
@@ -4079,7 +4079,10 @@ def _assert_allocation_checkout_reset_is_safe(
     unexpected: list[str] = []
     for entry in entries:
         code, path = entry[:2], entry[3:]
-        if code == " D" and path in tracked_paths:
+        # A --no-checkout worktree has an empty index, so porcelain reports
+        # each tree path as a staged deletion (`D `), not a worktree deletion
+        # (` D`). Compare against HEAD's tree; `ls-files` is empty here.
+        if code == "D " and path in tracked_paths:
             missing_tracked.add(path)
         elif code == "??" and path == record_path:
             # The schema-v3 lifecycle record is intentionally untracked and
