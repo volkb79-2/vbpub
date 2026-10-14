@@ -11,8 +11,13 @@ import builtins
 import hashlib
 import io
 import json
+import os
+import queue
+import stat
 import subprocess
 import sys
+import threading
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -402,16 +407,17 @@ class TestCreateRemoveList:
         with pytest.raises(worktree.WorktreeError, match="ciu env generate"):
             create_path(tmp_repo, "wt", base="main")
 
-    def test_create_surfaces_git_worktree_creation_failure(self, tmp_repo, monkeypatch):
-        monkeypatch.setattr(
-            worktree,
-            "_git",
-            lambda *_args: subprocess.CompletedProcess(
-                ["git"], 1, "", "branch exists"
-            ),
-        )
-        with pytest.raises(worktree.WorktreeError, match="branch exists"):
-            create_path(tmp_repo, "wt", base="main")
+    def test_create_refuses_unresolved_base_before_allocation_mutation(self, tmp_repo):
+        common = worktree._git_common_dir(tmp_repo)
+        exclude = common / "info" / "exclude"
+        before = exclude.read_bytes() if exclude.exists() else None
+
+        with pytest.raises(worktree.WorktreeError, match="cannot verify selected base"):
+            create_path(tmp_repo, "wt", base="missing-base")
+
+        assert worktree.find_instance_record(tmp_repo, "wt") is None
+        assert worktree.find_worktree(tmp_repo, "wt") is None
+        assert (exclude.read_bytes() if exclude.exists() else None) == before
 
     def test_list_worktrees_shows_primary_and_added(self, tmp_repo, fake_generate_env):
         create_path(tmp_repo, "wt1", base="main")
@@ -529,6 +535,176 @@ class TestManagedIdentityLifecycle:
         assert stored["runtime"]["instance_id"] == record.instance_id
         assert "head" not in stored
         assert "password" not in record.record_path.read_text(encoding="utf-8").lower()
+
+    def test_record_writer_syncs_parent_directory_after_replace(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "durable-record", base="main")
+        directory = record.record_path.parent
+        events = []
+        real_open = os.open
+        real_fsync = os.fsync
+        real_replace = os.replace
+
+        def tracked_open(path, flags, *args, **kwargs):
+            fd = real_open(path, flags, *args, **kwargs)
+            if Path(path) == directory:
+                events.append(("directory-open", fd))
+            return fd
+
+        def tracked_fsync(fd):
+            kind = "directory-fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file-fsync"
+            events.append((kind, fd))
+            return real_fsync(fd)
+
+        def tracked_replace(source, destination):
+            result = real_replace(source, destination)
+            events.append(("replace", str(destination)))
+            return result
+
+        monkeypatch.setattr(worktree.os, "open", tracked_open)
+        monkeypatch.setattr(worktree.os, "fsync", tracked_fsync)
+        monkeypatch.setattr(worktree.os, "replace", tracked_replace)
+        worktree._write_instance_record(record)
+
+        labels = [event[0] for event in events]
+        assert labels.index("file-fsync") < labels.index("replace")
+        assert labels.index("replace") < labels.index("directory-open")
+        assert labels.index("directory-open") < labels.index("directory-fsync")
+
+    def test_parent_directory_sync_failure_reports_already_replaced_record(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "directory-sync-fails")
+        real_fsync = os.fsync
+
+        def fail_directory_sync(fd):
+            if stat.S_ISDIR(os.fstat(fd).st_mode):
+                raise OSError("directory sync denied")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(worktree.os, "fsync", fail_directory_sync)
+        with pytest.raises(
+            worktree.WorktreeError, match="was replaced.*durability is uncertain"
+        ):
+            worktree._write_instance_record(record)
+
+        assert worktree.read_instance_record(record.record_path) == record
+
+    def test_lease_update_cannot_restore_allocating_snapshot_after_ready(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        original = worktree.create(tmp_repo, "lease-transition", profile="core")
+        allocating = replace(
+            original,
+            state="allocating",
+            initial_overlay_pending=True,
+            network_id=None,
+        )
+        worktree._write_instance_record(allocating)
+        ready = replace(
+            allocating,
+            state="ready",
+            initial_overlay_pending=False,
+            network_id="a" * 64,
+        )
+
+        ready_write_started = threading.Event()
+        allow_ready_write = threading.Event()
+        ready_written = threading.Event()
+        lease_started = threading.Event()
+        observed = queue.Queue()
+        failures = []
+        real_lock = worktree._allocation_lock
+        real_find = worktree.find_instance_record
+        real_write = worktree._write_instance_record
+
+        @contextmanager
+        def tracked_lock(root):
+            if threading.current_thread().name == "lease-updater":
+                observed.put("lease-lock")
+            with real_lock(root):
+                yield
+
+        def tracked_find(root, name, **kwargs):
+            record = real_find(root, name, **kwargs)
+            if threading.current_thread().name == "lease-updater":
+                observed.put(("lease-read", record.state if record else None))
+            return record
+
+        def tracked_write(candidate):
+            thread_name = threading.current_thread().name
+            if thread_name == "allocator" and candidate.state == "ready":
+                ready_write_started.set()
+                if not allow_ready_write.wait(timeout=5):
+                    raise AssertionError("test did not release ready publication")
+                result = real_write(candidate)
+                ready_written.set()
+                return result
+            if thread_name == "lease-updater" and candidate.lease is not None:
+                if not ready_written.wait(timeout=5):
+                    raise AssertionError("lease write did not follow ready publication")
+            return real_write(candidate)
+
+        monkeypatch.setattr(worktree, "_allocation_lock", tracked_lock)
+        monkeypatch.setattr(worktree, "find_instance_record", tracked_find)
+        monkeypatch.setattr(worktree, "_write_instance_record", tracked_write)
+
+        def publish_ready():
+            try:
+                with worktree._allocation_lock(tmp_repo):
+                    worktree._write_instance_record(ready)
+            except BaseException as exc:  # surface worker failures in the test thread
+                failures.append(exc)
+
+        def update_lease():
+            lease_started.set()
+            try:
+                worktree.apply_lease(
+                    tmp_repo, "lease-transition", extend="1h"
+                )
+            except BaseException as exc:
+                failures.append(exc)
+
+        allocator = threading.Thread(target=publish_ready, name="allocator")
+        allocator.start()
+        assert ready_write_started.wait(timeout=5)
+        lease_thread = threading.Thread(target=update_lease, name="lease-updater")
+        lease_thread.start()
+        assert lease_started.wait(timeout=5)
+        first_lease_action = observed.get(timeout=5)
+        allow_ready_write.set()
+        allocator.join(timeout=5)
+        lease_thread.join(timeout=5)
+
+        assert not allocator.is_alive() and not lease_thread.is_alive()
+        assert not failures
+        assert first_lease_action == "lease-lock"
+        final = worktree.read_instance_record(original.record_path)
+        assert final.state == "ready"
+        assert final.initial_overlay_pending is False
+        assert final.network_id == "a" * 64
+        assert final.lease is not None
+
+    def test_own_lease_entrypoints_use_the_allocation_lock(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        record = worktree.create(tmp_repo, "own-lease-lock")
+        lock_roots = []
+        real_lock = worktree._allocation_lock
+
+        @contextmanager
+        def tracked_lock(root):
+            lock_roots.append(Path(root).resolve())
+            with real_lock(root):
+                yield
+
+        monkeypatch.setattr(worktree, "_allocation_lock", tracked_lock)
+        assert worktree.acquire_own_lease(
+            record.ciu_root, ttl_hours=1
+        ).lease is not None
+        assert worktree.release_own_lease(record.ciu_root).lease is None
+        assert lock_roots == [record.ciu_root.resolve(), record.ciu_root.resolve()]
 
     def test_generated_same_second_collision_suffixes_only_second(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -896,12 +1072,58 @@ class TestManagedIdentityLifecycle:
         monkeypatch.setattr(worktree, "_generate_env_in", collide)
         monkeypatch.setattr(worktree, "_docker_network_exists", lambda _network: False)
         worktree.create(tmp_repo, "logical-one")
-        with pytest.raises(worktree.WorktreeError, match="already belongs"):
+        with pytest.raises(
+            worktree.RuntimeNetworkOwnershipError, match="already belongs"
+        ):
             worktree.create(tmp_repo, "logical-two")
         failed = worktree.find_instance_record(tmp_repo, "logical-two")
         assert failed is not None
         assert failed.state == "recovery-required"
         assert failed.recovery_status == "runtime-collision"
+
+    def test_runtime_registry_failure_is_not_classified_as_collision(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        real_list = worktree.list_instance_records
+        list_calls = 0
+
+        def unavailable(_root, **_kwargs):
+            nonlocal list_calls
+            list_calls += 1
+            if list_calls == 2:
+                raise worktree.WorktreeError("Git worktree inventory unavailable")
+            return real_list(_root, **_kwargs)
+
+        monkeypatch.setattr(worktree, "list_instance_records", unavailable)
+        with pytest.raises(
+            worktree.RuntimeNetworkVerificationError,
+            match="identity uniqueness.*inventory unavailable",
+        ):
+            worktree.create(tmp_repo, "registry-unavailable")
+
+        assert list_calls == 2
+        monkeypatch.setattr(worktree, "list_instance_records", real_list)
+        failed = worktree.find_instance_record(tmp_repo, "registry-unavailable")
+        assert failed is not None
+        assert failed.state == "recovery-required"
+        assert failed.recovery_status == "runtime-verification-failed"
+
+    def test_runtime_network_probe_failure_has_recoverable_status(
+        self, tmp_repo, fake_generate_env, monkeypatch
+    ):
+        def unavailable(_network):
+            raise worktree.RuntimeNetworkProbeError("docker permission denied")
+
+        monkeypatch.setattr(worktree, "_docker_network_details", unavailable)
+        with pytest.raises(
+            worktree.RuntimeNetworkProbeError, match="permission denied"
+        ):
+            worktree.create(tmp_repo, "network-probe-unavailable")
+
+        failed = worktree.find_instance_record(tmp_repo, "network-probe-unavailable")
+        assert failed is not None
+        assert failed.state == "recovery-required"
+        assert failed.recovery_status == "runtime-verification-failed"
 
     def test_network_collision_is_independent_of_instance_id(
         self, tmp_repo, monkeypatch, write_instance_facts
@@ -1295,14 +1517,12 @@ class TestManagedIdentityLifecycle:
 
 
 class TestForkPointProvenance:
-    """CIU-106: `create()` records WHERE `base_ref` pointed at creation.
+    """CIU-106: new allocations snapshot their requested base commit.
 
-    `base_ref` is a branch NAME and the branch keeps moving. Once it has
-    absorbed this worktree's work, `merge-base(base_ref, HEAD)` stops being
-    the fork point and becomes this tree's own pre-merge tip — and in the
-    fast-forward case nothing local separates that from a healthy fork. The
-    fork commit therefore has to be written down at the one moment it is
-    unambiguous.
+    Historical records may still hold symbolic base refs. A new record stores
+    the resolved commit in `base_ref`, and the `fork_point_sha` is read back
+    from the checkout after reset. A moving branch cannot change the tree
+    validated during preflight or the tree allocated.
     """
 
     def test_create_records_where_base_pointed(self, tmp_repo, fake_generate_env):
@@ -1568,20 +1788,10 @@ class TestForkPointProvenance:
         assert record.state == "recovery-required"
         assert record.recovery_status == "env-generation-failed"
 
-    def test_the_fork_point_is_the_CHECKED_OUT_tip_not_base_at_entry(
+    def test_base_ref_is_snapshotted_before_allocation_and_validation(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        """Regression: the capture used to read `base` in repo_root BEFORE
-        `_finish_allocation`'s `reset --hard <base_ref>`, which is what
-        actually sets the branch tip and re-resolves `base_ref` afresh.
-
-        Another session committing to the shared `main` checkout in that
-        window — which this estate's workflow explicitly expects — produced a
-        record that was born SPENT: the consumer refused it forever and
-        blamed `main` for absorbing work it never absorbed. Simulated by
-        moving `main` after the initial record write but before
-        `_finish_allocation` resolves and checks out `base_ref`.
-        """
+        """A moving branch cannot change the tree validated or checked out."""
         before = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
         real_write_record = worktree._write_instance_record
         raced = False
@@ -1591,18 +1801,28 @@ class TestForkPointProvenance:
             real_write_record(record)
             if not raced and record.state == "allocating" and record.fork_point_sha is None:
                 raced = True
-                (tmp_repo / "raced.txt").write_text("another session\n", encoding="utf-8")
+                (tmp_repo / "ciu.global.defaults.toml.j2").unlink()
+                (tmp_repo / "raced.txt").write_text(
+                    "another session\n", encoding="utf-8"
+                )
                 assert _git(["add", "-A"], tmp_repo).returncode == 0
                 assert _git(["commit", "-m", "raced commit"], tmp_repo).returncode == 0
 
         monkeypatch.setattr(worktree, "_write_instance_record", racing_record)
-        record = worktree.create(tmp_repo, "logical-one", base="main")
+        record = worktree.create(
+            tmp_repo, "logical-one", base="main", profile="core"
+        )
         after = _git(["rev-parse", "main"], tmp_repo).stdout.strip()
         assert raced
         assert after != before                       # the race really happened
         head = _git(["rev-parse", "HEAD"], record.git_worktree_path).stdout.strip()
-        # the recorded fork point is the tree that actually got checked out
-        assert record.fork_point_sha == head
+        assert record.base_ref == before
+        assert record.fork_point_sha == before
+        assert head == before
+        assert (record.ciu_root / "ciu.global.defaults.toml.j2").is_file()
+        assert (
+            record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        ).is_file()
         # ... and the record is therefore LIVE, not born spent
         assert _git(["merge-base", "main", "HEAD"],
                     record.git_worktree_path).stdout.strip() == record.fork_point_sha
@@ -2348,6 +2568,12 @@ class TestManagedHelperRefusals:
             lambda *_a, **_kw: (_ for _ in ()).throw(FileNotFoundError()),
         )
         assert worktree._docker_network_exists("wanted") is False
+        monkeypatch.setattr(
+            worktree.procutil, "docker",
+            lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("permission denied")),
+        )
+        with pytest.raises(worktree.RuntimeNetworkProbeError, match="permission denied"):
+            worktree._docker_network_exists("wanted")
         monkeypatch.setattr(
             worktree.procutil, "docker",
             lambda *_a, **_kw: subprocess.CompletedProcess([], 1, "", "denied"),
@@ -3139,6 +3365,48 @@ class TestExactWorktreeControl:
         ]
         assert kwargs["cwd"] == record.ciu_root
 
+    def test_up_refuses_same_name_network_replacement_before_child_start(
+        self, ready, fake_run, monkeypatch
+    ):
+        repo_root, record = ready
+        recorded = replace(record, network_id="4" * 64)
+        worktree._write_instance_record(recorded)
+        monkeypatch.setattr(
+            worktree,
+            "_docker_network_details",
+            lambda _network: {"id": "5" * 64, "labels": {}},
+        )
+
+        with pytest.raises(
+            worktree.RuntimeNetworkOwnershipError, match="cannot prove ownership"
+        ):
+            worktree.up_instance(repo_root, "ctrl")
+
+        assert fake_run["calls"] == []
+        failed = worktree.read_instance_record(record.record_path)
+        assert failed.state == "recovery-required"
+        assert failed.recovery_status == "runtime-collision"
+        assert failed.network_id == "4" * 64
+
+    def test_up_probe_failure_refuses_without_demoting_ready_record(
+        self, ready, fake_run, monkeypatch
+    ):
+        repo_root, record = ready
+
+        def probe_failure(_network):
+            raise worktree.RuntimeNetworkProbeError("docker permission denied")
+
+        monkeypatch.setattr(worktree, "_docker_network_details", probe_failure)
+        with pytest.raises(
+            worktree.RuntimeNetworkProbeError, match="permission denied"
+        ):
+            worktree.up_instance(repo_root, "ctrl")
+
+        assert fake_run["calls"] == []
+        current = worktree.read_instance_record(record.record_path)
+        assert current.state == "ready"
+        assert current.recovery_status is None
+
     def test_up_all_ignores_declared_profiles(self, ready, monkeypatch, fake_run):
         repo_root, _record = ready
         monkeypatch.setattr(
@@ -3821,3 +4089,41 @@ def test_ready_ensure_keeps_last_network_id_while_network_is_absent(
 
     assert ready.state == "ready"
     assert ready.network_id == "1" * 64
+
+
+def test_ensure_probe_permission_error_is_not_network_absence(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "network-probe-denied")
+    monkeypatch.setattr(
+        worktree.procutil,
+        "docker",
+        lambda *_a, **_kw: (_ for _ in ()).throw(PermissionError("docker denied")),
+    )
+
+    with pytest.raises(worktree.RuntimeNetworkProbeError, match="docker denied"):
+        worktree.ensure(tmp_repo, "network-probe-denied")
+
+    assert worktree.read_instance_record(record.record_path).state == "ready"
+
+
+def test_explicit_network_claim_cannot_replace_saved_object_id(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "network-claim-once")
+    record = replace(record, network_id="2" * 64)
+    worktree._write_instance_record(record)
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: {"id": "3" * 64, "labels": {}},
+    )
+
+    with pytest.raises(worktree.RuntimeNetworkOwnershipError, match="cannot prove ownership"):
+        worktree.ensure(
+            tmp_repo, "network-claim-once", adopt_existing_network=True
+        )
+
+    failed = worktree.read_instance_record(record.record_path)
+    assert failed.network_id == "2" * 64
+    assert failed.state == "recovery-required"

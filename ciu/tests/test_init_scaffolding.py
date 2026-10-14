@@ -10,6 +10,7 @@ Oracles:
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -136,6 +137,23 @@ def test_gitignore_entries_match_gitignored_ciu_sample():
     }
     scaffold_patterns = {entry for entry, _why in scaffold._GITIGNORE_ENTRIES}
     assert scaffold_patterns == sample_patterns
+
+
+def test_managed_record_atomic_writer_scratch_is_ignored_in_this_repo():
+    """A killed atomic record write must not dirty the CIU gate checkout."""
+    repo_root = Path(__file__).resolve().parents[2]
+    for path in (
+        "ciu/.ciu.worktree-instance.json.123.tmp",
+        ".worktrees/example/ciu/.ciu.worktree-instance.json.123.tmp",
+    ):
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", "--", path],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, f"record writer scratch is not ignored: {path}"
 
 
 def test_gitignore_entries_omit_the_committed_override_templates():
@@ -356,6 +374,8 @@ def test_gitignore_fully_satisfied_appends_nothing(tmp_path, monkeypatch, capfd)
         "**/ciu.compose.yml\n"
         "# managed worktree identity/lifecycle record (S16)\n"
         "ciu.worktree-instance.json\n"
+        "# atomic worktree-record staging files (CIU-135) — ignored until publication\n"
+        "**/.ciu.worktree-instance.json.*.tmp\n"
         "# atomic initial-overlay staging files (CIU-135) — ignored until publication\n"
         "**/.ciu.global.instance.toml.j2.*.tmp\n"
         "# per-checkout sparse global override (S3.1b) — hand-authored, "

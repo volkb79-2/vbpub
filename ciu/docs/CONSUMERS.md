@@ -58,8 +58,12 @@ workspace record contains the matching root-entry list. CIU does not report
 lifecycle verb (`create`, `ensure`, `adopt`) with `--json` emits the same
 envelope. `status` is one of `allocating`, `ready`,
 `recovery-required`; a `recovery-required` instance carries a closed
-`recovery_status` of `checkout-incomplete`, `env-generation-failed`, or
-`runtime-collision`. Resume a partial allocation with `ensure`.
+`recovery_status` of `checkout-incomplete`, `env-generation-failed`,
+`runtime-collision`, or `runtime-verification-failed`. A proven duplicate
+identity or foreign network is a collision; an unreadable Git-family registry
+or failed Docker ownership probe is indeterminate and uses
+`runtime-verification-failed`. Resume a partial allocation with `ensure` after
+the registry or probe is available.
 
 CIU must prove the checkout's exact commit before it can select the committed
 root set. If Git cannot provide that commit, creation leaves the allocated
@@ -77,6 +81,17 @@ committed target root. For example:
 $ ciu worktree create pkg-under-test --base main \
     --profile core,db
 ```
+
+Use that same selected root for follow-on worktree commands such as `inspect`,
+`up`, `lease`, `exec`, `list`, and `rm`. Git operations still use the whole
+worktree family, while CIU record lookup uses the selected root's recorded
+offset. This matters in a monorepo with several CIU roots.
+
+CIU resolves the requested `--base REF` to one full commit before creating the
+workspace. It uses that same commit for committed-root validation, workspace
+creation, and the first checkout reset. If `main` advances after this snapshot,
+the allocation stays on the validated commit; an explicit `ensure --base main`
+then refuses until `main` again names the recorded allocation commit.
 
 Use names declared by this project's profiles. An adopted checkout can receive
 the same initial selection with `ciu worktree adopt NAME PATH --profile P1,P2`.
@@ -125,13 +140,19 @@ fast path. A same-name replacement with no matching owner proof changes the
 record to `recovery-required`; a network outage does not erase the last saved
 object id. For a known legacy network with no CIU owner label, explicitly
 claim the exact object once with `--adopt-existing-network` on `adopt` or
-`ensure`:
+`ensure`, while the record has no saved network object id:
 
 ```console
 $ ciu worktree ensure pkg-under-test --adopt-existing-network
 ```
 
 A conflicting owner label always refuses.
+After an object id is saved, this flag cannot replace it with a different
+unlabelled network. `worktree up` also checks a present network immediately
+before launching the managed `ciu up` child. A Docker permission or execution
+failure is an unknown result and refuses; it is not treated as proof that the
+network is absent. A genuinely absent Docker executable or network remains a
+supported local-only state.
 
 If root preparation fails, keep the checkout and retry through CIU:
 

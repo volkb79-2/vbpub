@@ -526,6 +526,90 @@ class TestManagedLifecycleDispatch:
         ]) == 0
         assert seen["root"] == nested_root
 
+    def test_nested_root_lifecycle_verbs_keep_the_selected_root(
+        self, monkeypatch
+    ):
+        git_root = Path("/tmp/mono")
+        nested_root = git_root / "component"
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_git_root_cli", lambda *_a: git_root
+        )
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_ciu_root_cli", lambda *_a: nested_root
+        )
+        calls = []
+
+        def record_root(name):
+            def capture(root, *_args, **_kwargs):
+                calls.append((name, root))
+                return _ready_record()
+            return capture
+
+        def document_root(name):
+            def capture(root, *_args, **_kwargs):
+                calls.append((name, root))
+                return {"status": "ready"}
+            return capture
+
+        monkeypatch.setattr(wt_mod, "create", record_root("create"))
+        monkeypatch.setattr(wt_mod, "ensure", record_root("ensure"))
+        monkeypatch.setattr(wt_mod, "adopt", record_root("adopt"))
+        monkeypatch.setattr(
+            wt_mod, "up_instance",
+            lambda root, *_a, **_kw: (calls.append(("up", root)) or 0),
+        )
+        assert cli._worktree([
+            "create", "nested-task", "--profile", "core", "--up"
+        ]) == 0
+        assert cli._worktree(["ensure", "nested-task"]) == 0
+        assert cli._worktree(["adopt", "nested-adopt", "/tmp/target"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "inspect_instance", document_root("inspect")
+        )
+        assert cli._worktree(["inspect", "nested-task", "--json"]) == 0
+        assert cli._worktree(["up", "nested-task"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "apply_lease", record_root("lease")
+        )
+        assert cli._worktree(["lease", "nested-task", "--perpetual"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "remove_document",
+            lambda root, *_a, **_kw: (calls.append(("rm", root)) or {"removed": True}),
+        )
+        assert cli._worktree(["rm", "nested-task", "--json"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "list_instances", document_root("list")
+        )
+        assert cli._worktree(["list", "--json"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "branch_hygiene", document_root("branches")
+        )
+        assert cli._worktree(["branches", "--json"]) == 0
+        monkeypatch.setattr(
+            wt_mod, "reap_groups", document_root("reap")
+        )
+        assert cli._worktree(["reap", "--json"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "exec_instance",
+            lambda root, *_a, **_kw: (calls.append(("exec", root)) or 0),
+        )
+        assert cli._worktree(["exec", "nested-task", "--", "true"]) == 0
+
+        assert calls == [
+            ("create", nested_root), ("up", nested_root),
+            ("ensure", nested_root), ("adopt", nested_root),
+            ("inspect", nested_root), ("up", nested_root),
+            ("lease", nested_root), ("rm", nested_root),
+            ("list", nested_root), ("branches", nested_root),
+            ("reap", nested_root), ("exec", nested_root),
+        ]
+
     def test_overlay_options_refuse_without_a_selected_ciu_root(
         self, monkeypatch, capsys
     ):

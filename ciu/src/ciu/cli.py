@@ -1720,7 +1720,11 @@ def _worktree_exec(rest: list[str], resolve_repo_root) -> int:
             f"[S16] unexpected argument {token!r} for `ciu worktree exec`; "
             "usage: ciu worktree exec LOGICAL [--target ALIAS] -- ARGV..."
         )
-    repo_root = _resolve_worktree_git_root_cli(define_root, Path.cwd())
+    git_root = _resolve_worktree_git_root_cli(define_root, Path.cwd())
+    selected_ciu_root = _resolve_worktree_ciu_root_cli(
+        git_root, define_root, Path.cwd()
+    )
+    repo_root = selected_ciu_root or git_root
     if target_alias is not None:
         return wt_mod.exec_target_instance(
             repo_root, logical_name, target_alias, argv
@@ -1952,11 +1956,11 @@ def _worktree(rest: list[str]) -> int:
     )
 
     try:
-        lifecycle_root = repo_root
+        selected_ciu_root = _resolve_worktree_ciu_root_cli(
+            repo_root, getattr(opts, "define_root", None), Path.cwd()
+        )
+        lifecycle_root = selected_ciu_root or repo_root
         if opts.action in ("create", "ensure", "adopt"):
-            selected_ciu_root = _resolve_worktree_ciu_root_cli(
-                repo_root, getattr(opts, "define_root", None), Path.cwd()
-            )
             overlay_requested = any(
                 getattr(opts, key, None) is not None
                 for key in (
@@ -1973,9 +1977,6 @@ def _worktree(rest: list[str]) -> int:
                     "selected CIU root; run from that root or pass its path with "
                     "--root-folder"
                 )
-            if selected_ciu_root is not None:
-                lifecycle_root = selected_ciu_root
-
         def emit_record(operation: str, record) -> None:
             if getattr(opts, "json", False):
                 print(json.dumps(
@@ -2006,7 +2007,7 @@ def _worktree(rest: list[str]) -> int:
             )
             emit_record(opts.action, record)
             if opts.action == "create" and opts.up:
-                rc = wt_mod.up_instance(repo_root, opts.logical_name)
+                rc = wt_mod.up_instance(lifecycle_root, opts.logical_name)
                 if rc != 0:
                     print(
                         f"[ERROR] worktree creation succeeded but `ciu worktree "
@@ -2035,19 +2036,19 @@ def _worktree(rest: list[str]) -> int:
             if getattr(opts, "json", False):
                 print(json.dumps(
                     wt_mod.remove_document(
-                        repo_root, opts.name, yes=opts.yes, force=opts.force
+                        lifecycle_root, opts.name, yes=opts.yes, force=opts.force
                     ),
                     sort_keys=True,
                 ))
             else:
                 path = wt_mod.remove(
-                    repo_root, opts.name, yes=opts.yes, force=opts.force
+                    lifecycle_root, opts.name, yes=opts.yes, force=opts.force
                 )
                 print(f"removed: {path}")
             return 0
 
         if opts.action == "inspect":
-            doc = wt_mod.inspect_instance(repo_root, opts.logical_name)
+            doc = wt_mod.inspect_instance(lifecycle_root, opts.logical_name)
             if getattr(opts, "json", False):
                 print(json.dumps(doc, sort_keys=True))
             else:
@@ -2062,7 +2063,7 @@ def _worktree(rest: list[str]) -> int:
 
         if opts.action == "lease":
             record = wt_mod.apply_lease(
-                repo_root, opts.logical_name, extend=opts.extend,
+                lifecycle_root, opts.logical_name, extend=opts.extend,
                 perpetual=opts.perpetual, release=opts.release,
             )
             if getattr(opts, "json", False):
@@ -2085,14 +2086,14 @@ def _worktree(rest: list[str]) -> int:
         if opts.action == "up":
             if opts.all:
                 return wt_mod.up_instance(
-                    repo_root, opts.logical_name, all_profiles=True,
+                    lifecycle_root, opts.logical_name, all_profiles=True,
                 )
-            return wt_mod.up_instance(repo_root, opts.logical_name)
+            return wt_mod.up_instance(lifecycle_root, opts.logical_name)
 
         if opts.action == "branches":
             doc = wt_mod.prune_branches(
-                repo_root, base=opts.base, yes=opts.yes
-            ) if opts.yes else wt_mod.branch_hygiene(repo_root, base=opts.base)
+                lifecycle_root, base=opts.base, yes=opts.yes
+            ) if opts.yes else wt_mod.branch_hygiene(lifecycle_root, base=opts.base)
             # ONE exit-code decision, decided ABOVE the output-format branch so
             # every mode shares it: a partial prune is never a silent success.
             # It used to live inside the human/else arm only, so `--json`
@@ -2145,7 +2146,7 @@ def _worktree(rest: list[str]) -> int:
 
         if opts.action == "reap":
             doc = wt_mod.reap_groups(
-                repo_root, yes=opts.yes, categories=opts.category,
+                lifecycle_root, yes=opts.yes, categories=opts.category,
                 dry_run=opts.dry_run,
             )
             # ONE exit-code decision, hoisted above the output-format branch
@@ -2193,9 +2194,9 @@ def _worktree(rest: list[str]) -> int:
         # Every action above returned; the only remaining action is "list"
         # (argparse's required subparsers make it one of the registered set).
         if getattr(opts, "json", False):
-            print(json.dumps(wt_mod.list_instances(repo_root), sort_keys=True))
+            print(json.dumps(wt_mod.list_instances(lifecycle_root), sort_keys=True))
         else:
-            for info in wt_mod.list_worktrees(repo_root):
+            for info in wt_mod.list_worktrees(lifecycle_root):
                 tag = "  (primary)" if info.is_primary else ""
                 print(f"{info.head}  {info.branch:<40} {info.path}{tag}")
         return 0

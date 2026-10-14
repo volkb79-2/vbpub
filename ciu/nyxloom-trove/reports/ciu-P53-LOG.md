@@ -70,3 +70,31 @@ invocation, exit 0). No focused test suite or registered gate has run on the
 follow-up edits yet. Review 02 is complete and all six findings are addressed
 in the candidate; the final gate and read-only review are pending. See
 `ciu-P53-REPORT.md` when complete.
+
+## Final broad review: findings and closure (2026-10-14)
+
+Sol xhigh's final read-only review of commit
+`8af65ea127009e9de6141694698a2f8c8db2e081` found eight more CIU defects. The
+full findings are retained in `ciu-P53-REVIEW-03.md`. This follow-on folds in:
+
+- selected nested-root routing for every worktree lifecycle verb;
+- one resolved base commit for validation, workspace allocation, and reset;
+- allocation-lock serialization for lease and lifecycle record updates;
+- network ownership verification before managed startup;
+- one-time legacy network claims that cannot overwrite a saved object id;
+- refusal on indeterminate Docker probes instead of treating them as absence;
+- parent-directory fsync after atomic record replacement; and
+- schema-v5 descriptions corrected in the public specification.
+
+Two adjacent defects found while closing that review are also folded in. A
+worktree-registry or Docker ownership probe failure during allocation now uses
+`runtime-verification-failed`; `runtime-collision` is reserved for proven
+identity/ownership conflicts. The unique atomic record-writer scratch name is
+now ignored by the repo, CIU project, and generated `ciu init` rules. Tests pin
+the nested-root verb routing, snapshot race, concurrent lease ordering,
+startup/retry ownership checks, recovery status distinction, record durability,
+and generated ignore rules.
+
+`git diff --check` and `python -m compileall -q ciu/src/ciu ciu/tests` pass on
+the follow-on edits. No suite or gate has run on them; the registered CIU gate
+and a final read-only review remain pending.

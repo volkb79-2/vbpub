@@ -16,6 +16,9 @@ ciu.env
 
 # managed worktree identity/lifecycle record (S16)
 ciu.worktree-instance.json
+# Atomic managed-record staging file (CIU-135); a hard interruption can leave
+# ignored scratch beside the record for later inspection/cleanup.
+**/.ciu.worktree-instance.json.*.tmp
 
 # CIU machine-owned artifact directory (S1.6/S1.7)
 **/.ciu/

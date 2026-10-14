@@ -51,6 +51,34 @@ The profile is written to the selected committed CIU root. The command derives
 that root from the current directory or an explicit `--root-folder` that names
 the nested root; if no root is selected, overlay and network-claim options
 refuse instead of creating an unused overlay at the Git root.
+The same root selection is used by follow-on worktree commands. Git worktree
+operations remain family-wide, but record lookup must retain the selected
+root's offset; sending a nested-root record through the Git root loses its
+identity and makes a successful allocation appear missing.
+
+The requested base is resolved to one immutable commit before allocation.
+Using that commit for root validation, the shared workspace record, and the
+first checkout reset prevents a branch update between those steps from
+changing which tree CIU validates. A later commit to `main` does not silently
+move an allocation that was already accepted.
+
+An explicit legacy-network claim is available only before CIU has recorded an
+object id, so it cannot erase evidence after a same-name replacement.
+`worktree up` repeats the ownership check immediately before starting its
+child. An unavailable Docker probe is indeterminate and refuses without being
+mistaken for an absent network.
+During allocation, a proven duplicate or ownership conflict is recorded as
+`runtime-collision`; inability to read the worktree registry or inspect the
+network is recorded as `runtime-verification-failed`. This keeps a tool failure
+from being presented as a finding that another instance owns the identity.
+
+The CIU record is shared mutable state: lifecycle transitions and lease writes
+take the same Git-family lock, then read and update the record under that lock.
+This prevents a lease update based on an `allocating` snapshot from restoring
+the pending overlay bit or erasing a network id after creation reaches
+`ready`. The record writer fsyncs the file before rename and the parent
+directory after rename, which makes the checkpoint durable across power loss
+where the filesystem supports directory fsync.
 
 The family registry also records generic Git worktrees whose selected base
 contains no CIU root. Their ready record has null runtime values because there
@@ -399,7 +427,7 @@ logic at all. The operator's own file — renamed
 instance and not every checkout is a git worktree — no longer has an ongoing
 CIU writer. CIU-135 adds one narrow exception: an explicit managed lifecycle
 request may publish the initial overlay once, after persisting the exact
-payload in the schema-v4 lifecycle record. Resume can restore that payload
+payload in the schema-v5 lifecycle record. Resume can restore that payload
 only when the file is missing. A differing operator file is never replaced,
 and CIU does not check, restore, or rewrite the overlay after the allocation
 becomes ready. New overlays use mode `0644` because this is non-secret config

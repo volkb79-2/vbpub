@@ -32,6 +32,10 @@ ciu.global.toml
 # to catch, and CIU's own repo should be the first thing that satisfies it.
 **/ciu.worktree-instance.json
 
+# Atomic CIU-135 managed-record writer scratch; a hard interruption may leave
+# a unique staging file beside the record without dirtying the checkout.
+**/.ciu.worktree-instance.json.*.tmp
+
 # Per-checkout sparse global override (S3.1b) — declared gitignored by SPEC
 # and by CIU's own published `.gitignored.ciu` sample rules, but missing here
 # until CIU-60. Renamed from `ciu.global.worktree.toml.j2` by ciu-P47; the old

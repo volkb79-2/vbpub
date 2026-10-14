@@ -195,7 +195,10 @@ WORKTREE_LIFECYCLE_STATES = frozenset(
     {"allocating", "ready", "recovery-required"}
 )
 WORKTREE_RECOVERY_STATUSES = frozenset(
-    {"checkout-incomplete", "env-generation-failed", "runtime-collision"}
+    {
+        "checkout-incomplete", "env-generation-failed", "runtime-collision",
+        "runtime-verification-failed",
+    }
 )
 _ALLOCATION_LOCK_NAME = "ciu-worktree-allocation.lock"
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -203,6 +206,18 @@ _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 # Generic lifecycle failures come from the neutral library.  CIU adds product
 # context to their messages but must not maintain a second exception taxonomy.
 WorktreeError = _shared_worktree().WorkspaceError
+
+
+class RuntimeNetworkVerificationError(WorktreeError):
+    """CIU could not establish runtime identity/network uniqueness."""
+
+
+class RuntimeNetworkOwnershipError(RuntimeNetworkVerificationError):
+    """A present network exists, but its owner cannot be proved for this instance."""
+
+
+class RuntimeNetworkProbeError(RuntimeNetworkVerificationError):
+    """Docker could not determine whether the named runtime network exists."""
 
 
 @dataclass(frozen=True)
@@ -243,6 +258,9 @@ class WorktreeInstanceRecord:
     git_worktree_path: Path
     ciu_root_offset: Path
     created_at_utc: str
+    #: New create records store the resolved full commit SHA here so validation,
+    #: workspace creation, and the first reset cannot resolve a moving ref
+    #: differently. Historical records may retain a symbolic name.
     base_ref: str
     state: str
     instance_id: str | None = None
@@ -740,22 +758,37 @@ def read_instance_record(path: Path) -> WorktreeInstanceRecord:
 
 
 def _write_instance_record(record: WorktreeInstanceRecord) -> None:
-    """Atomically replace one record; a crash yields old-or-new, never partial."""
+    """Durably replace one record; a crash yields old-or-new, never partial."""
     path = record.record_path
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     payload = json.dumps(record.to_dict(), indent=2, sort_keys=True) + "\n"
+    replaced = False
     try:
         with tmp.open("w", encoding="utf-8") as fh:
             fh.write(payload)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
+        replaced = True
+        directory_fd = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     except OSError as exc:
         try:
             tmp.unlink()
         except OSError:
             pass
+        if replaced:
+            raise WorktreeError(
+                f"[S16] record {path} was replaced, but its parent directory "
+                f"could not be synced; durability is uncertain: {exc}"
+            ) from exc
         raise WorktreeError(f"[S16] could not atomically write {path}: {exc}") from exc
 
 
@@ -894,19 +927,21 @@ def acquire_own_lease(
     instance record (PRIMARY or unmanaged): `ciu up` there behaves exactly as
     it did before this package existed.
     """
-    record = read_own_instance_record(ciu_root)
-    if record is None:
-        return None
-    instance_id = record.instance_id or _runtime_identity(Path(ciu_root))[0]
-    updated = acquire_lease(
-        record, ttl_hours=ttl_hours, holder=lease_holder(instance_id), now=now
-    )
-    _write_instance_record(updated)
-    # `ciu up` reaches this adapter entry point directly, rather than going
-    # through `apply_lease`. Keep the neutral lifecycle record's ownership
-    # claim in lockstep or the shared remover could miss an active CIU lease.
-    _sync_shared_lease(ciu_root, updated.lease)
-    return updated
+    ciu_root = Path(ciu_root).resolve()
+    with _allocation_lock(ciu_root):
+        record = read_own_instance_record(ciu_root)
+        if record is None:
+            return None
+        instance_id = record.instance_id or _runtime_identity(ciu_root)[0]
+        updated = acquire_lease(
+            record, ttl_hours=ttl_hours, holder=lease_holder(instance_id), now=now
+        )
+        _write_instance_record(updated)
+        # `ciu up` reaches this adapter entry point directly, rather than going
+        # through `apply_lease`. Keep the neutral lifecycle record's ownership
+        # claim in lockstep or the shared remover could miss an active CIU lease.
+        _sync_shared_lease(ciu_root, updated.lease)
+        return updated
 
 
 def release_own_lease(ciu_root: Path) -> WorktreeInstanceRecord | None:
@@ -916,17 +951,19 @@ def release_own_lease(ciu_root: Path) -> WorktreeInstanceRecord | None:
     failed clean must leave the lease exactly as it was, because the lease is
     the evidence that something still owns those Docker resources.
     """
-    record = read_own_instance_record(ciu_root)
-    if record is None:
-        return None
-    # Nothing claimed => nothing to clear, and in particular a v1 record is
-    # NOT dragged up to v2 by a teardown that had no lease to release.
-    if record.lease is None:
-        return record
-    updated = release_lease(record)
-    _write_instance_record(updated)
-    _sync_shared_lease(ciu_root, None)
-    return updated
+    ciu_root = Path(ciu_root).resolve()
+    with _allocation_lock(ciu_root):
+        record = read_own_instance_record(ciu_root)
+        if record is None:
+            return None
+        # Nothing claimed => nothing to clear, and in particular a v1 record is
+        # NOT dragged up to v2 by a teardown that had no lease to release.
+        if record.lease is None:
+            return record
+        updated = release_lease(record)
+        _write_instance_record(updated)
+        _sync_shared_lease(ciu_root, None)
+        return updated
 
 
 def generated_worktree_name(prefix: str, feature: str, *, now: datetime | None = None) -> str:
@@ -2281,31 +2318,35 @@ def apply_lease(
             "[S16.9] `ciu worktree lease` needs exactly one of --extend "
             "DURATION, --perpetual or --release"
         )
-    record = find_instance_record(repo_root, logical_name)
-    if record is None:
-        raise WorktreeError(
-            f"[S16.9] no managed worktree instance named {logical_name!r} under "
-            f"{repo_root}; `ciu worktree list` shows what exists."
-        )
-    if release:
-        # Unconditional, unlike the teardown-driven clear: the operator asked
-        # for "claims nothing", so the record says so even if it said so
-        # already (and a v1 record is normalized to v2 by that statement).
-        updated = release_lease(record)
-    else:
-        instance_id = record.instance_id or _runtime_identity(record.ciu_root)[0]
-        holder = lease_holder(instance_id)
-        updated = (
-            make_lease_perpetual(record, holder=holder, now=now)
-            if perpetual
-            else acquire_lease(
-                record, ttl_hours=_lease_duration_hours(str(extend)),
-                holder=holder, now=now,
+    with _allocation_lock(repo_root):
+        # Re-read only after acquiring the same lock as create/ensure. A lease
+        # update built from an allocating snapshot must not overwrite the
+        # ready transition, cleared overlay marker, or network evidence.
+        record = find_instance_record(repo_root, logical_name)
+        if record is None:
+            raise WorktreeError(
+                f"[S16.9] no managed worktree instance named {logical_name!r} under "
+                f"{repo_root}; `ciu worktree list` shows what exists."
             )
-        )
-    _write_instance_record(updated)
-    _sync_shared_lease(updated.ciu_root, updated.lease)
-    return updated
+        if release:
+            # Unconditional, unlike the teardown-driven clear: the operator asked
+            # for "claims nothing", so the record says so even if it said so
+            # already (and a v1 record is normalized to v2 by that statement).
+            updated = release_lease(record)
+        else:
+            instance_id = record.instance_id or _runtime_identity(record.ciu_root)[0]
+            holder = lease_holder(instance_id)
+            updated = (
+                make_lease_perpetual(record, holder=holder, now=now)
+                if perpetual
+                else acquire_lease(
+                    record, ttl_hours=_lease_duration_hours(str(extend)),
+                    holder=holder, now=now,
+                )
+            )
+        _write_instance_record(updated)
+        _sync_shared_lease(updated.ciu_root, updated.lease)
+        return updated
 
 
 def capabilities_document() -> dict[str, Any]:
@@ -3765,21 +3806,44 @@ def up_instance(
     invalid/mismatched target env, or a child-start failure refuses loudly.
     """
     repo_root = Path(repo_root).resolve()
-    record = _require_ready_record(repo_root, logical_name)
-    env = _sanitized_target_env(repo_root, record)
-    import sys
+    with _allocation_lock(repo_root):
+        record = _require_ready_record(repo_root, logical_name)
+        env = _sanitized_target_env(repo_root, record)
+        import sys
 
-    global_config = config_model.render_global_chain(
-        record.ciu_root, record.ciu_root, write_rendered=False, environ=env,
-    )
-    declared_profiles = resolve_worktree_up_profiles(global_config)
-    argv = [sys.executable, "-m", "ciu.cli", "up"]
-    if declared_profiles and not all_profiles:
-        for profile_name in declared_profiles:
-            argv.extend(["--profile", profile_name])
-        # Keep profiles in one deploy process. Several dstdns stacks rely on
-        # requires/provides checks across profile boundaries before any start.
-        argv.extend(["--deploy", "--healthcheck"])
+        global_config = config_model.render_global_chain(
+            record.ciu_root, record.ciu_root, write_rendered=False, environ=env,
+        )
+        declared_profiles = resolve_worktree_up_profiles(global_config)
+        argv = [sys.executable, "-m", "ciu.cli", "up"]
+        if declared_profiles and not all_profiles:
+            for profile_name in declared_profiles:
+                argv.extend(["--profile", profile_name])
+            # Keep profiles in one deploy process. Several dstdns stacks rely
+            # on requires/provides checks across profile boundaries before any
+            # start.
+            argv.extend(["--deploy", "--healthcheck"])
+
+        # Verify the exact Docker network immediately before launching the
+        # managed child. `ciu up` can create an absent network, but a present
+        # same-name replacement must not be reused just because this record
+        # was previously ready. Keep this read/check/write serialized with
+        # allocation and lease record updates, then release the lock before
+        # waiting for the potentially long deploy.
+        if record.instance_id is not None and record.network is not None:
+            try:
+                verified = _verify_and_record_network(
+                    record,
+                    record.instance_id,
+                    record.network,
+                    claim_unlabeled_network=False,
+                )
+            except RuntimeNetworkOwnershipError:
+                _mark_recovery(record, "runtime-collision")
+                raise
+            if verified != record:
+                _write_instance_record(verified)
+                record = verified
     try:
         res = _run_child(argv, record.ciu_root, env)
     except OSError as exc:
@@ -4133,16 +4197,22 @@ def _runtime_identity(ciu_root: Path) -> tuple[str, str]:
 def _check_runtime_collision(
     repo_root: Path, record: WorktreeInstanceRecord, instance_id: str, network: str
 ) -> None:
-    for other in list_instance_records(repo_root):
+    try:
+        records = list_instance_records(repo_root)
+    except WorktreeError as exc:
+        raise RuntimeNetworkVerificationError(
+            f"[S16] could not verify runtime identity uniqueness: {exc}"
+        ) from exc
+    for other in records:
         if other.logical_name == record.logical_name:
             continue
         if other.instance_id == instance_id:
-            raise WorktreeError(
+            raise RuntimeNetworkOwnershipError(
                 f"[S16] runtime INSTANCE_ID {instance_id!r} already belongs to "
                 f"logical instance {other.logical_name!r}"
             )
         if other.network == network:
-            raise WorktreeError(
+            raise RuntimeNetworkOwnershipError(
                 f"[S16] runtime network {network!r} already belongs to "
                 f"logical instance {other.logical_name!r}"
             )
@@ -4158,10 +4228,15 @@ def _docker_network_exists(network: str) -> bool:
             ["network", "ls", "--filter", f"name={network}", "--format", "{{.Name}}"],
             capture=True, check=False,
         )
-    except (FileNotFoundError, OSError):
+    except FileNotFoundError:
         return False
+    except OSError as exc:
+        raise RuntimeNetworkProbeError(
+            f"[S16] could not verify host runtime-network uniqueness for "
+            f"{network!r}: {exc}"
+        ) from exc
     if result.returncode != 0:
-        raise WorktreeError(
+        raise RuntimeNetworkProbeError(
             f"[S16] could not verify host runtime-network uniqueness for "
             f"{network!r}: {(result.stderr or result.stdout or '').strip()}"
         )
@@ -4177,18 +4252,18 @@ def _docker_network_details(network: str) -> dict[str, Any] | None:
             ["network", "inspect", network], capture=True, check=False,
         )
     except (FileNotFoundError, OSError) as exc:
-        raise WorktreeError(
+        raise RuntimeNetworkProbeError(
             f"[S16] could not inspect existing runtime network {network!r}: {exc}"
         ) from exc
     if result.returncode != 0:
-        raise WorktreeError(
+        raise RuntimeNetworkProbeError(
             f"[S16] could not inspect existing runtime network {network!r}: "
             f"{(result.stderr or result.stdout or '').strip()}"
         )
     try:
         inspected = json.loads(result.stdout or "")
     except json.JSONDecodeError as exc:
-        raise WorktreeError(
+        raise RuntimeNetworkProbeError(
             f"[S16] docker network inspect {network!r} returned invalid JSON"
         ) from exc
     if (
@@ -4197,7 +4272,7 @@ def _docker_network_details(network: str) -> dict[str, Any] | None:
         or not isinstance(inspected[0], dict)
         or inspected[0].get("Name") != network
     ):
-        raise WorktreeError(
+        raise RuntimeNetworkProbeError(
             f"[S16] docker network inspect {network!r} did not return exactly "
             "that network"
         )
@@ -4205,7 +4280,7 @@ def _docker_network_details(network: str) -> dict[str, Any] | None:
     network_id = details.get("Id")
     labels = details.get("Labels")
     if not isinstance(network_id, str) or not _NETWORK_ID_RE.fullmatch(network_id):
-        raise WorktreeError(
+        raise RuntimeNetworkProbeError(
             f"[S16] docker network inspect {network!r} returned no full object id"
         )
     if labels is None:
@@ -4214,7 +4289,7 @@ def _docker_network_details(network: str) -> dict[str, Any] | None:
         not isinstance(key, str) or not isinstance(value, str)
         for key, value in labels.items()
     ):
-        raise WorktreeError(
+        raise RuntimeNetworkProbeError(
             f"[S16] docker network inspect {network!r} returned malformed labels"
         )
     return {"id": network_id, "labels": labels}
@@ -4243,7 +4318,7 @@ def _verify_and_record_network(
     labels = details["labels"]
     labeled_owner = labels.get(_NETWORK_OWNER_LABEL)
     if labeled_owner is not None and labeled_owner != instance_id:
-        raise WorktreeError(
+        raise RuntimeNetworkOwnershipError(
             f"[S16] runtime network {network!r} carries owner instance "
             f"{labeled_owner!r}, expected {instance_id!r}"
         )
@@ -4251,11 +4326,15 @@ def _verify_and_record_network(
         return record
     if labeled_owner == instance_id:
         return _record_with_verified_network_id(record, details["id"])
-    if claim_unlabeled_network and labeled_owner is None:
+    if (
+        claim_unlabeled_network
+        and record.network_id is None
+        and labeled_owner is None
+    ):
         return _record_with_verified_network_id(record, details["id"])
 
     previous = record.network_id or "not recorded"
-    raise WorktreeError(
+    raise RuntimeNetworkOwnershipError(
         f"[S16] cannot prove ownership of existing runtime network {network!r}: "
         f"Docker object id is {details['id']!r} (recorded {previous!r}) and it "
         f"does not carry {_NETWORK_OWNER_LABEL}={instance_id!r}; for a known "
@@ -4652,23 +4731,10 @@ def _finish_allocation(
                 f"{record.base_ref!r} failed: {(checkout.stderr or checkout.stdout).strip()}. "
                 f"Resume with `ciu worktree ensure {record.logical_name}`."
             )
-        # CIU-106: the fork point is captured HERE, and nowhere earlier.
-        #
-        # It is THIS `reset --hard <base_ref>` that decides the new branch's
-        # tip — not `git worktree add` — and it re-resolves `base_ref` afresh,
-        # after the initial allocation intent record is durable. Reading
-        # `base_ref` in repo_root before that left a window in which another
-        # session committing to the shared `main` checkout (which this
-        # estate's own workflow expects) produced a record that was born
-        # SPENT: the consumer would refuse it forever and blame `main` for
-        # absorbing work it never absorbed. `ensure()` resuming a partial
-        # allocation hit the same skew with no race at all. The fork point is
-        # persisted before the recorded overlay is published, so an
-        # interruption there remains safely resumable too.
-        #
-        # Taken from the worktree's own HEAD, immediately after the reset, it
-        # is the branch tip by construction — no window, and no question
-        # about how an annotated tag or any other `base_ref` spelling peels.
+        # CIU-106: capture the fork point from the linked checkout after the
+        # reset. `base_ref` is already the immutable commit snapshot validated
+        # before allocation, so this value must equal it; reading HEAD here
+        # also verifies that the exact intended tree was checked out.
         head = _git(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"],
                     record.git_worktree_path)
         candidate = head.stdout.strip() if head.returncode == 0 else ""
@@ -4732,14 +4798,24 @@ def _finish_allocation(
             instance_id, network = _runtime_identity(record.ciu_root)
             try:
                 _check_runtime_collision(repo_root, allocating, instance_id, network)
+            except RuntimeNetworkOwnershipError:
+                recovery_status = "runtime-collision"
+                raise
+            except RuntimeNetworkVerificationError:
+                recovery_status = "runtime-verification-failed"
+                raise
+            try:
                 allocating = _verify_and_record_network(
                     allocating,
                     instance_id,
                     network,
                     claim_unlabeled_network=claim_unlabeled_network,
                 )
-            except WorktreeError:
+            except RuntimeNetworkOwnershipError:
                 recovery_status = "runtime-collision"
+                raise
+            except RuntimeNetworkVerificationError:
+                recovery_status = "runtime-verification-failed"
                 raise
             allocating = replace(
                 allocating, instance_id=instance_id, network=network,
@@ -4775,8 +4851,11 @@ def _finish_allocation(
                     network,
                     claim_unlabeled_network=claim_unlabeled_network,
                 )
-            except WorktreeError:
+            except RuntimeNetworkOwnershipError:
                 recovery_status = "runtime-collision"
+                raise
+            except RuntimeNetworkVerificationError:
+                recovery_status = "runtime-verification-failed"
                 raise
             _write_instance_record(allocating)
 
@@ -4922,18 +5001,6 @@ def create(
     initial_overlay = _worktree_overlay_text(profile, shared_infra_intent)
 
     offset = _ciu_root_offset(repo_root)
-    if initial_overlay is not None:
-        resolved_base = _git(
-            ["rev-parse", "--verify", "--quiet", f"{base}^{{commit}}"],
-            repo_root,
-        )
-        commit = resolved_base.stdout.strip() if resolved_base.returncode == 0 else ""
-        if not _FULL_SHA_RE.fullmatch(commit):
-            raise WorktreeError(
-                f"[S16] cannot verify the selected base {base!r} as a commit "
-                "for the requested initial overlay"
-            )
-        _assert_overlay_root_in_commit(repo_root, commit, offset)
     primary = primary_worktree_root(repo_root).resolve()
     instant = _utc_now()
     generated_base = (
@@ -4942,6 +5009,26 @@ def create(
     )
 
     with _allocation_lock(repo_root):
+        resolved_base = _git(
+            ["rev-parse", "--verify", "--quiet", "--end-of-options",
+             f"{base}^{{commit}}"],
+            repo_root,
+        )
+        base_commit = (
+            resolved_base.stdout.strip()
+            if resolved_base.returncode == 0 else ""
+        )
+        if not _FULL_SHA_RE.fullmatch(base_commit):
+            raise WorktreeError(
+                f"[S16] cannot verify selected base {base!r} as a commit"
+            )
+        if initial_overlay is not None:
+            # The overlay's selected root, the new Git workspace, and its first
+            # reset all use this same immutable commit. A symbolic branch may
+            # move at any time; resolving it again after this preflight could
+            # publish an overlay under a root absent from the actual checkout.
+            _assert_overlay_root_in_commit(repo_root, base_commit, offset)
+
         candidate_display = display_name or generated_base or logical_name
         _validate_name(candidate_display, label="display name")
         requested_path = (
@@ -5004,7 +5091,7 @@ def create(
                 repo_root,
                 target,
                 branch=candidate_branch,
-                base=base,
+                base=base_commit,
                 purpose="ciu",
                 physical_target=physical_target,
                 labels={"ciu.logical_name": logical_name},
@@ -5015,13 +5102,12 @@ def create(
                 raise
             raise WorktreeError(f"[S16] shared workspace allocation failed: {exc}") from exc
 
-        # CIU-106: `fork_point_sha` is deliberately NOT set here. The branch
-        # tip is decided by `_finish_allocation`'s `reset --hard <base_ref>`,
-        # which happens after this record is written and re-resolves
-        # `base_ref` afresh — so capturing `base` now would leave a window
-        # for it to disagree with the tree that actually gets checked out.
-        # An interrupted create therefore leaves a record with no fork point,
-        # which consumers already fail closed on.
+        # CIU-106: `fork_point_sha` is deliberately NOT set here. It is
+        # checkpointed only after `_finish_allocation` resets to this exact
+        # `base_commit` and reads the resulting HEAD from the linked checkout.
+        # The symbolic request has already been resolved once, before any
+        # allocation mutation, so a moving branch cannot change which tree was
+        # validated or checked out.
         record = WorktreeInstanceRecord(
             logical_name=logical_name,
             display_name=candidate_display,
@@ -5029,7 +5115,7 @@ def create(
             git_worktree_path=target,
             ciu_root_offset=offset,
             created_at_utc=instant.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
-            base_ref=base,
+            base_ref=base_commit,
             state="allocating",
             initial_overlay=initial_overlay,
             overlay_intent_known=True,
@@ -5145,7 +5231,7 @@ def ensure(
                                 record.network,
                                 claim_unlabeled_network=claim_unlabeled_network,
                             )
-                        except WorktreeError:
+                        except RuntimeNetworkOwnershipError:
                             _mark_recovery(record, "runtime-collision")
                             raise
                         if claim_unlabeled_network and verified.network_id is None:

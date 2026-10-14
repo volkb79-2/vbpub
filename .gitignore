@@ -239,6 +239,7 @@ ciu.global.worktree.toml.j2
 ciu.global.instance.toml.j2
 # Atomic CIU-135 initial-overlay writer scratch; a hard interruption may leave
 # the unique staging file for later inspection/cleanup without dirtying gates.
+**/.ciu.worktree-instance.json.*.tmp
 **/.ciu.global.instance.toml.j2.*.tmp
 ciu.instance.generated.toml
 

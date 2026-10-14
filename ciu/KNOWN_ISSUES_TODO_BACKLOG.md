@@ -5108,6 +5108,34 @@ to restore it and can finish with the requested selection absent.
   existing allocation: the base must resolve to its recorded allocation
   commit, and the directory must resolve to the recorded checkout path. Refuse
   when either comparison cannot be proven.
+- Resolve a create request's base ref once to a full commit before any
+  allocation side effect. Validate the requested CIU root at that commit, and
+  pass the same commit to the shared workspace allocation and first reset; a
+  later movement of the symbolic ref must not change the checked-out tree.
+- Resolve the selected nested CIU root for every worktree verb that looks up
+  CIU records (`create --up`, `ensure`, `adopt`, `inspect`, `up`, `exec`,
+  `lease`, `list`, `rm`, `branches`, and `reap`). Git operations remain
+  family-wide, but record lookup must use the same root offset that wrote the
+  record. Rootless Git families keep their record-only behavior.
+- Verify present network ownership immediately before managed `worktree up`
+  launches its child. A Docker permission/execution failure is indeterminate,
+  not network absence, and must refuse without falsely demoting a ready record
+  to a collision. A one-time explicit legacy claim may record an unlabelled
+  network only if no network object id is already saved.
+- Reserve `runtime-collision` for a proven duplicate identity or foreign
+  network. A failed Git-family registry read or Docker ownership probe during
+  allocation is `runtime-verification-failed`, not evidence that another
+  instance owns the identity; retry `ensure` after the probe works.
+- Serialize lease and lifecycle read-modify-write operations through the same
+  Git-family allocation lock. Each mutation re-reads after acquiring the lock
+  so a stale lease snapshot cannot restore pending overlay state or erase a
+  network id.
+- After replacing the CIU record, fsync its containing directory. If that sync
+  fails after rename, report the replacement and uncertain durability rather
+  than claiming the record was untouched.
+- Ignore the managed-record writer's unique temporary file in the repository
+  root, CIU project ignore file, and `ciu init`'s published sample rules, so a
+  hard interruption cannot leave gate-visible scratch.
 - When `ensure` resumes an incomplete allocation, restore a missing recorded
   payload atomically. Accept an existing regular file only when it matches the
   recorded payload exactly; refuse symlinks, non-regular files and conflicting
@@ -5145,23 +5173,52 @@ explicit overlay options for an existing record, a base resolving to another
 commit, and a worktree directory resolving to another path. (12) After reset
 succeeds but before its fork point is saved, stage deletions of all tracked
 paths and retry `ensure`: it refuses without another reset and preserves the
-staged deletions. Controlled wrong implementations that write the record first, infer
-missing intent, replay an initial overlay after readiness, reuse a network
-based only on failure status, silently ignore `ensure` options, or use
-`os.replace` must fail the corresponding oracle.
+staged deletions. (13) In a nested-root repository, create with `--up`, then
+ensure, adopt, inspect, up, lease, exec, list, branches, reap, and remove
+through the selected root; each operation uses that root's record offset.
+(14) Move the base branch after its snapshot
+and remove the selected root marker from the new branch tip: creation still
+validates and checks out the original commit. (15) Interleave a lease update
+with the first ready transition: the final record is ready, the overlay marker
+stays clear, and a network id written by creation remains. (16) Replace a
+recorded network and call `worktree up`: CIU refuses before starting the child.
+(17) After recording an object id, `--adopt-existing-network` cannot replace
+it with a different unlabelled object. (18) A missing Docker executable is
+treated as absence, but `PermissionError` refuses and leaves a ready record
+ready. (19) The record writer fsyncs the file before replace and the parent
+directory after replace; a parent-sync failure reports the already-replaced
+record with uncertain durability. Controlled wrong implementations that write
+the record first, infer missing intent, replay an initial overlay after
+readiness, reuse a network based only on failure status, silently ignore
+`ensure` options, treat probe errors as absence, skip startup ownership checks,
+or use `os.replace` to publish operator overlays must fail their oracles.
+(20) A failed family-registry or Docker ownership probe during allocation is
+recorded as `runtime-verification-failed`, while a proven duplicate remains
+`runtime-collision`; a failed managed `up` probe leaves the ready record and
+does not start its child.
+(21) A generated managed-record staging filename is ignored by both the CIU
+project and a fresh `ciu init` scaffold, and the scaffold list matches the
+published `.gitignored.ciu` sample.
+(22) `runtime-verification-failed` is accepted as a record status and appears
+in a user-facing document, so the documentation contract detects if the new
+closed recovery value is omitted.
 
 **File list.** `src/ciu/worktree.py`, `src/ciu/workspace_env.py`,
+`src/ciu/scaffold.py`,
 `src/ciu/cli.py`; the owning worktree lifecycle, workspace-network and CLI tests;
+`tests/test_init_scaffolding.py`, `tests/tests/test_ciu_documentation_contract.py`;
 the root `.gitignore`, `ciu/.gitignore`, and the shipped `.gitignored.ciu`
 rules for interrupted atomic-writer scratch;
 `docs/SPEC.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `docs/CONFIG.md`,
 `docs/CIU.md`, and `README.md`; the root `AGENTS.md` Run-Gate invocation rule;
 `libraries/worktree/SPEC.md` and `libraries/worktree/CONSUMERS.md` CLI examples;
-this backlog entry; and the next CIU `CHANGES.md` release-note section. The
+this backlog entry; the P53 review reports; and the next CIU `CHANGES.md`
+release-note section. The
 three adopter-facing documents (README, DESIGN-GUIDE, CONSUMERS) are required
 before merge, alongside the normative spec and configuration reference.
 
-**Disposition:** OPEN. The six findings from the second independent review are
-folded into the isolated implementation and regression oracles. The exact
-candidate still needs its registered CIU gate and a final read-only review
-before merge.
+**Disposition:** OPEN. The six findings from the second independent review,
+eight findings from the final broad design review, and two adjacent gaps found
+while closing those findings are folded into the isolated implementation and
+regression oracles. The exact candidate still needs its registered CIU gate
+and a final read-only review before merge.

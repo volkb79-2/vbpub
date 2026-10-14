@@ -285,7 +285,7 @@ requirements are marked *(withdrawn)*.
   request its initial `ciu.instance.service_profiles` and
   `ciu.instance.shared_infra` values. CIU validates and renders the complete
   payload before allocation side effects, then checkpoints those exact bytes
-  in the schema-v4 worktree record before publishing the file. If allocation
+  in the schema-v5 worktree record before publishing the file. If allocation
   is interrupted, `ensure` may restore a missing file from that checkpoint;
   it accepts an existing file only when it is a regular file with identical
   contents, and refuses symlinks, non-regular files and operator edits rather
@@ -4333,6 +4333,12 @@ allocation. Each root's identity record is read by exact path, never via a
 search that consults `$REPO_ROOT` or a sibling `ciu.env`. Runtime start may
 regenerate missing facts from physical path facts; inspection and read-only
 operations refuse until `ciu env generate` has produced the current schema.
+Every worktree verb that reads or writes a CIU instance record MUST use the
+selected CIU root's offset, including `create --up`, `inspect`, `up`, `exec`,
+`lease`, `list`, `rm`, `branches`, and `reap`. The Git operation remains
+family-wide; a nested record must not disappear because lookup was routed
+through the Git root's different offset. A rootless Git family continues to
+use its family-root record-only behavior.
 
 ### S16.1 — Shared-infra join for worktree instances (CIU-22)
 
@@ -4649,11 +4655,13 @@ to stderr. The `operation` vocabulary is closed (`create | ensure | adopt |
 inspect | lease | list | remove`) and the `status` vocabulary is closed
 (`allocating | ready | recovery-required | removed`); a `recovery-required`
 instance additionally carries a closed `recovery_status`
-(`checkout-incomplete | env-generation-failed | runtime-collision`). The
+(`checkout-incomplete | env-generation-failed | runtime-collision |
+runtime-verification-failed`). The
 persisted instance record is nested under `instance`
-(`WorktreeInstanceRecord.to_dict()` — v1, v2 with a `lease` key, or v3 with
-both `lease` and the initial-overlay intent checkpoint); current Git facts are
-nested under `git`.
+(`WorktreeInstanceRecord.to_dict()` — legacy v1; v2 adds `lease`; v3 adds
+initial-overlay intent; v4 adds the one-time overlay-pending marker and
+created/adopted origin; v5 adds checkout-reset uncertainty and the last
+verified Docker network object id). Current Git facts are nested under `git`.
 
 Git facts are freshly read from Git, never inferred from a name or a stale
 record: `git.registered` (the record's checkout is a current registered
@@ -5181,11 +5189,15 @@ For a newly created worktree, CIU then checks out the requested base and
 persists the resulting fork point before publishing the overlay. If the process
 stops before publication after the fork point is saved, `ensure` resumes from
 that recorded checkout instead of resolving a moving base reference again.
-Adoption keeps its existing checkout and never resets it. A durable reset-pending
-marker is written before the first `reset --hard`; if its exact resulting commit
-is not saved, `ensure` refuses to repeat the reset. A pristine `--no-checkout`
-tree and an operator-staged deletion of every tracked file have the same Git
-status, so status inspection cannot prove that a replay is safe.
+Before allocation side effects, CIU resolves `--base REF` to one full commit
+SHA. A requested overlay's committed-root validation, the shared Git workspace,
+and the first `reset --hard` all use that same SHA; if the named branch moves
+after preflight, this allocation remains pinned to the validated commit.
+Adoption keeps its existing checkout and never resets it. A durable
+reset-pending marker is written before the first `reset --hard`; if its exact
+resulting commit is not saved, `ensure` refuses to repeat the reset. A pristine
+`--no-checkout` tree and an operator-staged deletion of every tracked file have
+the same Git status, so status inspection cannot prove that a replay is safe.
 
 When `ensure` resumes an incomplete schema-v4 or v5 allocation with
 `initial_overlay_pending: true`, it restores a missing recorded overlay with a
@@ -5232,10 +5244,32 @@ label always refuses. Neither `adopted` origin nor a generic
 `env-generation-failed` status alone is network ownership evidence.
 
 When `ensure` finds a ready record whose root evidence is complete, it MUST
-still verify a present runtime network before returning `ready`; a same-name
-replacement is not hidden by the ready fast path. If Docker or the network is
-absent, the ready record remains usable, but its last verified object id stays
-available to detect a later replacement.
+still verify a present runtime network before returning `ready`; `worktree up`
+MUST perform the same ownership check immediately before it launches the
+managed child. A same-name replacement is not hidden by either fast path. If
+the Docker executable or network is genuinely absent, the ready record remains
+usable, but its last verified object id stays available to detect a later
+replacement. A Docker permission or execution error is indeterminate, not
+absence: the command refuses and does not rewrite the saved ready state as a
+collision.
+
+During an incomplete allocation, a proven identity or ownership conflict uses
+`runtime-collision`. Failure to read the Git-family identity registry or
+failure to inspect Docker uses `runtime-verification-failed`, so inability to
+verify is never reported as a collision. Retry `ensure` after the registry or
+Docker probe is available.
+
+The explicit `--adopt-existing-network` assertion is one-time: it may record
+an unlabelled object's id only when no network id is already saved. It cannot
+replace a previously verified id. A matching CIU owner label remains separate
+ownership evidence.
+
+All record read-modify-write operations, including lease changes, serialize
+through the Git family's allocation lock and read the record only after taking
+that lock. Record replacement fsyncs the temporary file, renames it, then
+fsyncs the parent directory; if the directory sync fails after rename, CIU
+reports that the replacement occurred but its power-loss durability is
+uncertain.
 
 `adopt` with no overlay flags records known `null` intent and preserves any
 pre-existing operator overlay. If adopt flags would create an overlay where
