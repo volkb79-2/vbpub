@@ -553,7 +553,7 @@ The change should land in small, reviewable commits. A suggested sequence is:
    templates, changelogs, and trove references. Add tests that load every
    config example and resolve every cross-document anchor.
 8. **External gates.** Run the complete CIU, CMRU, and shared
-   `libraries/worktree` lanes through their declared `run-gate.py` commands in
+   `libraries/worktree` lanes through their declared `run-gate` commands in
    tester-unified, with assay resume/progress. Run any Docker/VM acceptance lane
    in its designated container or VM. No evidence from this cockpit is a ship
    signal.

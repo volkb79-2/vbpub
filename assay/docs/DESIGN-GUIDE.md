@@ -2491,7 +2491,7 @@ pre-existing dirt for R1+ snapshot lanes. The verdict records those paths as
 lanes retain their strict/pre-post policy because an override there would need
 a separate pre/post dirty-set proof. `assay verify` accepts a structurally
 valid marker but warns; release receipt consumers refuse non-empty override
-lists by default. `run-gate.py --allow-dirty` remains an independent outer
+lists by default. `run-gate --allow-dirty` remains an independent outer
 clean-tree policy and is not forwarded to assay.
 
 ### Liveness side-file placement (B093)
@@ -2697,7 +2697,7 @@ even one the container wrote itself. The full lane's driver checks it
 first (`b105_report_check.py --receipt-only`, phase
 `require-same-commit-tester-unified-pass`), and the checker refuses a full
 report without a matching receipt. The preflight lane needs none. Run
-`./run-gate.py tester-unified` before `./run-gate.py self-qualification`, in the same
+`run-gate tester-unified` before `run-gate self-qualification`, in the same
 worktree and with no commit in between: any later commit, a docs-only or merge
 commit included, needs a fresh `tester-unified` run first. A
 gate started while another `run-gate-*` container runs exits 3 with
@@ -2763,7 +2763,7 @@ source lines and branches.
 
 ```bash
 cd assay
-./run-gate.py self-qualification
+run-gate self-qualification
 ```
 
 The invocation is failure-bounded, but the current B105 campaign is not yet

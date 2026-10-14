@@ -1,5 +1,5 @@
 # =============================================================================
-# assay project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# assay project gate lanes — parsed ONLY by Run-Gate CLI (one parser, D-110).
 # The self-hosting driver (tools/tester-unified-gate.sh) owns its own
 # container mechanics: exact-OID private clone, hash-pinned offline build
 # closure, two-venv install, detached run with verified cgroup placement, and

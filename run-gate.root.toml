@@ -1,7 +1,7 @@
 # =============================================================================
 # run-gate ROOT config — vbpub monorepo root.
-# Parsed ONLY by run-gate.py (one parser, D-110). Project configs remain named
-# run-gate.toml next to each project's run-gate.py symlink/copy; they inherit
+# Parsed ONLY by Run-Gate CLI (one parser, D-110). Project configs remain named
+# run-gate.toml next to each project's Run-Gate CLI symlink/copy; they inherit
 # THESE tables unless they shadow a name. Since RG-16 (SPEC R-22) central
 # [lanes.*] are LEGAL
 # here: shared lanes inherited by every consuming project by name.

@@ -581,9 +581,9 @@ pass that commit explicitly to both registered entrypoints:
 
 ```bash
 P1_BASE=eb3af770eb16362cff4c39388193c0180c2d370c
-./run-gate.py --base "$P1_BASE" --dry-run r2
-./run-gate.py --base "$P1_BASE" r2
-./run-gate.py --base "$P1_BASE" gate
+run-gate --base "$P1_BASE" --dry-run r2
+run-gate --base "$P1_BASE" r2
+run-gate --base "$P1_BASE" gate
 ```
 
 Run these from `scripts/cgroup-profiler/`. The dry run shows the expanded

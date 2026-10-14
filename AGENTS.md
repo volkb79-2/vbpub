@@ -145,7 +145,7 @@ signal.
 
 **Do not execute tests from the devcontainer cockpit.** This includes pytest,
 Hypothesis, unittest, project test scripts, and focused test selections. Run
-tests through the project's registered `./run-gate.py <lane>` so the declared
+tests through the project's registered `run-gate <lane>` so the declared
 `tester-unified` image, dependencies, identity, and resource limits define the
 environment. If a behavior has no registered lane, add or use a supported
 tester-unified lane before executing it. The cockpit may inspect files, run
@@ -194,9 +194,11 @@ a slice name should verify it's actually a loaded unit first
 
 ## Manual tester-unified fallback runs — the four traps (estate-wide)
 
-**For any project with a root `run-gate.py`, use `./run-gate.py <lane>` for
-registered gates — the mechanics are tested code (`run-gate-project/SPEC.md`),
-not doctrine prose.** The manual recipe below is only a fallback for projects
+**For any project with a root `run-gate.toml`, install the released Run-Gate
+wheel and use `run-gate <lane>` from that project directory — the mechanics
+are tested code (`run-gate-project/SPEC.md`), not doctrine prose.** Copied
+scripts and consumer symlinks are retired; `run-gate --version` reports the
+installed wheel's SemVer identity. The manual recipe below is only a fallback for projects
 without a root runner or for a narrowly-scoped live acceptance probe that the
 registered lane cannot express; it is not a substitute for registered gate
 evidence. Adopted estate-wide

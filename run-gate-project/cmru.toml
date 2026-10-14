@@ -18,10 +18,8 @@
 # GitHub Release is keyed by --prefix on the push step, so everything
 # user-facing stays `run-gate-v*` / `run_gate-*.whl`.
 #
-# Version identity is TWO-TIER (pyproject.toml header): __revision__ inside
-# run-gate.py stays the copy-drift marker external repos compare; semver
-# tags/releases are the publish identity, derived by setuptools-scm from the
-# tag this config's strategy mints.
+# The installed wheel's SemVer is the public identity and compatibility
+# floor. Internal revision fields remain only in persisted record provenance.
 #
 # Historical bootstrap note: the first semver release followed the bare
 # integer tag `run-gate-v22`, so it used `--set-version 23.0.0`. Semver tags
@@ -35,11 +33,11 @@ schema_version = 1
 kind = "none"
 
 [env]
-RUN_GATE_RELEASE_NOTES = "## run-gate wheel\n\nThe per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script. Stdlib-only — no dependencies.\n\nThe canonical artifact remains the SCRIPT (`run-gate.py`, drift marker `__revision__`); this wheel only wraps the same module for pip-installable consumption and must never become a requirement.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
+RUN_GATE_RELEASE_NOTES = "## run-gate 24.0.0\n\nRun-Gate is now supported as an installed wheel with a SemVer identity. Check the installed version with `run-gate --version`; the reported version is read from wheel metadata.\n\n### Breaking change\n\nConsumer scripts and symlinks have been retired. Install the `run-gate` wheel, then invoke the `run-gate` console command from the project directory containing `run-gate.toml`. Config examples, release commands, and Buildkite generation use the installed CLI. `run-gate validate-pointers` reports legacy `run-gate.py` references.\n\nInternal revision fields remain only for saved-record provenance and do not act as an upgrade floor.\n\n**Install**\n```bash\npython -m pip install ./run_gate-24.0.0-py3-none-any.whl\n```"
 
 [project]
 id = "run-gate-project"
-description = "run-gate — the per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script"
+description = "run-gate — the per-project gate entrypoint: declared lanes and reserved exit codes"
 template_revision = 4
 prefix = "run-gate-v"
 artifacts = ["wheel"]
@@ -57,7 +55,7 @@ artifact_dirs = ["dist"]
 evidence_paths = ["coverage.json"]
 
 # SSOT pointer (D-110/D-111): the release gate IS the project's own run-gate
-# lane (`./run-gate.py selftest` -> run-gate.toml), not a duplicated pytest
+# lane (`run-gate selftest` -> run-gate.toml), not a duplicated pytest
 # line. The lane owns all test logic (pytest + diff-coverage floor) in exactly
 # one place. CMRU executes step commands directly; the registered Run-Gate
 # lane owns its tester-unified container, placement, init, and resource caps.
@@ -67,8 +65,7 @@ evidence_paths = ["coverage.json"]
 # a real mapping, and the release step runs with project_root as cwd.
 # The installed CMRU 6.1.0 executes this argv as a project step; Run-Gate
 # itself now supplies `--init` for the tester container (RG-84).
-# First standalone bootstrap before cmru is installed anywhere fresh:
-# python3 run-gate.py selftest works with zero installs (stdlib-only).
+# Run-Gate must be installed from its wheel before invoking this release step.
 #
 # RG-55 wave, package P2, C2 (2026-09-12): run-gate.toml grew `assay-r1`/
 # `assay-r2`/`assay-r3`/`gate-full` (assay-based judgment, stricter and
@@ -85,7 +82,7 @@ evidence_paths = ["coverage.json"]
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "run-gate: selftest in tester-unified", argv = ["./run-gate.py", "selftest"], cwd = "." },
+  { label = "run-gate: selftest in tester-unified", argv = ["run-gate", "selftest"], cwd = "." },
 ]
 
 [steps.build]

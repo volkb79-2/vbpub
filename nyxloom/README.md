@@ -281,14 +281,14 @@ list no longer lists it as a non-goal because it shipped (P48).
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+`run-gate` is the canonical test entrypoint — `run-gate --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
 The broad `tester-unified` CLI lane measures and enforces 100% whole-source
 line and branch coverage through Assay. The focused `session-extract` lane
 keeps its own branch, mutation, and canary contract. The rationale is in the
-[design guide](docs/DESIGN-GUIDE.md). Run these lanes through `./run-gate.py`;
+[design guide](docs/DESIGN-GUIDE.md). Run these lanes through `run-gate`;
 a cockpit-local pytest run is diagnostic only.
 
 ### CLI diagnostics

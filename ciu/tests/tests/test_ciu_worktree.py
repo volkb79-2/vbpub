@@ -953,10 +953,11 @@ class TestForkPointProvenance:
 class TestRunGateReadsTheRealRecord:
     """The seam itself, run for real ONCE rather than trusted.
 
-    `ciu.worktree-instance.json` is consumed by vbpub's `run-gate.py` as a
+    `ciu.worktree-instance.json` is consumed by vbpub's installed Run-Gate
+    wheel as a
     loose FILE-FORMAT contract — by well-known filename, with stdlib `json`,
-    deliberately never by importing `ciu` (separate projects; that launcher
-    must run on a fresh clone with zero installs). The cost of that choice is
+    deliberately never by importing `ciu` (separate projects; Run-Gate's
+    supported CLI remains a separately installed wheel). The cost of that choice is
     that BOTH sides' unit tests use hand-written fixtures of the other side's
     output, which is exactly the drift TESTING-METHODOLOGY's "no drifted
     fixtures at a seam" row warns about: run-gate's suite writes records by
@@ -964,22 +965,20 @@ class TestRunGateReadsTheRealRecord:
     `to_dict()` and the reader stopped agreeing.
 
     So: produce a record with the REAL `worktree.create()`, and feed it to
-    the REAL reader, loaded by path (run-gate.py is stdlib-only, so this
-    costs an exec and nothing else). Skipped when the counterpart is not
-    present, which is every checkout of ciu outside this monorepo.
+    the REAL reader from the installed `run-gate` wheel. Skipped when that
+    package is not installed, which is every checkout of ciu outside this
+    monorepo.
     """
 
     @staticmethod
     def _run_gate():
-        import importlib.util
-
-        script = Path(__file__).resolve().parents[2] / "run-gate.py"
-        if not script.is_file():
-            pytest.skip("run-gate.py is not present beside this checkout")
-        spec = importlib.util.spec_from_file_location("_rg_seam", script)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
+        try:
+            import run_gate
+        except ModuleNotFoundError as exc:
+            if exc.name != "run_gate":
+                raise
+            pytest.skip("Run-Gate wheel is not installed in this environment")
+        return run_gate
 
     def test_a_real_ciu_record_is_ACCEPTED_by_run_gates_real_reader(
         self, tmp_repo, fake_generate_env

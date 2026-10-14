@@ -2,7 +2,7 @@
 """Mechanical diff-coverage gate for run-gate-project.
 
 Fails the release gate when a change adds or edits *executable* lines of
-run-gate.py that no test exercises. The project's TOTAL line+branch coverage
+run_gate.py that no test exercises. The project's TOTAL line+branch coverage
 is ~47% today (909 stmts / 444 branches accumulated before any floor existed);
 a total --cov-fail-under=100 therefore cannot pass yet. This gate enforces the
 floor the estate actually applies to legacy code (topos/nyxloom pattern):
@@ -42,7 +42,7 @@ BASE hiding real source changes; the judge cannot tell that apart from
 "this change genuinely touches no source line" by the zero alone, so the
 zero is made visible and NAMED (which base, and how HEAD relates to it)
 instead of being hidden behind a plain `100.0% OK` or blocking every
-gate run that happens not to touch the judged file (e.g. `./run-gate.py
+gate run that happens not to touch the judged file (e.g. `run-gate
 selftest` on `main` itself, where merge-base(main, HEAD) == HEAD). Hard
 refusal (exit 2, naming the three known routes to a false 0/0) is now
 OPT-IN via `--refuse-empty-diff`; `--allow-empty-diff` no longer exists.
@@ -412,7 +412,7 @@ def _is_ancestor(repo: str, ancestor: str, descendant: str) -> bool:
 def _base_relation(repo: str, base_rev: str, head_rev: str) -> str:
     """Describe HEAD's relationship to the resolved base, for the 0/0
     notice (RW-5). "HEAD is on the base" when HEAD is an ancestor of (or
-    equal to) the resolved base — the exact shape `./run-gate.py selftest`
+equal to) the resolved base — the exact shape `run-gate selftest`
     hits on `main` itself, where merge-base(main, HEAD) == HEAD. Otherwise
     HEAD is some N commits ahead of the base and none of those N commits
     touched an executable source line under `--source`.
@@ -483,8 +483,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                     help="path to `coverage json` output")
     p.add_argument("--base", default="main",
                     help="ref the change is measured against (default: main)")
-    p.add_argument("--source", default="run-gate-project/run-gate.py",
-                   help="source path prefix (default: run-gate-project/run-gate.py)")
+    p.add_argument("--source", default="run-gate-project/run_gate.py",
+                   help="source path prefix (default: run-gate-project/run_gate.py)")
     p.add_argument("--fail-under", type=float, default=100.0,
                    help="minimum %% of changed executable lines (default: 100)")
     p.add_argument("--repo", default=".",

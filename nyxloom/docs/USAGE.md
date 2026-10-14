@@ -106,7 +106,7 @@ be onboarded this way.
 > **`--check-gate` (GA3 v1, docs/plan-gate-adoption.md §GA3):** an opt-in,
 > deterministic, AI-free follow-on -- reports whether the project declares a
 > usable `[gates.*]` and, if not, points to the next step: declare a project
-> gate, then run its lane with `./run-gate.py <lane>`. It does not scaffold a
+> gate, then run its lane with `run-gate <lane>`. It does not scaffold a
 > gate (Dockerfile/`[gates.*]` authoring is a v2 follow-up); combine freely with
 > `--scan`/`--questionnaire` in the same call.
 

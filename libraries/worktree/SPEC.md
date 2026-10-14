@@ -114,7 +114,7 @@ release policy, and per-project runtime adapters. Both must pass the resulting
 
 ## Qualification
 
-The source package has a dedicated `worktree` lane under `run-gate.py`. It runs
+The source package has a dedicated `worktree` lane under `run-gate`. It runs
 the complete `tests/` suite in `tester-unified` at S1 with Assay R0, R1, R2, and
 R3: a 100% line-and-branch coverage floor, serial changed-source mutation, and
 an import-break canary. CIU and CMRU retain their own lanes because they must
@@ -123,7 +123,7 @@ not a substitute for exercising the shared library's own refusal and lifecycle
 matrix. Run it from this directory with:
 
 ```console
-$ CGROUP_PARENT_DEV_GATES=dev-gates.slice ./run-gate.py worktree
+$ CGROUP_PARENT_DEV_GATES=dev-gates.slice run-gate worktree
 ```
 
 The gate uses the estate-approved snapshot boundary and the same serial,

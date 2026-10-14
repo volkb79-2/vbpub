@@ -13,7 +13,7 @@
 #                                       make (token redacted) and make NO
 #                                       network call
 #
-# The lane still runs as `./run-gate.py <lane>` on the agent: this script only
+# The lane still runs as `run-gate <lane>` on the agent: this script only
 # creates the build and reads its result. Lane SELECTION is passed to the
 # pipeline generator (seam 2, tools/buildkite/pipeline.sh) as the build's
 # env.RUN_GATE_LANES — this script never reads run-gate.toml and never decides

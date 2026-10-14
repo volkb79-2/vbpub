@@ -5,9 +5,13 @@
 From a vbpub checkout or linked worktree, keep the gate command after `--` so
 its argv is passed without a second shell parse:
 
+Build the image with the current Run-Gate wheel version first (see the
+[image build steps](../README.md#tester-unified)); its installed CLI must match
+the Run-Gate wheel built from the same checkout.
+
 ```bash
-tester-unified/run --workdir run-gate-project -- ./run-gate.py selftest
-tester-unified/run --workdir run-gate-project -- ./run-gate.py --base BASE_SHA assay-r1
+tester-unified/run --workdir run-gate-project -- run-gate selftest
+tester-unified/run --workdir run-gate-project -- run-gate --base BASE_SHA assay-r1
 ```
 
 Assay's offline wheel/self-hosting phases can run through the same launcher:
@@ -40,7 +44,7 @@ To place evidence somewhere else, use an explicit path:
 
 ```bash
 tester-unified/run --evidence-dir /workspaces/vbpub/.assay/my-gate \
-  --workdir run-gate-project -- ./run-gate.py doctor
+  --workdir run-gate-project -- run-gate doctor
 ```
 
 Do not invoke pytest in the cockpit and do not reproduce the launch with a

@@ -945,7 +945,7 @@ reset); plain `ciu clean` preserves it. `ciu migration-check` reports a
 CIU's gate is judged by Assay installed from the **selected vbpub worktree**.
 There is no consumer-owned pyz or fixed version to refresh. You can reproduce
 the judgment half locally (the container orchestration still belongs to
-`run-gate.py`):
+`run-gate`):
 
 ```bash
 # 1. Install the selected worktree's source, with no dependency resolution.

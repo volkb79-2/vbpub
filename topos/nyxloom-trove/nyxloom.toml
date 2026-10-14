@@ -69,7 +69,7 @@ docs_dir          = "docs"
 # cockpit's cgroup; the ambient var names the host-managed low-priority gate
 # tier whose IOPS budget is deliberately below the production game-server
 # tier.
-argv = ["bash", "-c", "cd {worktree}/topos && exec ./run-gate.py --worktree {worktree} topos-suite"]
+argv = ["bash", "-c", "cd {worktree}/topos && exec run-gate --worktree {worktree} topos-suite"]
 phase = "implementation"
 asserts = ["tests-pass", "changed-line-coverage", "canary-verified"]
 timeout_seconds = 1800
@@ -81,7 +81,7 @@ environment = "tester-unified"
 # when input is empty). The gate layer that runs this is `review` only.
 [gates.py-compile]
 # SSOT pointer: lane `py-compile` in topos/run-gate.toml (same P96 mechanics).
-argv = ["bash", "-c", "cd {worktree}/topos && exec ./run-gate.py --worktree {worktree} py-compile"]
+argv = ["bash", "-c", "cd {worktree}/topos && exec run-gate --worktree {worktree} py-compile"]
 phase = "review"
 timeout_seconds = 120
 environment = "local"

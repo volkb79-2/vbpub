@@ -1,5 +1,5 @@
 # =============================================================================
-# shared-ramdisk-depot-manager project gate lanes — parsed ONLY by run-gate.py
+# shared-ramdisk-depot-manager project gate lanes — parsed ONLY by Run-Gate CLI
 # (one parser, D-110). tools/gate.sh owns its own container mechanics (its
 # srdm-gate image, cgroup verification via tools/cgroup-parent.sh, detached
 # run + separate verdict read); run-gate owns uniform invocation only — same

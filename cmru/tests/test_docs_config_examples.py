@@ -123,7 +123,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
     release_steps = cmru["steps"]["run-tests"]["commands"]
     assert len(release_steps) == 1
-    assert release_steps[0]["argv"] == ["./run-gate.py", "gate"]
+    assert release_steps[0]["argv"] == ["run-gate", "gate"]
     assert "KI-62" in (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
     release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
     for name in ("installed-wheel", "assay", "coverage", "mutation", "canary"):

@@ -1,9 +1,10 @@
-# Changelog — run-gate
+# Changelog — Run-Gate
 
-All notable changes to `run-gate.py` and its estate adoption are recorded
-here. The in-file `__revision__` is the drift marker: estate sweeps compare
-it, and any consumer holding a COPY (not a symlink) must re-copy when it
-moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
+Changes to the Run-Gate wheel and its estate adoption are recorded here.
+Release SemVer from the installed wheel is the public tool identity. Historical
+`__revision__` values and persisted `revision` fields are provenance only; they
+do not track consumer copies or define upgrade floors. Normative behavior
+lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]

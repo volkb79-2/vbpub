@@ -2925,7 +2925,7 @@ HEAD.
 An empty source diff writes skip evidence bound to HEAD. The serial campaign
 has a 120-second per-candidate timeout,
 `--maxfail=1`, `--resume`, and a progress stream.
-`run-gate.py gate` runs the Assay R0/R1/R3 lane plus the tag-based R2 campaign,
+`run-gate gate` runs the Assay R0/R1/R3 lane plus the tag-based R2 campaign,
 total coverage, and the cause-sensitive canary.
 
 **S16.1 — Snapshot boundary.** Assay R1/R3 run in
@@ -2964,7 +2964,7 @@ canary evidence is written. The `gate` lane runs these with the total-coverage
 and cause-sensitive canary checks as one release contract.
 
 **S16.3 — Admission boundary.** The canonical entrypoint is
-`./run-gate.py`; the tester-unified lane requires the estate-provided
+`run-gate`; the tester-unified lane requires the estate-provided
 `$CGROUP_PARENT_DEV_GATES` slice and fails closed when it is absent or not a
 loaded unit. A local devcontainer pytest result is not gate evidence.
 
@@ -2972,7 +2972,7 @@ loaded unit. A local devcontainer pytest result is not gate evidence.
 lane, the registered host `gate` lane MUST resolve the selected CMRU Git auth,
 save all visible root/project `cmru.secret.toml` overlays in a private
 temporary directory outside the repository mount, and replace their worktree
-paths with symlinks to those host-only backups. Every nested `run-gate.py`
+paths with symlinks to those host-only backups. Every nested `run-gate`
 process MUST have
 `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, `CMRU_GIT_AUTH_TOKEN`, and
 `RUN_GATE_EXTRA_MOUNTS` removed. The host MAY use its in-memory auth object for

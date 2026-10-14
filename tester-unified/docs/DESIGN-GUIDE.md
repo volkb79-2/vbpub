@@ -33,6 +33,13 @@ closure keeps that install offline and deterministic while still recording the
 exact runtime Assay version in the verdict. The image does not install a
 copied Assay tree, because the judged worktree is the source of truth.
 
+Run-Gate is different: nested gate commands need its installed console script,
+so the image builds the wheel from the same checkout and verifies that its
+metadata version matches the exact version passed from the candidate wheel.
+That keeps invocation available without treating a repository script or a
+revision counter as a package identity. The wheel build uses a separate
+throwaway environment because Run-Gate and CMRU pin different build tools.
+
 The launcher refuses missing cgroup configuration, workspace-root fallbacks,
 high launch-time memory pressure, absent Docker access, missing images, more
 than two concurrent tester containers, and any mismatch in Docker's accepted

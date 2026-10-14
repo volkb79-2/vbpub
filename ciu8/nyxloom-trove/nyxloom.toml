@@ -32,7 +32,7 @@ docs_dir = "docs"
 # TestPointerLinkageEstate sweep, which blocked cutting run-gate-v23.5.0.
 # Restore this section verbatim once ciu8/run-gate.toml actually exists.
 # [gates.tester-unified]
-# argv = ["bash", "-c", "cd {worktree}/ciu8 && exec ./run-gate.py --worktree {worktree} ciu8"]
+# argv = ["bash", "-c", "cd {worktree}/ciu8 && exec run-gate --worktree {worktree} ciu8"]
 # phase = "implementation"
 # asserts = ["tests-pass", "changed-line-coverage", "assay-verdict"]
 # timeout_seconds = 1800

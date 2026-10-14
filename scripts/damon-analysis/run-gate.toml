@@ -1,5 +1,5 @@
 # =============================================================================
-# damon-analysis gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# damon-analysis gate lanes — parsed ONLY by Run-Gate CLI (one parser, D-110).
 # All three tiers exercise fixture data only — this project analyzes DAMON
 # sysfs output already captured to disk/JSON, it never touches DAMON itself
 # and never starts a container.
@@ -19,7 +19,7 @@
 # worked out and verified live first.
 #
 # gate stays bare-host: its whole job is launching the three lanes above as
-# nested `./run-gate.py <lane>` processes, each starting its own docker
+# nested `run-gate <lane>` processes, each starting its own docker
 # container -- that needs real docker-socket access tester-unified does not
 # have wired up.
 # =============================================================================
@@ -82,7 +82,7 @@ kind = "command"
 environment = "bare-host"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/damon-analysis && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
+    "cd {worktree}/scripts/damon-analysis && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r2 && run-gate --worktree {worktree} r3",
 ]
 clean_tree = false
 budget = "1h"

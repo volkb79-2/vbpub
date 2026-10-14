@@ -97,7 +97,7 @@ Options and choices named here are detailed in the option table below. Effects d
 | `nyxloom extract*` | `nyxloom-harness extract*` | Old paths are removed without forwarding aliases. |
 | `nyxloom project`, `status`, `doctor`, `resync`, `render`, `tick`, `migrate-store`, `auth`, workflow/intake/finding/model/route commands | `nyxloomctl` with the same command paths after the executable name. | Old paths are removed without forwarding aliases; commands remain local operations. |
 | `nyxloom daemon [--foreground]` | `nyxloomctl daemon`; service manager uses `nyxloomd`. | `--foreground` is removed because daemon mode already runs in foreground. The container invokes the installed binary directly. |
-| `nyxloom gate` | Removed. | It had no child action; project gates use each project's declared `run-gate.py`/Assay lane. |
+| `nyxloom gate` | Removed. | It had no child action; project gates use each project's declared `run-gate`/Assay lane. |
 | `-h` | Use `--help` or `help [VERB]`. | `-h` is rejected, following cli-extended's public grammar. |
 | `--debug` as traceback request | `--debug`/`--verbose` sets verbosity; `--traceback` requests unexpected-failure tracebacks. | Scripts that used the old meaning should change the flag explicitly. |
 | `nyxloom backlog list` when INDEX.md is absent | Same path. | Now renders in memory and stays read-only; use `backlog index` to write the index. |
@@ -534,7 +534,7 @@ generic --yes prompt.
 | backlog list [--project-id ID] [--status STATUS] | Display generated index; cmd_backlog_list. | Project defaults by cwd discovery. Missing INDEX.md is silently written before read. | Approved target (D-002): render in memory when missing; keep `list` read-only and leave file generation to `backlog index`. Not yet implemented. |
 | backlog show ENTRY_ID [--project-id ID] | Read entry; cmd_backlog_show. | Project defaults by cwd discovery. Read-only. | Keep. |
 | backlog index [--project-id ID] | Regenerate INDEX.md; cmd_backlog_index. | Project defaults by cwd discovery. Writes generated index. | Keep as explicit index writer. |
-| gate | Reserved parser namespace; no child action. Dispatch prints root help and exits 2. | Does not execute a project gate. docs/USAGE.md says use each project's run-gate.py/Assay lane. | Approved target (D-005): remove the empty path; project run-gate/Assay remains separate. Not yet implemented. |
+| gate | Reserved parser namespace; no child action. Dispatch prints root help and exits 2. | Does not execute a project gate. docs/USAGE.md says use each project's run-gate/Assay lane. | Approved target (D-005): remove the empty path; project run-gate/Assay remains separate. Not yet implemented. |
 
 ## Positional argument inventory
 
@@ -805,7 +805,7 @@ runtime yet.
 | doctor versus resync | doctor diagnoses health/replay divergence; resync plans/applies task state from handoff/git evidence. | Keep separate; combining them blurs diagnosis and state repair. |
 | init versus onboard | init creates the base tree; onboard adds choice-driven scaffold and optional analysis. | Keep separate; clarify help. |
 | daemon versus tick | daemon starts the resident service; tick runs one reconcile cycle. | Keep both, but place the human/local daemon command under `nyxloomctl` and expose `nyxloomd` for the service manager. |
-| Empty gate | gate has no action and exits 2; docs/USAGE.md says gates run through project run-gate.py/Assay. NL-13 reports stale generated gate verify prose. | Remove dead advertised route unless a Nyxloom-owned action is approved (D-005). Existing command changes to unknown-command; project gates remain unaffected. |
+| Empty gate | gate has no action and exits 2; docs/USAGE.md says gates run through project run-gate/Assay. NL-13 reports stale generated gate verify prose. | Remove dead advertised route unless a Nyxloom-owned action is approved (D-005). Existing command changes to unknown-command; project gates remain unaffected. |
 | JSON/progress/confirmation | JSON is defined on selected verbs, progress has no current general contract, and mutations already have explicit operation/state guards. | Disable meaningless cli-extended common flags per command. Do not add generic confirmation prompts or duplicate existing safeguards. |
 | Doctor cgroup gap (NL-10) | Doctor checks gate argv but not project ciu/compose cgroup_parent. | Keep diagnostic backlog; no new verb/option required. |
 | Retired gate residue (NL-13, NL-14) | NL-13 is stale generated onboarding prose; NL-14 is schema-validated dead cadence config. | Fix generated guidance and retire/deprecate dead config in separate scopes; do not restore gate verify. |

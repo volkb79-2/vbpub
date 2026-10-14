@@ -497,7 +497,7 @@ def test_the_full_qualification_driver_requires_the_same_commit_tester_unified_r
         '    --expected-tree "$source_tree" \\\n'
     ) in script
     assert (
-        'die "no registered tester-unified pass at $source_commit; run ./run-gate.py tester-unified first"'
+        'die "no registered tester-unified pass at $source_commit; run run-gate tester-unified first"'
         in script
     )
     # It sits after the private clone is verified and before anything is built.
@@ -986,7 +986,7 @@ def test_b131_analysis_r2_pilot_is_a_separate_exact_source_measurement_gate():
     nyxloom = tomllib.loads(NYXLOOM_TOML.read_text(encoding="utf-8"))["gates"]
     assert nyxloom[B131_PILOT_ID]["timeout_seconds"] == 9000
     assert nyxloom[B131_PILOT_ID]["asserts"] == ["tests-pass"]
-    assert "./run-gate.py --worktree {worktree} analysis-r2-pilot" in nyxloom[B131_PILOT_ID]["argv"][-1]
+    assert "run-gate --worktree {worktree} analysis-r2-pilot" in nyxloom[B131_PILOT_ID]["argv"][-1]
 
     script = (PROJECT_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8")
     pilot = _shell_function_body(script, "run_analysis_r2_pilot")

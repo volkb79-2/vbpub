@@ -88,7 +88,7 @@ The internal library has a dedicated tester-unified lane. From this directory,
 run the complete R0-R3 qualification through the project launcher:
 
 ```bash
-CGROUP_PARENT_DEV_GATES=dev-gates.slice ./run-gate.py worktree
+CGROUP_PARENT_DEV_GATES=dev-gates.slice run-gate worktree
 ```
 
 This does not release a third package. It verifies the source that CIU and CMRU

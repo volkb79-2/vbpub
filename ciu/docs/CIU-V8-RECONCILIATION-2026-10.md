@@ -179,7 +179,7 @@ Several rows carry more than one tag.
 
 The gate is a subsystem of the ciu v8 implementation (`ciu8/src/ciu8/gate/`, renamed with the package at the 8.0.0 cutover). Its behaviour is **today's run-gate behaviour, re-expressed in the v8 entity model**: environments name LogicalServices, identity is data, locks are the canonical keys, config is `[testing.*]` in `ciu.toml`. After cutover there is one implementation:
 - `run-gate-project/` is archived;
-- the `run-gate` console script and the copied or symlinked `run-gate.py` disappear;
+- Run-Gate 24 retires copied and symlinked `run-gate.py` entrypoints; the CIU v8 cutover later replaces the installed `run-gate` command with `ciu gate` and can remove the Run-Gate dependency from that project;
 - the estate's `run-gate.root.toml` becomes a zero-instance root `ciu.toml`.
 
 run-gate is a single 8841-line file (`run_gate.py`). The port is a **copy-and-adapt into modules**, consistent with the ciu8 rule "reusable v7 code copied and adapted, never imported". It is not a rewrite from S16's text, because S16 is the older and smaller contract.
@@ -285,7 +285,7 @@ This deletes S14.6 `max_concurrent`, `[ciu.worktree] max_concurrent_instances`, 
   - `bash -c "run-gate a && run-gate b"` conjunctions → `kind = "sequence"`;
   - nyxloom `[gates.*]` pointers → `ciu gate <lane> --worktree {worktree}`.
 - It prints a residue report for anything it cannot convert: argv that is shell text, scripts that start containers.
-- The consumer commits the converted config, deletes `run-gate.toml`, the `run-gate.py` symlink and `.run-gate/` (history restarts; it is evidence, not state), and re-measures footprints.
+- The consumer commits the converted config, deletes `run-gate.toml` and `.run-gate/` (history restarts; it is evidence, not state), and re-measures footprints.
 - AGENTS §4.1 holds: each repo has one gate path at every commit. The estate is converted repo by repo, so cross-repo skew is bounded by "ciu8 installed alongside ciu7". That works because ciu8 is a different console script until the rename.
 
 ---
@@ -453,7 +453,7 @@ Each question lists the options with the recommendation first, then the trade-of
 - *Trade-off:* A preserves both current modes with one declaration (dstdns: 236 version sites → 1). B makes the image the pin, which is weaker provenance than a sha256, and breaks dstdns's zipapp. C is the boilerplate RG-76 is about.
 
 **Q13 — How do consumers cut over?**
-- **A (rec):** Per repo, atomically: one commit that runs `ciu migrate --gate`, deletes `run-gate.toml`, `run-gate.py` and `.run-gate/`, rewrites the pointers, and re-measures footprints. History restarts.
+- **A (rec):** Per repo, atomically: one commit that runs `ciu migrate --gate`, deletes `run-gate.toml` and `.run-gate/`, rewrites the pointers, and re-measures footprints. History restarts.
 - B: Staged lane-by-lane with both tools live in one repo.
 - C: Per worktree opt-in.
 - *Trade-off:* A obeys §4.1 and loses lane history (evidence, regenerable). B is the dual path §4.1 forbids. C makes the gate's behaviour depend on which checkout you are in.

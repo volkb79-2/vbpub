@@ -103,7 +103,7 @@ The gate is orchestration above the released Assay CLI, not a CIU module:
 
 ```
 operator / nyxloomd
-  └─ ./ciu/run-gate.py ciu (host; clean-tree check)
+  └─ run-gate ciu (host; clean-tree check)
        └─ resolve CGROUP_PARENT_DEV_GATES from the root gate config
             └─ detached tester-unified container in that cgroup slice
                  ├─ install Assay from the selected worktree's assay/

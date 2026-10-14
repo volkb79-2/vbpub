@@ -7,7 +7,7 @@ the generated `## [6.0.0]` section of `CHANGES.md`; the pre-release hand-written
 recoverable from the W3-PREP commit history (`git show 1be285b09:cmru/CHANGES.md`), and the
 pre-wave hand-written text from `git show 68a03b4fe^:cmru/CHANGES.md`.
 
-**Release status: PROVISIONAL.** cmru 6.0.0 was released through `./run-gate.py gate-provisional`,
+**Release status: PROVISIONAL.** cmru 6.0.0 was released through `run-gate gate-provisional`,
 which skips ONLY the R2 mutation campaign by operator decision (2026-10-06); the postponement is
 recorded in the retained release evidence (`.assay/mutation-postponed-cmru.json`) and tracked as
 **KI-62**. The R2 run against the `cmru-v6.0.0` tag, and the fixes it backports, follow the release;

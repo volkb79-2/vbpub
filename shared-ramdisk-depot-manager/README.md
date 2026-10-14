@@ -196,7 +196,7 @@ shared-ramdisk-depot-manager/
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint (`--list` discovers the
+`run-gate` is the canonical test entrypoint (`--list` discovers the
 declared lanes); definitions live in `run-gate.toml`, whose host lanes
 invoke the drivers below:
 

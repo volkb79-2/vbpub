@@ -1,15 +1,15 @@
 # =============================================================================
-# cgroup-profiler gate lanes — parsed ONLY by run-gate.py (one parser,
+# cgroup-profiler gate lanes — parsed ONLY by Run-Gate CLI (one parser,
 # D-110). r0-r1 wraps this project's OWN pre-existing tools/gate.sh
 # verbatim, host-scoped, because that script already does its own complete
 # docker orchestration (placement-verified, detached-run, separate
-# verdict-read — see gate.sh's own header for why) and run-gate.py's
+# verdict-read — see gate.sh's own header for why) and Run-Gate CLI's
 # container orchestration would just be a second, redundant layer around
 # the same docker calls. This mirrors debian-install-v2's
 # r1-vm-real-commit precedent (a host lane whose argv happens to be a
 # script that itself launches docker).
 #
-# r2 and r3 both run INSIDE run-gate.py's own tester-unified container
+# r2 and r3 both run INSIDE Run-Gate CLI's own tester-unified container
 # (SPEC.md R-15/R-16 — placement, dual-mount, safe.directory, detached-
 # run+separate-verdict-read): r2 because assay's R2 execution needs this
 # project's report-tier deps (pandas/plotly/etc, already baked into
@@ -29,7 +29,7 @@
 # estate-wide sweep, 2026-09-03): as of rev 36, plain "host" is a CONTAINER
 # default with no docker-socket mount (verified live via --dry-run) —
 # gate.sh needs real docker access to launch its own nested container, and
-# gate needs it to launch r0-r1/r2/r3 as nested `./run-gate.py <lane>`
+# gate needs it to launch r0-r1/r2/r3 as nested `run-gate <lane>`
 # processes. r2's `pip install -e assay` also can't work inside
 # tester-unified (its site-packages is root-owned, read-only for the
 # non-root user the container runs as) -- PYTHONPATH points straight at
@@ -102,7 +102,7 @@ kind = "command"
 environment = "bare-host"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/cgroup-profiler && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} --base {base} r2 && ./run-gate.py --worktree {worktree} r3",
+    "cd {worktree}/scripts/cgroup-profiler && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} --base {base} r2 && run-gate --worktree {worktree} r3",
 ]
 clean_tree = false
 # The full sequence includes the enforced 24h assay R2 window. This outer

@@ -111,6 +111,7 @@ SPEC §9.
 | RG-91 | Run-Gate's cgprofile control and watch clients pretty-print JSON to a newline-delimited socket, so the daemon reads only `{` and refuses the request | Major | FIXED in candidate rev 65; byte-at-a-time newline-framing regressions cover control and watch requests; exact gate and release pending |
 | RG-92 | cgroup observer unavailability maps Assay's pre-candidate `NO_MEASUREMENT` to a product FAIL; observer group validation reads the devcontainer's potentially unrelated `docker` name | Major | FIXED in the contract-2 candidate; reason-specific ERROR mapping and host numeric GID check are implemented, exact gate pending |
 | RG-93 | the shared Git directory stays read-write for tester commits, letting a container plant a common hook that a later host commit executes and alter host `info/exclude` | Major | FIXED IN CANDIDATE rev 67; focused mount tests pass; registered real-container test pending |
+| RG-94 | Run-Gate still presents its internal source revision as the consumer compatibility identity although supported consumers install the wheel | Major | IN PROGRESS — migrate the public CLI, consumers, tester image, and release contract to wheel SemVer; retain revisions only for record/schema provenance |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6093,3 +6094,42 @@ DESIGN-GUIDE, CONSUMERS and SPEC state the mapping; the exact registered
 **Fix.** For linked and opted-in plain-checkout ephemeral lanes, Run-Gate overlays the common `hooks/` directory with a private empty read-only directory and mounts the real common `info/` directory read-only at both physical and namespace paths. Missing, symlinked, or non-directory paths fail before launch. The common Git directory remains read-write for in-lane Git behavior. CMRU also disables local hooks around its host-side mutation-baseline Git calls.
 
 **Oracles.** Mount tests require both dual-path overlays and read-only flags. The registered real-container test plants a host `post-commit` hook, proves the in-container commit cannot run or replace it or edit `info/exclude`, then checks that a subsequent host commit still runs the original hook unchanged. The exact-tree Run-Gate gate and independent review remain release requirements.
+
+## RG-94 — public compatibility identity is an internal revision number
+
+**Status: IN PROGRESS in the RG-93 integration candidate; wheel-only SemVer migration and release gates pending.**
+
+**Observed.** Run-Gate's supported distribution is a wheel with a console
+entrypoint, but the public `--version` output, help banner, lane banners,
+consumer docs, and CMRU judge floor still use or describe `rev N`. The
+revision number originated as a drift marker for copied `run-gate.py` files.
+That copied-script contract is no longer supported, so it has no consumer
+compatibility value and cannot be compared consistently with SemVer-based
+tool releases.
+
+**Decision.** Public consumers use the installed Run-Gate wheel and its
+SemVer distribution version. The release that removes the source-script
+consumer contract is a major release. Internal revision fields may remain in
+historical records where they describe the record writer or stored schema;
+they must not be presented or checked as the installed-tool version or a
+consumer upgrade floor.
+
+**Fix.** Make the installed console CLI the supported entrypoint, read its
+version from installed distribution metadata, and fail clearly when the
+wheel metadata is absent or invalid. Migrate active consumer lane/release
+commands and docs from `./run-gate.py` to `run-gate`, remove estate consumer
+symlinks, install and assert the released wheel in tester-unified, and change
+consumer floors to SemVer. Keep schema/provenance revision fields only where
+their existing record compatibility contract needs them. Update the root
+agent instructions, Buildkite generator, pointer validation, and all three
+user docs (README, DESIGN-GUIDE, CONSUMERS) in the same change.
+
+**Oracles.** A fresh project with only `run-gate.toml` can invoke the
+installed CLI from its project directory; `run-gate --version`, help,
+argument errors, and lane banners identify the same installed SemVer. Missing
+or malformed distribution metadata fails closed. Active estate configs and
+release steps contain no script pointer; `validate-pointers` reports legacy
+script references. The tester image proves its installed Run-Gate artifact
+and version. Config examples parse, public CLI examples use the wheel, and
+docs cross-links resolve. The exact registered selftest, full gate, canary,
+and release workflow pass at the reviewed candidate commit.

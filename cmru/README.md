@@ -716,7 +716,7 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+`run-gate` is the canonical test entrypoint — `run-gate --list`
 discovers the declared lanes; definitions live in `run-gate.toml`. The
 `assay` lane declares R0/R1/R3: the full suite, 100% line+branch coverage,
 and an import-break canary. The release `gate` adds R2 through a separate

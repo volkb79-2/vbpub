@@ -363,7 +363,7 @@ where to run it.**
   `ERROR`/`BAD_LANE_CONFIG` when it fails; the lane command itself still runs
   in the environment assay is given. This makes a wrong dependency closure
   loud instead of surfacing as an unrelated test import failure.
-- An environment tool (in this estate, `ciu` or `run-gate.py`) decides
+- An environment tool (in this estate, `ciu` or `run-gate`) decides
   *where* — which container, which host. The probe names a fact about that
   environment; it does not give assay container orchestration.
 - assay decides *how to judge* the result of running that one declared
@@ -1339,7 +1339,7 @@ artifact = "cov.json"
 always protected because it is loaded from the working tree. An unignored
 path requires an explicit `assay run --allow-dirty` (and the same independent
 flag is available on `assay plan` for parity). R0 remains strict. The
-`run-gate.py` flag with the same spelling controls run-gate's outer clean-tree
+`run-gate` flag with the same spelling controls run-gate's outer clean-tree
 check and is independent; it does not silently change assay's policy.
 
 ```bash
@@ -1436,7 +1436,7 @@ you're changing assay itself:
   something is an oversight rather than a deliberate choice.
 - [`nyxloom-trove/handoffs/README.md`](nyxloom-trove/handoffs/README.md)
   tracks the current package queue and its dependency order.
-- `./run-gate.py tester-unified` is the ordinary R0 release gate. It collects both
+- `run-gate tester-unified` is the ordinary R0 release gate. It collects both
   test trees (`tests/` and `gate/tests/`), and after a green run at a commit it writes
   the same-commit receipt `.assay/registered-gate/tester-unified.json`
   (`ASSAY_REGISTERED_GATE_RECEIPT=` names it). The
@@ -1444,8 +1444,8 @@ you're changing assay itself:
   [design guide](docs/DESIGN-GUIDE.md#unprivileged-host-slice-preflight-for-tester-unified),
   with the operator-facing gate sequence in the
   [consumer guide](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
-  The separately invoked `./run-gate.py self-qualification` requires that receipt for
-  its own commit and tree (run `./run-gate.py tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
+  The separately invoked `run-gate self-qualification` requires that receipt for
+  its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; `tester-unified` exits 3 with `ASSAY_GATE_INCONCLUSIVE=` when another `run-gate-*` container is running, which means rerun), then runs full-source
   R0-R3 qualification in `tester-unified`. The B105 run-gate lanes use the
   bare-host `tools/self-qualification-container.sh` wrapper because the
   generic run-gate tester container has a private cgroup namespace. The
@@ -1482,7 +1482,7 @@ you're changing assay itself:
   mutation lane cannot overwrite the preflight coverage artifact. Before
   starting mutation, it runs
   the same full-source R0/R1 check as
-  `./run-gate.py self-qualification-preflight`; that preflight stops on a red
+  `run-gate self-qualification-preflight`; that preflight stops on a red
   baseline or coverage floor. Both lanes build the selected commit as a
   wheel, while each qualification snapshot imports its own source tree. B105
   derives the wheel's `SOURCE_DATE_EPOCH` from that commit; on retry it checks
@@ -1516,8 +1516,8 @@ you're changing assay itself:
   qualification attempt.
 
   Two registered B110 lanes support non-qualifying R2 measurement:
-  `./run-gate.py b110-pilot` selects a bounded campaign sample, while
-  `./run-gate.py b110-screen` checks a complete full-plan result and can accept
+  `run-gate b110-pilot` selects a bounded campaign sample, while
+  `run-gate b110-screen` checks a complete full-plan result and can accept
   survivors as a completed measurement. Pilot invocations cap campaign
   initialization, planning, selection, Assay execution, report checking, final
   source/deadline checks and completion markers at 90 minutes within a persisted
@@ -1620,7 +1620,7 @@ you're changing assay itself:
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+`run-gate` is the canonical test entrypoint — `run-gate --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 

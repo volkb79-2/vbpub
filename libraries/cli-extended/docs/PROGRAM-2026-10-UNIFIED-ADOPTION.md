@@ -39,7 +39,7 @@ implementer briefs cite. Backlog entries `CLI-EXT-05`…`CLI-EXT-15` in
 - **Integration branch:** `cli-extended-unified` (worktree `.worktrees/cli-extended-unified`). Each package gets its own worktree and branch off the integration branch, and merges back `--no-ff` after review.
 - **Roles:** the controller is Opus. Implementers and adversarial reviewers are Sonnet, in fresh sessions, never forks (memory `implementers-sonnet-only`). Each package gets at most 3 review rounds.
 - **Gates:**
-  - Each package passes the registered `r0-r1` lane: 100% statement and branch coverage, run through `run-gate.py` in tester-unified. Implementers iterate with focused `nice -n 19 ionice -c3` pytest runs only.
+  - Each package passes the registered `r0-r1` lane: 100% statement and branch coverage, run through `run-gate` in tester-unified. Implementers iterate with focused `nice -n 19 ionice -c3` pytest runs only.
   - The full wave gate (`r0-r1` → `r2` mutation at 100% killed → `r3` canary) runs on the integrated branch before the merge to `main`.
   - Only one gate container runs at a time, because the host is shared with a production game server.
 - **Docs are part of each package** (AGENTS.md "User-facing docs" rule). Every package updates `README.md` (what), `docs/DESIGN-GUIDE.md` (why), `docs/CONSUMERS.md` (how, with pasteable examples) and the normative `SPEC.md` in the same change. `tests/test_docs.py` keeps examples parseable by the shipped loader.
@@ -311,7 +311,7 @@ Each entry goes in the tool's own backlog (cross-repo convention). The common sh
 | ② | cmru | `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` | S-CLI.9 moves to the surface lifecycle. Consolidate 5 registries (cli, agent, controller, handlers, tester). `parse_target_names` becomes `SelectorList`. Installer `[[installer.wheels]]` installs cli-extended first with `--no-index` (CX-D2). |
 | ③ | nyxloom | `nyxloom/nyxloom-trove/4-backlog-inbox.md` | Drop `_invoke`/`_verb`/`_leaf`/`--traceback` in favour of W1. The `validate=` callbacks become W2 constraints where expressible. The wheel's `.dockerignore` lesson (P112) applies again. **Packaging DONE 2026-10-07 (NYX-CLIX, branch `mm-move`):** vendoring removed (`package-dir`/`packages.find` entries gone), `cli-extended>=0.3.0` declared, gate lanes use the image's released wheel (no `PYTHONPATH` source root), the nyxloomd image builds and installs the cli-extended wheel first. The CLI-registry items (W1/W2/skills/doctor/surface lifecycle) of NL-30 remain open. |
 | ④ | cgprofile | `scripts/cgroup-profiler/nyxloom-trove/backlog/` | Its `doctor` moves to W5. |
-| ⑤ | pwmcp | `pwmcp/KNOWN_ISSUES_TODO_BACKLOG.md` | 25-line client CLI; also `run-gate.py`/`build-push.py` scripts. |
+| ⑤ | pwmcp | `pwmcp/KNOWN_ISSUES_TODO_BACKLOG.md` | 25-line client CLI; also `run-gate`/`build-push.py` scripts. |
 | ⑥ | assay | `assay/nyxloom-trove/4-backlog.md` | Reword A-005. The zipapp bundles `cli_extended`. 2.2k-line parser with injected streams. |
 | ⑦ | run-gate | `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` | 11k-line single module; full grammar re-registration (CX-D12). Also fix the test that wrote an `assay` shim into the real `~/.local/bin` (`tests/test_run_gate.py:359`). |
 | ⑧ | ciu | `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` | 2.4k-line manual dispatch; `ciu skills` and `ciu doctor` per SPEC-V8 §770 become the shared verbs. |

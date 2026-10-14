@@ -441,7 +441,6 @@ def committed_worktree():
     (project / ".gitignore").write_text(".assay/\n.run-gate/\n", encoding="utf-8")
     (project / "pyproject.toml").write_text("[project]\nname='assay-fixture'\nversion='1.0'\n", encoding="utf-8")
     shutil.copy2(PROJECT_ROOT / "run-gate.toml", project / "run-gate.toml")
-    (project / "run-gate.py").symlink_to((PROJECT_ROOT / "run-gate.py").resolve())
     shutil.copy2(SCRIPT, project / "tools" / SCRIPT.name)
     shutil.copy2(CGROUP_HELPER, project / "tools" / CGROUP_HELPER.name)
     shutil.copy2(PILOT_HOST_CHECK, project / "tools" / PILOT_HOST_CHECK.name)

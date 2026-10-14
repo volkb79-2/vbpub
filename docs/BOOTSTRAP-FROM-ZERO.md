@@ -71,7 +71,7 @@ is the premise here, not zero network.
    `tester-unified/local-wheel/` and build with
    `--build-arg CLI_EXTENDED_RESOLVE=local --build-arg CLI_EXTENDED_WHEEL_SHA256=<logged sha256>`
    (see `tester-unified/README.md`). The image asserts the wheel carries a `+local` version.
-3. **Run the cli-extended gate.** From `libraries/cli-extended`: `./run-gate.py r0-r1` and `r3`
+3. **Run the cli-extended gate.** From `libraries/cli-extended`: `run-gate r0-r1` and `r3`
    (the same lanes its release transaction runs).
 4. **Release cli-extended** with the source-bootstrapped cmru from step 1:
    `cmru release cli-extended --set-version 0.2.0` (the first release has no prior tag).
