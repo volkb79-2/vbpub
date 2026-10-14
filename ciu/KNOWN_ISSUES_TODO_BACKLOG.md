@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-10-14 — **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` made the real-system lane fail on key-duplication assertions, then the source was restored byte-for-byte. The release flow invokes the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. **CIU-134 remains OPEN** for a permission-specific, consented worktree-removal retry with exact-state reporting. **CIU-135 remains OPEN** pending its registered gate and final review; its package now also covers reset-retry ambiguity, network ownership proof, nested-root profile targeting, explicit `ensure` constraints, and empty-profile refusal (P53 review 02). **CIU-129 FIXED** for the hidden-failure diagnostic by Assay B146 (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). CIU-128's registered gate passed on 2026-10-05. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
+Last updated: 2026-10-14 — **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` made the real-system lane fail on key-duplication assertions, then the source was restored byte-for-byte. The release flow invokes the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. **CIU-134 remains OPEN** for a permission-specific, consented worktree-removal retry with exact-state reporting. **CIU-135 remains OPEN** pending its registered gate and final review; the package now also covers direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 FIXED** for the hidden-failure diagnostic by Assay B146 (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). CIU-128's registered gate passed on 2026-10-05. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared gate invocations and their budgets.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -5122,6 +5122,22 @@ to restore it and can finish with the requested selection absent.
   not network absence, and must refuse without falsely demoting a ready record
   to a collision. A one-time explicit legacy claim may record an unlabelled
   network only if no network object id is already saved.
+- Verify managed network identity in the shared network-startup path used by
+  direct native and shipped `ciu up`, before network creation/attachment and
+  again after creation. `worktree up` alone is not a complete guard because
+  operators can invoke the stack command directly from a managed checkout.
+- Require an exact network object to exist before `--adopt-existing-network`
+  can claim it. A missing network cannot satisfy an assertion of ownership.
+- Classify an unlabelled same-name replacement with a different saved object
+  id as unproven (`runtime-verification-failed`), not a proven collision.
+  Keep `runtime-collision` for a duplicate identity/network or a foreign owner
+  label.
+- Fail runtime identity admission when a sibling record cannot be read and
+  that sibling has a CIU root at the selected offset. Keep listing best effort
+  and do not let malformed rootless worktrees block a CIU runtime allocation.
+- Refuse an explicit worktree `--root-folder` that is neither a CIU root nor
+  the containing Git-family root; do not silently use the caller's current
+  directory to select a different root.
 - Reserve `runtime-collision` for a proven duplicate identity or foreign
   network. A failed Git-family registry read or Docker ownership probe during
   allocation is `runtime-verification-failed`, not evidence that another
@@ -5202,9 +5218,23 @@ published `.gitignored.ciu` sample.
 (22) `runtime-verification-failed` is accepted as a record status and appears
 in a user-facing document, so the documentation contract detects if the new
 closed recovery value is omitted.
+(23) Direct native and shipped `ciu up` verify the managed record and network
+before network setup and again afterward; an ownership mismatch refuses
+before network attachment/deployment, and a newly created exact network id is
+checkpointed. `ciu worktree up` keeps its pre-child check. (24) A non-CIU,
+non-family explicit `--root-folder` exits 2 with a diagnostic instead of
+falling back to the current directory. (25) An absent network cannot satisfy
+`--adopt-existing-network`, and an unproven replacement is recorded as
+`runtime-verification-failed` while a foreign owner label remains
+`runtime-collision`. (26) A malformed CIU-root sibling blocks runtime
+identity admission but remains visible as a best-effort listing warning; a
+malformed rootless sibling does not block identity admission. Controlled wrong
+implementations that bypass direct-start verification, mark an unproven
+network as a collision, silently accept a missing claim target, or ignore an
+unreadable CIU-root sibling must fail their oracles.
 
 **File list.** `src/ciu/worktree.py`, `src/ciu/workspace_env.py`,
-`src/ciu/scaffold.py`,
+`src/ciu/engine.py`, `src/ciu/scaffold.py`,
 `src/ciu/cli.py`; the owning worktree lifecycle, workspace-network and CLI tests;
 `tests/test_init_scaffolding.py`, `tests/tests/test_ciu_documentation_contract.py`;
 the root `.gitignore`, `ciu/.gitignore`, and the shipped `.gitignored.ciu`
@@ -5218,7 +5248,8 @@ three adopter-facing documents (README, DESIGN-GUIDE, CONSUMERS) are required
 before merge, alongside the normative spec and configuration reference.
 
 **Disposition:** OPEN. The six findings from the second independent review,
-eight findings from the final broad design review, and two adjacent gaps found
-while closing those findings are folded into the isolated implementation and
-regression oracles. The exact candidate still needs its registered CIU gate
-and a final read-only review before merge.
+eight findings from the final broad design review, two adjacent gaps found
+while closing those findings, and five additional findings from the final
+follow-up review are folded into the isolated implementation and regression
+oracles. The exact candidate still needs its registered CIU gate and a final
+read-only review before merge.

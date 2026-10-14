@@ -98,3 +98,28 @@ and generated ignore rules.
 `git diff --check` and `python -m compileall -q ciu/src/ciu ciu/tests` pass on
 the follow-on edits. No suite or gate has run on them; the registered CIU gate
 and a final read-only review remain pending.
+
+## Final follow-up review: additional findings (2026-10-14)
+
+A second full Sol xhigh read-only review of `main...HEAD` at
+`9a69f22a5e6574e9712185fdab20b6b5056d5394` found five material defects;
+findings and checkout-integrity evidence are retained in
+`ciu-P53-REVIEW-04.md`. They are being folded into the same package:
+
+- direct `ciu up` from a managed checkout must verify the network in the
+  shared runtime path, not only in the `worktree up` wrapper;
+- an explicit `--root-folder` that is neither a CIU root nor the Git-family
+  root must refuse rather than fall back;
+- `--adopt-existing-network` must fail when no exact network object exists;
+- unproven network ownership must not be labeled a proven collision; and
+- allocation identity admission must fail closed on unreadable CIU-root
+  sibling records, while listing and rootless records retain best-effort
+  behavior.
+
+All five findings are now reflected in the implementation and planned
+regressions: direct native/shipped startup verifies managed network ownership
+in the shared path; invalid explicit root selectors refuse; a requested
+legacy claim requires an existing object; unproven replacements map to
+`runtime-verification-failed`; and unreadable CIU-root siblings block runtime
+identity admission while rootless records remain best effort. The registered
+gate and another read-only review remain pending.

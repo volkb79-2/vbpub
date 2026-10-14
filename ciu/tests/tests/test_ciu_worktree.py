@@ -1084,29 +1084,46 @@ class TestManagedIdentityLifecycle:
     def test_runtime_registry_failure_is_not_classified_as_collision(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
-        real_list = worktree.list_instance_records
-        list_calls = 0
+        real_scan = worktree._scan_instance_records
+        scan_calls = 0
 
         def unavailable(_root, **_kwargs):
-            nonlocal list_calls
-            list_calls += 1
-            if list_calls == 2:
+            nonlocal scan_calls
+            scan_calls += 1
+            if scan_calls == 2:
                 raise worktree.WorktreeError("Git worktree inventory unavailable")
-            return real_list(_root, **_kwargs)
+            return real_scan(_root)
 
-        monkeypatch.setattr(worktree, "list_instance_records", unavailable)
+        monkeypatch.setattr(worktree, "_scan_instance_records", unavailable)
         with pytest.raises(
             worktree.RuntimeNetworkVerificationError,
             match="identity uniqueness.*inventory unavailable",
         ):
             worktree.create(tmp_repo, "registry-unavailable")
 
-        assert list_calls == 2
-        monkeypatch.setattr(worktree, "list_instance_records", real_list)
+        assert scan_calls == 2
+        monkeypatch.setattr(worktree, "_scan_instance_records", real_scan)
         failed = worktree.find_instance_record(tmp_repo, "registry-unavailable")
         assert failed is not None
         assert failed.state == "recovery-required"
         assert failed.recovery_status == "runtime-verification-failed"
+
+    def test_unreadable_ciu_root_sibling_blocks_runtime_identity_admission(
+        self, tmp_repo, fake_generate_env
+    ):
+        damaged = worktree.create(tmp_repo, "damaged-ciu-sibling")
+        damaged.record_path.write_text('{"logical_name":"damaged-ciu-sibling",\n', encoding="utf-8")
+
+        with pytest.raises(
+            worktree.RuntimeNetworkVerificationError,
+            match="cannot verify runtime identity uniqueness.*damaged-ciu-sibling",
+        ):
+            worktree.create(tmp_repo, "new-runtime-instance")
+
+        partial = worktree.find_instance_record(tmp_repo, "new-runtime-instance")
+        assert partial is not None
+        assert partial.state == "recovery-required"
+        assert partial.recovery_status == "runtime-verification-failed"
 
     def test_runtime_network_probe_failure_has_recoverable_status(
         self, tmp_repo, fake_generate_env, monkeypatch
@@ -3378,14 +3395,15 @@ class TestExactWorktreeControl:
         )
 
         with pytest.raises(
-            worktree.RuntimeNetworkOwnershipError, match="cannot prove ownership"
+            worktree.RuntimeNetworkOwnershipUnprovenError,
+            match="cannot prove ownership",
         ):
             worktree.up_instance(repo_root, "ctrl")
 
         assert fake_run["calls"] == []
         failed = worktree.read_instance_record(record.record_path)
         assert failed.state == "recovery-required"
-        assert failed.recovery_status == "runtime-collision"
+        assert failed.recovery_status == "runtime-verification-failed"
         assert failed.network_id == "4" * 64
 
     def test_up_probe_failure_refuses_without_demoting_ready_record(
@@ -4056,6 +4074,112 @@ def test_adopt_requires_explicit_claim_for_an_unlabeled_legacy_network(
     assert ready.network_id == "d" * 64
 
 
+def test_explicit_network_claim_refuses_when_no_network_object_exists(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    target = tmp_repo.parent / "adopted-missing-network"
+    assert _git(
+        ["worktree", "add", "-b", target.name, str(target), "main"], tmp_repo
+    ).returncode == 0
+    monkeypatch.setattr(worktree, "_docker_network_details", lambda _network: None)
+
+    with pytest.raises(
+        worktree.RuntimeNetworkVerificationError,
+        match="no existing runtime network.*available to adopt",
+    ):
+        worktree.adopt(
+            tmp_repo, target.name, str(target), adopt_existing_network=True
+        )
+
+    partial = worktree.find_instance_record(tmp_repo, target.name)
+    assert partial is not None
+    assert partial.state == "recovery-required"
+    assert partial.recovery_status == "runtime-verification-failed"
+    assert partial.network_id is None
+
+
+def test_direct_managed_startup_verifies_and_saves_the_network_object_id(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-network")
+    docker_id = "a" * 64
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda network: (
+            {
+                "id": docker_id,
+                "labels": {worktree._NETWORK_OWNER_LABEL: record.instance_id},
+            }
+            if network == record.network else None
+        ),
+    )
+
+    verified = worktree.verify_own_runtime_network(
+        record.ciu_root,
+        expected_instance_id=record.instance_id,
+        expected_network=record.network,
+    )
+
+    assert verified is not None
+    assert verified.network_id == docker_id
+    saved = worktree.read_instance_record(record.record_path)
+    assert saved.network_id == docker_id
+
+
+def test_direct_managed_startup_records_unknown_network_as_verification_failure(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-replacement")
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda network: (
+            {"id": "b" * 64, "labels": {}}
+            if network == record.network else None
+        ),
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkOwnershipUnprovenError,
+        match="cannot prove ownership",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id=record.instance_id,
+            expected_network=record.network,
+        )
+
+    failed = worktree.read_instance_record(record.record_path)
+    assert failed.state == "recovery-required"
+    assert failed.recovery_status == "runtime-verification-failed"
+
+
+def test_direct_managed_startup_refuses_generated_identity_mismatch_before_probe(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "direct-startup-identity-mismatch")
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: pytest.fail("identity mismatch must refuse before Docker"),
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkVerificationError,
+        match="generated runtime identity.*does not match",
+    ):
+        worktree.verify_own_runtime_network(
+            record.ciu_root,
+            expected_instance_id="different-instance",
+            expected_network=record.network,
+        )
+
+    saved = worktree.read_instance_record(record.record_path)
+    assert saved.state == "ready"
+    assert saved.recovery_status is None
+
+
 def test_ready_ensure_refuses_same_name_replacement_network(
     tmp_repo, fake_generate_env, monkeypatch,
 ):
@@ -4073,8 +4197,31 @@ def test_ready_ensure_refuses_same_name_replacement_network(
 
     failed = worktree.read_instance_record(record.record_path)
     assert failed.state == "recovery-required"
-    assert failed.recovery_status == "runtime-collision"
+    assert failed.recovery_status == "runtime-verification-failed"
     assert failed.network_id == "e" * 64
+
+
+def test_ready_ensure_marks_a_conflicting_owner_label_as_collision(
+    tmp_repo, fake_generate_env, monkeypatch
+):
+    record = worktree.create(tmp_repo, "network-foreign-label")
+    monkeypatch.setattr(
+        worktree,
+        "_docker_network_details",
+        lambda _network: {
+            "id": "6" * 64,
+            "labels": {worktree._NETWORK_OWNER_LABEL: "foreign-instance"},
+        },
+    )
+
+    with pytest.raises(
+        worktree.RuntimeNetworkOwnershipError, match="carries owner instance"
+    ):
+        worktree.ensure(tmp_repo, "network-foreign-label")
+
+    failed = worktree.read_instance_record(record.record_path)
+    assert failed.state == "recovery-required"
+    assert failed.recovery_status == "runtime-collision"
 
 
 def test_ready_ensure_keeps_last_network_id_while_network_is_absent(
@@ -4119,7 +4266,10 @@ def test_explicit_network_claim_cannot_replace_saved_object_id(
         lambda _network: {"id": "3" * 64, "labels": {}},
     )
 
-    with pytest.raises(worktree.RuntimeNetworkOwnershipError, match="cannot prove ownership"):
+    with pytest.raises(
+        worktree.RuntimeNetworkOwnershipUnprovenError,
+        match="cannot prove ownership",
+    ):
         worktree.ensure(
             tmp_repo, "network-claim-once", adopt_existing_network=True
         )

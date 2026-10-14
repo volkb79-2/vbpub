@@ -725,7 +725,12 @@ def _resolve_worktree_ciu_root_cli(
                 except CiuWorkspaceError:
                     return None
             else:
-                return None
+                cli_error(
+                    f"[ERROR] [S16] explicit --root-folder {explicit_root} is "
+                    "neither a CIU root nor the Git-family root; refusing to "
+                    "look up worktree records at a different offset"
+                )
+                raise SystemExit(2)
     else:
         try:
             selected = resolve_ciu_root(start_dir)

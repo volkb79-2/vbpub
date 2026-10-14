@@ -149,7 +149,7 @@ def test_bootstrap_after_generate_prefers_file_identity_over_ambient(
     monkeypatch.setattr(
         workspace_env,
         "ensure_workspace_network",
-        lambda name, auto_connect=True: attached.append(name),
+        lambda name, auto_connect=True, **_kwargs: attached.append(name),
     )
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: None)
 

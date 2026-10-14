@@ -213,7 +213,11 @@ class RuntimeNetworkVerificationError(WorktreeError):
 
 
 class RuntimeNetworkOwnershipError(RuntimeNetworkVerificationError):
-    """A present network exists, but its owner cannot be proved for this instance."""
+    """A present network or identity is proven to belong to another instance."""
+
+
+class RuntimeNetworkOwnershipUnprovenError(RuntimeNetworkVerificationError):
+    """A present network has no evidence proving that this instance owns it."""
 
 
 class RuntimeNetworkProbeError(RuntimeNetworkVerificationError):
@@ -3841,6 +3845,9 @@ def up_instance(
             except RuntimeNetworkOwnershipError:
                 _mark_recovery(record, "runtime-collision")
                 raise
+            except RuntimeNetworkOwnershipUnprovenError:
+                _mark_recovery(record, "runtime-verification-failed")
+                raise
             if verified != record:
                 _write_instance_record(verified)
                 record = verified
@@ -4198,12 +4205,38 @@ def _check_runtime_collision(
     repo_root: Path, record: WorktreeInstanceRecord, instance_id: str, network: str
 ) -> None:
     try:
-        records = list_instance_records(repo_root)
+        scan = _scan_instance_records(repo_root)
     except WorktreeError as exc:
         raise RuntimeNetworkVerificationError(
             f"[S16] could not verify runtime identity uniqueness: {exc}"
         ) from exc
-    for other in records:
+    offset = _ciu_root_offset(repo_root)
+    runtime_problems = []
+    for problem in scan.problems:
+        try:
+            has_runtime_root = _ciu_root_marker_present(
+                problem.worktree_path / offset
+            )
+        except WorktreeError as exc:
+            raise RuntimeNetworkVerificationError(
+                f"[S16] could not determine whether unreadable sibling "
+                f"{problem.worktree_path} has runtime identity: {exc}"
+            ) from exc
+        if has_runtime_root:
+            runtime_problems.append(problem)
+    if runtime_problems:
+        details = "; ".join(
+            f"{problem.record_path}: {problem.detail}"
+            for problem in runtime_problems[:3]
+        )
+        remaining = len(runtime_problems) - 3
+        if remaining > 0:
+            details += f"; and {remaining} more unreadable CIU-root record(s)"
+        raise RuntimeNetworkVerificationError(
+            "[S16] cannot verify runtime identity uniqueness because a CIU-root "
+            f"sibling record is unreadable or inconsistent: {details}"
+        )
+    for other in scan.records:
         if other.logical_name == record.logical_name:
             continue
         if other.instance_id == instance_id:
@@ -4310,6 +4343,11 @@ def _verify_and_record_network(
     """
     details = _docker_network_details(network)
     if details is None:
+        if claim_unlabeled_network:
+            raise RuntimeNetworkVerificationError(
+                f"[S16] no existing runtime network {network!r} is available "
+                "to adopt"
+            )
         # Keep the last verified object id across an outage/removal. Clearing
         # it here would make a later same-name replacement look like a first
         # observation and erase the evidence needed to reject it.
@@ -4334,13 +4372,70 @@ def _verify_and_record_network(
         return _record_with_verified_network_id(record, details["id"])
 
     previous = record.network_id or "not recorded"
-    raise RuntimeNetworkOwnershipError(
+    raise RuntimeNetworkOwnershipUnprovenError(
         f"[S16] cannot prove ownership of existing runtime network {network!r}: "
         f"Docker object id is {details['id']!r} (recorded {previous!r}) and it "
         f"does not carry {_NETWORK_OWNER_LABEL}={instance_id!r}; for a known "
         "legacy network, explicitly use `--adopt-existing-network` to record "
         "this exact object"
     )
+
+
+def verify_own_runtime_network(
+    ciu_root: Path,
+    *,
+    expected_instance_id: str | None,
+    expected_network: str,
+) -> WorktreeInstanceRecord | None:
+    """Verify and checkpoint this managed checkout's live runtime network.
+
+    Unmanaged and rootless checkouts remain untouched. A managed checkout must
+    be ready and its generated identity must match the saved record before it
+    may start. An absent network is allowed so the normal startup path can
+    create it; a second call then verifies and records the new Docker object.
+    """
+    ciu_root = Path(ciu_root).resolve()
+    with _allocation_lock(ciu_root):
+        record = read_own_instance_record(ciu_root)
+        if record is None:
+            return None
+        if record.state != "ready":
+            raise RuntimeNetworkVerificationError(
+                f"[S16] managed worktree {record.logical_name!r} is "
+                f"{record.state!r}; run `ciu worktree ensure "
+                f"{record.logical_name}` before starting it"
+            )
+        if record.instance_id is None and record.network is None:
+            if _ciu_root_marker_present(ciu_root):
+                raise RuntimeNetworkVerificationError(
+                    f"[S16] managed CIU root {ciu_root} has no saved runtime "
+                    f"identity; run `ciu worktree ensure {record.logical_name}`"
+                )
+            return record
+        if (
+            expected_instance_id != record.instance_id
+            or expected_network != record.network
+        ):
+            raise RuntimeNetworkVerificationError(
+                f"[S16] generated runtime identity for {ciu_root} does not match "
+                "its managed worktree record"
+            )
+        try:
+            verified = _verify_and_record_network(
+                record,
+                record.instance_id,
+                record.network,
+                claim_unlabeled_network=False,
+            )
+        except RuntimeNetworkOwnershipError:
+            _mark_recovery(record, "runtime-collision")
+            raise
+        except RuntimeNetworkOwnershipUnprovenError:
+            _mark_recovery(record, "runtime-verification-failed")
+            raise
+        if verified != record:
+            _write_instance_record(verified)
+        return verified
 
 
 def _record_with_verified_network_id(
@@ -5233,6 +5328,11 @@ def ensure(
                             )
                         except RuntimeNetworkOwnershipError:
                             _mark_recovery(record, "runtime-collision")
+                            raise
+                        except RuntimeNetworkOwnershipUnprovenError:
+                            _mark_recovery(
+                                record, "runtime-verification-failed"
+                            )
                             raise
                         if claim_unlabeled_network and verified.network_id is None:
                             raise WorktreeError(

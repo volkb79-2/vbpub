@@ -20,10 +20,14 @@ def _patch_repo_root(monkeypatch, tmp_path):
 
 
 class TestWorktreeCreateDispatch:
-    def test_selected_ciu_root_resolves_from_cwd_or_explicit_target(self, tmp_path):
+    def test_selected_ciu_root_resolves_from_cwd_or_explicit_target(
+        self, tmp_path, capsys
+    ):
         git_root = tmp_path / "mono"
         nested = git_root / "component"
         nested.mkdir(parents=True)
+        unrelated = git_root / "other"
+        unrelated.mkdir()
         (nested / "ciu.global.defaults.toml.j2").write_text(
             "[ciu]\n", encoding="utf-8"
         )
@@ -34,9 +38,10 @@ class TestWorktreeCreateDispatch:
         assert cli._resolve_worktree_ciu_root_cli(
             git_root, git_root, nested
         ) == nested
-        assert cli._resolve_worktree_ciu_root_cli(
-            git_root, git_root / "other", nested
-        ) is None
+        with pytest.raises(SystemExit) as exc:
+            cli._resolve_worktree_ciu_root_cli(git_root, unrelated, nested)
+        assert exc.value.code == 2
+        assert "neither a CIU root nor the Git-family root" in capsys.readouterr().err
 
     def test_forwards_all_options(self, monkeypatch, capsys):
         seen = {}

@@ -5246,23 +5246,41 @@ label always refuses. Neither `adopted` origin nor a generic
 When `ensure` finds a ready record whose root evidence is complete, it MUST
 still verify a present runtime network before returning `ready`; `worktree up`
 MUST perform the same ownership check immediately before it launches the
-managed child. A same-name replacement is not hidden by either fast path. If
-the Docker executable or network is genuinely absent, the ready record remains
-usable, but its last verified object id stays available to detect a later
-replacement. A Docker permission or execution error is indeterminate, not
-absence: the command refuses and does not rewrite the saved ready state as a
-collision.
+managed child. Direct native and shipped `ciu up` MUST perform the same check
+in the shared network-startup path, before accepting or creating the network
+and again after creation before attaching the devcontainer. A same-name
+replacement is not hidden by any of these paths. If the Docker executable or
+network is genuinely absent, the ready record remains usable, but its last
+verified object id stays available to detect a later replacement. A Docker
+permission or execution error is indeterminate, not absence: the command
+refuses and does not rewrite the saved ready state as a collision.
 
 During an incomplete allocation, a proven identity or ownership conflict uses
 `runtime-collision`. Failure to read the Git-family identity registry or
 failure to inspect Docker uses `runtime-verification-failed`, so inability to
-verify is never reported as a collision. Retry `ensure` after the registry or
-Docker probe is available.
+verify is never reported as a collision. A same-name network whose object id
+differs from the saved id and has no matching owner label is unproven, not a
+proven conflict; it uses `runtime-verification-failed`. A foreign owner label
+or a duplicate identity/network in readable sibling records is a proven
+conflict and uses `runtime-collision`. Allocation MUST refuse with
+`runtime-verification-failed` when an unreadable sibling record belongs to a
+CIU root at the selected root offset, because CIU cannot certify runtime
+identity uniqueness. Best-effort listing remains available, and unreadable
+rootless siblings do not block runtime admission. Retry `ensure` after the
+registry or Docker probe is available.
 
 The explicit `--adopt-existing-network` assertion is one-time: it may record
 an unlabelled object's id only when no network id is already saved. It cannot
-replace a previously verified id. A matching CIU owner label remains separate
-ownership evidence.
+replace a previously verified id. The exact named network must exist when the
+claim is made; an absent network is not an object that can be adopted and the
+operation fails with `runtime-verification-failed`. A matching CIU owner label
+remains separate ownership evidence.
+
+For worktree CLI operations that select a CIU record root, an explicit
+`--root-folder` must resolve either to a CIU root or to the Git-family root.
+When it names the Git-family root, the invocation directory may select a
+nested CIU root. Any other explicit path refuses; CIU does not fall back to a
+different root selected from the current directory.
 
 All record read-modify-write operations, including lease changes, serialize
 through the Git family's allocation lock and read the record only after taking

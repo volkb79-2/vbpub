@@ -146,6 +146,77 @@ def test_ensure_workspace_network_without_auto_connect_only_ensures_network(
     assert events == [("ensure", "ciu-network")]
 
 
+def test_managed_startup_verifies_network_before_and_after_ensure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[tuple[object, ...]] = []
+    monkeypatch.setattr(workspace_env, "_test_suite_gate_active", lambda: False)
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("INSTANCE_ID", "managed-1")
+
+    from ciu import worktree
+
+    def verify(root, *, expected_instance_id, expected_network):
+        events.append(("verify", root, expected_instance_id, expected_network))
+
+    monkeypatch.setattr(worktree, "verify_own_runtime_network", verify)
+    monkeypatch.setattr(
+        workspace_env,
+        "_ensure_network_exists",
+        lambda name, **_kwargs: events.append(("ensure", name)),
+    )
+    monkeypatch.setattr(
+        workspace_env,
+        "_connect_devcontainer_to_network",
+        lambda name: events.append(("connect", name)),
+    )
+
+    workspace_env.ensure_workspace_network(
+        "managed-net", verify_managed_instance=True
+    )
+
+    assert events == [
+        ("verify", tmp_path.resolve(), "managed-1", "managed-net"),
+        ("ensure", "managed-net"),
+        ("verify", tmp_path.resolve(), "managed-1", "managed-net"),
+        ("connect", "managed-net"),
+    ]
+
+
+def test_managed_startup_refuses_before_network_side_effect_on_unknown_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    events: list[str] = []
+    monkeypatch.setattr(workspace_env, "_test_suite_gate_active", lambda: False)
+    monkeypatch.setenv("REPO_ROOT", str(tmp_path))
+    monkeypatch.setenv("INSTANCE_ID", "managed-1")
+
+    from ciu import worktree
+
+    def refuse(*_args, **_kwargs):
+        events.append("verify")
+        raise worktree.RuntimeNetworkOwnershipUnprovenError("unknown owner")
+
+    monkeypatch.setattr(worktree, "verify_own_runtime_network", refuse)
+    monkeypatch.setattr(
+        workspace_env,
+        "_ensure_network_exists",
+        lambda *_args, **_kwargs: events.append("ensure"),
+    )
+    monkeypatch.setattr(
+        workspace_env,
+        "_connect_devcontainer_to_network",
+        lambda *_args, **_kwargs: events.append("connect"),
+    )
+
+    with pytest.raises(workspace_env.WorkspaceEnvError, match="unknown owner"):
+        workspace_env.ensure_workspace_network(
+            "managed-net", verify_managed_instance=True
+        )
+
+    assert events == ["verify"]
+
+
 def test_generated_bootstrap_without_network_still_runs_tls_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -162,7 +233,7 @@ def test_generated_bootstrap_without_network_still_runs_tls_probe(
     monkeypatch.setattr(
         workspace_env,
         "ensure_workspace_network",
-        lambda _name: events.append("network"),
+        lambda _name, **_kwargs: events.append("network"),
     )
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: events.append("tls"))
 
@@ -196,7 +267,7 @@ def test_generated_workspace_bootstrap_without_network_probes_tls_and_validates(
     monkeypatch.setattr(
         workspace_env,
         "ensure_workspace_network",
-        lambda _name: events.append("network"),
+        lambda _name, **_kwargs: events.append("network"),
     )
     monkeypatch.setattr(workspace_env, "_check_tls_access", lambda: events.append("tls"))
 

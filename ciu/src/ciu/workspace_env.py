@@ -1097,11 +1097,43 @@ def ensure_workspace_network(
     auto_connect: bool = True,
     *,
     owner_instance_id: str | None = None,
+    verify_managed_instance: bool = False,
 ) -> None:
-    """Ensure the shared Docker network exists and attach devcontainer if enabled."""
+    """Ensure the shared network exists and verify managed startup ownership.
+
+    Runtime startup sets ``verify_managed_instance``. A managed worktree then
+    proves its ready record and the live Docker object before the network is
+    accepted or the devcontainer is attached. The second proof records the
+    object created when no network existed at the first proof.
+    """
     resolved = network_name or os.environ.get("DOCKER_NETWORK_INTERNAL", "")
     owner = owner_instance_id or os.environ.get("INSTANCE_ID")
+    managed_root = os.environ.get("REPO_ROOT", "")
+
+    def verify_managed_record() -> None:
+        if not verify_managed_instance or _test_suite_gate_active():
+            return
+        if not managed_root:
+            raise WorkspaceEnvError(
+                "[S16] cannot verify managed runtime network without REPO_ROOT"
+            )
+        from . import worktree
+
+        try:
+            worktree.verify_own_runtime_network(
+                Path(managed_root),
+                expected_instance_id=owner,
+                expected_network=resolved,
+            )
+        except worktree.WorktreeError as exc:
+            raise WorkspaceEnvError(str(exc)) from exc
+
+    # Reject a non-ready or foreign same-name network before CIU can create it
+    # or attach this devcontainer to it. The second call checkpoints an object
+    # created by `_ensure_network_exists` below.
+    verify_managed_record()
     _ensure_network_exists(resolved, owner_instance_id=owner)
+    verify_managed_record()
     if auto_connect:
         _connect_devcontainer_to_network(resolved)
 
@@ -2190,7 +2222,9 @@ def bootstrap_workspace_env(
         if network_name:
             try:
                 ensure_workspace_network(
-                    network_name, owner_instance_id=os.environ.get("INSTANCE_ID")
+                    network_name,
+                    owner_instance_id=os.environ.get("INSTANCE_ID"),
+                    verify_managed_instance=True,
                 )
             except WorkspaceEnvError as exc:
                 _log_warn(f"Network setup skipped: {exc}")

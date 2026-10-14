@@ -149,10 +149,24 @@ $ ciu worktree ensure pkg-under-test --adopt-existing-network
 A conflicting owner label always refuses.
 After an object id is saved, this flag cannot replace it with a different
 unlabelled network. `worktree up` also checks a present network immediately
-before launching the managed `ciu up` child. A Docker permission or execution
-failure is an unknown result and refuses; it is not treated as proof that the
-network is absent. A genuinely absent Docker executable or network remains a
-supported local-only state.
+before launching the managed `ciu up` child. Direct native and shipped `ciu up`
+also verify the managed record and network before accepting or creating the
+network, then verify again after creation before attaching the devcontainer.
+A Docker permission or execution failure is an unknown result and refuses; it
+is not treated as proof that the network is absent. A same-name replacement
+without a matching object id or owner label is reported as
+`runtime-verification-failed`; a foreign owner label or duplicate readable
+identity is a proven `runtime-collision`. An unreadable sibling record under a
+CIU root at the selected root offset also blocks new runtime identity
+admission, while record listing remains best effort and malformed rootless
+siblings do not block it. A genuinely absent Docker executable or network
+remains a supported local-only state.
+
+When a worktree command needs a selected CIU root, `--root-folder` may name
+that CIU root or the Git-family root. If it names the family root, the current
+directory selects the nested CIU root. An existing path that is neither one
+of those roots is an error; CIU will not silently use a different root from
+the current directory.
 
 If root preparation fails, keep the checkout and retry through CIU:
 

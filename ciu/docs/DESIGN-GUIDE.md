@@ -64,13 +64,25 @@ move an allocation that was already accepted.
 
 An explicit legacy-network claim is available only before CIU has recorded an
 object id, so it cannot erase evidence after a same-name replacement.
-`worktree up` repeats the ownership check immediately before starting its
-child. An unavailable Docker probe is indeterminate and refuses without being
-mistaken for an absent network.
+`worktree up` and direct native or shipped `ciu up` both verify the managed
+record and live network before startup. The direct path checks before network
+creation or attachment, then checks again after creation so the new object's
+id is saved. An unavailable Docker probe is indeterminate and refuses without
+being mistaken for an absent network.
 During allocation, a proven duplicate or ownership conflict is recorded as
 `runtime-collision`; inability to read the worktree registry or inspect the
 network is recorded as `runtime-verification-failed`. This keeps a tool failure
 from being presented as a finding that another instance owns the identity.
+An unlabelled replacement with a different saved object id is also unproven,
+so it uses `runtime-verification-failed`; a foreign owner label is positive
+evidence of a conflict and uses `runtime-collision`. Allocation also refuses
+to certify uniqueness when an unreadable sibling record belongs to a CIU root
+at this root offset. Listing stays best effort, and a malformed rootless
+sibling does not claim a CIU runtime identity.
+
+The one-time `--adopt-existing-network` option asserts ownership of an exact
+existing unlabelled Docker object. If the network is absent, there is no object
+to claim and CIU refuses the operation.
 
 The CIU record is shared mutable state: lifecycle transitions and lease writes
 take the same Git-family lock, then read and update the record under that lock.
