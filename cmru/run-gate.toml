@@ -99,6 +99,7 @@ argv = [
   '''
 set -euo pipefail
 cd {worktree}/cmru
+rm -f coverage.json junit-coverage.xml
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 exec env PYTHONPATH=src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json --junitxml=junit-coverage.xml
@@ -188,6 +189,7 @@ argv = [
   '''
 set -euo pipefail
 cd {worktree}/cmru
+rm -f coverage.json junit-coverage.xml
 /opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
 /opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
 mkdir -p .assay

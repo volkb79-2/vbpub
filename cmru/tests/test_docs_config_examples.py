@@ -117,7 +117,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
     gate_command = " ".join(gate["lanes"]["gate"]["argv"])
     assert gate_command == (
-        "python3 {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
+        "python3 -I -B {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
     )
     assert "gate-provisional" not in gate["lanes"]
     cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
