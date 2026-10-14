@@ -762,12 +762,14 @@ The
 and an import-break canary. The release `gate` adds R2 through a separate
 changed-source mutation campaign based on the highest-version published
 `cmru-v*` tag in the candidate's full ancestry.
-Every ephemeral CMRU tester lane declares contract-2 `cgprofile` resource
-observation and explicit memory and PID ceilings. The current 6.2.0 release
-candidate selects `gate-provisional`: it runs the ref, installed-wheel, Assay
-R0/R1/R3, coverage, and canary checks, then records the operator-approved R2
-deferral under KI-79. The full `gate` lane remains available for the
-post-release mutation campaign.
+The native-R2 `mutation` lane requests contract-2 `cgprofile` resource-event
+observation. Other tester lanes declare memory and PID ceilings but do not yet
+collect event evidence; [KI-77](KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-gate-lacks-container-resource-event-evidence-on-non-mutation-lanes-and-cannot-confine-every-shared-git-ref)
+tracks that gap. The current 6.2.0 release candidate selects
+`gate-provisional`: it runs the ref, installed-wheel, Assay R0/R1/R3, coverage,
+and canary checks, then records the operator-approved R2 deferral under KI-79.
+It therefore records no mutation event evidence. The full `gate` lane remains
+available for the post-release mutation campaign.
 The registered `gate` lane queries every CMRU release tag on origin through
 CMRU's credential-scoped Git transport, then forwards only token-free tag and
 commit facts to the `cmru-mutation` tester environment as

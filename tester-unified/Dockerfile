@@ -107,6 +107,12 @@ ARG RUN_GATE_TESTER_WHEEL_SHA256
 RUN test -n "${RUN_GATE_TESTER_VERSION}" \
  && test -n "${RUN_GATE_TESTER_WHEEL_SHA256}" \
     || { echo "Run-Gate version and wheel SHA-256 are required; use tester-unified/build-image.sh" >&2; exit 1; }
+LABEL org.vbpub.run-gate.version="${RUN_GATE_TESTER_VERSION}" \
+      org.vbpub.run-gate.wheel-sha256="${RUN_GATE_TESTER_WHEEL_SHA256}"
+RUN printf '{"version":"%s","sha256":"%s"}\n' \
+      "${RUN_GATE_TESTER_VERSION}" "${RUN_GATE_TESTER_WHEEL_SHA256}" \
+      > /etc/tester-unified-run-gate-wheel.json \
+ && chmod 0444 /etc/tester-unified-run-gate-wheel.json
 RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
       > /tmp/tester-requirements.txt \
  && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \

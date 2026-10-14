@@ -33,6 +33,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - Fix: recognize retired `run-gate.py` invocations when they use relative,
   worktree-prefixed, or absolute paths, so pointer validation cannot certify a
   call to a removed script.
+- Fix: anchor the release coverage floor to the newest reachable stable
+  Run-Gate release tag, so merging a candidate to `main` cannot collapse the
+  judged source diff to zero.
+- Fix: build and receipt the exact candidate wheel before the release gate,
+  verify the running tester image contains those bytes, and refuse publication
+  if CMRU's post-tag wheel build differs.
 
 <!-- cmru: release history -->
 

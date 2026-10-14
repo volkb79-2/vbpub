@@ -694,14 +694,16 @@ the installed wheel metadata and refuses development, local-suffix, or older bui
 before any CMRU sub-lane starts. It records the wheel version in the snapshot
 manifest, and a resumed snapshot refuses if that identity changed.
 
-All ephemeral lanes used by the CMRU aggregate (`installed-wheel`,
-`installed-wheel-live`, `ref-probe`, `assay`, `coverage`, `mutation`, and
-`canary`) request contract-2 event evidence from `cgprofile` and declare 2 GiB
-memory and an 8192-process ceiling. The release step for the current 6.2.0
-candidate runs `run-gate gate-provisional`, which skips only the long mutation
+The native-R2 `mutation` lane requests contract-2 event evidence from
+`cgprofile`. The `installed-wheel`, `installed-wheel-live`, `ref-probe`,
+`assay`, `coverage`, and `canary` lanes declare 2 GiB memory and an
+8192-process ceiling but do not collect event evidence; KI-77 tracks adding
+working observation to those command lanes. The release step for the current
+6.2.0 candidate runs `run-gate gate-provisional`, which skips the long mutation
 lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
-KI-79. Run `run-gate gate` when full R2 evidence is required; that lane includes
-the mutation campaign.
+KI-79. That release therefore has no mutation event evidence. Run `run-gate
+gate` when full R2 evidence is required; that lane includes the mutation
+campaign.
 
 The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0

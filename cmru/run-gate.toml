@@ -22,7 +22,6 @@ schema_version = 1
 kind = "assay"
 assay_lane = "cmru"                 # -> assay.toml [lanes.cmru]
 environment = "tester-unified"
-resource_observer = "cgprofile"
 budget = "20m"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
@@ -44,7 +43,6 @@ memory_swap = "16g"
 [lanes.installed-wheel]
 kind = "command"
 environment = "tester-unified"
-resource_observer = "cgprofile"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py"]
 budget = "10m"
 
@@ -60,7 +58,6 @@ memory_swap = "16g"
 [lanes.installed-wheel-live]
 kind = "command"
 environment = "tester-unified"
-resource_observer = "cgprofile"
 argv = ["bash", "-c", "cd {worktree}/cmru && exec /opt/tester-venv/bin/python tools/installed_wheel_smoke.py --require-live-snapshot"]
 budget = "10m"
 
@@ -76,7 +73,6 @@ memory_swap = "16g"
 [lanes.ref-probe]
 kind = "command"
 environment = "tester-unified"
-resource_observer = "cgprofile"
 argv = [
   "bash",
   "-c",
@@ -101,7 +97,6 @@ memory_swap = "16g"
 [lanes.coverage]
 kind = "command"
 environment = "tester-unified"
-resource_observer = "cgprofile"
 argv = [
   "bash",
   "-c",
@@ -193,7 +188,6 @@ memory_swap = "16g"
 [lanes.canary]
 kind = "command"
 environment = "tester-unified"
-resource_observer = "cgprofile"
 argv = [
   "bash",
   "-c",

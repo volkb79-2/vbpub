@@ -353,6 +353,25 @@ def _git(repo: str, args: list[str]) -> str:
 
 
 def _resolve_base(repo: str, base: str) -> str:
+    if base == "latest-release-tag":
+        tags = _git(
+            repo,
+            ["tag", "--merged", "HEAD", "--sort=-version:refname", "--list", "run-gate-v*"],
+        ).splitlines()
+        tag = next(
+            (
+                candidate for candidate in tags
+                if re.fullmatch(r"run-gate-v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", candidate)
+            ),
+            None,
+        )
+        if tag is None:
+            raise CoverageGateError(
+                "no reachable stable run-gate-vX.Y.Z release tag; "
+                "cannot establish the release coverage baseline"
+            )
+        return _git(repo, ["rev-parse", "--verify", f"{tag}^{{commit}}"]).strip()
+
     tokens = _git(repo, ["rev-list", "--parents", "-n", "1", "HEAD"]).split()
     if len(tokens) >= 3:
         return tokens[1]
@@ -488,7 +507,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--coverage-json", required=True,
                     help="path to `coverage json` output")
     p.add_argument("--base", default="main",
-                    help="ref the change is measured against (default: main)")
+                    help="ref the change is measured against; use latest-release-tag to anchor a release gate to the newest reachable stable run-gate-vX.Y.Z tag (default: main)")
     p.add_argument("--source", default="run-gate-project/run_gate.py",
                    help="source path prefix (default: run-gate-project/run_gate.py)")
     p.add_argument("--fail-under", type=float, default=100.0,

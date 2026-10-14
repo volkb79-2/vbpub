@@ -8,7 +8,10 @@ its argv is passed without a second shell parse:
 Build the Run-Gate wheel from the checkout, then use the supported image
 builder (see the [image build steps](../README.md#tester-unified)). The builder
 passes the exact wheel bytes through a named BuildKit context, checks its
-version and digest, and installs that wheel into the image.
+version and digest, and installs that wheel into the image. It requires
+`$CGROUP_PARENT_DEV_GATES` or `--cgroup-parent`, verifies the host slice through
+CMRU's `tester-gate` probe, passes the same parent to Buildx, and checks the
+loaded image labels against the wheel's version and SHA-256.
 
 ```bash
 tester-unified/run --workdir run-gate-project -- run-gate selftest
@@ -59,8 +62,9 @@ records the runtime version and source commit.
 `run-gate-project/` checkout can otherwise be judged by an older wheel. From
 the repository root, build the wheel from the selected checkout and rebuild
 the image using the supported procedure in the
-[tester-unified README](../README.md). CIU's registered lane compares the
-installed wheel modules with the selected checkout and refuses a stale image.
+[tester-unified README](../README.md). CIU's registered lane compares installed
+module bytes and console-entry-point targets with the selected checkout and
+refuses a stale image.
 
 Alternatively, add a source-match preflight to the consumer's gate. CIU runs
 that preflight before its suite and enrollment commands; the failure message

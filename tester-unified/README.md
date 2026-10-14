@@ -23,11 +23,20 @@ For an ordinary local image, the wheel's scm-derived version is sufficient:
 cmru handler wheel-build --cwd run-gate-project
 ```
 
-After either build, build and load the image from that exact wheel:
+After either build, build and load the image from that exact wheel. The builder
+requires the configured `$CGROUP_PARENT_DEV_GATES` (or an explicit
+`--cgroup-parent`), checks the host slice through CMRU's `tester-gate` probe,
+and passes the same parent to Buildx. It verifies the loaded image labels still
+name the exact wheel version and SHA-256:
 
 ```bash
 tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local
 ```
+
+The image labels and `/etc/tester-unified-run-gate-wheel.json` record that
+wheel's version and SHA-256. The builder verifies the loaded labels, and
+Run-Gate's release lane checks the in-container identity against its
+commit-bound receipt before running the suite.
 
 `cmru handler wheel-build` runs the project build in CMRU's declared
 `wheel-builder` container. From this repository root, CMRU resolves the image

@@ -31,12 +31,29 @@ done
 [[ -z "$allow_docker_socket" || -n "$allow_infra" ]] || { echo "--allow-docker-socket requires --allow-infra" >&2; exit 2; }
 [[ -n "$cgroup_parent" ]] || { echo "set CGROUP_PARENT_DEV_GATES, MUTATION_AUDIT_CGROUP_PARENT, or --cgroup-parent; refusing ungoverned Docker containers" >&2; exit 2; }
 command -v systemctl >/dev/null 2>&1 || { echo "systemctl is required to verify cgroup parent '$cgroup_parent' is loaded" >&2; exit 2; }
-if ! cgroup_parent_load_state=$(systemctl show "$cgroup_parent" --property=LoadState --value 2>/dev/null); then
+if ! cgroup_parent_properties=$(systemctl show "$cgroup_parent" --property=LoadState,FragmentPath --no-pager 2>/dev/null); then
   echo "could not verify cgroup parent '$cgroup_parent' with systemctl; refusing ungoverned Docker containers" >&2
   exit 2
 fi
+cgroup_parent_load_state=$(sed -n 's/^LoadState=//p' <<<"$cgroup_parent_properties")
+cgroup_parent_fragment_path=$(sed -n 's/^FragmentPath=//p' <<<"$cgroup_parent_properties")
 [[ "$cgroup_parent_load_state" == loaded ]] || { echo "cgroup parent '$cgroup_parent' is not a loaded systemd unit (LoadState=${cgroup_parent_load_state:-empty}); refusing ungoverned Docker containers" >&2; exit 2; }
+[[ -n "$cgroup_parent_fragment_path" ]] || { echo "cgroup parent '$cgroup_parent' is only a transient systemd slice (FragmentPath is empty); refusing Docker's fail-open placement" >&2; exit 2; }
 [[ -n "$repo" ]] || repo=$(git config --get remote.origin.url) || { echo "no --repo and no origin remote" >&2; exit 2; }
+if [[ -z "$tester_image" ]]; then
+  command -v cmru >/dev/null 2>&1 || { echo "CMRU is required to build the exact Run-Gate wheel and tester image; install CMRU 6.2.0 or later or pass --tester-image" >&2; exit 2; }
+  cmru_version_text=$(cmru --version) || { echo "could not read the installed CMRU version; install CMRU 6.2.0 or later" >&2; exit 2; }
+  if [[ ! "$cmru_version_text" =~ ^cmru\ ([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    echo "CMRU wheel-build requires a stable CMRU release; got ${cmru_version_text@Q}" >&2
+    exit 2
+  fi
+  cmru_major=${BASH_REMATCH[1]}
+  cmru_minor=${BASH_REMATCH[2]}
+  if (( cmru_major < 6 || (cmru_major == 6 && cmru_minor < 2) )); then
+    echo "CMRU 6.2.0 or later is required to resolve the configured wheel-builder image; found $cmru_version_text" >&2
+    exit 2
+  fi
+fi
 
 run_id=$(date -u +%Y%m%dT%H%M%SZ)-$$
 started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -94,13 +111,15 @@ if [[ -n "$tester_image" ]]; then
   image_tag="$tester_image"
   image_reference="$tester_image"
 else
-  command -v cmru >/dev/null 2>&1 || { echo "CMRU is required to build the exact Run-Gate wheel and tester image; install the CMRU CLI or pass --tester-image" >&2; exit 2; }
   owned_image_tag="tester-unified:mutation-audit-${sha:0:12}-${volume_suffix}"
   image_tag="$owned_image_tag"
   image_reference="locally-built:$owned_image_tag"
-  CMRU_DOCKER_CGROUP_PARENT="$cgroup_parent" cmru handler wheel-build --cwd "$checkout/run-gate-project"
+  CGROUP_PARENT_DEV_GATES="$cgroup_parent" \
+    CMRU_DOCKER_CGROUP_PARENT="$cgroup_parent" \
+    cmru handler wheel-build --cwd "$checkout/run-gate-project"
   "$checkout/tester-unified/build-image.sh" \
     --wheel-dir "$checkout/run-gate-project/dist" \
+    --cgroup-parent "$cgroup_parent" \
     --tag "$image_tag"
 fi
 image_id=$(docker image inspect --format '{{.Id}}' "$image_tag")

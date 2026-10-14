@@ -80,7 +80,10 @@ def test_host_launcher_refuses_unloaded_cgroup_parent_before_clone(tmp_path):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     systemctl = fake_bin / "systemctl"
-    systemctl.write_text("#!/bin/sh\nprintf 'not-found\\n'\n", encoding="utf-8")
+    systemctl.write_text(
+        "#!/bin/sh\nprintf 'LoadState=not-found\\nFragmentPath=\\n'\n",
+        encoding="utf-8",
+    )
     systemctl.chmod(0o755)
     effects = tmp_path / "effects.log"
     for name in ("git", "docker"):
@@ -102,6 +105,90 @@ def test_host_launcher_refuses_unloaded_cgroup_parent_before_clone(tmp_path):
     assert result.returncode == 2
     assert "not a loaded systemd unit" in result.stderr
     assert not effects.exists()
+
+
+def test_host_launcher_refuses_auto_vivified_transient_slice_before_clone(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    systemctl = fake_bin / "systemctl"
+    systemctl.write_text(
+        "#!/bin/sh\nprintf 'LoadState=loaded\\nFragmentPath=\\n'\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    effects = tmp_path / "effects.log"
+    for name in ("git", "docker"):
+        tool = fake_bin / name
+        tool.write_text("#!/bin/sh\necho called >> \"$EFFECTS\"\nexit 99\n", encoding="utf-8")
+        tool.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+    env["EFFECTS"] = str(effects)
+    env["CGROUP_PARENT_DEV_GATES"] = "misspelled.slice"
+
+    result = subprocess.run(
+        [str(TOOLS / "remote-mutation-audit-host.sh"), "--manifest-rel", "audit.toml", "--repo", "https://example.invalid/repo.git"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "only a transient systemd slice" in result.stderr
+    assert not effects.exists()
+
+
+def test_host_launcher_requires_supported_cmru_before_cloning(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    systemctl = fake_bin / "systemctl"
+    systemctl.write_text(
+        "#!/bin/sh\nprintf 'LoadState=loaded\\nFragmentPath=/etc/systemd/system/dev-gates.slice\\n'\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    effects = tmp_path / "effects.log"
+    cmru = fake_bin / "cmru"
+    cmru.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = --version ]; then printf 'cmru 6.1.0\\n'; exit 0; fi\n"
+        "echo called >> \"$EFFECTS\"\n"
+        "exit 99\n",
+        encoding="utf-8",
+    )
+    cmru.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = f"{fake_bin}:/usr/bin:/bin"
+    env["EFFECTS"] = str(effects)
+    env["CGROUP_PARENT_DEV_GATES"] = "dev-gates.slice"
+
+    result = subprocess.run(
+        [
+            str(TOOLS / "remote-mutation-audit-host.sh"),
+            "--manifest-rel", "audit.toml",
+            "--repo", "https://example.invalid/repo.git",
+        ],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "CMRU 6.2.0 or later" in result.stderr
+    assert not effects.exists()
+
+
+def test_host_launcher_passes_verified_parent_to_both_cmru_and_buildx():
+    script = (TOOLS / "remote-mutation-audit-host.sh").read_text(encoding="utf-8")
+    assert 'CGROUP_PARENT_DEV_GATES="$cgroup_parent" \\' in script
+    assert 'CMRU_DOCKER_CGROUP_PARENT="$cgroup_parent" \\' in script
+    assert "cmru handler wheel-build --cwd \"$checkout/run-gate-project\"" in script
+    assert '"$checkout/tester-unified/build-image.sh" \\' in script
+    assert '--cgroup-parent "$cgroup_parent"' in script
 
 
 @pytest.mark.parametrize(

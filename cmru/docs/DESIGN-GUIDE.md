@@ -573,9 +573,11 @@ acceptance, Assay R0/R1/R3, total coverage, and canary. It records the skipped
 mutation lane with the candidate commit, time, reason, and tracking id under
 `.assay/mutation-postponed-cmru.json`. The full `gate` remains separate and
 continues to run R2. A provisional marker is evidence of a deferral, never a
-mutation pass. All ephemeral lanes declare contract-2 event observation and
-explicit resource ceilings so OOM or process-limit events cannot be confused
-with ordinary test outcomes.
+mutation pass. The native-R2 mutation lane declares contract-2 event
+observation; the current command lanes declare resource ceilings but do not
+collect event evidence. Declaring an observer on a lane with no observer client
+would add a daemon dependency without detecting OOM or process-limit events, so
+KI-77 tracks actual event capture for those lanes before they opt in.
 
 #### Mutation process-tree isolation
 

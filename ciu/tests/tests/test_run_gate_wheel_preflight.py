@@ -81,6 +81,9 @@ def test_main_checks_both_installed_wheel_modules(monkeypatch, tmp_path, capsys)
     venv_root = tmp_path / "venv"
     script_path.parent.mkdir(parents=True)
     source_root.mkdir()
+    (source_root / "pyproject.toml").write_text(
+        '[project.scripts]\nrun-gate = "run_gate:main"\n', encoding="utf-8"
+    )
     modules = {}
     for module_name in ("run_gate", "run_gate_admission"):
         source_path = source_root / f"{module_name}.py"
@@ -97,9 +100,16 @@ def test_main_checks_both_installed_wheel_modules(monkeypatch, tmp_path, capsys)
         "import_module",
         lambda module_name: modules[module_name],
     )
+    monkeypatch.setattr(
+        check_run_gate_wheel.importlib.metadata,
+        "distribution",
+        lambda _name: SimpleNamespace(entry_points=[
+            SimpleNamespace(name="run-gate", value="run_gate:main", group="console_scripts")
+        ]),
+    )
 
     assert check_run_gate_wheel.main() == 0
-    assert "matches the selected checkout" in capsys.readouterr().out
+    assert "modules and console entry points match the selected checkout" in capsys.readouterr().out
 
 
 def test_main_rejects_only_stale_admission_module(monkeypatch, tmp_path):
@@ -109,6 +119,9 @@ def test_main_rejects_only_stale_admission_module(monkeypatch, tmp_path):
     venv_root = tmp_path / "venv"
     script_path.parent.mkdir(parents=True)
     source_root.mkdir()
+    (source_root / "pyproject.toml").write_text(
+        '[project.scripts]\nrun-gate = "run_gate:main"\n', encoding="utf-8"
+    )
     modules = {}
     for module_name in ("run_gate", "run_gate_admission"):
         source_path = source_root / f"{module_name}.py"
@@ -131,3 +144,13 @@ def test_main_rejects_only_stale_admission_module(monkeypatch, tmp_path):
 
     with pytest.raises(SystemExit, match="run_gate_admission"):
         check_run_gate_wheel.main()
+
+
+def test_stale_console_entry_point_is_rejected():
+    installed = SimpleNamespace(entry_points=[
+        SimpleNamespace(name="run-gate", value="old_module:main", group="console_scripts")
+    ])
+    with pytest.raises(SystemExit, match="console entry points do not match"):
+        check_run_gate_wheel.verify_console_scripts(
+            installed, {"run-gate": "run_gate:main"}
+        )

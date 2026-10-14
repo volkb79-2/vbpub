@@ -57,8 +57,9 @@ evidence_paths = ["coverage.json"]
 # line. The lane owns all test logic (pytest + diff-coverage floor) in exactly
 # one place. CMRU executes step commands directly; the registered Run-Gate
 # lane owns its tester-unified container, placement, init, and resource caps.
-# Do not wrap it with `cmru tester-gate`: that wrapper starts a separate
-# privileged host-PID systemd probe which this package gate does not need.
+# The suite itself is not wrapped in `cmru tester-gate`; Run-Gate owns its
+# container. The image builder separately uses CMRU's slice probe before the
+# Buildx workload starts.
 # The lane's container bind-mounts this checkout so mountinfo tests exercise
 # a real mapping, and the release step runs with project_root as cwd.
 # CMRU executes this argv from its active runtime; when a release wave needs
@@ -82,13 +83,15 @@ evidence_paths = ["coverage.json"]
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "run-gate: selftest in tester-unified", argv = ["run-gate", "selftest"], cwd = "." },
+  { label = "run-gate: build and receipt exact release wheel/image", argv = ["python", "tools/release_candidate.py", "prepare"], cwd = "." },
+  { label = "run-gate: selftest in tester-unified", argv = ["env", "RUN_GATE_RELEASE_WHEEL_RECEIPT=.assay/run-gate-release-wheel.json", "run-gate", "selftest"], cwd = "." },
 ]
 
 [steps.build]
 quiet = true
 commands = [
   { label = "run-gate: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "run-gate: verify published wheel is the exact tested wheel", argv = ["python", "tools/release_candidate.py", "verify"], cwd = "." },
 ]
 
 [steps.push]

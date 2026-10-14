@@ -266,16 +266,25 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
 1. **`selftest`** — the release gate (`cmru.toml [steps.run-tests]`
    points at it; a release cannot be tagged unless it passes). It owns a
    capped `tester-unified` container and runs from the selected worktree's
-   project directory. In `tester-unified`, it runs
-   `python3 -m pytest tests -q --cov=. --cov-branch` directly, followed by
+   project directory. When CMRU releases this package, the run-tests step first
+   builds the prepared-version wheel and tester image from those exact bytes,
+   then writes a commit-bound receipt. The lane checks that image identity
+   before testing. In `tester-unified`, it runs
+   `/opt/tester-venv/bin/python -m pytest tests -q --cov=. --cov-branch`, followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since `main`. The comparison detects renames before filtering to
+   since the newest reachable stable `run-gate-vX.Y.Z` release tag. This
+   immutable baseline stays meaningful after merge; using `main` there would
+   resolve the merge base to the candidate itself and hide the release's
+   source changes. The comparison detects renames before filtering to
    `run_gate.py`, so replacing the retired compatibility symlink does not
-   make the whole module appear new; see the [coverage design](docs/DESIGN-GUIDE.md#changed-line-coverage-follows-content-across-renames).
+   make the whole module appear new; see the [coverage design](docs/DESIGN-GUIDE.md#release-coverage-uses-a-fixed-tag-baseline-and-follows-content-across-renames)
+   and [consumer adoption note](CONSUMERS.md#release-coverage-baseline).
    The release contract deliberately does not claim a
    whole-project 100% floor; the separate `assay-r1` lane is the broader
-   line-and-branch judge.
+   line-and-branch judge. After the gate and tag, CMRU rebuilds the wheel and
+   refuses publication unless its version and SHA-256 still match the receipted
+   wheel and tester image; see [the exact-wheel release design](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel).
 2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND
    judge in its own `tester-unified` container: the selected worktree's
    assay source running the same test command, `assay.toml [lanes.r1]`

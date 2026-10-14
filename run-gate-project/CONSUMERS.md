@@ -1843,6 +1843,36 @@ python -m pip install https://github.com/volkb79-2/vbpub/releases/download/run-g
 run-gate --version
 ```
 
+### Release coverage baseline
+
+The Run-Gate package release lane measures changed executable lines against
+the newest reachable stable `run-gate-vX.Y.Z` tag. That release tag remains
+the same before and after merging to `main`; a moving branch name would make
+the merge-base collapse to the candidate itself and hide its source changes.
+The lane invokes its coverage helper this way:
+
+```console
+python tools/coverage_gate.py --repo . --base latest-release-tag \\
+  --coverage-json coverage.json --source run_gate.py
+```
+
+The helper refuses if Git history has no reachable stable Run-Gate release
+tag, because it cannot derive a trustworthy release baseline in that state.
+See the [design rationale](docs/DESIGN-GUIDE.md#release-coverage-uses-a-fixed-tag-baseline-and-follows-content-across-renames)
+and [release-gate overview](README.md#version-probe).
+
+### Exact-wheel release verification
+
+The supported `cmru release run-gate-project` workflow prepares the wheel from
+the versioned changelog section before running `selftest`. It builds the tester
+image from those exact wheel bytes; the lane checks the image's baked SHA-256
+against a candidate receipt before pytest runs. CMRU rebuilds the release wheel
+after tagging and refuses publication if its digest does not match that
+receipt. Keep the package, wheel, and image steps inside this release workflow
+so the gate and published asset refer to the same candidate commit and bytes.
+See the [design rationale](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel)
+and [tester image build procedure](../tester-unified/README.md).
+
 
 ## Anti-goals (read before extending)
 

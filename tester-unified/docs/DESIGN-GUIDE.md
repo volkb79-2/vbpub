@@ -44,6 +44,12 @@ metadata version against the wheel's version. This keeps command lookup
 independent of the base image's private `/home/vscode/.venv`, which uid 1003
 cannot traverse.
 
+The image build is a host workload too. `build-image.sh` requires the declared
+gates slice (or an explicit override), verifies that slice through CMRU's
+host-systemd probe, and passes it to Buildx. The loaded image carries the exact
+Run-Gate wheel version and digest as labels; the builder checks those labels
+before reporting success.
+
 The wheel supplies the command entrypoint; the bind-mounted checkout supplies
 lane configuration and judged project files. CIU's release gate also compares
 the installed Run-Gate module bytes with the selected checkout and refuses a

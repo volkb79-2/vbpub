@@ -1145,8 +1145,9 @@ The step invokes the installed Run-Gate CLI as `run-gate enroll` inside
 and gates-slice environment; use the registered `cmru run` sequence above for
 that complete setup. There is no checkout-relative `../run-gate.py`
 dependency. Before the release step starts, CIU checks that the installed
-Run-Gate modules match the selected checkout; if they differ, rebuild
-`tester-unified` from this checkout as described in the
+Run-Gate module bytes and console-entry-point targets match the selected
+checkout; it does not compare unrelated wheel metadata. If either check
+differs, rebuild `tester-unified` from this checkout as described in the
 [tester-unified build guide](../../tester-unified/README.md). The registered
 lane requires the exact DinD endpoint and forwarded `$CGROUP_PARENT_DEV_GATES`
 value created by CMRU. With

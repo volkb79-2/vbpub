@@ -1957,6 +1957,11 @@ def campaign(
     coverage_blocks = coverage_summary["artifact_status"] not in (
         "not_applicable", "parsed_and_reverified_r1",
     )
+    if verdict is not None:
+        shard = (r2_policy.get("shard_index"), r2_policy.get("shard_count"))
+    else:
+        shard = ((latest["shard"] or {}).get("index"), (latest["shard"] or {}).get("count"))
+    multi_shard = shard[1] is not None and shard[1] > 1
     blockers = {
         name for name, holds in (
             ("no_verdict", verdict is None),
@@ -1977,6 +1982,7 @@ def campaign(
                 ),
             ),
             ("lane_timeout_or_unstarted", lane_timeout_row),
+            ("shard_not_merged", multi_shard),
         ) if holds
     }
     status = "incomplete" if blockers else "complete"
@@ -2001,18 +2007,15 @@ def campaign(
             "command_exit_source": "explicit caller observation" if command_exit is not None else None,
             "command_exit_matches": actual_exit_matches,
         }
-    if verdict is not None:
-        shard = (r2_policy.get("shard_index"), r2_policy.get("shard_count"))
-    else:
-        shard = ((latest["shard"] or {}).get("index"), (latest["shard"] or {}).get("count"))
     document = {
         "schema_version": SCHEMA_VERSION,
         "analysis": "mutation_campaign",
         "status": status,
-        # One shard covers the complete deterministic inventory. Treat it as
-        # whole-plan scope, like an unsharded run; only a multi-shard campaign
-        # needs the merged evidence before it can qualify.
-        "qualifying": not pilot_requested and (shard[0] is None or shard[1] == 1),
+        # One shard covers the complete deterministic inventory. A multi-shard
+        # run remains incomplete even when this shard happens to contain every
+        # candidate in a small or empty plan; only merged shard evidence can
+        # establish whole-plan completion.
+        "qualifying": not pilot_requested and not multi_shard,
         "complete_blockers": sorted(blockers),
         "expected_commit": expected_commit,
         "tree": tree,

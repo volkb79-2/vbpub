@@ -86,7 +86,11 @@ def _fixture(tmp_path: Path, monkeypatch):
     (primary / "cmru").mkdir()
     (primary / "README.md").write_text("tracked fixture\n", encoding="utf-8")
     (primary / "cmru" / "cmru.toml").write_text("schema_version = 1\n", encoding="utf-8")
-    _git(primary, "add", "README.md", "cmru/cmru.toml")
+    (primary / "cmru" / "CHANGES.md").write_text(
+        "# Changelog\n\n## [6.2.0] - 2026-10-14\n\n- prepared release\n",
+        encoding="utf-8",
+    )
+    _git(primary, "add", "README.md", "cmru/cmru.toml", "cmru/CHANGES.md")
     _git(primary, "commit", "--quiet", "-m", "fixture")
     repo = tmp_path / "repository"
     _git(primary, "worktree", "add", "--quiet", "-b", "gate-source", str(repo), "HEAD")
@@ -651,7 +655,7 @@ def test_postponed_mutation_skips_only_the_mutation_lane_and_records_the_marker(
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     status = run_release_gate.run_release_gate(
-        repo, temp_parent=private_root, postpone_mutation="KI-62",
+        repo, temp_parent=private_root, postpone_mutation="KI-79",
     )
     assert status == 0
     # Every other lane runs exactly as before, in order; no mutation lane and
@@ -659,7 +663,9 @@ def test_postponed_mutation_skips_only_the_mutation_lane_and_records_the_marker(
     assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage", "canary"]
     marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
     record = json.loads(marker.read_text(encoding="utf-8"))
-    assert record["tracking_id"] == "KI-62"
+    assert record["tracking_id"] == "KI-79"
+    assert record["candidate_commit"] == _git(repo, "rev-parse", "HEAD")
+    assert record["target_version"] == "6.2.0"
     assert record["lane"] == "mutation"
     assert record["status"] == "postponed"
     assert record["reason"] == run_release_gate.POSTPONE_REASON
@@ -667,7 +673,36 @@ def test_postponed_mutation_skips_only_the_mutation_lane_and_records_the_marker(
     err = capsys.readouterr().err
     warn_lines = [line for line in err.splitlines() if "WARN" in line]
     assert len(warn_lines) == 1
-    assert "POSTPONED" in warn_lines[0] and "KI-62" in warn_lines[0]
+    assert "POSTPONED" in warn_lines[0] and "KI-79" in warn_lines[0]
+
+
+def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
+    tmp_path, monkeypatch,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    (repo / "cmru" / "CHANGES.md").write_text(
+        "# Changelog\n\n## [6.2.1] - 2026-10-15\n\n- later release\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="authorized only for CMRU 6.2.0"):
+        run_release_gate.run_release_gate(
+            repo, temp_parent=private_root, postpone_mutation="KI-79",
+        )
+
+    assert calls == []
+    assert not (repo / "cmru" / ".assay" / "mutation-postponed-cmru.json").exists()
+
+
+def test_unknown_postponement_id_is_refused_before_any_lane_runs(tmp_path, monkeypatch):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+
+    with pytest.raises(RuntimeError, match="is not authorized for a release"):
+        run_release_gate.run_release_gate(
+            repo, temp_parent=private_root, postpone_mutation="KI-62",
+        )
+
+    assert calls == []
 
 
 def test_postponement_still_runs_later_lanes_and_stops_at_a_failing_one(tmp_path, monkeypatch):
@@ -679,7 +714,7 @@ def test_postponement_still_runs_later_lanes_and_stops_at_a_failing_one(tmp_path
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     status = run_release_gate.run_release_gate(
-        repo, temp_parent=private_root, postpone_mutation="KI-62",
+        repo, temp_parent=private_root, postpone_mutation="KI-79",
     )
     assert status == 7
     assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage", "canary"]
@@ -694,7 +729,7 @@ def test_postponement_does_not_hide_an_earlier_lane_failure(tmp_path, monkeypatc
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     assert run_release_gate.run_release_gate(
-        repo, temp_parent=private_root, postpone_mutation="KI-62",
+        repo, temp_parent=private_root, postpone_mutation="KI-79",
     ) == 5
     assert not (repo / "cmru" / ".assay" / "mutation-postponed-cmru.json").exists()
 
@@ -739,10 +774,10 @@ def test_main_passes_the_stripped_tracking_id_through(tmp_path, monkeypatch):
         "run_release_gate",
         lambda worktree, **kwargs: seen.append((worktree, kwargs)) or 0,
     )
-    assert run_release_gate.main(["--worktree", str(tmp_path), "--postpone-mutation", " KI-62 "]) == 0
+    assert run_release_gate.main(["--worktree", str(tmp_path), "--postpone-mutation", " KI-79 "]) == 0
     assert run_release_gate.main(["--worktree", str(tmp_path)]) == 0
     assert seen == [
-        (tmp_path, {"postpone_mutation": "KI-62"}),
+        (tmp_path, {"postpone_mutation": "KI-79"}),
         (tmp_path, {"postpone_mutation": None}),
     ]
 

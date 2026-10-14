@@ -7,7 +7,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Changed
 - KI-78 stages pending notes inside every tagged candidate's dated section before the gate and tag; direct publishers read the matching tag rather than mutable changelog files. `--no-build` and image-only releases retain notes in the tagged changelog without creating a GitHub Release body.
 - CMRU's aggregate gate uses Run-Gate SemVer as its compatibility floor and retained judge identity; it no longer treats a source revision counter as a compatibility version.
-- Every ephemeral CMRU gate lane records contract-2 cgroup resource-event evidence with declared memory and PID limits. The 6.2.0 release candidate uses the explicit `gate-provisional` lane to postpone only the long R2 campaign and retain that decision as evidence under KI-79.
+- The native-R2 mutation lane requests contract-2 cgroup resource-event evidence; other tester lanes declare memory and PID limits but do not yet produce event evidence (KI-77). The 6.2.0 release candidate uses `gate-provisional`, so it records an explicit R2 deferral and contains no mutation resource-event evidence (KI-79).
 
 ### Fixed
 - Bind release gates to the exact candidate commit and committed file contents. CMRU now refuses a release when a gate changes the candidate or hides tracked edits with Git index flags.

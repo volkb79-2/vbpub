@@ -21,16 +21,38 @@ while saved-record compatibility is answered by the record's schema and
 provenance contract. See the [user-facing version contract](../CONSUMERS.md#distribution-installed-wheel-and-semver)
 and [CLI overview](../README.md#distribution-installed-wheel).
 
-## Changed-line coverage follows content across renames
+## Release coverage uses a fixed tag baseline and follows content across renames
 
-The selftest coverage floor compares executable lines changed since the
-selected base. Git must identify renames before Run-Gate filters the diff to
+The selftest release coverage floor compares executable lines changed since
+the newest reachable stable `run-gate-vX.Y.Z` tag. The tag remains a fixed
+baseline after the candidate merges to `main`; a `main` merge-base would become
+the candidate itself and report no changed source lines. The explicit
+`latest-release-tag` base refuses when the checkout has no reachable stable
+Run-Gate release tag. Git must identify renames before Run-Gate filters the diff to
 `run_gate.py`. A path-limited diff hides the deleted path from rename
 detection; when a compatibility symlink becomes the wheel module, Git then
 reports every line in the module as newly added. The gate uses rename and
 rewrite detection on the project diff, then applies its source filter to the
 parsed paths. This keeps the denominator tied to changed content while still
-ignoring unrelated files. See the [release-gate description](../README.md#version-probe).
+ignoring unrelated files. See the [release-gate description](../README.md#version-probe)
+and [consumer adoption note](../CONSUMERS.md#release-coverage-baseline).
+
+## The release gate tests the published wheel
+
+The CMRU `run-tests` step reads the version section prepared in `CHANGES.md`,
+builds that wheel through CMRU's wheel builder, and builds `tester-unified`
+from those exact wheel bytes. The builder checks and labels the version and
+SHA-256; the running selftest compares those baked facts with the candidate
+receipt before it starts pytest. After tagging, CMRU rebuilds the wheel from
+the same candidate commit and refuses to publish if its version, filename,
+digest, or tester image identity differs. This connects the bytes that ran in
+the gate to the bytes attached to the release rather than treating matching
+version strings as artifact identity.
+
+The receipt is stored under the candidate's ignored `.assay/` directory and
+names the exact commit, wheel, and image. A normal local `run-gate selftest`
+does not require a release receipt; CMRU sets the receipt variable only for its
+release transaction. See the [consumer release workflow](../CONSUMERS.md#exact-wheel-release-verification).
 
 ## A worktree is the complete judgment boundary
 

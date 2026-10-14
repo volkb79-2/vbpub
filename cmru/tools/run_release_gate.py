@@ -443,9 +443,10 @@ def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
 
 POSTPONED_MARKER = Path(".assay") / "mutation-postponed-cmru.json"
 POSTPONE_REASON = (
-    "operator-approved provisional release: the R2 mutation lane was skipped and "
-    "must be run afterwards against the released tag"
+    "operator-approved provisional release of CMRU 6.2.0: the R2 mutation lane "
+    "was skipped and must be run afterwards against the released tag"
 )
+POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": "6.2.0"}
 
 
 def _tracking_id(value: str) -> str:
@@ -456,6 +457,47 @@ def _tracking_id(value: str) -> str:
     return tracking_id
 
 
+def _prepared_release_version(project_root: Path) -> str | None:
+    """Read the newest dated release heading prepared by CMRU before the gate."""
+    changelog = project_root / "CHANGES.md"
+    try:
+        markdown = changelog.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"cannot read prepared CMRU release changelog: {changelog}: {exc}") from exc
+    source_root = PROJECT_ROOT / "src"
+    if str(source_root) not in sys.path:
+        sys.path.insert(0, str(source_root))
+    try:
+        from cmru.release_notes import markdown_h2_headings
+    except ImportError as exc:
+        raise RuntimeError("cannot load CMRU's release-heading parser") from exc
+    for heading in markdown_h2_headings(markdown):
+        match = re.fullmatch(
+            r"## \[((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))\] - \d{4}-\d{2}-\d{2}",
+            heading.text,
+        )
+        if match is not None:
+            return match.group(1)
+    return None
+
+
+def _validate_postponement(project_root: Path, tracking_id: str) -> str:
+    """Allow the documented R2 deferral only for its one planned release."""
+    expected_version = POSTPONEMENT_RELEASE_VERSIONS.get(tracking_id)
+    if expected_version is None:
+        raise RuntimeError(
+            f"mutation postponement {tracking_id!r} is not authorized for a release"
+        )
+    observed_version = _prepared_release_version(project_root)
+    if observed_version != expected_version:
+        observed = observed_version or "no prepared release version"
+        raise RuntimeError(
+            f"mutation postponement {tracking_id} is authorized only for CMRU "
+            f"{expected_version}; prepared changelog identifies {observed}"
+        )
+    return observed_version
+
+
 def _record_postponement(project_root: Path, tracking_id: str) -> Path:
     """Write the retained marker saying the mutation lane was skipped, and WARN.
 
@@ -464,11 +506,15 @@ def _record_postponement(project_root: Path, tracking_id: str) -> Path:
     """
     marker = project_root / POSTPONED_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
+    candidate_commit = _git_output(project_root.parent, "rev-parse", "HEAD").decode("ascii").strip()
+    target_version = _validate_postponement(project_root, tracking_id)
     record = {
         "schema_version": 1,
         "lane": "mutation",
         "status": "postponed",
         "tracking_id": tracking_id,
+        "candidate_commit": candidate_commit,
+        "target_version": target_version,
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "reason": POSTPONE_REASON,
     }
@@ -596,6 +642,8 @@ def _run_release_gate_with_private_cache(
         raise RuntimeError(
             f"release gate helper is not running from the selected worktree: {PROJECT_ROOT}"
         )
+    if postpone_mutation is not None:
+        _validate_postponement(project_root, postpone_mutation)
     _assert_no_untracked_gate_code(repo_root)
     _preflight_assay_source(repo_root)
     run_gate_identity = _check_run_gate_identity(repo_root)

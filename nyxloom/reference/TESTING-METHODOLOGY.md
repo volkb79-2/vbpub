@@ -230,6 +230,14 @@ keeps reports outside the disposable checkout and the worker emits `events.jsonl
 per-mutant stdout/stderr, and `summary.json` even when a baseline, mutant, or
 teardown fails.
 
+Before it clones or launches containers, the host launcher requires the declared
+gates slice and checks both `LoadState=loaded` and a non-empty `FragmentPath`.
+Systemd can auto-create an unlimited transient `.slice` for a misspelled name,
+so `LoadState` alone is not proof that the configured host unit exists. When it
+builds an image, it uses CMRU's configured wheel-builder image, passes the same
+gates slice to the wheel build and `tester-unified/build-image.sh`, and derives
+the tester image's Run-Gate identity from the built wheel.
+
 The launcher records the exact commit, manifest SHA-256, and built tester image
 ID in `host.json`, and the worker repeats those values in every summary. Large
 audits can be split deterministically with `--shard-index/--shard-count`; each

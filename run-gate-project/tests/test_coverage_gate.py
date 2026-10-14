@@ -295,6 +295,74 @@ def test_base_relation_ancestor_reads_head_is_on_the_base(tmp_path):
             == "HEAD is on the base")
 
 
+def test_latest_release_tag_base_remains_valid_after_merge_to_main(tmp_path):
+    """The release gate must not collapse its comparison to HEAD after merge."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args],
+                              check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    source = tmp_path / "run_gate.py"
+    source.write_text("released = True\n", encoding="utf-8")
+    git("add", "run_gate.py")
+    git("commit", "-q", "-m", "released source")
+    release = git("rev-parse", "HEAD").strip()
+    git("tag", "run-gate-v23.10.0")
+
+    source.write_text("released = True\ncandidate = True\n", encoding="utf-8")
+    git("add", "run_gate.py")
+    git("commit", "-q", "-m", "candidate source")
+
+    assert coverage_gate._resolve_base(str(tmp_path), "latest-release-tag") == release
+
+
+def test_latest_release_tag_base_uses_highest_reachable_stable_version(tmp_path):
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args],
+                              check=True, capture_output=True, text=True).stdout
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (tmp_path / "run_gate.py").write_text("released = True\n", encoding="utf-8")
+    git("add", "run_gate.py")
+    git("commit", "-q", "-m", "base")
+    older = git("rev-parse", "HEAD").strip()
+    git("tag", "run-gate-v23.9.1")
+    git("tag", "run-gate-v23.10.0")
+
+    (tmp_path / "other.txt").write_text("later\n", encoding="utf-8")
+    git("add", "other.txt")
+    git("commit", "-q", "-m", "later source-neutral commit")
+
+    assert coverage_gate._resolve_base(str(tmp_path), "latest-release-tag") == older
+
+
+def test_latest_release_tag_base_refuses_when_no_release_tag_is_reachable(tmp_path):
+    import subprocess
+    import pytest
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    (tmp_path / "run_gate.py").write_text("candidate = True\n", encoding="utf-8")
+    git("add", "run_gate.py")
+    git("commit", "-q", "-m", "unreleased source")
+
+    with pytest.raises(coverage_gate.CoverageGateError, match="no reachable stable run-gate-vX.Y.Z release tag"):
+        coverage_gate._resolve_base(str(tmp_path), "latest-release-tag")
+
+
 def test_base_relation_ahead_names_commit_count(tmp_path):
     import subprocess
 

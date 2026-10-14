@@ -315,8 +315,11 @@ the suite.
 The nested fixtures are bounded inside the sidecar, and the lane refuses
 when the required isolated-Docker endpoint is missing. CMRU invokes the
 installed Run-Gate CLI (`run-gate enroll`) inside the tester container. Before
-each gate command, CIU checks that the installed wheel's code matches the
-selected checkout; a stale tester image fails with the exact rebuild command.
+each gate command, CIU checks that both installed Run-Gate module files and
+the console-entry-point targets match the selected checkout; a stale tester
+image fails with the exact rebuild command. This preflight checks the files and
+entry-point mapping that determine this lane's behavior, not every wheel metadata
+field.
 Run-Gate's `mode = "host"` is a general capability; each consumer chooses
 whether it fits its policy. The MDT cockpit policy requires the cockpit to drive gates
 while a stable test environment hosts the suite; see the
