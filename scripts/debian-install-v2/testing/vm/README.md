@@ -88,7 +88,7 @@ directly from `/work/vm`; `run-vm-harness.sh --daemon` prints the exact name.
 
 Subcommands: `prepare-base <case>`, `prepare-ready-base <case>` (see below),
 `start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N]
-[--no-apt-cache]`, `wait <run> [--timeout-s N]`, `ssh <run> [-- cmd...]`,
+[--no-apt-cache] [--seed-iso PATH]`, `wait <run> [--timeout-s N]`, `ssh <run> [-- cmd...]`,
 `copy <run> <src> <dst>`, `snapshot <run> <new-case>` (flatten a *stopped*
 run's disk into a new runner-local `<new-case>-base.qcow2`), `console <run>`,
 `status <run>`, `stop <run>` (graceful QMP `system_powerdown`, falling
@@ -102,6 +102,16 @@ complete remote shell program as one quoted argument, for example
 The wrapper quotes multiple simple arguments before sending them, while the
 one-argument form is intentionally preserved as shell syntax for the test
 lane.
+
+For NoCloud/ISO acceptance tests, `start --seed-iso PATH` attaches the supplied
+seed ISO instead of generating the harness's normal `tester` seed. The path is
+resolved inside the runner container; a file saved under this worktree's
+`testing/vm/.vm/` is visible there as `/work/vm/.vm/<name>.iso`. The supplied
+user-data must provision the harness SSH key for a `tester` account with
+passwordless sudo, because `wait` and `ssh` connect as `tester`. `vmctl` copies
+the source ISO into the disposable run directory with mode `0600`; it does not
+modify the source artifact. Keep credential-bearing seed ISOs in the ignored
+`.vm/` directory, not in tracked source.
 
 ## Skipping repeated first-boot cost: "ready" base images
 

@@ -177,8 +177,15 @@ if [ "$inside_container" = "0" ] && [ -n "$SOURCE_NAMESPACE_DIR" ]; then
     HOST_SOURCE_DIR="$SOURCE_NAMESPACE_DIR"
 fi
 
-[ -d "$HOST_SOURCE_DIR" ] || die \
-    "VM source directory '$HOST_SOURCE_DIR' does not exist; refusing to start with a phantom bind"
+# Outside a Docker cockpit, this path is already in the daemon's namespace and
+# a local check is authoritative. Inside a cockpit, HOST_SOURCE_DIR has been
+# translated from a container path to a host-only path; never stat that
+# translated value here. The daemon-side --mount below refuses a missing
+# source instead of -v's silent creation of an empty directory.
+if [ "$inside_container" = "0" ]; then
+    [ -d "$HOST_SOURCE_DIR" ] || die \
+        "VM source directory '$HOST_SOURCE_DIR' does not exist; refusing to start with a phantom bind"
+fi
 
 verify_cgroup_parent() {
     [ -n "$VM_CGROUP_PARENT" ] || die \
@@ -292,8 +299,8 @@ ensure_runner() {
         --label "mdt.vm.testing-dir=$HOST_TESTING_DIR" \
         -e "MDT_VM_STATE_DIR=$VM_STATE_DIR" \
         -e "MDT_VM_CACHE_DIR=$VM_CACHE_DIR" \
-        -v "$HOST_TESTING_DIR:/work:ro" \
-        -v "$HOST_SOURCE_DIR:/source:ro" \
+        --mount "type=bind,src=$HOST_TESTING_DIR,dst=/work,readonly" \
+        --mount "type=bind,src=$HOST_SOURCE_DIR,dst=/source,readonly" \
         -w /work/vm \
         "$IMAGE" sleep infinity >/dev/null
 }

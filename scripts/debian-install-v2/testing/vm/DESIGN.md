@@ -201,7 +201,7 @@ while building this:
 
 A test (or a human) never constructs a `qemu-system-x86_64` command line
 directly. `vmctl` exposes: `prepare-base <case>`, `start <run> [--case
-case-b] [--ssh-port N] [--mem MB] [--smp N]`, `wait <run> [--timeout-s
+case-b] [--ssh-port N] [--mem MB] [--smp N] [--seed-iso PATH]`, `wait <run> [--timeout-s
 N]`, `ssh <run> [-- cmd...]`, `copy <run> <src> <dst>`, `console <run>`,
 `status <run>`, `stop <run>`, `destroy <run>`. This mirrors a pattern from
 an independent design discussion the operator had in parallel (compared
@@ -212,6 +212,14 @@ protocol details behind one small script, so tests only ever see
 available on this estate, the only change needed is swapping `-accel
 tcg,thread=multi -cpu max` for `-accel kvm -cpu host` inside `vmctl`
 itself; nothing that calls it needs to know or care.
+
+The optional `--seed-iso` is for testing cloud-init seed acceptance against an
+unmodified cloud-image base. It replaces the harness-generated seed and is
+copied, mode `0600`, into that run's disposable state; the source ISO remains
+unchanged. Its user-data must provision the harness's `tester` account and SSH
+key or the normal SSH-based wait/control path cannot connect. Keeping this as a
+per-run input avoids changing the default deterministic seed or the immutable
+base image.
 
 ## 3. Base images and copy-on-write resets
 
