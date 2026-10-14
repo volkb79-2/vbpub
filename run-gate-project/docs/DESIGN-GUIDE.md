@@ -18,8 +18,8 @@ format; those are data provenance, not the installed tool's identity.
 
 This separates two questions: package compatibility is answered by SemVer,
 while saved-record compatibility is answered by the record's schema and
-provenance contract. See the [user-facing version contract](../CONSUMERS.md#distribution--installed-wheel-and-semver)
-and [CLI overview](../README.md#distribution--installed-wheel).
+provenance contract. See the [user-facing version contract](../CONSUMERS.md#distribution-installed-wheel-and-semver)
+and [CLI overview](../README.md#distribution-installed-wheel).
 
 ## A worktree is the complete judgment boundary
 

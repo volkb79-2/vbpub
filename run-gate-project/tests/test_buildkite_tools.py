@@ -162,7 +162,9 @@ def test_pipeline_output_parses_as_the_documented_pipeline(tmp_path):
 def test_pipeline_default_project_is_dot_and_emits_no_cd(tmp_path):
     proj = _stub_project(tmp_path / "proj")
     res = _run(PIPELINE_SH, cwd=proj, env={"RUN_GATE_QUEUE": "q1",
-                                           "RUN_GATE_LANES": "selftest"})
+                                           "RUN_GATE_LANES": "selftest",
+                                           "PATH": f"{tmp_path / 'bin'}:"
+                                                   f"{os.environ['PATH']}"})
     assert res.returncode == 0, res.stderr
     assert '    command: "run-gate selftest"\n' in res.stdout
     assert '      - ".assay/*"\n' in res.stdout
@@ -336,9 +338,16 @@ def test_pipeline_help_exits_zero_and_names_the_env_contract():
         assert key in res.stdout
 
 
-def test_pipeline_never_reads_run_gate_toml():
-    """The anti-goal, pinned as a test: no second parser of run-gate.toml."""
-    assert "run-gate.toml" not in _uncommented(PIPELINE_SH)
+def test_pipeline_delegates_lane_parsing_to_run_gate(tmp_path):
+    """The generator checks config presence, but never parses its contents."""
+    proj = _stub_project(tmp_path / "proj")
+    # A present but invalid config still works because the installed Run-Gate
+    # command is the only parser; this script consumes its --list output.
+    (proj / "run-gate.toml").write_text("not valid TOML = =\n")
+    res = _run(PIPELINE_SH, "proj", cwd=tmp_path,
+               env={"RUN_GATE_QUEUE": "q1", "RUN_GATE_LANES": "selftest"})
+    assert res.returncode == 0, res.stderr
+    assert 'command: "cd proj && run-gate selftest"' in res.stdout
 
 
 # ---------------------------------------------------------------------------

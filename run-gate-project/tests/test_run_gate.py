@@ -11,6 +11,7 @@ import calendar
 import contextlib
 import fcntl
 import hashlib
+from importlib import metadata as importlib_metadata
 import io
 import json
 import os
@@ -39,20 +40,10 @@ import pytest
 RUN_GATE_DIR = Path(__file__).resolve().parent.parent
 _TOOL = RUN_GATE_DIR / "run_gate.py"
 
-# Unit subprocesses execute the candidate module from source, while public CLI
-# identity still comes from installed wheel metadata. Supply an isolated test
-# distribution so the suite does not depend on the gate image's release.
-_TEST_VERSION = "24.0.0"
-_TEST_METADATA_ROOT = Path(tempfile.mkdtemp(prefix="run-gate-test-metadata-"))
-_TEST_DIST_INFO = _TEST_METADATA_ROOT / f"run_gate-{_TEST_VERSION}.dist-info"
-_TEST_DIST_INFO.mkdir()
-(_TEST_DIST_INFO / "METADATA").write_text(
-    "Metadata-Version: 2.1\nName: run-gate\nVersion: "
-    f"{_TEST_VERSION}\n\n")
-sys.path.insert(0, str(_TEST_METADATA_ROOT))
-os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (
-    str(_TEST_METADATA_ROOT), os.environ.get("PYTHONPATH", ""))))
-atexit.register(shutil.rmtree, _TEST_METADATA_ROOT, ignore_errors=True)
+# Public CLI identity comes from the installed wheel, including when a test
+# subprocess imports the candidate source module. Keep expectations tied to
+# that same installed distribution instead of inventing a test-only version.
+_TEST_VERSION = importlib_metadata.version("run-gate")
 
 # The suite invokes from a neutral directory so each fixture's current working
 # directory selects its project config as the installed CLI contract requires.
@@ -2091,10 +2082,18 @@ class TestArgvConstruction:
         assert any(m.endswith(f":{repo / '.git'}/config:ro") for m in overlays)
         # + `worktrees/` read-only (real contents) and the judged admin dir
         # read-write on top, each at both paths (RG-86 round 4)
-        assert len(mounts) == 10, mounts
+        assert len(mounts) == 20, mounts
         assert sum(m.endswith("/.git/worktrees:ro") for m in mounts) == 2
         assert sum(m.split(":")[0].endswith(f"/.git/worktrees/{wt.name}")
                    and not m.endswith(":ro") for m in mounts) == 2, mounts
+        # RG-93: protect the common hooks/info directories and the linked
+        # worktree's three Git pointers, at both physical and namespace paths.
+        assert sum(m.endswith("/.git/hooks:ro") for m in mounts) == 2, mounts
+        assert sum(m.endswith("/.git/info:ro") for m in mounts) == 2, mounts
+        pointer_mounts = [m for m in mounts
+                          if m.endswith(("/.git:ro", "/gitdir:ro",
+                                         "/commondir:ro"))]
+        assert len(pointer_mounts) == 6, pointer_mounts
         assert not any(m.split(":")[1] == str(repo) for m in mounts), mounts
         assert "--rm" not in run_call
         assert run_call[-4:-2] == ["tester-unified:local", "bash"]
@@ -2797,8 +2796,10 @@ def test_no_stdlib_violations():
     allowed.add("collections")
     # select: RG-55's placement ready/continue barrier waits on the wrapper's
     # private readiness pipe without timing out a slow command's lane body.
-    allowed.update({"copy", "contextlib", "dataclasses", "io", "select",
-                   "signal", "stat", "run_gate_admission"})
+    # grp: resolve host group identity for safe observer socket access.
+    # importlib: read the installed wheel's SemVer distribution metadata.
+    allowed.update({"copy", "contextlib", "dataclasses", "grp", "importlib",
+                   "io", "select", "signal", "stat", "run_gate_admission"})
     assert set(imports) <= allowed, f"non-stdlib/unplanned imports: {imports}"
 
 
@@ -3586,24 +3587,23 @@ def test_source_backed_assay_inner_installs_selected_worktree_source():
     assert "sha256sum" not in inner
 
 
-def test_unreleased_changelog_matches_revision_and_recovery_contract():
+def test_changelog_uses_wheel_semver_and_preserves_removed_release_notes():
     changes = (RUN_GATE_DIR / "CHANGES.md").read_text()
+    preserved = (RUN_GATE_DIR / "nyxloom-trove" / "reports" /
+                 "CMRU-KI58-unreleased-notes-carry-forward-2026-10-13.md")
+    notes = preserved.read_text()
 
-    # The tagged release remains source rev 55. RG-90's telemetry change is
-    # historical at rev 60; the P5 transport and placement launch gate are
-    # historical at rev 64; RG-91's framing fix is at rev 65; RG-89's
-    # contract-2 preflight is current at rev 66.
-    assert "This section describes released source rev 55." in changes
-    assert "RG-90, rev 60" in changes
-    assert "RG-55/P5, rev 64" in changes
-    assert "RG-91, rev 65" in changes
-    assert f"RG-89, rev {run_gate.__revision__}" in changes
-    assert "RG-89, rev 58" in changes
-    assert "RG-81, rev 54" in changes
-    assert "Older schemas refuse rather than being guessed or overwritten" \
-        in changes
-    assert "--fresh` only for an ephemeral-container lane" in changes
-    assert "lifecycle owner's confirmation" in changes
+    assert "SemVer from the installed wheel is the public tool identity" in changes
+    assert "persisted `revision` fields are provenance only" in changes
+    assert "## [23.10.0]" in changes
+    assert "## [Unreleased]" in changes
+    # CMRU requires the working section to stay empty until release; these
+    # removed notes remain preserved verbatim for the upcoming versioned
+    # section rather than being silently discarded.
+    assert "RG-90, rev 60" in notes
+    assert "RG-55/P5, rev 64" in notes
+    assert "observer-only Unix socket" in notes
+    assert "CP-11" in notes
 
 
 def test_selftest_lane_uses_bind_mounted_pytest_scratch_root():
@@ -8288,7 +8288,8 @@ class TestResourceObserverLane:
         monkeypatch.setattr(run_gate, "CGPROFILE_RESOURCE_OBSERVER_SOURCE",
                             str(socket_path))
         self._patch_socket_metadata(monkeypatch, socket_path, missing=True)
-        with pytest.raises(run_gate.GateInfraError, match="host Docker group source"):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="observer directory or socket is unavailable"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
@@ -8359,7 +8360,8 @@ class TestResourceObserverLane:
         self._patch_socket_metadata(
             monkeypatch, socket_path, parent_gid=1234, socket_gid=1234,
             docker_group_missing=True)
-        with pytest.raises(run_gate.GateInfraError, match="unavailable"):
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect the host Docker group source"):
             run_gate.resource_observer_docker_flags({
                 "kind": "assay", "environment": "tester-unified",
                 "resource_observer": "cgprofile"}, {"mode": "ephemeral"})
