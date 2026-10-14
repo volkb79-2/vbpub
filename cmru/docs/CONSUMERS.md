@@ -889,8 +889,8 @@ section in every tagged release candidate before the gate and tag:
 when a CMRU GitHub Release-body handler will publish it. For `--no-build` and image-only
 publishers, it previews the tagged changelog section instead; no GitHub Release body is
 published. In every case the release candidate commits the folded section before the gate,
-and its tag carries those notes. Promotion carries the candidate to `main` after the tagged
-transaction completes. A failed gate, build, publish or promotion leaves the source branch's
+and its tag carries those notes. The candidate reaches `main` only after a successful publish
+and promotion. A failed gate, build, publish or promotion leaves the source branch's
 notes under `[Unreleased]`. This removes the need to park notes outside the changelog
 (KI-58). CMRU also reads direct `cmru publish --from-checkout` release notes from the
 matching local release tag, never from later mutable changelog edits.

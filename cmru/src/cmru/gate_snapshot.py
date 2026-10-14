@@ -488,7 +488,8 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
     api = _worktree_api()
     source_root = source_root.resolve(strict=True)
     common, head, source_branch = _verify_source(source_root)
-    if "refs/heads/main" not in _anchor_ref_values(source_root):
+    source_anchors = _anchor_ref_values(source_root)
+    if "refs/heads/main" not in source_anchors:
         raise RuntimeError(
             "CMRU release gate requires a local refs/heads/main anchor; "
             "fetch or create the repository's main branch before starting"
@@ -618,12 +619,10 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
             # checks used for retries.
             _git(target, "reset", "--hard", head)
             refs_sha256 = _protected_refs_sha256(target, patterns)
-            anchor_refs = _anchor_ref_values(target)
-            if "refs/heads/main" not in anchor_refs:
-                raise RuntimeError(
-                    "CMRU release gate requires a local refs/heads/main anchor; "
-                    "fetch or create the repository's main branch before starting"
-                )
+            # The source and sidecar share one Git ref store. Keep the baseline
+            # read before allocating the sidecar so a missing main ref cannot
+            # leave a newly registered orphan snapshot behind.
+            anchor_refs = source_anchors
         else:
             # Validate retained state before trusting or deleting anything
             # left by a prior lane. A crashed or tampered checkout must be

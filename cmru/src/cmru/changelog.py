@@ -83,14 +83,6 @@ def _render_folded_notes(notes: str) -> str:
     return f"{PENDING_NOTES_BEGIN}\n{notes}\n{PENDING_NOTES_END}"
 
 
-def _without_folded_notes(section: str) -> str:
-    block = _folded_notes_block(section)
-    if block is None:
-        return section
-    start, end, _notes = block
-    return section[:start] + section[end:]
-
-
 def fold_unreleased_notes(markdown: str, version: str) -> str | None:
     """Move pending notes into the release section in the disposable candidate.
 

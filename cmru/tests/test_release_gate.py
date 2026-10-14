@@ -438,7 +438,7 @@ def test_release_candidate_cleanup_removes_its_gate_snapshot(tmp_path):
 
     primary = tmp_path / "primary"
     primary.mkdir()
-    _git(primary, "init", "--quiet")
+    _git(primary, "init", "--quiet", "--initial-branch=main")
     _git(primary, "config", "user.name", "CMRU Gate Test")
     _git(primary, "config", "user.email", "cmru-gate@example.invalid")
     (primary / "README.md").write_text("tracked fixture\n", encoding="utf-8")
@@ -1034,9 +1034,10 @@ def test_main_cannot_be_rewound_to_an_older_fast_forward_tip_between_lanes(
 
 def test_main_non_fast_forward_during_a_lane_fails_the_gate(tmp_path, monkeypatch):
     repo, *_rest, calls = _fixture(tmp_path, monkeypatch)
-    _git(repo, "commit", "--allow-empty", "--quiet", "-m", "advance main")
-    old_main = _git(repo, "rev-parse", "HEAD^")
-    new_main = _git(repo, "rev-parse", "HEAD")
+    primary = tmp_path / "primary"
+    old_main = _git(primary, "rev-parse", "refs/heads/main")
+    _git(primary, "commit", "--allow-empty", "--quiet", "-m", "advance main")
+    new_main = _git(primary, "rev-parse", "HEAD")
     _git(repo, "checkout", "--quiet", "-b", "release-candidate")
     private_root = tmp_path / "private-backups"
     private_root.mkdir(mode=0o700)
@@ -1346,14 +1347,27 @@ def _closed_snapshot(source: Path):
     return snapshot
 
 
-def test_a_retained_snapshot_without_run_gate_identity_refuses_resume(tmp_path, monkeypatch):
+@pytest.mark.parametrize("identity", [
+    None,
+    {},
+    {"revision": True, "version": "23.11.0"},
+    {"revision": -1, "version": "23.11.0"},
+    {"revision": 68, "version": ""},
+    {"revision": 68, "version": 23},
+])
+def test_a_retained_snapshot_without_valid_run_gate_identity_refuses_resume(
+    tmp_path, monkeypatch, identity,
+):
     from cmru import gate_snapshot
 
     repo, *_rest = _fixture(tmp_path, monkeypatch)
     snapshot = _closed_snapshot(repo)
     manifest = repo / "cmru" / ".assay" / "release-gate-snapshot.json"
     document = json.loads(manifest.read_text(encoding="utf-8"))
-    del document["run_gate_identity"]
+    if identity is None:
+        del document["run_gate_identity"]
+    else:
+        document["run_gate_identity"] = identity
     manifest.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="no trusted Run-Gate identity"):

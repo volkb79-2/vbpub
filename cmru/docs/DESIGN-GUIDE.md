@@ -795,7 +795,8 @@ The choices, and what was rejected:
   the source branch remains unchanged. A failed publish also leaves source `[Unreleased]`
   unchanged, while the tagged candidate retains the exact notes sent to the publisher.
   Promotion carries the staged changelog to `main` only after the tagged transaction
-  succeeds (including publication when enabled). A dry
+  succeeds, including a successful publish when the configured transaction publishes an
+  artifact. A dry
   run stages the same section temporarily and restores the original bytes; when no body
   will be published, it previews the tagged changelog section. Rejected: a post-publish
   changelog commit, which could block

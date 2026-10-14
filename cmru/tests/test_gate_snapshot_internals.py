@@ -10,7 +10,9 @@ import hashlib
 import json
 import os
 import shutil
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import worktree
@@ -63,6 +65,37 @@ def test_host_git_hooks_disabled_pins_git_to_the_verified_worktree_and_restores(
         assert os.environ["GIT_CONFIG_KEY_0"] == "core.hooksPath"
     assert os.environ["GIT_DIR"] == "/preset"
     assert "GIT_WORK_TREE" not in os.environ
+
+
+@pytest.mark.parametrize(("stdout", "message"), [
+    (b"malformed ref record\n", "malformed main/tag ref record"),
+    (b"refs/heads/unrelated\0" + b"a" * 40 + b"\n", "out-of-scope"),
+    (b"refs/tags/example\0not-an-object-id\n", "invalid object id"),
+])
+def test_anchor_ref_parser_rejects_malformed_and_out_of_scope_records(
+    tmp_path, monkeypatch, stdout, message,
+):
+    monkeypatch.setattr(gs, "_git", lambda *_args: SimpleNamespace(stdout=stdout))
+
+    with pytest.raises(RuntimeError, match=message):
+        gs._anchor_ref_values(tmp_path)
+
+
+def test_main_ancestry_probe_reports_git_failure_without_diagnostics(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        gs, "_linked_git_context", lambda *_args, **_kwargs: (tmp_path, tmp_path),
+    )
+    monkeypatch.setattr(gs, "_host_git_policy", lambda: nullcontext())
+    monkeypatch.setattr(
+        gs.subprocess, "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=2, stderr="", stdout=""),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="cannot verify main fast-forward ancestry: no diagnostic output",
+    ):
+        gs._git_is_ancestor(tmp_path, "a" * 40, "b" * 40)
 
 
 def test_a_failing_git_command_reports_its_arguments_and_output(tmp_path, monkeypatch):
@@ -246,6 +279,18 @@ def test_an_existing_snapshot_without_main_and_tag_anchors_refuses_resume(tmp_pa
     manifest.write_text(json.dumps(document), encoding="utf-8")
 
     with pytest.raises(RuntimeError, match="no trusted main/tag ref baseline"):
+        gs.open_gate_snapshot(repo)
+
+
+def test_an_existing_snapshot_with_malformed_main_tag_anchors_refuses_resume(tmp_path, monkeypatch):
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = _closed_snapshot(repo)
+    manifest = repo / "cmru" / ".assay" / "release-gate-snapshot.json"
+    document = json.loads(manifest.read_text(encoding="utf-8"))
+    document["anchor_refs"] = {"refs/heads/main": "not-an-object-id"}
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="invalid main/tag ref anchors"):
         gs.open_gate_snapshot(repo)
 
 

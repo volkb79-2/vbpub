@@ -174,8 +174,8 @@ def test_a_second_release_can_fold_notes_when_the_prior_version_has_fold_markers
         "## [2.1.0] - 2026-10-14\n### Fixed\n- The next repair.\n\n"
         "## [2.0.0] - 2026-10-13",
     ).replace(
-        "## [Unreleased]\n<!-- keep this comment -->",
-        "## [Unreleased]\n<!-- keep this comment -->\n\n- notes for 2.1.0",
+        "## [Unreleased]\n\n<!-- keep this comment -->",
+        "## [Unreleased]\n\n<!-- keep this comment -->\n\n- notes for 2.1.0",
     )
 
     second_release = changelog.fold_unreleased_notes(second_source, "2.1.0")

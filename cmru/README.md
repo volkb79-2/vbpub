@@ -483,9 +483,9 @@ section of the project's changelog for the version being released**, verbatim. P
 in the disposable release candidate before its gate and tag. The publisher reads the
 section from the exact tagged commit, so the tag and release body carry the same notes.
 Every tagged release carries the notes in its changelog; `--no-build` and image-only
-publishers do not create a GitHub Release body. The candidate reaches `main` only after
-the transaction promotes it; gate, build, publish, and promotion failures leave the source
-branch's `[Unreleased]` unchanged. A dry run prints
+publishers do not create a GitHub Release body. The candidate reaches `main` only after a
+successful publish and promotion; gate, build, publish, and promotion failures leave the
+source branch's `[Unreleased]` unchanged. A dry run prints
 the complete body between `----- begin release body -----` and `----- end release body -----`
 and restores the changelog bytes. If no GitHub Release body will be published, the dry run
 prints the candidate's tagged changelog section instead. This works for every configured

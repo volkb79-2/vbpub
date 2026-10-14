@@ -1906,7 +1906,9 @@ bundle; README, DESIGN-GUIDE, and CONSUMERS distinguish bootstrap integrity
 from bundle integrity. Consider whether the workflow can retain the desired
 one-command UX without shell-specific pipe-status traps.
 
-### KI-77 — the release gate lacks container resource-event evidence on non-mutation lanes and cannot confine every shared Git ref — *partly implemented in the CMRU candidate; gate evidence pending; severity: major*
+### KI-77 — the release gate lacks container resource-event evidence on non-mutation lanes and cannot confine every shared Git ref
+
+**Status:** partly implemented in the CMRU candidate; gate evidence pending; severity: major.
 
 **Observed (review D-2, D-3, plus C-2 follow-up):** Run-Gate's common Git directory remains read-write; only hooks and `info/` receive the documented mounts. CMRU now checks `run-gate --version`, requires rev 68 or later and a stable installed package version, records the judge identity in the gate manifest, and protects existing tags plus monotonic `main` during each lane. New refs and unrelated existing branch refs remain writable and unguarded; fully confining those needs Run-Gate mount changes. Separately only `[lanes.mutation]` opts into `resource_observer = "cgprofile"`; the other container lanes (`installed-wheel*`, `ref-probe`, `assay`, `coverage`, `canary`) rely on `--init`, `--pids-limit` and their command surfacing its own fork/OOM failure, and the docs do not say which lanes carry container-level event evidence.
 

@@ -22,7 +22,7 @@ def repository(tmp_path, monkeypatch):
     """A linked source worktree holding one closed (resumable) gate snapshot."""
     primary = tmp_path / "primary"
     primary.mkdir()
-    _git(primary, "init", "--quiet")
+    _git(primary, "init", "--quiet", "--initial-branch=main")
     _git(primary, "config", "user.name", "CMRU Gate Test")
     _git(primary, "config", "user.email", "cmru-gate@example.invalid")
     (primary / "README.md").write_text("tracked fixture\n", encoding="utf-8")
@@ -31,6 +31,8 @@ def repository(tmp_path, monkeypatch):
     source = tmp_path / "source"
     _git(primary, "worktree", "add", "--quiet", "-b", "gate-source", str(source), "HEAD")
     snapshot = gate_snapshot.open_gate_snapshot(source)
+    snapshot.run_gate_identity = {"revision": 68, "version": "23.11.0"}
+    gate_snapshot.write_snapshot_manifest(snapshot, "failed")
     gate_snapshot.close_gate_snapshot(snapshot)
     monkeypatch.chdir(source)
     return source, snapshot
