@@ -608,8 +608,56 @@ def test_git_added_lines_reports_the_working_trees_own_line_numbers_dirty(tmp_pa
     # An UNCOMMITTED edit on top: two lines prepended push `d` to line 6.
     (tmp_path / "demo.py").write_text("x\ny\na\nb\nc\nd\n", encoding="utf-8")
 
-    added = coverage_gate._git_added_lines(str(tmp_path), base_rev, "demo.py")
+    added = coverage_gate._git_added_lines(str(tmp_path), base_rev)
     # `d`'s REAL on-disk position is 6, not the committed diff's 4 -- and the
     # two prepended uncommitted lines are correctly reported too, at 1 and 2,
     # since they are equally new relative to base_rev.
     assert added == {"demo.py": {1, 2, 6}}, added
+
+
+def test_git_added_lines_tracks_content_when_symlink_becomes_module(tmp_path):
+    """A filename filter hides the old path from Git's rename detector.
+
+    Run-Gate's wheel migration replaces a tracked `run_gate.py` symlink with
+    a real module while retiring `run-gate.py`. The changed-line judge must
+    count the edited content, not certify or reject the whole destination as
+    a new file. It still parses unrelated project changes; `evaluate()` owns
+    the source-scope filter.
+    """
+    import subprocess
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args],
+                       check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.invalid")
+    git("config", "user.name", "test")
+    old = [f"original line {i}\n" for i in range(100)]
+    (tmp_path / "run-gate.py").write_text("".join(old), encoding="utf-8")
+    (tmp_path / "run_gate.py").symlink_to("run-gate.py")
+    (tmp_path / "unrelated.py").write_text("answer = 1\n", encoding="utf-8")
+    git("add", "run-gate.py", "run_gate.py", "unrelated.py")
+    git("commit", "-q", "-m", "base")
+    base_rev = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True).stdout.strip()
+
+    (tmp_path / "run-gate.py").unlink()
+    (tmp_path / "run_gate.py").unlink()
+    additions = [f"new executable {i}\n" for i in range(8)]
+    new = old[:50] + additions + old[50:]
+    (tmp_path / "run_gate.py").write_text("".join(new), encoding="utf-8")
+    (tmp_path / "unrelated.py").write_text("answer = 2\n", encoding="utf-8")
+
+    added = coverage_gate._git_added_lines(str(tmp_path), base_rev)
+    assert added["run_gate.py"] == set(range(51, 59)), added
+    assert added["unrelated.py"] == {1}, added
+    verdict = coverage_gate.evaluate(
+        added,
+        {"run_gate.py": {
+            "executed_lines": list(range(51, 59)), "missing_lines": []}},
+        source_prefix="run_gate.py",
+    )
+    assert verdict.passed
+    assert verdict.changed_executable == 8

@@ -36,7 +36,8 @@
 # topos/src/topos) or the test suite (a test's own "coverage" of itself is
 # not a meaningful check). Both --source and --coverage-json are plain
 # "run_gate.py"/"coverage.json" (no "run-gate-project/" prefix): the tool
-# invokes `git diff --relative ...`, which reports paths relative to CWD.
+# invokes rename-aware `git diff --relative ...` from CWD, then filters parsed
+# paths to --source; unrelated project files stay outside the denominator.
 # The selftest command explicitly enters the effective project dir before
 # pytest and coverage_gate.py run, so the bare filename is what git reports,
 # not a repo-root-relative path.

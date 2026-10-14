@@ -6148,3 +6148,28 @@ Severity: Major (a false PASS can certify a lane whose process failed). Type: bu
 **Oracles.** (1) Each closed outcome with its matching raw and artifact code preserves the current gate mapping. (2) PASS with runner code 1 and artifact code 0 returns ERROR and retains raw 1. (3) A raw/artifact match of 1 with outcome PASS returns ERROR because the outcome/code pair is invalid. (4) FAIL with runner code 0 and artifact code 1 returns ERROR. (5) Missing, boolean, or malformed artifact codes return ERROR. (6) Source and artifact identity checks and the observer-refusal rollup remain intact after valid exit agreement. A controlled regression that ignores the raw/artifact comparison must fail the existing false-PASS oracle.
 
 **Release evidence.** README, DESIGN-GUIDE, CONSUMERS and SPEC document the comparison. The registered Run-Gate selftest and a live Assay-lane acceptance on the exact release commit are required before marking fixed.
+
+## RG-96 — selftest diff coverage treats a symlink-to-module migration as a full-file addition
+
+**Status: FIXED IN CANDIDATE; registered coverage gate and independent reviews pending.**
+
+**Observed.** The selftest diff-coverage helper passed `--source run_gate.py`
+as a Git pathspec before Git performed rename detection. During the wheel-only
+migration, `run_gate.py` changed from a symlink to the old `run-gate.py` script
+into the full module, while the old script was retired. Git therefore could
+not match the deleted source to its replacement and counted the entire module
+as newly added. That made the 100% changed-line gate refuse the candidate even
+though the actual source delta was much smaller.
+
+**Fix.** Compare the project-relative working-tree diff with rewrite and
+rename detection enabled, then apply the existing source-prefix filter to the
+parsed file paths. Keep the dirty-tree line-number behavior: the diff must
+still describe the exact bytes measured by the same run's coverage report.
+
+**Oracles.** A temporary Git repository starts with a regular `run-gate.py`
+and a `run_gate.py` symlink, then replaces them with a mostly unchanged
+`run_gate.py` module plus an unrelated source edit. The helper reports only
+the new module lines and the unrelated file separately; `evaluate()` counts
+only the selected module. Existing dirty-tree line-number coverage remains.
+The registered selftest must show 100% coverage of changed executable lines
+and branches on the exact candidate tree.

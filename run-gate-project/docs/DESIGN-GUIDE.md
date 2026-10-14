@@ -21,6 +21,17 @@ while saved-record compatibility is answered by the record's schema and
 provenance contract. See the [user-facing version contract](../CONSUMERS.md#distribution-installed-wheel-and-semver)
 and [CLI overview](../README.md#distribution-installed-wheel).
 
+## Changed-line coverage follows content across renames
+
+The selftest coverage floor compares executable lines changed since the
+selected base. Git must identify renames before Run-Gate filters the diff to
+`run_gate.py`. A path-limited diff hides the deleted path from rename
+detection; when a compatibility symlink becomes the wheel module, Git then
+reports every line in the module as newly added. The gate uses rename and
+rewrite detection on the project diff, then applies its source filter to the
+parsed paths. This keeps the denominator tied to changed content while still
+ignoring unrelated files. See the [release-gate description](../README.md#version-probe).
+
 ## A worktree is the complete judgment boundary
 
 `--worktree W` selects the source tree whose commit is judged. The lane policy

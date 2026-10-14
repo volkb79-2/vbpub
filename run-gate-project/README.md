@@ -270,7 +270,10 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    `python3 -m pytest tests -q --cov=. --cov-branch` directly, followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since `main`. The release contract deliberately does not claim a
+   since `main`. The comparison detects renames before filtering to
+   `run_gate.py`, so replacing the retired compatibility symlink does not
+   make the whole module appear new; see the [coverage design](docs/DESIGN-GUIDE.md#changed-line-coverage-follows-content-across-renames).
+   The release contract deliberately does not claim a
    whole-project 100% floor; the separate `assay-r1` lane is the broader
    line-and-branch judge.
 2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND

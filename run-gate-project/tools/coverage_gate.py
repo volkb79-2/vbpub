@@ -359,7 +359,7 @@ def _resolve_base(repo: str, base: str) -> str:
     return _git(repo, ["merge-base", base, "HEAD"]).strip()
 
 
-def _git_added_lines(repo: str, base_rev: str, source: str) -> dict[str, set[int]]:
+def _git_added_lines(repo: str, base_rev: str) -> dict[str, set[int]]:
     # RG-40: diff against the WORKING TREE, not HEAD. The coverage.json this
     # gate cross-references is generated from whatever bytes are actually on
     # disk (`--allow-dirty` runs the suite there directly) -- diffing against
@@ -371,9 +371,15 @@ def _git_added_lines(repo: str, base_rev: str, source: str) -> dict[str, set[int
     # tree directly (staged + unstaged), which is byte-identical to `base_rev
     # HEAD` on a CLEAN tree (working tree == HEAD there) and correct on a
     # dirty one -- unconditional, no dirty/clean branch to keep in sync.
+    # Discover renames before applying the source filter in `evaluate()`.
+    # A path-limited diff cannot match a deleted source with its replacement;
+    # in particular, replacing the old `run_gate.py` symlink with the wheel
+    # module made the entire module look newly added. `-B` breaks a rewritten
+    # destination into delete/add pairs so `-M` can pair it with the old file.
     out = _git(
         repo,
-        ["diff", "--relative", "--unified=0", base_rev, "--", source],
+        ["diff", "--relative", "--find-renames=50%",
+         "--break-rewrites=50%", "--unified=0", base_rev],
     )
     return parse_added_lines(out)
 
@@ -502,7 +508,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         base_rev = _resolve_base(args.repo, args.base)
         head_rev = _git(args.repo, ["rev-parse", "HEAD"]).strip()
-        added = _git_added_lines(args.repo, base_rev, args.source)
+        added = _git_added_lines(args.repo, base_rev)
         coverage_files = _load_coverage(args.coverage_json)
     except CoverageGateError as exc:
         print(f"diff-coverage ERROR: {exc}", file=sys.stderr)

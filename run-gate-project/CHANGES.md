@@ -14,6 +14,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - Fix: require Assay's verdict exit code to be a non-boolean integer matching
   both the runner status and the closed outcome table, preventing a stale or
   inconsistent PASS artifact from certifying a failed process (RG-95).
+- Fix: detect source renames before filtering the selftest diff-coverage scope,
+  so replacing the retired compatibility symlink measures changed content
+  instead of treating the whole wheel module as new (RG-96).
 
 <!-- cmru: release history -->
 
