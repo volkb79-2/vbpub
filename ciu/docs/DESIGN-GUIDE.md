@@ -611,6 +611,48 @@ the identifiers advertised in this release. Each maps to a shipped code path:
 An identifier is added to `WORKTREE_CAPABILITIES` in the same commit as the
 code path it names, or not at all.
 
+## Why enrollment runs in the isolated gate
+
+The enrollment oracle creates a disposable sshd container, writes an
+authorized key with the expected owner and modes, checks the host-key
+fingerprint, and logs in with that key. The ordinary tester-unified suite has
+no host Docker socket. CMRU's `tester-gate --enable-docker` gives this one
+registered lane a disposable nested Docker daemon instead of exposing the host
+daemon, which would grant root-equivalent host access.
+
+Before starting either container, CMRU verifies the declared host gates slice
+and places both the DinD sidecar and the tester-unified container there. The
+lane's nested fixtures inherit the sidecar's placement and resource ceiling;
+they do not try to name a host systemd slice that the nested daemon cannot
+resolve. The in-test preflight requires the exact CMRU DinD endpoint and the
+forwarded gates-slice fact. Before invoking the installed Run-Gate CLI,
+`run-gate enroll`, CIU compares its installed module files with the selected
+checkout and refuses a stale tester image. This keeps the gate on the installed
+wheel while binding that wheel to the judged source. Inside tester-unified, this
+lane's declared `mode = "host"` means a subprocess in the current tester
+container. Run-Gate is a general tool and allows host-mode execution; each
+consumer sets its own policy. The MDT cockpit policy requires the devcontainer
+to drive gates while a stable test environment hosts the suite; see the
+[MDT container doctrine](../../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+This CIU path chooses a stable tester image so package versions and the test
+environment are declared.
+This lane sets `profile = false` because the tester container's Docker view is
+the nested daemon, which cannot inspect the outer tester container in the host
+cgroup tree. CMRU still enforces host placement and CPU/memory caps; the lane
+does not claim a Run-Gate resource profile from that nested view.
+
+A VM runner is an alternative design for a lane that is configured to execute
+inside that guest. The VM isolates guest process, filesystem, kernel, and
+daemon state from host containers, but shares physical CPU, memory, and I/O
+unless the host reserves those resources. CIU-131's enrollment lane is not
+VM-compatible today: its release step uses CMRU's DinD sidecar and requires the
+`tcp://localhost:2375` endpoint. Supporting a VM requires a declared VM runner
+and a runner-specific endpoint and placement preflight; changing only the
+Docker address would not establish the host resource evidence. CIU and CMRU do
+not provision a VM in this release flow. The current CIU release path keeps
+host placement evidence in the outer tester-gate receipt, separate from the
+enrollment assertions.
+
 ## Why `up` and `exec` take one exact selected instance
 
 A worktree family has one primary checkout and many linked ones; each linked

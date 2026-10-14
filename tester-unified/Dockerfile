@@ -269,8 +269,13 @@ RUN if getent group 1003 >/dev/null; then \
  && chown -R 1003:1003 /opt/tester-venv
 
 USER 1003
-ENV HOME=/home/tester \
+ENV PATH=/opt/tester-venv/bin:${PATH} \
+    HOME=/home/tester \
     XDG_CONFIG_HOME=/home/tester/.config \
     XDG_CACHE_HOME=/home/tester/.cache \
     XDG_STATE_HOME=/home/tester/.local/state \
     TESTER_VENV=/opt/tester-venv
+
+# The installed CLI must remain executable after switching to the unprivileged
+# gate identity, with PATH resolving to the exact wheel installed above.
+RUN run-gate --version

@@ -14,6 +14,21 @@ tester-unified/run --workdir run-gate-project -- run-gate selftest
 tester-unified/run --workdir run-gate-project -- run-gate --base BASE_SHA assay-r1
 ```
 
+### Invoking Run-Gate from a CMRU step
+
+When CMRU has already started this image for a declared workflow step, invoke
+the installed console script directly:
+
+```console
+$ run-gate enroll
+```
+
+The image builds the Run-Gate wheel from the repository source and installs it
+into `/opt/tester-venv`; that venv is first on `PATH`. The selected checkout
+provides `run-gate.toml` and the worktree being judged. This console command is
+available to the non-root tester user and does not depend on a script path
+inside the project's directory.
+
 Assay's offline wheel/self-hosting phases can run through the same launcher:
 
 ```bash
@@ -39,6 +54,22 @@ The image must be rebuilt from the same checkout after changing Assay's
 `pins` out of `run-gate.toml`; run-gate installs the selected worktree's
 `assay/` source into the image's writable `/opt/tester-venv` and the verdict
 records the runtime version and source commit.
+
+The image's installed Run-Gate CLI is built from the source copied at image
+build time. `tester-unified:local` is a mutable tag shared across worktrees, so
+a changed `run-gate-project/` checkout can otherwise be judged by an older
+wheel. From the repository root, rebuild the image from the selected checkout
+with:
+
+```bash
+docker build -f tester-unified/Dockerfile -t tester-unified:local .
+```
+
+Alternatively, add a source-match preflight to the consumer's gate. CIU runs
+that preflight before its suite and enrollment commands; the failure message
+gives the exact rebuild command. If concurrent gates need different Run-Gate
+revisions, use distinct image tags; gates using the shared
+`tester-unified:local` tag must serialize image rebuilds.
 
 To place evidence somewhere else, use an explicit path:
 

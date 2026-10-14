@@ -128,6 +128,7 @@ CMRU_POST_INSTALL_IDENTITY_RUN = (
 CMRU_POST_INSTALL_MUTATIONS = (
     CMRU_POST_INSTALL_VERSION_ASSERTION_RUN,
     CMRU_POST_INSTALL_IDENTITY_RUN,
+    "RUN run-gate --version",
 )
 NYXLOOM_WHEEL_BUILD_BODY = (
     "python -m build --wheel --outdir /wheels && ls -1 /wheels"
@@ -1202,6 +1203,8 @@ def test_dockerfile_asserts_where_imports_come_from_and_that_cli_extended_is_the
     assert 'run_gate_version == os.environ["RUN_GATE_TESTER_VERSION"]' in text
     assert 'subprocess.run(["run-gate", "--version"]' in text
     assert 'RUN_GATE_TESTER_VERSION}"' in text
+    assert "ENV PATH=/opt/tester-venv/bin:${PATH}" in text
+    assert text.rstrip().endswith("RUN run-gate --version")
 
 
 def test_estate_has_no_tracked_run_gate_script_copies_or_symlinks():

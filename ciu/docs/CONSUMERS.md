@@ -985,6 +985,54 @@ checks for path translation, Docker-style resource sizes, and shared-infra
 argument grammar. These properties supplement the full 100% line-and-branch
 suite; they do not replace the declared Assay judgment.
 
+### The enrollment security lane also gates releases (CIU-131)
+
+The release workflow runs the real-system enrollment lane after the isolated
+suite, inside `tester-unified` with CMRU's isolated nested Docker daemon. The
+outer `cmru tester-gate` verifies the host gates slice before it starts the
+sidecar and test container. The lane then creates a disposable sshd fixture and
+verifies the authorized-key write, ownership and modes, host-key fingerprint,
+and login without access to the host Docker socket.
+
+Run the complete registered release test sequence from the repository root:
+
+```console
+$ cmru run ciu --step run-tests
+```
+
+Run this from a committed checkout with no tracked or untracked changes. The
+registered Run-Gate lane refuses a dirty judged tree; CMRU's isolated release
+worktree satisfies that requirement when the release workflow runs it.
+
+The step invokes the installed Run-Gate CLI as `run-gate enroll` inside
+`tester-unified`. Before it starts, CIU checks that the installed wheel's
+Run-Gate modules match the selected checkout; if they differ, rebuild
+`tester-unified` from this checkout as described in the
+[tester-unified build guide](../../tester-unified/README.md). The registered
+lane requires the exact DinD endpoint and forwarded `$CGROUP_PARENT_DEV_GATES`
+value created by CMRU. With
+`CIU_ENROLL_REQUIRED=1`, the enrollment oracle fails if that endpoint is
+missing; it does not silently skip the security assertions.
+
+Run-Gate supports `mode = "host"` as a general execution mode. It does not
+decide where every consumer must run tests. MDT's cockpit policy requires the
+devcontainer to drive gates while a stable, declared test environment hosts
+the suite, so dependencies and resource conditions are repeatable. See the
+[MDT container doctrine](../../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+This lane sets `profile = false`: its isolated
+Docker daemon cannot inspect the outer tester container's host cgroup, while
+CMRU applies the host placement and container caps. If stronger independence
+from the host kernel and container daemon is needed, an externally managed VM
+runner is an alternative architecture for lanes that declare a VM runner. It
+is not a drop-in for this CIU lane: the registered enrollment gate requires
+CMRU's `tcp://localhost:2375` DinD endpoint. A VM version needs its own runner
+declaration plus endpoint and placement checks. A VM gives the lane its own
+guest kernel and Docker daemon, but still shares physical CPU, memory, and I/O
+with its host unless those resources are reserved. CIU and CMRU do not
+provision a VM in this release workflow; CIU's registered path uses CMRU's
+tester-unified DinD setup. See
+[the design rationale](DESIGN-GUIDE.md#why-enrollment-runs-in-the-isolated-gate).
+
 ## 13. Read the per-stack status report (`ciu status --json`, S7.10, CIU-QOL-6)
 
 ```console

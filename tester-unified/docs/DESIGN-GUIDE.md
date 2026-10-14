@@ -33,12 +33,23 @@ closure keeps that install offline and deterministic while still recording the
 exact runtime Assay version in the verdict. The image does not install a
 copied Assay tree, because the judged worktree is the source of truth.
 
-Run-Gate is different: nested gate commands need its installed console script,
-so the image builds the wheel from the same checkout and verifies that its
-metadata version matches the exact version passed from the candidate wheel.
-That keeps invocation available without treating a repository script or a
-revision counter as a package identity. The wheel build uses a separate
-throwaway environment because Run-Gate and CMRU pin different build tools.
+## The installed Run-Gate CLI
+
+Some CMRU steps invoke Run-Gate after CMRU has started tester-unified. The image
+builds a Run-Gate wheel from the selected source modules, installs its console
+script into `/opt/tester-venv`, and puts that environment first on `PATH`. The
+build requires an explicit version derived from the candidate or release wheel;
+the image verifies that `run-gate --version` reports the same installed
+metadata version. This keeps command lookup independent of the base image's
+private `/home/vscode/.venv`, which uid 1003 cannot traverse.
+
+The wheel supplies the command entrypoint; the bind-mounted checkout supplies
+lane configuration and judged project files. CIU's release gate also compares
+the installed Run-Gate module bytes with the selected checkout and refuses a
+stale tester image. `tester-unified:local` is one mutable tag shared by
+worktrees, so a rebuild and the exact-tree gate that consumes it must be
+serialized. Distinct image tags are needed for concurrent exact-tree runs that
+need different Run-Gate versions.
 
 The launcher refuses missing cgroup configuration, workspace-root fallbacks,
 high launch-time memory pressure, absent Docker access, missing images, more

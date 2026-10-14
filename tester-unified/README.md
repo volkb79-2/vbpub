@@ -70,13 +70,18 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   host. Either way it requires and verifies the sha256, and the wheel is installed
   `--no-index --no-deps` BEFORE cmru. cmru is built offline from the COPYed
   `cmru/` and `libraries/worktree/` sources (`pip wheel --no-index --no-deps
-  --no-build-isolation`, in a throwaway venv holding only its pinned build
+  --no-build-isolation`, in separate throwaway venvs for their pinned build
   backends) with a `+tester.unified` local version, and the build asserts that
   `cli_extended` and `worktree` import from `/opt/tester-venv`, that cmru is the
   local build and that cli-extended is the release. Gate lanes put only
   `src:../libraries/worktree/src` on `PYTHONPATH`; cli_extended always comes from
   the installed release. The repo-root `.dockerignore` whitelists exactly the
-  files this needs.
+  files this needs. CMRU and Run-Gate are built as internal wheels from the
+  copied repository source and installed into `/opt/tester-venv`; `PATH` puts
+  that venv first, so its `run-gate` console script is accessible to the tester
+  user without traversing `/home/vscode` in the base image. See the
+  [design rationale](docs/DESIGN-GUIDE.md#the-installed-run-gate-cli) and
+  [consumer command](docs/CONSUMERS.md#invoking-run-gate-from-a-cmru-step).
 
 - **Run-Gate is installed as a wheel.** The image builds the Run-Gate source
   from this checkout using the exact version extracted from the candidate wheel
