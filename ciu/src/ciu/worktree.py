@@ -1134,13 +1134,15 @@ def _write_rendered_worktree_overlay(ciu_root: Path, payload: str | None) -> Non
             ) from exc
         raise WorktreeError(f"[S16] could not write {path}: {exc}") from exc
     else:
-        if tmp is not None:
-            try:
-                tmp.unlink()
-            except OSError:
-                # The target is already published; a temp-file cleanup failure
-                # must not turn a successful overlay write into a false failure.
-                pass
+        # Reaching this branch means NamedTemporaryFile returned and assigned
+        # the path before the atomic link succeeded.
+        assert tmp is not None
+        try:
+            tmp.unlink()
+        except OSError:
+            # The target is already published; a temp-file cleanup failure
+            # must not turn a successful overlay write into a false failure.
+            pass
 
 
 def _ensure_initial_overlay(record: WorktreeInstanceRecord) -> None:

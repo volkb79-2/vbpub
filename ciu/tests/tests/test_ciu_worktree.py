@@ -154,6 +154,119 @@ class TestInitialCheckoutResetSafety:
             worktree._assert_allocation_checkout_reset_is_safe(record)
         assert "total entries" not in str(raised.value)
 
+    def test_record_rejects_overlay_intent_below_schema_three(self, tmp_path):
+        record = replace(self._record(tmp_path), schema_version=2, overlay_intent_known=True)
+        with pytest.raises(ValueError, match="requires worktree record schema version 3"):
+            record.to_dict()
+
+    def test_overlay_writer_accepts_known_no_overlay_intent(self, tmp_path):
+        worktree._write_rendered_worktree_overlay(tmp_path, None)
+        assert not (tmp_path / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES).exists()
+
+    def test_overlay_resume_rechecks_an_identical_file_from_a_publish_race(
+        self, tmp_path, monkeypatch
+    ):
+        payload = "[ciu.instance]\nservice_profiles = [\"core\"]\n"
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay=payload, overlay_intent_known=True,
+        )
+        overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+
+        def raced_publish(_root, contents):
+            overlay.write_text(contents, encoding="utf-8")
+            raise worktree.WorktreeError("publish lost race")
+
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", raced_publish)
+        worktree._ensure_initial_overlay(record)
+        assert overlay.read_text(encoding="utf-8") == payload
+
+    def test_overlay_resume_refuses_a_symlink_created_during_publish_race(
+        self, tmp_path, monkeypatch
+    ):
+        payload = "[ciu.instance]\nservice_profiles = [\"core\"]\n"
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay=payload, overlay_intent_known=True,
+        )
+        overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        target = tmp_path / "operator-overlay"
+        target.write_text(payload, encoding="utf-8")
+
+        def raced_symlink(_root, _contents):
+            overlay.symlink_to(target)
+            raise worktree.WorktreeError("publish lost race")
+
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", raced_symlink)
+        with pytest.raises(worktree.WorktreeError, match="is a symlink"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_resume_reports_raced_file_that_cannot_be_opened(
+        self, tmp_path, monkeypatch
+    ):
+        payload = "[ciu.instance]\nservice_profiles = [\"core\"]\n"
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay=payload, overlay_intent_known=True,
+        )
+        overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        real_open = worktree.os.open
+
+        def deny_raced_open(path, flags):
+            if Path(path) == overlay and overlay.exists():
+                raise PermissionError("read denied")
+            return real_open(path, flags)
+
+        def raced_publish(_root, contents):
+            overlay.write_text(contents, encoding="utf-8")
+            raise worktree.WorktreeError("publish lost race")
+
+        monkeypatch.setattr(worktree.os, "open", deny_raced_open)
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", raced_publish)
+        with pytest.raises(worktree.WorktreeError, match="cannot verify.*read denied"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_resume_reports_initial_open_failure(self, tmp_path, monkeypatch):
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay="payload", overlay_intent_known=True,
+        )
+        monkeypatch.setattr(
+            worktree.os, "open",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="cannot verify.*denied"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_resume_reports_file_read_failure(self, tmp_path, monkeypatch):
+        record = replace(
+            self._record(tmp_path), schema_version=3,
+            initial_overlay="payload", overlay_intent_known=True,
+        )
+        overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        overlay.write_text("payload", encoding="utf-8")
+        monkeypatch.setattr(
+            worktree.os, "fdopen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("read failed")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="cannot verify.*read failed"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_resume_refuses_records_without_known_intent(self, tmp_path):
+        record = replace(self._record(tmp_path), schema_version=3)
+        with pytest.raises(worktree.WorktreeError, match="predates durable overlay intent"):
+            worktree._ensure_initial_overlay(record)
+
+    def test_overlay_writer_reports_failure_before_temp_file_creation(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(
+            worktree.tempfile, "NamedTemporaryFile",
+            lambda **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+        with pytest.raises(worktree.WorktreeError, match="could not write.*denied"):
+            worktree._write_rendered_worktree_overlay(tmp_path, "payload")
+
 
 class _FlushRecordingStream(io.StringIO):
     def __init__(self):
@@ -1421,6 +1534,31 @@ class TestManagedRecordValidation:
         path.write_text("{not-json", encoding="utf-8")
         with pytest.raises(worktree.WorktreeError, match="valid instance record"):
             worktree.read_instance_record(path)
+
+    @pytest.mark.parametrize(
+        ("updates", "message"),
+        [
+            ({"overlay_intent_known": 1}, "overlay_intent_known must be boolean"),
+            ({"initial_overlay": []}, "expected a string or null"),
+            (
+                {"initial_overlay": "payload", "overlay_intent_known": False},
+                "unknown intent cannot carry a payload",
+            ),
+        ],
+    )
+    def test_schema_three_rejects_malformed_overlay_intent(
+        self, tmp_path, updates, message
+    ):
+        raw = self.raw(tmp_path)
+        raw.update(
+            schema_version=3,
+            lease=None,
+            initial_overlay=None,
+            overlay_intent_known=True,
+        )
+        raw.update(updates)
+        with pytest.raises(worktree.WorktreeError, match=message):
+            worktree._record_from_dict(raw, tmp_path / "record.json")
 
     def test_generated_name_rejects_naive_clock(self):
         with pytest.raises(worktree.WorktreeError, match="timezone-aware"):
