@@ -28115,14 +28115,18 @@ class TestFinalChangedLineCoverageOracles:
         assert 'mode = "ephemeral"' in config.read_text()
         capsys.readouterr()
 
-        orphan = tmp_path / "orphan" / "pkg"
-        orphan.mkdir(parents=True)
-        orphan_config = orphan / run_gate.CONFIG_NAME
-        orphan_config.write_text('schema_version = 1\n'
-                                 '[environments.local]\nimage = "runner:v1"\n')
-        assert run_gate.main(["migrate-modes", str(orphan_config)]) == 0
-        assert 'mode = "ephemeral"' in orphan_config.read_text()
-        capsys.readouterr()
+        # The registered selftest keeps pytest scratch under this checkout so
+        # mount-sensitive fixtures see the bind mount. Put the orphan beyond
+        # that repository root, or it would inherit the real central config.
+        with tempfile.TemporaryDirectory(prefix="run-gate-orphan-", dir="/tmp") as outside_repo:
+            orphan = Path(outside_repo) / "pkg"
+            orphan.mkdir()
+            orphan_config = orphan / run_gate.CONFIG_NAME
+            orphan_config.write_text('schema_version = 1\n'
+                                     '[environments.local]\nimage = "runner:v1"\n')
+            assert run_gate.main(["migrate-modes", str(orphan_config)]) == 0
+            assert 'mode = "ephemeral"' in orphan_config.read_text()
+            capsys.readouterr()
 
     def test_resolve_inflight_preserves_recorded_paths_for_follow_and_reattach(
             self, tmp_path, monkeypatch):
