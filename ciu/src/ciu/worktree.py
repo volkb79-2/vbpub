@@ -4073,13 +4073,23 @@ def _assert_allocation_checkout_reset_is_safe(
             f"tracked checkout paths at {checkout}: "
             f"{(tracked.stderr or tracked.stdout).strip()}"
         )
-    tracked_paths = [path for path in tracked.stdout.split("\0") if path]
-    all_unchecked_out = (
-        bool(tracked_paths)
-        and len(entries) == len(tracked_paths)
-        and all(entry[:2] == " D" for entry in entries)
-    )
-    if not all_unchecked_out:
+    tracked_paths = {path for path in tracked.stdout.split("\0") if path}
+    record_path = record.record_path.relative_to(checkout).as_posix()
+    missing_tracked: set[str] = set()
+    unexpected: list[str] = []
+    for entry in entries:
+        code, path = entry[:2], entry[3:]
+        if code == " D" and path in tracked_paths:
+            missing_tracked.add(path)
+        elif code == "??" and path == record_path:
+            # The schema-v3 lifecycle record is intentionally untracked and
+            # locally excluded. Porcelain can still report it in callers that
+            # provide a partial/fixture exclude, so whitelist only this exact
+            # file rather than ignoring arbitrary untracked content.
+            continue
+        else:
+            unexpected.append(entry)
+    if unexpected or missing_tracked != tracked_paths:
         raise WorktreeError(
             f"[S16] cannot safely resume {record.logical_name!r}: the incomplete "
             f"checkout at {checkout} contains local changes; inspect it before "
