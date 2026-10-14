@@ -4410,14 +4410,15 @@ def _prepare_release_projects(
             notes = _pending_release_notes_or_refuse(
                 repo_root, project, minor=minor, major=major, set_version=set_version,
             )
-            if include_pending_notes and _has_cmru_github_release_body(project):
+            has_release_body = _has_cmru_github_release_body(project)
+            if not include_pending_notes:
+                log_info(f"{name}: --no-build leaves [Unreleased] notes pending")
+            elif has_release_body:
                 _fold_pending_release_notes(repo_root, project, notes.version)
                 notes = _pending_release_notes_or_refuse(
                     repo_root, project, minor=minor, major=major, set_version=set_version,
                 )
-            elif not include_pending_notes:
-                log_info(f"{name}: --no-build leaves [Unreleased] notes pending")
-            elif not _has_cmru_github_release_body(project):
+            else:
                 log_info(
                     f"{name}: push step has no CMRU GitHub Release-body handler; "
                     "[Unreleased] notes stay pending"

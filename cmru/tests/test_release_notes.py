@@ -360,6 +360,17 @@ def test_direct_publish_refuses_when_no_matching_tag_binds_the_notes(publisher, 
     assert "cannot bind release notes to demo-v2.0.0" in capsys.readouterr().err
 
 
+def test_direct_publish_refuses_a_release_tag_that_does_not_match_the_version(
+    publisher, monkeypatch, capsys,
+):
+    project, gh = publisher
+    monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
+    monkeypatch.setenv("CMRU_RELEASE_TAG", "demo-v2.0.1")
+    assert _wheel_publish(project) == exit_codes.REFUSED
+    assert gh.bodies == []
+    assert "does not match 'demo-v2.0.0'" in capsys.readouterr().err
+
+
 def test_a_retained_builds_source_commit_selects_the_notes(tmp_path, monkeypatch):
     project = tmp_path / "demo"
     project.mkdir()

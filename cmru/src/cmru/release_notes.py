@@ -92,9 +92,7 @@ def _mask_html_comments(markdown: str) -> str:
         while index < len(line):
             if in_comment:
                 if line.startswith("-->", index):
-                    for position in range(index, index + 3):
-                        if chars[position] not in "\r\n":
-                            chars[position] = " "
+                    chars[index:index + 3] = "   "
                     index += 3
                     in_comment = False
                     continue
@@ -103,9 +101,7 @@ def _mask_html_comments(markdown: str) -> str:
                 index += 1
                 continue
             if line.startswith("<!--", index):
-                for position in range(index, index + 4):
-                    if chars[position] not in "\r\n":
-                        chars[position] = " "
+                chars[index:index + 4] = "    "
                 index += 4
                 in_comment = True
                 continue

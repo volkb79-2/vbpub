@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from cmru import changelog, cli, release, release_notes, transaction
+from cmru.errors import RefusedBeforeChange
 from cmru.release_notes import PENDING_NOTES_BEGIN, PENDING_NOTES_END, ReleaseNotesError
 from tests.test_release_notes import _git, _project, _release_repo
 
@@ -87,6 +88,17 @@ def test_headings_inside_html_comments_and_fenced_code_do_not_end_sections():
     section = release_notes.extract_release_section(folded, "2.0.0", source="x").text
     assert "- real note" in section
     assert section.count("<!-- literal code comment -->") == 1
+
+
+def test_a_backtick_inside_the_info_string_does_not_open_a_markdown_fence():
+    headings = release_notes.markdown_h2_headings(
+        "```invalid`info\n## [2.0.0] - 2026-10-13\n- visible heading\n",
+    )
+    assert [heading.text for heading in headings] == ["## [2.0.0] - 2026-10-13"]
+    tilde_headings = release_notes.markdown_h2_headings(
+        "~~~markdown\n## [1.0.0] - fake\n~~~\n## [2.0.0] - 2026-10-13\n",
+    )
+    assert [heading.text for heading in tilde_headings] == ["## [2.0.0] - 2026-10-13"]
 
 
 @pytest.mark.parametrize("heading", ["## [unreleased]", "## Unreleased", "## [Unreleased] - 2026-01-01"])
@@ -240,6 +252,63 @@ def test_folding_into_the_last_section_and_with_no_comment_to_keep():
         "## [Unreleased]\n\n<!-- cmru: release history -->\n\n"
         f"## [1.0.0] - 2026-01-01\n- a\n\n{PENDING_NOTES_BEGIN}\n- one\n{PENDING_NOTES_END}\n"
     )
+
+
+@pytest.mark.parametrize("block", [
+    f"{PENDING_NOTES_BEGIN}\n- one\n{PENDING_NOTES_BEGIN}\n- two\n{PENDING_NOTES_END}\n",
+    f"{PENDING_NOTES_BEGIN}{PENDING_NOTES_END}\n",
+    f"{PENDING_NOTES_BEGIN}\n\n{PENDING_NOTES_END}\n",
+])
+def test_malformed_folded_note_blocks_refuse(block):
+    with pytest.raises(ReleaseNotesError):
+        changelog._folded_notes_block(block)
+
+
+def test_folding_refuses_when_unreleased_notes_and_a_folded_block_both_exist():
+    document = (
+        f"## [Unreleased]\n- still pending\n\n"
+        f"## [1.0.0] - 2026-01-01\n- released\n\n"
+        f"{PENDING_NOTES_BEGIN}\n- already folded\n{PENDING_NOTES_END}\n"
+    )
+    with pytest.raises(ReleaseNotesError, match="both pending \\[Unreleased\\] notes"):
+        changelog.fold_unreleased_notes(document, "1.0.0")
+
+
+@pytest.mark.real_release_notes_preflight
+def test_folding_refusal_is_converted_to_a_release_preflight_refusal(tmp_path):
+    repo = _release_repo(tmp_path)
+    project = _project()
+    changes = repo / "demo" / "CHANGES.md"
+    changes.write_text("## [Unreleased]\n- note\n", encoding="utf-8")
+    with pytest.raises(RefusedBeforeChange, match="release notes"):
+        cli._fold_pending_release_notes(repo, project, "1.0.1")
+
+
+@pytest.mark.real_release_notes_preflight
+def test_duplicate_version_headings_in_a_generated_changelog_refuse(tmp_path):
+    repo = _release_repo(tmp_path)
+    project = _project()
+    (repo / "demo" / "CHANGES.md").write_text(
+        "# Changelog\n\n"
+        "## [1.0.1] - 2026-10-13\n<!-- cmru: generated -->\n- one\n\n"
+        "## [1.0.1] - 2026-10-14\n<!-- cmru: generated -->\n- two\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RefusedBeforeChange, match="requires exactly one"):
+        changelog.generate_release_changelog(repo, project)
+
+
+@pytest.mark.parametrize("argv, expected", [
+    (["cmru", "handler", "wheel-publish"], True),
+    (["cmru", "handler", "tarball-publish"], True),
+    (["cmru", "handler", "unsupported"], False),
+    (["python", "-m", "cmru.handlers", "wheel-publish"], False),
+    (["cmru"], False),
+])
+def test_only_declared_cmru_release_body_handlers_qualify(argv, expected):
+    project = _project()
+    project.runner_steps = {"push": SimpleNamespace(commands=[{"argv": argv}])}
+    assert cli._has_cmru_github_release_body(project) is expected
 
 
 def test_there_is_nothing_to_consume_without_an_unreleased_section_or_notes():
