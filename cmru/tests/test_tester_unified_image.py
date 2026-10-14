@@ -76,6 +76,7 @@ CMRU_POST_INSTALL_VERSION_ASSERTION_RUN = '''RUN /opt/tester-venv/bin/python - <
 import importlib.metadata as metadata
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import cli_extended
@@ -100,7 +101,8 @@ run_gate_location = str(Path(run_gate.__file__).resolve())
 assert run_gate_location.startswith(site), (
     f"run_gate imports from {run_gate_location}, not {site}"
 )
-reported = subprocess.run(["run-gate", "--version"], check=True,
+entrypoint = Path(sys.executable).with_name("run-gate")
+reported = subprocess.run([str(entrypoint), "--version"], check=True,
                           capture_output=True, text=True).stdout
 assert reported == f"run-gate {run_gate_version}\n", reported
 released = metadata.version("cli-extended")
@@ -1201,7 +1203,8 @@ def test_dockerfile_asserts_where_imports_come_from_and_that_cli_extended_is_the
     assert 'assert "+" not in released' in text
     assert 'metadata.version("run-gate")' in text
     assert 'run_gate_version == os.environ["RUN_GATE_TESTER_VERSION"]' in text
-    assert 'subprocess.run(["run-gate", "--version"]' in text
+    assert 'Path(sys.executable).with_name("run-gate")' in text
+    assert 'subprocess.run([str(entrypoint), "--version"]' in text
     assert 'RUN_GATE_TESTER_VERSION}"' in text
     assert "ENV PATH=/opt/tester-venv/bin:${PATH}" in text
     assert text.rstrip().endswith("RUN run-gate --version")
