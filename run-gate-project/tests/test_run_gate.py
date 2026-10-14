@@ -5180,8 +5180,7 @@ class TestPointerLinkageEstate:
         assert len(commands) == 2
         assert commands[0]["argv"] == ["python", "tools/release_candidate.py", "prepare"]
         assert commands[1]["argv"] == [
-            "env", "RUN_GATE_RELEASE_WHEEL_RECEIPT=.assay/run-gate-release-wheel.json",
-            "run-gate", "selftest",
+            "python", "tools/release_candidate.py", "run-selftest",
         ]
         selftest_argv = gate_doc["lanes"]["selftest"]["argv"]
         assert selftest_argv[2].startswith(

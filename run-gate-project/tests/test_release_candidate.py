@@ -611,7 +611,7 @@ def test_candidate_cli_installs_the_receipted_wheel_offline(monkeypatch, tmp_pat
     assert all(call[1] == temp_root and call[2:] == (False, True, True) for call in calls)
 
 
-def test_receipt_image_check_requires_the_prepared_image_id(monkeypatch):
+def test_receipt_image_check_requires_the_prepared_image_id(monkeypatch, capsys):
     receipt = _receipt()
     monkeypatch.setattr(
         release_candidate,
