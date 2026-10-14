@@ -151,7 +151,7 @@ def test_wheel_identity_parses_valid_receipt_and_refuses_bad_outputs(monkeypatch
         (_completed(stderr="wheel scan failed", returncode=2), "cannot identify"),
         (_completed("not-json"), "not JSON"),
         (_completed(json.dumps({"version": "24.0.0"})), "incomplete"),
-        (_completed(json.dumps({**identity, "sha256": "bad"})), "malformed SHA-256"),
+        (_completed(json.dumps({**identity, "sha256": "bad"})), "wheel SHA-256 is malformed"),
     ]
     for result, message in cases:
         monkeypatch.setattr(
