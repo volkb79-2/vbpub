@@ -225,7 +225,6 @@ def _candidate_wheel_path(receipt: dict[str, str]) -> Path:
         wheel_dir = (PROJECT_ROOT / "dist").resolve(strict=True)
         wheel = wheel_dir / receipt["filename"]
         resolved = wheel.resolve(strict=True)
-        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
     except (OSError, RuntimeError) as exc:
         raise ReleaseCandidateError(
             f"cannot read receipted Run-Gate wheel under {PROJECT_ROOT / 'dist'}: {exc}"
@@ -234,6 +233,12 @@ def _candidate_wheel_path(receipt: dict[str, str]) -> Path:
         raise ReleaseCandidateError(
             f"receipted Run-Gate wheel is not a regular file under {wheel_dir}"
         )
+    try:
+        digest = hashlib.sha256(resolved.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ReleaseCandidateError(
+            f"cannot read receipted Run-Gate wheel under {wheel_dir}: {exc}"
+        ) from exc
     if digest != receipt["sha256"]:
         raise ReleaseCandidateError(
             f"receipted Run-Gate wheel SHA-256 changed: expected {receipt['sha256']}, "

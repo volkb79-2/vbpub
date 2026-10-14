@@ -51,7 +51,14 @@ def test_prepared_release_version_uses_first_dated_stable_section(monkeypatch, t
 
     source_entry = str(release_candidate.REPOSITORY_ROOT / "cmru" / "src")
     was_present = source_entry in sys.path
-    monkeypatch.setattr(release_candidate, "_git", lambda *args: "run-gate-v23.10.0" if args[0] == "tag" else "")
+    monkeypatch.setattr(
+        release_candidate,
+        "_git",
+        lambda *args: (
+            "run-gate-v23.10.0\nrun-gate-v23.10.0.dev1\nrun-gate-vfuture"
+            if args[0] == "tag" else ""
+        ),
+    )
     assert release_candidate.prepared_release_version(changes) == "24.0.0"
     assert (source_entry in sys.path) is was_present
 
@@ -95,9 +102,35 @@ def test_prepared_release_version_keeps_existing_cmru_source_path(monkeypatch, t
     changes.write_text("## [24.0.0] - 2026-10-14\n", encoding="utf-8")
     source_entry = str(release_candidate.REPOSITORY_ROOT / "cmru" / "src")
     monkeypatch.setattr(sys, "path", [source_entry, *(entry for entry in sys.path if entry != source_entry)])
+    monkeypatch.setattr(
+        release_candidate,
+        "_git",
+        lambda *args: "run-gate-v23.10.0" if args[0] == "tag" else "",
+    )
 
     assert release_candidate.prepared_release_version(changes) == "24.0.0"
     assert sys.path.count(source_entry) == 1
+
+
+def test_stable_semver_and_release_tag_parsing(monkeypatch):
+    assert release_candidate._semver_key("24.0.0") == (24, 0, 0)
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="invalid stable Run-Gate version"):
+        release_candidate._semver_key("24.0")
+
+    monkeypatch.setattr(
+        release_candidate,
+        "_git",
+        lambda *_args: "run-gate-v23.9.1\nrun-gate-v23.10.0\nrun-gate-v23.10.0.dev1\nrun-gate-vgarbage",
+    )
+    assert release_candidate._latest_release_tag() == ("run-gate-v23.10.0", "23.10.0")
+
+    monkeypatch.setattr(
+        release_candidate,
+        "_git",
+        lambda *_args: "run-gate-v23.10\nrun-gate-v23.10.0.dev1\nrun-gate-vlegacy",
+    )
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="no stable.*release tag"):
+        release_candidate._latest_release_tag()
 
 
 def test_prepared_release_version_reports_import_and_read_failures(monkeypatch, tmp_path):
@@ -347,6 +380,101 @@ def test_installed_wheel_verification_rejects_module_or_cli_mismatch(monkeypatch
         release_candidate._verify_installed_candidate_wheel(_receipt())
 
 
+def test_installed_wheel_verification_rejects_missing_wrong_version_and_imports(
+    monkeypatch, tmp_path
+):
+    _patch_installed_wheel(monkeypatch, tmp_path)
+
+    def no_distribution(_name):
+        raise release_candidate.importlib.metadata.PackageNotFoundError("run-gate")
+
+    monkeypatch.setattr(release_candidate.importlib.metadata, "version", no_distribution)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="no installed Run-Gate distribution",
+    ):
+        release_candidate._verify_installed_candidate_wheel(_receipt())
+
+    monkeypatch.setattr(
+        release_candidate.importlib.metadata,
+        "version",
+        lambda _name: "23.10.0",
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="does not match candidate",
+    ):
+        release_candidate._verify_installed_candidate_wheel(_receipt())
+
+    monkeypatch.setattr(
+        release_candidate.importlib.metadata,
+        "version",
+        lambda _name: "24.0.0",
+    )
+    monkeypatch.setattr(
+        release_candidate.importlib,
+        "import_module",
+        lambda _name: (_ for _ in ()).throw(ImportError("module missing")),
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot import installed Run-Gate module",
+    ):
+        release_candidate._verify_installed_candidate_wheel(_receipt())
+
+
+def test_installed_wheel_verification_rejects_modules_outside_tester_venv(
+    monkeypatch, tmp_path
+):
+    _patch_installed_wheel(monkeypatch, tmp_path)
+    outside = tmp_path / "outside.py"
+    outside.write_text("", encoding="utf-8")
+    import_module = release_candidate.importlib.import_module
+    monkeypatch.setattr(
+        release_candidate.importlib,
+        "import_module",
+        lambda name: (
+            SimpleNamespace(__file__=str(outside))
+            if name == "run_gate" else import_module(name)
+        ),
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="resolved outside tester venv",
+    ):
+        release_candidate._verify_installed_candidate_wheel(_receipt())
+
+
+def test_installed_wheel_verification_reports_unreadable_module_bytes(
+    monkeypatch, tmp_path
+):
+    _patch_installed_wheel(monkeypatch, tmp_path)
+    source = tmp_path / "project" / "run_gate.py"
+    original_read_bytes = Path.read_bytes
+
+    def fail_source_read(path):
+        if path == source:
+            raise OSError("source bytes unavailable")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_source_read)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot compare installed Run-Gate module",
+    ):
+        release_candidate._verify_installed_candidate_wheel(_receipt())
+
+
+def test_installed_wheel_verification_requires_an_executable_cli(monkeypatch, tmp_path):
+    _patch_installed_wheel(monkeypatch, tmp_path)
+    (tmp_path / "venv" / "bin" / "run-gate").unlink()
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="no executable installed CLI",
+    ):
+        release_candidate._verify_installed_candidate_wheel(_receipt())
+
+
 def test_running_image_rejects_wrong_commit_bad_identity_and_resolves_relative_receipt(
     monkeypatch, tmp_path
 ):
@@ -562,13 +690,81 @@ def test_run_selftest_uses_receipt_specific_image_without_mutating_shared_tag(mo
         return _completed(returncode=7)
 
     monkeypatch.setattr(release_candidate.subprocess, "run", run)
-    assert release_candidate.run_selftest(receipt_path) == 7
+    assert release_candidate.run_selftest(Path(".assay/receipt.json")) == 7
     argv, cwd, env, check = calls[0]
     assert argv == [str(candidate_cli), "selftest"]
     assert cwd == project_root
     assert env["RUN_GATE_RELEASE_WHEEL_RECEIPT"] == ".assay/receipt.json"
     assert env["RUN_GATE_TESTER_UNIFIED_IMAGE"] == receipt["image_tag"]
     assert check is False
+
+
+def test_run_selftest_refuses_wrong_commit_and_receipt_outside_checkout(
+    monkeypatch, tmp_path
+):
+    project_root = tmp_path / "project"
+    receipt_path = tmp_path / "outside" / "receipt.json"
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps(_receipt()), encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: "2" * 40)
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="receipt is for"):
+        release_candidate.run_selftest(receipt_path)
+
+    wheel_path = project_root / "dist" / "run_gate-24.0.0-py3-none-any.whl"
+    wheel_path.parent.mkdir(parents=True)
+    wheel_path.write_bytes(b"candidate wheel")
+    receipt = _receipt(sha256=hashlib.sha256(wheel_path.read_bytes()).hexdigest())
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(
+        release_candidate,
+        "_git",
+        lambda *_args: receipt["candidate_commit"],
+    )
+    monkeypatch.setattr(
+        release_candidate,
+        "_verify_receipt_image",
+        lambda _receipt: None,
+    )
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="receipt must be inside"):
+        release_candidate.run_selftest(receipt_path)
+
+
+def test_run_selftest_reports_a_spawn_error(monkeypatch, tmp_path):
+    project_root = tmp_path / "project"
+    receipt_path = project_root / ".assay" / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    wheel_path = project_root / "dist" / "run_gate-24.0.0-py3-none-any.whl"
+    wheel_path.parent.mkdir()
+    wheel_path.write_bytes(b"candidate wheel")
+    receipt = _receipt(sha256=hashlib.sha256(wheel_path.read_bytes()).hexdigest())
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(
+        release_candidate,
+        "_git",
+        lambda *_args: receipt["candidate_commit"],
+    )
+    monkeypatch.setattr(
+        release_candidate,
+        "_verify_receipt_image",
+        lambda _receipt: None,
+    )
+    monkeypatch.setattr(
+        release_candidate,
+        "_candidate_cli",
+        lambda _wheel, _temp_root: tmp_path / "candidate-venv" / "bin" / "run-gate",
+    )
+    monkeypatch.setattr(
+        release_candidate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("exec unavailable")),
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot start.*exec unavailable",
+    ):
+        release_candidate.run_selftest(receipt_path)
 
 
 def test_candidate_wheel_path_is_bound_to_the_receipt(monkeypatch, tmp_path):
@@ -584,6 +780,54 @@ def test_candidate_wheel_path_is_bound_to_the_receipt(monkeypatch, tmp_path):
     wheel.write_bytes(b"changed")
     with pytest.raises(release_candidate.ReleaseCandidateError, match="SHA-256 changed"):
         release_candidate._candidate_wheel_path(receipt)
+
+
+def test_candidate_wheel_path_refuses_missing_and_escaping_paths(monkeypatch, tmp_path):
+    project = tmp_path / "run-gate-project"
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", project)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot read receipted.*dist",
+    ):
+        release_candidate._candidate_wheel_path(_receipt())
+
+    wheel_dir = project / "dist"
+    wheel_dir.mkdir(parents=True)
+    outside = tmp_path / "outside.whl"
+    outside.write_bytes(b"wheel outside the project")
+    wheel = wheel_dir / "run_gate-24.0.0-py3-none-any.whl"
+    wheel.symlink_to(outside)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="not a regular file under",
+    ):
+        release_candidate._candidate_wheel_path(_receipt())
+
+    wheel.unlink()
+    inside_dir = wheel_dir / "not-a-wheel"
+    inside_dir.mkdir()
+    wheel.symlink_to(inside_dir, target_is_directory=True)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="not a regular file under",
+    ):
+        release_candidate._candidate_wheel_path(_receipt())
+
+    wheel.unlink()
+    wheel.write_bytes(b"candidate wheel")
+    original_read_bytes = Path.read_bytes
+
+    def fail_wheel_read(path):
+        if path == wheel:
+            raise OSError("wheel bytes unavailable")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", fail_wheel_read)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot read receipted Run-Gate wheel.*wheel bytes unavailable",
+    ):
+        release_candidate._candidate_wheel_path(_receipt())
 
 
 def test_candidate_cli_installs_the_receipted_wheel_offline(monkeypatch, tmp_path):
@@ -609,6 +853,53 @@ def test_candidate_cli_installs_the_receipted_wheel_offline(monkeypatch, tmp_pat
     assert [call[0][1:3] for call in calls] == [["-m", "venv"], ["-m", "pip"]]
     assert calls[1][0][3:8] == ["install", "--no-deps", "--no-index", "--disable-pip-version-check", str(wheel)]
     assert all(call[1] == temp_root and call[2:] == (False, True, True) for call in calls)
+
+
+def test_candidate_cli_refuses_creation_install_and_missing_entrypoint_failures(
+    monkeypatch, tmp_path
+):
+    wheel = tmp_path / "run_gate-24.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"candidate wheel")
+    temp_root = tmp_path / "isolated"
+    temp_root.mkdir()
+
+    monkeypatch.setattr(
+        release_candidate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed(stderr="venv creation failed", returncode=1),
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot create.*venv creation failed",
+    ):
+        release_candidate._candidate_cli(wheel, temp_root)
+
+    calls = 0
+
+    def fail_install(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _completed()
+        return _completed(stderr="pip install failed", returncode=1)
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", fail_install)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot install.*pip install failed",
+    ):
+        release_candidate._candidate_cli(wheel, temp_root)
+
+    monkeypatch.setattr(
+        release_candidate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: _completed(),
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="did not install its console script",
+    ):
+        release_candidate._candidate_cli(wheel, temp_root)
 
 
 def test_receipt_image_check_requires_the_prepared_image_id(monkeypatch, capsys):
