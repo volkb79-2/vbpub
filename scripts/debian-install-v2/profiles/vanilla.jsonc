@@ -1,0 +1,26 @@
+{
+  // Minimal host profile: preserve the installer’s disk/root-resize and swap
+  // transaction, while omitting optional host tuning and services. The ISO
+  // wizard supplies per-host persistent root SSH key(s), added to
+  // /root/.ssh/authorized_keys and never removed by controller-key cleanup.
+  // Core apt use for required packages and installer stage/reboot machinery
+  // still run. The shared disk defaults are root_resize_policy=resize,
+  // swap_policy=on, auto swap sizing (min(2x RAM, rounded 20% disk)), and
+  // four swap partitions.
+  "schema_version": 1,
+  "run_user_config": false,
+  "run_apt_config": false,
+  "run_journald_config": false,
+  "run_docker_install": false,
+  "run_ksm": false,
+  "run_oomd_config": false,
+  "run_fstrim": false,
+  "run_docker_cleanup": false,
+  "run_apt_auto_upgrade": false,
+  "apt_upgrade_at_install": false,
+  "run_auto_reboot": false,
+  "run_zswap_config": false,
+  "run_cgroup2_config": false,
+  "run_io_benchmark": false,
+  "iocost_enabled": false
+}

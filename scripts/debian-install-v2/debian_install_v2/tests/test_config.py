@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -14,16 +15,56 @@ BASE = {
     "schema_version": 1,
     "fresh_install": True,
     "swap_disk_total_gb": 32,
-    "swap_file_count": 8,
+    "swap_partition_count": 4,
     "telegram_bot_token": "123:test",
     "telegram_chat_id": "123123",
 }
+VALID_ED25519 = (
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIcesQXRRI6R1benlU3hpLX712Iokf4htzSKpuk25Q2n "
+    "fixture@example.test"
+)
+
+
+def _ed25519_key(public_bytes: bytes, comment: str) -> str:
+    key_type = b"ssh-ed25519"
+    blob = len(key_type).to_bytes(4, "big") + key_type + len(public_bytes).to_bytes(4, "big") + public_bytes
+    return f"ssh-ed25519 {base64.b64encode(blob).decode()} {comment}"
 
 
 def test_known_shape_loads():
     config = load_config(raw_json='{"schema_version":1,"swap_disk_total_gb":32,"swap_file_count":8}')
-    assert (config.swap_disk_total_gb, config.swap_file_count) == (32, 8)
+    assert (config.swap_disk_total_gb, config.swap_partition_count) == (32, 8)
     assert config.cloud_init_cleanup_mode == "retain"
+
+
+def test_disk_layout_defaults_are_configurable_and_automatic():
+    config = load_config(raw_json='{"schema_version":1}')
+    assert config.root_resize_policy == "resize"
+    assert config.swap_policy == "on"
+    assert config.swap_disk_total_gb is None
+    assert config.swap_partition_count == 4
+
+
+@pytest.mark.parametrize("policy", ["resize", "untouched", "grow-only"])
+def test_root_resize_policy_accepts_each_documented_value(policy):
+    assert load_config(raw_json=json.dumps({"root_resize_policy": policy})).root_resize_policy == policy
+
+
+@pytest.mark.parametrize("policy", ["on", "off", "untouched"])
+def test_swap_policy_accepts_each_documented_value(policy):
+    assert load_config(raw_json=json.dumps({"swap_policy": policy})).swap_policy == policy
+
+
+def test_disk_policy_rejects_unknown_values():
+    with pytest.raises(ConfigError, match="root_resize_policy"):
+        load_config(raw_json='{"root_resize_policy":"shrink-whatever"}')
+    with pytest.raises(ConfigError, match="swap_policy"):
+        load_config(raw_json='{"swap_policy":"maybe"}')
+
+
+def test_swap_partition_count_alias_conflicts_are_refused():
+    with pytest.raises(ConfigError, match="conflict"):
+        load_config(raw_json='{"swap_file_count":8,"swap_partition_count":4}')
 
 
 @pytest.mark.parametrize("mode", CLOUD_INIT_CLEANUP_MODES)
@@ -98,6 +139,41 @@ def test_controller_ssh_key_must_be_a_single_authorized_keys_line(newline):
                 {"controller_ssh_pubkey": f"ssh-ed25519 AAAA operator{newline}extra"}
             )
         )
+
+
+def test_persistent_ssh_keys_accept_multiple_valid_lines_and_preserve_comments():
+    other = _ed25519_key(bytes(range(32)), "backup@laptop")
+    # Same public key with a different comment is duplicate key material.
+    with pytest.raises(ConfigError, match="duplicates an earlier"):
+        load_config(raw_json=json.dumps({
+            "ssh_authorized_keys": [
+                VALID_ED25519,
+                VALID_ED25519.replace("fixture@example.test", "backup@laptop"),
+            ]
+        }))
+    loaded = load_config(raw_json=json.dumps({"ssh_authorized_keys": [VALID_ED25519, other]}))
+    assert loaded.ssh_authorized_keys == [VALID_ED25519, other]
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "ssh-ed25519 AAAA fixture@example.test",
+        "ssh-rsa not-base64 fixture@example.test",
+        "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIIcesQXRRI6R1benlU3hpLX712Iokf4htzSKpuk25Q2n fixture@example.test",
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIIcesQXRRI6R1benlU3hpLX712Iokf4htzSKpuk25Q2n fixture@example.test\nextra",
+    ],
+)
+def test_persistent_ssh_keys_reject_malformed_or_mismatched_lines(line):
+    with pytest.raises(ConfigError, match="ssh_authorized_keys"):
+        load_config(raw_json=json.dumps({"ssh_authorized_keys": [line]}))
+
+
+def test_persistent_ssh_keys_require_a_bounded_array():
+    with pytest.raises(ConfigError, match="JSON array"):
+        load_config(raw_json='{"ssh_authorized_keys":"ssh-ed25519 AAAA"}')
+    with pytest.raises(ConfigError, match="at most"):
+        load_config(raw_json=json.dumps({"ssh_authorized_keys": [VALID_ED25519] * 65}))
 
 
 def test_unsupported_minimal_v2_surface_is_refused():

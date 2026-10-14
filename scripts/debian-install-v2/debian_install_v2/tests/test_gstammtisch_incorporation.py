@@ -14,7 +14,7 @@ from debian_install_v2.state import StateStore
 BASE = {
     "schema_version": 1,
     "swap_disk_total_gb": 32,
-    "swap_file_count": 8,
+    "swap_partition_count": 8,
     "telegram_bot_token": "",
     "telegram_chat_id": "",
 }
@@ -209,16 +209,16 @@ def test_swap_partitions_get_vbpub_labels(tmp_path):
         a.argv for a in actions.planned
         if a.argv and a.argv[0] == "/usr/sbin/mkswap"
     ]
-    assert len(label_calls) == 8
+    assert len(label_calls) == 4
     labels = sorted(argv[argv.index("-L") + 1] for argv in label_calls)
-    assert labels == [f"vbpub-swap{n}" for n in range(1, 9)]
+    assert labels == [f"vbpub-swap{n}" for n in range(1, 5)]
 
 
 def test_swap_fstab_entries_carry_discard_once(tmp_path):
     _, actions = install_dry(tmp_path)
     fstab = actions.dry_run_writes["/etc/fstab"]
     swap_lines = [line for line in fstab.splitlines() if " none swap " in line]
-    assert len(swap_lines) == 8
+    assert len(swap_lines) == 4
     assert all(",discard=once" in line for line in swap_lines)
 
 

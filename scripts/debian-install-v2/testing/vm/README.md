@@ -45,6 +45,19 @@ cd scripts/debian-install-v2/testing/vm
 ./run-vm-harness.sh destroy smoke1
 ```
 
+To exercise the default installer profile's 10 GiB preserved-root floor and
+automatic swap sizing, grow only the disposable VM overlay to a realistic
+target size. For example, a 20 GiB disk with the default 2 GiB VM RAM gives a
+4 GiB automatic swap target:
+
+```bash
+./run-vm-harness.sh start iso-test --disk-gb 20 --seed-iso ./.vm/private.iso
+```
+
+Use the raw cloud-image base for this first-boot test: cloud-init can grow its
+root partition into the larger virtual disk. The downloaded base remains
+unchanged.
+
 For fast, repeated installer test iterations, use the "ready" base instead
 of the raw stock image (see "Skipping repeated first-boot cost" below):
 
@@ -88,7 +101,7 @@ directly from `/work/vm`; `run-vm-harness.sh --daemon` prints the exact name.
 
 Subcommands: `prepare-base <case>`, `prepare-ready-base <case>` (see below),
 `start <run> [--case case-b] [--ssh-port N] [--mem MB] [--smp N]
-[--no-apt-cache]`, `wait <run> [--timeout-s N]`, `ssh <run> [-- cmd...]`,
+[--disk-gb N] [--no-apt-cache] [--seed-iso PATH]`, `wait <run> [--timeout-s N]`, `ssh <run> [-- cmd...]`,
 `copy <run> <src> <dst>`, `snapshot <run> <new-case>` (flatten a *stopped*
 run's disk into a new runner-local `<new-case>-base.qcow2`), `console <run>`,
 `status <run>`, `stop <run>` (graceful QMP `system_powerdown`, falling
@@ -102,6 +115,22 @@ complete remote shell program as one quoted argument, for example
 The wrapper quotes multiple simple arguments before sending them, while the
 one-argument form is intentionally preserved as shell syntax for the test
 lane.
+
+For NoCloud/ISO acceptance tests, `start --seed-iso PATH` attaches the supplied
+seed ISO instead of generating the harness's normal `tester` seed. The path is
+resolved inside the runner container; a file saved under this worktree's
+`testing/vm/.vm/` is visible there as `/work/vm/.vm/<name>.iso`. The supplied
+user-data must provision the harness SSH key for a `tester` account with
+passwordless sudo, because `wait` and `ssh` connect as `tester`. `vmctl` copies
+the source ISO into the disposable run directory with mode `0600`; it does not
+modify the source artifact. Keep credential-bearing seed ISOs in the ignored
+`.vm/` directory, not in tracked source.
+
+`start --disk-gb N` grows the new CoW overlay's virtual capacity to `N` GiB
+before boot. It never resizes the base image and does not request a shrink;
+values must be positive whole GiB. Omit it to keep the base image's original
+capacity. Use a raw cloud-init-enabled base when testing first-boot root growth;
+`*-ready` bases have cloud-init disabled.
 
 ## Skipping repeated first-boot cost: "ready" base images
 
