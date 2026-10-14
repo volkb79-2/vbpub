@@ -8327,7 +8327,7 @@ def linked_worktree_gitdir(worktree: Path) -> Path | None:
         return None
     try:
         text = gitfile.read_text()
-    except OSError:  # pragma: no cover - is_file() just succeeded
+    except OSError:
         return None
     for line in text.splitlines():
         if not line.startswith("gitdir:"):
@@ -13992,7 +13992,7 @@ def _dispatch(argv: list[str] | None = None, *,
                      f"{ROOT_CONFIG_NAME} (got {path.name!r})")
             known: set[str] = set()
             if path.name == CONFIG_NAME:
-                for parent in path.parents:  # pragma: no cover - named config paths always have a parent
+                for parent in path.parents:
                     central_path = parent / ROOT_CONFIG_NAME
                     if central_path.is_file():
                         try:

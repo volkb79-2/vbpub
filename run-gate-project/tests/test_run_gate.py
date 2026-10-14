@@ -7355,6 +7355,23 @@ class TestLinkedWorktreeHostLaneWarning:
         (tree / ".git").write_text("# not a gitfile\n")
         assert run_gate.linked_worktree_gitdir(tree) is None
 
+    def test_gitfile_read_error_after_file_check_is_benign(
+            self, tmp_path, monkeypatch):
+        tree = tmp_path / "t"
+        tree.mkdir()
+        gitfile = tree / ".git"
+        gitfile.write_text("gitdir: /outside/admin\n")
+        real_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path == gitfile:
+                raise OSError("read failed after the regular-file check")
+            return real_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", read_text)
+        assert gitfile.is_file()
+        assert run_gate.linked_worktree_gitdir(tree) is None
+
     def test_doctor_warns_from_a_linked_worktree_with_a_host_lane(
             self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
