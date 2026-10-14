@@ -14272,6 +14272,7 @@ def plant_inflight(proj: Path, repo: Path, state: Path | None, *,
         outcome = "PASS" if code == 0 else "FAIL"
         verdict_path.write_text(json.dumps({
             "outcome": outcome,
+            "exit_code": code,
             "reason_code": None,
             "judge_provenance": {
                 "name": "assay", "version": "7.2.0",
@@ -28515,7 +28516,7 @@ class TestFinalChangedLineCoverageOracles:
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
         monkeypatch.setattr(run_gate, "run_bare_host_lane",
-                            lambda *_args, **_kwargs: 0)
+                            lambda *_args, **_kwargs: 1)
         result = run_gate._dispatch(
             ["unit", "--allow-dirty"], _admission_ticket=ticket,
             _admission_managed=True)
