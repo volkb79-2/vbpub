@@ -5415,6 +5415,15 @@ evidence-judgment command.
   AGENTS.md "Manual tester-unified gate runs — the four traps": cgroup env
   passthrough, dual-path mount for worktree gitfiles, `safe.directory`, and
   the detached run form.
+- **S18.6** *Enrollment security lane.* Every CIU release runs the registered
+  `enroll` lane after the `tester-unified` suite, via the project release
+  command `python3 ../run-gate.py enroll`. This lane runs on the invoking host
+  because its real-system enrollment oracles create and log into disposable
+  sshd containers, while `tester-unified` has no Docker socket. It requires
+  Docker access and a loaded `$CGROUP_PARENT_DEV_GATES` slice; the lane's
+  `CIU_ENROLL_REQUIRED=1` makes missing prerequisites fail rather than skip.
+  Its child containers have their own CPU and memory limits. Both the
+  isolated suite and enrollment lane must pass before a CIU release proceeds.
 
 ## S19 — Repository scaffolding (`ciu init`)
 

@@ -985,6 +985,23 @@ checks for path translation, Docker-style resource sizes, and shared-infra
 argument grammar. These properties supplement the full 100% line-and-branch
 suite; they do not replace the declared Assay judgment.
 
+### The enrollment security lane also gates releases (CIU-131)
+
+The release workflow runs the real-system enrollment lane after the isolated
+suite. It uses Docker to create a disposable sshd container and verifies the
+authorized-key write, ownership and modes, host-key fingerprint, and login.
+Run the same registered lane from the `ciu/` project directory with:
+
+```console
+$ python3 ../run-gate.py enroll
+```
+
+The invoking environment must provide Docker access and a loaded
+`$CGROUP_PARENT_DEV_GATES` slice. The lane fails if either prerequisite is
+missing; do not treat a skip or a local pytest run as release evidence. The
+disposable containers carry their own CPU and memory bounds under the gates
+slice. See [the design rationale](DESIGN-GUIDE.md#why-enrollment-has-a-separate-release-lane).
+
 ## 13. Read the per-stack status report (`ciu status --json`, S7.10, CIU-QOL-6)
 
 ```console

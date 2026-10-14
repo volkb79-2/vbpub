@@ -298,7 +298,14 @@ cmru build   ciu     # retained worktree: gate + wheel build, no publish
 cmru resolve ciu     # resolve the current latest (version / url / sha256)
 ```
 
-The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). An old,
+The release gate runs the full suite in `tester-unified`, then invokes the
+registered bare-host `enroll` lane through `../run-gate.py`. The enrollment
+oracles need Docker to create disposable sshd containers, so they cannot run
+inside `tester-unified`; the lane must pass for every CIU release. Its Docker
+children are bounded and placed under `$CGROUP_PARENT_DEV_GATES`, and a missing
+Docker daemon or unloaded gates slice is a release failure. See
+[CONSUMERS §12](docs/CONSUMERS.md#12-the-implementation-gate-assay-backed-s18)
+for the manual command and prerequisites. An old,
 unmanaged GitHub Release is CMRU maintenance, not CIU behavior: inspect first with
 `cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run`,
 then repeat with `--yes` to delete that Release while deliberately retaining its Git tag.

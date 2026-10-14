@@ -611,6 +611,19 @@ the identifiers advertised in this release. Each maps to a shipped code path:
 An identifier is added to `WORKTREE_CAPABILITIES` in the same commit as the
 code path it names, or not at all.
 
+## Why enrollment has a separate release lane
+
+The enrollment test proves behavior that the ordinary CIU unit and coverage
+suite cannot: it creates a disposable sshd container, writes an authorized
+key with the expected owner and modes, checks the host-key fingerprint, and
+logs in with that key. The `tester-unified` container deliberately has no
+Docker socket, so running this test inside that container either skips the
+security oracle or requires a different privileged container topology. CIU's
+release workflow therefore runs the regular isolated suite first, followed by
+the registered `enroll` lane on the invoking host. That lane creates only
+bounded, gates-slice children and fails closed when Docker or the configured
+slice is unavailable. Both verdicts are required before a release can proceed.
+
 ## Why `up` and `exec` take one exact selected instance
 
 A worktree family has one primary checkout and many linked ones; each linked
