@@ -76,6 +76,65 @@ def _instance_id_for(path: Path) -> str:
     return hashlib.sha256(str(path.resolve()).encode("utf-8")).hexdigest()[:6]
 
 
+class TestInitialCheckoutResetSafety:
+    @staticmethod
+    def _record(path: Path) -> worktree.WorktreeInstanceRecord:
+        return worktree.WorktreeInstanceRecord(
+            logical_name="demo",
+            display_name="demo",
+            branch="demo",
+            git_worktree_path=path.resolve(),
+            ciu_root_offset=Path("."),
+            created_at_utc="2026-10-14T00:00:00Z",
+            base_ref="main",
+            state="allocating",
+        )
+
+    def test_status_inspection_failure_refuses_checkout_reset(self, tmp_path, monkeypatch):
+        def fail_status(args, _cwd):
+            assert args[0] == "status"
+            return subprocess.CompletedProcess(args, 1, "", "status unavailable")
+
+        monkeypatch.setattr(worktree, "_git", fail_status)
+        with pytest.raises(worktree.WorktreeError, match="status unavailable"):
+            worktree._assert_allocation_checkout_reset_is_safe(self._record(tmp_path))
+
+    def test_tree_inspection_failure_refuses_checkout_reset(self, tmp_path, monkeypatch):
+        def fail_tree(args, _cwd):
+            if args[0] == "status":
+                return subprocess.CompletedProcess(args, 0, "D  tracked.txt\0", "")
+            assert args[:2] == ["ls-tree", "-r"]
+            return subprocess.CompletedProcess(args, 1, "", "tree unavailable")
+
+        monkeypatch.setattr(worktree, "_git", fail_tree)
+        with pytest.raises(worktree.WorktreeError, match="tree unavailable"):
+            worktree._assert_allocation_checkout_reset_is_safe(self._record(tmp_path))
+
+    def test_unexpected_files_are_reported_with_a_bounded_status_sample(
+        self, tmp_path, monkeypatch
+    ):
+        record = self._record(tmp_path)
+        record_path = record.record_path.relative_to(record.git_worktree_path).as_posix()
+        tracked_paths = [f"tracked-{index}.txt" for index in range(5)]
+        status_entries = [
+            f"?? {record_path}",
+            "?? operator.txt",
+            *(f"D  {path}" for path in tracked_paths),
+        ]
+        status_output = "\0".join(status_entries) + "\0"
+        tree_output = "\0".join(tracked_paths) + "\0"
+
+        def fake_git(args, _cwd):
+            if args[0] == "status":
+                return subprocess.CompletedProcess(args, 0, status_output, "")
+            assert args[:2] == ["ls-tree", "-r"]
+            return subprocess.CompletedProcess(args, 0, tree_output, "")
+
+        monkeypatch.setattr(worktree, "_git", fake_git)
+        with pytest.raises(worktree.WorktreeError, match="operator.txt.*7 total entries"):
+            worktree._assert_allocation_checkout_reset_is_safe(record)
+
+
 class _FlushRecordingStream(io.StringIO):
     def __init__(self):
         super().__init__()
