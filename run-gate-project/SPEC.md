@@ -237,7 +237,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `BUDGET_EXCEEDED` if another result has that status, and FAIL if another has
   `FAIL`, `INCONCLUSIVE`, or `NO_MEASUREMENT`; malformed claim/evidence records
   map to ERROR. The raw outcome is retained as `assay_outcome`. Missing/invalid
-  judge provenance is ERROR.
+  judge provenance is ERROR. The top-level `exit_code` in the verified Assay
+  verdict must be an integer (booleans are invalid), equal the raw lane process
+  status, and match the closed Assay outcome table: PASS 0, FAIL 1, ERROR 2,
+  NO_MEASUREMENT 3, BUDGET_EXCEEDED 4, INCONCLUSIVE 5. A missing, malformed,
+  runner-mismatched, or outcome-mismatched code returns infrastructure ERROR
+  and retains the raw runner code and Assay outcome; it can never certify PASS.
   `--json` lane results contain `verdict`, raw `exit_code`, `reason`,
   `log_path`, `assay_outcome`, and `admission`. The human lane summary names
   verdict, raw code when present, reason when present, and log path when one

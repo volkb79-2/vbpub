@@ -42,6 +42,10 @@ MAX_PLAN_FILE_BYTES = 32 * 1024 * 1024
 MAX_LOG_BYTES = 16 * 1024 * 1024
 MAX_PROGRESS_RUNS = 10_000
 MAX_DETAIL_LIMIT = 500
+MAX_STATE_DIRECTORY_ENTRIES = 50_000
+MAX_STATE_DIRECTORY_RECORDS = 10_000
+MAX_STATE_DIRECTORY_BYTES = 64 * 1024 * 1024
+MAX_ANALYSIS_OUTPUT_BYTES = 16 * 1024 * 1024
 MIN_ETA_SAMPLE = 20
 MAX_ERRORS = 10
 MAX_SAMPLE_IDS = 10
@@ -967,18 +971,47 @@ def _state_entry(record: dict, stem: str) -> dict:
 
 
 def _read_state_dir(state_dir: Path) -> list[dict]:
-    """Read every state record by name; all shape failures are reported together."""
-    if not state_dir.is_dir():
+    """Read state records under explicit directory, record-count, and byte budgets."""
+    try:
+        state_stat = state_dir.lstat()
+    except OSError as exc:
+        raise ValueError(f"cannot inspect state directory {state_dir}: {exc}") from exc
+    if not stat.S_ISDIR(state_stat.st_mode):
         raise ValueError(f"state directory is not an existing directory: {state_dir}")
+    names = []
+    scanned = 0
+    try:
+        with os.scandir(state_dir) as children:
+            for child in children:
+                scanned += 1
+                if scanned > MAX_STATE_DIRECTORY_ENTRIES:
+                    raise ValueError(
+                        "state directory scan exceeds "
+                        f"{MAX_STATE_DIRECTORY_ENTRIES} entries"
+                    )
+                if _STATE_NAME.fullmatch(child.name):
+                    names.append(child.name)
+                    if len(names) > MAX_STATE_DIRECTORY_RECORDS:
+                        raise ValueError(
+                            "state directory contains more than "
+                            f"{MAX_STATE_DIRECTORY_RECORDS} mutation records"
+                        )
+    except OSError as exc:
+        raise ValueError(f"cannot scan state directory {state_dir}: {exc}") from exc
     entries: list[dict] = []
     failures: list[dict] = []
-    for name in sorted(os.listdir(state_dir)):
-        if not _STATE_NAME.fullmatch(name):
-            continue
+    total_bytes = 0
+    for name in sorted(names):
         try:
-            raw, _artifact = _read_artifact(
+            raw, artifact = _read_artifact(
                 state_dir / name, limit=mutation.MUTATION_STATE_RECORD_LIMIT, label="state record"
             )
+            total_bytes += artifact["bytes"]
+            if total_bytes > MAX_STATE_DIRECTORY_BYTES:
+                raise ValueError(
+                    "state records exceed "
+                    f"{MAX_STATE_DIRECTORY_BYTES} aggregate bytes"
+                )
             record = evidence._json(raw.decode("utf-8"))
             if not isinstance(record, dict):
                 raise ValueError("record is not a JSON object")
@@ -988,6 +1021,18 @@ def _read_state_dir(state_dir: Path) -> list[dict]:
     if failures:
         raise EvidenceErrors(failures)
     return entries
+
+
+def _enforce_output_budget(document: dict) -> None:
+    """Refuse a report whose pretty-printed JSON would exceed its output budget."""
+    size = 0
+    encoder = json.JSONEncoder(indent=2, sort_keys=True)
+    for chunk in encoder.iterencode(document):
+        size += len(chunk.encode("utf-8"))
+        if size > MAX_ANALYSIS_OUTPUT_BYTES:
+            raise ValueError(
+                f"analysis report exceeds {MAX_ANALYSIS_OUTPUT_BYTES} output bytes"
+            )
 
 
 def _id_summary(ids) -> dict:
@@ -1928,7 +1973,7 @@ def campaign(
         shard = (r2_policy.get("shard_index"), r2_policy.get("shard_count"))
     else:
         shard = ((latest["shard"] or {}).get("index"), (latest["shard"] or {}).get("count"))
-    return {
+    document = {
         "schema_version": SCHEMA_VERSION,
         "analysis": "mutation_campaign",
         "status": status,
@@ -1977,6 +2022,9 @@ def campaign(
         "state": state["output"],
         "projection": projection,
     }
+    stage.name = "input"
+    _enforce_output_budget(document)
+    return document
 
 
 def _project_jobs(text: str) -> int:

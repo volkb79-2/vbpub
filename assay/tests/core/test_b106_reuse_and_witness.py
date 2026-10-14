@@ -647,6 +647,7 @@ operators = ["python:compare-swap"]
     exit_code = main(
         [
             "plan",
+            "--json",
             "package",
             "--file",
             str(project / "assay.toml"),
@@ -673,6 +674,7 @@ operators = ["python:compare-swap"]
     exit_code = main(
         [
             "plan",
+            "--json",
             "package",
             "--file",
             str(project / "assay.toml"),
@@ -690,6 +692,7 @@ operators = ["python:compare-swap"]
     exit_code = main(
         [
             "plan",
+            "--json",
             "package",
             "--file",
             str(project / "assay.toml"),

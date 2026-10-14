@@ -10963,7 +10963,7 @@ campaign trees and do not relabel the `hung` result as equivalent.
 
 ## B108 — deterministic mutation-campaign analysis and automatic post-lane closeout
 
-**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns). Phased 2026-09-28: phase 1 is the deterministic `assay analyze campaign` core that the B110 pilot and survivor screen need (brief `reports/b110/P8-campaign-analysis-core.md`). Phase 2 is the automatic run-gate post-lane closeout and its `run-gate-project/SPEC.md` integration, and stays open.**
+**Status: OPEN (filed 2026-09-26 after repeated manual progress/verdict analysis across Assay consumer campaigns). Phased 2026-09-28: phase 1 is the deterministic `assay analyze campaign` core that the B110 pilot and survivor screen need (brief `reports/b110/P8-campaign-analysis-core.md`). Controller update 2026-10-13: phase 1's state scan and report output now have explicit budgets, and its adopter docs distinguish whole-plan scope from a completed/passing result; exact tester-unified gate and review are pending on `assay-b108-phase1-closeout-20261013`. Phase 2—the automatic run-gate post-lane closeout and its `run-gate-project/SPEC.md` integration—remains open.**
 
 **Observed need:** operators repeatedly call Assay and then write one-off
 Python/LLM analysis to answer basic campaign questions: how many candidates
@@ -11046,6 +11046,11 @@ interpretation step.
       the machine-readable and text closeout in tester-unified gate evidence.
       A command lane without explicit analysis declarations does not guess;
       a closeout failure preserves the original command status and verdict.
+- [ ] A large unrelated state store, a state directory over the entry/record/
+      byte budgets, and a campaign report over the output budget each produce
+      a named evidence error; no path silently drops state, runs, or
+      reclassification history. README, DESIGN-GUIDE and CONSUMERS state the
+      shipped limits and explain that `qualifying` describes scope, not result.
 - [ ] README explains the analysis surface, DESIGN-GUIDE records its identity,
       failure, and estimate rules, and CONSUMERS.md includes pasteable direct
       and run-gate workflows. `run-gate-project/SPEC.md` documents the
@@ -11873,7 +11878,7 @@ Deliberate verifier duplication stays (A-182). Rewriting comparisons into lookup
 
 **Status: IMPLEMENTED (stage 1); bounded measurement pending on the current release candidate; full R2 stage 2 remains open.** The analysis package (A-478) has an R0+R1 whole-target lane and a separate `analysis-r2` lane plus a non-qualifying `analysis-r2-pilot` gate. Keep B105's `src/assay` scope and ordinary R0 release gate unchanged. B131 owns its analysis selector and checker; the P8 extension in this wave lets its selection report and progress be summarized without qualifying the selected sample (A-490). The candidate plan and bounded pilot measure the declared target without choosing the full-run envelope or GO policy; the historical ≈317 estimate and B105 thresholds are not current measurements. Full analysis R2 qualification is stage 2 and does not become a release gate by default. The implementation adds selector/checker and selected-summary tests and syncs README, DESIGN-GUIDE, CONSUMERS and this backlog entry in the same package. The final integrated `tester-unified` gate and MDT `smoke` passed on `b8713d56`; a fresh preflight retry on `595b4069` refused before child launch with 1,375,588,352 bytes of headroom against its 2 GiB requirement. On 2026-10-10, the registered `b110-pilot` and `analysis-r2-pilot` attempts on `2980858b` both refused before child launch at the shared 2 GiB `dev-gates.slice` reserve check (1,315,123,200 and 1,314,852,864 bytes available, respectively). These are capacity refusals, not failed mutation campaigns. A later exact-tip retry on `77805722` also refused before child launch: the B105 pilot had 1,048,875,008 bytes and the analysis pilot had 1,048,760,320 bytes of headroom, versus 2,147,483,648 required; logs are recorded in B118. None of those attempts produced a measurement.
 
-**Controller update (2026-10-13):** The selector and checker are integrated in the release candidate. Run the registered `b110-pilot` and `analysis-r2-pilot` on the exact committed candidate after contract-2 observer deployment. These are non-qualifying measurements and do not block the Assay release. Record admission refusals as capacity outcomes, not mutation results. No full analysis R2 qualification is claimed.
+**Controller update (2026-10-13):** The selector and checker are integrated in the release candidate. The first exact-candidate attempt at `341abd66a07d` planned 923 candidates and selected a bounded sample, then refused before candidate execution because the fixed `.assay/analysis-r2-pilot-state/PILOT-STATE` belonged to an older selection. It produced no pilot measurement. The launcher and host checker now use a commit-bound state directory, preserving the older selection state while allowing this exact revision to resume independently. Rerun the registered `analysis-r2-pilot` and record its result. The B105 bounded pilot is a separate failed attempt: its baseline ended `ERROR/EXEC_FAILED` before R2 selection execution, with no retained evidence establishing OOM; investigate before retry. Both pilots are non-qualifying measurements and do not block the Assay release. Record admission refusals as capacity outcomes, not mutation results. No full analysis R2 qualification is claimed.
 
 ## B132 — SQL constructs PostgreSQL may refuse
 
@@ -12880,3 +12885,36 @@ from runner state and may persist across lanes, so mutable service data still
 needs per-lane isolation or a declared lock/reset policy. Until the v8
 cutover, use the registered `run-gate` workflow; this transition does not
 authorize hand-written Docker commands.
+
+## B168 — B110 and B131 pilot checkers omit v16 process-tree evidence
+
+**Status: IMPLEMENTED IN THE ASSAY 10 CANDIDATE; exact-tip gate pending.**
+
+The native R2 state-record contract now requires `process_tree_evidence` for
+executed outcomes. `_terminal_result_matches_bucket()` uses that evidence to
+refuse a killed, survived or equivalent result unless the leader exited
+normally and no descendants remained. A timeout or hung result must retain
+the matching timeout-killed leader status. The B110 and B131 independent
+pilot checkers called this classifier without parsing or passing the evidence,
+so valid pilot records failed validation and the checkers did not enforce the
+same process-window boundary as `assay verify`.
+
+**Required behavior.** Both pilot readers require the field on every native
+state record, validate its exact schema with `ProcessTreeEvidence.from_dict`,
+and pass it to `_terminal_result_matches_bucket()`. Missing or malformed
+evidence is a named pilot-state refusal. Fixtures describe ordinary exits and
+timeout-killed hung candidates accurately. The public docs explain this
+state-record requirement and how it protects candidate classification.
+
+**Files:** `tools/b110_pilot_report_check.py`,
+`tools/analysis_r2_pilot_check.py`, their gate tests,
+`README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, and this backlog.
+
+**Oracles:** (1) B110 and B131 pilot fixtures with valid normal-exit evidence
+are accepted. (2) Removing the evidence from either fixture is refused with
+the named missing-evidence diagnostic. (3) Malformed evidence is refused and
+cannot be downgraded to a cache miss. (4) A killed/survived/equivalent state
+with a non-exited leader or outliving descendants is not accepted as that
+bucket. (5) A hung state is accepted only with `timeout-killed` evidence and
+the existing complete liveness resource trace. (6) All config examples and
+documentation anchors remain valid.

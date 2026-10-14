@@ -131,6 +131,8 @@ artifacts = [
 # The campaign deadline filename includes the judged commit. The registered
 # host runner emits its resolved path in the lane output; `.assay` remains the
 # containing state-directory artifact, not a substitute for naming that file.
+# The resumable B131 state directory is commit-scoped and is captured by the
+# `.assay` artifact above.
 [lanes.analysis-r2-pilot]
 kind = "command"
 environment = "bare-host"
@@ -149,7 +151,6 @@ artifacts = [
   ".assay/analysis-r2-pilot-attestation.json",
   ".assay/r2-manifest-analysis-r2-pilot.txt",
   ".assay/progress-analysis-r2-pilot.jsonl",
-  ".assay/analysis-r2-pilot-state",
 ]
 
 # Non-qualifying survivor screen (B110 plan §9.1). It is never B105 evidence

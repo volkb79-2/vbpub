@@ -1800,6 +1800,7 @@ operators = ["python:compare-swap", "python:bool-const-flip"]
     plan_code = assay_cli.main(
         [
             "plan",
+            "--json",
             "self-qualification",
             "--file",
             str(lane_file),

@@ -1184,7 +1184,11 @@ transformed R2 command, configuration digest, and coverage/R2 baselines. The
 gate retains `.assay/r2-manifest-b110-pilot.txt` with the summary. The checker
 recomputes its ordered collection digest, requires candidate collection facts
 to match the appropriate baseline, and requires every kill witness to name a
-collected test. It validates candidate elapsed and phase evidence and binds
+collected test. It also validates each v16 `process_tree_evidence` object from
+resumable state before accepting the terminal outcome: killed, survived and
+equivalent require a normally exited leader and no outliving descendants;
+timeout and hung records must prove the corresponding timeout-killed leader.
+It validates candidate elapsed and phase evidence and binds
 CPU/RSS/phase/startup measurements between progress and state. It also
 validates resource evidence, pending and resumed progress, campaign deadline,
 the 90-minute attempt window and wheel digest. The 90-minute cap
@@ -5407,7 +5411,8 @@ assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --project --project-jobs 1 --outcome survived --limit 20
 assay analyze campaign r2 --file assay.toml --expected-commit "$REVIEW_HEAD" \
   --progress .assay/progress-r2.jsonl --verdict .assay/verdict-r2.json \
-  --command-exit 0 --outcome survived --outcome hung
+  --coverage .assay/coverage-r2.json --command-exit 0 \
+  --outcome survived --outcome hung
 ```
 
 Without `--verdict` the status is never `complete` (blocker `no_verdict`). The
@@ -5423,6 +5428,18 @@ measured runtime before adding candidate costs to the projection. Exit codes:
 0 complete PASS, 1 complete and not PASS, 2 evidence error, 3 incomplete.
 `complete_blockers` names why a campaign is incomplete. Without `--verdict`, a
 plan whose lane delegates its base to the request needs `--request-base`.
+For a lane that declares R1 coverage, include `--coverage` with its declared
+artifact; without it the report stays incomplete. The artifact must be present
+in the worktree (and ignored by Git) even when the judge produced it inside a
+snapshot. `qualifying: true` identifies whole-plan scope only; it does not
+mean the verdict passed or that all evidence is complete.
+
+The reader is bounded: a supplied state directory may contain at most 50,000
+directory entries, 10,000 mutation records and 64 MiB of record data. The
+pretty-printed JSON report has a 16 MiB limit. If a large store or campaign
+history exceeds a limit, Assay returns `evidence_error` with the exceeded
+budget; it does not drop records and present a partial summary. Candidate
+details remain paged with `--offset` and `--limit`.
 
 - **Plan rows.** The JSON rows printed by `assay plan --json` carry `source_sha256` (the
   candidate's source file) and `mutated_file_sha256` (the file with the
@@ -5464,7 +5481,7 @@ For B131, use the analysis lane's retained artifacts instead:
 ```bash
 assay analyze campaign analysis-r2 --file assay.toml \
   --expected-commit "$REVIEW_HEAD" --progress .assay/progress-analysis-r2-pilot.jsonl \
-  --state-dir .assay/analysis-r2-pilot-state \
+  --state-dir ".assay/analysis-r2-pilot-state-${REVIEW_HEAD:0:12}" \
   --plan-json .assay/analysis-r2-pilot-plan.json \
   --selection-file .assay/analysis-r2-pilot-selection.json \
   --project --project-jobs 1 --outcome survived --limit 20
@@ -5526,7 +5543,11 @@ failure, including a recognized first failing test.
 The checker verifies that each candidate's collection evidence matches its
 baseline and each kill witness names a collected test. Read
 `.assay/progress-analysis-r2-pilot.jsonl` plus
-`.assay/analysis-r2-pilot-state/` for resumable execution evidence. A successful
+`.assay/analysis-r2-pilot-state-<commit12>/` for resumable execution evidence.
+Each state record must include valid v16 process-tree evidence; the checker
+uses it when reconciling the terminal result with the reported bucket.
+The commit-bound directory keeps a new source revision's selection separate
+from older pilot state while preserving those earlier records. A successful
 gate means only that the sample completed and its evidence verified. It does
 not create a verdict or qualify the full plan. A timeout, partial sample,
 host-busy refusal or cgroup resource event is not a successful measurement.

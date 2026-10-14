@@ -233,9 +233,14 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
                 capture_output=True, text=True)
             commit = commit_result.stdout.strip() \
                 if commit_result.returncode == 0 else ""
-            outcome = "PASS" if status == "0" else "FAIL"
+            exit_code = int(status)
+            outcome = {
+                0: "PASS", 1: "FAIL", 2: "ERROR", 3: "NO_MEASUREMENT",
+                4: "BUDGET_EXCEEDED", 5: "INCONCLUSIVE",
+            }.get(exit_code, "ERROR")
             path.write_text(json.dumps({
                 "outcome": outcome,
+                "exit_code": exit_code,
                 "assay_version": "7.2.0",
                 "commit": commit,
                 "reason_code": None,
@@ -377,10 +382,17 @@ def install_fake_assay(monkeypatch, body: str, name: str = "assay") -> Path:
         done
         if [ -n "$verdict" ]; then
           mkdir -p "$(dirname "$verdict")"
-          outcome=PASS
-          [ "$result" -eq 0 ] || outcome=FAIL
-          printf '{"outcome":"%s","reason_code":null,"judge_provenance":{"name":"assay","version":"7.2.0","artifact":"test-assay","digest_algorithm":"sha256","digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}\\n' \\
-            "$outcome" > "$verdict"
+          case "$result" in
+            0) outcome=PASS ;;
+            1) outcome=FAIL ;;
+            2) outcome=ERROR ;;
+            3) outcome=NO_MEASUREMENT ;;
+            4) outcome=BUDGET_EXCEEDED ;;
+            5) outcome=INCONCLUSIVE ;;
+            *) outcome=ERROR ;;
+          esac
+          printf '{"outcome":"%s","exit_code":%s,"reason_code":null,"judge_provenance":{"name":"assay","version":"7.2.0","artifact":"test-assay","digest_algorithm":"sha256","digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}}\\n' \\
+            "$outcome" "$result" > "$verdict"
         fi
         exit "$result"
     """))
@@ -1341,21 +1353,24 @@ class TestRG78ClosedExitTable:
 
     def test_assay_outcomes_follow_the_closed_table_and_retain_raw_outcome(self):
         expected = {
-            "PASS": "PASS", "FAIL": "FAIL", "ERROR": "ERROR",
-            "BUDGET_EXCEEDED": "BUDGET_EXCEEDED",
-            "NO_MEASUREMENT": "FAIL", "INCONCLUSIVE": "FAIL",
+            "PASS": (0, "PASS"), "FAIL": (1, "FAIL"),
+            "ERROR": (2, "ERROR"),
+            "BUDGET_EXCEEDED": (4, "BUDGET_EXCEEDED"),
+            "NO_MEASUREMENT": (3, "FAIL"), "INCONCLUSIVE": (5, "FAIL"),
         }
         provenance = {"name": "assay", "version": "1", "artifact": "wheel",
                       "digest_algorithm": "sha256", "digest": "a" * 64}
-        for outcome, verdict in expected.items():
-            result = run_gate.assay_lane_result(1, outcome,
-                                                judge_provenance=provenance)
+        for outcome, (exit_code, verdict) in expected.items():
+            result = run_gate.assay_lane_result(
+                exit_code, outcome, verdict_exit_code=exit_code,
+                judge_provenance=provenance)
             assert result.verdict == verdict
             assert result.assay_outcome == outcome
         selected_commit = "b" * 40
-        for outcome, verdict in expected.items():
+        for outcome, (exit_code, verdict) in expected.items():
             result = run_gate.assay_lane_result(
-                1, outcome, source_mode=True, source_version="8.0.0.dev1",
+                exit_code, outcome, verdict_exit_code=exit_code,
+                source_mode=True, source_version="8.0.0.dev1",
                 source_commit=selected_commit,
                 expected_source_commit=selected_commit)
             assert result.verdict == verdict
@@ -1363,13 +1378,31 @@ class TestRG78ClosedExitTable:
         invalid = run_gate.assay_lane_result(
             0, "UNKNOWN", source_mode=True, source_version="8.0.0.dev1",
             source_commit=selected_commit,
-            expected_source_commit=selected_commit)
+            expected_source_commit=selected_commit,
+            verdict_exit_code=0)
         assert invalid.verdict == "ERROR"
         assert invalid.reason == "invalid-assay-outcome"
-        missing = run_gate.assay_lane_result(0, "PASS")
+        missing = run_gate.assay_lane_result(0, "PASS", verdict_exit_code=0)
         assert missing.verdict == "ERROR"
         assert missing.reason == "missing-or-invalid-judge-provenance"
         assert missing.gate_exit_code == 2
+
+        missing_exit = run_gate.assay_lane_result(0, "PASS")
+        assert missing_exit.verdict == "ERROR"
+        assert missing_exit.reason == "missing-or-invalid-assay-verdict-exit-code"
+
+        mismatched_runner = run_gate.assay_lane_result(
+            1, "PASS", verdict_exit_code=0, judge_provenance=provenance)
+        assert mismatched_runner.verdict == "ERROR"
+        assert mismatched_runner.reason == "assay-exit-code-mismatch"
+        mismatched_outcome = run_gate.assay_lane_result(
+            1, "PASS", verdict_exit_code=1, judge_provenance=provenance)
+        assert mismatched_outcome.verdict == "ERROR"
+        assert mismatched_outcome.reason == "assay-outcome-exit-code-mismatch"
+        boolean_exit = run_gate.assay_lane_result(
+            0, "PASS", verdict_exit_code=True, judge_provenance=provenance)
+        assert boolean_exit.verdict == "ERROR"
+        assert boolean_exit.reason == "missing-or-invalid-assay-verdict-exit-code"
         def claims_with_observer_refusal(**statuses):
             ordered = [
                 ("R0", statuses.get("R0", "PASS")),
@@ -1392,49 +1425,57 @@ class TestRG78ClosedExitTable:
             ]
 
         unavailable = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE",
             claims=claims_with_observer_refusal(), evidence=[])
         assert unavailable.verdict == "ERROR"
         assert unavailable.assay_outcome == "NO_MEASUREMENT"
         assert unavailable.reason == "CGROUP_OBSERVATION_UNAVAILABLE"
         r1_failed = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE",
             claims=claims_with_observer_refusal(R1="FAIL"), evidence=[])
         assert r1_failed.verdict == "FAIL"
         assert r1_failed.reason == "assay-adverse-claim-alongside-observer-refusal"
         r3_failed = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE",
             claims=claims_with_observer_refusal(R3="FAIL"), evidence=[])
         assert r3_failed.verdict == "FAIL"
         budget_exceeded = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE",
             claims=claims_with_observer_refusal(R1="BUDGET_EXCEEDED"), evidence=[])
         assert budget_exceeded.verdict == "BUDGET_EXCEEDED"
         malformed_claims = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE", claims=[{}], evidence=[])
         assert malformed_claims.verdict == "ERROR"
         assert malformed_claims.reason == "invalid-assay-claims-for-observer-refusal"
         wrong_rigor = claims_with_observer_refusal()
         wrong_rigor[2]["rigor"] = "R4"
         malformed_observer_claim = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE",
             claims=wrong_rigor, evidence=[])
         assert malformed_observer_claim.verdict == "ERROR"
         assert malformed_observer_claim.reason == "invalid-assay-observer-refusal-claim"
         malformed_evidence = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE",
             claims=claims_with_observer_refusal(), evidence=[{}])
         assert malformed_evidence.verdict == "ERROR"
         assert malformed_evidence.reason == "invalid-assay-evidence-for-observer-refusal"
         malformed_evidence_source = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE",
             claims=claims_with_observer_refusal(),
             evidence=[{"source": [], "key": "review", "status": "PASS",
@@ -1443,7 +1484,8 @@ class TestRG78ClosedExitTable:
         assert malformed_evidence_source.reason == \
             "invalid-assay-evidence-for-observer-refusal"
         unverified_passing_evidence = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE",
             claims=claims_with_observer_refusal(),
             evidence=[{"source": "attested", "key": "review", "status": "PASS",
@@ -1452,18 +1494,21 @@ class TestRG78ClosedExitTable:
         assert unverified_passing_evidence.reason == \
             "CGROUP_OBSERVATION_UNAVAILABLE"
         failed_evidence = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="CGROUP_OBSERVATION_UNAVAILABLE",
             claims=claims_with_observer_refusal(),
             evidence=[{"source": "adjudicated", "key": "review",
                        "status": "FAIL", "verified_by_assay": True}])
         assert failed_evidence.verdict == "FAIL"
         ordinary_no_measurement = run_gate.assay_lane_result(
-            3, "NO_MEASUREMENT", judge_provenance=provenance,
+            3, "NO_MEASUREMENT", verdict_exit_code=3,
+            judge_provenance=provenance,
             reason="EMPTY_COVERAGE")
         assert ordinary_no_measurement.verdict == "FAIL"
         missing_source = run_gate.assay_lane_result(
-            0, "PASS", source_mode=True, source_version="8.0.0.dev1",
+            0, "PASS", verdict_exit_code=0, source_mode=True,
+            source_version="8.0.0.dev1",
             source_commit=selected_commit, expected_source_commit=None)
         assert missing_source.verdict == "ERROR"
         assert missing_source.reason == "missing-or-invalid-source-identity"
@@ -1471,14 +1516,16 @@ class TestRG78ClosedExitTable:
         # valid matching commit hashes must not mask a missing or blank version.
         for source_version in (None, "", "   "):
             invalid_source_version = run_gate.assay_lane_result(
-                0, "PASS", source_mode=True, source_version=source_version,
+                0, "PASS", verdict_exit_code=0, source_mode=True,
+                source_version=source_version,
                 source_commit=selected_commit,
                 expected_source_commit=selected_commit)
             assert invalid_source_version.verdict == "ERROR"
             assert invalid_source_version.reason == \
                 "missing-or-invalid-source-identity"
         mismatch = run_gate.assay_lane_result(
-            0, "PASS", source_mode=True, source_version="8.0.0.dev1",
+            0, "PASS", verdict_exit_code=0, source_mode=True,
+            source_version="8.0.0.dev1",
             source_commit="c" * 40, expected_source_commit=selected_commit)
         assert mismatch.verdict == "ERROR"
         assert mismatch.reason == "source-commit-mismatch"
@@ -17312,7 +17359,8 @@ class TestInflightRecordStore:
         verdict_path = Path(verdict)
         verdict_path.parent.mkdir(parents=True)
         commit = run_gate.head_commit(repo)
-        stale_pass = {"outcome": "PASS", "assay_version": "8.0.0",
+        stale_pass = {"outcome": "PASS", "exit_code": 0,
+                      "assay_version": "8.0.0",
                       "commit": commit}
         verdict_path.write_text(json.dumps(stale_pass))
         run_record = {"commit": commit, "_verdict_path": verdict}
@@ -17357,7 +17405,8 @@ class TestInflightRecordStore:
         # one; both return before fresh-attempt cleanup.
         for attached_code, attached_verdict in (
                 (0, stale_pass),
-                (1, {"outcome": "FAIL", "assay_version": "8.0.0",
+                (1, {"outcome": "FAIL", "exit_code": 1,
+                     "assay_version": "8.0.0",
                      "commit": commit})):
             verdict_path.write_text(json.dumps(attached_verdict))
             assert run_gate.run_container_lane(
@@ -26600,7 +26649,7 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
             "outcome": "failed", "exception_class": "AssertionError"}) + "\n")
         verdict = assay_dir / "verdict-unit.json"
         commit = run_gate.head_commit(repo)
-        verdict.write_text(json.dumps({"outcome": "FAIL",
+        verdict.write_text(json.dumps({"outcome": "FAIL", "exit_code": 1,
                                        "assay_version": "8.0.0",
                                        "commit": commit}))
         record = {"run_id": "evidence-run", "commit": commit,
@@ -26644,7 +26693,7 @@ class TestDispatchAssayEvidenceAndAdmissionOracles:
                                    *, run_record, **_kwargs):
             selected = run_gate.head_commit(worktree)
             assert run_record["commit"] == selected == commit
-            verdict.write_text(json.dumps({"outcome": "PASS",
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0,
                                            "assay_version": "8.0.0",
                                            "commit": selected}))
             return 0
@@ -28481,7 +28530,7 @@ class TestFinalChangedLineCoverageOracles:
         _repo, _project, _record, verdict, _progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
                 tmp_path, monkeypatch)
-        verdict.write_text(json.dumps({"outcome": "FAIL"}))
+        verdict.write_text(json.dumps({"outcome": "FAIL", "exit_code": 1}))
         monkeypatch.setattr(run_gate, "resolve_slice",
                             lambda *_args: ("run-gates.slice", "fixture"))
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda _slice: None)
@@ -28496,7 +28545,7 @@ class TestFinalChangedLineCoverageOracles:
         _repo, _project, _record, verdict, _progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
                 tmp_path, monkeypatch)
-        verdict.write_text(json.dumps({"outcome": "FAIL",
+        verdict.write_text(json.dumps({"outcome": "FAIL", "exit_code": 1,
                                        "assay_version": "8.0.0",
                                        "commit": "f" * 40}))
         monkeypatch.setattr(run_gate, "resolve_slice",
@@ -28513,7 +28562,7 @@ class TestFinalChangedLineCoverageOracles:
         _repo, _project, record, verdict, _progress = \
             TestDispatchAssayEvidenceAndAdmissionOracles._project(
                 tmp_path, monkeypatch)
-        verdict.write_text(json.dumps({"outcome": ["PASS"],
+        verdict.write_text(json.dumps({"outcome": ["PASS"], "exit_code": 1,
                                        "assay_version": "8.0.0",
                                        "commit": record["commit"]}))
         monkeypatch.setattr(run_gate, "resolve_slice",
@@ -28555,7 +28604,7 @@ class TestFinalChangedLineCoverageOracles:
             # The current config is source mode. This mode came from the
             # inflight record written by the old invocation.
             record["_assay_identity_mode"] = "artifact"
-            verdict.write_text(json.dumps({"outcome": "PASS",
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0,
                                            "judge_provenance": provenance}))
             return 0
 
@@ -28589,7 +28638,7 @@ class TestFinalChangedLineCoverageOracles:
             promoted, _saved = run_gate.promote_follower(
                 "docker", "runner", "unit", project, 0, run_record)
             assert promoted
-            verdict.write_text(json.dumps({"outcome": "PASS",
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0,
                                            "judge_provenance": provenance}))
             return 0
 
@@ -28643,7 +28692,7 @@ class TestFinalChangedLineCoverageOracles:
             assert promoted
             # A zero container status is not a PASS if the source verdict is
             # missing its selected commit and Assay version.
-            verdict.write_text(json.dumps({"outcome": "PASS"}))
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0}))
             return 0
 
         def finish_and_capture(run_record, *, exit_code=None, error=None):
@@ -28692,7 +28741,7 @@ class TestFinalChangedLineCoverageOracles:
 
         def erase_recorded_mode(*_args, **_kwargs):
             record.pop("_assay_identity_mode", None)
-            verdict.write_text(json.dumps({"outcome": "PASS",
+            verdict.write_text(json.dumps({"outcome": "PASS", "exit_code": 0,
                                            "judge_provenance": provenance}))
             return 0
 
