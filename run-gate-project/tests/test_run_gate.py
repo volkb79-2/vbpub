@@ -25311,7 +25311,8 @@ class TestReattachProfilingWiring:
         assert run_gate.main(["suite"]) == 0
         latest = lane_slot(proj)["latest"]
         assert latest["resources"] is None
-        assert "does not survive a client restart" in latest["profile_error"]
+        assert "does not survive the owning client's death" \
+            in latest["profile_error"]
 
     def test_promoted_follower_stop_failure_names_the_reason(
             self, tmp_path, monkeypatch, capsys):
@@ -30330,7 +30331,8 @@ class TestRunGateR1DirectCoverage:
             lane, "unit", tmp_path, tmp_path, tmp_path, env,
             "fixture environment", "dev-gates.slice", "fixture",
             dry_run=True,
-            profile_plan={"enabled": False, "disabled_reason": "test"}) == 0
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "fixture"}) == 0
 
         output = capsys.readouterr().out
         argv = next(line for line in output.splitlines()
@@ -30401,6 +30403,7 @@ class TestRunGateR1DirectCoverage:
                 schema_version = 1
                 [environments.runner]
                 mode = "exec"
+                image = "runner:local"
                 container_name = "fixture-runner"
                 {cgroup_line}
                 [lanes.unit]
