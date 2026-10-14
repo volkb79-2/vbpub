@@ -643,6 +643,8 @@ class TestManagedIdentityLifecycle:
     def test_create_resume_restores_exact_recorded_overlay_after_interruption(
         self, tmp_repo, fake_generate_env, monkeypatch
     ):
+        real_writer = worktree._write_rendered_worktree_overlay
+
         def interrupt_before_overlay(*_args, **_kwargs):
             raise KeyboardInterrupt("simulated interruption")
 
@@ -662,6 +664,7 @@ class TestManagedIdentityLifecycle:
         overlay = partial.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
         assert not overlay.exists()
 
+        monkeypatch.setattr(worktree, "_write_rendered_worktree_overlay", real_writer)
         resumed = worktree.ensure(tmp_repo, "overlay-resume")
         assert resumed.state == "ready"
         assert overlay.read_text(encoding="utf-8") == partial.initial_overlay
