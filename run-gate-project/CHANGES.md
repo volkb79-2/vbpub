@@ -17,6 +17,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - Fix: detect source renames before filtering the selftest diff-coverage scope,
   so replacing the retired compatibility symlink measures changed content
   instead of treating the whole wheel module as new (RG-96).
+- Fix: name unreadable or undecodable Python files in `--check-env` and mark
+  the scan `INCOMPLETE`, so skipped source cannot appear as a clean sweep
+  (RG-97).
 
 <!-- cmru: release history -->
 

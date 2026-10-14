@@ -779,7 +779,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   indirection the pass does not model — so a clean sweep is evidence, never
   a certificate, and `--check-env` stays advisory. A source file that does
   not parse is reported as such and falls back to the old line regex: "could
-  not read it" is never rendered as "there is nothing there".
+  not read it" is never rendered as "there is nothing there". A Python file
+  that cannot be read or decoded is named in the report and marks the scan
+  `INCOMPLETE`; the advisory exit status stays unchanged, and a zero count
+  does not certify sources the scanner could not inspect.
 
 - `R-25` **Override-reachability guard (RG-1):** a container command lane
   (ephemeral or exec) invoked with `--worktree` whose argv contains NO

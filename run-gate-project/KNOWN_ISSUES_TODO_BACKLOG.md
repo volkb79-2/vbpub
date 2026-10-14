@@ -113,6 +113,8 @@ SPEC §9.
 | RG-93 | the shared Git directory stays read-write for tester commits, letting a container plant a common hook that a later host commit executes and alter host `info/exclude` | Major | FIXED IN CANDIDATE rev 67; focused mount tests pass; registered real-container test pending |
 | RG-94 | Run-Gate still presents its internal source revision as the consumer compatibility identity although supported consumers install the wheel | Major | IMPLEMENTED in the SemVer candidate; exact gates, independent review, and release pending |
 | RG-95 | Run-Gate can accept Assay PASS without checking the artifact exit code against the runner's raw status | Major | IMPLEMENTED in the integrated candidate; exact gates, live Assay acceptance, independent review, and release pending |
+| RG-96 | selftest diff coverage treats a symlink-to-module migration as a full-file addition | Major | FIXED IN CANDIDATE; registered coverage gate and independent reviews pending |
+| RG-97 | `--check-env` silently treats unreadable or undecodable Python sources as a complete scan | Minor | IMPLEMENTED in the integrated candidate; exact gates, independent review, and release pending |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6173,3 +6175,31 @@ the new module lines and the unrelated file separately; `evaluate()` counts
 only the selected module. Existing dirty-tree line-number coverage remains.
 The registered selftest must show 100% coverage of changed executable lines
 and branches on the exact candidate tree.
+
+## RG-97 — `--check-env` silently treats unreadable Python sources as a complete scan
+
+**Status: IMPLEMENTED in the integrated candidate; exact gates, independent review, and release pending.**
+
+Severity: Minor. Type: bugfix. Found while closing Run-Gate R1 changed-line
+coverage on 2026-10-14.
+
+**Observed.** `cmd_check_env()` skipped a Python source when `Path.read_text()`
+raised `OSError`, then could print `0 uncovered reference(s)`. A source file
+that could not be read or decoded was therefore indistinguishable from a file
+with no environment reads. That output claimed a complete scan while omitting
+part of its input.
+
+**Required contract.** Name each unreadable or undecodable Python file and
+report the overall scan as `INCOMPLETE`, including the number of skipped
+files. Preserve the existing advisory behavior and exit status; this heuristic
+does not become a lane refusal. Parsing errors retain their existing named
+line-regex fallback.
+
+**Oracles.** A direct `cmd_check_env()` case with a read failure names the
+relative file, marks the summary incomplete, reports any readable uncovered
+reference once, and remains exit 0. A clean direct scan reports zero without
+`ADVISORY ONLY` or `INCOMPLETE`. A decoding failure follows the same incomplete
+path. Existing toolchain failures still determine the command's exit status.
+
+**Documentation.** Keep README, DESIGN-GUIDE, CONSUMERS, SPEC, and CHANGES
+aligned on the incomplete-scan status and its advisory exit behavior.

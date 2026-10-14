@@ -527,7 +527,10 @@ run-gate: env-drift: $RUN_LIVE_TESTS referenced in conftest.py:6
 It CANNOT see a name assembled at runtime (`os.getenv(prefix + suffix)`), a
 name read from a non-Python source, or an indirection it does not model. A
 file that does not parse is reported by name and falls back to the old line
-regex, so a parse failure is never silently reported as "nothing found".
+regex, so a parse failure is never silently reported as "nothing found". If a
+Python file cannot be read or decoded, Run-Gate names it and marks the scan
+`INCOMPLETE`; a zero count does not certify unreadable files. The drift scan
+remains advisory, while toolchain failures retain their existing exit status.
 **A clean sweep is evidence, not a certificate** — it stays advisory (always
 exit 0 for drift); `required_env` is the mechanism that actually refuses.
 

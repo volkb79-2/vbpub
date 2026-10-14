@@ -323,6 +323,16 @@ stale or forged, while the process can fail after writing its verdict. This
 comparison keeps both facts visible and fails closed only on an actual
 inconsistency.
 
+## Env drift does not certify unreadable source
+
+`--check-env` is a heuristic scan, so its result is only as complete as the
+Python files it can read. A syntax error can use the documented line-regex
+fallback; an I/O or decoding error cannot be scanned at all. Run-Gate names
+that file and marks the overall scan incomplete instead of folding missing
+input into a clean zero-reference result. The drift scan remains advisory:
+it does not decide whether a lane is allowed to run, while a toolchain failure
+still keeps its existing exit status.
+
 ## Preflight probes preserve lane context
 
 An Assay inventory or toolchain probe must reach the same ephemeral

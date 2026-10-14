@@ -497,7 +497,9 @@ the tool's reason to exist and MUST be implemented + tested:
   relying on it must migrate (CONSUMERS.md "BREAKING CHANGE"), because its
   absence produces a false GREEN, not an error. `--check-env` sweeps the
   project's Python for env reads no lane forwards or requires, including
-  reads wrapped in the project's own helper functions.
+  reads wrapped in the project's own helper functions. It names unreadable
+  files and marks the scan incomplete; see the
+  [design rationale](docs/DESIGN-GUIDE.md#env-drift-does-not-certify-unreadable-source).
 - **Clean tree:** refuse a dirty judged tree by default (assay lanes get this
   from assay; command lanes get it from the tool) — a gate over uncommitted
   state is not evidence.

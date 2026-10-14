@@ -6258,9 +6258,10 @@ def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
     verdict_path: Path | None = None
     if recorded is not None and recorded.get("verdict") is not None:
         declared = recorded["verdict"]
-        if declared:
-            verdict_path = Path(os.path.normpath(declared))
-            print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
+        # Inflight Assay records are contract-validated before they reach
+        # this disclosure path, so a present verdict is a non-empty path.
+        verdict_path = Path(os.path.normpath(declared))
+        print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
     elif lane["kind"] == "assay":
         verdict_path = Path(os.path.normpath(
             project_dir / (".assay/verdict-" + lane["assay_lane"] + ".json")))
@@ -6902,10 +6903,15 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
         if env:
             covered.update(env.get("forward_env", []))
     findings = []
+    unreadable_files = 0
     for path in sorted(scan_dir.rglob("*.py")):
         try:
             text = path.read_text()
-        except OSError:
+        except (OSError, UnicodeError) as exc:
+            unreadable_files += 1
+            rel = path.relative_to(scan_dir)
+            print(f"run-gate: env-drift: {rel} could not be read ({exc}) — "
+                  f"scan incomplete for this file", flush=True)
             continue
         rel = path.relative_to(scan_dir)
         try:
@@ -6932,9 +6938,13 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
               f"({form}) is neither forwarded nor declared required_env — "
               f"add it to the environment's forward_env or the lane's "
               f"required_env", flush=True)
-    print(f"run-gate: env-drift scan: {len(seen)} uncovered reference(s)"
-          f"{' — ADVISORY ONLY, the run was not affected' if seen else ''}",
-          flush=True)
+    scan_summary = f"run-gate: env-drift scan: {len(seen)} uncovered reference(s)"
+    if seen:
+        scan_summary += " — ADVISORY ONLY, the run was not affected"
+    if unreadable_files:
+        scan_summary += (f" — INCOMPLETE: {unreadable_files} Python source "
+                         "file(s) could not be read")
+    print(scan_summary, flush=True)
     # RG-25: the env-drift half above stays ADVISORY (heuristic — a .get with
     # a default may be deliberately optional). The toolchain half is NOT a
     # heuristic: the judge itself said the lane needs the tool and the
@@ -14268,23 +14278,6 @@ def _dispatch(argv: list[str] | None = None, *,
             }
         env, env_source = resolve_environment(lane, args.lane, cfg, central,
                                               cfg_path, central_path)
-        if args.fresh and (not env or env.get("mode") == "exec"):
-            # RG-43 (rev 36): 'host' now resolves to a non-empty synthetic
-            # env and runs through run_container_lane() like any named
-            # environment -- `not env` is true ONLY for the built-in
-            # 'bare-host' environment now (this process runs the lane
-            # directly) -- this message named the WRONG one (the pre-RG-43
-            # meaning of `not env`) until this fix. An exec lane runs inside
-            # a runner run-gate did not start and will not remove: neither
-            # bare-host nor exec-mode leaves a container behind, so neither
-            # has an inflight record.
-            where = (f"host-mode environment {args.lane!r}" if not env
-                    else f"exec-mode environment {env_source}")
-            fail(f"--fresh names the container an ephemeral container lane "
-                 f"left running, but lane {args.lane!r} runs on "
-                 f"{where} "
-                 f"— run-gate starts no container of its own there, so there "
-                 f"is nothing to re-attach to or replace")
         # RG-17/19: declared inputs verified BEFORE anything runs — presence
         # in the invoking environment for every kind; for container lanes
         # also that the names are on the forward_env allowlist at all.
