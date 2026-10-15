@@ -6214,6 +6214,7 @@ path. Existing toolchain failures still determine the command's exit status.
 
 **Documentation.** Keep README, DESIGN-GUIDE, CONSUMERS, SPEC, and CHANGES
 aligned on the incomplete-scan status and its advisory exit behavior.
+
 ## RG-98 — RG-85 regression: the Assay judge inherits `TMPDIR=<state_root>`, so an in-repo state root puts Assay's isolation scratch inside `repo_top`
 
 **Status:** FIXED IN CANDIDATE with contract (a), superseding the interim preflight refusal (contract (b)), which two independent reviews held against the release: it made the default configuration a refusal, probed the judge on every run, and printed a remedy (`state_root`) that the loader rejects for `mode = "host"`. In-worktree state roots are now exported to the judge only as `RUN_GATE_TMPDIR`; `TMPDIR` is exported only for an out-of-worktree root. Consumer-style fixture (default root + snapshot-isolating judge reaches R0, with a control that errors under the old shape) added; the registered gate remains. Filed 2026-10-15 from the dstdns deep review (`dstdns@305d8519`, from-scratch measurement campaign). Observed with run-gate 24.0.0, the unreleased candidate wheel built from `.worktrees/tool-release-wave-fixes-20261014`. Severity Major: every snapshot-isolated Assay lane of a consumer that keeps the default in-repo `.run-gate` root ERRORs before R0.

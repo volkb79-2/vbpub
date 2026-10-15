@@ -1,6 +1,6 @@
 """LT-EARLY (LT-F-r1002-02): every error after config parsing gets the failure handling.
 
-Live finding: a parseable-but-unplannable config (LT-05: preserve_root_size_gb=1)
+Live finding: a parseable-but-unplannable config with a root floor above the planned size
 made the customScript exit 1 with no state.json, no controller key (host
 unreachable) and no failure post, because bootstrap._install() called
 installer.show_plan() BEFORE the guarded installer.install(). These tests drive
@@ -60,7 +60,7 @@ def host(tmp_path, monkeypatch):
 def _write(tmp_path, **overrides) -> str:
     data = {
         "schema_version": 1, "fresh_install": True,
-        "swap_disk_total_gb": 32, "swap_file_count": 8,
+        "swap_disk_total_gb": 32, "swap_partition_count": 8,
         "auto_reboot_after_stage1": False, "never_reboot": True,
         "credential_mode": "systemd",
         "state_dir": str(tmp_path / "state"), "log_dir": str(tmp_path / "logs"),
@@ -96,7 +96,7 @@ def _assert_failed_with_cause(tmp_path, actions, posts, cause):
 
 def test_lt05_invalid_preserve_root_size_fails_with_state_key_one_post_nonzero(tmp_path, host, capsys):
     actions, posts = host
-    cfg = _write(tmp_path, preserve_root_size_gb=1)
+    cfg = _write(tmp_path, preserve_root_size_gb=30)
     code = main(["install", "--config", cfg, "--yes"])
     assert code != 0
     assert "preserve_root_size_gb" in capsys.readouterr().err
@@ -105,7 +105,7 @@ def test_lt05_invalid_preserve_root_size_fails_with_state_key_one_post_nonzero(t
 
 def test_lt05_without_a_pubkey_still_records_state_and_posts(tmp_path, host):
     actions, posts = host
-    cfg = _write(tmp_path, preserve_root_size_gb=1, controller_ssh_pubkey="")
+    cfg = _write(tmp_path, preserve_root_size_gb=30, controller_ssh_pubkey="")
     assert main(["install", "--config", cfg, "--yes"]) != 0
     assert "/root/.ssh/authorized_keys" not in actions.files
     assert _state(tmp_path)["status"] == "failed"
@@ -189,12 +189,12 @@ def test_a_successful_dry_run_posts_nothing_and_writes_no_state(tmp_path, capsys
 
 def test_a_parse_error_with_valid_notify_settings_posts_once_and_exits_2(tmp_path, host, capsys):
     _, posts = host
-    cfg = _write(tmp_path, swap_file_count=0)
+    cfg = _write(tmp_path, swap_partition_count=0)
     assert main(["install", "--config", cfg, "--yes"]) == 2
     err = capsys.readouterr().err
-    assert "invalid installation configuration" in err and "swap_file_count" in err
+    assert "invalid installation configuration" in err and "swap_partition_count" in err
     assert len(posts) == 1
-    assert "swap_file_count" in posts[0] and "install FAILED" in posts[0]
+    assert "swap_partition_count" in posts[0] and "install FAILED" in posts[0]
     assert "secretid" not in posts[0]
     assert not (tmp_path / "state" / "state.json").exists()
 
@@ -209,8 +209,8 @@ def test_a_parse_error_via_config_json_also_posts(tmp_path, host):
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"mattermost_webhook_url": "http://insecure.example/hooks/x", "swap_file_count": 0},
-        {"mattermost_webhook_url": "", "swap_file_count": 0},
+        {"mattermost_webhook_url": "http://insecure.example/hooks/x", "swap_partition_count": 0},
+        {"mattermost_webhook_url": "", "swap_partition_count": 0},
     ],
 )
 def test_a_parse_error_without_usable_notify_settings_posts_nothing(tmp_path, host, overrides):
@@ -228,11 +228,11 @@ def test_an_unreadable_config_file_posts_nothing_and_exits_2(tmp_path, host, cap
 
 def test_a_parse_error_in_dry_run_posts_nothing(tmp_path, host):
     _, posts = host
-    assert main(["install", "--config", _write(tmp_path, swap_file_count=0), "--dry-run"]) == 2
+    assert main(["install", "--config", _write(tmp_path, swap_partition_count=0), "--dry-run"]) == 2
     assert posts == []
 
 
 def test_read_only_verbs_never_post_on_a_parse_error(tmp_path, host):
     _, posts = host
-    assert main(["plan", "--config", _write(tmp_path, swap_file_count=0)]) == 2
+    assert main(["plan", "--config", _write(tmp_path, swap_partition_count=0)]) == 2
     assert posts == []

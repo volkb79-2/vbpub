@@ -50,7 +50,7 @@ def make_case_b_installer(tmp_path: Path, **config_overrides) -> tuple[Installer
         "telegram_chat_id": "",
         "auto_reboot_after_stage1": False,
         "swap_disk_total_gb": 32,
-        "swap_file_count": 8,
+        "swap_partition_count": 8,
     }
     defaults.update(config_overrides)
     config = Config(
@@ -66,6 +66,7 @@ def make_case_b_installer(tmp_path: Path, **config_overrides) -> tuple[Installer
     actions.outputs[("/usr/sbin/dumpe2fs", "-h", "/dev/vda3")] = DUMPE2FS_OUTPUT
     actions.outputs[("/usr/sbin/resize2fs", "-P", "/dev/vda3")] = RESIZE2FS_OUTPUT
     installer = Installer(config, actions)
+    installer._root_used_bytes = lambda: 8 * 1024 ** 3
     StateStore(config.state_dir).save_new(StateStore.new(config))
     return installer, actions
 
@@ -79,7 +80,7 @@ def make_case_a_installer(tmp_path: Path) -> tuple[Installer, FakeHostActions]:
         telegram_chat_id="",
         auto_reboot_after_stage1=False,
         swap_disk_total_gb=32,
-        swap_file_count=8,
+        swap_partition_count=8,
     )
     actions = FakeHostActions()
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
@@ -170,15 +171,15 @@ def test_plan_root_shrink_installs_hook_when_disk_lacks_space(tmp_path):
     assert update_initramfs_calls[0].argv == ("/usr/sbin/update-initramfs", "-u", "-k", "all")
 
 
-def test_plan_root_shrink_honors_preserve_root_size_gb_above_filesystem_minimum(tmp_path):
-    # default preserve_root_size_gb=10 GiB is well above the fixture's ~7.8
-    # GiB (minimum_blocks + margin) -- the configured value should win.
+def test_plan_root_shrink_treats_preserve_root_size_as_a_floor_not_a_target(tmp_path):
+    # The disk-maximizing policy leaves ~16.8 GiB after the explicit 32 GiB
+    # swap target. preserve_root_size_gb=10 is a refusal floor, not a target.
     installer, actions = make_case_b_installer(tmp_path)
     installer._plan_root_shrink()
     env_content = actions.files["/etc/vbpub/root-shrink-plan.env"].decode()
     fields = dict(line.split("=", 1) for line in env_content.splitlines() if line)
     target_gib = int(fields["TARGET_SECTORS"]) * 512 / 1024 ** 3
-    assert target_gib == pytest.approx(10, abs=0.01)
+    assert target_gib > 10
 
 
 def test_plan_root_shrink_refuses_when_preserve_is_smaller_than_filesystem_minimum(tmp_path):
@@ -189,15 +190,17 @@ def test_plan_root_shrink_refuses_when_preserve_is_smaller_than_filesystem_minim
     # (adversarial review finding -- an earlier version of this test
     # asserted the silent-clamp behavior as correct, which was itself the
     # bug: nothing told the operator preserve_root_size_gb was overridden).
-    installer, actions = make_case_b_installer(tmp_path, preserve_root_size_gb=1)
-    with pytest.raises(RuntimeError, match="smaller than the root filesystem's own minimum"):
+    installer, actions = make_case_b_installer(
+        tmp_path, preserve_root_size_gb=1, swap_disk_total_gb=45
+    )
+    with pytest.raises(RuntimeError, match="root filesystem minimum plus 256 MiB"):
         installer._plan_root_shrink()
     assert "/etc/vbpub/root-shrink-plan.env" not in actions.files
 
 
 def test_plan_root_shrink_raises_when_disk_still_lacks_space_after_shrink(tmp_path):
     installer, _ = make_case_b_installer(tmp_path, swap_disk_total_gb=10240)
-    with pytest.raises(RuntimeError, match="still lacks space"):
+    with pytest.raises(RuntimeError, match="no usable space for a positive-size root"):
         installer._plan_root_shrink()
 
 
@@ -205,31 +208,23 @@ def test_plan_root_shrink_refuses_a_noop_or_growing_target(tmp_path):
     # preserve_root_size_gb larger than the CURRENT root -- the computed
     # target would not actually shrink anything.
     installer, _ = make_case_b_installer(tmp_path, preserve_root_size_gb=1000)
-    with pytest.raises(RuntimeError, match="not smaller than the current"):
+    with pytest.raises(RuntimeError, match="below preserve_root_size_gb"):
         installer._plan_root_shrink()
 
 
-def test_plan_root_shrink_reraises_swap_too_small_unchanged(tmp_path):
-    # swap_file_count=2048 against swap_disk_total_gb=1 makes
-    # _plan_swap_partitions() raise "too small for N devices" -- BEFORE it
-    # could ever reach the "lacks space" check _plan_root_shrink() actually
-    # handles. Confirms the except clause's message match is specific: this
-    # different RuntimeError propagates untouched, not misread as "needs a
-    # shrink" (and confirms _plan_root_shrink() has no reachable duplicate of
-    # this same per-device guard -- reaching its Case B branch at all already
-    # proves per_device > 0 for these config values).
-    installer, _ = make_case_b_installer(tmp_path, swap_disk_total_gb=1, swap_file_count=2048)
-    with pytest.raises(RuntimeError, match="too small for 2048 devices"):
+def test_plan_root_shrink_refuses_swap_count_over_gpt_limit(tmp_path):
+    # Direct Config construction bypasses the public <=64 schema check; the
+    # planner still refuses a layout that cannot fit GPT partition numbers.
+    installer, _ = make_case_b_installer(tmp_path, swap_disk_total_gb=1, swap_partition_count=2048)
+    with pytest.raises(RuntimeError, match="GPT partition-number limit"):
         installer._plan_root_shrink()
 
 
-def test_plan_root_shrink_reraises_unrelated_swap_planning_errors(tmp_path):
-    # swap_file_count=0 makes _plan_swap_partitions() raise ZeroDivisionError
-    # long before it could ever raise the "lacks space" RuntimeError -- not
-    # the condition _plan_root_shrink() exists to handle, so it must
-    # propagate untouched rather than being misread as "needs a shrink".
-    installer, _ = make_case_b_installer(tmp_path, swap_file_count=0)
-    with pytest.raises(ZeroDivisionError):
+def test_plan_root_shrink_refuses_zero_swap_count_explicitly(tmp_path):
+    # Direct Config construction bypasses the public >=1 schema check; this
+    # must fail as a clear policy error rather than a division-by-zero.
+    installer, _ = make_case_b_installer(tmp_path, swap_partition_count=0)
+    with pytest.raises(RuntimeError, match="swap_partition_count must be at least one"):
         installer._plan_root_shrink()
 
 
@@ -426,6 +421,66 @@ def test_stage1_and_stage2_still_dry_run_clean_with_root_shrink_wired_in(tmp_pat
     assert any(action.argv[0] == "/usr/sbin/mkswap" for action in actions.planned)
 
 
+def test_stage1_validates_shrink_with_pre_cleanup_usage_before_removing_swap_backings(tmp_path, monkeypatch):
+    installer, _actions = make_case_b_installer(
+        tmp_path,
+        run_journald_config=False,
+        run_apt_config=False,
+        run_user_config=False,
+        run_docker_install=False,
+        run_apt_auto_upgrade=False,
+    )
+    events = []
+    snapshot = (4096, 2_000_000, 14 * 1024 ** 3)
+    resolved = ([(10, 20)], 30, True)
+
+    for method in (
+        "_secure_bootstrap_files",
+        "_configure_persistent_ssh_keys",
+        "_configure_controller_ssh_key",
+        "_hold_apt_timers",
+        "_install_notify_helper",
+    ):
+        monkeypatch.setattr(installer, method, lambda name=method: events.append((name,)))
+    monkeypatch.setattr(installer, "_packages", lambda *args: events.append(("packages",)))
+    monkeypatch.setattr(installer, "_upgrade_at_install", lambda: events.append(("upgrade",)))
+    monkeypatch.setattr(
+        installer,
+        "_resolve_root_shrink_plan",
+        lambda **kwargs: events.append(("resolve", kwargs)) or resolved,
+    )
+    monkeypatch.setattr(
+        installer,
+        "_root_shrink_safety_facts",
+        lambda: events.append(("snapshot",)) or snapshot,
+    )
+    monkeypatch.setattr(
+        installer,
+        "_remove_managed_swap_backings",
+        lambda: events.append(("remove-backings",)),
+    )
+    monkeypatch.setattr(
+        installer,
+        "_plan_root_shrink",
+        lambda plan: events.append(("plan-hook", plan)),
+    )
+    monkeypatch.setattr(installer, "_install_stage2", lambda: events.append(("stage2",)))
+    monkeypatch.setattr(installer, "_reboot", lambda: events.append(("reboot",)))
+
+    installer._stage1()
+
+    snapshot_index = next(i for i, event in enumerate(events) if event[0] == "snapshot")
+    resolve_index = next(
+        i for i, event in enumerate(events)
+        if event[0] == "resolve" and event[1].get("root_safety_facts") == snapshot
+    )
+    cleanup_index = next(i for i, event in enumerate(events) if event[0] == "remove-backings")
+    hook_index = next(i for i, event in enumerate(events) if event[0] == "plan-hook")
+    assert snapshot_index < resolve_index < cleanup_index < hook_index
+    assert events[resolve_index][1]["root_safety_facts"] == snapshot
+    assert events[hook_index][1] == resolved
+
+
 # --- _stage2() control flow: the critical post-Case-B-success regression ---
 
 def test_stage2_skips_apply_known_swap_shape_when_root_shrink_already_wrote_swap(tmp_path, monkeypatch):
@@ -443,6 +498,7 @@ def test_stage2_skips_apply_known_swap_shape_when_root_shrink_already_wrote_swap
     calls = []
     monkeypatch.setattr(installer, "_packages", lambda *a, **k: None)
     monkeypatch.setattr(installer, "_verify_and_apply_root_shrink", lambda: True)
+    monkeypatch.setattr(installer, "_grow_root_to_plan", lambda: calls.append("grow_root"))
     monkeypatch.setattr(installer, "_configure_zswap", lambda: None)
     monkeypatch.setattr(installer, "_configure_cgroup2_flags", lambda: None)
     monkeypatch.setattr(installer, "_configure_ksm", lambda: None)
@@ -453,7 +509,7 @@ def test_stage2_skips_apply_known_swap_shape_when_root_shrink_already_wrote_swap
     monkeypatch.setattr(installer, "_activate_swap_partitions", lambda: calls.append("activate_swap_partitions"))
     monkeypatch.setattr(installer, "_health_gate_swap_devices", lambda: calls.append("health_gate"))
     installer._stage2()
-    assert calls == ["activate_swap_partitions", "health_gate"]  # apply_known_swap_shape must NOT appear
+    assert calls == ["grow_root", "activate_swap_partitions", "health_gate"]  # apply_known_swap_shape must NOT appear
 
 
 def test_stage2_still_calls_apply_known_swap_shape_for_case_a(tmp_path, monkeypatch):
@@ -461,6 +517,7 @@ def test_stage2_still_calls_apply_known_swap_shape_for_case_a(tmp_path, monkeypa
     calls = []
     monkeypatch.setattr(installer, "_packages", lambda *a, **k: None)
     monkeypatch.setattr(installer, "_verify_and_apply_root_shrink", lambda: False)
+    monkeypatch.setattr(installer, "_grow_root_to_plan", lambda: calls.append("grow_root"))
     monkeypatch.setattr(installer, "_configure_zswap", lambda: None)
     monkeypatch.setattr(installer, "_configure_cgroup2_flags", lambda: None)
     monkeypatch.setattr(installer, "_configure_ksm", lambda: None)
@@ -471,4 +528,4 @@ def test_stage2_still_calls_apply_known_swap_shape_for_case_a(tmp_path, monkeypa
     monkeypatch.setattr(installer, "_activate_swap_partitions", lambda: calls.append("activate_swap_partitions"))
     monkeypatch.setattr(installer, "_health_gate_swap_devices", lambda: calls.append("health_gate"))
     installer._stage2()
-    assert calls == ["apply_known_swap_shape", "activate_swap_partitions", "health_gate"]
+    assert calls == ["apply_known_swap_shape", "grow_root", "activate_swap_partitions", "health_gate"]

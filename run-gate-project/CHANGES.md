@@ -84,6 +84,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   rejected by dpkg; both bases are covered by an executable oracle.
 - Docs: fix the doubled backslash in the CONSUMERS zero-release bootstrap
   example.
+
 <!-- cmru: release history -->
 
 ## [23.10.0] - 2026-10-07

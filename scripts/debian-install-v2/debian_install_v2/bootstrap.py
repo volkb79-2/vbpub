@@ -222,8 +222,17 @@ def _render_plan(plan: dict[str, Any]) -> str:
         f"Release: {plan['release']}",
         f"Root device: {plan['root_device']}",
         f"New root size: {plan['new_root_size_sectors']} sectors",
+        f"Root-shrink safety: {plan['root_shrink_check']}",
         "Swap partitions:",
     ]
+    if plan["swap_policy"] == "on":
+        lines.insert(
+            3,
+            "Swap capacity: "
+            f"{plan['swap_total_gb']} GiB target; "
+            f"{plan['swap_retained_before_root_gb']:.2f} GiB retained before root; "
+            f"{plan['swap_after_root_gb']:.2f} GiB planned after root",
+        )
     for swap in plan["swap_partitions"]:
         lines.append(
             f"  {swap['device']}: start={swap['start']}, sectors={swap['sectors']}"
@@ -247,6 +256,12 @@ def _wizard(args: Any, runtime: Any) -> int:
     )
 
 
+def _build_iso(args: Any, runtime: Any) -> int:
+    from .iso_builder import run_build_iso_wizard
+
+    return run_build_iso_wizard(output_path=args.output, runtime=runtime)
+
+
 def _install(args: Any, runtime: Any) -> int:
     config = _load_config(args, runtime, report_failure=True)
     installer = Installer(config, HostActions(dry_run=runtime.dry_run), inspect_host=False)
@@ -256,6 +271,7 @@ def _install(args: Any, runtime: Any) -> int:
     # just stage one. Host inspection and the plan preview used to sit
     # outside it, so an invalid-but-parseable config died silently.
     with installer.failure_guard("stage1"):
+        installer._refuse_completed_install()
         installer.inspect()
         plan = installer.show_plan()
     if not actions.dry_run:
@@ -324,7 +340,8 @@ def _disable_stage2(args: Any, runtime: Any) -> int:
 
 
 def _plan(args: Any, runtime: Any) -> int:
-    plan = _make_installer(args, runtime).show_plan()
+    installer = _make_installer(args, runtime)
+    plan = installer.show_plan()
     if runtime.json_mode:
         runtime.output.primary(plan)
     else:
@@ -373,7 +390,8 @@ def build_cli():
         prog=f"{PROG}.py",
         description=(
             "Prepare settings, review the host plan, run or monitor the two-stage "
-            "Debian installer, and build its cloud-init bundle."
+            "Debian installer, build its provider-neutral cloud-init bundle, or "
+            "create a private NoCloud seed ISO for hypervisor VMs."
         ),
         getting_started=(
             f"{PROG}.py wizard --output install.json",
@@ -416,6 +434,33 @@ def build_cli():
                 ),
             ),
             handler=_wizard,
+        )
+    )
+    registry.register(
+        VerbSpec(
+            name="build-iso",
+            description=(
+                "interactively build a private NoCloud seed ISO containing a "
+                "moving-channel installer bootstrap, persistent SSH key list, "
+                "and per-host settings"
+            ),
+            summary_description="build a private cloud-init seed ISO for an unattended VM install",
+            group=VerbGroup.MODIFICATION.value,
+            examples=(f"{PROG}.py build-iso --output ./debian-vbpub.iso",),
+            mutating=True,
+            interactive=True,
+            include_json=False,
+            include_progress=False,
+            options=(
+                OptionSpec(
+                    ("--output",),
+                    "destination for the private mode-0600 NoCloud ISO",
+                    group="OUTPUT",
+                    metavar="FILE",
+                    parser_kwargs={"required": True},
+                ),
+            ),
+            handler=_build_iso,
         )
     )
     registry.register(

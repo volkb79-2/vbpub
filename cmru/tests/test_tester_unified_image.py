@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import importlib.util
 import fnmatch
+import hashlib
 import json
 import posixpath
+import os
 import re
 import shlex
 import subprocess
@@ -18,12 +20,14 @@ import textwrap
 import tomllib
 from functools import lru_cache
 from pathlib import Path, PurePosixPath
+from zipfile import ZipFile
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "tester-unified" / "gen-requirements.py"
 DOCKERFILE = REPO_ROOT / "tester-unified" / "Dockerfile"
+RUN_GATE_WHEEL_VERSION_HELPER = REPO_ROOT / "tester-unified" / "run-gate-wheel-version.py"
 NYXLOOM_DOCKERFILE = REPO_ROOT / "nyxloom" / "nyxloomd" / "Dockerfile"
 CMRU_WHEEL_BUILD_COMMAND = (
     r"/tmp/internal-build-venv/bin/pip wheel[\s\S]*?/src/cmru"
@@ -34,24 +38,56 @@ CMRU_WHEEL_BUILD_BODY = (
     "/tmp/internal-build-venv/bin/pip wheel --no-index --no-deps "
     "--no-build-isolation -w /tmp/internal-wheels /src/cmru"
 )
-RUN_GATE_WHEEL_BUILD_COMMAND = (
-    r"/tmp/run-gate-build-venv/bin/pip wheel[\s\S]*?/src/run-gate-project"
+TESTER_GIT_MAINTENANCE_RUN = (
+    "git config --system maintenance.autoDetach false && git config --system gc.autoDetach false "
+    '&& test "$(git config --system --get maintenance.autoDetach)" = false '
+    '&& test "$(git config --system --get gc.autoDetach)" = false'
 )
-RUN_GATE_WHEEL_BUILD_BODY = (
-    'rm -rf /tmp/run-gate-build-venv /tmp/run-gate-wheels && '
-    '/usr/local/bin/python3.14 -m venv /tmp/run-gate-build-venv && '
-    '/tmp/run-gate-build-venv/bin/pip install --no-cache-dir '
-    '-r /tmp/run-gate-build-requirements.txt && '
-    'mkdir -p /tmp/run-gate-wheels && '
-    'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_VERSION}" '
-    '/tmp/run-gate-build-venv/bin/pip wheel --no-index --no-deps '
-    '--no-build-isolation -w /tmp/run-gate-wheels /src/run-gate-project'
+RUN_GATE_VERSION_REQUIREMENT_RUN = (
+    'test -n "${RUN_GATE_TESTER_VERSION}" && '
+    'test -n "${RUN_GATE_TESTER_WHEEL_SHA256}" || { '
+    'echo "Run-Gate version and wheel SHA-256 are required; use '
+    'tester-unified/build-image.sh" >&2; exit 1; }'
 )
-RUN_GATE_WHEEL_INSTALL_BODY = (
-    '/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps '
-    '/tmp/run-gate-wheels/*.whl && rm -rf /tmp/run-gate-build-venv '
-    '/tmp/run-gate-wheels /tmp/run-gate-build-requirements.txt '
-    '/src/run-gate-project'
+RUN_GATE_WHEEL_INSTALL_RUN = (
+    'set -eu; set -- /tmp/run-gate-wheels/run_gate-*.whl; '
+    'if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then echo '
+    '"named run-gate-wheel context must contain exactly one run_gate-*.whl" '
+    '>&2; exit 1; fi; printf \'%s  %s\\n\' '
+    '"${RUN_GATE_TESTER_WHEEL_SHA256}" "$1" | sha256sum -c -; '
+    '/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "$1"; '
+    'rm -rf /tmp/run-gate-wheels /src/run-gate-project'
+)
+TESTER_REQUIREMENTS_GENERATION_RUN = (
+    "/usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py "
+    "--root /src > /tmp/tester-requirements.txt && "
+    "/usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py "
+    "--root /src --build-requires cmru/pyproject.toml "
+    "> /tmp/internal-build-requirements.txt && "
+    'case "${CLI_EXTENDED_RESOLVE}" in pinned) set -- --wheel-url '
+    '"${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; '
+    'latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; local) set -- ;; '
+    '*) echo "CLI_EXTENDED_RESOLVE must be pinned, latest or local" >&2; exit 1 ;; '
+    'esac && if [ "${CLI_EXTENDED_RESOLVE}" = local ]; then '
+    'set -- /tmp/cli-extended-local/cli_extended-*.whl; '
+    'if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then echo '
+    '"CLI_EXTENDED_RESOLVE=local needs exactly one cli_extended-*.whl in '
+    'tester-unified/local-wheel" >&2; exit 1; fi; '
+    'echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c - || '
+    '{ echo "local wheel does not match --build-arg CLI_EXTENDED_WHEEL_SHA256" '
+    '>&2; exit 1; }; mkdir -p /tmp/cli-extended-release && cp "$1" '
+    '/tmp/cli-extended-release/; else '
+    '/usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py '
+    '--dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; fi'
+)
+TESTER_DEPENDENCY_BOOTSTRAP_RUN = (
+    "/usr/local/bin/python3.14 -m venv --copies /opt/tester-venv && "
+    "/opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip && "
+    "/opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt && "
+    "/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "
+    "/tmp/cli-extended-release/*.whl && /usr/local/bin/python3.14 -m venv "
+    "/tmp/internal-build-venv && /tmp/internal-build-venv/bin/pip install "
+    "--no-cache-dir -r /tmp/internal-build-requirements.txt"
 )
 CMRU_SOURCE_TREE_CLEAN_RUN = (
     "rm -rf /src/cmru /src/libraries/worktree /src/run-gate-project"
@@ -72,7 +108,7 @@ CMRU_WHEEL_INSTALL_RUN_BODY = (
     + ' && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, '
     "scipy, numpy, ruptures; print('cgroup-profiler report tier OK')\""
 )
-CMRU_POST_INSTALL_VERSION_ASSERTION_RUN = '''RUN /opt/tester-venv/bin/python - <<'PY'
+CMRU_POST_INSTALL_VERSION_ASSERTION_RUN = r'''RUN /opt/tester-venv/bin/python - <<'PY'
 import importlib.metadata as metadata
 import os
 import subprocess
@@ -93,9 +129,12 @@ assert version.endswith("+tester.unified"), (
     f"cmru {version} was not built from the COPYed source in this image"
 )
 run_gate_version = metadata.version("run-gate")
-assert run_gate_version == os.environ["RUN_GATE_TESTER_VERSION"], (
+expected_run_gate_version = (
+    os.environ["RUN_GATE_TESTER_VERSION"]
+)
+assert run_gate_version == expected_run_gate_version, (
     f"Run-Gate wheel {run_gate_version} does not match the requested image version "
-    f"{os.environ['RUN_GATE_TESTER_VERSION']}"
+    f"{expected_run_gate_version}"
 )
 run_gate_location = str(Path(run_gate.__file__).resolve())
 assert run_gate_location.startswith(site), (
@@ -158,35 +197,11 @@ NYXLOOM_FINAL_WHEEL_INSTALL_RUN_BODY = (
 CMRU_PRE_SENSITIVE_RUN_BODIES = (
     CMRU_SOURCE_TREE_CLEAN_RUN,
     CMRU_VENV_CLEAN_RUN,
-    "git config --system maintenance.autoDetach false && git config --system gc.autoDetach false "
-    '&& test "$(git config --system --get maintenance.autoDetach)" = false '
-    '&& test "$(git config --system --get gc.autoDetach)" = false',
-    "/usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src "
-    "> /tmp/tester-requirements.txt && /usr/local/bin/python3.14 "
-    "/usr/local/lib/tester-unified/gen-requirements.py --root /src "
-    "--build-requires cmru/pyproject.toml > /tmp/internal-build-requirements.txt "
-    '&& case "${CLI_EXTENDED_RESOLVE}" in pinned) set -- --wheel-url '
-    '"${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; '
-    'latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; local) set -- ;; '
-    '*) echo "CLI_EXTENDED_RESOLVE must be pinned, latest or local" >&2; exit 1 ;; '
-    'esac && if [ "${CLI_EXTENDED_RESOLVE}" = local ]; then '
-    'set -- /tmp/cli-extended-local/cli_extended-*.whl; '
-    'if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then echo '
-    '"CLI_EXTENDED_RESOLVE=local needs exactly one cli_extended-*.whl in '
-    'tester-unified/local-wheel" >&2; exit 1; fi; '
-    'echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c - || '
-    '{ echo "local wheel does not match --build-arg CLI_EXTENDED_WHEEL_SHA256" '
-    '>&2; exit 1; }; mkdir -p /tmp/cli-extended-release && cp "$1" '
-    '/tmp/cli-extended-release/; else '
-    '/usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py '
-    '--dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; fi',
-    "/usr/local/bin/python3.14 -m venv --copies /opt/tester-venv && "
-    "/opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip && "
-    "/opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt && "
-    "/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "
-    "/tmp/cli-extended-release/*.whl && /usr/local/bin/python3.14 -m venv "
-    "/tmp/internal-build-venv && /tmp/internal-build-venv/bin/pip install "
-    "--no-cache-dir -r /tmp/internal-build-requirements.txt",
+    TESTER_GIT_MAINTENANCE_RUN,
+    RUN_GATE_VERSION_REQUIREMENT_RUN,
+    RUN_GATE_WHEEL_INSTALL_RUN,
+    TESTER_REQUIREMENTS_GENERATION_RUN,
+    TESTER_DEPENDENCY_BOOTSTRAP_RUN,
 )
 NYXLOOM_BUILD_TOOL_RUN = "pip install --no-cache-dir build==1.2.2"
 NYXLOOM_CLI_EXTENDED_SOURCE_CLEAN_RUN = "rm -rf /build/libraries/cli-extended"
@@ -652,6 +667,7 @@ def _dockerfile_copy_specs_before_command(
     expected_workdir: str | None = None,
     run_sensitive_sources: tuple[str, ...] = (),
     allowed_pre_sensitive_run_bodies: tuple[str, ...] = (),
+    allowed_external_contexts: tuple[str, ...] = (),
     allowed_shell_prefix: tuple[str, ...] = (),
     expected_run_body: str | None = None,
 ) -> list[tuple[PurePosixPath, str, tuple[str, ...]]]:
@@ -660,6 +676,9 @@ def _dockerfile_copy_specs_before_command(
     selected_stage_ordinals = {
         ordinal for ordinal, selector, _index, _instruction in instructions
         if selector == stage.lower()
+    }
+    declared_stages = {
+        selector.lower() for _ordinal, selector, _index, _instruction in instructions
     }
     if len(selected_stage_ordinals) > 1:
         raise ValueError(f"Dockerfile stage selector {stage!r} is ambiguous")
@@ -706,9 +725,14 @@ def _dockerfile_copy_specs_before_command(
                 instruction, include_stage=True,
             ):
                 if run_sensitive_sources and source.parts[:1] == ("__stage_copy__",):
-                    raise ValueError(
-                        "cannot certify wheel inputs copied from another build stage"
-                    )
+                    context_or_stage = source.parts[1] if len(source.parts) > 1 else ""
+                    if (
+                        context_or_stage in declared_stages
+                        or context_or_stage not in allowed_external_contexts
+                    ):
+                        raise ValueError(
+                            "cannot certify wheel inputs copied from another build stage"
+                        )
                 specs.append((
                     source,
                     _resolve_docker_copy_destination(destination, workdir),
@@ -1177,15 +1201,22 @@ def test_dockerfile_installs_estate_internal_packages_only_offline_from_copied_s
     code = _dockerfile_run_lines()
     # The old install of cmru from a PyPI-default pip is gone.
     assert "pip install --no-cache-dir --no-deps /src/cmru" not in code
-    wheel = re.search(r"pip wheel (?P<flags>[^\n]*\\\n[^\n]*)", code)
-    assert wheel is not None
+    wheels = [
+        command for command in _pip_commands(code)
+        if "pip wheel" in command and "/src/cmru" in command
+    ]
+    assert len(wheels) == 1, wheels
     for flag in ("--no-index", "--no-deps", "--no-build-isolation"):
-        assert flag in wheel["flags"], flag
-    # CMRU and Run-Gate are built from COPYed source; cli-extended is a release wheel.
-    assert "/src/cmru" in wheel["flags"] and "/src/libraries/cli-extended" not in code
+        assert flag in wheels[0], flag
+    # CMRU is built from copied source; Run-Gate is installed from the exact
+    # external wheel; cli-extended is a release wheel.
+    assert "/src/cmru" in wheels[0] and "/src/libraries/cli-extended" not in code
     assert "/src/run-gate-project" in code
-    assert "--no-index --no-deps /tmp/run-gate-wheels/*.whl" in code
-    assert 'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="${RUN_GATE_TESTER_VERSION}"' in code
+    assert "COPY --from=run-gate-wheel /run_gate-*.whl /tmp/run-gate-wheels/" in code
+    assert 'RUN_GATE_TESTER_WHEEL_SHA256}" "$1" | sha256sum -c -' in code
+    assert '/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "$1"' in code
+    assert "/tmp/run-gate-build-venv" not in code
+    assert "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE" not in code
     assert "--no-index --no-deps /tmp/internal-wheels/*.whl" in code
     # The PyPI-bound requirements come from the refusing generator.
     assert "gen-requirements.py --root /src" in code
@@ -1194,6 +1225,61 @@ def test_dockerfile_installs_estate_internal_packages_only_offline_from_copied_s
     # cli-extended source is NOT copied (it is a wheel dependency).
     assert "COPY libraries/worktree/ /src/libraries/worktree/" in code
     assert not re.search(r"^COPY libraries/\s", code, re.MULTILINE)
+
+
+def test_run_gate_wheel_version_helper_reads_the_wheel_metadata(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    wheel = dist / "run_gate-24.0.0-py3-none-any.whl"
+    with ZipFile(wheel, "w") as archive:
+        archive.writestr(
+            "run_gate-24.0.0.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: run-gate\nVersion: 24.0.0\n\n",
+        )
+
+    result = subprocess.run(
+        [sys.executable, str(RUN_GATE_WHEEL_VERSION_HELPER), str(dist)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "24.0.0\n"
+
+    identity = subprocess.run(
+        [sys.executable, str(RUN_GATE_WHEEL_VERSION_HELPER), str(dist), "--json"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert identity.returncode == 0, identity.stderr
+    assert json.loads(identity.stdout) == {
+        "version": "24.0.0",
+        "filename": wheel.name,
+        "sha256": hashlib.sha256(wheel.read_bytes()).hexdigest(),
+    }
+
+
+def test_run_gate_wheel_version_helper_refuses_ambiguous_dist_directory(tmp_path):
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    for version in ("24.0.0", "24.1.0"):
+        with ZipFile(dist / f"run_gate-{version}-py3-none-any.whl", "w") as archive:
+            archive.writestr(
+                f"run_gate-{version}.dist-info/METADATA",
+                f"Metadata-Version: 2.1\nName: run-gate\nVersion: {version}\n\n",
+            )
+
+    result = subprocess.run(
+        [sys.executable, str(RUN_GATE_WHEEL_VERSION_HELPER), str(dist)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "expected one Run-Gate wheel" in result.stderr
 
 
 def test_dockerfile_asserts_where_imports_come_from_and_that_cli_extended_is_the_release():
@@ -1205,7 +1291,8 @@ def test_dockerfile_asserts_where_imports_come_from_and_that_cli_extended_is_the
     assert '\nassert version.endswith("+tester.unified"), (' in text
     assert 'assert "+" not in released' in text
     assert 'metadata.version("run-gate")' in text
-    assert 'run_gate_version == os.environ["RUN_GATE_TESTER_VERSION"]' in text
+    assert 'os.environ["RUN_GATE_TESTER_VERSION"]' in text
+    assert 'run_gate_version == expected_run_gate_version' in text
     assert 'Path(sys.executable).with_name("run-gate")' in text
     assert 'subprocess.run([str(entrypoint), "--version"]' in text
     assert 'RUN_GATE_TESTER_VERSION}"' in text
@@ -1215,7 +1302,7 @@ def test_dockerfile_asserts_where_imports_come_from_and_that_cli_extended_is_the
 
 def test_estate_has_no_tracked_run_gate_script_copies_or_symlinks():
     listed = subprocess.run(
-        ["git", "ls-files", "--name-only", "-z"],
+        ["git", "ls-files", "-z"],
         cwd=REPO_ROOT,
         check=True,
         capture_output=True,
@@ -1228,73 +1315,36 @@ def test_estate_has_no_tracked_run_gate_script_copies_or_symlinks():
     assert legacy == [], f"retired Run-Gate script copies remain tracked: {legacy}"
 
 
-def test_dockerfile_builds_and_installs_the_exact_run_gate_wheel():
+def test_dockerfile_installs_the_exact_run_gate_wheel_from_a_named_context():
     text = DOCKERFILE.read_text(encoding="utf-8")
-    instructions = _dockerfile_instructions_by_stage(text)
-    clean_index, = [
-        index
-        for index, (_ordinal, _selector, _stage_index, instruction)
-        in enumerate(instructions)
-        if instruction == f"RUN {CMRU_SOURCE_TREE_CLEAN_RUN}"
-    ]
-    build_index, = [
-        index
-        for index, (_ordinal, _selector, _stage_index, instruction)
-        in enumerate(instructions)
-        if instruction == f"RUN {RUN_GATE_WHEEL_BUILD_BODY}"
-    ]
-    copied_inputs = [
-        instruction
-        for index, (_ordinal, _selector, _stage_index, instruction)
-        in enumerate(instructions)
-        if clean_index < index < build_index
-        and instruction.startswith("COPY run-gate-project/")
-    ]
-    assert copied_inputs == [
-        "COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml",
-        "COPY run-gate-project/README.md /src/run-gate-project/README.md",
-        "COPY run-gate-project/run_gate.py /src/run-gate-project/run_gate.py",
-        "COPY run-gate-project/run_gate_admission.py /src/run-gate-project/run_gate_admission.py",
-    ]
     assert "ARG RUN_GATE_TESTER_VERSION\n" in text
-    assert "RUN test -n \"${RUN_GATE_TESTER_VERSION}\"" in text
-    _assert_dockerfile_wheel_build_output_is_installed(
-        text,
-        stage="stage-0",
-        build_run_body=RUN_GATE_WHEEL_BUILD_BODY,
-        install_run_body=RUN_GATE_WHEEL_INSTALL_BODY,
-        require_final_image=False,
-    )
-    specs = _dockerfile_copy_specs_before_command(
-        text,
-        "stage-0",
-        RUN_GATE_WHEEL_BUILD_COMMAND,
-        expected_workdir="/",
-        run_sensitive_sources=(
-            "run-gate-project/README.md",
-            "run-gate-project/run_gate.py",
-            "run-gate-project/run_gate_admission.py",
-        ),
-        expected_run_body=RUN_GATE_WHEEL_BUILD_BODY,
-    )
-    source_files = (
-        "run-gate-project/pyproject.toml",
-        "run-gate-project/README.md",
-        "run-gate-project/run_gate.py",
-        "run-gate-project/run_gate_admission.py",
-    )
-    for path in source_files:
-        _assert_copy_spec_covers_path_at_destination(
-            specs,
-            path,
-            path,
-            f"/src/{path}",
-        )
-    _assert_copy_specs_cover_all_committed_context_files(
-        specs,
-        copy_sources=tuple((path, f"/src/{path}") for path in source_files),
-    )
+    assert "ARG RUN_GATE_TESTER_WHEEL_SHA256\n" in text
+    assert "COPY --from=run-gate-wheel /run_gate-*.whl /tmp/run-gate-wheels/" in text
+    assert '"${RUN_GATE_TESTER_WHEEL_SHA256}" "$1" | sha256sum -c -' in text
+    assert '/opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "$1"' in text
+    assert 'metadata.version("run-gate")' in text
+    assert 'os.environ["RUN_GATE_TESTER_VERSION"]' in text
+    assert "RUN_GATE_TESTER_LOCAL_VERSION" not in text
+    assert "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE" not in text
+    assert "/tmp/run-gate-build-venv" not in text
+    assert "COPY run-gate-project/run_gate.py" not in text
+    assert "COPY run-gate-project/run_gate_admission.py" not in text
 
+    builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(
+        encoding="utf-8",
+    )
+    assert "run-gate-wheel-version.py" in builder
+    assert "sha256" in builder
+    assert '"$wheel_dir/$run_gate_filename"' in builder
+    assert '"run-gate-wheel=$wheel_stage"' in builder
+    assert '"RUN_GATE_TESTER_VERSION=$run_gate_version"' in builder
+    assert '"RUN_GATE_TESTER_WHEEL_SHA256=$run_gate_sha256"' in builder
+    assert "docker buildx build --load" in builder
+
+    dockerignore = (REPO_ROOT / ".dockerignore").read_text(encoding="utf-8")
+    assert "!run-gate-project/pyproject.toml" in dockerignore
+    assert "!run-gate-project/run_gate.py" not in dockerignore
+    assert "!run-gate-project/run_gate_admission.py" not in dockerignore
 
 def _pip_commands(code: str) -> list[str]:
     """Every ``pip ...`` command of the Dockerfile's RUN lines, continuation
@@ -1325,7 +1375,11 @@ def test_dockerfile_no_cli_extended_reaches_pip_except_the_sha256_verified_relea
         if "--no-index" in command:
             continue
         # An index-capable pip may only read the generator output or upgrade itself.
-        assert re.search(r"-r /tmp/(tester|internal-build)-requirements\.txt$|--upgrade pip$", command), command
+        assert re.search(
+            r"-r /tmp/(tester|internal-build|run-gate-build)-requirements\.txt$"
+            r"|--upgrade pip$",
+            command,
+        ), command
     assert "/src/libraries/cli-extended" not in code
     assert "libraries/cli-extended" not in code
 
@@ -3245,25 +3299,50 @@ def test_dockerfile_builds_cmru_from_the_build_requires_mode():
     match = re.search(r"--build-requires (?P<paths>[^\n\\]*)", code)
     assert match is not None
     assert match["paths"].split() == ["cmru/pyproject.toml"]
-    wheel = re.search(r"pip wheel (?P<flags>[^\n]*\\\n[^\n]*)", code)
-    assert "/src/cmru" in wheel["flags"]
+    wheels = [
+        command for command in _pip_commands(code)
+        if "pip wheel" in command and "/src/cmru" in command
+    ]
+    assert len(wheels) == 1, wheels
 
 
-def test_tester_unified_build_instructions_load_the_remote_builder_output():
+def test_tester_unified_build_instructions_use_the_exact_wheel_builder():
     readme = (REPO_ROOT / "tester-unified" / "README.md").read_text(
         encoding="utf-8",
     )
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
-
-    command = (
-        "docker buildx build --load -f tester-unified/Dockerfile "
-        "-t tester-unified:local ."
+    builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(
+        encoding="utf-8",
     )
-    assert command in readme
-    assert command in dockerfile
+
+    assert "tester-unified/build-image.sh --wheel-dir run-gate-project/dist" in readme
+    assert "docker buildx build --load" in builder
+    assert '--build-context "run-gate-wheel=$wheel_stage"' in builder
+    assert '"RUN_GATE_TESTER_VERSION=$run_gate_version"' in builder
+    assert '"RUN_GATE_TESTER_WHEEL_SHA256=$run_gate_sha256"' in builder
+    assert "Run-Gate version and wheel SHA-256 are required; use tester-unified/build-image.sh" in dockerfile
     for document in (readme, dockerfile):
         assert "docker build -f tester-unified/Dockerfile" not in document
 
+    consumers = (REPO_ROOT / "tester-unified" / "docs" / "CONSUMERS.md").read_text(
+        encoding="utf-8",
+    )
+    remote_lanes = (REPO_ROOT / "run-gate-project" / "REMOTE-LANES-BUILDKITE.md").read_text(
+        encoding="utf-8",
+    )
+    profiler_gate = (REPO_ROOT / "scripts" / "cgroup-profiler" / "tools" / "gate.sh").read_text(
+        encoding="utf-8",
+    )
+    audit_launcher = (REPO_ROOT / "nyxloom" / "tools" / "remote-mutation-audit-host.sh").read_text(
+        encoding="utf-8",
+    )
+    for document in (consumers, remote_lanes):
+        assert "tester-unified README" in document
+    assert "tester-unified/build-image.sh" in profiler_gate
+    assert '"$checkout/tester-unified/build-image.sh"' in audit_launcher
+    assert 'cmru handler wheel-build --cwd "$checkout/run-gate-project"' in audit_launcher
+    assert "run-gate-wheel-version.py" in readme
+    assert "run-gate-wheel-version.py" in builder
 
 def test_tester_unified_venvs_are_cleared_before_creation():
     instructions = _dockerfile_instructions_by_stage(
@@ -3370,6 +3449,7 @@ def test_dockerfile_copies_every_cmru_wheel_input_before_build():
         expected_workdir="/",
         run_sensitive_sources=("cmru", "libraries/worktree"),
         allowed_pre_sensitive_run_bodies=CMRU_PRE_SENSITIVE_RUN_BODIES,
+        allowed_external_contexts=("run-gate-wheel",),
         allowed_shell_prefix=(
             "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified",
         ),

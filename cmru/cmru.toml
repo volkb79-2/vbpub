@@ -38,15 +38,13 @@ evidence_paths = ["coverage.json", ".assay"]
 [steps.run-tests]
 quiet = true
 commands = [
-  # SSOT pointer (D-110/D-111): every test definition — Assay R0/R1/R3,
-  # 100% line+branch coverage, the changed-source R2 mutation campaign (base
-  # = nearest ancestor cmru-v* tag, KI-18), and the cause-sensitive coverage
-  # canary — lives in cmru/run-gate.toml. Assay R2 is omitted because release
-  # candidates are already at origin/main, so a main-based candidate set is
-  # empty. This step owns no test logic; it runs the `gate` conjunction, whose
-  # sub-lanes launch their own gated tester-unified containers via run-gate.
-  # Steps execute with project_root as cwd, so no `cd` is needed here.
-  { label = "cmru: run-gate full release conjunction", argv = ["run-gate", "gate"], cwd = "." },
+  # SSOT pointer (D-110/D-111): every test definition lives in
+  # cmru/run-gate.toml. This release uses the operator-approved provisional
+  # gate: all lanes run except the long R2 mutation campaign, whose deferral is
+  # retained as .assay/mutation-postponed-cmru.json under KI-79. The full
+  # `gate` lane remains available for the post-release R2 run. Steps execute
+  # with project_root as cwd.
+  { label = "cmru: provisional release gate (R2 deferred, KI-79)", argv = ["run-gate", "gate-provisional"], cwd = "." },
 ]
 
 # Initial standalone build (before cmru is installed):

@@ -697,11 +697,23 @@ def test_resource_evidence_parser_rejects_forged_counter_arithmetic():
         ResourceLimitEvidence.from_dict(raw)
 
 
+def test_shared_ancestor_memory_max_is_telemetry_not_attribution_failure():
+    leaf = ("/candidate", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    parent_before = ("/gates", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+    parent_after = ("/gates", 0, 1, 0, 0, 0, 0, 1, 0, 0, 0)
+    before = replace(_zero_counters(), path_event_counters=(leaf, parent_before))
+    after = replace(_zero_counters(), path_event_counters=(leaf, parent_after))
+
+    evidence = ResourceLimitEvidence.between(before, after)
+
+    assert evidence.memory_events_max.delta == 0
+    assert evidence.limit_hit is False
+
+
 @pytest.mark.parametrize(
     "evidence",
     [
         _evidence(pids=(0, 1)),
-        _evidence(memory_max=(0, 1)),
         _evidence(oom=(0, 1)),
         _evidence(oom_kill=(1, 2)),
         _evidence(oom_group_kill=(0, 1)),
@@ -719,11 +731,11 @@ def test_unchanged_counters_leave_a_real_test_failure_killed():
 def test_successful_reclaim_memory_max_event_is_conservatively_not_a_kill():
     evidence = _evidence(memory_max=(4, 5))
 
-    assert evidence.limit_hit is True
+    assert evidence.limit_hit is False
     assert evidence.memory_events_max.delta == 1
     assert evidence.memory_events_oom.delta == 0
     assert evidence.memory_events_oom_kill.delta == 0
-    assert _resource_limit_bucket("killed", evidence) == "crashed"
+    assert _resource_limit_bucket("killed", evidence) == "killed"
 
 
 def test_crashed_resource_limited_outcome_makes_r2_an_error():

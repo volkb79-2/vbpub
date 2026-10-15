@@ -3485,7 +3485,13 @@ def run_mutation(
     from . import runner as _runner_module
 
     if process_runner is _runner_module.default_process_runner:
-        process_runner = ProcessTreeProcessRunner()
+        process_runner = ProcessTreeProcessRunner(
+            sensitive_values=tuple(
+                plan.env_effective[name]
+                for name in plan.env_passthrough
+                if name in plan.env_effective
+            )
+        )
 
     if not is_strict_int(jobs):
         raise ValueError(f"run_mutation jobs must be an integer, got {jobs!r}")

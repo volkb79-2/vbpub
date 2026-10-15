@@ -204,11 +204,13 @@ class ResourceLimitEvidence:
 
     @property
     def limit_hit(self) -> bool:
+        # memory.events:max is retained as telemetry: the kernel may satisfy
+        # the allocation through reclaim without entering OOM or changing the
+        # candidate's correctness result.
         return any(
             getattr(self, name).delta > 0
             for name in (
                 "pids_events_max",
-                "memory_events_max",
                 "memory_events_oom",
                 "memory_events_oom_kill",
                 "memory_events_oom_group_kill",
@@ -345,7 +347,12 @@ def _candidate_counter_deltas(
         leaf_value = 0 if leaf_delta is None else leaf_delta.delta
         for ancestor in per_path[1:]:
             ancestor_delta = ancestor[metric_index + 5]
-            if ancestor_delta is not None and ancestor_delta.delta > 0 and leaf_value == 0:
+            if (
+                metric_index != 1  # memory.events:max is telemetry, not a failure
+                and ancestor_delta is not None
+                and ancestor_delta.delta > 0
+                and leaf_value == 0
+            ):
                 raise ResourceLimitObservationError(
                     "a shared ancestor resource event is not attributable to the "
                     "candidate cgroup; mutation outcomes are withheld"

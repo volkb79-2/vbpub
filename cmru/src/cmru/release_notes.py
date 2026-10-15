@@ -164,9 +164,16 @@ def markdown_h2_headings(markdown: str) -> tuple[MarkdownHeading, ...]:
                 fence_length = len(marker)
             offset += len(line)
             continue
-        if content.startswith("## "):
-            heading_text = content.rstrip()
-            headings.append(MarkdownHeading(heading_text, offset, offset + len(heading_text)))
+        heading = re.match(r"^ {0,3}##[ \t]+(.*)$", content)
+        if heading is not None:
+            # CommonMark permits up to three leading spaces before an ATX
+            # heading and one or more spaces or tabs after its markers. Keep a
+            # canonical semantic spelling while ``end`` stays tied to the
+            # source line's actual character span.
+            heading_text = "## " + heading.group(1).rstrip()
+            headings.append(MarkdownHeading(
+                heading_text, offset, offset + len(content.rstrip())
+            ))
         offset += len(line)
     return tuple(headings)
 

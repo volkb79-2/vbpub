@@ -38,6 +38,33 @@ checkout before it creates the release worktree:
 Both are fail-closed by default; `--allow-uncommitted` only overrides the
 second one; there is no override for the first (push your commits instead).
 
+## Bootstrap when the release engine changes in the same wave
+
+When an earlier tool release needs CMRU behavior that is present on the
+merged `origin/main` but not in the currently released CMRU wheel (for
+example, folding `[Unreleased]` notes under KI-78), bootstrap from the exact
+merged commit before releasing that tool. Build CMRU from the committed
+`cmru/` source with the declared wheel-builder workflow, install that wheel as
+a non-editable package in the estate venv, and record the source commit and
+wheel SHA-256 in the release log. Verify the active `cmru` launcher and its
+distribution both resolve from the estate venv before starting releases. This
+bootstrap wheel is a local release controller, not a published CMRU release.
+An actual `cmru release` now refuses a source-tree or editable controller and
+records the wheel and installed-file digests in both the launcher and
+transaction logs.
+
+Use the bootstrapped controller for dependent releases such as CGProfile and
+Run-Gate. After Run-Gate is published, rebuild `tester-unified` from the exact
+published Run-Gate wheel and run the CMRU release gate with that image before
+releasing CMRU itself. This keeps the dependency order usable while ensuring
+the CMRU release is judged with the public Run-Gate artifact. The gate hashes
+the published wheel bytes, checks the installed wheel's recorded source digest,
+and verifies the selected image's version and wheel-digest labels before each
+lane. It pins the lane to the inspected image ID so a mutable tag cannot select
+a different image. Never run the
+bootstrap through an editable checkout: uncommitted files and whichever source
+tree happens to be mounted are not release evidence.
+
 cmru then creates the release worktree and reports concise orchestration progress
 to your terminal. Full project subprocess output is line-flushed into the root
 audit log and transaction-local `<project>/logs/cmru/<step>.log` files; use
@@ -506,7 +533,7 @@ The following release gates are now declared through `cmru tester-gate`:
 | Project | Current state | Required follow-up |
 |---|---|---|
 | ciu | Full pytest coverage floor | `run-ciu-tests.py` |
-| cmru | Assay R0/R1/R3, tag-based R2 mutation, coverage, and canary | `run-gate gate` |
+| cmru | Contract-2 resource observation on every ephemeral gate lane; current 6.2.0 candidate uses the KI-79 provisional R2 deferral | `run-gate gate` for full R2; `run-gate gate-provisional` records an approved deferral only |
 | nyxloom | Full unit/contract suite | `pytest tests -q` |
 | MDT | Source-first release-flow and OCI-staging contracts | focused `unittest` modules |
 | pwmcp | Resolver and builder contracts | `pytest tests -q` |

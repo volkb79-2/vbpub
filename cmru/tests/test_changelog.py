@@ -5,7 +5,12 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-from cmru.changelog import backfill_release_changelog, generate_release_changelog
+from cmru.changelog import (
+    backfill_release_changelog,
+    generate_release_changelog,
+    pending_release_tag,
+)
+from cmru.version import status_records
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -44,6 +49,18 @@ def _image_project() -> SimpleNamespace:
         changelog="CHANGES.md",
         commit_generated=(),
         version=SimpleNamespace(strategy="none", bump="conventional"),
+    )
+
+
+def _other_project() -> SimpleNamespace:
+    return SimpleNamespace(
+        name="other",
+        cwd="other",
+        paths=["other"],
+        prefix="other-v",
+        git_tag=True,
+        changelog="CHANGES.md",
+        version=SimpleNamespace(strategy="scm", bump="conventional"),
     )
 
 
@@ -88,6 +105,39 @@ def test_feature_selects_a_minor_history_heading(tmp_path):
     assert generate_release_changelog(tmp_path, _project()) is True
     history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
     assert "## [1.1.0]" in history
+
+
+def test_scoped_release_bump_uses_full_project_registry_for_plan_and_changelog(tmp_path):
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@cmru.test")
+    _git(tmp_path, "config", "user.name", "CMRU test")
+    _commit(
+        tmp_path, "chore: initialise release history", "demo/CHANGES.md",
+        "# Changelog\n\n<!-- cmru: release history -->\n",
+    )
+    demo = _project()
+    other = _other_project()
+    _commit(tmp_path, "feat(other): initialise other", "other/core.py", "VALUE = 1\n")
+    _git(tmp_path, "tag", "demo-v1.0.0")
+    _git(tmp_path, "tag", "other-v1.0.0")
+    _commit(tmp_path, "feat(other)!: change demo API", "demo/core.py", "VALUE = 2\n")
+    known_project_names = frozenset({"demo", "other"})
+
+    assert pending_release_tag(
+        tmp_path, demo, known_project_names=known_project_names,
+    ) == "demo-v1.0.1"
+    records = status_records(
+        tmp_path, {"demo": demo}, known_project_names=known_project_names,
+    )
+    assert records[0]["bump"] == "patch"
+    assert records[0]["next_version"] == "demo-v1.0.1"
+
+    assert generate_release_changelog(
+        tmp_path, demo, known_project_names=known_project_names,
+    ) is True
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert "## [1.0.1] - " in history
+    assert "feat(other)!: change demo API" in history
     assert "### Added" in history
 
 

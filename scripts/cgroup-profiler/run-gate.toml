@@ -91,6 +91,8 @@ argv = [
 clean_tree = false
 budget = "10m"
 [lanes.r3.resources]
+memory = "1g"
+memory_swap = "16g"
 cpus = "3"
 
 # The implementation/release gate: every consumer (release steps, agents,

@@ -163,7 +163,7 @@ def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
         ["type=bind", "source=/host/git-common", f"target={reported_common_dir}", "readonly"],
     ]
     assert gate_run[gate_run.index("-w") + 1] == f"{worktree}/scripts/cgroup-profiler"
-    assert "docker buildx build --load" in (PROJECT_ROOT / "tools" / "gate.sh").read_text(
+    assert "tester-unified/build-image.sh" in (PROJECT_ROOT / "tools" / "gate.sh").read_text(
         encoding="utf-8"
     )
 
@@ -201,6 +201,13 @@ def test_observer_r2_serializes_mutants_that_share_one_tester_cgroup():
     assay = tomllib.loads((PROJECT_ROOT / "assay.toml").read_text(encoding="utf-8"))
     assert gate["lanes"]["r2"]["resource_observer"] == "cgprofile"
     assert assay["lanes"]["r2"]["judge"]["mutation"]["jobs"] == 1
+
+
+def test_canary_lane_has_an_explicit_memory_admission_budget():
+    gate = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    assert gate["lanes"]["r3"]["resources"] == {
+        "memory": "1g", "memory_swap": "16g", "cpus": "3",
+    }
 
 
 def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():

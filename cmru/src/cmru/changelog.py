@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 import re
 import subprocess
-from typing import Any
+from typing import Any, Mapping
 
 from cmru.errors import RefusedBeforeChange, StepUnavailable, UsageRefusal
 from cmru.release_notes import (
@@ -141,6 +141,8 @@ def _project_release_plan(
     minor: bool = False,
     major: bool = False,
     set_version: str | None = None,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> tuple[str | None, str | None]:
     """Return the pending ``(version, previous_tag)`` for a release.
 
@@ -153,7 +155,8 @@ def _project_release_plan(
     changed = {
         candidate_name: (last_tag, bump)
         for candidate_name, _candidate, last_tag, bump in detect_changed_projects(
-            repo_root, {name: project}
+            repo_root, {name: project}, known_projects=known_projects,
+            known_project_names=known_project_names,
         )
     }
     if name not in changed:
@@ -196,6 +199,8 @@ def pending_release_tag(
     minor: bool = False,
     major: bool = False,
     set_version: str | None = None,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> str | None:
     """The tag a release of *project* will create, or ``None`` for a no-tag project.
 
@@ -204,6 +209,7 @@ def pending_release_tag(
     """
     version, _previous = _project_release_plan(
         repo_root, project, minor=minor, major=major, set_version=set_version,
+        known_projects=known_projects, known_project_names=known_project_names,
     )
     if version is None:
         return None
@@ -217,6 +223,8 @@ def pending_release_notes(
     minor: bool = False,
     major: bool = False,
     set_version: str | None = None,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> ReleaseNotes:
     """The curated section a tagged release of *project* will publish (KI-75).
 
@@ -229,6 +237,7 @@ def pending_release_notes(
     path = _validate_changelog_path(project, repo_root)
     version, _previous = _project_release_plan(
         repo_root, project, minor=minor, major=major, set_version=set_version,
+        known_projects=known_projects, known_project_names=known_project_names,
     )
     if version is None:
         raise UsageRefusal(
@@ -495,6 +504,8 @@ def generate_release_changelog(
     minor: bool = False,
     major: bool = False,
     set_version: str | None = None,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> bool:
     """Generate exactly one pending history section; return whether the file changed.
 
@@ -506,6 +517,7 @@ def generate_release_changelog(
     path = _validate_changelog_path(project, repo_root)
     version, previous_tag = _project_release_plan(
         repo_root, project, minor=minor, major=major, set_version=set_version,
+        known_projects=known_projects, known_project_names=known_project_names,
     )
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     source_end = _git(repo_root, "rev-parse", "HEAD").strip()

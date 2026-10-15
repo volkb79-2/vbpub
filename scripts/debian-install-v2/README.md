@@ -16,7 +16,8 @@ Design/status docs elsewhere in this tree, not duplicated here:
 
 `debian-install-v2.py` is the operator entry point. It has grouped verbs for
 configuration, installation, status, verification, planning, and generating a
-provider-neutral cloud-init custom-script bundle. Run it without a verb for the
+provider-neutral cloud-init custom-script bundle, or build a private NoCloud
+seed ISO for a VM. Run it without a verb for the
 usage map, or use `--help` for details:
 
 ```text
@@ -37,6 +38,12 @@ Verbs that consume settings require exactly one of `--config FILE` and
 `--config-json JSON`; their generated usage shows that required choice.
 The generated remote custom-script launcher uses Python’s standard-library
 HTTPS client and fails nonzero if it cannot retrieve the bootstrap.
+For self-hosted hypervisors, `build-iso` interactively collects per-host
+notification credentials and SSH access, then creates a mode-0600 seed ISO.
+The ISO points at a moving repository branch and profile; credentials are not
+stored in the repository or generic profiles. See
+[Build a private VM seed ISO](docs/CONSUMERS.md#build-a-private-vm-seed-iso)
+for the setup and security implications.
 
 ### Library dependency and remote bootstrap
 
@@ -49,7 +56,7 @@ two wheels beside it is also exit 2. The repository’s library source is never
 used as a fallback. The product version is the single line in
 [`VERSION`](VERSION).
 
-`bootstrap-remote.py` (stdlib only) downloads the installer tree plus the
+`bootstrap-remote.py` (stdlib only) fetches the installer tree plus the
 **released** cli-extended wheel and verifies its sha256 before writing it:
 
 | Environment | Meaning |
@@ -75,6 +82,57 @@ automatic color on a TTY, `NO_COLOR`/`--no-color` to disable, and `--color` to
 force it. JSON and primary status/plan results remain uncolored. The installer
 does not add its own ANSI formatting.
 
+## Private VM seed ISO and profiles
+
+`./debian-install-v2.py build-iso --output ./debian-vbpub.iso` runs an
+interactive builder for a NoCloud seed ISO. It contains a small launcher, the
+selected moving-channel source/profile reference, and per-host settings. The
+ISO is a sensitive artifact: its cloud-init user-data contains notification
+credentials, the Basic Auth password for a private profile if supplied, and
+the persistent root SSH public keys. The wizard validates each key with
+`ssh-keygen`; these keys are independent of the temporary controller key and
+remain in `authorized_keys` after stage two. Keep the ISO private and detach it
+after first boot if it should not be offered again.
+
+The released profiles are [`vanilla`](profiles/vanilla.jsonc) and
+[`default`](profiles/default.jsonc). `vanilla` keeps the root-disk
+resize/partition and swap transaction while disabling optional host tuning/services; `default`
+uses the installer’s current `Config()` defaults (currently including Docker,
+APT policy/upgrades, journald, zswap, cgroup2 flags, oomd, and fstrim). The
+profile ID is resolved from the selected branch when the VM boots, so an older
+ISO deliberately follows later changes to that branch’s profile and code.
+Third parties can embed a local JSONC profile in their ISO or give an HTTPS
+profile URL; the builder supports separate Basic Auth credentials for a
+protected profile endpoint. Profiles contain no per-host credentials.
+
+Optional host configuration is controlled by shared JSON `Config` fields. In
+particular, `run_zswap_config` and `run_cgroup2_config` default to `true`,
+matching current installer behavior; set either to `false` to omit that
+configuration. Disabling zswap also skips its post-install health assertion.
+The released `vanilla` profile turns these and the other optional host
+components off. Root partition/swap transactions and stage orchestration
+remain core installer behavior.
+
+Python’s standard `json` module does not accept JSONC directly. The bootstrap
+uses a small comment stripper for `//` and `/* ... */` comments outside
+strings, then validates strict JSON with the standard library and the shipped
+config loader (no trailing commas or broader JSON5 syntax).
+
+The installer tree is fetched through Git over public HTTPS with a shallow
+`--filter=blob:none` clone and sparse paths. Git itself is installed from the
+target’s APT sources if absent; this Git check/install is part of bootstrap
+preflight and happens before the cli-extended wheel is resolved or downloaded.
+The Git server must support partial-clone blob filtering or bootstrap refuses.
+This source fetch works with non-GitHub Git
+providers. The initial HTTPS URL for `bootstrap-remote.py` and the
+cli-extended release manifest are separate endpoints; their defaults use
+GitHub, and the wizard accepts alternate HTTPS endpoints. Once the bootstrap
+script has been fetched from a floating branch but before its Git fetch has
+resolved that branch, a branch update can make those two pieces come from
+adjacent commits. This small launch-time race is accepted; after the Git fetch,
+the installer code and released profile are read from the same checked-out
+tree. See the [design rationale](docs/DESIGN-GUIDE.md#private-vm-seed-iso-and-moving-profiles).
+
 ## Cloud-init cache cleanup policy
 
 The shared config/profile key `cloud_init_cleanup_mode` controls cloud-init
@@ -86,14 +144,18 @@ credentials. Earlier stage-two failures do not invoke cleanup.
 | Value | Effect after successful stage two |
 | --- | --- |
 | `retain` | Keep all cloud-init cache data (default). |
-| `userdata-only` | Remove only `/var/lib/cloud/instance/user-data.txt`. |
+| `userdata-only` | Remove the cloud-init copies of user-data that may contain credentials: `user-data.txt`, `user-data.txt.i`, `cloud-config.txt`, and `obj.pkl`. |
 | `clean` | Run `cloud-init clean`; clear cloud-init run state while retaining logs and the guest's cached seed. |
 | `clean-all` | Run `cloud-init clean --logs --seed`; also remove cloud-init logs and the guest's cached seed. |
 
 Both clean modes make cloud-init run its stages again on the next boot. If the
 same NoCloud seed ISO is still attached, cloud-init may process the same
 user-data again; `--seed` removes only the guest's local cached seed, not the
-attached ISO. `clean-all` intentionally does not pass `--configs all`,
+attached ISO. Before cleanup, the installer writes the durable
+`/var/lib/vbpub/install-v2-complete` marker outside cloud-init's cache. A later
+fresh-install invocation checks that marker and the saved state, then refuses
+before it can create a new state or repartition the disk. Use `resume` for an
+incomplete stage two. `clean-all` intentionally does not pass `--configs all`,
 `--machine-id`, or `--reboot`, so it does not ask cloud-init to remove the
 installed SSH/network/fstab configuration, reset this VM's identity, or reboot
 immediately. See the [design rationale](docs/DESIGN-GUIDE.md#cloud-init-cache-cleanup-policy)
@@ -103,30 +165,86 @@ and the [consumer example](docs/CONSUMERS.md#cloud-init-cache-policy).
 
 ### Disk / swap
 
-Two starting shapes, detected automatically:
+Root and swap are separate policy choices in the shared config/profile. The
+keys `root_resize_policy` and `swap_policy` control them independently. By
+default, `root_resize_policy: "resize"` sizes the ext root partition to the
+largest safe extent after the configured swap area; it may grow online or
+shrink offline in an initramfs pre-mount hook. `grow-only` can use available
+space but never shrinks root. `untouched` forbids root geometry changes.
 
-- **Case A** — free space already exists after the root partition (the
-  normal case when the disk is larger than the deployed image). Swap
-  partitions are added directly into that free space.
-- **Case B** — root fills the entire disk (the cloud-init default: `growpart`
-  grows root to fill whatever disk it's given, so this is actually the more
-  common real-world starting shape, not the edge case the name suggests).
-  Handled via an offline shrink: an `initramfs-tools` `local-premount` hook
-  that fires pre-mount, before root is ever mounted live, running
-  `e2fsck` → `resize2fs` → `sfdisk` to shrink the root partition down to
-  `preserve_root_size_gb`, then rebooting into the now-correctly-sized disk.
+`swap_policy: "on"` (default) replaces the guest's configured swap setup with
+native GPT swap partitions. It disables all active swap, removes configured
+swapfiles and swap logical volumes, and replaces `/etc/fstab` swap entries
+with the managed partitions. A pre-root swap partition (physically before the
+root partition) is retained; its capacity counts toward the target, so less
+swap is placed after root. The default `swap_partition_count: 4` is the total
+including any retained pre-root swap partition. `off` disables active swap,
+removes swap entries from `/etc/fstab`, and removes swap-type partition entries
+from the root disk; it does not delete swapfiles or logical volumes.
+`untouched` leaves swap activation, fstab entries, and partition geometry
+alone. When swap is managed, the installer deactivates active swap before its
+partition-table transaction.
 
-Swap is always native GPT partitions (`swap_file_count` of them, each sized
-from `swap_disk_total_gb`), never swap files. Every partition write goes
-through a plan → dry-run → apply → readback-verify → rollback-on-mismatch
-cycle (`inuse_partition_editor.py`) — this live disk surgery on a mounted,
-booting root with no console access is the tool's actual hard-to-replicate
-value; see "Is this the right tool for everything?" below.
+`swap_disk_total_gb: null` (default) derives the total from actual disk
+capacity and guest RAM: `min(ceil(2 × RAM in GiB), round-half-up(20% of disk
+capacity in GiB))`. The RAM side rounds upward to whole GiB; the disk side
+rounds to the nearest GiB, with half-GiB ties upward.
+`swap_partition_count` defaults to 4; an explicit integer
+`swap_disk_total_gb` overrides only the total size. A retained pre-root swap
+partition also counts toward this configured total size; if it already meets
+or exceeds the target, no new tail swap partition is needed. Example totals for nominal
+provider capacities (decimal GB; actual sizing uses bytes):
 
-Config: `swap_disk_total_gb`, `swap_file_count`, `swap_priority`,
-`swap_discard`, `preserve_root_size_gb`.
+| Disk | 4 GB RAM | 8 GB | 16 GB | 32 GB | 64 GB | 128 GB |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 20 GB | 4 | 4 | 4 | 4 | 4 | 4 |
+| 32 GB | 6 | 6 | 6 | 6 | 6 | 6 |
+| 64 GB | 8 | 12 | 12 | 12 | 12 | 12 |
+| 128 GB | 8 | 16 | 24 | 24 | 24 | 24 |
+| 256 GB | 8 | 16 | 32 | 48 | 48 | 48 |
+| 512 GB | 8 | 16 | 32 | 64 | 95 | 95 |
+
+Core layout settings are:
+
+```json
+{
+  "schema_version": 1,
+  "root_resize_policy": "resize",
+  "swap_policy": "on",
+  "swap_disk_total_gb": null,
+  "swap_partition_count": 4,
+  "preserve_root_size_gb": 10
+}
+```
+
+When `swap=on` cannot fit without shrinking, `root=untouched` and
+`root=grow-only` fail with the requested and available space rather than
+silently changing root. A shrink is also refused if current root data or the
+ext filesystem's estimated minimum plus a 256 MiB safety margin exceeds the
+planned root target. The offline hook repeats the filesystem-minimum check
+after stage-one package changes. Unknown non-swap partitions after root are
+not moved or overwritten; that layout is refused when swap is managed.
+Root-shrink safety is checked before swapfile cleanup, so the original file
+usage and filesystem minimum remain part of the safety check.
+
+Partition order is determined from on-disk sector extents, never partition
+numbers. This supports Debian genericcloud's GPT layout, where BIOS/EFI
+partitions 14 and 15 sit before root partition 1; those pre-root partitions
+are retained unchanged. Unknown non-swap partitions physically after root,
+overlaps, or incomplete geometry still fail closed. See the
+[root/swap design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies).
+
+Every managed partition-table write is planned, backed up, applied, read back,
+and rolled back on a mismatch. Kernel partition refreshes target only the exact
+added/removed/changed partition-number ranges. See the
+[root/swap design rationale](docs/DESIGN-GUIDE.md#root-and-swap-policies) and
+[adoption examples](docs/CONSUMERS.md#root-and-swap-policy).
 
 ### zswap
+
+The feature is enabled by default through `run_zswap_config=true`; set that
+shared config/profile field to `false` to skip both zswap setup and its
+post-install health assertion.
 
 A `zswap-config.service` (sysinit.target, before `swap.target`, mechanism
 copied from the gstammtisch host setup) configures zswap before any swap
@@ -171,6 +289,9 @@ re-run or resume those old units are disabled and removed if present.
   `use_zero_pages=1` (installed when `run_ksm` is true).
 
 ### cgroup2 and sysctls
+
+The cgroup2 mount flags are installed when `run_cgroup2_config=true` (default)
+and can be omitted independently in a profile or config.
 
 cgroup2 mount flags `memory_recursiveprot`, `nsdelegate`. The rendered
 sysctl file carries a one-line "why" per value:
@@ -351,6 +472,9 @@ the post. When netcup `install-host.py` sees host retention in the
 customScript it refuses `--local-controller-key remove`.
 `credential_mode` (`root-storage` / `systemd`) selects how the Telegram
 token / Mattermost webhook URL and controller pubkey are stored on disk.
+Persistent login keys use `ssh_authorized_keys`, a bounded array of
+`authorized_keys` lines with comments. They are added in stage one, preserved
+alongside existing entries, and never treated as temporary controller keys.
 
 ## Not yet in v2 (v1 had some of this)
 

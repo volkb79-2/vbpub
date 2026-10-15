@@ -103,6 +103,9 @@ class ProjectConfig:
     # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
     # no declared tool dependency (today's behaviour, unchanged).
     tool_dependencies: tuple = ()
+    # Scope names from the full orchestration registry, retained when a
+    # release child loads only selected projects from its candidate tree.
+    known_project_names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -572,6 +575,18 @@ def _bare_prefix(prefix: Optional[str]) -> str:
     return prefix[:-2] if prefix.endswith("-v") else prefix
 
 
+def _known_project_scope_names(
+    configs: Mapping[str, ProjectConfig],
+) -> frozenset[str] | None:
+    """Return the full scope registry retained on selected project configs."""
+    names = frozenset(
+        scope_name
+        for project in configs.values()
+        for scope_name in project.known_project_names
+    )
+    return names or None
+
+
 def load_config(
     config_path: Path,
     *,
@@ -597,6 +612,13 @@ def load_config(
     """
     resolved_config_path = config_path.expanduser().resolve()
     forge = load_forge_config(resolved_config_path)
+    from cmru.version import _project_scope_names
+
+    known_project_names = frozenset(
+        alias
+        for name, project in forge.projects.items()
+        for alias in _project_scope_names(name, project)
+    )
     if (
         validate_dependencies
         and resolved_config_path.name == ORCHESTRATION_CONFIG_FILENAME
@@ -726,6 +748,7 @@ def load_config(
             github_token=forge.project_tokens.get(name, forge.github.token or ""),
             tool_dependencies=tuple(parsed.tool_dependencies),
             runtime_kind=parsed.runtime_kind,
+            known_project_names=known_project_names,
         )
 
     cleanup_raw = forge.cleanup
@@ -2871,6 +2894,62 @@ def _report_publication_started(
     )
 
 
+def _run_release_gates_on_exact_head(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    names: List[str],
+) -> str:
+    """Run the declared gate and return only the commit it actually judged."""
+    judged_sha = _git(repo_root, "rev-parse", "HEAD")
+    _assert_release_gate_source_matches_commit(repo_root, judged_sha, phase="before")
+    _run_release_gates(repo_root, configs, names)
+    current_sha = _git(repo_root, "rev-parse", "HEAD")
+    if current_sha != judged_sha:
+        raise RuntimeError(
+            "a release gate changed the candidate commit "
+            f"({judged_sha[:12]} -> {current_sha[:12]}); refusing to tag a commit "
+            "that the gate did not judge"
+        )
+    _assert_release_gate_source_matches_commit(repo_root, judged_sha, phase="after")
+    return judged_sha
+
+
+def _assert_release_gate_source_matches_commit(
+    repo_root: Path, expected_sha: str, *, phase: str,
+) -> None:
+    """Reject hidden tracked-byte changes around a release gate.
+
+    `git status` and `git diff` honor index flags such as assume-unchanged and
+    skip-worktree. Check those flags directly, then compare every tracked byte
+    and mode with the exact commit before trusting the usual dirty-path scan.
+    """
+    index = _git(repo_root, "ls-files", "-v", "-z")
+    flagged = [
+        entry for entry in index.split("\0")
+        if entry and (entry[:1] == "S" or entry[:1].islower())
+    ]
+    if flagged:
+        raise RuntimeError(
+            f"release gate source {phase} the gate has assume-unchanged or "
+            "skip-worktree index entries; clear them before judging an exact commit"
+        )
+    try:
+        from cmru.gate_snapshot import _verify_tracked_files_match_commit
+
+        _verify_tracked_files_match_commit(repo_root, expected_sha)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"release gate source {phase} the gate does not match commit "
+            f"{expected_sha[:12]}: {exc}"
+        ) from exc
+    changed = _worktree_changed_paths(repo_root)
+    if changed:
+        raise RuntimeError(
+            f"release gate source {phase} the gate has non-ignored changes: "
+            f"{', '.join(changed[:8])}"
+        )
+
+
 def _run_tagged_build_and_publish(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -2970,8 +3049,9 @@ def _release_projects_sequentially(
         # Keep the remote candidate branch current before the gate too. A gate
         # failure must leave the generated candidate available for inspection.
         transaction.push_backup_branch(workspace, git_auth=git_auth)
-        _run_release_gates(repo_root, configs, [name])
-        gated_sha = _git(repo_root, "rev-parse", "HEAD")
+        gated_sha = _run_release_gates_on_exact_head(
+            repo_root, configs, [name]
+        )
 
         strategy = _version_strategy(project)
         if not getattr(project, "git_tag", True):
@@ -2996,7 +3076,11 @@ def _release_projects_sequentially(
             )
             log_info(f"{name}: promoted release candidate to origin/main")
         else:
-            release_cmd(repo_root, {name: project}, minor=minor, major=major, set_version=set_version)
+            release_cmd(
+                repo_root, {name: project}, minor=minor, major=major,
+                set_version=set_version, known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
+            )
             # A file:-strategy tag commits a version bump here. Refresh the
             # durable candidate before tags or public publication are touched.
             transaction.push_backup_branch(workspace, git_auth=git_auth)
@@ -3007,7 +3091,15 @@ def _release_projects_sequentially(
                 # candidate so the commit that produces the artifact has passed
                 # the same acceptance contract before publication begins.
                 log_info(f"{name}: versioning changed the candidate; re-running release gate")
-                _run_release_gates(repo_root, configs, [name])
+                gated_sha = _run_release_gates_on_exact_head(
+                    repo_root, configs, [name]
+                )
+                candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+            if candidate_sha != gated_sha:
+                raise RuntimeError(
+                    f"{name}: refusing to tag candidate {candidate_sha[:12]} "
+                    f"because its gate receipt is for {gated_sha[:12]}"
+                )
             tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
             if tag:
                 _push_tags(repo_root, [tag], git_auth=git_auth, workspace=workspace)
@@ -4333,6 +4425,15 @@ def _preview_release_bodies(
     from cmru.release import build_release_body
     from cmru.release_notes import ARTIFACT_PLACEHOLDER, SHA256_PLACEHOLDER
 
+    # The release plan knows every project in the Git family, including scopes
+    # that are not selected for this particular release. Changelog headings,
+    # notes and tags must interpret scoped Conventional Commits the same way.
+    plan = {
+        **plan,
+        "known_projects": configs,
+        "known_project_names": _known_project_scope_names(configs),
+    }
+
     for name in project_names:
         project = configs[name]
         if not getattr(project, "changelog", None) or not getattr(project, "git_tag", True):
@@ -4403,6 +4504,8 @@ def _prepare_release_projects(
             log_info(f"{name}: generating release history")
             changed = generate_release_changelog(
                 repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
             )
             if changed:
                 log_info(f"{name}: updated {changelog}")
@@ -4413,10 +4516,14 @@ def _prepare_release_projects(
             # from the eventual tag, never the mutable [Unreleased] source.
             notes = _pending_release_notes_or_refuse(
                 repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
             )
             _fold_pending_release_notes(repo_root, project, notes.version)
             notes = _pending_release_notes_or_refuse(
                 repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
             )
             if not _has_cmru_github_release_body(project):
                 log_info(
@@ -4429,7 +4536,8 @@ def _prepare_release_projects(
                 try:
                     candidate_label = pending_release_tag(
                         repo_root, project, minor=minor, major=major,
-                        set_version=set_version,
+                        set_version=set_version, known_projects=configs,
+                        known_project_names=_known_project_scope_names(configs),
                     ) or project.name
                 except RuntimeError:
                     pass  # the trailer is provenance only; fall back to the name
@@ -5220,14 +5328,19 @@ def _status(vargs, runtime, repo_root: Path, configs, selected_names: List[str])
     groups = transaction.project_git_family_groups(
         repo_root, [configs[name] for name in selected_names]
     )
+    all_groups = transaction.project_git_family_groups(repo_root, list(configs.values()))
     records: list = []
     for family_root, members in groups.items():
         family_names = [getattr(project, "name") for project in members]
         family_configs = _configs_for_git_family(configs, family_names, family_root)
+        known_members = all_groups.get(family_root, members)
+        known_names = [getattr(project, "name") for project in known_members]
+        known_configs = _configs_for_git_family(configs, known_names, family_root)
         family = {name: family_configs[name] for name in family_names}
         options = dict(
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-            ref=vargs.ref or "HEAD",
+            ref=vargs.ref or "HEAD", known_projects=known_configs,
+            known_project_names=_known_project_scope_names(known_configs),
         )
         if vargs.json:
             records.extend(status_records(family_root, family, **options))
@@ -5249,6 +5362,18 @@ def _exit_for_domain_error(exc: CmruError) -> NoReturn:
     if exc.hint:
         log_info(exc.hint)
     sys.exit(exc.exit_code)
+
+
+def _record_release_controller_identity(phase: str) -> Mapping[str, str]:
+    """Validate the installed release controller and return its audit identity."""
+    from cmru.release_controller import release_controller_identity
+
+    identity = release_controller_identity(Path(__file__))
+    log_debug(
+        f"verified CMRU release controller during {phase}: "
+        f"module={identity['module_path']}"
+    )
+    return identity
 
 
 def _release_launcher(
@@ -5296,6 +5421,14 @@ def _release_launcher(
     # project's own path (--allow-uncommitted overrides): otherwise it would be
     # silently left out with no warning, since the build never looks at it.
     try:
+        if not vargs.dry_run:
+            identity = _record_release_controller_identity("launcher")
+            log_info(
+                "CMRU release controller: "
+                f"version={identity['version']} "
+                f"wheel-sha256={identity['wheel_sha256']} "
+                f"installed-files-sha256={identity['distribution_sha256']}"
+            )
         transaction_root = transaction.source_git_root_for_projects(
             repo_root, [configs[name] for name in release_scope]
         )
@@ -5504,6 +5637,15 @@ def _release_child(
     """The in-worktree half of ``release``: detect, tag, push, build, publish."""
     from cmru.version import ReleasePlanRefused, release_cmd, detect_changed_projects
 
+    if not vargs.dry_run:
+        identity = _record_release_controller_identity("transaction")
+        log_info(
+            "CMRU transaction controller: "
+            f"version={identity['version']} "
+            f"wheel-sha256={identity['wheel_sha256']} "
+            f"installed-files-sha256={identity['distribution_sha256']}"
+        )
+
     selected_ordered = {name: ordered[name] for name in selected_names}
 
     # Scope to what this run will actually touch *before* computing the plan
@@ -5538,6 +5680,8 @@ def _release_child(
             check_tag_at_head=True,
             allow_tag_ahead_of_head=vargs.allow_tag_ahead_of_head,
             git_auth=git_auth,
+            known_projects=configs,
+            known_project_names=_known_project_scope_names(configs),
         )
     except ReleasePlanRefused as exc:
         log_error(str(exc))
@@ -5589,11 +5733,13 @@ def _release_child(
             repo_root, ordered, release_names,
             no_build=vargs.no_build,
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            known_projects=configs,
         )
         release_cmd(
             repo_root, selected_ordered,
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-            dry_run=True,
+            dry_run=True, known_projects=configs,
+            known_project_names=_known_project_scope_names(configs),
         )
         log_info("[DRY RUN] No tags pushed, nothing built/published.")
         return

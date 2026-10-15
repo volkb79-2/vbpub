@@ -1922,6 +1922,23 @@ def _preflight_shared_infra_for_add(
     )
 
 
+def _generate_env_with_lock_held() -> int:
+    """Run full env generation under the caller's allocation lock.
+
+    The ordinary CLI converts an invalid or unreadable workspace identity into
+    a concise ``[ERROR]`` diagnostic. This private child entry point preserves
+    that behavior while avoiding a second lock acquisition.
+    """
+    from .workspace_env import WorkspaceEnvError
+    from .deploy import action_generate_env
+
+    try:
+        return action_generate_env(None, Path.cwd(), allocation_lock_held=True)
+    except WorkspaceEnvError as exc:
+        print(f"[ERROR] {exc}", file=sys.stderr)
+        return 1
+
+
 def _generate_env_in(
     worktree: Path,
     *,
@@ -1959,10 +1976,14 @@ def _generate_env_in(
             )
         argv.append("--identity-only")
     elif allocation_lock_held:
-        # This private child is launched while its parent owns the family lock.
-        # The marker lets only this allocation child verify the allocating
-        # record without trying to reacquire the same flock and deadlocking.
-        argv.append("--allocation-lock-held")
+        # This child is an internal call made while the parent owns the family
+        # lock. Enter the implementation directly; never expose a CLI switch
+        # that lets an ordinary user bypass allocation serialization.
+        argv = [
+            sys.executable, "-c",
+            "from ciu.worktree import _generate_env_with_lock_held; "
+            "raise SystemExit(_generate_env_with_lock_held())",
+        ]
     try:
         return subprocess.run(argv, cwd=str(worktree), env=env, check=False).returncode
     except OSError as exc:  # pragma: no cover - environmental
@@ -4916,7 +4937,8 @@ def _assert_allocation_checkout_reset_is_safe(
     """
     checkout = record.git_worktree_path
     status = _git(
-        ["status", "--porcelain=v1", "-z", "--untracked-files=all"], checkout
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all",
+         "--ignored=matching"], checkout
     )
     if status.returncode != 0:
         raise WorktreeError(
@@ -4946,11 +4968,11 @@ def _assert_allocation_checkout_reset_is_safe(
         # (` D`). Compare against HEAD's tree; `ls-files` is empty here.
         if code == "D " and path in tracked_paths:
             missing_tracked.add(path)
-        elif code == "??" and path == record_path:
+        elif code in {"??", "!!"} and path == record_path:
             # The CIU lifecycle record is intentionally untracked and
             # locally excluded. Porcelain can still report it in callers that
             # provide a partial/fixture exclude, so whitelist only this exact
-            # file rather than ignoring arbitrary untracked content.
+            # file rather than ignoring arbitrary untracked/ignored content.
             continue
         else:
             unexpected.append(entry)

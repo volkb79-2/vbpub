@@ -772,6 +772,17 @@ def test_process_runner_turns_post_spawn_oserror_into_cleanup_failure(
         )
 
 
+def test_read_tail_redacts_secret_that_crosses_retained_boundary(tmp_path: Path) -> None:
+    output = tmp_path / "output.bin"
+    output.write_bytes(b"xxSECRETzz")
+    with output.open("rb") as stream:
+        tail, dropped = process_tree._read_tail(
+            stream, limit=5, sensitive_values=("SECRET",)
+        )
+    assert dropped == 5
+    assert tail == "***zz"
+
+
 def test_process_runner_propagates_process_tree_proof_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

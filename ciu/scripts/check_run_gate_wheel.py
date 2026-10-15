@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import importlib
+import importlib.metadata
 import sys
+import tomllib
 from pathlib import Path
 
 
@@ -26,9 +28,42 @@ def verify_module_file(
         raise SystemExit(
             "tester-unified's installed Run-Gate wheel does not match the "
             f"selected checkout ({module_name}); rebuild it from the selected "
-            "repository root with `docker build -f tester-unified/Dockerfile "
-            "-t tester-unified:local .`, then rerun the registered CIU gate"
+            "checkout using the supported procedure in "
+            "`tester-unified/README.md` (build the image from the exact Run-Gate "
+            "wheel for that checkout), then rerun the registered CIU gate"
         )
+
+
+def verify_console_scripts(installed_distribution, source_scripts: dict[str, str]) -> None:
+    """Require installed Run-Gate entry points to match its source metadata."""
+    installed_scripts = {
+        entry_point.name: entry_point.value
+        for entry_point in installed_distribution.entry_points
+        if entry_point.group == "console_scripts"
+    }
+    if installed_scripts != source_scripts:
+        raise SystemExit(
+            "tester-unified's installed Run-Gate console entry points do not "
+            "match run-gate-project/pyproject.toml: "
+            f"installed={installed_scripts!r}, checkout={source_scripts!r}"
+        )
+
+
+def _source_console_scripts(pyproject_path: Path) -> dict[str, str]:
+    try:
+        data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise SystemExit(f"cannot read Run-Gate checkout metadata {pyproject_path}: {exc}") from exc
+    project = data.get("project")
+    scripts = project.get("scripts") if isinstance(project, dict) else None
+    if not isinstance(scripts, dict) or not all(
+        isinstance(name, str) and isinstance(target, str)
+        for name, target in scripts.items()
+    ):
+        raise SystemExit(
+            f"Run-Gate checkout metadata has no valid [project.scripts] table: {pyproject_path}"
+        )
+    return scripts
 
 
 def main() -> int:
@@ -42,7 +77,16 @@ def main() -> int:
         source_path = (source_root / f"{module_name}.py").resolve()
         verify_module_file(module_name, installed_path, source_path, venv_root)
 
-    print("tester-unified Run-Gate wheel matches the selected checkout")
+    try:
+        distribution = importlib.metadata.distribution("run-gate")
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise SystemExit("tester-unified has no installed Run-Gate distribution") from exc
+    verify_console_scripts(
+        distribution,
+        _source_console_scripts(source_root / "pyproject.toml"),
+    )
+
+    print("tester-unified Run-Gate modules and console entry points match the selected checkout")
     return 0
 
 

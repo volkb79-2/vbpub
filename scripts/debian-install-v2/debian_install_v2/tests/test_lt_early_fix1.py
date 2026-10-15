@@ -130,7 +130,7 @@ def test_identity_refusal_types():
 def test_a_plan_refusal_is_not_an_identity_refusal_and_keeps_the_key(tmp_path, host):
     """The other side of D1: the host is the right one, only the config cannot be planned."""
     actions, posts = host
-    assert main(["install", "--config", _write(tmp_path, preserve_root_size_gb=1), "--yes"]) != 0
+    assert main(["install", "--config", _write(tmp_path, preserve_root_size_gb=30), "--yes"]) != 0
     assert _key_written(actions)
     assert _state(tmp_path)["status"] == "failed"
     assert "nothing was installed" not in posts[0]
@@ -223,7 +223,7 @@ def _seed_other_run(tmp_path) -> dict:
 def test_an_early_failure_leaves_a_pre_existing_other_run_state_untouched(tmp_path, host):
     actions, posts = host
     before = _seed_other_run(tmp_path)
-    assert main(["install", "--config", _write(tmp_path, preserve_root_size_gb=1), "--yes"]) != 0
+    assert main(["install", "--config", _write(tmp_path, preserve_root_size_gb=30), "--yes"]) != 0
     assert _state(tmp_path) == before  # no status flip, no step marks, no notifier mark
     assert len(posts) == 1
     assert "install FAILED" in posts[0] and "left untouched" in posts[0] and "preserve_root_size_gb" in posts[0]
@@ -251,18 +251,18 @@ def test_a_config_parse_error_is_posted_through_telegram_too(tmp_path, host, mon
         lambda request, timeout=None: requests.append(request) or SimpleNamespace(close=lambda: None),
     )
     cfg = _write(
-        tmp_path, swap_file_count=0, mattermost_webhook_url="",
+        tmp_path, swap_partition_count=0, mattermost_webhook_url="",
         telegram_bot_token=token, telegram_chat_id="-100123",
     )
     assert main(["install", "--config", cfg, "--yes"]) == 2
-    assert "swap_file_count" in capsys.readouterr().err
+    assert "swap_partition_count" in capsys.readouterr().err
     assert len(requests) == 1
     request = requests[0]
     assert request.full_url.startswith("https://api.telegram.org/bot") and request.full_url.endswith("/sendMessage")
     payload = urllib.parse.parse_qs(request.data.decode("utf-8"))
     assert payload["chat_id"] == ["-100123"] and payload["parse_mode"] == ["HTML"]
     text = payload["text"][0]
-    assert "Install FAILED" in text and "swap_file_count" in text
+    assert "Install FAILED" in text and "swap_partition_count" in text
     assert token not in text
     assert not (tmp_path / "state" / "state.json").exists()
 

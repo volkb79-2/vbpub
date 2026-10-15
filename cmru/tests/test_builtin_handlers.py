@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -106,6 +107,21 @@ def test_check_build_prerequisites_requires_explicit_builder_image(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         handlers._check_build_prerequisites()
     assert exc.value.code == exit_codes.PREREQ_MISSING
+
+
+def test_wheel_build_resolves_registered_builder_image_from_cmr_config(monkeypatch):
+    repo_root = Path(__file__).resolve().parents[2]
+    config_path = repo_root / "cmru.orchestration.toml"
+    declared = tomllib.loads(config_path.read_text(encoding="utf-8"))[
+        "orchestration"]["defaults"]["env"][handlers._WHEEL_BUILDER_IMAGE_ENV]
+    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+    # The strict orchestration loader resolves this required host placement
+    # input while reading the same configuration used for the image.
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
+
+    actual = handlers._configured_wheel_builder_image(repo_root / "run-gate-project")
+
+    assert actual == declared
 
 
 def test_check_build_prerequisites_explicit_builder_image_is_accepted(monkeypatch):

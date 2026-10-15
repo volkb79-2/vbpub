@@ -467,6 +467,15 @@ def test_lane_output_validation_names_each_kind_of_unapproved_residue(tmp_path, 
             validate()
         _git(root, "checkout", "--quiet", "--", "README.md")
 
+        (root / "README.md").write_text("hidden tampering\n", encoding="utf-8")
+        _git(root, "update-index", "--assume-unchanged", "README.md")
+        with pytest.raises(RuntimeError, match="assume-unchanged or skip-worktree"):
+            validate()
+        _git(root, "update-index", "--no-assume-unchanged", "README.md")
+        with pytest.raises(RuntimeError, match="differs from exact commit"):
+            gs._verify_tracked_files_match_commit(root, snapshot.commit)
+        _git(root, "checkout", "--quiet", "--", "README.md")
+
         plain = tmp_path / "plain-worktree"
         _git(tmp_path / "primary", "worktree", "add", "--quiet", "-b", "plain", str(plain), "HEAD")
         with pytest.raises(RuntimeError, match="no CMRU workspace record"):

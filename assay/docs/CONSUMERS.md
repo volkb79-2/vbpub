@@ -311,7 +311,7 @@ runtime; it does not run candidates and may use a larger worker count:
 | Counter | What it detects |
 |---|---|
 | `pids.events:max` | A process or thread creation was refused at a `pids.max` boundary. |
-| `memory.events:max` | Memory use reached a `memory.max` boundary; reclaim may succeed and avoid OOM, but Assay still treats the event conservatively as infrastructure interference. |
+| `memory.events:max` | Memory use approached `memory.max`; reclaim may succeed. Assay records it as telemetry, and it does not invalidate a candidate by itself. |
 | `memory.events:oom` | A memory allocation reached the cgroup OOM condition. |
 | `memory.events:oom_kill` | An OOM killer killed a process belonging to the cgroup, including a global OOM kill. |
 | `memory.events:oom_group_kill` | A cgroup group-OOM kill occurred. |
@@ -325,12 +325,12 @@ are needed because an ancestor may impose a stricter effective limit than the
 container's own cgroup reports. A leaf showing `pids.max = max`, for example,
 can still have a fork refused by a finite parent `pids.max`.
 
-These are event checks, not measurements of current or peak usage. Even when
-`memory.events:max` increments and reclaim lets the command complete normally,
-Assay conservatively withholds a mutation result: the attempt ran at a hard
-memory boundary, which can affect latency or test behavior. The bounded pilots
-record whether this occurs under their configured envelope; they do not change
-the rule. B145 does not use `pids.current`, `memory.current`, `memory.peak`, CPU usage, or
+These are event checks, not measurements of current or peak usage. A
+`memory.events:max` increment is retained as telemetry when reclaim lets the
+command continue; it does not invalidate the mutation result without an OOM
+event. `pids.events:max` or an OOM-related counter still makes the result
+infrastructure-affected. The bounded pilots record `memory.events:max` under
+their configured envelope. B145 does not use `pids.current`, `memory.current`, `memory.peak`, CPU usage, or
 `memory.events:high` to decide whether a mutant was killed. Those measurements
 can help explain runtime or pressure, but they do not by themselves establish
 that a test failure came from resource enforcement.
@@ -415,9 +415,11 @@ cgroup path, controller availability, or configured limits during a candidate
 also makes the run an infrastructure error. A positive candidate event delta
 records that candidate as `crashed`; the R2 result is an infrastructure error,
 never a mutation kill or survivor. If the candidate is quiet but a visible
-ancestor's local counter increases, Assay cannot attribute the event and
-withholds mutation outcomes with `ERROR/EXEC_FAILED`. A hierarchical-only
-ancestor change does not block the candidate. A positive delta during a
+ancestor's local failure-relevant counter increases, Assay cannot attribute
+the event and withholds mutation outcomes with `ERROR/EXEC_FAILED`.
+`memory.events:max` remains telemetry at ancestors too and does not block the
+candidate by itself. A hierarchical-only ancestor change does not block the
+candidate. A positive delta during a
 saved-witness replay likewise stops the lane with a payload-free
 `ERROR/EXEC_FAILED` before Assay can retry
 the candidate; it does not produce a per-candidate outcome. Fix the runner's
@@ -449,8 +451,8 @@ nor the explicit observer can provide the required hierarchy, Assay writes
 R0/R1 claims are retained, and independent R3 may continue.
 
 That no-measurement result applies only before the first candidate starts. If
-the observer disappears, the hierarchy changes, or a shared-parent event
-becomes ambiguous during a candidate window, Assay returns
+the observer disappears, the hierarchy changes, or a shared-parent
+failure-relevant event becomes ambiguous during a candidate window, Assay returns
 `ERROR/EXEC_FAILED` and withholds the candidate bucket. A process-tree cleanup
 failure takes precedence over a later counter-read failure. Run-Gate maps the
 pre-candidate `CGROUP_OBSERVATION_UNAVAILABLE` refusal to gate `ERROR` only
@@ -5426,13 +5428,16 @@ at least 20 samples per basis and says why it has none. `--project-jobs` accepts
 example uses 1. The fixed-overhead estimate subtracts the first candidate's
 measured runtime before adding candidate costs to the projection. Exit codes:
 0 complete PASS, 1 complete and not PASS, 2 evidence error, 3 incomplete.
-`complete_blockers` names why a campaign is incomplete. Without `--verdict`, a
-plan whose lane delegates its base to the request needs `--request-base`.
+`complete_blockers` names why a campaign is incomplete, including
+`shard_not_merged` when the evidence is from one shard of a multi-shard run.
+Without `--verdict`, a plan whose lane delegates its base to the request needs `--request-base`.
 For a lane that declares R1 coverage, include `--coverage` with its declared
 artifact; without it the report stays incomplete. The artifact must be present
 in the worktree (and ignored by Git) even when the judge produced it inside a
 snapshot. `qualifying: true` identifies whole-plan scope only; it does not
-mean the verdict passed or that all evidence is complete.
+mean the verdict passed or that all evidence is complete. A `0/1` shard covers
+the full inventory and can qualify; a single result from a multi-shard campaign
+cannot qualify the combined plan.
 
 The reader is bounded: a supplied state directory may contain at most 50,000
 directory entries, 10,000 mutation records and 64 MiB of record data. The

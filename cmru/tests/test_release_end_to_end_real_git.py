@@ -68,7 +68,7 @@ commands = [ { label = "build", argv = ["sh", "-c", '[ ! -e "$FAIL_BUILD" ] || e
 
 [steps.push]
 quiet = true
-commands = [ { label = "push", argv = ["sh", "-c", '[ ! -e "$FAIL_PUSH" ] || exit 1; echo pub >> "$MARK"'], cwd = "." } ]
+commands = [ { label = "push", argv = ["sh", "-c", '[ ! -e "$FAIL_PUSH" ] || exit 1; echo pub >> "$MARK"; printf "%s\\n" "$CMRU_RELEASE_COMMIT" > "$PUBLISHED_COMMIT"'], cwd = "." } ]
 """
 
 
@@ -90,6 +90,7 @@ class _Env:
         self.repo = root / "repo"
         self.project = self.repo / "demo"
         self.mark = root / "mark"
+        self.published_commit = root / "published-commit"
         self.fail_build = root / "fail-build"
         self.fail_push = root / "fail-push"
         self.hooks = root / "hooks"
@@ -115,6 +116,7 @@ class _Env:
             "GITHUB_PUSH_PAT": "x",
             "GATE_HOOK": "",
             "MARK": str(self.mark),
+            "PUBLISHED_COMMIT": str(self.published_commit),
             "FAIL_BUILD": str(self.fail_build),
             "FAIL_PUSH": str(self.fail_push),
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
@@ -130,7 +132,8 @@ class _Env:
             _CMRU_TOML.replace("@STRATEGY@", strategy)
         )
         (seed / "demo" / "CHANGES.md").write_text(
-            "# Changes\n\n## [Unreleased]\n\n<!-- cmru: release history -->\n"
+            "# Changes\n\n## [Unreleased]\n\n- Preserve this migration note.\n\n"
+            "<!-- cmru: release history -->\n"
         )
         (seed / "demo" / "a.txt").write_text("hi\n")
         (seed / "README.md").write_text("root readme\n")
@@ -239,8 +242,12 @@ def test_rel15_fresh_release_end_to_end(e2e):
     assert len(e2e.worktrees()) == 1
     assert e2e.origin_heads() == ["refs/heads/main"]
     assert e2e.out("rev-parse", "main") == e2e.origin_main()
-    assert "[Unreleased]" in (e2e.project / "CHANGES.md").read_text()
-    assert "## [0.1.0]" in (e2e.project / "CHANGES.md").read_text()
+    tagged_commit = e2e.out("rev-parse", f"{_TAG}^{{commit}}")
+    assert e2e.published_commit.read_text().strip() == tagged_commit
+    tagged_changelog = e2e.out("show", f"{_TAG}:demo/CHANGES.md")
+    assert "## [0.1.0]" in tagged_changelog
+    assert "Preserve this migration note." in tagged_changelog
+    assert "## [Unreleased]\n\n<!-- cmru: release history -->" in tagged_changelog
 
 
 def test_rel08_release_inputs_commit_carries_the_candidate_trailer(e2e):

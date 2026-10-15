@@ -745,9 +745,11 @@ lane's nested fixtures inherit the sidecar's placement and resource ceiling;
 they do not try to name a host systemd slice that the nested daemon cannot
 resolve. The in-test preflight requires the exact CMRU DinD endpoint and the
 forwarded gates-slice fact. Before invoking the installed Run-Gate CLI,
-`run-gate enroll`, CIU compares its installed module files with the selected
-checkout and refuses a stale tester image. This keeps the gate on the installed
-wheel while binding that wheel to the judged source. Inside tester-unified, this
+`run-gate enroll`, CIU compares the installed module bytes and console
+entry-point targets with the selected checkout and refuses a stale tester
+image. This keeps the gate on the installed wheel while checking the source
+files and command mapping used by this lane; it does not claim byte-for-byte
+identity for unrelated wheel metadata. Inside tester-unified, this
 lane's declared `mode = "host"` means a subprocess in the current tester
 container. Run-Gate is a general tool and allows host-mode execution; each
 consumer sets its own policy. An operator may invoke a host-mode lane from a

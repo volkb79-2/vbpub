@@ -586,6 +586,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-135 | Managed worktree overlay recovery, reset retries, network ownership, and explicit `ensure` constraints can be ambiguous or silently ignored | Medium | OPEN — implementation now folds Review 05 recovery, startup, root-selection, and final-network-check findings; registered gate and final review remain |
 | CIU-136 | `ciu resolve` does not report live attached networks, aliases, derived URLs, or a nonzero status for an absent service | Medium | OPEN — extend the existing service-discovery follow-up from CIU-118 / nyxloom NL-38 |
 | CIU-139 | `ciu resolve --root-folder P` (and likely `ciu exec`) does not seed its environment from P's instance record, so an unprimed shell fails with missing `INSTANCE_ID`/`REPO_ROOT`/... while `ciu env print --root-folder P` succeeds | Medium | OPEN (filed 2026-10-15, dstdns deep review C04 F06) |
+| CIU-140 | Private locked env generation prints a traceback for expected workspace errors | Low | IN PROGRESS — candidate fix and regression test; registered CIU gate and final review pending |
 | CIU-142 | A managed worktree that is rebased keeps its spent `fork_point_sha` in `ciu.worktree-instance.json`, and no `ciu worktree` verb re-records it, so run-gate's derived base (SPEC R-35a: merge-base must equal the recorded fork point) refuses `NOT_RUN no-base` and every later gate needs a hand-passed `--base` | Medium | OPEN (filed 2026-10-15, dstdns P242, ciu 7.16.0) |
 
 
@@ -5308,6 +5309,16 @@ fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, D
 **Oracles.** Unprimed-shell `resolve --root-folder P` returns P's identities; run from an unrelated cwd it still resolves P (a cwd-seeded implementation fails this); with the record deleted it refuses with the remedy.
 
 **SPEC owner.** S3.1b (instance record), the CIU-118 resolve/exec contract.
+
+## CIU-140 — private locked env generation prints a traceback for expected workspace errors
+
+**Status:** fix and regression test in the 2026-10-14 release candidate; registered CIU gate and final review pending. Severity: low (diagnostic quality; the operation still fails closed).
+
+**Observed:** managed worktree recovery invokes `action_generate_env(..., allocation_lock_held=True)` in a private Python child so it does not reacquire the allocation lock. Unlike the public `ciu env generate` handler, that child did not catch `WorkspaceEnvError`; malformed or unreadable workspace facts therefore produced a traceback instead of the normal `[ERROR]` message.
+
+**Chosen behavior:** route the private child through a private helper that catches only `WorkspaceEnvError`, prints the same concise error form as the CLI, and returns exit 1. Unexpected programming errors still retain their traceback.
+
+**Oracle:** a focused test forces `WorkspaceEnvError` through the private helper and asserts the exact stderr line and exit code; a neighboring test verifies the allocation-lock bypass remains private and does not add a user-facing CLI flag.
 
 ## CIU-142 — no way to re-record a managed worktree's fork point after a legitimate rebase
 

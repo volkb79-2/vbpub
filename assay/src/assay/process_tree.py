@@ -475,19 +475,57 @@ class ProcessTreeWindow:
         return False
 
 
-def _read_tail(stream, *, limit: int = _OUTPUT_TAIL_BYTES) -> tuple[str, int]:
+def _read_tail(
+    stream,
+    *,
+    limit: int = _OUTPUT_TAIL_BYTES,
+    sensitive_values: Sequence[str] = (),
+) -> tuple[str, int]:
+    """Return a redacted, bounded UTF-8 tail and the omitted byte count.
+
+    Read enough prefix context to recognize a secret that straddles the
+    retained-tail boundary. Redacting only after seeking to ``size - limit``
+    can expose the suffix of such a secret.
+    """
     size = os.fstat(stream.fileno()).st_size
-    start = max(0, size - limit)
+    retained_start = max(0, size - limit)
+    normalized_values = tuple(
+        value.encode("utf-8", errors="surrogateescape").decode(
+            "utf-8", errors="replace"
+        )
+        for value in sensitive_values if value
+    )
+    overlap = max(
+        (len(value.encode("utf-8")) for value in normalized_values),
+        default=0,
+    )
+    start = max(0, retained_start - max(0, overlap - 1))
     stream.seek(start)
-    raw = stream.read()
-    return raw.decode("utf-8", "replace"), start
+    raw = stream.read().decode("utf-8", "replace")
+    if normalized_values:
+        from .redaction import redact_passthrough_text
+
+        raw = redact_passthrough_text(raw, normalized_values)
+    encoded = raw.encode("utf-8")
+    if len(encoded) > limit:
+        cutoff = len(encoded) - limit
+        while cutoff < len(encoded) and (encoded[cutoff] & 0xC0) == 0x80:
+            cutoff += 1
+        raw = encoded[cutoff:].decode("utf-8")
+    return raw, retained_start
 
 
 class ProcessTreeProcessRunner:
     """ProcessRunner-compatible command isolation for native R2 calls."""
 
-    def __init__(self, *, cleanup_seconds: float = _CLEANUP_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        cleanup_seconds: float = _CLEANUP_SECONDS,
+        sensitive_values: Sequence[str] = (),
+    ) -> None:
         self.cleanup_seconds = cleanup_seconds
+        self.sensitive_values = tuple(value for value in sensitive_values if value)
 
     def __call__(
         self,
@@ -532,8 +570,12 @@ class ProcessTreeProcessRunner:
                         returncode = proc.wait(timeout=timeout)
                     except subprocess.TimeoutExpired as exc:
                         evidence = window.finish(timed_out=True, force=True)
-                        out, out_dropped = _read_tail(stdout)
-                        err, err_dropped = _read_tail(stderr)
+                        out, out_dropped = _read_tail(
+                            stdout, sensitive_values=self.sensitive_values
+                        )
+                        err, err_dropped = _read_tail(
+                            stderr, sensitive_values=self.sensitive_values
+                        )
                         timeout_error = subprocess.TimeoutExpired(
                             command, timeout, output=out, stderr=err
                         )
@@ -542,8 +584,12 @@ class ProcessTreeProcessRunner:
                         timeout_error.assay_stderr_dropped_bytes = err_dropped
                         raise timeout_error from exc
                     evidence = window.finish()
-                    out, out_dropped = _read_tail(stdout)
-                    err, err_dropped = _read_tail(stderr)
+                    out, out_dropped = _read_tail(
+                        stdout, sensitive_values=self.sensitive_values
+                    )
+                    err, err_dropped = _read_tail(
+                        stderr, sensitive_values=self.sensitive_values
+                    )
                     result = subprocess.CompletedProcess(command, returncode, out, err)
                     result.process_tree_evidence = evidence.to_dict()
                     result.assay_stdout_dropped_bytes = out_dropped

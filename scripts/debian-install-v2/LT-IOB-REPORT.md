@@ -19,7 +19,7 @@ netcup run.
   so there is one raw sfdisk path. `_validate_plan_geometry()` is NOT modified.
   The helper takes `record_in_dry_run` so the benchmark's actions appear in a
   dry-run plan; the swap shape still records none in dry-run, as before.
-- Partition: tail of the disk, number `root_number + swap_file_count + 1`,
+- Partition: tail of the disk, number `root_number + swap_partition_count + 1`,
   GPT name `vbpub-iobench`, Linux filesystem type. Sizing
   `min(io_benchmark_max_size_gb, tail free - swap requirement - 1 GiB)`,
   2048-sector aligned; under 2 GiB -> step `skipped` with a reason.

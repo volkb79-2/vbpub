@@ -6,7 +6,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Changed
 - KI-78 stages pending notes inside every tagged candidate's dated section before the gate and tag; direct publishers read the matching tag rather than mutable changelog files. `--no-build` and image-only releases retain notes in the tagged changelog without creating a GitHub Release body.
+- Real `cmru release` transactions require a non-editable CMRU wheel controller and record its wheel and installed-file digests in the release logs; `--dry-run` remains source-checkout friendly.
 - CMRU's aggregate gate uses Run-Gate SemVer as its compatibility floor and retained judge identity; it no longer treats a source revision counter as a compatibility version.
+- The native-R2 mutation lane requests contract-2 cgroup resource-event evidence; other tester lanes declare memory and PID limits but do not yet produce event evidence (KI-77). The 6.2.0 release candidate uses `gate-provisional`, so it records an explicit R2 deferral and contains no mutation resource-event evidence (KI-79).
+
+### Fixed
+- Bind release gates to the exact candidate commit and committed file contents. CMRU now refuses a release when a gate changes the candidate or hides tracked edits with Git index flags.
+- Recheck the pinned Run-Gate executable, installed wheel, published asset digest, and tester-image labels around each lane; use stable SemVer without a synthetic tester-image suffix.
+- Apply project-scope filtering against the full configured project set and refuse published-tag divergence even when only changelog files changed.
+- Parse valid indented level-two changelog headings when collecting pending release notes.
+- Resolve direct wheel-build invocations from the enclosing CMRU configuration when no
+  explicit builder-image environment value is supplied.
+- Use the full configured project-scope registry consistently for status, release tags, generated
+  changelog headings, and release notes, so cross-project scopes cannot produce mismatched versions.
+- Explain that a Run-Gate development/local build fails CMRU's stable `24.0.0` release-gate floor and name the minimum stable SemVer required.
 
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
