@@ -3913,6 +3913,10 @@ def test_tester_cmru_and_worktree_package_source_trees_are_nonempty():
         expected_workdir="/",
         run_sensitive_sources=("cmru", "libraries/worktree"),
         allowed_pre_sensitive_run_bodies=CMRU_PRE_SENSITIVE_RUN_BODIES,
+        # The Run-Gate wheel arrives through an external named BuildKit context
+        # (`COPY --from=run-gate-wheel`); it is not a CMRU input. Declared or
+        # intermediate stages are still refused.
+        allowed_external_contexts=("run-gate-wheel",),
         allowed_shell_prefix=(
             "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified",
         ),

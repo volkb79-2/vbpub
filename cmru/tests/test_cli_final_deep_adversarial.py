@@ -15,7 +15,7 @@ def _project(name="demo", *, git_tag=True, build_step="build", steps=None, strat
         name=name, cwd=name, project_root=Path(name), paths=[name], runner_steps=steps or {},
         steps=steps or {}, env={}, github_token="tok", prefix=f"{name}-v", scm_dist=None,
         git_tag=git_tag, build_step=build_step, version=SimpleNamespace(strategy=strategy),
-        changelog=None, commit_generated=(),
+        changelog=None, commit_generated=(), known_project_names=frozenset(),
     )
 
 
