@@ -679,6 +679,20 @@ def test_client_get_retries_after_401(install_host_mod, monkeypatch):
     assert calls["n"] == 2
 
 
+def test_client_post_without_body_sets_json_content_type(install_host_mod, monkeypatch):
+    requests = []
+
+    def fake_urlopen(req, timeout=30):
+        requests.append(req)
+        return FakeHTTPResponse(b"{}")
+
+    monkeypatch.setattr(install_host_mod.urllib.request, "urlopen", fake_urlopen)
+    client = install_host_mod.NetcupSCPClient("test-access-token")
+    assert client.post("/api/v1/users/1/isos/restore.iso?multipart=true") == {}
+    assert requests[0].get_header("Content-type") == "application/json"
+    assert requests[0].data is None
+
+
 # --- install_from_payload: --dry-run must never mutate -------------------
 
 def test_install_from_payload_dry_run_never_posts(install_host_mod, tmp_path, fake_client, capsys):

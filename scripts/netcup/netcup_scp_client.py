@@ -491,6 +491,10 @@ def _http_json(
     if json_body is not None:
         data = json.dumps(json_body).encode("utf-8")
         hdrs.setdefault("Content-Type", "application/json")
+    elif method.upper() in {"POST", "PUT", "PATCH"}:
+        # SCP validates Content-Type even for body-less JSON actions such as
+        # preparing an ISO upload. urllib omits this header when data is None.
+        hdrs.setdefault("Content-Type", "application/json")
 
     req = urllib.request.Request(url, data=data, method=method.upper(), headers=hdrs)
     try:
