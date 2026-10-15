@@ -144,7 +144,7 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
 ## Central defaults (vbpub monorepo)
 
 `run-gate.root.toml` at the REPO ROOT holds environment facts once for all
-internal projects (`[environments.<name>]`: `image`, optional `image_env`,
+internal projects (`[environments.<name>]`: `image`, optional ephemeral-only `image_env`,
 `cgroup_slice` or `cgroup_slice_env`) and, since RG-16, SHARED LANES too: every package can use
 the identical lane without copying definitions. Discovery: nearest STRICT
 ancestor of the project dir; project entries shadow a central name entirely
@@ -231,11 +231,35 @@ memory = "2g"                       # required local ceiling for memory.events a
 pids = 8192                          # required local ceiling for pids.events attribution
 ```
 
-Use `image_env` when a workflow must select an image by immutable or
-receipt-specific tag. Run-Gate reads the named environment variable before
-starting the container; an unset variable uses the declared `image`, while a
-set but empty variable is an error. The value is consumed by the host-side
-Run-Gate process and is not forwarded into the test container.
+### Per-invocation image selection
+
+Use `image_env` on an **ephemeral** environment when a workflow must select an
+image by immutable ID or receipt-specific tag:
+
+```toml
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"
+
+[lanes.suite]
+kind = "command"
+environment = "tester-unified"
+argv = ["true"]
+```
+
+Run-Gate reads the named variable before starting the container. An unset
+variable uses the declared `image`; a set but empty value is an error. The
+value is consumed by the host-side Run-Gate process and is not forwarded into
+the test container. The run log states whether the configured value or the
+override selected the image. `run-gate history --json` records the declared
+image, override variable, effective image, and immutable image ID inspected
+from the container that actually ran. An image ID inspection failure is
+recorded as unavailable with its reason rather than silently omitting the
+selection. `image_env` is refused for `exec` environments because Run-Gate does
+not start or replace their persistent container.
 
 The `native-r2` lane demonstrates the opt-in observer-only socket integration:
 it exposes only the read-only resource-observer socket to the Assay process in
@@ -1871,8 +1895,10 @@ and [release-gate overview](README.md#version-probe).
 ### Exact-wheel release verification
 
 The supported `cmru release run-gate-project` workflow prepares the wheel from
-the versioned changelog section before running `selftest`. It builds the tester
-image from those exact wheel bytes; the lane checks the image's baked SHA-256
+the versioned changelog section before running `selftest`. CMRU supplies the
+protected `CMRU_RELEASE_GATE_COMMIT` to that gate, and preparation refuses a
+missing or mismatched commit. It builds the tester image from those exact wheel
+bytes; the lane checks the image's baked SHA-256
 against a candidate receipt before pytest runs. CMRU rebuilds the release wheel
 after tagging and refuses publication if its digest does not match that
 receipt. Keep the package, wheel, and image steps inside this release workflow

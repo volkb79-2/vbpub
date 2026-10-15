@@ -937,8 +937,8 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
         fail(f"{where} [environments.{name}]: 'image' must be a non-empty string")
     image_env = table.get("image_env")
     if image_env is not None:
-        if mode == "host":
-            fail(f"{where} [environments.{name}]: 'image_env' requires a container mode")
+        if mode != "ephemeral":
+            fail(f"{where} [environments.{name}]: 'image_env' requires mode = 'ephemeral'")
         if not isinstance(image_env, str) or not re.fullmatch(
                 r"[A-Za-z_][A-Za-z0-9_]*", image_env):
             fail(f"{where} [environments.{name}]: 'image_env' must be a valid "
@@ -2007,11 +2007,20 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
         if resolved["mode"] == "host":
             return {}, source
         image_env = resolved.pop("image_env", None)
-        if image_env is not None and image_env in os.environ:
-            image_override = os.environ[image_env]
-            if not image_override.strip():
-                fail(f"{source}: selected image override ${image_env} is empty")
-            resolved["image"] = image_override
+        if image_env is not None:
+            declared_image = resolved["image"]
+            image_override_applied = image_env in os.environ
+            if image_override_applied:
+                image_override = os.environ[image_env]
+                if not image_override.strip():
+                    fail(f"{source}: selected image override ${image_env} is empty")
+                resolved["image"] = image_override
+            resolved["_image_selection"] = {
+                "declared_image": declared_image,
+                "override_env": image_env,
+                "override_applied": image_override_applied,
+                "effective_image": resolved["image"],
+            }
         # Preserve the repository's existing override for its explicitly
         # declared `host` container environment. The name alone selects no
         # behavior; its required `mode` does.
@@ -2027,6 +2036,63 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
              f"not defined in {project_path} nor in central config {central_path}")
     fail(f"[lanes.{lane_name}] in {project_path}: environment '{name}' is not "
          f"defined in {project_path} (no central {ROOT_CONFIG_NAME} exists)")
+
+
+def image_selection_record(env: dict, env_name: str,
+                           env_source: str) -> dict | None:
+    """Return JSON-safe evidence for a declared per-invocation image override."""
+    selection = env.get("_image_selection")
+    if not isinstance(selection, dict):
+        return None
+    return {
+        "environment": env_name,
+        "environment_source": env_source,
+        **selection,
+        "image_id": None,
+        "image_id_status": "not-observed",
+        "image_id_error": None,
+    }
+
+
+def inspect_container_image_id(docker: str, container: str) -> tuple[str | None, str | None]:
+    """Read the immutable image identity Docker actually started for a lane."""
+    try:
+        result = subprocess.run(
+            [docker, "inspect", "--format", "{{.Image}}", container],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "no diagnostic output").strip()
+        return None, f"docker inspect exited {result.returncode}: {detail[:300]}"
+    image_id = result.stdout.strip()
+    if re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+        return None, f"docker inspect returned an invalid image ID: {image_id!r}"
+    return image_id, None
+
+
+def disclose_image_selection(selection: dict | None) -> None:
+    if not isinstance(selection, dict):
+        return
+    variable = selection.get("override_env")
+    if selection.get("override_applied") is True:
+        origin = f"${variable} override"
+    else:
+        origin = f"declared image (override ${variable} unset)"
+    image_id = selection.get("image_id")
+    identity = f", image ID {image_id}" if isinstance(image_id, str) else ""
+    status = selection.get("image_id_status")
+    unavailable = (
+        f" (image ID {status}: {selection.get('image_id_error')})"
+        if status == "unavailable" else ""
+    )
+    print(
+        "run-gate: image selection: "
+        f"{selection.get('effective_image')} from {origin}; "
+        f"declared {selection.get('declared_image')}{identity}{unavailable}",
+        flush=True,
+    )
 
 
 def lane_environment_name(lane: dict) -> str:
@@ -5702,6 +5768,12 @@ def adopt_inflight_start(run_record: dict, pending: dict) -> None:
     would claim a mutation lane took the four seconds this client was
     attached to it."""
     run_record["started_at"] = pending["started_at"]
+    if isinstance(pending.get("image_selection"), dict):
+        run_record["image_selection"] = pending["image_selection"]
+    else:
+        # The current config is not evidence about a container started by an
+        # older invocation. Legacy records have no recoverable image source.
+        run_record.pop("image_selection", None)
     epoch = pending.get("started_epoch")
     if isinstance(epoch, (int, float)) and not isinstance(epoch, bool):
         run_record.pop("_started_monotonic", None)
@@ -12104,6 +12176,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     attached = resolve_inflight(docker, lane, lane_name, project_dir, repo,
                                 worktree, fresh, dry_run, run_record)
     if attached is not None:
+        disclose_image_selection(
+            run_record.get("image_selection") if run_record else None,
+        )
         return attached
     if not dry_run and lane.get("resource_observer") is not None:
         resource_observer_version_preflight(
@@ -12178,6 +12253,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     argv += [env["image"], "bash", "-c", inner]
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source} | "
           f"slice {slice_name} ({slice_src})", flush=True)
+    selection = (run_record.get("image_selection") if run_record is not None
+                 else image_selection_record(env, lane_environment_name(lane), env_source))
+    disclose_image_selection(selection)
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     print_lane_bounds(lane)
     print(f"run-gate: docker argv: "
@@ -12222,6 +12300,12 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         where = f"\nrun-gate: partial container logs: {saved}" if saved else ""
         fail_infra(f"docker run failed (exit {started.returncode}); last "
                    f"stderr line(s):\n{tail}{where}")
+    if isinstance(selection, dict):
+        image_id, image_error = inspect_container_image_id(docker, name)
+        selection["image_id"] = image_id
+        selection["image_id_status"] = "observed" if image_id else "unavailable"
+        selection["image_id_error"] = image_error
+        disclose_image_selection(selection)
     # RW-1: written on a SUCCESSFUL `docker run -d` and only then — a record
     # naming a container that was never created would send the next
     # invocation looking for a ghost.
@@ -12286,6 +12370,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         "watch": None,
         "placement": None,
     }
+    if isinstance(selection, dict):
+        inflight_payload["image_selection"] = selection
     if run_record is not None:
         run_record["_inflight"] = inflight_payload
     write_inflight_record(project_dir, worktree, lane_name, inflight_payload)
@@ -14396,6 +14482,11 @@ def _dispatch(argv: list[str] | None = None, *,
                 central_config_path=central_path,
                 central_config_sha256=central_cfg_sha256)
             record["_project_dir"] = eff_proj
+            image_selection = image_selection_record(
+                env, lane_environment_name(lane), env_source,
+            )
+            if image_selection is not None:
+                record["image_selection"] = image_selection
             if lane.get("kind") == "assay":
                 record["_assay_identity_mode"] = assay_identity_mode(lane)
             if _admission_ticket is not None:

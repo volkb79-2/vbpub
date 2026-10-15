@@ -1042,6 +1042,69 @@ def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
         assert identity["installed_payload_sha256"] == payload_sha256
 
 
+def test_release_gate_reads_legacy_pep610_archive_hash_from_installed_wheel(
+    tmp_path, monkeypatch,
+):
+    import venv
+
+    environment = tmp_path / "candidate-venv"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    interpreter = environment / "bin" / "python"
+    site_packages = environment / "lib" / (
+        f"python{sys.version_info.major}.{sys.version_info.minor}"
+    ) / "site-packages"
+    site_packages.mkdir(parents=True)
+    dist_info = site_packages / "run_gate-24.0.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: run-gate\nVersion: 24.0.0\n",
+        encoding="utf-8",
+    )
+    (site_packages / "run_gate.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (site_packages / "run_gate_admission.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (dist_info / "RECORD").write_text(
+        "run_gate.py,,\nrun_gate_admission.py,,\n", encoding="utf-8",
+    )
+    wheel = tmp_path / "run_gate-24.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"legacy direct-url wheel bytes")
+    wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    (tmp_path / "cmru").mkdir()
+    direct_url_path = dist_info / "direct_url.json"
+    direct_url_path.write_text(json.dumps({
+        "url": wheel.as_uri(),
+        "archive_info": {"hash": f"sha256={wheel_sha256}"},
+        "dir_info": {"editable": False},
+    }), encoding="utf-8")
+
+    launcher = environment / "bin" / "run-gate"
+    launcher.write_text(f"#!{interpreter}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    original_run = subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[0] == str(launcher):
+            return subprocess.CompletedProcess(argv, 0, stdout="run-gate 24.0.0\n", stderr="")
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(run_release_gate.shutil, "which", lambda _name: str(launcher))
+    monkeypatch.setattr(run_release_gate.subprocess, "run", run)
+
+    identity = run_release_gate._check_run_gate_identity(tmp_path)
+
+    assert identity["installed_wheel_sha256"] == wheel_sha256
+
+    direct_url_path.write_text(json.dumps({
+        "url": wheel.as_uri(),
+        "archive_info": {
+            "hash": f"sha256={wheel_sha256}",
+            "hashes": {"sha256": "f" * 64},
+        },
+        "dir_info": {"editable": False},
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="not proven to come from a non-editable wheel"):
+        run_release_gate._check_run_gate_identity(tmp_path)
+
+
 def test_release_gate_refuses_when_run_gate_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(run_release_gate.shutil, "which", lambda _name: None)
     with pytest.raises(RuntimeError, match="requires the installed run-gate CLI"):
@@ -1059,6 +1122,7 @@ def _mock_run_gate_release_artifact_inputs(
     asset_url="https://example.invalid/run-gate.whl", image_id=None,
     docker_error=None, configured_image="tester-unified:configured",
     run_gate_config_text=None, write_run_gate_config=True,
+    provider_prefix="run-gate-v",
 ):
     from cmru import config as cmru_config
     from cmru import tool_deps
@@ -1091,7 +1155,7 @@ def _mock_run_gate_release_artifact_inputs(
             )
     forge = SimpleNamespace(
         projects=(
-            {"run-gate-project": SimpleNamespace(prefix="run-gate-v")}
+            {"run-gate-project": SimpleNamespace(prefix=provider_prefix)}
             if provider_present else {}
         ),
         github=SimpleNamespace(owner="volkb79-2", repo="vbpub", token="test-token"),
@@ -1112,7 +1176,7 @@ def _mock_run_gate_release_artifact_inputs(
     }
     wheel_asset = {"name": wheel_name, "browser_download_url": asset_url}
     release = {
-        "tag_name": release_tag or f"run-gate-v{version}",
+        "tag_name": release_tag or f"{provider_prefix}{version}",
         "draft": release_draft,
         "prerelease": release_prerelease,
         "assets": [
@@ -1124,7 +1188,10 @@ def _mock_run_gate_release_artifact_inputs(
     }
 
     def get_release(path, **_kwargs):
-        assert path == "/repos/volkb79-2/vbpub/releases/tags/run-gate-v24.0.0"
+        assert path == (
+            "/repos/volkb79-2/vbpub/releases/tags/"
+            f"{provider_prefix}24.0.0"
+        )
         if release_error is not None:
             raise release_error
         return None if release_result is None else release
@@ -1185,6 +1252,28 @@ def test_release_gate_binds_installed_and_tester_run_gate_to_published_wheel(
         "docker", "image", "inspect", "--format", "{{json .}}",
         "tester-unified:release",
     ]]
+
+
+def test_release_gate_uses_prefix_from_the_repository_cmru_project_config(
+    tmp_path, monkeypatch,
+):
+    project_config = tomllib.loads(
+        (ROOT.parent / "run-gate-project" / "cmru.toml").read_text(
+            encoding="utf-8",
+        )
+    )
+    prefix = project_config["project"]["prefix"]
+    assert prefix == "run-gate-v"
+    monkeypatch.setenv("RUN_GATE_IMAGE_FOR_TEST", "tester-unified:release")
+    release, wheel_sha, _docker_calls = _mock_run_gate_release_artifact_inputs(
+        tmp_path, monkeypatch, provider_prefix=prefix,
+    )
+
+    run_release_gate._check_run_gate_release_artifacts(
+        tmp_path, _matching_release_identity(wheel_sha),
+    )
+
+    assert release["tag_name"] == f"{prefix}24.0.0"
 
 
 @pytest.mark.parametrize(
@@ -1554,6 +1643,22 @@ def test_release_gate_refuses_when_tester_image_changes_during_a_lane(
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
 
     assert calls == ["lane"]
+
+
+def test_run_gate_identity_recheck_preserves_published_payload_digest(
+    tmp_path, monkeypatch,
+):
+    expected = _gate_identity()
+    monkeypatch.setattr(
+        run_release_gate, "_check_run_gate_identity",
+        lambda _root: _base_run_gate_identity(),
+    )
+    monkeypatch.setattr(
+        run_release_gate, "_check_tester_image_identity",
+        lambda _root, **_kwargs: _tester_image_identity(),
+    )
+
+    assert run_release_gate._recheck_run_gate_identity(tmp_path, expected) == expected
 
 
 def test_a_silent_ref_detector_fails_the_gate(tmp_path, monkeypatch):

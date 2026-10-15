@@ -22,6 +22,20 @@ RECEIPT_PATH = PROJECT_ROOT / ".assay" / "run-gate-release-wheel.json"
 IMAGE_IDENTITY_PATH = Path("/etc/tester-unified-run-gate-wheel.json")
 IMAGE_VERSION_LABEL = "org.vbpub.run-gate.version"
 IMAGE_SHA256_LABEL = "org.vbpub.run-gate.wheel-sha256"
+_CANDIDATE_SELFTEST_CODE = "\n".join((
+    "import importlib.metadata",
+    "from pathlib import Path",
+    "import run_gate",
+    "import run_gate_admission",
+    "distribution = importlib.metadata.distribution('run-gate')",
+    "owned = {Path(distribution.locate_file(item)).resolve(strict=True) "
+    "for item in (distribution.files or ())}",
+    "for module in (run_gate, run_gate_admission):",
+    "    path = Path(module.__file__).resolve(strict=True)",
+    "    if path not in owned:",
+    "        raise SystemExit(f'Run-Gate module loaded outside the installed wheel: {path}')",
+    "raise SystemExit(run_gate.main(['selftest']))",
+))
 STABLE_SEMVER = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z"
 )
@@ -305,8 +319,18 @@ def _verify_receipt_image(receipt: dict[str, str]) -> None:
 
 
 def prepare(image_tag: str | None = None) -> dict[str, str]:
-    version = prepared_release_version(PROJECT_ROOT / "CHANGES.md")
     commit = _git("rev-parse", "HEAD")
+    gate_commit = os.environ.get("CMRU_RELEASE_GATE_COMMIT")
+    if not isinstance(gate_commit, str) or not gate_commit:
+        raise ReleaseCandidateError(
+            "stable Run-Gate preparation requires CMRU's protected release-gate commit"
+        )
+    if gate_commit != commit:
+        raise ReleaseCandidateError(
+            "CMRU release-gate commit does not match the selected Run-Gate checkout: "
+            f"expected {gate_commit}, observed {commit}"
+        )
+    version = prepared_release_version(PROJECT_ROOT / "CHANGES.md")
     image_tag = image_tag or f"tester-unified:run-gate-candidate-{commit[:12]}"
     epoch = _git("log", "-1", "--format=%ct")
     env = os.environ.copy()
@@ -474,7 +498,7 @@ def _verify_installed_candidate_wheel(receipt: dict[str, str]) -> None:
 
 
 def run_selftest(receipt_path: Path = RECEIPT_PATH) -> int:
-    """Run selftest through the console script installed from the receipted wheel."""
+    """Run selftest from modules owned by the installed receipted wheel."""
     if not receipt_path.is_absolute():
         receipt_path = PROJECT_ROOT / receipt_path
     receipt = _read_receipt(receipt_path)
@@ -495,12 +519,18 @@ def run_selftest(receipt_path: Path = RECEIPT_PATH) -> int:
         ) from exc
     env = os.environ.copy()
     env["RUN_GATE_RELEASE_WHEEL_RECEIPT"] = container_receipt
-    env["RUN_GATE_TESTER_UNIFIED_IMAGE"] = receipt["image_tag"]
+    env["RUN_GATE_TESTER_UNIFIED_IMAGE"] = receipt["image_id"]
     with tempfile.TemporaryDirectory(prefix="run-gate-candidate-driver-") as directory:
         executable = _candidate_cli(wheel, Path(directory))
+        python = executable.parent / "python"
+        if not python.is_file() or not os.access(python, os.X_OK):
+            raise ReleaseCandidateError(
+                f"the candidate environment has no executable Python at {python}"
+            )
         try:
             result = subprocess.run(
-                [str(executable), "selftest"], cwd=PROJECT_ROOT, env=env, check=False,
+                [str(python), "-I", "-c", _CANDIDATE_SELFTEST_CODE],
+                cwd=PROJECT_ROOT, env=env, check=False,
             )
         except OSError as exc:
             raise ReleaseCandidateError(

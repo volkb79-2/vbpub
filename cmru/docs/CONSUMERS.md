@@ -1067,9 +1067,20 @@ ambient values from every other project step, and project and step configuration
 cannot override these protected values. The pair is source-consistency metadata,
 not an authentication token or proof of CMRU provenance.
 
+During a release gate, CMRU supplies the candidate SHA as the protected
+`CMRU_RELEASE_GATE_COMMIT`. Release preparation steps can use it to bind a
+pre-tag receipt to the exact candidate. CMRU clears ambient values on other
+steps, and project configuration cannot set this name.
+
 A build that derives artifact identity from Git should check `HEAD` and the local
 tag against both values, then build from that exact commit. Invoke `cmru release`
 for publication; do not set the values manually.
+
+CMRU verifies that tracked source still matches the candidate around the gate,
+build, and publish steps. It refuses `assume-unchanged` and `skip-worktree`
+index flags, which can make Git status hide edits. Build outputs and logs should
+be ignored or declared as commit-bound evidence; do not have a release step
+rewrite tracked source.
 
 Put this check in a tagged artifact step before building. It verifies both the
 checked-out commit and the local tag after peeling annotated tags:

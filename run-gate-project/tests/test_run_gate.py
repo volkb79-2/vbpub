@@ -14106,6 +14106,12 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             echo "sha256:fakeid-$name"
             ;;
           inspect)
+            if [ "$1" = "--format" ] && [ "$2" = "{{{{.Image}}}}" ]; then
+              name="$3"
+              [ -f "$S/$name" ] || {{ echo "Error: No such object: $name" >&2; exit 1; }}
+              echo "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              exit 0
+            fi
             name="$3"
             [ -f "$S/$name" ] || {{ echo "Error: No such object: $name" >&2; exit 1; }}
             read status code id started < "$S/$name"
@@ -23090,6 +23096,45 @@ class TestEphemeralProfilingWiring:
         assert record["placement"] == placement
         assert not (proj / ".run-gate" / "inflight" / "suite.json").exists()
 
+    def test_candidate_image_override_is_the_docker_image_argument(
+            self, tmp_path, monkeypatch, capsys):
+        image_override = "tester-unified:receipt-candidate"
+        config = self._config().replace(
+            'image = "tester-unified:local"',
+            'image = "tester-unified:local"\n'
+            'image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"',
+        )
+        monkeypatch.setenv("RUN_GATE_TESTER_UNIFIED_IMAGE", image_override)
+        repo, proj = make_history_repo(tmp_path, config)
+        monkeypatch.setattr(run_gate, "physical_path", lambda p, **k: Path("/phys"))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        log, _state = fake_docker_stateful(tmp_path, monkeypatch)
+
+        assert run_gate.main(["suite"]) == 0
+        output = capsys.readouterr().out
+
+        run_call = docker_runs(log)[0]
+        assert run_call[-4] == image_override
+        assert "tester-unified:local" not in run_call
+        assert (
+            "image selection: tester-unified:receipt-candidate from "
+            "$RUN_GATE_TESTER_UNIFIED_IMAGE override" in output
+        )
+        assert "image ID sha256:" + "b" * 64 in output
+        selection = lane_slot(proj)["latest"]["image_selection"]
+        assert selection == {
+            "environment": "tester-unified",
+            "environment_source": f"[environments.tester-unified] in {proj / 'run-gate.toml'}",
+            "declared_image": "tester-unified:local",
+            "override_env": "RUN_GATE_TESTER_UNIFIED_IMAGE",
+            "override_applied": True,
+            "effective_image": image_override,
+            "image_id": "sha256:" + "b" * 64,
+            "image_id_status": "observed",
+            "image_id_error": None,
+        }
+
     def test_disabled_lane_has_no_token_and_no_profiling_calls(
             self, tmp_path, monkeypatch):
         # `RUN_GATE_PROFILE=off` stays set (the module autouse default) --
@@ -26424,10 +26469,17 @@ class TestRG78AndRG76DirectOracles:
                     {"mode": "ephemeral", "image": "tester:local", "image_env": value},
                     "run-gate.root.toml",
                 )
-        with pytest.raises(run_gate.GateError, match="requires a container mode"):
+        with pytest.raises(run_gate.GateError, match="requires mode = 'ephemeral'"):
             run_gate._validate_environment(
                 "local", {"mode": "host", "image_env": "TESTER_IMAGE"},
                 "run-gate.toml",
+            )
+        with pytest.raises(run_gate.GateError, match="requires mode = 'ephemeral'"):
+            run_gate._validate_environment(
+                "runner", {
+                    "mode": "exec", "image": "runner:local",
+                    "image_env": "TESTER_IMAGE",
+                }, "run-gate.toml",
             )
 
     def test_config_snapshot_inherits_nearest_root_config(self, tmp_path):

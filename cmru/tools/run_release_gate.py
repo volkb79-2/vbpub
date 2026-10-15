@@ -199,6 +199,13 @@ if direct_url:
     url = direct.get("url") if isinstance(direct, dict) else None
     editable = (direct.get("dir_info") or {}).get("editable", False) if isinstance(direct, dict) else False
     candidate = hashes.get("sha256") if isinstance(hashes, dict) else None
+    legacy_hash = archive.get("hash") if isinstance(archive, dict) else None
+    if isinstance(legacy_hash, str) and legacy_hash.startswith("sha256="):
+        legacy_candidate = legacy_hash.removeprefix("sha256=")
+        if candidate is None:
+            candidate = legacy_candidate
+        elif candidate != legacy_candidate:
+            candidate = None
     if (
         not editable
         and isinstance(url, str)
@@ -524,6 +531,7 @@ def _recheck_run_gate_identity(
     return {
         **current,
         "published_wheel_sha256": expected.get("published_wheel_sha256"),
+        "published_payload_sha256": expected.get("published_payload_sha256"),
         **image,
     }
 

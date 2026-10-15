@@ -64,6 +64,9 @@ from cmru.errors import (  # noqa: F401
 # CHILD_ENV is imported from cmru.credential_handoff (single definition).
 BRANCH_ENV = "CMRU_RELEASE_BRANCH"
 BASE_ENV = "CMRU_RELEASE_BASE"
+RELEASE_CONTROLLER_VERSION_ENV = "CMRU_RELEASE_CONTROLLER_VERSION"
+RELEASE_CONTROLLER_WHEEL_SHA256_ENV = "CMRU_RELEASE_CONTROLLER_WHEEL_SHA256"
+RELEASE_CONTROLLER_FILES_SHA256_ENV = "CMRU_RELEASE_CONTROLLER_FILES_SHA256"
 # Redesign section D: the bound launcher handed to project steps is internal.
 INTERNAL_BIN_ENV = "CMRU_INTERNAL_BIN"
 _LEGACY_RESUME_METADATA_KEY = "transaction_scope"
@@ -3421,12 +3424,17 @@ def run_child(
     workspace: ReleaseWorkspace, child_args: Sequence[str], *, verb: str = "release",
     project_names: Sequence[str] | None = None,
     credentials: CredentialHandoff | None = None,
+    controller_identity: Mapping[str, str] | None = None,
 ) -> int:
     """Run a CMRU verb from the snapshot, preserving terminal output.
 
     Release children use the installed ``cmru`` executable. For CMRU's own
     release, prepend the candidate's source roots so that the code being shipped
     also owns its transaction, including Git transport authentication.
+
+    A release caller also supplies its installed-wheel identity. The child
+    checks that its wheel and installed-file hashes still match before any
+    release plan or project gate can run.
 
     The publisher credential resolved by the parent reaches the child ONLY over
     a private inherited pipe (*credentials*): never argv, never a file in the
@@ -3443,6 +3451,27 @@ def run_child(
         env["CMRU_WORKSPACE_ID"] = workspace.workspace_id
     env["CMRU_WORKSPACE_PATH"] = str(workspace.path)
     env["CMRU_SOURCE_GIT_ROOT"] = str(workspace.repo_root)
+    if controller_identity is not None:
+        try:
+            version = controller_identity["version"]
+            wheel_sha256 = controller_identity["wheel_sha256"]
+            files_sha256 = controller_identity["distribution_sha256"]
+        except KeyError as exc:
+            raise RuntimeError(
+                "release controller identity is incomplete before child launch"
+            ) from exc
+        if (
+            not isinstance(version, str)
+            or not version
+            or not isinstance(wheel_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", wheel_sha256) is None
+            or not isinstance(files_sha256, str)
+            or re.fullmatch(r"[0-9a-f]{64}", files_sha256) is None
+        ):
+            raise RuntimeError("release controller identity is malformed before child launch")
+        env[RELEASE_CONTROLLER_VERSION_ENV] = version
+        env[RELEASE_CONTROLLER_WHEEL_SHA256_ENV] = wheel_sha256
+        env[RELEASE_CONTROLLER_FILES_SHA256_ENV] = files_sha256
     if project_names is not None:
         env["CMRU_TRANSACTION_PROJECTS"] = ",".join(project_names)
         candidate_cmru = workspace.path / "cmru" / "src"

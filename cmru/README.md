@@ -304,7 +304,11 @@ unchanged. The compatibility rationale is in the
 
 `release` detects changed projects, runs their explicit prepare/gate/tag/build/push/promote
 contract in dependency order, and retains a failed transaction for diagnosis. It publishes
-from the exact gated candidate commit, then pushes that same commit to `origin/main`. If main
+from the exact gated candidate commit and supplies its SHA to each gate as the protected
+`CMRU_RELEASE_GATE_COMMIT`. Around each gate, artifact build, and publish step, CMRU checks
+tracked file bytes and modes against that commit and refuses index flags that can hide edits;
+ignored logs and build outputs remain allowed. It then pushes that same commit to `origin/main`.
+If main
 advanced during the gate, CMRU merges `origin/main` into the candidate (up to three attempts, never
 a rebase or force-push) unless the new commits touched the project's own paths or conflict; see
 [promotion](docs/RELEASE-TRANSACTIONS.md#promotion-when-originmain-advanced-rel-04). A build

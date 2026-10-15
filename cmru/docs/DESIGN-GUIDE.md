@@ -451,6 +451,17 @@ lookup. Publication must use the supported `cmru release` workflow.
 The values are reserved so project configuration cannot replace the identity
 CMRU supplies to tagged artifact steps.
 
+The release gate also receives the selected commit as the protected
+`CMRU_RELEASE_GATE_COMMIT`. This lets a package prepare a commit-bound test
+receipt before CMRU assigns a release tag. CMRU clears ambient values of this
+name on ordinary steps and refuses project configuration that tries to set it.
+
+CMRU also rechecks the candidate source around every gate, build, and publish
+step. `git status` alone is insufficient because `assume-unchanged` and
+`skip-worktree` index flags can hide modified files. CMRU refuses those flags
+and compares tracked file bytes and modes with the candidate commit before it
+trusts a step; ignored logs and generated artifacts remain permitted.
+
 ## Git transport authentication
 
 The repository-root credential also covers CMRU's own GitHub HTTPS reads and writes. A release

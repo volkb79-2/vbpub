@@ -7,13 +7,7 @@ import pytest
 
 from debian_install_v2.actions import ActionError, HostActions
 from debian_install_v2.config import Config
-from debian_install_v2.installer import (
-    CLOUD_INIT_USER_DATA_CACHE_FILES,
-    INSTALL_COMPLETE_MARKER,
-    CompletedInstallRefusal,
-    Installer,
-)
-from debian_install_v2.state import StateStore
+from debian_install_v2.installer import CLOUD_INIT_USER_DATA_CACHE, Installer
 
 
 def _installer(mode: str) -> Installer:
@@ -47,71 +41,15 @@ def test_cloud_init_clean_modes_plan_only_the_selected_flags(mode, expected_argv
     ]
 
 
-def test_userdata_only_removes_all_secret_bearing_cloud_init_user_data_caches():
+def test_userdata_only_removes_exactly_the_raw_user_data_cache():
     installer = _installer("userdata-only")
 
     installer._cleanup_cloud_init_cache()
 
-    assert installer.actions.dry_run_removals == list(CLOUD_INIT_USER_DATA_CACHE_FILES)
+    assert installer.actions.dry_run_removals == [CLOUD_INIT_USER_DATA_CACHE]
     assert [action.argv for action in installer.actions.planned] == [
-        ("/usr/bin/rm", "-f", path) for path in CLOUD_INIT_USER_DATA_CACHE_FILES
+        ("/usr/bin/rm", "-f", CLOUD_INIT_USER_DATA_CACHE)
     ]
-
-
-def test_completed_state_refuses_a_fresh_install_without_overwriting_state(tmp_path, monkeypatch):
-    state_dir = tmp_path / "state"
-    config = Config(state_dir=str(state_dir))
-    state = StateStore(config.state_dir)
-    state.save_new(StateStore.new(config))
-    state.save(phase="done", status="success")
-    monkeypatch.setattr(
-        "debian_install_v2.installer.INSTALL_COMPLETE_MARKER",
-        str(tmp_path / "global-complete"),
-    )
-    installer = Installer(config, HostActions(dry_run=True), inspect_host=False)
-
-    with pytest.raises(CompletedInstallRefusal, match="completed install"):
-        installer._refuse_completed_install()
-
-    assert state.load()["phase"] == "done"
-    assert state.load()["status"] == "success"
-
-
-def test_fixed_completion_marker_refuses_a_fresh_install(tmp_path, monkeypatch):
-    marker = tmp_path / "global-complete"
-    marker.touch()
-    monkeypatch.setattr(
-        "debian_install_v2.installer.INSTALL_COMPLETE_MARKER", str(marker),
-    )
-    installer = Installer(
-        Config(state_dir=str(tmp_path / "state")),
-        HostActions(dry_run=True),
-        inspect_host=False,
-    )
-
-    with pytest.raises(CompletedInstallRefusal, match="completion marker"):
-        installer._refuse_completed_install()
-
-
-def test_install_refuses_replay_before_bootstrap_security_changes(tmp_path, monkeypatch):
-    marker = tmp_path / "global-complete"
-    marker.touch()
-    monkeypatch.setattr(
-        "debian_install_v2.installer.INSTALL_COMPLETE_MARKER", str(marker),
-    )
-    installer = Installer(
-        Config(state_dir=str(tmp_path / "state")),
-        HostActions(dry_run=True),
-        inspect_host=False,
-    )
-    installer._secure_bootstrap_files = Mock()
-    installer._install_guarded = Mock()
-
-    with pytest.raises(CompletedInstallRefusal, match="completion marker"):
-        installer.install()
-
-    installer._secure_bootstrap_files.assert_not_called()
-    installer._install_guarded.assert_not_called()
 
 
 def test_retain_mode_does_not_plan_cache_changes():
@@ -172,24 +110,6 @@ def _stage2_harness(*, fail_before_cleanup: bool = False):
 
 def test_cleanup_runs_after_successful_stage2_work():
     installer, events = _stage2_harness()
-
-    installer._stage2()
-
-    assert events[-2:] == [
-        "cloud-init-cleanup",
-        ("state-save", {"phase": "done", "status": "success"}),
-    ]
-
-
-def test_fixed_completion_marker_is_written_before_cloud_init_clean():
-    installer, events = _stage2_harness()
-    installer.actions = HostActions(dry_run=True)
-
-    def cleanup():
-        events.append("cloud-init-cleanup")
-        assert INSTALL_COMPLETE_MARKER in installer.actions.dry_run_writes
-
-    installer._cleanup_cloud_init_cache = cleanup
 
     installer._stage2()
 

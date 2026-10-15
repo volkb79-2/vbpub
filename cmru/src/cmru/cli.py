@@ -359,6 +359,7 @@ def run_project_step(
             # artifact steps receive the exact pair above.
             for key in ("CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG"):
                 internal_env.setdefault(key, None)
+            internal_env.setdefault("CMRU_RELEASE_GATE_COMMIT", None)
             # KI-75: where a publisher finds the curated section for the version
             # it releases (or `none` when the project opted out of a changelog).
             # Protected: a project cannot declare or replace it.
@@ -2782,26 +2783,24 @@ def _version_strategy(proj: "ProjectConfig") -> str:
 
 
 def _assert_release_candidate_unchanged(
-    repo_root: Path, project_name: str, expected_sha: str,
+    repo_root: Path, project_name: str, expected_sha: str, *, phase: str,
 ) -> None:
-    """Require publication to have used the exact candidate commit.
+    """Require a release step to use the exact candidate commit and bytes.
 
     Release steps may create ignored logs and artifact output, but they must not
-    move ``HEAD`` or leave a non-ignored worktree mutation behind. A later
-    promotion must therefore integrate the same commit that was gated and built.
+    move ``HEAD`` or change tracked source, including changes hidden by Git index
+    flags. A later promotion must integrate the same bytes that were gated and
+    built.
     """
     actual_sha = _git(repo_root, "rev-parse", "HEAD")
     if actual_sha != expected_sha:
         raise RuntimeError(
-            f"{project_name}: release step moved HEAD from {expected_sha} to "
+            f"{project_name}: {phase} moved HEAD from {expected_sha} to "
             f"{actual_sha}; refusing to promote a different commit"
         )
-    changed = _worktree_changed_paths(repo_root)
-    if changed:
-        raise RuntimeError(
-            f"{project_name}: release step left non-ignored changes before promotion: "
-            f"{', '.join(changed)}"
-        )
+    _assert_release_gate_source_matches_commit(
+        repo_root, expected_sha, phase=f"{phase} for {project_name}",
+    )
 
 
 def _project_release_paths(project: "ProjectConfig", name: str) -> list[str]:
@@ -2902,7 +2901,7 @@ def _run_release_gates_on_exact_head(
     """Run the declared gate and return only the commit it actually judged."""
     judged_sha = _git(repo_root, "rev-parse", "HEAD")
     _assert_release_gate_source_matches_commit(repo_root, judged_sha, phase="before")
-    _run_release_gates(repo_root, configs, names)
+    _run_release_gates(repo_root, configs, names, candidate_sha=judged_sha)
     current_sha = _git(repo_root, "rev-parse", "HEAD")
     if current_sha != judged_sha:
         raise RuntimeError(
@@ -2917,7 +2916,7 @@ def _run_release_gates_on_exact_head(
 def _assert_release_gate_source_matches_commit(
     repo_root: Path, expected_sha: str, *, phase: str,
 ) -> None:
-    """Reject hidden tracked-byte changes around a release gate.
+    """Reject candidate changes hidden by index flags or ordinary Git status.
 
     `git status` and `git diff` honor index flags such as assume-unchanged and
     skip-worktree. Check those flags directly, then compare every tracked byte
@@ -2930,8 +2929,8 @@ def _assert_release_gate_source_matches_commit(
     ]
     if flagged:
         raise RuntimeError(
-            f"release gate source {phase} the gate has assume-unchanged or "
-            "skip-worktree index entries; clear them before judging an exact commit"
+            f"candidate source {phase} has assume-unchanged or "
+            "skip-worktree index entries; clear them before CMRU uses this candidate"
         )
     try:
         from cmru.gate_snapshot import _verify_tracked_files_match_commit
@@ -2939,13 +2938,13 @@ def _assert_release_gate_source_matches_commit(
         _verify_tracked_files_match_commit(repo_root, expected_sha)
     except RuntimeError as exc:
         raise RuntimeError(
-            f"release gate source {phase} the gate does not match commit "
+            f"candidate source {phase} does not match commit "
             f"{expected_sha[:12]}: {exc}"
         ) from exc
     changed = _worktree_changed_paths(repo_root)
     if changed:
         raise RuntimeError(
-            f"release gate source {phase} the gate has non-ignored changes: "
+            f"candidate source {phase} has non-ignored changes: "
             f"{', '.join(changed[:8])}"
         )
 
@@ -2974,10 +2973,16 @@ def _run_tagged_build_and_publish(
     }
     if artifact_phases:
         try:
+            _assert_release_candidate_unchanged(
+                repo_root, name, candidate_sha, phase="before artifact build",
+            )
             _run_project_steps(
                 repo_root, configs, [name], artifact_phases,
                 github_config=github_config, env_config=env_config,
                 protected_env=release_identity,
+            )
+            _assert_release_candidate_unchanged(
+                repo_root, name, candidate_sha, phase="after artifact build",
             )
         except Exception as exc:  # deliberately broad: ANY build failure must roll the tag back; re-raised
             _rollback_unpublished_release_tag(
@@ -2985,12 +2990,23 @@ def _run_tagged_build_and_publish(
             )
             raise
     try:
+        _assert_release_candidate_unchanged(
+            repo_root, name, candidate_sha, phase="before publication",
+        )
+    except Exception as exc:
+        _rollback_unpublished_release_tag(
+            repo_root, workspace, tag, git_auth=git_auth, cause=exc,
+        )
+        raise
+    try:
         _run_project_steps(
             repo_root, configs, [name], ["push"],
             github_config=github_config, env_config=env_config,
             protected_env=release_identity,
         )
-        _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
+        _assert_release_candidate_unchanged(
+            repo_root, name, candidate_sha, phase="after publication",
+        )
     except Exception:  # deliberately broad: ANY failure after publish began must report it; re-raised
         _report_publication_started(repo_root, workspace, tag)
         raise
@@ -3058,11 +3074,16 @@ def _release_projects_sequentially(
             if not no_build:
                 log_info(f"Building + publishing {name} (no git tag)")
                 candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+                _assert_release_candidate_unchanged(
+                    repo_root, name, candidate_sha, phase="before untagged release",
+                )
                 _run_untagged_project(
                     repo_root, configs, name,
                     github_config=github_config, env_config=env_config,
                 )
-                _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
+                _assert_release_candidate_unchanged(
+                    repo_root, name, candidate_sha, phase="after untagged release",
+                )
                 released.append(f"{name} (no git tag)")
                 transaction.write_release_result(
                     repo_root, workspace, name, f"source-{_git(repo_root, 'rev-parse', 'HEAD')[:12]}"
@@ -3102,7 +3123,20 @@ def _release_projects_sequentially(
                 )
             tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
             if tag:
+                candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+                _assert_release_candidate_unchanged(
+                    repo_root, name, candidate_sha, phase="before tag publication",
+                )
                 _push_tags(repo_root, [tag], git_auth=git_auth, workspace=workspace)
+                try:
+                    _assert_release_candidate_unchanged(
+                        repo_root, name, candidate_sha, phase="after tag publication",
+                    )
+                except Exception as exc:
+                    _rollback_unpublished_release_tag(
+                        repo_root, workspace, tag, git_auth=git_auth, cause=exc,
+                    )
+                    raise
                 if not no_build:
                     log_info(f"Building + publishing {name} ({tag})")
                     candidate_sha = _git(repo_root, "rev-parse", "HEAD")
@@ -4218,9 +4252,12 @@ def _run_release_gates(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
     project_names: List[str],
+    *,
+    candidate_sha: str | None = None,
 ) -> None:
     """Run every selected project's declared release gate before source promotion."""
     log_dir = repo_root / "logs"
+    gate_commit = candidate_sha or _git(repo_root, "rev-parse", "HEAD")
     for name in project_names:
         project = configs[name]
         if not project.steps.get("run-tests"):
@@ -4229,7 +4266,10 @@ def _run_release_gates(
                 "cmru refuses to tag or publish without a meaningful tester-unified gate"
             )
         log_info(f"{name}: running required release gate")
-        run_project_step(project, "run-tests", repo_root, log_dir)
+        run_project_step(
+            project, "run-tests", repo_root, log_dir,
+            protected_env={"CMRU_RELEASE_GATE_COMMIT": gate_commit},
+        )
 
 
 def _check_release_tool_dependencies(
@@ -5376,6 +5416,78 @@ def _record_release_controller_identity(phase: str) -> Mapping[str, str]:
     return identity
 
 
+def _record_installed_release_controller_identity(phase: str) -> Mapping[str, str]:
+    """Hash the installed controller when CMRU self-release loads candidate source."""
+    from cmru.release_controller import installed_release_controller_identity
+
+    identity = installed_release_controller_identity()
+    log_debug(
+        f"verified installed CMRU release controller during {phase}: "
+        f"module={identity['module_path']}"
+    )
+    return identity
+
+
+def _release_child_controller_identity(
+    repo_root: Path, selected_names: Sequence[str],
+) -> Mapping[str, str]:
+    """Require the transaction child to see the launcher's installed wheel."""
+    expected = {
+        "version": os.environ.get(transaction.RELEASE_CONTROLLER_VERSION_ENV),
+        "wheel_sha256": os.environ.get(
+            transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV,
+        ),
+        "distribution_sha256": os.environ.get(
+            transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV,
+        ),
+    }
+    if not all(isinstance(value, str) and value for value in expected.values()):
+        raise RuntimeError(
+            "CMRU transaction child has no complete launcher controller identity"
+        )
+    selected = {
+        "version": expected["version"],
+        "wheel_sha256": expected["wheel_sha256"],
+        "distribution_sha256": expected["distribution_sha256"],
+    }
+    if any(
+        re.fullmatch(r"[0-9a-f]{64}", selected[key]) is None
+        for key in ("wheel_sha256", "distribution_sha256")
+    ):
+        raise RuntimeError("CMRU transaction child launcher controller identity is malformed")
+
+    if "cmru" in selected_names:
+        # A CMRU self-release intentionally imports the candidate source tree.
+        # Its installed bootstrap wheel still must match the parent launcher.
+        try:
+            active_module = Path(__file__).resolve(strict=True)
+            candidate_module = (
+                repo_root / "cmru" / "src" / "cmru" / "cli.py"
+            ).resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"cannot resolve the CMRU self-release candidate controller: {exc}"
+            ) from exc
+        if active_module != candidate_module:
+            raise RuntimeError(
+                "CMRU self-release controller is not loaded from its selected candidate: "
+                f"active={active_module}, candidate={candidate_module}"
+            )
+        actual = _record_installed_release_controller_identity("transaction")
+    else:
+        actual = _record_release_controller_identity("transaction")
+    actual_identity = {
+        key: actual.get(key)
+        for key in ("version", "wheel_sha256", "distribution_sha256")
+    }
+    if actual_identity != selected:
+        raise RuntimeError(
+            "CMRU release controller identity changed between launcher and transaction: "
+            f"launcher={selected}, transaction={actual_identity}; refusing to release"
+        )
+    return actual
+
+
 def _release_launcher(
     rest: List[str], vargs, cfg_path: Path, repo_root: Path, configs, ordered,
     project_order, selected_names: List[str], resume_scope, git_auth,
@@ -5421,13 +5533,14 @@ def _release_launcher(
     # project's own path (--allow-uncommitted overrides): otherwise it would be
     # silently left out with no warning, since the build never looks at it.
     try:
+        launcher_identity = None
         if not vargs.dry_run:
-            identity = _record_release_controller_identity("launcher")
+            launcher_identity = _record_release_controller_identity("launcher")
             log_info(
                 "CMRU release controller: "
-                f"version={identity['version']} "
-                f"wheel-sha256={identity['wheel_sha256']} "
-                f"installed-files-sha256={identity['distribution_sha256']}"
+                f"version={launcher_identity['version']} "
+                f"wheel-sha256={launcher_identity['wheel_sha256']} "
+                f"installed-files-sha256={launcher_identity['distribution_sha256']}"
             )
         transaction_root = transaction.source_git_root_for_projects(
             repo_root, [configs[name] for name in release_scope]
@@ -5548,6 +5661,7 @@ def _release_launcher(
             rc = transaction.run_child(
                 workspace, child_args, project_names=release_scope,
                 credentials=_credential_handoff(github_config, configs, release_scope),
+                controller_identity=launcher_identity,
             )
             if rc == 0:
                 retained: list[Path] = []
@@ -5638,7 +5752,7 @@ def _release_child(
     from cmru.version import ReleasePlanRefused, release_cmd, detect_changed_projects
 
     if not vargs.dry_run:
-        identity = _record_release_controller_identity("transaction")
+        identity = _release_child_controller_identity(repo_root, selected_names)
         log_info(
             "CMRU transaction controller: "
             f"version={identity['version']} "

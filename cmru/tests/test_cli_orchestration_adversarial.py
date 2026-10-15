@@ -82,16 +82,20 @@ def test_release_gate_refuses_missing_run_tests_before_runner(monkeypatch, tmp_p
         cli._run_release_gates(tmp_path, {"demo": project}, ["demo"])
     project.steps = {"run-tests": [object()]}
     calls = []
-    monkeypatch.setattr(cli, "run_project_step", lambda *args: calls.append(args[1]))
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "a" * 40)
+    monkeypatch.setattr(
+        cli, "run_project_step",
+        lambda *args, **kwargs: calls.append((args[1], kwargs.get("protected_env"))),
+    )
     cli._run_release_gates(tmp_path, {"demo": project}, ["demo"])
-    assert calls == ["run-tests"]
+    assert calls == [("run-tests", {"CMRU_RELEASE_GATE_COMMIT": "a" * 40})]
 
 
 def test_release_gate_refuses_when_candidate_head_moves_during_gate(monkeypatch, tmp_path):
     heads = iter(("a" * 40, "b" * 40))
     monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: next(heads))
     monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(cli, "_run_release_gates", lambda *_args: None)
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *_args, **_kwargs: None)
     with pytest.raises(RuntimeError, match="gate changed the candidate commit"):
         cli._run_release_gates_on_exact_head(tmp_path, {}, ["demo"])
 
@@ -106,6 +110,10 @@ def test_release_gate_source_check_rejects_hidden_tracked_byte_change(tmp_path, 
 
     with pytest.raises(RuntimeError, match="assume-unchanged or skip-worktree"):
         cli._assert_release_gate_source_matches_commit(root, expected_sha, phase="after")
+    with pytest.raises(RuntimeError, match="assume-unchanged or skip-worktree"):
+        cli._assert_release_candidate_unchanged(
+            root, "demo", expected_sha, phase="after artifact build",
+        )
 
 
 def test_child_release_args_removes_resume_but_rejects_no_obsolete_destructive_option(tmp_path):

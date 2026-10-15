@@ -73,15 +73,6 @@ _LOG = logging.getLogger("debian_install_v2.installer")
 
 TELEGRAM_MESSAGE_LIMIT = 4096
 CLOUD_INIT_USER_DATA_CACHE = "/var/lib/cloud/instance/user-data.txt"
-CLOUD_INIT_USER_DATA_CACHE_FILES = (
-    CLOUD_INIT_USER_DATA_CACHE,
-    "/var/lib/cloud/instance/user-data.txt.i",
-    "/var/lib/cloud/instance/cloud-config.txt",
-    "/var/lib/cloud/instance/obj.pkl",
-)
-# Fixed outside cloud-init's cache and independent of the profile-selected
-# state_dir. A retained NoCloud ISO can run runcmd again after `cloud-init clean`.
-INSTALL_COMPLETE_MARKER = "/var/lib/vbpub/install-v2-complete"
 
 # LT-F-r1002-01: stage2's apt-get exited 100 because unattended-upgrade (started
 # by apt-daily-upgrade.service 4 s earlier) held the dpkg lock. Every apt-get the
@@ -155,10 +146,6 @@ class HostIdentityRefusal(InstallerError):
     filesystem minimum, mounted partitions, ...) are NOT identity refusals: the
     host is the right one, so the key stays for diagnosis.
     """
-
-
-class CompletedInstallRefusal(InstallerError):
-    """A fresh-install entrypoint was invoked after this host completed stage two."""
 
 
 class UnsupportedHostRelease(HostIdentityRefusal, ConfigError):
@@ -365,8 +352,8 @@ class Installer:
     def _handle_failure(self, exc: BaseException, phase: str) -> None:
         """Failure bookkeeping. Every step is best-effort; it never raises.
 
-        * HostIdentityRefusal / CompletedInstallRefusal: post ONLY. No state,
-          controller key or timer change; the host must remain untouched.
+        * HostIdentityRefusal (D1): post ONLY. No state, no controller key, no
+          timer change -- this is not the host the config is for.
         * Otherwise: failed state.json (see _record_failed_state for the rule
           about a state that belongs to another run), the controller key
           (idempotent), the apt timers ONLY if this run held them, then ONE post.
@@ -376,16 +363,13 @@ class Installer:
         self._in_failure_handling = True
         self._state_frozen = False
         try:
-            refusal = isinstance(exc, (HostIdentityRefusal, CompletedInstallRefusal))
+            refusal = isinstance(exc, HostIdentityRefusal)
             owns_state = False
             note = ""
             if refusal:
                 self._state_frozen = True  # never touch (or quote) any state.json
                 if not self.actions.dry_run:
-                    if isinstance(exc, HostIdentityRefusal):
-                        note = " (host-identity refusal: nothing was installed or changed on this host)"
-                    else:
-                        note = " (completed-install refusal: existing state and install markers were left untouched)"
+                    note = " (host-identity refusal: nothing was installed or changed on this host)"
             elif not self.actions.dry_run:  # a dry run never writes state or touches the host
                 owns_state, note = self._record_failed_state(exc, phase)
                 self._ensure_controller_key_after_failure()
@@ -461,40 +445,11 @@ class Installer:
             _LOG.warning("could not install the controller key after failure: %s", exc)
 
     def install(self) -> None:
+        # LT-F-r1002-03: first action, before the state init / plan code that can
+        # fail early (stage1 repeats it; it is idempotent).
+        self._secure_bootstrap_files()
         with self.failure_guard("stage1"):
-            self._refuse_completed_install()
-            # LT-F-r1002-03: before state init / plan code that can fail early
-            # (stage1 repeats it; it is idempotent).
-            self._secure_bootstrap_files()
             self._install_guarded()
-
-    def _refuse_completed_install(self) -> None:
-        """Prevent a replayed cloud-init seed from starting a second disk install."""
-        fixed_marker = Path(INSTALL_COMPLETE_MARKER)
-        if fixed_marker.exists() or fixed_marker.is_symlink():
-            raise CompletedInstallRefusal(
-                "this host already has the debian-install-v2 completion marker; "
-                "refusing to start a fresh install"
-            )
-        state_path = Path(self.config.state_dir) / "state.json"
-        state_marker = Path(self.config.state_dir) / "stage2_done"
-        if state_marker.exists() or state_marker.is_symlink():
-            raise CompletedInstallRefusal(
-                f"{state_marker} marks stage two complete; refusing to start a fresh install"
-            )
-        if not state_path.exists() and not state_path.is_symlink():
-            return
-        try:
-            state = self.state.load()
-        except StateError as exc:
-            raise CompletedInstallRefusal(
-                f"cannot safely inspect existing installer state at {state_path}; "
-                "refusing to overwrite it"
-            ) from exc
-        if state.get("phase") == "done" or state.get("status") == "success":
-            raise CompletedInstallRefusal(
-                f"{state_path} records a completed install; refusing to start a fresh install"
-            )
 
     def _install_guarded(self) -> None:
         new_state = StateStore.new(self.config)
@@ -4305,8 +4260,7 @@ MaxFileSec=1month
         self._mark_step(step, "run", mode)
         try:
             if mode == "userdata-only":
-                for path in CLOUD_INIT_USER_DATA_CACHE_FILES:
-                    self.actions.remove_file(path)
+                self.actions.remove_file(CLOUD_INIT_USER_DATA_CACHE)
             else:
                 argv = ["/usr/bin/cloud-init", "clean"]
                 if mode == "clean-all":
@@ -4368,9 +4322,6 @@ MaxFileSec=1month
         self._activate_swap_partitions()
         self._health_gate_swap_devices()
         self._release_apt_timers()
-        # Set this before `cloud-init clean`: an attached NoCloud ISO remains a
-        # source after clean and can otherwise replay its original runcmd.
-        self.actions.write_file(INSTALL_COMPLETE_MARKER, "schema_version=1\n", 0o600)
         # Run last so failures in the install work above retain cloud-init's
         # user-data and cache for diagnosis.
         self._cleanup_cloud_init_cache()

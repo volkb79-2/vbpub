@@ -144,18 +144,14 @@ credentials. Earlier stage-two failures do not invoke cleanup.
 | Value | Effect after successful stage two |
 | --- | --- |
 | `retain` | Keep all cloud-init cache data (default). |
-| `userdata-only` | Remove the cloud-init copies of user-data that may contain credentials: `user-data.txt`, `user-data.txt.i`, `cloud-config.txt`, and `obj.pkl`. |
+| `userdata-only` | Remove only `/var/lib/cloud/instance/user-data.txt`. |
 | `clean` | Run `cloud-init clean`; clear cloud-init run state while retaining logs and the guest's cached seed. |
 | `clean-all` | Run `cloud-init clean --logs --seed`; also remove cloud-init logs and the guest's cached seed. |
 
 Both clean modes make cloud-init run its stages again on the next boot. If the
 same NoCloud seed ISO is still attached, cloud-init may process the same
 user-data again; `--seed` removes only the guest's local cached seed, not the
-attached ISO. Before cleanup, the installer writes the durable
-`/var/lib/vbpub/install-v2-complete` marker outside cloud-init's cache. A later
-fresh-install invocation checks that marker and the saved state, then refuses
-before it can create a new state or repartition the disk. Use `resume` for an
-incomplete stage two. `clean-all` intentionally does not pass `--configs all`,
+attached ISO. `clean-all` intentionally does not pass `--configs all`,
 `--machine-id`, or `--reboot`, so it does not ask cloud-init to remove the
 installed SSH/network/fstab configuration, reset this VM's identity, or reboot
 immediately. See the [design rationale](docs/DESIGN-GUIDE.md#cloud-init-cache-cleanup-policy)

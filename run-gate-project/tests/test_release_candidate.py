@@ -513,6 +513,7 @@ def test_prepare_records_the_exact_wheel_and_tester_image(monkeypatch, tmp_path,
     }
     image_id = "sha256:" + "b" * 64
     monkeypatch.setattr(release_candidate, "prepared_release_version", lambda _path: "24.0.0")
+    monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
     monkeypatch.setattr(
         release_candidate,
         "_git",
@@ -577,6 +578,7 @@ def test_prepare_refuses_mismatched_build_and_image(
         "sha256": "a" * 64,
     }
     monkeypatch.setattr(release_candidate, "prepared_release_version", lambda _path: "24.0.0")
+    monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
     monkeypatch.setattr(
         release_candidate,
         "_git",
@@ -587,6 +589,26 @@ def test_prepare_refuses_mismatched_build_and_image(
     monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
     results = iter((_completed(), _completed(), image_result))
     monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+        release_candidate.prepare()
+
+
+@pytest.mark.parametrize(
+    ("gate_commit", "message"),
+    [
+        (None, "requires CMRU's protected release-gate commit"),
+        ("2" * 40, "does not match the selected Run-Gate checkout"),
+    ],
+)
+def test_prepare_refuses_stable_candidate_without_matching_cmru_gate_commit(
+    monkeypatch, gate_commit, message,
+):
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: "1" * 40)
+    if gate_commit is None:
+        monkeypatch.delenv("CMRU_RELEASE_GATE_COMMIT", raising=False)
+    else:
+        monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", gate_commit)
 
     with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
         release_candidate.prepare()
@@ -678,6 +700,10 @@ def test_run_selftest_uses_receipt_specific_image_without_mutating_shared_tag(mo
     monkeypatch.setattr(release_candidate, "_git", lambda *_args: receipt["candidate_commit"])
     monkeypatch.setattr(release_candidate, "_verify_receipt_image", lambda _receipt: None)
     candidate_cli = tmp_path / "candidate-venv" / "bin" / "run-gate"
+    candidate_cli.parent.mkdir(parents=True)
+    candidate_python = candidate_cli.parent / "python"
+    candidate_python.write_text("unused by mocked process", encoding="utf-8")
+    candidate_python.chmod(0o755)
     monkeypatch.setattr(
         release_candidate,
         "_candidate_cli",
@@ -692,11 +718,81 @@ def test_run_selftest_uses_receipt_specific_image_without_mutating_shared_tag(mo
     monkeypatch.setattr(release_candidate.subprocess, "run", run)
     assert release_candidate.run_selftest(Path(".assay/receipt.json")) == 7
     argv, cwd, env, check = calls[0]
-    assert argv == [str(candidate_cli), "selftest"]
+    assert argv[:2] == [str(candidate_cli.parent / "python"), "-I"]
+    assert argv[2] == "-c"
+    assert "distribution.locate_file" in argv[3]
+    assert "run_gate_admission" in argv[3]
     assert cwd == project_root
     assert env["RUN_GATE_RELEASE_WHEEL_RECEIPT"] == ".assay/receipt.json"
-    assert env["RUN_GATE_TESTER_UNIFIED_IMAGE"] == receipt["image_tag"]
+    assert env["RUN_GATE_TESTER_UNIFIED_IMAGE"] == receipt["image_id"]
     assert check is False
+
+
+def test_run_selftest_ignores_pythonpath_shadow_and_uses_installed_wheel(
+    monkeypatch, tmp_path, capsys,
+):
+    project_root = tmp_path / "run-gate-project"
+    receipt_path = project_root / ".assay" / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    wheel_path = project_root / "dist" / "run_gate-24.0.0-py3-none-any.whl"
+    wheel_path.parent.mkdir()
+    wheel_path.write_bytes(b"exact candidate wheel")
+    receipt = _receipt(sha256=hashlib.sha256(wheel_path.read_bytes()).hexdigest())
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: receipt["candidate_commit"])
+    monkeypatch.setattr(release_candidate, "_verify_receipt_image", lambda _receipt: None)
+
+    candidate_env = tmp_path / "candidate-venv"
+    import venv
+
+    venv.EnvBuilder(with_pip=False).create(candidate_env)
+    python = candidate_env / "bin" / "python"
+    site_packages = candidate_env / "lib" / (
+        f"python{sys.version_info.major}.{sys.version_info.minor}"
+    ) / "site-packages"
+    site_packages.mkdir(parents=True)
+    dist_info = site_packages / "run_gate-24.0.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: run-gate\nVersion: 24.0.0\n",
+        encoding="utf-8",
+    )
+    (site_packages / "run_gate.py").write_text(
+        "def main(argv):\n"
+        "    assert argv == ['selftest']\n"
+        "    print('candidate module:', __file__)\n"
+        "    return 23\n",
+        encoding="utf-8",
+    )
+    (site_packages / "run_gate_admission.py").write_text("\n", encoding="utf-8")
+    files = ["run_gate.py", "run_gate_admission.py"]
+    (dist_info / "RECORD").write_text(
+        "".join(f"{name},,\n" for name in files), encoding="utf-8",
+    )
+    (dist_info / "WHEEL").write_text(
+        "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        encoding="utf-8",
+    )
+    console_script = candidate_env / "bin" / "run-gate"
+    console_script.write_text("unused by isolated invocation\n", encoding="utf-8")
+    monkeypatch.setattr(
+        release_candidate, "_candidate_cli", lambda _wheel, _root: console_script,
+    )
+
+    shadow = tmp_path / "shadow"
+    shadow.mkdir()
+    (shadow / "run_gate.py").write_text(
+        "raise SystemExit(91)\n", encoding="utf-8",
+    )
+    (shadow / "run_gate_admission.py").write_text(
+        "raise SystemExit(92)\n", encoding="utf-8",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(shadow))
+
+    assert release_candidate.run_selftest(Path(".assay/receipt.json")) == 23
+    output = capsys.readouterr().out
+    assert str(site_packages / "run_gate.py") in output
 
 
 def test_run_selftest_refuses_wrong_commit_and_receipt_outside_checkout(
@@ -755,6 +851,10 @@ def test_run_selftest_reports_a_spawn_error(monkeypatch, tmp_path):
         "_candidate_cli",
         lambda _wheel, _temp_root: tmp_path / "candidate-venv" / "bin" / "run-gate",
     )
+    candidate_python = tmp_path / "candidate-venv" / "bin" / "python"
+    candidate_python.parent.mkdir(parents=True)
+    candidate_python.write_text("unused by mocked process", encoding="utf-8")
+    candidate_python.chmod(0o755)
     monkeypatch.setattr(
         release_candidate.subprocess,
         "run",

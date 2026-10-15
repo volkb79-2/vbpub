@@ -41,6 +41,9 @@ and [consumer adoption note](../CONSUMERS.md#release-coverage-baseline).
 
 The CMRU `run-tests` step reads the new dated version section prepared in
 `CHANGES.md` and refuses a section at or behind the newest release tag. It
+requires CMRU's protected `CMRU_RELEASE_GATE_COMMIT` and verifies that it
+matches the selected checkout, so a dated heading alone cannot stamp a stable
+version onto an unrelated or manually prepared tree. It then
 builds that wheel through CMRU's wheel builder and builds a uniquely tagged
 `tester-unified` image from those exact wheel bytes. The selftest selects that
 tag through `image_env`, leaving the shared `:local` tag alone. Before pytest,
@@ -145,13 +148,15 @@ checked independently.
 ## Per-invocation image identity
 
 Release gates must not replace a shared mutable image tag while proving which
-wheel they tested. `image_env` lets a container environment keep its normal
-declared `image` while one invocation selects a receipt-specific tag through a
-named host environment variable. An unset variable preserves ordinary
-behavior; a present but empty value refuses. Run-Gate consumes the value
-before launching the container and does not pass it through to the test
-process. This keeps an exact candidate image attached to its receipt without
-changing the image selected by unrelated lanes.
+wheel they tested. `image_env` is available only to ephemeral environments:
+the Run-Gate process that starts the lane can select that invocation's image,
+but an `exec` lane cannot replace the image of a persistent container. The
+named host variable overrides the declared `image` when set and non-empty; when
+unset, the declared value remains in effect. A set but empty value refuses.
+Run-Gate prints the override source and effective image, then records that
+selection and the actual Docker image ID in the lane history. This binds a
+receipt-specific candidate to its evidence without moving a shared tag and
+makes an environment override visible during later review.
 
 ## PID 1 and cgroup resource events
 
