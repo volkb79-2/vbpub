@@ -72,6 +72,11 @@ services:
       # Alternative HTTPS: port-based routing fallback.
       - "9443:8443"
 
+      # Mattermost Calls: same public port over TCP and UDP. TCP maps to its
+      # own Traefik port because internal 8443/TCP belongs to websecure-alt.
+      - "8443:8444/tcp"
+      - "8443:8443/udp"
+
     volumes:
 
       # Static Traefik config — re-render + restart container on change.
