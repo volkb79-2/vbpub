@@ -98,7 +98,12 @@ The image is defined by [`wheel-builder/Dockerfile`](../wheel-builder/Dockerfile
 The bootstrap script checks its `org.vbpub.wheel-builder.kind` label and
 rebuilds the configured image tag from that Dockerfile when the tag is missing
 or points to a different image; an MDT devcontainer tag cannot silently stand
-in for the source-built wheel builder.
+in for the source-built wheel builder. Before any Docker/Buildx work it proves
+the build slice on the Docker host, and it ends by writing
+`cmru/dist/bootstrap-artifacts.env`: the exact paths and SHA-256 digests of the
+CMRU and `cli-extended` wheels it built. Install exactly those wheels
+(`cli-extended` first) into the Python environment you choose; no `cmru` command
+exists until you do, and the zero-release guide's step 1 shows the commands.
 For the complete zero-release sequence and dependency order, see
 [`docs/BOOTSTRAP-FROM-ZERO.md`](../docs/BOOTSTRAP-FROM-ZERO.md).
 The script prints the manual virtual-environment install commands (cli-extended wheel
@@ -441,7 +446,13 @@ uses `--enable-docker` must also declare its nested-Docker image and that sideca
 and DinD images run privileged, so they must be `@sha256:`-pinned and already present locally:
 they are started with `--pull=never`. The stock `wheel-build`
 handler resolves the wheel-builder image from its explicit environment or the nearest
-enclosing CMRU configuration. These are release inputs, not CMRU defaults; pin immutable
+enclosing CMRU configuration, and it proves its `CMRU_DOCKER_CGROUP_PARENT` /
+`$CGROUP_PARENT_DEV_BACKGROUND` slice is a real host systemd unit (`LoadState=loaded` with a
+non-empty `FragmentPath`, probed on the Docker host through the same pinned probe image used by
+`tester-gate`, placed in `CMRU_TESTER_CGROUP_PARENT`) before it starts any build container; a
+typo'd slice, an absent probe input, or an unavailable probe refuses with exit 3 and starts
+nothing. `publish --from-checkout` refuses a release-prose source unless the local
+`<prefix>-v<version>` tag points at the same commit as origin's tag of that name. These are release inputs, not CMRU defaults; pin immutable
 digests in a production contract. Direct calls from a registered project resolve the
 central orchestration environment even when they run outside a release step. See the
 [configuration resolution design](docs/DESIGN-GUIDE.md#direct-wheel-build-uses-the-declared-image).
@@ -798,6 +809,15 @@ tracks that gap. The current 6.2.0 release candidate selects
 and canary checks, then records the operator-approved R2 deferral under KI-79.
 It therefore records no mutation event evidence. The full `gate` lane remains
 available for the post-release mutation campaign.
+A provisional gate still exits 0, but it is reported and recorded as **provisional**, never
+as a full pass: after every required non-mutation lane and the final canary succeeded, the
+retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) has
+`state: "provisional"` and a `deferred_lanes` entry naming the `mutation` lane, its reason,
+tracking id, follow-up lane and prerequisites, and the marker
+`.assay/mutation-postponed-cmru.json` says `result: "provisional"`. A failed lane or canary
+leaves neither record, and a full `gate` records `state: "passed"` with an empty
+`deferred_lanes` and removes any stale marker. The follow-up needs
+a branch created at the published release tag (so the exact tagged source is judged), the CGProfile host observer deployed and reachable, and the D-4 capacity evidence the Run-Gate follow-up lane requires (defined by the Run-Gate RG-55 program, not by CMRU).
 If origin has no published stable CMRU tag, the same protected provisional
 release workflow instead runs the explicit whole-source `assay-first-release`
 lane. It does not fabricate a diff base. The gate records that whole-source R2

@@ -50,31 +50,6 @@ if [[ -z "${cgroup_parent}" ]]; then
     exit 2
 fi
 
-builder_kind=""
-if docker image inspect "${builder_image}" >/dev/null 2>&1; then
-    builder_kind="$(docker image inspect \
-        --format '{{index .Config.Labels "org.vbpub.wheel-builder.kind"}}' \
-        "${builder_image}" 2>/dev/null || true)"
-fi
-if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
-    echo "[INFO] Building ${builder_image} from wheel-builder/Dockerfile (image label is ${builder_kind:-missing})" >&2
-    docker buildx build --load --pull \
-        --cgroup-parent "${cgroup_parent}" \
-        -f "${repo_root}/wheel-builder/Dockerfile" \
-        -t "${builder_image}" \
-        "${repo_root}"
-    builder_kind="$(docker image inspect \
-        --format '{{index .Config.Labels "org.vbpub.wheel-builder.kind"}}' \
-        "${builder_image}" 2>/dev/null)" || {
-        echo "[ERROR] cannot verify the rebuilt wheel-builder image ${builder_image}" >&2
-        exit 2
-    }
-    if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
-        echo "[ERROR] rebuilt image ${builder_image} has unexpected wheel-builder label ${builder_kind:-missing}" >&2
-        exit 2
-    fi
-fi
-
 # cmru depends on the cli-extended WHEEL (KI-51 / CX-D1: never vendored, never from
 # an index; normally the RELEASED one, or the explicit zero-release source build
 # below). `python -m cmru.handlers` imports it, so the bootstrap
@@ -202,6 +177,56 @@ printf 'Metadata-Version: 2.1\nName: cmru\nVersion: %s\n' "${cmru_version}" > "$
 printf 'bootstrap\n' > "${cmru_dist_info}/INSTALLER"
 : > "${cmru_dist_info}/RECORD"
 
+# Host placement is proven BEFORE any Docker/Buildx workload starts. systemd
+# auto-vivifies an unlimited transient slice for a typo'd name and Docker then
+# starts the build there without complaint. This is CMRU's own host-side probe
+# contract (LoadState=loaded + non-empty FragmentPath, read from the Docker
+# HOST's systemd by a pinned privileged probe container; never a local
+# systemctl): the same check `cmru handler wheel-build` repeats for each build.
+# It needs the staged cli-extended + cmru identity above, which is why the
+# builder image is built only after them. Probe image and probe placement come
+# from CMRU_TESTER_CGROUP_PROBE_IMAGE / CMRU_TESTER_CGROUP_PARENT (environment,
+# else cmru.orchestration.toml [env]); a missing input or any uncertainty refuses.
+verify_pythonpath="${project_dir}/src:${cli_extended_stage}/site:${repo_root}/libraries/worktree/src"
+if [[ "${cli_extended_mode}" == "source" ]]; then
+    # Zero-release path only: cli-extended does not exist as a wheel yet.
+    verify_pythonpath="${verify_pythonpath}:${repo_root}/libraries/cli-extended/src"
+fi
+PYTHONPATH="${verify_pythonpath}" "${python_bin}" -s -c '
+import sys
+from pathlib import Path
+from cmru import handlers
+handlers.require_installed_cgroup_parent(sys.argv[1], Path(sys.argv[2]))
+' "${cgroup_parent}" "${project_dir}" || {
+    echo "[ERROR] cgroup parent ${cgroup_parent} is not a verified host slice; no build was started" >&2
+    exit 2
+}
+
+builder_kind=""
+if docker image inspect "${builder_image}" >/dev/null 2>&1; then
+    builder_kind="$(docker image inspect \
+        --format '{{index .Config.Labels "org.vbpub.wheel-builder.kind"}}' \
+        "${builder_image}" 2>/dev/null || true)"
+fi
+if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
+    echo "[INFO] Building ${builder_image} from wheel-builder/Dockerfile (image label is ${builder_kind:-missing})" >&2
+    docker buildx build --load --pull \
+        --cgroup-parent "${cgroup_parent}" \
+        -f "${repo_root}/wheel-builder/Dockerfile" \
+        -t "${builder_image}" \
+        "${repo_root}"
+    builder_kind="$(docker image inspect \
+        --format '{{index .Config.Labels "org.vbpub.wheel-builder.kind"}}' \
+        "${builder_image}" 2>/dev/null)" || {
+        echo "[ERROR] cannot verify the rebuilt wheel-builder image ${builder_image}" >&2
+        exit 2
+    }
+    if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
+        echo "[ERROR] rebuilt image ${builder_image} has unexpected wheel-builder label ${builder_kind:-missing}" >&2
+        exit 2
+    fi
+fi
+
 # Zero-release path (CMRU_BOOTSTRAP_CLI_EXTENDED=source): build cli-extended with
 # the SAME builder every estate wheel uses (`cmru.handlers wheel-build`, i.e. the
 # wheel-builder image). cmru can only run from this checkout, so for THIS build
@@ -273,16 +298,31 @@ fi
 cp -f "${cli_extended_wheel}" "${project_dir}/dist/"
 cli_extended_installed="${project_dir}/dist/$(basename "${cli_extended_wheel}")"
 
+sha256_of() {
+    "${python_bin}" -s -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+}
+cmru_wheel_sha="$(sha256_of "${wheels[0]}")" || { echo "[ERROR] cannot read ${wheels[0]}" >&2; exit 2; }
+cli_extended_sha_installed="$(sha256_of "${cli_extended_installed}")" || { echo "[ERROR] cannot read ${cli_extended_installed}" >&2; exit 2; }
+
+# The exact artifacts this run produced, as a sourceable record. A later step
+# (install, tester-image build) reads the paths and digests from HERE instead of
+# re-typing a wheel name or a digest: docs/BOOTSTRAP-FROM-ZERO.md sources it.
+identity_file="${project_dir}/dist/bootstrap-artifacts.env"
+{
+    printf 'BOOTSTRAP_CMRU_WHEEL=%q\n' "${wheels[0]}"
+    printf 'BOOTSTRAP_CMRU_WHEEL_SHA256=%q\n' "${cmru_wheel_sha}"
+    printf 'BOOTSTRAP_CLI_EXTENDED_WHEEL=%q\n' "${cli_extended_installed}"
+    printf 'BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256=%q\n' "${cli_extended_sha_installed}"
+} > "${identity_file}"
+
 echo "" >&2
-echo "[INFO] Built: ${wheels[0]}" >&2
-echo "[INFO] Verified cli-extended wheel kept beside it: ${cli_extended_installed}" >&2
+echo "[INFO] Built: ${wheels[0]} sha256=${cmru_wheel_sha}" >&2
+echo "[INFO] Verified cli-extended wheel kept beside it: ${cli_extended_installed} sha256=${cli_extended_sha_installed}" >&2
+echo "[INFO] Exact artifact paths and digests: ${identity_file}" >&2
 echo "" >&2
 echo "[INFO] cmru requires cli-extended (a release asset, never on PyPI): install both" >&2
-echo "       wheels offline, cli-extended first. Install into an isolated environment with:" >&2
-echo "       cd ${repo_root}" >&2
-echo "       python3 -m venv .venv-cmru" >&2
-echo "       .venv-cmru/bin/python -m pip install --no-index --no-deps ${cli_extended_installed} ${wheels[0]}" >&2
-echo "       export PATH=\"${repo_root}/.venv-cmru/bin:\$PATH\"" >&2
-echo "" >&2
-echo "[INFO] Install the wheels directly into \`.venv/bin/cmru\`:" >&2
-echo "       python -m pip install --no-index --no-deps ${cli_extended_installed} ${wheels[0]}" >&2
+echo "       wheels offline, cli-extended first, into the Python environment you select" >&2
+echo "       (no cmru command exists until this is done):" >&2
+echo "       . ${identity_file}" >&2
+echo "       <python-of-the-chosen-environment> -m pip install --no-index --no-deps \\" >&2
+echo "           \"\$BOOTSTRAP_CLI_EXTENDED_WHEEL\" \"\$BOOTSTRAP_CMRU_WHEEL\"" >&2

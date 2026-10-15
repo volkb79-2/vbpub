@@ -382,6 +382,33 @@ the selected project directory. It does not invent `wheel-builder:local` when co
 is absent. This keeps bootstrap builds on the same declared builder as release builds while
 making an unconfigured project fail before Docker starts.
 
+### Wheel-build proves its slice on the host first
+
+systemd auto-vivifies a `.slice` for any name, so Docker given a typo'd `--cgroup-parent`
+starts the build normally inside an unlimited transient slice beside production. A non-empty
+string is therefore not placement. `wheel-build` (and the bootstrap script, before its
+Buildx) runs the same host-side probe `tester-gate` uses
+(`cmru.tester_gate.check_slice_unit`: `LoadState=loaded` plus a non-empty `FragmentPath`,
+read from the Docker host's systemd by a pinned privileged `nsenter` container, never a
+local `systemctl` from a cockpit that cannot see the host's) before any builder workload.
+Rejected: probing inside the slice under test (the probe would itself be the first
+unverified workload) and a cockpit-local filesystem/`systemctl` check (asks the wrong
+kernel). The probe is placed in the already-declared gates tier
+(`CMRU_TESTER_CGROUP_PARENT`), its image is the declared digest-pinned
+`CMRU_TESTER_CGROUP_PROBE_IMAGE`; either input missing, or any uncertainty, refuses. The
+residual trust root is that gates tier, which every `tester-gate` launch verifies.
+
+### Direct publish binds notes to the published tag
+
+`publish --from-checkout` reads release prose from the local `<prefix>-v<version>` tag. A
+tag that merely shares the published name (moved, re-created, or never pushed) would put
+another commit's notes into an immutable release body, so the handler reuses CMRU's exact
+origin comparison (`cmru.version._tag_pushed_to_origin`, direct and peeled refs, so annotated
+and lightweight tags compare by the commit they target) and refuses before any publish call
+when the tag is absent from origin, disagrees with it, or origin cannot be queried. An
+inaccessible origin is never read as "nothing released". The isolated `cmru release` flow
+names its commit explicitly and is unchanged.
+
 ## Git family is separate from CMRU root
 
 An orchestration root is policy scope, not a Git checkout. A registered project
@@ -598,7 +625,11 @@ acceptance, Assay R0/R1/R3, total coverage, and canary. It records the skipped
 mutation lane with the candidate commit, time, reason, and tracking id under
 `.assay/mutation-postponed-cmru.json`. The full `gate` remains separate and
 continues to run R2. A provisional marker is evidence of a deferral, never a
-mutation pass. The native-R2 mutation lane declares contract-2 event
+mutation pass: the marker and the snapshot manifest's `deferred_lanes` are written only after
+every required non-mutation lane and the final canary succeeded (so a failed canary can leave
+no success-shaped record), the manifest `state` is `provisional` rather than `passed`, and a
+gate start deletes any earlier marker. Rejected: keeping `state: "passed"` and relying on the
+marker alone (a reader of the manifest would see an unqualified pass). The native-R2 mutation lane declares contract-2 event
 observation; the current command lanes declare resource ceilings but do not
 collect event evidence. Declaring an observer on a lane with no observer client
 would add a daemon dependency without detecting OOM or process-limit events, so

@@ -244,6 +244,7 @@ def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
     project.mkdir()
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
     monkeypatch.setenv(handlers._DOCKER_CGROUP_PARENT_ENV, "dev-background.slice")
+    monkeypatch.setattr(handlers, "require_installed_cgroup_parent", lambda *_a: None)
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
     monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", lambda _source, **_kw: [])

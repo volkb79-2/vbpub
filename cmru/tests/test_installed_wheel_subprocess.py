@@ -126,8 +126,10 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     docker = fake_bin / "docker"
     docker_log = tmp_path / "docker.log"
     builder_marker = tmp_path / "wheel-builder-ready"
+    order_log = tmp_path / "order.log"
     docker.write_text(
         "#!/bin/sh\n"
+        f'printf "docker %s\\n" "$*" >> "{order_log}"\n'
         'if [ "$1" = "buildx" ] && [ "$2" = "build" ]; then\n'
         f'  printf "%s\\n" "$*" >> "{docker_log}"\n'
         f'  touch "{builder_marker}"\n'
@@ -157,6 +159,13 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
         f'    }} > "{record}.cxbuild"\n'
         f'    rm -rf "$lib/dist"; PYTHONNOUSERSITE=1 exec "{sys.executable}" -m pip wheel --no-deps --no-build-isolation '
         '--no-index -q -w "$lib/dist" "$lib";;\n'
+        # The host-slice proof (require_installed_cgroup_parent). CMRU_TEST_PLACEMENT_FAIL
+        # stands for a typo'd/uncertain slice: the real probe's refusal is exit non-zero.
+        '  *"require_installed_cgroup_parent"*)\n'
+        '    shift 3\n'
+        f'    echo "verify $1 $2" >> "{order_log}"\n'
+        '    if [ -n "$CMRU_TEST_PLACEMENT_FAIL" ]; then exit 1; fi\n'
+        "    exit 0;;\n"
         '  *"-m cmru.handlers"*)\n'
         '    { echo "ARGS=$*"; echo "PP=$PYTHONPATH"; echo "EPOCH=$SOURCE_DATE_EPOCH"\n'
         '      second="$(echo "$PYTHONPATH" | cut -d: -f2)"\n'
@@ -164,6 +173,7 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
         f'    }} > "{record}"\n'
         # Optional probe: run code in a REAL bare interpreter with the exact PYTHONPATH
         # the handlers launch got (the staged unpack + dist-info is all it can see).
+        '    if [ -n "$CMRU_TEST_TOY_CMRU_WHEEL" ]; then mkdir -p dist; rm -f dist/*.whl; cp "$CMRU_TEST_TOY_CMRU_WHEEL" dist/; fi\n'
         '    if [ -n "$CMRU_TEST_PROBE_PY" ]; then\n'
         '      "$CMRU_TEST_PROBE_PY" -s -c "$CMRU_TEST_PROBE_CODE" > "$CMRU_TEST_PROBE_OUT" 2>&1 || true\n'
         "    fi\n"
@@ -189,6 +199,7 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     return {
         "repo_root": repo_root, "bootstrap": bootstrap, "record": record,
         "docker_log": docker_log, "builder_marker": builder_marker, "env": env,
+        "order_log": order_log,
     }
 
 
@@ -613,3 +624,38 @@ def test_bootstrap_refuses_when_no_cmru_version_can_be_derived(tmp_path):
     assert result.returncode == 2
     assert "cannot derive the cmru version" in result.stderr
     assert not Path(tree["record"]).exists()
+
+
+# --- placement is proven on the host before ANY Docker/Buildx workload ---
+
+def test_bootstrap_proves_the_host_slice_before_the_first_docker_workload(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest)
+
+    _run_bootstrap(tree)
+
+    order = Path(tree["order_log"]).read_text(encoding="utf-8").splitlines()
+    first_buildx = next(i for i, line in enumerate(order) if line.startswith("docker buildx build"))
+    verify = [i for i, line in enumerate(order) if line.startswith("verify ")]
+    assert verify and verify[0] < first_buildx
+    assert order[verify[0]] == f"verify test.slice {tree['repo_root'] / 'cmru'}"
+
+
+def test_bootstrap_with_an_unverified_slice_starts_no_buildx_and_no_handler(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    tree["env"].update(
+        CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest,
+        CMRU_TEST_PLACEMENT_FAIL="1",
+    )
+
+    result = _run_bootstrap(tree)
+
+    assert result.returncode == 2
+    assert "test.slice is not a verified host slice" in result.stderr
+    assert not Path(tree["docker_log"]).exists()  # no Buildx
+    assert not Path(tree["builder_marker"]).exists()
+    assert not Path(tree["record"]).exists()  # cmru.handlers wheel-build never launched
+    order = Path(tree["order_log"]).read_text(encoding="utf-8").splitlines()
+    assert all(not line.startswith("docker buildx") for line in order)

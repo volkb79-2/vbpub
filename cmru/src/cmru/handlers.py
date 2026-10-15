@@ -89,10 +89,49 @@ def _curated_release_notes(
                     f"cannot bind release notes to {expected_tag}: {detail}"
                 )
             commit = tagged.stdout.strip()
+            # The notes are about to be bound to a LOCAL tag. Prove it is the
+            # published tag, not a same-named hand-made one.
+            _require_local_tag_is_published_tag(cwd, expected_tag)
         return load_release_notes(cwd, declaration, version, commit=commit)
     except ReleaseNotesError as exc:
         print(f"[ERROR] release notes: {exc}", file=sys.stderr)
         raise SystemExit(exit_codes.REFUSED) from None
+
+
+def _require_local_tag_is_published_tag(cwd: Path, tag: str) -> None:
+    """Refuse unless origin's *tag* points at the very commit the local one does.
+
+    ``publish --from-checkout`` resolves release prose from a local tag, so a
+    local tag that merely shares the published name (moved, re-created, or
+    never pushed) would put another commit's notes into an immutable release
+    body. This reuses CMRU's exact origin comparison
+    (:func:`cmru.version._tag_pushed_to_origin`: one ``ls-remote`` over the
+    direct and peeled refs, so annotated and lightweight tags both compare by
+    the commit they target) with the same repository credential the publish
+    itself uses. A tag absent from origin, a disagreement, and an origin that
+    cannot be queried are three distinct refusals; none is read as "nothing
+    published yet".
+    """
+    from cmru.git_auth import GitHubGitAuth
+    from cmru.version import _tag_pushed_to_origin
+
+    auth = GitHubGitAuth(
+        owner=_require_env("GITHUB_USERNAME"),
+        repo=_require_env("GITHUB_REPO"),
+        token=_require_env("GITHUB_PUSH_PAT"),
+    )
+    try:
+        published = _tag_pushed_to_origin(cwd, tag, git_auth=auth)
+    except (RuntimeError, OSError) as exc:
+        raise ReleaseNotesError(
+            f"cannot bind release notes to {tag}: the local tag could not be "
+            f"verified as the published one: {exc}"
+        ) from exc
+    if not published:
+        raise ReleaseNotesError(
+            f"cannot bind release notes to {tag}: origin has no {tag!r} tag, so the "
+            "local tag is not the published release tag; push the reviewed tag first"
+        )
 
 
 def _require_env(name: str) -> str:
@@ -247,12 +286,17 @@ _DOCKER_CGROUP_PARENT_ENV = "CMRU_DOCKER_CGROUP_PARENT"
 
 
 def _configured_wheel_builder_image(cwd: Path) -> str:
-    """Read the wheel-builder image from CMRU config enclosing *cwd*.
+    """Read the wheel-builder image from CMRU config enclosing *cwd*."""
+    return _configured_env_value(cwd, _WHEEL_BUILDER_IMAGE_ENV)
+
+
+def _configured_env_value(cwd: Path, name: str) -> str:
+    """Read one ``[env]`` value from the CMRU config enclosing *cwd*.
 
     A direct handler invocation does not run through the release-step
     environment injector. For registered estate projects, the nearest
     orchestration document is authoritative; for a standalone project, its
-    own ``cmru.toml`` is authoritative. No image name is invented here.
+    own ``cmru.toml`` is authoritative. No value is invented here.
     """
     from cmru.config import (
         ORCHESTRATION_CONFIG_FILENAME,
@@ -296,7 +340,7 @@ def _configured_wheel_builder_image(cwd: Path) -> str:
     project_name = max(matches, key=lambda item: item[0])[1]
     values.update(forge.projects[project_name].env)
 
-    return str(values.get(_WHEEL_BUILDER_IMAGE_ENV, "") or "").strip()
+    return str(values.get(name, "") or "").strip()
 
 
 def _resolve_wheel_builder_image(cwd: Path | None = None) -> str:
@@ -351,9 +395,67 @@ def _docker_cgroup_parent() -> str:
             "refusing to launch an ungoverned Docker container",
             file=sys.stderr,
         )
-        from cmru import exit_codes
         raise SystemExit(exit_codes.PREREQ_MISSING)
     return parent
+
+
+def _declared_input(cwd: Path, name: str) -> str:
+    """An explicit environment value wins; otherwise the enclosing CMRU config."""
+    if name in os.environ:
+        return os.environ[name].strip()
+    return _configured_env_value(cwd, name)
+
+
+def require_installed_cgroup_parent(cgroup_parent: str, cwd: Path) -> None:
+    """Prove *cgroup_parent* is a real, configured host systemd slice, or refuse.
+
+    systemd auto-vivifies a ``.slice`` for ANY name, so Docker given a typo'd
+    ``--cgroup-parent`` starts the container normally in an unlimited
+    transient slice next to production. The check therefore runs BEFORE the
+    wheel-builder ``docker run`` (and before the bootstrap script's Buildx),
+    through the same host-side probe contract ``tester-gate`` uses
+    (:func:`cmru.tester_gate.check_slice_unit`: ``LoadState=loaded`` and a
+    non-empty ``FragmentPath``, read from the Docker HOST's systemd via a
+    pinned privileged ``nsenter`` container; never a local ``systemctl`` from a
+    cockpit that has no view of the host's systemd).
+
+    The probe container itself must not start in the slice being verified, so
+    it is placed in the gates tier already declared for every CMRU gate
+    (``CMRU_TESTER_CGROUP_PARENT``); the probe image is the declared
+    digest-pinned ``CMRU_TESTER_CGROUP_PROBE_IMAGE``. Either input missing, or
+    any uncertainty (no docker, probe failure, unknown LoadState), refuses.
+    """
+    from cmru import tester_gate
+
+    probe_image_name = tester_gate._SLICE_PROBE_IMAGE_ENV
+    probe_parent_name = tester_gate._CGROUP_PARENT_ENV
+    probe_image = _declared_input(cwd, probe_image_name)
+    probe_parent = _declared_input(cwd, probe_parent_name)
+    missing = [
+        name for name, value in (
+            (probe_image_name, probe_image), (probe_parent_name, probe_parent),
+        ) if not value
+    ]
+    if missing:
+        print(
+            f"[ERROR] cannot verify cgroup parent {cgroup_parent!r} before "
+            f"wheel-build: {', '.join(missing)} is required (normally declared in "
+            "cmru.orchestration.toml [env]); refusing to launch a Docker container "
+            "into an unverified slice",
+            file=sys.stderr,
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+    pinned_image = tester_gate.require_digest_pinned(probe_image, "cgroup probe image")
+    exists, note = tester_gate.check_slice_unit(cgroup_parent, pinned_image, probe_parent)
+    if exists is not True:
+        print(
+            f"[ERROR] wheel-build refuses to launch: cgroup parent {cgroup_parent!r} "
+            f"is not a verified host slice ({note})",
+            file=sys.stderr,
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+
+
 def _host_bind_source(container_path: Path) -> str:
     """Resolve the real host-filesystem path backing a bind-mounted directory.
 
@@ -490,13 +592,15 @@ def cmd_wheel_build(args: argparse.Namespace) -> None:
         raise RuntimeError(
             f"Wheel build requires a Git worktree: cannot resolve git common directory for {cwd}."
         )
+    # Verify the placement before anything is deleted or launched.
+    cgroup_parent = _docker_cgroup_parent()
+    require_installed_cgroup_parent(cgroup_parent, cwd)
     dist = cwd / "dist"
     if dist.exists():
         for stale in dist.glob("*.whl"):
             stale.unlink()
     print(f"[INFO] cmru handler: building wheel in {cwd}")
 
-    cgroup_parent = _docker_cgroup_parent()
     # Run from the parent directory with the project dir as positional source;
     # the image's venv replaces the retired local-Python build path.
     mount_root = _wheel_builder_mount_root(cwd)

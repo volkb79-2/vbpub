@@ -753,6 +753,33 @@ FIRST_RELEASE_POSTPONE_REASON = (
     f"`run-gate {FIRST_RELEASE_R2_FOLLOW_UP_LANE}`"
 )
 POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": "6.2.0"}
+#: What a later whole-source/full mutation follow-up needs before it can run.
+#: The marker and the snapshot manifest carry these verbatim so a reader never
+#: has to infer them from prose. ``d4-capacity-evidence`` is named, not defined,
+#: here: its content is owned by the Run-Gate RG-55 resource-profiling program.
+FOLLOW_UP_PREREQUISITES = (
+    {
+        "id": "release-tag-branch",
+        "requirement": (
+            "a branch created at the published release tag, so the follow-up judges "
+            "the exact tagged source rather than a later main"
+        ),
+    },
+    {
+        "id": "cgprofile-observer",
+        "requirement": (
+            "the CGProfile host observer deployed and reachable "
+            "(the follow-up lane declares resource_observer = \"cgprofile\")"
+        ),
+    },
+    {
+        "id": "d4-capacity-evidence",
+        "requirement": (
+            "the D-4 capacity evidence the Run-Gate follow-up lane requires for a "
+            "multi-hour R2 run (RG-55 D-4; CMRU does not define or fabricate it)"
+        ),
+    },
+)
 
 
 def _tracking_id(value: str) -> str:
@@ -820,11 +847,15 @@ def _validate_postponement(
 
 def _record_postponement(
     project_root: Path, tracking_id: str, *, first_release: bool = False,
-) -> Path:
-    """Write the retained marker saying the mutation lane was skipped, and WARN.
+) -> tuple[Path, dict[str, object]]:
+    """Write the retained marker saying the mutation lane was deferred, and WARN.
 
-    The marker lives under ``.assay`` so cmru's ``evidence_paths`` retain it
-    with the rest of the gate evidence; it is never written by a full gate.
+    Called only once EVERY required non-mutation lane and the final canary have
+    passed: the marker is a success-shaped record and must never exist for a
+    gate that did not finish. The marker lives under ``.assay`` so cmru's
+    ``evidence_paths`` retain it with the rest of the gate evidence; a full
+    gate removes it. Returns the marker path and the structured deferral that
+    the snapshot manifest also records.
     """
     marker = project_root / POSTPONED_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
@@ -832,25 +863,41 @@ def _record_postponement(
     target_version = _validate_postponement(
         project_root, tracking_id, first_release=first_release,
     )
+    follow_up_lane = FIRST_RELEASE_R2_FOLLOW_UP_LANE if first_release else "mutation"
+    reason = FIRST_RELEASE_POSTPONE_REASON if first_release else POSTPONE_REASON
+    deferral = {
+        "lane": "mutation",
+        "tracking_id": tracking_id,
+        "reason": reason,
+        "follow_up_lane": follow_up_lane,
+        "follow_up_prerequisites": [dict(item) for item in FOLLOW_UP_PREREQUISITES],
+    }
     record = {
-        "schema_version": 2,
+        "schema_version": 3,
+        "result": "provisional",
         "lane": "mutation",
         "status": "postponed",
         "tracking_id": tracking_id,
         "candidate_commit": candidate_commit,
         "target_version": target_version,
         "baseline_state": "no-published-stable-release" if first_release else "prior-release-available",
-        "follow_up_lane": FIRST_RELEASE_R2_FOLLOW_UP_LANE if first_release else "mutation",
+        "follow_up_lane": follow_up_lane,
+        "follow_up_prerequisites": deferral["follow_up_prerequisites"],
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "reason": FIRST_RELEASE_POSTPONE_REASON if first_release else POSTPONE_REASON,
+        "reason": reason,
     }
-    marker.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        marker.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except BaseException:
+        marker.unlink(missing_ok=True)  # never leave a half-written success-shaped record
+        raise
     print(
-        f"cmru-release-gate: WARN: mutation lane POSTPONED ({tracking_id}); "
-        f"this gate is PROVISIONAL; marker {marker}",
+        f"cmru-release-gate: WARN: PROVISIONAL PASS: every required non-mutation lane and the "
+        f"canary passed, but the mutation lane is DEFERRED ({tracking_id}); this is NOT "
+        f"an R2 pass. Follow-up lane: {follow_up_lane}. Marker: {marker}",
         file=sys.stderr,
     )
-    return marker
+    return marker, deferral
 
 
 def _invoke_lane(
@@ -1013,7 +1060,12 @@ def _run_release_gate_with_private_cache(
             except BaseException:
                 state = "failed"
                 raise
-            state = "passed" if result == 0 else "failed"
+            if result != 0:
+                state = "failed"
+            elif snapshot.deferred_lanes:
+                state = "provisional"  # exit 0, but a required lane was deferred
+            else:
+                state = "passed"
             return result
         finally:
             try:
@@ -1071,6 +1123,11 @@ def _run_locked_gate(
     lane_environment = _lane_environment()
     from cmru import gate_snapshot
 
+    # Deferral evidence is written only by a gate that finishes. Whatever an
+    # earlier run left behind (marker or manifest field) is stale from here on.
+    snapshot.deferred_lanes = []
+    (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
+
     # Live detector probe first: a lane that writes a protected ref from inside
     # the real tester container must be seen by the gate, or no later lane's
     # silence about refs means anything.
@@ -1087,15 +1144,7 @@ def _run_locked_gate(
         if result:
             return result
 
-    if effective_postponement is not None:
-        # Provisional gate: ONLY the mutation lane (and its remote-facts
-        # preparation) is skipped; the postponement is recorded as evidence.
-        _record_postponement(
-            project_root, effective_postponement, first_release=first_release,
-        )
-    else:
-        # A full gate never leaves an earlier provisional marker behind.
-        (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
+    if effective_postponement is None:
         _assert_no_untracked_gate_code(repo_root)
         gate_snapshot.assert_source_head(snapshot)
         with gate_snapshot.host_git_hooks_disabled(repo_root):
@@ -1123,6 +1172,15 @@ def _run_locked_gate(
     if result:
         return result
     gate_snapshot.assert_source_head(snapshot)
+    if effective_postponement is not None:
+        # Provisional gate: ONLY the mutation lane (and its remote-facts
+        # preparation) was skipped. The deferral is persisted now, after every
+        # required lane and the canary succeeded, and it is the last thing that
+        # can fail before the zero exit.
+        _marker, deferral = _record_postponement(
+            project_root, effective_postponement, first_release=first_release,
+        )
+        snapshot.deferred_lanes = [deferral]
     return 0
 
 

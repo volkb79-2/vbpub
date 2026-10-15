@@ -154,6 +154,7 @@ def test_handlers_wheel_build_runs_the_image_its_prerequisite_check_resolved(mon
     monkeypatch.setattr(handlers, "_check_build_prerequisites", check)
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_docker_cgroup_parent", lambda: "dev.slice")
+    monkeypatch.setattr(handlers, "require_installed_cgroup_parent", lambda *_a: None)
     monkeypatch.setattr(handlers, "_host_bind_source", lambda path: str(path))
     monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", lambda _source, **_kw: [])
     monkeypatch.setattr(handlers, "_git_toplevel", lambda _cwd: None)

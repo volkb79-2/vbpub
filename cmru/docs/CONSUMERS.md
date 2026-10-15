@@ -43,7 +43,11 @@ The source mode is explicit, creates a `+bootstrap.source` library wheel at
 CMRU's declared dependency floor, and never activates as a fallback. The
 temporary CMRU version covers a checkout with no CMRU tag. The script verifies
 the wheel-builder image label and rebuilds its configured tag from Microsoft's
-upstream Python base if the image is absent or belongs to another build.
+upstream Python base if the image is absent or belongs to another build. It
+verifies the build slice on the Docker host first, and records the exact wheel
+paths and digests it built in `cmru/dist/bootstrap-artifacts.env`
+(`. cmru/dist/bootstrap-artifacts.env` then
+`"$ESTATE_PYTHON" -m pip install --no-index --no-deps "$BOOTSTRAP_CLI_EXTENDED_WHEEL" "$BOOTSTRAP_CMRU_WHEEL"`).
 The [zero-release procedure](../../docs/BOOTSTRAP-FROM-ZERO.md) covers the
 tester image and project release order after this bootstrap.
 
@@ -418,6 +422,20 @@ the value from the nearest enclosing orchestration config or standalone project 
 it refuses if neither source declares one. The dry-run example only displays accepted
 inputs. See the wheel-build contract in [the CMRU spec](SPEC.md) and the
 [configuration resolution design](DESIGN-GUIDE.md#direct-wheel-build-uses-the-declared-image).
+Before it launches the builder, `wheel-build` verifies on the Docker host that its slice
+(`CMRU_DOCKER_CGROUP_PARENT`, else `$CGROUP_PARENT_DEV_BACKGROUND`) is an installed unit. It
+needs `CMRU_TESTER_CGROUP_PROBE_IMAGE` (digest-pinned, present locally) and
+`CMRU_TESTER_CGROUP_PARENT`, which a registered project already inherits from
+`cmru.orchestration.toml`:
+
+```sh
+export CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice CGROUP_PARENT_DEV_GATES=dev-gates.slice
+cmru handler wheel-build --cwd run-gate-project   # a typo'd slice name exits 3 and starts nothing
+```
+
+`cmru publish --from-checkout` additionally requires the local `<prefix>-v<version>` tag to
+match origin's tag (`git ls-remote` agrees with `git rev-parse <tag>^{commit}`); after an
+accidental `git tag -f`, run `git tag -d <tag> && git fetch --tags --force origin`.
 The bundle contract guarantees normalized deterministic output for `xztar`;
 other supported archive formats use the platform archive writer.
 
@@ -728,7 +746,11 @@ The native-R2 `mutation` lane requests contract-2 event evidence from
 working observation to those command lanes. The release step for the current
 6.2.0 candidate runs `run-gate gate-provisional`, which skips the long mutation
 lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
-KI-79. That release therefore has no mutation event evidence. Run `run-gate
+KI-79. That release therefore has no mutation event evidence. Read its result from
+`cmru/.assay/release-gate-snapshot.json`: `"state": "provisional"` with a `deferred_lanes`
+entry for `mutation` (never `"passed"`), for example
+`jq '{state, deferred_lanes: [.deferred_lanes[] | {lane, tracking_id, follow_up_lane}]}'`.
+The later mutation campaign needs a branch created at the published release tag (so the exact tagged source is judged), the CGProfile host observer deployed and reachable, and the D-4 capacity evidence the Run-Gate follow-up lane requires (defined by the Run-Gate RG-55 program, not by CMRU). Run `run-gate
 gate` when full R2 evidence is required; that lane includes the mutation
 campaign.
 

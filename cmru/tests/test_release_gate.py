@@ -290,7 +290,8 @@ def test_first_release_uses_whole_source_lane_and_records_actionable_r2_follow_u
     ]
     marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
     record = json.loads(marker.read_text(encoding="utf-8"))
-    assert record["schema_version"] == 2
+    assert record["schema_version"] == 3
+    assert record["result"] == "provisional"
     assert record["tracking_id"] == "FIRST-RELEASE-R2"
     assert record["target_version"] == "0.1.0"
     assert record["baseline_state"] == "no-published-stable-release"
@@ -839,7 +840,8 @@ def test_postponed_mutation_skips_only_the_mutation_lane_and_records_the_marker(
     err = capsys.readouterr().err
     warn_lines = [line for line in err.splitlines() if "WARN" in line]
     assert len(warn_lines) == 1
-    assert "POSTPONED" in warn_lines[0] and "KI-79" in warn_lines[0]
+    assert "DEFERRED" in warn_lines[0] and "KI-79" in warn_lines[0]
+    assert "PROVISIONAL PASS" in warn_lines[0] and "NOT an R2 pass" in warn_lines[0]
 
 
 def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
