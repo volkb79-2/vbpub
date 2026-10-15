@@ -62,3 +62,15 @@ proposal only; implementation shape and security boundaries still need review.
 **Acceptance.** `cli-extended audit` reports no `fail`; `cli-extended surface check` passes; pwmcp's own registered gate passes (`run-gate.toml`, `assay.toml`); a released pwmcp (client wheel plus server bundle) is deployed. The release bundle's client install instructions work offline with `--no-index --find-links` and the cli-extended wheel (CX-D2).
 
 **Oracles.** `pwmcp --version`, `pwmcp doctor` and `pwmcp contract` keep their observable output on the golden fixtures in `client/tests/`; installing the built `pwmcp-client` wheel without the library fails with the dependency named; a controlled wrong implementation that keeps the `"0.1.0"` literal fails a test that removes the metadata and expects `VersionLookupError`.
+
+## PWMCP-03 — the canonical `pwmcp-fetch` skill hard-codes a consumer's literal ciu instance id in its examples
+
+**Status:** OPEN. Filed 2026-10-15 from dstdns (docs-sync W05, dstdns@16fc5d7e). Severity Low. Type: bugfix (docs).
+
+**Observed.** `.claude/skills/pwmcp-fetch/SKILL.md:30` and `:34` give `dstdns-98535c-pwmcp` and `dstdns-98535c-network` as examples. `98535c` is a ciu instance id that dstdns's checkout path once derived. Instance ids are dynamic: dstdns's current main instance has another id, and every worktree has its own. A reader who copies the example targets a container that does not exist. A consumer that vendors the skill also trips its own literal-instance-id check (dstdns `tests/config/test_instance_identity_contract.py`).
+
+**Why pwmcp owns it.** The skill text is pwmcp's canonical; consumers sync from it (NL-23).
+
+**Required contract.** Examples use a placeholder (`<project>-<instance_id>-pwmcp`) and say how to resolve the real name, with `ciu resolve --json` or `docker ps --filter label=com.docker.compose.service=pwmcp`.
+
+**Oracle.** `grep -nE '[a-z0-9]+-[a-z0-9]{6}-(pwmcp|network)' .claude/skills/pwmcp-fetch/SKILL.md` finds no literal id.
