@@ -128,7 +128,7 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     builder_marker = tmp_path / "wheel-builder-ready"
     docker.write_text(
         "#!/bin/sh\n"
-        'if [ "$1" = "build" ]; then\n'
+        'if [ "$1" = "buildx" ] && [ "$2" = "build" ]; then\n'
         f'  printf "%s\\n" "$*" >> "{docker_log}"\n'
         f'  touch "{builder_marker}"\n'
         '  exit 0\n'
@@ -240,7 +240,7 @@ def test_bootstrap_rebuilds_an_existing_tag_that_is_not_the_declared_wheel_build
     _run_bootstrap(tree)
 
     docker_commands = Path(tree["docker_log"]).read_text(encoding="utf-8")
-    assert "build --pull --cgroup-parent test.slice" in docker_commands
+    assert "buildx build --load --pull --cgroup-parent test.slice" in docker_commands
     assert "wheel-builder/Dockerfile" in docker_commands
     assert "-t wheel-builder:test" in docker_commands
     assert Path(tree["builder_marker"]).is_file()

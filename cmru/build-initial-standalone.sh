@@ -58,7 +58,7 @@ if docker image inspect "${builder_image}" >/dev/null 2>&1; then
 fi
 if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
     echo "[INFO] Building ${builder_image} from wheel-builder/Dockerfile (image label is ${builder_kind:-missing})" >&2
-    docker build --pull \
+    docker buildx build --load --pull \
         --cgroup-parent "${cgroup_parent}" \
         -f "${repo_root}/wheel-builder/Dockerfile" \
         -t "${builder_image}" \
