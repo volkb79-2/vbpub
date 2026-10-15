@@ -25136,7 +25136,9 @@ class TestExecLaneInflightRecord:
             '  ps) printf \'the-runner\\n\' ;;')
         shim.write_text(body)
         env = {"forward_env": []}
-        lane = {"kind": "command", "argv": ["true"]}
+        lane = {
+            "kind": "command", "environment": "fixture", "argv": ["true"],
+        }
         profile_plan = {"enabled": True,
                         "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
                         "interval": "1s", "damon": True, "source": "test",
@@ -28474,7 +28476,9 @@ class TestFinalChangedLineCoverageOracles:
                             lambda *_args: None)
         monkeypatch.setattr(run_gate.shlex, "join",
                             lambda argv: (argvs.append(list(argv)) or "argv"))
-        lane = {"kind": "command", "argv": ["true"]}
+        lane = {
+            "kind": "command", "environment": "fixture", "argv": ["true"],
+        }
         env = {"image": "runner:v1"}
         plan = {"enabled": False, "disabled_reason": "test",
                 "source": "test"}

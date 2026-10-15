@@ -729,7 +729,7 @@ def test_run_selftest_uses_receipt_specific_image_without_mutating_shared_tag(mo
 
 
 def test_run_selftest_ignores_pythonpath_shadow_and_uses_installed_wheel(
-    monkeypatch, tmp_path, capsys,
+    monkeypatch, tmp_path, capfd,
 ):
     project_root = tmp_path / "run-gate-project"
     receipt_path = project_root / ".assay" / "receipt.json"
@@ -791,7 +791,7 @@ def test_run_selftest_ignores_pythonpath_shadow_and_uses_installed_wheel(
     monkeypatch.setenv("PYTHONPATH", str(shadow))
 
     assert release_candidate.run_selftest(Path(".assay/receipt.json")) == 23
-    output = capsys.readouterr().out
+    output = capfd.readouterr().out
     assert str(site_packages / "run_gate.py") in output
 
 
