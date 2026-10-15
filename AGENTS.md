@@ -70,10 +70,14 @@ operator directs.
 For Claude CLI work, do not pass `--permission-mode plan`: it enters a
 planning interaction and may return asking what to work on instead of
 performing the assigned task. Never pass `--no-session-persistence`; keep
-sessions resumable and retain their session IDs. Resume a session for
-follow-ups on the same task or review scope to preserve its context and avoid
-repeating orientation. Start a separate persistent session for independent
-blind reviews or when the task or review target materially changes.
+sessions resumable and retain their session IDs. Before a follow-up, inspect
+`claude agents --json`: if the session is still running, use `claude attach
+<id>` and continue that conversation; `claude --resume` on a running
+background session starts a copy. Resume a stopped session by its full
+`sessionId`. Reuse the same session for follow-ups on the same task or review
+scope to preserve context and avoid repeating orientation. Start a separate
+persistent session for independent blind reviews or when the task or review
+target materially changes.
 
 When stdin carries the prompt, pass `-` as the prompt argument and do not also
 pass a positional prompt. Codex appends piped stdin to a positional prompt as a
