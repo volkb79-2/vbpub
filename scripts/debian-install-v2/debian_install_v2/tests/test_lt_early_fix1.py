@@ -230,15 +230,17 @@ def test_an_early_failure_leaves_a_pre_existing_other_run_state_untouched(tmp_pa
     assert _key_written(actions)  # D1: not an identity refusal, the key still goes in
 
 
-def test_a_failure_after_install_created_its_state_replaces_the_old_run(tmp_path, host, monkeypatch):
+def test_completed_existing_run_refuses_a_new_install_without_overwriting_state(tmp_path, host):
     actions, posts = host
     _case_a(actions)
     old = _seed_other_run(tmp_path)
-    _stage_one_boom(monkeypatch)
     assert main(["install", "--config", _write(tmp_path), "--yes"]) != 0
     state = _state(tmp_path)
-    assert state["run_id"] != old["run_id"] and state["status"] == "failed"
-    assert recently_notified(state) and "left untouched" not in posts[-1]
+    assert state == old
+    assert not recently_notified(state)
+    assert len(posts) == 1
+    assert "completed-install refusal" in posts[-1] and "left untouched" in posts[-1]
+    assert not _key_written(actions)
 
 
 # --- S7: parse-error post through Telegram -----------------------------------------

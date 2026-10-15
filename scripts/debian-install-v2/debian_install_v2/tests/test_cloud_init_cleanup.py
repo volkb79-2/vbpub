@@ -144,6 +144,7 @@ def _stage2_harness(*, fail_before_cleanup: bool = False):
         run_fstrim=False,
         run_auto_reboot=False,
     )
+    installer.actions = HostActions(dry_run=True)
     events = []
     installer.state = SimpleNamespace(
         save=lambda **kwargs: events.append(("state-save", kwargs))
@@ -183,7 +184,6 @@ def test_cleanup_runs_after_successful_stage2_work():
 
 def test_fixed_completion_marker_is_written_before_cloud_init_clean():
     installer, events = _stage2_harness()
-    installer.actions = HostActions(dry_run=True)
 
     def cleanup():
         events.append("cloud-init-cleanup")

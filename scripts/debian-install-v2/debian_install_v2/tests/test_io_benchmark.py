@@ -56,6 +56,7 @@ class SimDisk(HostActions):
         self.partial_write_fails = False  # forward benchmark write lands, then sfdisk errors
         self.label_id = "SIM-LABEL-ID"
         self.fstab_content = ""
+        self.completion_marker: tuple[str, int] | None = None
         self.timeouts: list[tuple[str, float | None]] = []
         self.sysfs: dict[str, str] = {}
         self.tool_changes_sysfs = True
@@ -173,6 +174,11 @@ class SimDisk(HostActions):
             self.fstab_content = content
             self.planned.append(PlannedAction(("/usr/bin/tee", path), f"write {path}", True))
             return
+        if path == installer_module.INSTALL_COMPLETE_MARKER:
+            # This host-wide marker is a production safety boundary. Keep the
+            # disk simulator hermetic while recording the exact write.
+            self.completion_marker = (content, mode)
+            return
         # Safety net: a stage2 step that forgot to be stubbed must never write
         # outside the test's tmp dir (these tests may run as root).
         assert path.startswith(self.allowed_root), f"test would write outside tmp: {path}"
@@ -251,6 +257,7 @@ def bench_lines(disk: SimDisk) -> list[int]:
 def test_stage2_lifecycle_order_and_final_layout(tmp_path):
     installer, disk = make(tmp_path)
     installer._stage2()
+    assert disk.completion_marker == ("schema_version=1\n", 0o600)
     assert_lifecycle_order(disk.tags())
     assert bench_lines(disk) == []
     assert set(disk.table) == {3, *range(4, 12)}  # root + 8 swap partitions, no benchmark partition
