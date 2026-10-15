@@ -585,6 +585,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-134 | Worktree removal can finish `ciu clean` and then fail deleting the checkout due to protected descendants, leaving a partial Git/CIU lifecycle state with no supported root-assisted retry | High | OPEN — add permission-specific, consented retry through the existing S6.5 helper and truthful partial-state reporting |
 | CIU-135 | Managed worktree overlay recovery, reset retries, network ownership, and explicit `ensure` constraints can be ambiguous or silently ignored | Medium | OPEN — implementation now folds Review 05 recovery, startup, root-selection, and final-network-check findings; registered gate and final review remain |
 | CIU-136 | `ciu resolve` does not report live attached networks, aliases, derived URLs, or a nonzero status for an absent service | Medium | OPEN — extend the existing service-discovery follow-up from CIU-118 / nyxloom NL-38 |
+| CIU-139 | `ciu resolve --root-folder P` (and likely `ciu exec`) does not seed its environment from P's instance record, so an unprimed shell fails with missing `INSTANCE_ID`/`REPO_ROOT`/... while `ciu env print --root-folder P` succeeds | Medium | OPEN (filed 2026-10-15, dstdns deep review C04 F06) |
 
 
 The approved milestone decisions and serial package order are in
@@ -5287,3 +5288,22 @@ review, two adjacent gaps found while closing those findings, and five
 additional findings from the final follow-up review; all are folded into the
 isolated implementation and regression oracles. The exact candidate still
 needs its registered CIU gate and a final read-only review before merge.
+
+## CIU-139 — `ciu resolve --root-folder` does not seed its environment from the selected checkout's instance record
+
+**Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (auditor C04, finding F06), ciu 7.16.0. Severity Medium. Related to the CIU-118 follow-up (branch-local entry "service-discovery gaps in `ciu resolve`", whose Gap 4 measured results only "with the primed environment").
+
+**Observed.** In an unprimed shell:
+
+```
+env -i HOME=$HOME PATH=$PATH ciu resolve --root-folder /workspaces/dstdns \
+  --profile test --stack tools/test-runner --service test-runner --json
+```
+
+fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, DOCKER_NETWORK_INTERNAL, INSTANCE_ID, PHYSICAL_REPO_ROOT, PUBLIC_FQDN, REPO_NAME, REPO_ROOT`. `ciu env print --root-folder /workspaces/dstdns` exits 0 in the same shell. This contradicts the S3.1b / consumer promise that ciu seeds its own environment from `ciu.instance.generated.toml` (dstdns D-645). The dstdns cutover branch wraps it (`scripts/ciu_resolve.py` `read_ciu_env()`), and the raw commands its docs show fail for any agent whose shell was not primed. `ciu exec` likely shares the render path (not run: it would execute in a live container).
+
+**Proposed contract.** `resolve` and `exec` seed from the selected root's instance record exactly as `up` and `env print` do; if the record is absent they refuse naming it and the verb that creates it.
+
+**Oracles.** Unprimed-shell `resolve --root-folder P` returns P's identities; run from an unrelated cwd it still resolves P (a cwd-seeded implementation fails this); with the record deleted it refuses with the remedy.
+
+**SPEC owner.** S3.1b (instance record), the CIU-118 resolve/exec contract.
