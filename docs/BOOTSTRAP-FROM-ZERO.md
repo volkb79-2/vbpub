@@ -49,8 +49,17 @@ and the CGProfile → Run-Gate → CMRU gate prerequisites.
 Prerequisites: Docker/Buildx, a governed background parent for the standalone
 wheel build (`CMRU_BOOTSTRAP_CGROUP_PARENT` or
 `$CGROUP_PARENT_DEV_BACKGROUND`), `$CGROUP_PARENT_DEV_GATES` for tester-image
-builds and gates, and network access to the upstream Python image, PyPI build
-backends, and GitHub. The bootstrap script builds `wheel-builder:local` from
+builds and gates, the configured digest-pinned CMRU host-probe image pulled
+locally, and network access to the upstream Python image, PyPI build backends,
+and GitHub. Tester-gate deliberately runs the configured privileged probe
+image with `--pull=never`, so pull its exact digest before the first build:
+
+```bash
+docker pull debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+```
+
+This digest is also the `CMRU_TESTER_CGROUP_PROBE_IMAGE` value in
+`cmru.orchestration.toml`. The bootstrap script builds `wheel-builder:local` from
 that upstream image automatically when it is absent. Run builds serially.
 Before publishing the first Run-Gate stable release, run `run-gate assay-r1`
 from `run-gate-project/` on the reviewed source. The first-release selftest can
@@ -86,6 +95,11 @@ supplies the whole-source line-and-branch qualification.
    SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.0.0 \
      cmru handler wheel-build --cwd run-gate-project
    CLI_EXTENDED_SHA256='<source-wheel sha256 printed by the bootstrap command>'
+   CMRU_TESTER_MEMORY=1g \
+   CMRU_TESTER_MEMORY_SWAP=16g \
+   CMRU_TESTER_CPUS=2.5 \
+   CMRU_TESTER_PIDS_LIMIT=4096 \
+   CMRU_TESTER_CGROUP_PROBE_IMAGE='debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132' \
    tester-unified/build-image.sh \
      --base-image mcr.microsoft.com/devcontainers/python:3.14-trixie \
      --cli-extended-resolve local \
@@ -101,6 +115,10 @@ supplies the whole-source line-and-branch qualification.
    ```
 
    The builder checks the supplied Run-Gate wheel and image labels. The
+   explicit upstream base is also used for the builder's unprivileged CMRU
+   preflight, so this step does not require a pre-existing
+   `tester-unified:local` image. The privileged host-systemd slice probe still
+   uses its separately configured digest-pinned image. The
    Dockerfile explicitly installs the host-facing tools it needs, so the
    upstream Python base does not need to inherit a vbpub or MDT release. The
    host venv install makes this exact local candidate available to the

@@ -47,7 +47,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   and checks that the installed wheel modules and CLI match the candidate.
 - Fix: give the R1 and R3 tester containers explicit memory and swap ceilings,
   so gate admission accounts for their use and Docker applies per-container bounds.
-
+- Fix: refuse an R1-R3 Assay lane when its selected state root is inside the
+  judged worktree, before Assay can fail on in-tree snapshot scratch; configure
+  a durable mount outside that worktree (RG-98).
+- Fix: inject Git `safe.directory` only through `GIT_CONFIG_COUNT`, with no
+  global config file, lock file, or mutual-exclusion mechanism. RG-99 remains
+  open until concurrent exec-mode acceptance is complete.
+- Fix: resolve imported Assay inventory only for imported lane selection,
+  sequences that use an imported lane, or `--check-env`; listing and unrelated
+  local lanes remain available when a persistent judge is stopped (RG-100).
+- Docs/fix: correct the `bare-host` mode contract and include the exact
+  migration command and `[environments.bare-host] mode = "host"` remedy in an
+  undefined-environment refusal (RG-101).
 <!-- cmru: release history -->
 
 ## [23.10.0] - 2026-10-07

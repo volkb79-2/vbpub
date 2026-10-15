@@ -3354,6 +3354,7 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
     readme = (REPO_ROOT / "tester-unified" / "README.md").read_text("utf-8")
     design = (REPO_ROOT / "tester-unified" / "docs" / "DESIGN-GUIDE.md").read_text("utf-8")
     consumers = (REPO_ROOT / "tester-unified" / "docs" / "CONSUMERS.md").read_text("utf-8")
+    bootstrap = (REPO_ROOT / "docs" / "BOOTSTRAP-FROM-ZERO.md").read_text("utf-8")
 
     assert re.search(
         r"^ARG TESTER_UNIFIED_BASE_IMAGE=ghcr\.io/volkb79-2/modern-debian-tools-python-debug-"
@@ -3363,14 +3364,29 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
     )
     assert "FROM ${TESTER_UNIFIED_BASE_IMAGE}" in dockerfile
     assert "docker-compose" in dockerfile and "docker compose version" in dockerfile
+    assert "docker-cli docker-compose" in dockerfile
     assert '--base-image) base_image=${2:?}; shift 2 ;;' in builder
     assert 'build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE=$base_image")' in builder
+    assert 'tester_gate_args+=(--image "$base_image")' in builder
+    assert 'cmru tester-gate "${tester_gate_args[@]}" /bin/true' in builder
     assert '--cli-extended-resolve) cli_extended_resolve=${2:?}; shift 2 ;;' in builder
     assert 'build_args+=(--build-arg "CLI_EXTENDED_WHEEL_SHA256=$cli_extended_sha256")' in builder
     assert '--no-cache) no_cache=1; shift ;;' in builder
     assert "mcr.microsoft.com/devcontainers/python:3.14-trixie" in readme
     assert "mcr.microsoft.com/devcontainers/python:3.14-trixie" in consumers
     assert "first-release bootstrapping" in design
+    assert "before `tester-unified:local` exists" in readme
+    assert "pre-existing" in consumers and "tester-unified:local" in consumers
+    orchestration = tomllib.loads(
+        (REPO_ROOT / "cmru.orchestration.toml").read_text("utf-8"),
+    )
+    declared_env = orchestration["orchestration"]["defaults"]["env"]
+    for key in (
+        "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
+        "CMRU_TESTER_PIDS_LIMIT", "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+    ):
+        assert f"{key}={declared_env[key]}" in bootstrap
+    assert f"docker pull {declared_env['CMRU_TESTER_CGROUP_PROBE_IMAGE']}" in bootstrap
 
 
 def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():

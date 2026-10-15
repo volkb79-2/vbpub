@@ -76,7 +76,15 @@ fi
 # slice name can be auto-created by systemd as an unlimited transient unit, so
 # passing it through to Buildx without this host-side check is not sufficient.
 cd "$repo_root"
-cmru tester-gate --cwd run-gate-project --cgroup-parent "$cgroup_parent" /bin/true
+tester_gate_args=(--cwd run-gate-project --cgroup-parent "$cgroup_parent")
+if [[ -n "$base_image" ]]; then
+  # During a zero-release bootstrap, tester-unified:local does not exist yet.
+  # Probe the declared upstream base instead; CMRU's ordinary tester-gate
+  # launch pulls a missing unprivileged workload image as needed. The separate
+  # privileged host-systemd probe remains digest-pinned and pull=never.
+  tester_gate_args+=(--image "$base_image")
+fi
+cmru tester-gate "${tester_gate_args[@]}" /bin/true
 
 identity_json="$(python3 "$repo_root/tester-unified/run-gate-wheel-version.py" "$wheel_dir" --json)"
 mapfile -t identity < <(python3 -c '

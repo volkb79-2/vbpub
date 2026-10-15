@@ -9,6 +9,7 @@ import atexit
 import ast
 import calendar
 import contextlib
+import concurrent.futures
 import fcntl
 import hashlib
 from importlib import metadata as importlib_metadata
@@ -253,6 +254,54 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
             }))
     """))
     helper_command = shlex.quote(str(verdict_helper))
+    inventory_helper = tmp_path / "fake-assay-inventory.py"
+    inventory_helper.write_text(textwrap.dedent("""\
+        import json
+        import shlex
+        import sys
+        import tomllib
+        from pathlib import Path
+
+        script = sys.argv[1]
+        first = script.split("&&", 1)[0]
+        command = shlex.split(first)
+        project = (Path(command[1]) if len(command) > 1
+                   and command[0] == "cd" else Path.cwd())
+        documents = [project / "run-gate.toml"]
+        documents.extend(parent / "run-gate.root.toml"
+                         for parent in project.parents)
+        names = set()
+        for path in documents:
+            try:
+                config = tomllib.loads(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, tomllib.TOMLDecodeError):
+                continue
+            lanes = config.get("lanes", {})
+            if isinstance(lanes, dict):
+                for lane in lanes.values():
+                    if isinstance(lane, dict) and lane.get("kind") == "assay":
+                        name = lane.get("assay_lane")
+                        if isinstance(name, str):
+                            names.add(name)
+                    elif isinstance(lane, dict) and lane.get("kind") == "sequence":
+                        names.update(member for member in lane.get("lanes", [])
+                                     if isinstance(member, str)
+                                     and member not in lanes)
+            assay = config.get("assay", {})
+            imported = assay.get("import", {}) if isinstance(assay, dict) else {}
+            imported_names = imported.get("lanes") if isinstance(imported, dict) else None
+            if isinstance(imported_names, list):
+                names.update(name for name in imported_names
+                             if isinstance(name, str))
+        entries = [
+            {"name": name, "rigor": ["R0"], "base_source": None,
+             "external_tools": [], "argv0": None, "language": None}
+            for name in sorted(names)
+        ]
+        print(json.dumps({"assay_version": "9.0.0",
+                          "inventory_schema": 1, "lanes": entries}))
+    """))
+    inventory_helper_command = shlex.quote(str(inventory_helper))
     shim = shim_dir / "docker"
     shim.write_text(textwrap.dedent(f"""\
         #!/bin/sh
@@ -263,6 +312,14 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
             case "$*" in
               *RUN_GATE_STATE_ROOT_READY*)
                 echo "RUN_GATE_STATE_ROOT_READY"
+                ;;
+              *"lanes --json"*)
+                for last; do :; done
+                first_path="${{PATH%%:*}}"
+                if [ -x "$first_path/assay" ]; then
+                  exec bash -c "$last"
+                fi
+                python3 {inventory_helper_command} "$last"
                 ;;
               *)
                 python3 {helper_command} "{wait_code}" "$@"
@@ -277,6 +334,14 @@ def fake_docker(tmp_path: Path, monkeypatch, wait_code: int | str = 0) -> Path:
             case "$*" in
               *RUN_GATE_STATE_ROOT_READY*)
                 echo "RUN_GATE_STATE_ROOT_READY"
+                ;;
+              *"lanes --json"*)
+                for last; do :; done
+                first_path="${{PATH%%:*}}"
+                if [ -x "$first_path/assay" ]; then
+                  exec bash -c "$last"
+                fi
+                python3 {inventory_helper_command} "$last"
                 ;;
               *)
                 python3 {helper_command} "{wait_code}" "$@"
@@ -2163,7 +2228,10 @@ class TestArgvConstruction:
         assert run_call[-4:-2] == ["tester-unified:local", "bash"]
         inner = run_call[-1]
         assert inner.startswith("set -euo pipefail && ")
-        assert "git config --global --replace-all safe.directory '*'" in inner
+        assert "export GIT_CONFIG_COUNT=1" in inner
+        assert "export GIT_CONFIG_KEY_0=safe.directory" in inner
+        assert "export GIT_CONFIG_VALUE_0='*'" in inner
+        assert "git config --global --replace-all safe.directory" not in inner
         assert f"cd {wt}/proj && echo gate-ran" in inner  # {worktree} substituted
         # transparency: the docker argv is printed, never buried
         assert "docker argv:" in proc.stdout
@@ -3276,45 +3344,46 @@ class TestExtraMounts:
             run_gate.extra_mount_flags()
 
 
-def test_safe_directory_uses_git_config_global_env():
+def test_safe_directory_uses_only_count_injection():
     inner = run_gate.build_command_inner(
         {"argv": ["echo"]}, Path("/wt"))
-    assert "GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+    assert "export GIT_CONFIG_COUNT=1" in inner
+    assert "export GIT_CONFIG_KEY_0=safe.directory" in inner
+    assert "export GIT_CONFIG_VALUE_0='*'" in inner
+    assert "GIT_CONFIG_GLOBAL" not in inner
+    assert "run-gate-gitconfig" not in inner
+    assert "trap " not in inner
+    assert "git config --global" not in inner
 
 
-def test_safe_directory_write_survives_preexisting_entries(tmp_path):
-    """RG-22: a plain `git config --global safe.directory '*'` (no
-    --replace-all) fails with "cannot overwrite multiple values" the moment
-    the isolated gitconfig at /tmp/run-gate-gitconfig already carries more
-    than one safe.directory entry — reproduced from dstdns P126/P127's
-    linked-worktree runners sharing a host. --replace-all makes the write
-    succeed regardless of how many entries were already there.
-
-    This test touches the REAL /tmp/run-gate-gitconfig path (the inner
-    command hard-codes it, matching TestPinVersionVerify's live-subprocess
-    pattern elsewhere in this file) and restores its prior content
-    afterward — other tests in this suite write a single entry there too.
-    """
-    gitconfig = Path("/tmp/run-gate-gitconfig")
-    original = gitconfig.read_bytes() if gitconfig.exists() else None
-    try:
-        env = {**os.environ, "GIT_CONFIG_GLOBAL": str(gitconfig)}
-        for path in ("/some/project", "/other/project"):
-            proc = subprocess.run(
-                ["git", "config", "--global", "--add", "safe.directory", path],
-                env=env, capture_output=True, text=True)
-            assert proc.returncode == 0, proc.stderr
-        inner = run_gate.build_command_inner(
-            {"argv": ["echo", "ok"]}, tmp_path)
-        proc = subprocess.run(["bash", "-c", inner], cwd=tmp_path,
-                              capture_output=True, text=True)
-        assert proc.returncode == 0, proc.stderr
-        assert "ok" in proc.stdout
-    finally:
-        if original is None:
-            gitconfig.unlink(missing_ok=True)
-        else:
-            gitconfig.write_bytes(original)
+def test_parallel_lanes_use_lock_free_safe_directory_injection(tmp_path):
+    """RG-99: concurrent commands in one runner need no config file or lock."""
+    inners = [
+        run_gate.build_command_inner(
+            {"argv": ["bash", "-c", "git config --get safe.directory && "
+                      "printf alpha"]},
+            tmp_path),
+        run_gate.build_command_inner(
+            {"argv": ["bash", "-c", "git config --get safe.directory && "
+                      "printf beta"]},
+            tmp_path),
+    ]
+    for inner in inners:
+        assert "export GIT_CONFIG_COUNT=1" in inner
+        assert "export GIT_CONFIG_KEY_0=safe.directory" in inner
+        assert "export GIT_CONFIG_VALUE_0='*'" in inner
+        assert "GIT_CONFIG_GLOBAL" not in inner
+        assert "run-gate-gitconfig" not in inner
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(
+            lambda inner: subprocess.run(
+                ["bash", "-c", inner], cwd=tmp_path,
+                capture_output=True, text=True),
+            inners))
+    for label, result in zip(("alpha", "beta"), results):
+        assert result.returncode == 0, result.stderr
+        assert "*" in result.stdout
+        assert label in result.stdout
 
 
 class TestExecDisclosure:
@@ -3463,7 +3532,9 @@ class TestExecInnerWiring:
         calls = log.read_text().splitlines()
         exec_calls = docker_execs(log)
         inner = exec_calls[0][-1]
-        assert "echo gate-ran" in inner and "GIT_CONFIG_GLOBAL" in inner
+        assert "echo gate-ran" in inner
+        assert "export GIT_CONFIG_COUNT=1" in inner
+        assert "GIT_CONFIG_GLOBAL" not in inner
 
     def test_exec_assay_lane_builds_assay_inner_not_crash(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
@@ -3483,7 +3554,8 @@ class TestExecInnerWiring:
         (repo / "ciu.global.toml").write_text(
             "[deploy]\nproject_name = 'myproj'\nenvironment_tag = 'dev1'\n")
         commit_all(repo, "ciu")
-        log = fake_docker(tmp_path, monkeypatch)
+        log = fake_docker_executing(tmp_path, monkeypatch)
+        install_fake_assay(monkeypatch, _fake_judge(_inventory(name="mock")))
         shim = shim_dir_of(monkeypatch) / "docker"
         body = shim.read_text()
         body = body.replace('case "$1" in', 'case "$1" in\n  ps) echo "myproj-dev1-runner" ;;')
@@ -3494,14 +3566,21 @@ class TestExecInnerWiring:
         exec_calls = lane_execs(log)   # never the RG-26 inventory probe
         inner = exec_calls[0][-1]
         assert "--file assay.toml" in inner
-        assert "GIT_CONFIG_GLOBAL" in inner
+        assert "export GIT_CONFIG_COUNT=1" in inner
+        assert "GIT_CONFIG_GLOBAL" not in inner
 
 
-def test_assay_inner_has_git_config_global():
+def test_assay_inner_uses_only_count_injection():
     inner = run_gate.build_assay_inner(
         {"assay_lane": "x", "assay_command": ["assay"], "pins": {}},
         Path("/proj"), Path("/repo"))
-    assert "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig" in inner
+    assert "export GIT_CONFIG_COUNT=1" in inner
+    assert "export GIT_CONFIG_KEY_0=safe.directory" in inner
+    assert "export GIT_CONFIG_VALUE_0='*'" in inner
+    assert "GIT_CONFIG_GLOBAL" not in inner
+    assert "run-gate-gitconfig" not in inner
+    assert "trap " not in inner
+    assert "git config --global" not in inner
 
 
 def test_assay_inner_derives_test_temp_and_git_ceiling_from_state_root(tmp_path):
@@ -3517,11 +3596,16 @@ def test_assay_inner_derives_test_temp_and_git_ceiling_from_state_root(tmp_path)
     assert "/worktree/.run-gate" not in inner
 
 
-def test_bare_host_assay_creates_default_state_root_for_fresh_checkout(tmp_path):
+def test_bare_host_assay_creates_default_state_root_for_fresh_checkout(
+        tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     project = make_project(repo, SIMPLE_LANE)
     state_root = repo / ".run-gate"
     assert not state_root.exists()
+    monkeypatch.setattr(
+        run_gate, "assay_inventory_entry",
+        lambda *_args, **_kwargs:
+        ({"name": "r1", "rigor": ["R0"]}, "9.0.0", None))
     run_gate.assure_assay_state_root(
         None, {"kind": "assay", "assay_lane": "r1"}, {},
         "bare-host", "bare host", repo, project, repo, "")
@@ -3561,12 +3645,16 @@ def test_configured_host_state_root_refusal_names_configured_path(
     assert not configured_root.exists()
 
 
-def test_default_assay_state_root_refuses_symlink(tmp_path):
+def test_default_assay_state_root_refuses_symlink(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     project = make_project(repo, SIMPLE_LANE)
     outside = tmp_path / "outside"
     outside.mkdir()
     (repo / ".run-gate").symlink_to(outside, target_is_directory=True)
+    monkeypatch.setattr(
+        run_gate, "assay_inventory_entry",
+        lambda *_args, **_kwargs:
+        ({"name": "r1", "rigor": ["R0"]}, "9.0.0", None))
     with pytest.raises(run_gate.GateError, match="not a real directory"):
         run_gate.assure_assay_state_root(
             None, {"kind": "assay", "assay_lane": "r1"}, {},
@@ -3884,6 +3972,23 @@ def test_source_inventory_checks_and_runs_selected_package_from_project_cwd(
                    row.get("argv", [None])[0] == "lanes" and
                    row.get("cwd") == str(project_dir)
                    for row in rows[rows_before_shadow_probe:])
+
+
+def test_assay_inventory_reports_spawn_failure(monkeypatch, tmp_path):
+    monkeypatch.setattr(run_gate, "build_env_probe_argv",
+                        lambda *_args, **_kwargs: ["docker", "run"])
+
+    def fail_to_spawn(*_args, **_kwargs):
+        raise OSError("fixture spawn failure")
+
+    monkeypatch.setattr(run_gate.subprocess, "run", fail_to_spawn)
+    document, why = run_gate.assay_inventory(
+        "/bin/docker", {"assay_command": ["assay"], "assay_lane": "unit"},
+        {"mode": "host"}, "runner", tmp_path, tmp_path, "fixture",
+        tmp_path)
+    assert document is None
+    assert "probe could not start" in why
+    assert "fixture spawn failure" in why
 
 
 class TestPinVersionVerify:
@@ -5323,11 +5428,9 @@ class TestDryRun:
 
     def test_assay_lane_dry_run_runs_the_probe_and_no_judged_container(
             self, tmp_path, monkeypatch):
-        """B1 oracle: `--dry-run` DOES start a container since RG-26 — the
-        read-only inventory probe, because it is what resolves the base the
-        printed plan must show. `lane_runs()` filters on `-d` and therefore
-        cannot see it, so the exact call set is pinned here: every `docker
-        run` is the probe, no `-d`, no `docker exec`."""
+        """`--dry-run` runs the inventory probe needed to plan the lane, but
+        only prints the state-root probe command. No judged container or
+        state-root probe starts."""
         repo = make_repo(tmp_path)
         cfg = SIMPLE_LANE.replace('kind = "command"', 'kind = "assay"') \
             .replace('argv = ["bash", "-c", "cd {worktree}/proj && echo gate-ran"]',
@@ -5337,9 +5440,10 @@ class TestDryRun:
         proc = run_tool(proj, "suite", "--dry-run")
         assert proc.returncode == 0, proc.stderr
         runs = docker_runs(log)
-        assert len(runs) == 1, runs                # exactly one, and it is…
+        assert len(runs) == 1, runs
         assert "--rm" in runs[0] and "-d" not in runs[0]
-        assert "lanes --json" in runs[0][-1]       # …the inventory probe
+        assert "lanes --json" in runs[0][-1]
+        assert "assay state root preflight:" in proc.stdout
         assert docker_execs(log) == []
         assert lane_runs(log) == []                # no judged container at all
 
@@ -8049,6 +8153,7 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
     def test_doctor_non_git_worktree_fails_with_gits_own_message(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, wt = self._two_trees(tmp_path, monkeypatch, self.HOST_LANE)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         monkeypatch.chdir(proj)
         outside = tmp_path / "plain-dir"
         (outside / "proj").mkdir(parents=True)
@@ -8114,6 +8219,7 @@ class TestDoctorAndCheckEnvWorktreeReadScope:
     def test_check_env_non_git_worktree_refuses_with_gits_own_message(
             self, tmp_path, monkeypatch, capsys):
         repo, proj, wt = self._two_trees(tmp_path, monkeypatch, SIMPLE_LANE)
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         monkeypatch.chdir(proj)
         outside = tmp_path / "plain-dir"
         (outside / "proj").mkdir(parents=True)
@@ -8685,7 +8791,14 @@ class TestComparisonBasePassthrough:
 
     def test_judge_without_json_and_no_base_behaves_exactly_as_before(
             self, tmp_path, monkeypatch):
-        self._project(tmp_path, monkeypatch)
+        _repo, project = self._project(tmp_path, monkeypatch)
+        external_state = tmp_path / "external-assay-state"
+        external_state.mkdir()
+        config_path = project / run_gate.CONFIG_NAME
+        config_path.write_text(config_path.read_text().replace(
+            'image = "tester-unified:local"',
+            'image = "tester-unified:local"\n'
+            f'state_root = "{external_state}"', 1))
         log = fake_docker_executing(tmp_path, monkeypatch)
         install_fake_assay(monkeypatch, "#!/bin/sh\n"
                            'echo "unrecognized arguments: --json" >&2\nexit 2\n')
@@ -8837,7 +8950,7 @@ class TestComparisonBasePassthrough:
             #!/bin/sh
             case "$*" in
               *"lanes --json"*) echo '{"inventory_schema": 1, "lanes": [
-                  {"name": "ui_unit", "base_source": "request",
+                  {"name": "ui_unit", "base_source": "request", "rigor": ["R0"],
                    "external_tools": [], "argv0": null, "language": null}]}' ;;
               *) echo "JUDGE-RAN-IN: $(pwd)"; echo "JUDGE-ARGV: $*" ;;
             esac
@@ -8865,6 +8978,12 @@ class TestRG66SelectiveAssayRequests:
         cfg = ASSAY_LANE_CFG.replace(
             "clean_tree = false",
             "clean_tree = false\nprofile = false")
+        external_state = tmp_path / "external-assay-state"
+        external_state.mkdir()
+        cfg = cfg.replace(
+            'image = "tester-unified:local"',
+            'image = "tester-unified:local"\n'
+            f'state_root = "{external_state}"', 1)
         repo = make_repo(tmp_path)
         proj = make_project(repo, cfg)
         (proj / "assay.toml").write_text("# fixture\n")
@@ -9857,9 +9976,11 @@ class TestRecordedWorktreeBase:
         assert run_gate.local_branch_ref_name(repo, "v1.0.0") is None
         assert run_gate.local_branch_ref_name(repo, "nope") is None
 
-    def test_local_branch_ref_name_outside_a_repo_is_none(self, tmp_path):
+    def test_local_branch_ref_name_outside_a_repo_is_none(
+            self, tmp_path, monkeypatch):
         plain = tmp_path / "plain"
         plain.mkdir()
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         assert run_gate.local_branch_ref_name(plain, "main") is None
 
     def test_local_branch_ref_name_without_git_on_path_is_none(
@@ -10519,11 +10640,11 @@ class TestRG76AssayLaneImports:
         "inventory_schema": 1,
         "assay_version": "7.2.0",
         "lanes": [
-            {"name": "alpha", "base_source": "declared",
+            {"name": "alpha", "base_source": "declared", "rigor": ["R0"],
              "external_tools": [], "argv0": None, "language": None},
-            {"name": "beta", "base_source": "declared",
+            {"name": "beta", "base_source": "declared", "rigor": ["R0"],
              "external_tools": [], "argv0": None, "language": None},
-            {"name": "gamma", "base_source": "declared",
+            {"name": "gamma", "base_source": "declared", "rigor": ["R0"],
              "external_tools": [], "argv0": None, "language": None},
         ]})
 
@@ -10591,6 +10712,61 @@ class TestRG76AssayLaneImports:
             1)
         config = config.replace('"bare-host"', '"runner"')
         config_path.write_text(config)
+
+    def test_import_discovery_gives_non_exec_inventory_remedy(self, monkeypatch):
+        settings = {
+            "command": ["assay"], "pins": {"assay": {"sha256": "a"}},
+            "import": {"environment": "host", "lanes": ["unit"]},
+        }
+        monkeypatch.setattr(run_gate, "resolve_environment",
+                            lambda *_args: ({"mode": "host"}, "host"))
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "assay_inventory",
+                            lambda *_args: (None, "fixture inventory failure"))
+
+        with pytest.raises(run_gate.AssayImportUnavailable) as exc:
+            run_gate.discover_imported_assay_lanes(
+                settings, {}, {}, Path("run-gate.toml"), None,
+                Path("repo"), Path("repo"), Path("repo"))
+
+        assert "check the assay command, pin, and image" in str(exc.value)
+
+    def test_import_listing_placeholders_and_sequence_dependency(self):
+        declared = {
+            "suite": {"kind": "sequence", "lanes": ["local", "nested"]},
+            "local": {"kind": "command", "argv": ["true"]},
+            "nested": {"kind": "sequence", "lanes": ["remote", 17]},
+            "ignored": "not a lane table",
+        }
+        placeholders = run_gate.unresolved_import_placeholders(
+            {"import": {"environment": "runner", "lanes": "all"}},
+            declared)
+        assert list(placeholders) == ["remote"]
+        assert placeholders["remote"]["_import_unresolved"] is True
+        assert run_gate.unresolved_import_placeholders(
+            {"import": {"environment": "runner", "lanes": ["local", "remote"]}},
+            declared) == {"remote": {
+                "kind": "assay", "environment": "runner",
+                "assay_lane": "remote", "_import_unresolved": True}}
+        assert run_gate.unresolved_import_placeholders(
+            {"import": {"environment": "runner", "lanes": None}},
+            declared) == {}
+        assert run_gate.unresolved_import_placeholders({}, declared) == {}
+
+        assert run_gate.sequence_requires_assay_import(
+            "suite", declared, {"lanes": "all"})
+        assert run_gate.sequence_requires_assay_import(
+            "suite", declared, {"lanes": ["remote"]})
+        assert not run_gate.sequence_requires_assay_import(
+            "suite", declared, {"lanes": ["other"]})
+        assert not run_gate.sequence_requires_assay_import(
+            "local", declared, {"lanes": "all"})
+        cycle = {
+            "a": {"kind": "sequence", "lanes": ["b"]},
+            "b": {"kind": "sequence", "lanes": ["a"]},
+        }
+        assert not run_gate.sequence_requires_assay_import(
+            "a", cycle, {"lanes": "all"})
 
     @pytest.mark.parametrize("environment", ["host", "exec"])
     def test_container_record_refuses_after_imported_assay_environment_changes(
@@ -10751,6 +10927,74 @@ class TestRG76AssayLaneImports:
         assert "alpha\tassay\tbare-host" in captured.out
         assert "gamma\t" not in captured.out
         assert "imported assay lanes: alpha" in captured.err
+
+    def test_list_and_local_host_lane_do_not_require_stopped_import_runner(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        self._use_exec_import_environment(project)
+        config_path = project / run_gate.CONFIG_NAME
+        config_path.write_text(config_path.read_text() + "\n" + """\
+            [environments.local]
+            mode = "host"
+            [lanes.docs]
+            kind = "command"
+            environment = "local"
+            argv = ["bash", "-c", "echo docs"]
+            clean_tree = false
+            """)
+        commit_all(_repo, "add local docs lane")
+        calls = []
+        real_run = subprocess.run
+        real_which = shutil.which
+
+        def unavailable_docker(argv, **kwargs):
+            if argv and argv[0] == "/bin/docker":
+                calls.append(list(argv))
+                return subprocess.CompletedProcess(
+                    argv, 125, "", "Error response from daemon: no such container")
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: "/bin/docker" if name == "docker"
+                            else real_which(name))
+        monkeypatch.setattr(run_gate.subprocess, "run", unavailable_docker)
+
+        assert run_gate.main(["--list"]) == 0
+        listed = capsys.readouterr()
+        assert "alpha\tassay\trunner" in listed.out
+        assert "imported assay lane names unresolved: alpha" in listed.err
+        assert "assay import unresolved" in listed.err
+
+        assert run_gate.main(["docs", "--dry-run"]) == 0
+        local = capsys.readouterr()
+        assert "DRY RUN" in local.out
+        assert "alpha\tassay" not in local.out
+        assert len(calls) == 1  # only the best-effort `--list` query
+
+    def test_selected_imported_lane_refuses_with_runner_remedy_when_stopped(
+            self, tmp_path, monkeypatch, capsys):
+        _repo, project, _fake = self._project(
+            tmp_path, monkeypatch, imported=["alpha"])
+        self._use_exec_import_environment(project)
+        real_which = shutil.which
+        real_run = subprocess.run
+
+        def unavailable_docker(argv, **kwargs):
+            if argv and argv[0] == "/bin/docker":
+                return subprocess.CompletedProcess(
+                    argv, 125, "", "Error response from daemon: no such container")
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(run_gate.shutil, "which",
+                            lambda name: "/bin/docker" if name == "docker"
+                            else real_which(name))
+        monkeypatch.setattr(run_gate.subprocess, "run", unavailable_docker)
+
+        assert run_gate.main(["alpha", "--dry-run"]) == 2
+        error = capsys.readouterr().err
+        assert "[assay] import could not read the judge inventory" in error
+        assert "deployment authority" in error or "start via" in error
 
     def test_imported_lane_uses_shared_pin_and_tampering_is_not_run(
             self, tmp_path, monkeypatch, capsys):
@@ -12629,13 +12873,14 @@ class TestHistoryStoreSafety:
         assert run_gate.paths_are_git_ignored(
             repo, run_gate.history_written_paths(proj)) is False
 
-    def test_git_error_status_is_indeterminate_not_a_green_light(self,
-                                                                 tmp_path):
+    def test_git_error_status_is_indeterminate_not_a_green_light(
+            self, tmp_path, monkeypatch):
         """git exits 128 outside a repo. That is 'I could not answer', and
         folding it into either answer would be the absence-for-emptiness
         anti-pattern — here in its dangerous direction."""
         outside = tmp_path / "not-a-repo"
         outside.mkdir()
+        monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
         assert run_gate.paths_are_git_ignored(
             outside, run_gate.history_written_paths(outside)) is None
 
@@ -13734,6 +13979,121 @@ class TestResumeAndProgressAlways:
         assert run_gate.ASSAY_STATE_UNAVAILABLE in calls[1][-1]
         assert "mkdir" not in calls[1][-1] and "chown" not in calls[1][-1]
 
+    def test_default_in_repo_root_refuses_snapshot_lane_before_lane_exec(
+            self, monkeypatch, tmp_path):
+        """RG-98 consumer fixture: an R1 lane with the default `.run-gate`
+        root gets an actionable preflight refusal before its verdict is
+        cleared or its judge command is started."""
+        repo = tmp_path / "consumer"
+        project = repo / "service"
+        project.mkdir(parents=True)
+        calls = []
+
+        def run(argv, **_kwargs):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 0, "runner-1\n", "")
+
+        def inventory(*_args, **_kwargs):
+            return {"name": "r1", "rigor": ["R0", "R1"]}, "9.0.0", None
+
+        cleared = []
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate.subprocess, "run", run)
+        monkeypatch.setattr(run_gate, "assay_inventory_entry", inventory)
+        monkeypatch.setattr(
+            run_gate, "clear_previous_assay_verdict",
+            lambda *_args, **_kwargs: cleared.append(True))
+        lane = {**self._LANE, "kind": "assay", "environment": "runner",
+                "assay_lane": "r1", "assay_command": ["assay"]}
+        env = {"mode": "exec", "image": "runner:local"}
+
+        with pytest.raises(run_gate.GateNotRunError) as exc:
+            run_gate.run_exec_lane(
+                lane, "r1", project, repo, repo, env,
+                "[environments.runner]", "runner-1", "declared container_name",
+                "ciu up --dir test-runner", None, "no cgroup slice for exec",
+                run_record=None, profile_plan={"enabled": False})
+
+        assert exc.value.reason == "state-mount"
+        assert "inside" in str(exc.value)
+        assert "TMPDIR" in str(exc.value)
+        assert "durable absolute path outside the judged worktree" in str(exc.value)
+        assert calls == [["/bin/docker", "ps", "--format", "{{.Names}}"]]
+        assert not cleared
+
+    def test_default_in_repo_root_refuses_unknown_inventory_as_infrastructure(
+            self, monkeypatch, tmp_path):
+        repo = tmp_path / "consumer"
+        project = repo / "service"
+        project.mkdir(parents=True)
+        monkeypatch.setattr(
+            run_gate, "assay_inventory_entry",
+            lambda *_args, **_kwargs:
+            (None, "9.0.0", "fixture inventory failure"))
+
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot determine whether Assay lane"):
+            run_gate.assure_assay_state_root(
+                "/bin/docker",
+                {"kind": "assay", "assay_lane": "unit",
+                 "assay_command": ["assay"]},
+                {"mode": "exec", "image": "runner:local"}, "runner",
+                "fixture", repo, project, repo, "",
+                resolved_container_name="runner-1")
+
+    @pytest.mark.parametrize("rigor", [None, [], ["R4"], ["R0", 7]])
+    def test_default_in_repo_root_refuses_invalid_inventory_rigor(
+            self, monkeypatch, tmp_path, rigor):
+        repo = tmp_path / "consumer"
+        project = repo / "service"
+        project.mkdir(parents=True)
+        monkeypatch.setattr(
+            run_gate, "assay_inventory_entry",
+            lambda *_args, **_kwargs:
+            ({"name": "unit", "rigor": rigor}, "9.0.0", None))
+
+        with pytest.raises(run_gate.GateInfraError,
+                           match="returned invalid rigor"):
+            run_gate.assure_assay_state_root(
+                "/bin/docker",
+                {"kind": "assay", "assay_lane": "unit",
+                 "assay_command": ["assay"]},
+                {"mode": "exec", "image": "runner:local"}, "runner",
+                "fixture", repo, project, repo, "",
+                resolved_container_name="runner-1")
+
+    def test_in_repo_root_still_allows_r0_and_external_root_allows_r1(
+            self, monkeypatch, tmp_path, capsys):
+        repo = tmp_path / "consumer"
+        project = repo / "service"
+        project.mkdir(parents=True)
+        env = {"mode": "exec", "image": "runner:local"}
+        monkeypatch.setattr(
+            run_gate, "assay_inventory_entry",
+            lambda *_args, **_kwargs:
+            ({"name": "r0", "rigor": ["R0"]}, "9.0.0", None))
+        monkeypatch.setattr(run_gate, "probe_assay_state_root",
+                            lambda *_args, **_kwargs: (True, None))
+
+        run_gate.assure_assay_state_root(
+            "/bin/docker", {"kind": "assay", "assay_lane": "r0",
+                             "assay_command": ["assay"], "pins": []},
+            env, "runner", "fixture", repo, project, repo, "",
+            resolved_container_name="runner-1")
+        assert "assay state root:" in capsys.readouterr().out
+
+        external = {**env, "state_root": "/persist/run-gate"}
+        monkeypatch.setattr(
+            run_gate, "assay_inventory_entry",
+            lambda *_args, **_kwargs:
+            pytest.fail("an external state root needs no isolation probe"))
+        run_gate.assure_assay_state_root(
+            "/bin/docker", {"kind": "assay", "assay_lane": "r1",
+                             "assay_command": ["assay"], "pins": []},
+            external, "runner", "fixture", repo, project, repo, "",
+            resolved_container_name="runner-1")
+        assert "assay state root:" in capsys.readouterr().out
+
     @pytest.mark.parametrize(("env", "runner"), [
         ({"mode": "ephemeral", "image": "runner:local"},
          "image 'runner:local'"),
@@ -13743,6 +14103,10 @@ class TestResumeAndProgressAlways:
             self, monkeypatch, tmp_path, env, runner):
         repo = tmp_path / "repo"
         repo.mkdir()
+        monkeypatch.setattr(run_gate, "assay_inventory_entry",
+                            lambda *_args, **_kwargs:
+                            ({"name": "unit", "rigor": ["R0"]},
+                             "9.0.0", None))
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (False, None))
         monkeypatch.setattr(run_gate, "build_env_probe_argv",
@@ -13771,6 +14135,10 @@ class TestResumeAndProgressAlways:
 
     def test_writable_state_preflight_reports_the_ready_root(
             self, monkeypatch, tmp_path, capsys):
+        monkeypatch.setattr(run_gate, "assay_inventory_entry",
+                            lambda *_args, **_kwargs:
+                            ({"name": "unit", "rigor": ["R0"]},
+                             "9.0.0", None))
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (True, None))
         repo = tmp_path / "repo"
@@ -13783,6 +14151,10 @@ class TestResumeAndProgressAlways:
 
     def test_indeterminate_state_probe_is_an_infrastructure_error(
             self, monkeypatch, tmp_path):
+        monkeypatch.setattr(run_gate, "assay_inventory_entry",
+                            lambda *_args, **_kwargs:
+                            ({"name": "unit", "rigor": ["R0"]},
+                             "9.0.0", None))
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (None, "daemon unavailable"))
         repo = tmp_path / "repo"
@@ -13863,6 +14235,10 @@ class TestResumeAndProgressAlways:
             raise AssertionError("dry-run must not probe host state")
 
         monkeypatch.setattr(run_gate, "probe_assay_state_root", unexpected_probe)
+        monkeypatch.setattr(
+            run_gate, "assay_inventory_entry",
+            lambda *_args, **_kwargs:
+            ({"name": "unit", "rigor": ["R0"]}, "9.0.0", None))
         repo = tmp_path / "repo"
         repo.mkdir()
         default_root = repo / ".run-gate"
@@ -13962,7 +14338,7 @@ class TestResumeAndProgressAlways:
             #!/bin/sh
             case "$*" in
               *"lanes --json"*) echo '{"inventory_schema": 1, "lanes": [
-                  {"name": "ui_unit", "base_source": "request",
+                  {"name": "ui_unit", "base_source": "request", "rigor": ["R0"],
                    "external_tools": [], "argv0": null, "language": null}]}' ;;
               *) echo "JUDGE-ARGV: $*"
                  mkdir -p .assay
@@ -14069,6 +14445,8 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
     """
     log = fake_docker(tmp_path, monkeypatch)
     verdict_helper = shlex.quote(str(Path(tmp_path) / "fake-assay-verdict.py"))
+    inventory_helper = shlex.quote(
+        str(Path(tmp_path) / "fake-assay-inventory.py"))
     state = tmp_path / "docker-state"
     state.mkdir(exist_ok=True)
     shim = shim_dir_of(monkeypatch) / "docker"
@@ -14092,6 +14470,15 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             case "$*" in
               *RUN_GATE_STATE_ROOT_READY*)
                 echo "RUN_GATE_STATE_ROOT_READY"
+                exit 0
+                ;;
+              *"lanes --json"*)
+                for last; do :; done
+                first_path="${{PATH%%:*}}"
+                if [ -x "$first_path/assay" ]; then
+                  exec bash -c "$last"
+                fi
+                python3 {inventory_helper} "$last"
                 exit 0
                 ;;
             esac
@@ -26538,6 +26925,16 @@ class TestRG78AndRG76DirectOracles:
         assert resolved["image"] == "operator:v2"
         assert resolved["user"] == f"{os.getuid()}:{os.getgid()}"
 
+    def test_undefined_bare_host_names_mode_fix_and_migration_command(self):
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(
+                {"environment": "bare-host"}, "docs", {}, {},
+                Path("run-gate.toml"), None)
+        message = str(exc.value)
+        assert "[environments.bare-host]" in message
+        assert 'mode = "host"' in message
+        assert "run-gate migrate-modes run-gate.toml" in message
+
     def test_environment_image_override_requires_valid_name_and_container_mode(self):
         for value in ("", "1IMAGE", "IMAGE-NAME"):
             with pytest.raises(run_gate.GateError, match="valid environment-variable name"):
@@ -30487,8 +30884,6 @@ class TestRunGateR1DirectCoverage:
                             lambda *_args, **_kwargs: [])
         monkeypatch.setattr(run_gate, "load_footprint_manifest",
                             lambda _project: None)
-        monkeypatch.setattr(run_gate.os, "access", lambda path, _mode:
-                            str(path) != "/tmp")
         monkeypatch.setattr(run_gate.subprocess, "run", lambda argv, **_kwargs:
                             subprocess.CompletedProcess(argv, 1, "", "missing"))
         lanes = {"unit": {"kind": "assay", "assay_lane": "unit",
@@ -30502,7 +30897,7 @@ class TestRunGateR1DirectCoverage:
         assert "[FAIL] mountinfo: mountinfo is unreadable" in output
         assert "[SKIP] Assay state root for env runner" in output
         assert "state probe fixture failure" in output
-        assert "[WARN] git-config: /tmp NOT writable" in output
+        assert "git-config" not in output
         assert "[WARN] image runner: runner not local" in output
 
     def test_artifact_disclosure_normalizes_substitutes_and_deduplicates(

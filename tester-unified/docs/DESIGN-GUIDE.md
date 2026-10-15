@@ -46,9 +46,15 @@ cannot traverse.
 
 The image build is a host workload too. `build-image.sh` requires the declared
 gates slice (or an explicit override), verifies that slice through CMRU's
-host-systemd probe, and passes it to Buildx. The loaded image carries the exact
-Run-Gate wheel version and digest as labels; the builder checks those labels
-before reporting success.
+host-systemd probe, and passes it to Buildx. When an explicit `--base-image` is
+selected, CMRU's unprivileged preflight runs from that same base. This breaks
+the first-image bootstrap loop without weakening the separate digest-pinned,
+pull-disabled host-systemd probe. The loaded image carries the exact Run-Gate
+wheel version and digest as labels; the builder checks those labels before
+reporting success. The release controller injects tester resource settings
+from the estate configuration. Direct shell builds must provide those same
+declared settings explicitly, and the pinned host probe must already be
+present locally.
 
 The default base is MDT's published devcontainer image for parity with the
 cockpit. The explicit `--base-image` override supports first-release

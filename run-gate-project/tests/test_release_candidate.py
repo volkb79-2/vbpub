@@ -9,6 +9,7 @@ import runpy
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 import pytest
 
 
@@ -612,7 +613,10 @@ def test_prepare_records_the_exact_wheel_and_tester_image(monkeypatch, tmp_path,
         "sha256": "a" * 64,
     }
     image_id = "sha256:" + "b" * 64
-    monkeypatch.setattr(release_candidate, "prepared_release_version", lambda _path: "24.0.0")
+    monkeypatch.setattr(
+        release_candidate, "prepared_release_version",
+        lambda _path, **_kwargs: "24.0.0",
+    )
     monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
     monkeypatch.setattr(
         release_candidate,
@@ -677,7 +681,10 @@ def test_prepare_refuses_mismatched_build_and_image(
         "filename": f"run_gate-{wheel_version}-py3-none-any.whl",
         "sha256": "a" * 64,
     }
-    monkeypatch.setattr(release_candidate, "prepared_release_version", lambda _path: "24.0.0")
+    monkeypatch.setattr(
+        release_candidate, "prepared_release_version",
+        lambda _path, **_kwargs: "24.0.0",
+    )
     monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
     monkeypatch.setattr(
         release_candidate,
@@ -1147,7 +1154,9 @@ def test_release_image_builder_checks_governed_parent_and_exact_labels(tmp_path)
     builder = (TOOLS.parents[1] / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
     dockerfile = (TOOLS.parents[1] / "tester-unified" / "Dockerfile").read_text(encoding="utf-8")
     assert 'CGROUP_PARENT_DEV_GATES or --cgroup-parent is required' in builder
-    assert 'cmru tester-gate --cwd run-gate-project --cgroup-parent "$cgroup_parent" /bin/true' in builder
+    assert 'tester_gate_args=(--cwd run-gate-project --cgroup-parent "$cgroup_parent")' in builder
+    assert 'tester_gate_args+=(--image "$base_image")' in builder
+    assert 'cmru tester-gate "${tester_gate_args[@]}" /bin/true' in builder
     assert 'docker buildx build --load --cgroup-parent "$cgroup_parent"' in builder
     assert 'org.vbpub.run-gate.wheel-sha256' in builder
     assert 'org.vbpub.run-gate.version' in dockerfile

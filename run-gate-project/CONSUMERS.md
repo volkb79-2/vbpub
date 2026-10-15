@@ -29,6 +29,8 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    `run-gate.root.toml` already defines them (see below). Central config
    lookup stops at the project's Git toplevel, so a nested standalone
    repository needs its own `run-gate.root.toml` to share environment facts.
+   `bare-host` is an ordinary environment name; to preserve the old bare-host
+   behavior, declare `[environments.bare-host] mode = "host"`.
 3. **Point consumers at lanes** — e.g. nyxloom's `[gates.<name>]`:
    `argv = ["bash", "-c", "cd {worktree}/<proj> && run-gate --worktree {worktree} <lane>"]`.
    `{worktree}` is substituted textually into a shell string, so judged
@@ -379,6 +381,19 @@ is missing that field or either comparison disagrees, the gate returns
 infrastructure ERROR while retaining the runner's raw status and Assay
 outcome. This prevents a PASS artifact from overriding a failing process.
 
+### Exec mode Git safety
+
+For `mode = "exec"`, use the existing single-user test-runner declared by
+your project. Run-Gate injects `safe.directory=*` into each lane process
+through Git's `GIT_CONFIG_COUNT` environment variables. No global Git config
+or lock file needs to be created, and no lane mutex is added. Concurrent
+lanes do not contend on Run-Gate's safe-directory setup. Keep one user per
+test container. RG-99 remains open until concurrent exec-mode acceptance is
+complete. Do not add a `git config --global safe.directory` preamble to the
+lane command. This covers Run-Gate's own Git safety setting; a lane that
+intentionally changes global Git settings owns that behavior separately. See the
+[design rationale](docs/DESIGN-GUIDE.md#concurrent-exec-lanes-use-read-only-git-safety).
+
 ### Init reaping and resource events
 
 When another tool starts run-gate inside a container, give it an init reaper.
@@ -696,8 +711,9 @@ durable mount is at another in-container path declares that exact path as
 `state_root` in its `[environments.<name>]` table. The runner owner must mount
 the corresponding durable host directory read-write before the gate runs;
 run-gate never creates a root-owned directory in an exec runner's disposable
-container layer. For example, if the runner mounts the checkout's `.run-gate`
-at `/workspace/project/.run-gate`, declare:
+container layer. For example, if the runner mounts a durable host directory
+at `/workspace/.run-gate` and the judged checkout at `/workspace/project`,
+declare:
 
 <!-- run-gate-config -->
 ```toml
@@ -707,7 +723,7 @@ schema_version = 1
 mode = "exec"
 image = "yourproj/test-runner:local"
 container_name = "yourproj-test-runner"
-state_root = "/workspace/project/.run-gate"
+state_root = "/workspace/.run-gate"
 ```
 
 For a host environment, run-gate uses the default checkout path directly;
@@ -739,6 +755,13 @@ names the resolved state directory. See the
 [mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
 for why Run-Gate does not create a configured root inside an exec runner.
 
+For a lane whose Assay inventory declares R1, R2, or R3, `state_root` must be
+outside the judged worktree. Assay reads `TMPDIR` itself to choose snapshot
+scratch, so an in-repository default such as `<checkout>/.run-gate` would
+violate Assay's isolation boundary. Run-Gate refuses that lane with
+NOT_RUN/`state-mount` and names the external durable mount remedy; R0-only
+lanes can keep the default root.
+
 The progress JSONL is append-only: Assay writes a `run` header for each
 invocation. Run-Gate attributes candidate status and silence only to records
 after the newest header, so old candidates retained for resume are not
@@ -768,7 +791,7 @@ schema_version = 1
 mode = "exec"
 image = "yourproj/test-runner:local"
 container_name = "yourproj-test-runner"
-state_root = "/workspace/project/.run-gate"
+state_root = "/workspace/.run-gate"
 
 [assay]
 command = ["/opt/tester-venv/bin/python", "tools/assay/assay-7.2.0.pyz"]
@@ -779,9 +802,14 @@ version = "7.2.0"
 sha256 = "tools/assay/assay-7.2.0.pyz.sha256"
 ```
 
-The verifier asks `assay lanes --json` inside `test-runner`, refuses a failed
-or malformed inventory, and verifies the same pin for every imported lane.
-Inspect the effective names with `run-gate --list`.
+The verifier asks `assay lanes --json` inside `test-runner` only when an
+imported lane is selected, a local sequence uses one, or `--check-env` needs
+the complete set. It refuses a failed or malformed inventory and verifies the
+same pin for every imported lane. `run-gate --list` keeps its three-column
+output when the runner is stopped and reports unresolved imports on stderr;
+it lists explicitly named imports as unresolved and does not invent names for
+`lanes = "all"`. This lets a host-only lane and project discovery work without
+starting a persistent judge.
 
 ### Selective lane requests
 

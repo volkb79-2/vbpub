@@ -111,6 +111,22 @@ prepares release-baseline facts. That protects the aggregate controller's
 credential-bearing Git operation; the Run-Gate mount protects later host Git
 operations after a tester lane.
 
+## Concurrent exec lanes use read-only Git safety
+
+Run-Gate needs `safe.directory=*` because a container user may differ from the
+host owner of the mounted checkout. Writing that setting with `git config
+--global` creates a shared lock file in the runner. Two concurrent `docker
+exec` lanes can then race during setup, and the loser can look like a product
+failure. Run-Gate instead passes the setting through Git's `GIT_CONFIG_COUNT`
+environment interface. Each lane process sees the value without writing a
+config file, lock file, or adding mutual exclusion. Test containers are
+single-user environments; this contract covers Run-Gate's own safety setting,
+not arbitrary global Git configuration writes performed by lane bodies.
+
+RG-99 remains open until concurrent lane commands have been observed inside
+the same live runner container. See [SPEC.md R-19a](../SPEC.md#5-execution-contract)
+and the [consumer guidance](../CONSUMERS.md#exec-mode-git-safety).
+
 ## The runner belongs to the judged worktree
 
 An exec lane uses a persistent runner managed by that project's deployment
@@ -387,6 +403,17 @@ and the same operator extra mounts. Without those, an imported Assay command
 or tool can be unavailable to preflight even though it is present in the
 actual lane, or a probe can pass under permissions the lane does not have.
 
+## Imported lanes are resolved only when needed
+
+An inventory import depends on a live Assay judge. Requiring that judge merely
+to list lanes or run an unrelated local command turns a stopped optional
+runner into a project-wide outage. Run-Gate therefore resolves inventory for
+an imported lane selection, a local sequence that references an imported
+lane, or `--check-env`; read-only listing keeps its stable three-column output
+and marks imports unresolved on stderr. When the judge is unavailable, a
+selected imported lane still fails with the runner remedy. This keeps unknown
+inventory distinct from an empty inventory and avoids guessing imported names.
+
 ## Source-backed Assay identifies code as source
 
 Internal vbpub lanes install Assay from the selected worktree with an editable
@@ -619,6 +646,14 @@ creates the root nor pretends it can certify the future lane user's access.
 The first live lane in those environments creates the root and checks access.
 A configured `state_root` or an `exec` environment is checked
 through its declared runner, never by host-statting a container path.
+For an Assay lane whose inventory declares R1, R2, or R3, the selected root
+must also be outside the judged worktree. Run-Gate sets `TMPDIR` so pytest
+uses the verified durable path, but Assay itself reads the same variable when
+choosing snapshot scratch. An in-tree default such as
+`<checkout>/.run-gate` would therefore violate Assay's snapshot boundary.
+Run-Gate checks the selected judge's inventory and returns NOT_RUN/`state-mount`
+with an external-mount remedy before invoking that lane; R0-only lanes retain
+the default in-repository root.
 When the default `<checkout>/.run-gate` path is not mounted there, the result
 is NOT_RUN/`state-mount` with the required read-write mount named. A container
 environment can set `state_root` when its durable mount uses another path;

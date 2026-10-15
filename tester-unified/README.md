@@ -53,8 +53,17 @@ cmru handler wheel-build --cwd run-gate-project
 After either build, build and load the image from that exact wheel. The builder
 requires the configured `$CGROUP_PARENT_DEV_GATES` (or an explicit
 `--cgroup-parent`), checks the host slice through CMRU's `tester-gate` probe,
-and passes the same parent to Buildx. It verifies the loaded image labels still
-name the exact wheel version and SHA-256:
+and passes the same parent to Buildx. When `--base-image` is supplied, the
+unprivileged preflight container uses that image. This lets the first tester
+image be built before `tester-unified:local` exists. The separate host-systemd
+probe remains digest-pinned and pull-disabled. The builder verifies the loaded
+image labels still name the exact wheel version and SHA-256:
+
+When called inside a CMRU release step, CMRU injects the tester resource
+settings. For a direct shell invocation, export the required
+`CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`,
+`CMRU_TESTER_PIDS_LIMIT`, and `CMRU_TESTER_CGROUP_PROBE_IMAGE` values from
+`cmru.orchestration.toml`; the probe image must already be present locally.
 
 ```bash
 tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local

@@ -120,6 +120,14 @@ environment-down, environment-mismatch, env-missing, external-missing,
 external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
 judge-digest, provenance-mismatch, and state-mount.
 
+Container lanes receive Git's `safe.directory=*` through per-process
+`GIT_CONFIG_COUNT` variables. Run-Gate writes no global config or lock file,
+so its setup does not contend on a shared config lock. RG-99 remains open
+until concurrent exec-mode acceptance is complete. Use one user per test
+container. See the
+[design rationale](docs/DESIGN-GUIDE.md#concurrent-exec-lanes-use-read-only-git-safety)
+and [consumer guidance](CONSUMERS.md#exec-mode-git-safety).
+
 Every `[environments.<name>]` declares `mode = "ephemeral"`, `"exec"`, or
 `"host"`. Names carry no behavior: `host` is an ordinary name and is a
 container only when its declaration says `mode = "ephemeral"`; `mode = "host"`
@@ -189,6 +197,10 @@ from `assay lanes --json` with
 lanes inherit the shared command and pin; a project lane with the same name
 overrides it. This is the v7 shape chosen to carry directly into CIU v8's
 `[testing.judge] import` contract. See the [consumer example](CONSUMERS.md#shared-assay-lane-imports).
+Run-Gate asks for inventory only when it needs an imported lane or when
+`--check-env` requests the full lane set. Listing and unrelated local lanes
+remain usable if a persistent judge is stopped; `--list` reports unresolved
+imports on stderr and keeps its three-column machine-readable output.
 
 An assay lane can pass `--reuse-from PATH`, repeatable `--rejudge ID`, and
 `--rejudge-outcome BUCKET` to one selected Assay run. A command lane accepts
@@ -215,6 +227,14 @@ Assay 5.2.0. Read the
 [state contract](CONSUMERS.md#resume-progress-and-durable-assay-state) and
 [mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
 before removing an ephemeral worktree.
+
+An Assay lane whose inventory declares R1, R2, or R3 also needs its selected
+`state_root` outside the judged worktree. Assay uses `TMPDIR` for its own
+snapshot scratch as well as passing it to pytest; keeping the default
+`<checkout>/.run-gate` inside an ordinary checkout would put that scratch
+inside the repository. Run-Gate refuses that combination before starting the
+lane and names the durable external mount to configure. R0-only lanes can use
+the default in-repo root.
 
 Projects inside the checkout keep their relative path key. A project outside
 the checkout uses a separate `assay-state-external/<sha256>` path based on its
@@ -487,9 +507,9 @@ the tool's reason to exist and MUST be implemented + tested:
   paths so worktree gitfiles resolve — when no alias is derivable (bare
   host, `phys == repo`) the lane refuses instead of silently collapsing to
   one mount; declare the second view via
-  `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`;
-  `git config --global safe.directory '*'`
-  inside the gate container.
+  `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`. Run-Gate supplies
+  `safe.directory=*` through per-process Git environment variables; no global
+  config write is needed.
 - **Mounts (RG-86):** an ephemeral container sees ONLY the judged worktree
   (all its own files, git-ignored ones included) plus the git common dir
   (read-write, ciu v8 SPEC S16.4.9), `<repo>/.run-gate` for assay state, and

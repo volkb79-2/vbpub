@@ -30,7 +30,7 @@ USER root
 # client only; the launcher supplies the host socket when a lane needs it.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates curl docker.io docker-compose git jq openssh-client util-linux \
+      ca-certificates curl docker-cli docker-compose git jq openssh-client util-linux \
  && rm -rf /var/lib/apt/lists/* \
  && docker --version \
  && docker compose version \

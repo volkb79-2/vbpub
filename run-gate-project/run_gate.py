@@ -715,6 +715,10 @@ class GateInfraError(GateError):
     exit_code = 2
 
 
+class AssayImportUnavailable(GateInfraError):
+    """The judge inventory could not be read, but the config was valid."""
+
+
 class GateNotRunError(GateError):
     """A declared precondition refused before the lane began running."""
 
@@ -1947,6 +1951,8 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
             continue
         lane = copy.deepcopy(original)
         was_imported = name in imported_names
+        unresolved_import = (lane.pop("_import_unresolved", False)
+                             if was_imported else False)
         for key, global_key in (("environment", "environment"),
                                 ("assay_command", "command"),
                                 ("pins", "pins")):
@@ -1966,6 +1972,10 @@ def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
             lane["assay_command"] = copy.deepcopy(defaults["command"])
             lane["pins"] = copy.deepcopy(defaults["pins"])
             lane["_imported"] = True
+            if unresolved_import:
+                # Internal list/usage marker only; never feed it through the
+                # public lane schema validator.
+                lane["_import_unresolved"] = True
         merged[name] = lane
     for name, lane in merged.items():
         if lane.get("kind") == "sequence":
@@ -2032,10 +2042,20 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
     # when no root config exists at all, say which root-specific filename the
     # operator can create rather than sending them to a project-local file.
     if central_path is not None:
-        fail(f"[lanes.{lane_name}] in {project_path}: environment '{name}' is "
-             f"not defined in {project_path} nor in central config {central_path}")
-    fail(f"[lanes.{lane_name}] in {project_path}: environment '{name}' is not "
-         f"defined in {project_path} (no central {ROOT_CONFIG_NAME} exists)")
+        message = (f"[lanes.{lane_name}] in {project_path}: environment "
+                   f"'{name}' is not defined in {project_path} nor in central "
+                   f"config {central_path}")
+    else:
+        message = (f"[lanes.{lane_name}] in {project_path}: environment "
+                   f"'{name}' is not defined in {project_path} (no central "
+                   f"{ROOT_CONFIG_NAME} exists)")
+    if name == "bare-host":
+        message += (" Legacy 'bare-host' is not a built-in environment; "
+                    "declare [environments.bare-host] with mode = \"host\", "
+                    "or run `run-gate migrate-modes "
+                    f"{shlex.quote(str(project_path))}` to materialize the "
+                    "legacy name and insert its mode in this config.")
+    fail(message)
 
 
 def image_selection_record(env: dict, env_name: str,
@@ -7457,9 +7477,11 @@ def _probe_slice(env: dict, env_source: str) -> str:
     return resolve_slice(env, env_source)[0]
 
 
-def assay_inventory(docker: str, lane: dict, env: dict, env_name: str,
+def assay_inventory(docker: str | None, lane: dict, env: dict, env_name: str,
                     repo: Path, worktree: Path, env_source: str,
-                    project_dir: Path) -> tuple[dict | None, str | None]:
+                    project_dir: Path,
+                    resolved_container_name: str | None = None
+                    ) -> tuple[dict | None, str | None]:
     """(inventory document, None) or (None, why it could not be obtained).
 
     RG-25: run-gate never parses `assay.toml` — it ASKS the judge, the same
@@ -7475,9 +7497,13 @@ def assay_inventory(docker: str, lane: dict, env: dict, env_name: str,
     ])
     argv = build_env_probe_argv(
         docker, env, env_name, repo, worktree, env_source,
-        _probe_slice(env, env_source),
-        probe)
-    out = subprocess.run(argv, capture_output=True, text=True)
+        _probe_slice(env, env_source), probe,
+        resolved_container_name=resolved_container_name)
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True)
+    except OSError as exc:
+        return None, (f"`assay lanes --json` probe could not start in "
+                      f"environment {env_name!r}: {exc}")
     if out.returncode != 0:
         tail = (out.stderr.strip().splitlines() or ["(no stderr)"])[-1]
         return None, (f"`assay lanes --json` did not run in environment "
@@ -7524,12 +7550,25 @@ def discover_imported_assay_lanes(settings: dict, cfg: dict, central: dict,
                                          cfg_path, central_path)
     docker = shutil.which("docker")
     if env and not docker:
-        fail_infra("assay lane import needs docker to ask the declared "
-                   "environment for `assay lanes --json`")
+        raise AssayImportUnavailable(
+            "assay lane import needs docker to ask the declared environment "
+            f"{env_name!r} for `assay lanes --json`")
     document, why = assay_inventory(docker, probe_lane, env, env_name,
                                     repo, worktree, env_source, project_dir)
     if document is None:
-        fail(f"[assay] import could not read the judge inventory: {why}")
+        if env and env.get("mode") == "exec":
+            try:
+                _name, _source, remedy = resolve_container_name(
+                    env_name, env, repo, worktree, env_source)
+            except GateError:
+                remedy = (f"start the configured runner for environment "
+                          f"{env_name!r} through its deployment owner, then retry")
+        else:
+            remedy = (f"check the assay command, pin, and image for "
+                      f"environment {env_name!r}, then retry")
+        raise AssayImportUnavailable(
+            f"[assay] import could not read the judge inventory: "
+            f"{why or 'inventory unavailable'}; {remedy}")
     entries = document.get("lanes")
     if not isinstance(entries, list):
         fail("[assay] import: assay inventory 'lanes' must be a list")
@@ -7555,6 +7594,62 @@ def discover_imported_assay_lanes(settings: dict, cfg: dict, central: dict,
                "assay_lane": name}
         for name in wanted
     }
+
+
+def unresolved_import_placeholders(settings: dict,
+                                   declared_lanes: dict) -> dict:
+    """Build name-only rows when listing does not need a live judge query.
+
+    Explicit imports give known lane names. An `all` import can contribute
+    only names referenced by declared sequences until the judge is reachable.
+    These placeholders are for list/usage/report queries; selecting one still
+    requires a successful inventory resolution.
+    """
+    spec = settings.get("import")
+    if not isinstance(spec, dict):
+        return {}
+    wanted = spec.get("lanes")
+    if isinstance(wanted, list):
+        names = set(wanted)
+    elif wanted == "all":
+        names = set()
+        for lane in declared_lanes.values():
+            if isinstance(lane, dict) and lane.get("kind") == "sequence":
+                names.update(member for member in lane.get("lanes", [])
+                             if isinstance(member, str)
+                             and member not in declared_lanes)
+    else:
+        return {}
+    return {
+        name: {"kind": "assay", "environment": spec["environment"],
+               "assay_lane": name, "_import_unresolved": True}
+        for name in sorted(names) if name not in declared_lanes
+    }
+
+
+def sequence_requires_assay_import(name: str, declared_lanes: dict,
+                                   import_spec: dict) -> bool:
+    """Whether this declared sequence references an imported lane name."""
+    wanted = import_spec.get("lanes")
+    visiting: set[str] = set()
+
+    def visit(current: str) -> bool:
+        if current in visiting:
+            return False  # cycle reporting belongs to merge_lanes
+        visiting.add(current)
+        lane = declared_lanes.get(current)
+        if not isinstance(lane, dict) or lane.get("kind") != "sequence":
+            return False
+        for member in lane.get("lanes", []):
+            if member not in declared_lanes:
+                if wanted == "all" or (isinstance(wanted, list)
+                                        and member in wanted):
+                    return True
+            elif visit(member):
+                return True
+        return False
+
+    return visit(name)
 
 
 def assay_lane_toolchain(entry: dict) -> tuple[list[str], str | None]:
@@ -8341,14 +8436,16 @@ def resolve_comparison_base(lane_name: str, base_flag: str | None,
 
 
 def assay_inventory_entry(lane: dict, env: dict, env_name: str, repo: Path,
-                          worktree: Path, env_source: str, project_dir: Path
+                          worktree: Path, env_source: str, project_dir: Path,
+                          resolved_container_name: str | None = None
                           ) -> tuple[dict | None, str | None, str | None]:
     """One lane's entry, judge version, and a reason when unavailable."""
     docker = shutil.which("docker")
     if env and not docker:
         return None, None, "docker is not on PATH, so the environment cannot be asked"
     doc, why = assay_inventory(docker, lane, env, env_name, repo, worktree,
-                               env_source, project_dir)
+                               env_source, project_dir,
+                               resolved_container_name=resolved_container_name)
     if doc is None:
         return None, None, why
     entry = next((e for e in doc.get("lanes", [])
@@ -9005,13 +9102,6 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
             record("SKIP", topic,
                    f"could not determine whether the state root {root} and "
                    f"state path {state_dir} are writable: {why}")
-    if os.access("/tmp", os.W_OK):
-        record("OK", "git-config", "/tmp writable for GIT_CONFIG_GLOBAL "
-                                   "(safe.directory isolation)")
-    else:
-        record("WARN", "git-config", "/tmp NOT writable — safe.directory "
-                                     "isolation via GIT_CONFIG_GLOBAL will fail")
-
     # 4. referenced images exist locally (advisory — a missing image may pull)
     if docker:
         for env_name, (env, _src) in sorted(env_cache.items()):
@@ -9621,6 +9711,16 @@ def assay_state_root(repo: Path, env: dict | None = None) -> Path:
     return Path(configured) if configured is not None else repo / ".run-gate"
 
 
+def assay_state_root_is_inside_worktree(state_root: Path,
+                                        worktree: Path) -> bool:
+    """Compare the declared lane paths lexically in their shared mount view.
+
+    These paths are the names run-gate passes to the lane environment. Do not
+    resolve or stat a container path from the controller's filesystem.
+    """
+    return state_root == worktree or state_root.is_relative_to(worktree)
+
+
 def ensure_default_assay_state_root(path: Path) -> None:
     """Create and validate Run-Gate's default, repo-owned state mount.
 
@@ -9825,6 +9925,47 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
         return
     state_root = assay_state_root(repo, env)
     state_dir = assay_state_dir(repo, project_dir, env.get("state_root"))
+    if assay_state_root_is_inside_worktree(state_root, worktree):
+        cached_inventory = lane.get("_assay_inventory")
+        if (isinstance(cached_inventory, dict)
+                and isinstance(cached_inventory.get("entry"), dict)):
+            entry = cached_inventory["entry"]
+            assay_version = cached_inventory.get("assay_version")
+            why = None
+        else:
+            entry, assay_version, why = assay_inventory_entry(
+                lane, env, env_name, repo, worktree, env_source, project_dir,
+                resolved_container_name=resolved_container_name)
+        if entry is None:
+            fail_infra(
+                f"cannot determine whether Assay lane "
+                f"{lane.get('assay_lane', '?')!r} requires snapshot "
+                f"isolation before using in-worktree state root "
+                f"'{state_root}': {why or 'judge inventory unavailable'}")
+        rigor = entry.get("rigor")
+        if (not isinstance(rigor, list)
+                or not rigor
+                or any(not isinstance(item, str)
+                       or item not in {"R0", "R1", "R2", "R3"}
+                       for item in rigor)):
+            fail_infra(
+                f"Assay lane {lane.get('assay_lane', '?')!r} returned "
+                f"invalid rigor in inventory from Assay {assay_version!r}; "
+                "run-gate will not guess whether its snapshot scratch "
+                "needs to be outside the worktree")
+        if any(item in {"R1", "R2", "R3"} for item in rigor):
+            remedy = (
+                f"set [environments.{env_name}].state_root to a durable "
+                "absolute path outside the judged worktree and mount that "
+                "path read-write in the selected runner; then retry")
+            raise GateNotRunError(
+                "state-mount",
+                f"lane {lane.get('assay_lane', '?')!r} declares "
+                f"{', '.join(rigor)} and needs Assay snapshot scratch "
+                f"outside the judged worktree, but state_root "
+                f"'{state_root}' is inside '{worktree}'. Run-Gate sets "
+                "TMPDIR to state_root; Assay follows it for its own "
+                f"scratch and would ERROR before R0. {remedy}")
     if not env or env.get("mode") == "host":
         if dry_run:
             action = "would check"
@@ -10182,9 +10323,9 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
              f"cd {shlex.quote(str(project_dir))}",
              "mkdir -p .assay",
              f"rm -f -- {shlex.quote(verdict)}",
-             "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
-             shlex.join(["git", "config", "--global", "--replace-all",
-                        "safe.directory", "*"]),
+             "export GIT_CONFIG_COUNT=1",
+             "export GIT_CONFIG_KEY_0=safe.directory",
+             "export GIT_CONFIG_VALUE_0='*'",
              *assay_source_setup(lane, selected_worktree, project_dir)]
     for pin_name, pin in lane.get("pins", {}).items():
         sha = Path(pin["sha256"])
@@ -10304,9 +10445,9 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
 def build_command_inner(lane: dict, worktree: Path,
                         base: str | None = None) -> str:
     return " && ".join(["set -euo pipefail",
-                        "export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig",
-                        shlex.join(["git", "config", "--global", "--replace-all",
-                                    "safe.directory", "*"]),
+                        "export GIT_CONFIG_COUNT=1",
+                        "export GIT_CONFIG_KEY_0=safe.directory",
+                        "export GIT_CONFIG_VALUE_0='*'",
                         shlex.join(lane_command_argv(lane, worktree, base))])
 
 
@@ -12185,8 +12326,6 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             docker,
             (profile_plan or {}).get("daemon", PROFILE_DAEMON_DEFAULT),
         )
-    if not dry_run:
-        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     # RG-NARROW: only the judged worktree + the git metadata it needs (dual,
     # RG-3), never the whole repo; the same set also reaches doctor and
     # Assay-state probes through build_env_probe_argv().
@@ -12265,6 +12404,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         assure_assay_state_root(
             docker, lane, env, lane_environment_name(lane), env_source,
             repo, project_dir, worktree, slice_name, dry_run=dry_run)
+    if not dry_run:
+        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     if dry_run:
         if profiling:
             # R-45: read the daemon's current headroom once so a dry run can
@@ -12544,8 +12685,6 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             "environment-down",
             f"persistent runner '{name}' ({name_src}) is not running — "
             f"{start_remedy}")
-    if not dry_run:
-        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     inner = build_assay_inner(lane, project_dir, repo, request_base,
                               worktree=worktree,
                               state_root=env.get("state_root")) \
@@ -12592,6 +12731,8 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
             docker, lane, env, lane_environment_name(lane), env_source,
             repo, project_dir, worktree, slice_name or "",
             resolved_container_name=name, dry_run=dry_run)
+    if not dry_run:
+        clear_previous_assay_verdict(lane, project_dir, repo, run_record)
     if dry_run:
         if profiling:
             # R-45 applies to persistent runners too; the read-only preflight
@@ -13362,7 +13503,12 @@ def cmd_list(lanes: dict) -> int:
         print(f"{name}\t{lane['kind']}\t{environment or '-'}")
     imported = sorted(name for name, lane in lanes.items()
                       if lane.get("_imported"))
-    if imported:
+    unresolved = [name for name in imported
+                  if lanes[name].get("_import_unresolved")]
+    if unresolved:
+        print("run-gate: imported assay lane names unresolved: "
+              + ", ".join(unresolved), file=sys.stderr, flush=True)
+    elif imported:
         print("run-gate: imported assay lanes: " + ", ".join(imported),
               file=sys.stderr, flush=True)
     return 0
@@ -13450,7 +13596,9 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
                 "clean_tree=true" if lane.get("clean_tree", True)
                 else "clean_tree=FALSE"]
         if lane.get("_imported"):
-            bits.append("imported=assay")
+            bits.append("imported=assay"
+                        + (" (unresolved)" if lane.get("_import_unresolved")
+                           else ""))
         if lane.get("budget"):
             bits.append(f"budget={lane['budget']} (hard limit)")
         if lane.get("stall_timeout"):
@@ -14266,15 +14414,49 @@ def _dispatch(argv: list[str] | None = None, *,
         assay_defaults = cfg.get("assay", central.get("assay", {}))
         preflight_inflight_assay_contract(args, cfg, central, assay_defaults,
                                           project_dir)
-        imported_lanes = {}
-        if "import" in assay_defaults:
-            import_repo, import_worktree, import_toplevel = \
-                resolve_repo_and_worktree(project_dir, args.worktree)
-            import_project = effective_project_dir(
-                project_dir, import_toplevel, import_worktree)
-            imported_lanes = discover_imported_assay_lanes(
-                assay_defaults, cfg, central, cfg_path, central_path,
-                import_repo, import_worktree, import_project)
+        declared_lanes = dict(central.get("lanes", {}))
+        declared_lanes.update(cfg.get("lanes", {}))
+        imported_lanes = unresolved_import_placeholders(
+            assay_defaults, declared_lanes)
+        import_unresolved_reason = None
+        import_spec = assay_defaults.get("import")
+        if isinstance(import_spec, dict):
+            selected = declared_lanes.get(args.lane) \
+                if isinstance(args.lane, str) else None
+            utility_lane = args.lane in {
+                "admission", "doctor", "history", "footprint",
+                "validate-pointers", "migrate-modes", "status",
+            }
+            should_resolve_import = (
+                args.list or args.check_env or args.help or args.lane is None
+                or (isinstance(selected, dict)
+                    and selected.get("kind") == "sequence"
+                    and sequence_requires_assay_import(
+                        args.lane, declared_lanes, import_spec))
+                or (selected is None and not utility_lane))
+            if should_resolve_import:
+                import_repo, import_worktree, import_toplevel = \
+                    resolve_repo_and_worktree(project_dir, args.worktree)
+                import_project = effective_project_dir(
+                    project_dir, import_toplevel, import_worktree)
+                try:
+                    imported_lanes = discover_imported_assay_lanes(
+                        assay_defaults, cfg, central, cfg_path, central_path,
+                        import_repo, import_worktree, import_project)
+                except AssayImportUnavailable as exc:
+                    if args.list or args.help or args.lane is None:
+                        imported_lanes = unresolved_import_placeholders(
+                            assay_defaults, declared_lanes)
+                        import_unresolved_reason = str(exc)
+                    else:
+                        raise
+        # RG-16/RG-76: lane listing and unrelated local lanes do not require
+        # an Assay judge round trip. Imported names are placeholders only for
+        # those read-only reports; selecting one, or a sequence that uses one,
+        # requires a live inventory.
+        if import_unresolved_reason:
+            print(f"run-gate: assay import unresolved: "
+                  f"{import_unresolved_reason}", file=sys.stderr, flush=True)
         # RG-16/RG-76: inherited and imported lanes form the one effective
         # namespace before any CLI verb looks at a lane name.
         lanes = merge_lanes(cfg.get("lanes", {}), central, project_dir,

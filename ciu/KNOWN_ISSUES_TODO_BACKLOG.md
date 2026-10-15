@@ -589,6 +589,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-138 | Worktree removal cleans only the selected nested CIU root before deleting a checkout containing other committed roots | High | OPEN — clean every exact committed root under its own identity; preserve checkout and records on any incomplete clean |
 | CIU-139 | `ciu resolve --root-folder P` (and likely `ciu exec`) does not seed its environment from P's instance record, so an unprimed shell fails with missing `INSTANCE_ID`/`REPO_ROOT`/... while `ciu env print --root-folder P` succeeds | Medium | OPEN (filed 2026-10-15, dstdns deep review C04 F06) |
 | CIU-140 | Private locked env generation prints a traceback for expected workspace errors | Low | IN PROGRESS — candidate fix and regression test; registered CIU gate and final review pending |
+| CIU-141 | No stack-scoped one-shot `ciu run`; gate lanes must reuse a persistent service or launch containers outside CIU's rendered network/secrets/mount/cgroup/user contract | Medium | OPEN — proposed v7 package after the current release wave; exact lifecycle and Run-Gate identity handoff contract required |
 
 
 The approved milestone decisions and serial package order are in
@@ -4465,9 +4466,10 @@ stack root; show the minimum config and `ciu init`/`ciu up` sequence; use the
 generated environment export; demonstrate read-only input and writable output
 mounts; and explain how to find and run a command in the selected service.
 Clarify the boundary between a normal project bridge with no published ports
-and Docker's stricter `--internal` network mode. If ordinary stacks need a
-supported stack-scoped one-shot `exec` command, record that as a separate
-product/API decision rather than making consumers depend on Docker labels.
+and Docker's stricter `--internal` network mode. The stack-scoped one-shot
+`ciu run` product/API decision is now tracked separately as CIU-141; this
+recipe should use that supported command once it ships rather than making
+consumers depend on Docker labels.
 
 The gap surfaced while preparing an MDB inspection stack in
 `mh-access-to-web`; the workflow succeeded using CIU 7.15.0 and a small
@@ -5343,3 +5345,19 @@ fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, D
 **Oracles.** Unprimed-shell `resolve --root-folder P` returns P's identities; run from an unrelated cwd it still resolves P (a cwd-seeded implementation fails this); with the record deleted it refuses with the remedy.
 
 **SPEC owner.** S3.1b (instance record), the CIU-118 resolve/exec contract.
+
+## CIU-141 — Run one command in a fresh container from a rendered CIU service
+
+**Status:** OPEN — proposed v7 package after the current release wave. Severity: Medium. Type: feature. Spec owners: S10.8 (CLI surface), S8 (Compose execution). Related: CIU-113 (consumer recipe), CIU-118 (`resolve`/`exec`), CIU-139 (root-scoped environment), RG-99 and RG-102.
+
+**Observed.** CIU v7 can resolve and `exec` into an already-running service, while `ciu up` starts its declared service persistently. A test-runner does not need to stay up between lanes: its existing Compose service declaration already carries the instance network, CIU-rendered secrets, mounts (including dstdns P242's state volume), cgroup parent and user. Launching each lane with `docker compose run --rm` can use that same declaration to create a uniquely named, one-shot container for one lane and remove it on completion. Keeping a shared runner alive creates avoidable shared `/tmp`, process-reaping and cross-lane-state risks.
+
+**Why CIU owns it.** The service declaration and its rendered environment are CIU's authority. A consumer-side `docker compose run` wrapper would repeat root/profile selection, compose-project naming, secret rendering and network/cgroup setup. `ciu run` is a v7 lifecycle primitive: it does not require cross-instance bindings, byte-budget admission, or the v8 realization graph. The v8 gate environment should build on this primitive rather than replace it.
+
+**Proposed contract.** Add `ciu run [--root-folder P] [--profile NAME ...] <stack>[:<service>] -- ARGV...`. Resolve the exact selected root, instance record, profile and rendered Compose service using CIU's existing source of truth; support an unprimed shell by deriving identity from that selected root's record (coordinate with CIU-139). Pass the command as argv without a shell and return its exact exit status. Use Compose's one-shot `run --rm` lifecycle with a unique container identity; the selected service's declared user, network, secrets, mounts, working directory and cgroup placement remain authoritative. A missing or ambiguous service refuses before launch; omitted service selection may proceed only if the selected stack resolves to exactly one runnable service. The operation must not require the test-runner service itself to be `up`, and successful, failing, and interrupted runs must not leave their one-shot container behind. Define whether declared Compose dependencies are started or explicitly suppressed; do not silently invent a different dependency policy.
+
+**Run-Gate handoff.** CIU must provide Run-Gate a structured lifecycle event containing the exact container ID before the lane body finishes, followed by the raw command status and cleanup result. Run-Gate must not discover identity by parsing lane stdout, container-name substrings, or a later best-effort search. Run-Gate remains owner of lane argv, deadlines, state-root preflight, verdict mapping and evidence. For RG-89/R2, the service declaration or a narrowly typed one-shot attachment must make the read-only observer socket available; CIU returns identity, and Run-Gate owns the cgprofile observer session. This is the coupling-heavy acceptance boundary and must be settled before RG-102 implementation.
+
+**Oracles.** (1) An unprimed `ciu run --root-folder P` resolves P's recorded identity and exact rendered service. (2) A fixture service with network, CIU secret, read-only and writable mounts, cgroup parent and non-root user retains all of them in the one-shot invocation. (3) Two concurrent invocations produce distinct container IDs and each reaches its own command body; each runs as the declared user, with no shared process or temporary directory. (4) Missing/ambiguous service, missing identity, render failure, and unavailable Docker refuse with named remedies before any lane body runs. (5) Child exit status, stdin/stdout/TTY behavior and interruption cleanup are preserved; secret values never appear in CIU output. (6) A live registered acceptance proves the one-shot attaches to the declared instance network, sees only CIU-rendered secrets, uses the declared mounts/cgroup/user, and is removed on success, failure and interruption. (7) A Run-Gate integration probe receives the exact container ID before completion and successfully starts/stops the RG-89 observer without scraping command output.
+
+**File list.** `src/ciu/cli.py`, the CIU compose execution boundary in `src/ciu/engine.py`/`src/ciu/deploy.py`, `docs/SPEC.md` S10.8/S8, README, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `CHANGES.md`, this backlog, focused CLI/render/lifecycle tests and the registered CIU live acceptance lane. Coordinate the Run-Gate side through RG-102; do not merge only a consumer shell wrapper.
