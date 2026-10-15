@@ -1085,7 +1085,7 @@ def verify_ref_probe_detected(snapshot: GateSnapshot) -> None:
             anchor_refs=snapshot.anchor_refs,
         )
     except RuntimeError as exc:
-        if "changed protected Git refs" not in str(exc):
+        if "protected Git refs changed during release-gate execution" not in str(exc):
             raise
     else:
         raise RuntimeError(
