@@ -381,6 +381,41 @@ def test_tag_head_relationship_reports_diverged_histories():
         assert _tag_head_relationship(repo.root, "demo-v1.0.0") == "diverged"
 
 
+@pytest.mark.parametrize(
+    ("stderr", "stdout", "detail"),
+    [
+        ("fatal: object database is unreadable\n", "", "fatal: object database is unreadable"),
+        ("", "reported on stdout\n", "reported on stdout"),
+    ],
+)
+def test_tag_head_relationship_refuses_when_git_cannot_compare_the_commits(
+    monkeypatch, stderr, stdout, detail,
+):
+    """Git answering neither "ancestor" (0) nor "not an ancestor" (1) is not a
+    classification: the plan is refused with git's own diagnostic, never guessed
+    to be ``behind`` or ``diverged``."""
+    with _Repo() as repo:
+        repo.tag("demo-v1.0.0")
+        repo.commit("demo/x.py", "feat: more")
+        tag_commit = _git(repo.root, "rev-parse", "demo-v1.0.0^{commit}")
+        real_run = subprocess.run
+
+        def run(argv, **kwargs):
+            # Fail only the tag-vs-HEAD comparison (resolved tag commit first).
+            if list(argv[:4]) == ["git", "merge-base", "--is-ancestor", tag_commit]:
+                return subprocess.CompletedProcess(argv, 128, stdout, stderr)
+            return real_run(argv, **kwargs)
+
+        monkeypatch.setattr(version.subprocess, "run", run)
+        with pytest.raises(ReleasePlanRefused) as refused:
+            _tag_head_relationship(repo.root, "demo-v1.0.0")
+
+        assert str(refused.value) == (
+            "cannot compare tag 'demo-v1.0.0' with HEAD "
+            f"(git merge-base exited 128): {detail}"
+        )
+
+
 def test_release_plan_refuses_diverged_tag_with_changelog_only_head_commit():
     with _Repo() as repo:
         base = repo.head()

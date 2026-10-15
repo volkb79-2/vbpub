@@ -185,6 +185,21 @@ def test_a_failed_build_rolls_the_tag_back_and_reraises(monkeypatch, tmp_path):
     assert steps.reported == []
 
 
+@pytest.mark.parametrize("phases", [["build"], []])
+def test_a_candidate_that_moves_before_publication_rolls_the_tag_back(
+    monkeypatch, tmp_path, phases,
+):
+    """The last check before the publisher runs: a moved candidate is still
+    unpublished, so the tag is rolled back, publication never starts, and nothing
+    is reported as published (with or without an artifact build phase)."""
+    steps = _Steps(monkeypatch, unchanged_fails="before publication")
+    with pytest.raises(RuntimeError, match="candidate moved"):
+        steps.run(tmp_path, phases)
+    assert steps.steps == ([["build"]] if phases else [])  # `push` never ran
+    assert steps.rolled_back == ["candidate moved"]
+    assert steps.reported == []
+
+
 # Publication has begun once `push` runs: a push failure, or a candidate that moved
 # during/after it ("after publication"), must keep the tag and report the start.
 @pytest.mark.parametrize(

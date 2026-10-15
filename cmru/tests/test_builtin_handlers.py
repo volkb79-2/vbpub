@@ -124,6 +124,44 @@ def test_wheel_build_resolves_registered_builder_image_from_cmr_config(monkeypat
     assert actual == declared
 
 
+def test_wheel_builder_image_from_config_follows_the_registered_project_containing_cwd(
+    tmp_path, monkeypatch,
+):
+    from tests.test_cli_dispatch import _valid_config
+
+    _valid_config(
+        tmp_path,
+        project_append='\n[env]\nCMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:alpha"\n',
+    )
+    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+    nested = tmp_path / "alpha" / "src" / "pkg"
+    nested.mkdir(parents=True)
+
+    # A directory inside the registered project resolves that project's image.
+    assert handlers._configured_wheel_builder_image(nested) == "wheel-builder:alpha"
+    # The explicit environment value still wins over any configuration.
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, " wheel-builder:explicit ")
+    assert handlers._resolve_wheel_builder_image(nested) == "wheel-builder:explicit"
+
+
+def test_wheel_builder_image_from_config_refuses_a_directory_outside_every_project(
+    tmp_path, monkeypatch,
+):
+    from tests.test_cli_dispatch import _valid_config
+
+    config = _valid_config(tmp_path)
+    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+    stray = tmp_path / "not-a-registered-project"
+    stray.mkdir()
+
+    with pytest.raises(ValueError) as refused:
+        handlers._configured_wheel_builder_image(stray)
+
+    assert str(refused.value) == (
+        f"{stray} is not inside a project registered by {config}"
+    )
+
+
 def test_check_build_prerequisites_explicit_builder_image_is_accepted(monkeypatch):
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:test")
     monkeypatch.setattr(handlers.shutil, "which", lambda _name: "/usr/bin/docker")

@@ -116,6 +116,47 @@ def test_release_gate_source_check_rejects_hidden_tracked_byte_change(tmp_path, 
         )
 
 
+def _linked_candidate(tmp_path: Path) -> tuple[Path, str]:
+    """A managed linked worktree of a committed repo, like a release candidate."""
+    root = _repo(tmp_path)
+    candidate = tmp_path / "candidate"
+    _git(root, "worktree", "add", "-q", "-b", "cmru/release/x", str(candidate), "HEAD")
+    return candidate, _git(candidate, "rev-parse", "HEAD")
+
+
+def test_release_gate_source_check_accepts_the_exact_candidate_and_names_a_changed_tracked_file(tmp_path):
+    candidate, expected_sha = _linked_candidate(tmp_path)
+    # The exact committed bytes pass both checks.
+    cli._assert_release_gate_source_matches_commit(candidate, expected_sha, phase="before")
+
+    (candidate / "demo" / "x").write_text("edited after the gate judged it\n")
+    with pytest.raises(RuntimeError) as refused:
+        cli._assert_release_gate_source_matches_commit(candidate, expected_sha, phase="after")
+    message = str(refused.value)
+    assert f"candidate source after does not match commit {expected_sha[:12]}" in message
+    assert "demo/x" in message
+
+
+def test_release_gate_source_check_refuses_a_new_non_ignored_file(tmp_path):
+    candidate, expected_sha = _linked_candidate(tmp_path)
+    (candidate / "demo" / "new.txt").write_text("untracked release input\n")
+
+    with pytest.raises(RuntimeError) as refused:
+        cli._assert_release_gate_source_matches_commit(candidate, expected_sha, phase="before")
+
+    assert str(refused.value) == (
+        "candidate source before has non-ignored changes: demo/new.txt"
+    )
+    # An ignored file is not release input and is tolerated.
+    (candidate / "demo" / "new.txt").unlink()
+    (candidate / ".gitignore").write_text("*.log\n")
+    _git(candidate, "add", ".gitignore")
+    _git(candidate, "commit", "-qm", "chore: ignore logs")
+    ignored_sha = _git(candidate, "rev-parse", "HEAD")
+    (candidate / "demo" / "build.log").write_text("noise\n")
+    cli._assert_release_gate_source_matches_commit(candidate, ignored_sha, phase="after")
+
+
 def test_child_release_args_removes_resume_but_rejects_no_obsolete_destructive_option(tmp_path):
     config = tmp_path / "cmru.toml"; config.write_text("x")
     args = cli._child_release_args(

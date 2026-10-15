@@ -269,6 +269,106 @@ def test_transaction_child_requires_launcher_controller_identity(monkeypatch, tm
         cli._release_child_controller_identity(tmp_path, ["demo"])
 
 
+def _launcher_identity_env(monkeypatch, **overrides):
+    values = {
+        transaction.RELEASE_CONTROLLER_VERSION_ENV: "6.2.0",
+        transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV: "a" * 64,
+        transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV: "b" * 64,
+    }
+    values.update(overrides)
+    for name, value in values.items():
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+
+@pytest.mark.parametrize("name", [
+    transaction.RELEASE_CONTROLLER_VERSION_ENV,
+    transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV,
+    transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV,
+])
+@pytest.mark.parametrize("value", [None, ""])
+def test_transaction_child_refuses_a_missing_or_empty_launcher_identity_value(
+    monkeypatch, tmp_path, name, value,
+):
+    _launcher_identity_env(monkeypatch, **{name: value})
+    monkeypatch.setattr(
+        cli, "_record_release_controller_identity",
+        lambda _phase: pytest.fail("the child must refuse before probing its own wheel"),
+    )
+
+    with pytest.raises(RuntimeError, match="no complete launcher controller identity"):
+        cli._release_child_controller_identity(tmp_path, ["demo"])
+
+
+@pytest.mark.parametrize("name", [
+    transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV,
+    transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV,
+])
+@pytest.mark.parametrize("digest", ["not-a-digest", "A" * 64, "a" * 63])
+def test_transaction_child_refuses_a_malformed_launcher_digest(
+    monkeypatch, tmp_path, name, digest,
+):
+    _launcher_identity_env(monkeypatch, **{name: digest})
+    monkeypatch.setattr(
+        cli, "_record_release_controller_identity",
+        lambda _phase: pytest.fail("the child must refuse before probing its own wheel"),
+    )
+
+    with pytest.raises(RuntimeError, match="launcher controller identity is malformed"):
+        cli._release_child_controller_identity(tmp_path, ["demo"])
+
+
+def test_self_release_refuses_a_checkout_without_the_candidate_controller(
+    monkeypatch, tmp_path,
+):
+    """A CMRU self-release must find the candidate's own cli.py in its worktree."""
+    _launcher_identity_env(monkeypatch)
+    monkeypatch.setattr(
+        cli, "_record_installed_release_controller_identity",
+        lambda _phase: pytest.fail("the candidate controller was never resolved"),
+    )
+
+    with pytest.raises(RuntimeError, match="cannot resolve the CMRU self-release candidate controller"):
+        cli._release_child_controller_identity(tmp_path, ["cmru"])
+
+
+def test_self_release_refuses_a_controller_not_loaded_from_the_selected_candidate(
+    monkeypatch, tmp_path,
+):
+    """The candidate has a cli.py, but this process is running a different one."""
+    _launcher_identity_env(monkeypatch)
+    candidate = tmp_path / "cmru" / "src" / "cmru" / "cli.py"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("# a different checkout's controller\n", encoding="utf-8")
+    monkeypatch.setattr(
+        cli, "_record_installed_release_controller_identity",
+        lambda _phase: pytest.fail("the mismatched candidate must be refused first"),
+    )
+
+    with pytest.raises(RuntimeError) as refused:
+        cli._release_child_controller_identity(tmp_path, ["cmru"])
+
+    message = str(refused.value)
+    assert message.startswith(
+        "CMRU self-release controller is not loaded from its selected candidate: "
+    )
+    assert f"candidate={candidate.resolve()}" in message
+    assert f"active={Path(cli.__file__).resolve()}" in message
+
+
+def test_installed_controller_identity_refuses_a_missing_installed_cli_module(
+    tmp_path, monkeypatch,
+):
+    installed = _installed_distribution(tmp_path, _wheel_url())
+    installed.module_path.unlink()  # the manifest lists it, the file is gone
+    monkeypatch.setattr(release_controller, "distribution", lambda _name: installed)
+
+    with pytest.raises(RuntimeError, match="cannot resolve the installed CMRU CLI module"):
+        release_controller.installed_release_controller_identity()
+
+
 def test_self_release_compares_installed_bootstrap_wheel_to_launcher(monkeypatch, tmp_path):
     identity = {
         "version": "6.2.0",

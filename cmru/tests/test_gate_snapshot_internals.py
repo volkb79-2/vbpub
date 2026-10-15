@@ -487,6 +487,31 @@ def test_lane_output_validation_names_each_kind_of_unapproved_residue(tmp_path, 
         gs.close_gate_snapshot(snapshot)
 
 
+def test_a_staged_change_hidden_by_restored_bytes_still_fails_the_lane(tmp_path, monkeypatch):
+    """The working-tree bytes can equal the judged commit while the INDEX no longer
+    does (a lane staged an edit, then wrote the original bytes back). The byte
+    proof passes, so only the status scan can refuse the snapshot."""
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = gs.open_gate_snapshot(repo)
+    root = snapshot.worktree_path
+    try:
+        original = (root / "README.md").read_bytes()
+        (root / "README.md").write_text("staged by a lane\n", encoding="utf-8")
+        _git(root, "add", "README.md")
+        (root / "README.md").write_bytes(original)
+        # The exact-tree proof alone is satisfied: every byte equals the commit.
+        gs._verify_tracked_files_match_commit(root, snapshot.commit)
+
+        with pytest.raises(
+            RuntimeError, match="a release gate lane changed tracked snapshot files or HEAD",
+        ):
+            gs.validate_lane_outputs(
+                root, snapshot.commit, protected_refs=snapshot.protected_refs,
+            )
+    finally:
+        gs.close_gate_snapshot(snapshot)
+
+
 # --- the host-only canary ------------------------------------------------------------
 
 

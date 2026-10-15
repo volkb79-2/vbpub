@@ -2051,6 +2051,44 @@ def test_run_child_passes_launcher_controller_identity_to_transaction(
     assert observed[transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV] == "c" * 64
 
 
+def _refused_identity_cases():
+    good = {"version": "6.2.0", "wheel_sha256": "a" * 64, "distribution_sha256": "c" * 64}
+    cases = [
+        ("incomplete", {key: value for key, value in good.items() if key != name})
+        for name in good
+    ]
+    cases += [
+        ("malformed", {**good, "version": ""}),
+        ("malformed", {**good, "version": 6}),
+        ("malformed", {**good, "wheel_sha256": "z" * 64}),
+        ("malformed", {**good, "wheel_sha256": 7}),
+        ("malformed", {**good, "distribution_sha256": "c" * 63}),
+        ("malformed", {**good, "distribution_sha256": None}),
+    ]
+    return cases
+
+
+@pytest.mark.parametrize(("problem", "identity"), _refused_identity_cases())
+def test_run_child_refuses_an_incomplete_or_malformed_controller_identity_before_launch(
+    tmp_path, monkeypatch, problem, identity,
+):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "release", "cmru-release-identity", "b" * 40,
+    )
+    launched = []
+    monkeypatch.setattr(
+        transaction.subprocess, "run", lambda *args, **kwargs: launched.append(args),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"release controller identity is {problem} before child launch",
+    ):
+        transaction.run_child(workspace, ["demo"], controller_identity=identity)
+
+    assert launched == []  # no child process ever ran under an unproven controller
+
+
 def test_resume_requires_operator_fixes_to_be_committed_on_retained_branch():
     with _OriginAndClone() as h:
         workspace = h.clone_workspace("cmru/release/resume")
