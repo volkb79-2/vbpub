@@ -292,8 +292,6 @@ def _configured_wheel_builder_image(cwd: Path) -> str:
             )
         project_name = max(matches, key=lambda item: item[0])[1]
         values.update(forge.projects[project_name].env)
-    elif len(forge.projects) == 1:
-        values.update(next(iter(forge.projects.values())).env)
 
     return str(values.get(_WHEEL_BUILDER_IMAGE_ENV, "") or "").strip()
 
