@@ -190,7 +190,7 @@ This was read-only: no repository files changed, no tests, gates or containers. 
 8. Release CMRU 6.2 last, after fixing H1 or explicitly documenting it, with its full `gate`.
 
 ## Three most valuable next backlog chunks
-1. **One attributable cgroup per candidate (observer contract 3).** The daemon creates a candidate leaf, places the PID, and returns local counters. This lifts B156, makes B110 feasible, and removes the sibling aborts behind H2. Decide the memory-`max` policy from the probe first.
+1. **One attributable cgroup per candidate (observer contract 3).** The daemon creates a candidate leaf, places the PID, and returns local counters. This lifts B157, makes B110 feasible, and removes the sibling aborts behind H2. Decide the memory-`max` policy from the probe first.
 2. **One R2 engine, one false-kill policy.** Retire CMRU's bespoke mutation loop onto Assay native R2 with the observer. Add a kill-evidence-strength column to the language matrix (Python, SQL, JS ingest, Go).
 3. **Close B110 honestly.** Run the pilot as a measurement and analyse it with P8 v2. Record the NO-GO, choose between B121, B119 and chunk 1, and land B120, which any consumer with equivalent survivors needs.
 

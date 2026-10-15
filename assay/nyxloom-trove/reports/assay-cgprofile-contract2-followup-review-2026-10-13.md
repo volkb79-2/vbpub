@@ -3,7 +3,7 @@
 This is the complete text of the review I just finished; nothing was re-run. It was read-only: no edits, tests, gates or containers. Gate outcomes are quoted only as the backlog records them. Findings are tagged **[DEFECT]** (proven from code or documents), **[EQUIV]** (likely equivalent mutant) or **[ASSUMPTION]** (unresolved).
 
 **Verdict: not release-ready.**
-- B110 cannot honestly reach its GO decision. Under B156 (`jobs = 1`) its 5-hour budget is impossible by arithmetic, and P8 cannot analyse the pilot anyway.
+- B110 cannot honestly reach its GO decision. Under B157 (`jobs = 1`) its 5-hour budget is impossible by arithmetic, and P8 cannot analyse the pilot anyway.
 - cgroup-profiler's R2 lane would predictably FAIL. The survivors' code is unchanged, there is no equivalence ledger (B120 OPEN), and only 581 of 1,593 candidates were ever accounted.
 - The full registered gate and the PostgreSQL hazard gate have not run on this tree.
 
@@ -16,7 +16,7 @@ This is the complete text of the review I just finished; nothing was re-run. It 
 - **The merge `ad679a15a`** brings in no content: `68f8a477b` was already contained, and the diff stat is empty.
 - **[ASSUMPTION]** I could not confirm from the repository that these three tests were the three failures recorded at `aec06c3`.
 
-## 1. B110/B131 pilots, P8, and the B156 conflict
+## 1. B110/B131 pilots, P8, and the B157 conflict
 
 ### 1.1 P8 cannot analyse the B110 pilot [DEFECT, against the plan]
 - The pilot runs `assay run self-qualification --candidates-file … --pilot-jobs 1 --cold-witness …` (`assay/tools/self-qualification-gate.sh`, the `run_b110_pilot_inner` run step). That stream carries `selection_sha256` in its `candidates` milestone (`mutation.py:3941`).
@@ -26,10 +26,10 @@ This is the complete text of the review I just finished; nothing was re-run. It 
 - The pilot report checker (`tools/b110_pilot_report_check.py`) only verifies integrity: plan, selection, state, progress, deadline and resource fields, bound to the source. It produces no projection.
 - **Consequence:** B110 plan §8.1.4 ("the pilot's P8 analysis reports no evidence error") can never be met with the current code.
 
-### 1.2 B156 makes the B110 GO arithmetic impossible [DEFECT, plan-level]
+### 1.2 B157 makes the B110 GO arithmetic impossible [DEFECT, plan-level]
 **What the plan assumes versus what the code allows:**
 - Plan §7 (line 394) runs `--pilot-jobs 3` with up to 3 survivors at once. §8.1.1 divides the projection by "effective workers". The runtime analysis scenarios use 3,760 kills on 3 workers.
-- B156 now makes the CLI refuse any value but 1 (`cli.py:738-747`). The loader, `run_mutation`, the verdict schema and `assay verify` all reject `jobs > 1` for native R2.
+- B157 now makes the CLI refuse any value but 1 (`cli.py:738-747`). The loader, `run_mutation`, the verdict schema and `assay verify` all reject `jobs > 1` for native R2.
 
 **The arithmetic at one worker:**
 - The 5-hour p90 limit leaves (18,000 s − up to 3,600 s fixed overhead) / 3,760 ≈ **3.8 s per candidate**.
@@ -37,7 +37,7 @@ This is the complete text of the review I just finished; nothing was re-run. It 
 - So an honest pilot at `jobs = 1` produces NO-GO on criterion 8.1.1 by construction, missing by about 2.5–3.5×. The 6-hour hard target is missed as well.
 
 **The false-certification risk:**
-- P8's `--project-jobs` accepts 1 to 64 (`campaign.py:46, 1823-1830`). B156's oracles keep this on purpose ("planning projection still accepts a worker count greater than 1").
+- P8's `--project-jobs` accepts 1 to 64 (`campaign.py:46, 1823-1830`). B157's oracles keep this on purpose ("planning projection still accepts a worker count greater than 1").
 - A GO projected at 3 workers would describe a configuration the executor refuses: a check whose conclusion is broader than what it compares.
 
 **Stale acceptance text:** the backlog line "The B105 lane's `jobs` is set from the pilot" (`4-backlog.md:11419`) is moot; it is fixed at 1.
@@ -52,7 +52,7 @@ This is the complete text of the review I just finished; nothing was re-run. It 
 
 **Recommendation: C for this release.** Then:
 - Amend B110 plan §7/§8 and the backlog: pilot jobs 1, effective workers 1, and P8's pilot analysis either removed from 8.1.4 or replaced by option A or B as recorded follow-up.
-- Record a D-decision: under B156, criterion 8.1.1 cannot be met on the local 3 CPU / 2 GiB envelope.
+- Record a D-decision: under B157, criterion 8.1.1 cannot be met on the local 3 CPU / 2 GiB envelope.
 - The next B110 step is therefore choosing a NO-GO branch (P11 isolation units, measured remote capacity, or parallelism with attributable per-candidate cgroups, §3.6), not running the pilot to "discover" GO.
 - Option A or B is still worth doing later as input to that decision.
 
@@ -97,7 +97,7 @@ This is the complete text of the review I just finished; nothing was re-run. It 
 ## 3. Integration, stale-doc, gate, release-order and cgroup-design findings
 
 ### 3.1 Gates: blocker, unchanged
-- Every item in B151–B161 records "exact-tip registered gate pending" (B151/B153/B154/B160 in progress; B155/B156/B158 in progress in the contract-2 candidate; B159/B161 fixed or implemented, gate pending).
+- Every item in B151–B161 records "exact-tip registered gate pending" (B151/B153/B154/B160 in progress; B155/B157/B158 in progress in the contract-2 candidate; B159/B161 fixed or implemented, gate pending).
 - The full registered Assay gate has not rerun since the test realignment; the last full run, at `aec06c3`, had 3 failures.
 - B132's 70-case PostgreSQL hazard gate is pending, and B132's own entry says it is needed before merge or release. That gate is also the only behavioural evidence for B160's hand-written rewrite of the SQL scanners' token grammar, since the unit tests are structural.
 - RG-84 says its registered selftest is still pending.
@@ -131,9 +131,9 @@ This is the complete text of the review I just finished; nothing was re-run. It 
 - Either way, advertise the observer contract in `version`.
 
 ### 3.6 The measurement design is now the throughput bottleneck [design; ASSUMPTION on cgroup mechanics]
-- B145, B155 and B156 make attribution correct by serialising candidates inside one shared cgroup. That trades throughput for correctness, and the cost is concrete: B110 cannot fit, and cgroup-profiler's R2 takes about 18 h.
+- B145, B155 and B157 make attribution correct by serialising candidates inside one shared cgroup. That trades throughput for correctness, and the cost is concrete: B110 cannot fit, and cgroup-profiler's R2 takes about 18 h.
 - **The structural fix is one cgroup per candidate:** each candidate runs in its own leaf, and its local `pids.events`/`memory.events` counters are read there. Events become attributable with several workers.
-- The daemon already creates delegated leaves and moves PIDs under the gates slice (`placement.py` `CgroupWriteGuard`, `leaf_name`, `is_leaf`). A future observer contract 3, "create candidate leaf, place PID, read its local counters", would make B156 a temporary measure.
+- The daemon already creates delegated leaves and moves PIDs under the gates slice (`placement.py` `CgroupWriteGuard`, `leaf_name`, `is_leaf`). A future observer contract 3, "create candidate leaf, place PID, read its local counters", would make B157 a temporary measure.
 - **Unverified constraints:**
   - Docker's private-namespace cgroup mount is normally read-only inside the container, so the host-side daemon would have to perform the writes;
   - cgroup v2's no-internal-process rule forces the container's own processes into a sibling leaf;
@@ -166,7 +166,7 @@ This is the complete text of the review I just finished; nothing was re-run. It 
 
 ## 4. Prioritized recommendations
 1. **Do not call the wave green.** Run the full registered Assay gate and the B132 PostgreSQL hazard gate on the exact tip, after rebuilding tester-unified and recording its image ID.
-2. **Release B110 and B131 as "pilot pending, no qualification claim"** (option C). Amend B110 plan §7/§8 and the backlog for `jobs = 1`, and record the D-decision that 8.1.1 cannot be met locally under B156. For P8, either refuse `--project-jobs > 1` for native R2 or label it hypothetical.
+2. **Release B110 and B131 as "pilot pending, no qualification claim"** (option C). Amend B110 plan §7/§8 and the backlog for `jobs = 1`, and record the D-decision that 8.1.1 cannot be met locally under B157. For P8, either refuse `--project-jobs > 1` for native R2 or label it hypothetical.
 3. **Reconcile backlog statuses** (KI-69, CP-20, CP-21, RG-89, B108/B110 phase wording) with CHANGES before tagging.
 4. **Repair cgroup-profiler's survivors** before any contract-2 R2 run whose PASS is needed: the two dead-code removals in `damon.py`, plus tests for sites 1, 2, 7 and 8 (and optionally 4). Then freeze the tree and run about 18 h serially. Without a needed PASS, make no R2 claim.
 5. **Choose and record the observer upgrade strategy** (§3.5), and advertise the observer contract in `version`.

@@ -1,4 +1,4 @@
-"""B115 queue mechanics and B156's public serial-R2 boundary.
+"""B115 queue mechanics and B157's public serial-R2 boundary.
 
 The executor implementation remains covered with injected worker counts so
 its ordering, draining, and resume invariants stay tested. Product callers use

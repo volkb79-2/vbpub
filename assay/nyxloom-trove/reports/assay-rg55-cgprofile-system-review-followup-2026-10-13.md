@@ -122,7 +122,7 @@ def run_isolated(argv, *, env, cwd, timeout, stdout_path, stderr_path, pass_fds=
 2. **Kill.** Send SIGKILL to each PID from `hints.direct_children(os.getpid())`.
 3. **Check the deadline.** Past it, raise `ProcessTreeError("deadline")` and leave the subreaper on. Otherwise sleep 5 ms and repeat.
 
-Every child seen inside the window belongs to the candidate. This rests on the lock, the empty-children precondition, `jobs = 1` (B156; assert it when a window opens), and on Assay never spawning anything else during a window. Git integrity checks run after the runner returns.
+Every child seen inside the window belongs to the candidate. This rests on the lock, the empty-children precondition, `jobs = 1` (B157; assert it when a window opens), and on Assay never spawning anything else during a window. Git integrity checks run after the runner returns.
 
 ### Changes in Assay
 

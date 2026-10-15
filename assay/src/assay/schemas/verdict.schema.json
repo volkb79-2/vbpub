@@ -2118,7 +2118,7 @@
           }
         },
         "jobs": {
-          "description": "Native R2 candidate event counters share one lane cgroup, so native execution is serial until each candidate has independently attributable evidence (B156). Required as 1 when producer = 'native'; FORBIDDEN when producer = 'ingested'.",
+          "description": "Native R2 candidate event counters share one lane cgroup, so native execution is serial until each candidate has independently attributable evidence (B157). Required as 1 when producer = 'native'; FORBIDDEN when producer = 'ingested'.",
           "type": "integer",
           "const": 1
         },

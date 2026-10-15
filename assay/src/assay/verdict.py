@@ -395,7 +395,7 @@ __all__ = [
 #: Versions 12-15 are bounded `--reuse-from` cold starts; v11 and older remain
 #: refused. Producers emit v16, and `assay verify` refuses v15 and older.
 #:
-#: **Bumped 15 -> 16 (B156).** Native R2 fixes `judgment.r2.jobs` at 1 because
+#: **Bumped 15 -> 16 (B157).** Native R2 fixes `judgment.r2.jobs` at 1 because
 #: candidate cgroup-event windows share counters and overlapping runs cannot
 #: be attributed. The schema/model/verifier refuse a native verdict claiming
 #: more than one worker. Older v15 verdicts remain eligible only as cold

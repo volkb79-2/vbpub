@@ -129,7 +129,7 @@ The new module and its tests, the sysusers file and CP-23 are untracked. B162, K
   - D3's bounded concurrent work queue (P4/B115) is void under A-491.
   - At one worker, 3,760 candidates × 9.4–13.4 s ≈ 9.8–14 h, against a 5 h p90 GO threshold, so the pilot can only measure a NO-GO.
   - The realistic paths to GO:
-    - **P9 shards in separate containers.** Each has its own cgroup, so B156's attribution still holds, though the host's one-gate-at-a-time rule rules this out locally.
+    - **P9 shards in separate containers.** Each has its own cgroup, so B157's attribution still holds, though the host's one-gate-at-a-time rule rules this out locally.
     - **P11** isolation units.
     - **CP-23** per-candidate cgroups.
   - Record a D-decision.

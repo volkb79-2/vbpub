@@ -592,6 +592,9 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-141 | No stack-scoped one-shot `ciu run`; gate lanes must reuse a persistent service or launch containers outside CIU's rendered network/secrets/mount/cgroup/user contract | Medium | OPEN — proposed v7 package after the current release wave; exact lifecycle and Run-Gate identity handoff contract required |
 | CIU-142 | A managed worktree that is rebased keeps its spent `fork_point_sha` in `ciu.worktree-instance.json`, and no `ciu worktree` verb re-records it, so run-gate's derived base (SPEC R-35a: merge-base must equal the recorded fork point) refuses `NOT_RUN no-base` and every later gate needs a hand-passed `--base` | Medium | OPEN (filed 2026-10-15, dstdns P242, ciu 7.16.0) |
 | CIU-144 | `ciu resolve --json` and `ciu check --json` in a linked worktree put the `[CIU-117] project-built images use worktree tag suffix ...` notice on STDOUT ahead of the JSON document whenever a selected stack declares Compose `build:` (`engine.scope_worktree_compose_images` bare `print`, `engine.py:1278`), so every JSON consumer fails to parse; a regression of CIU-84's S13.4a sweep | Medium | OPEN (filed 2026-10-15, dstdns P243, ciu 7.16.0) |
+| CIU-146 | `ciu down --profile NAME` (and `--phases`) stops EVERY project container: `action_stop` matches the whole `^{project}-{env}-` prefix and never reads the selection, while `ciu down --help` says `--profile` restricts to the named host profile | High | OPEN. Filed 2026-10-15 from dstdns (deep-review run, main 02ed2c8b), ciu 7.16.0. See the CIU-146 section |
+| CIU-147 | `ciu up` reports success for a stack whose rendered, bind-mounted config file changed, while the running container keeps serving the OLD config: Compose's recreate diff hashes the service definition, not the content of a bind-mounted file, and CIU never forces a recreate or warns | Medium | OPEN |
+| CIU-148 | `docs/SPEC.md` S15.20 and `docs/DESIGN-NOTES.md` D8 cite dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`, which dstdns merged into `docs/RESOURCE-GOVERNANCE.md` (dstdns docs-sync W20) | Low | OPEN |
 
 
 The approved milestone decisions and serial package order are in
@@ -5423,3 +5426,63 @@ fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, D
 4. Controlled wrong implementation: deleting the notice entirely passes oracle 1 but fails the stderr half of it, so the test must assert the notice moved, not vanished.
 
 **SPEC owner.** S18 (resolve data surface), S13.4a (check JSON contract), S6 CIU-117 worktree image isolation.
+
+## CIU-146 — `ciu down --profile` / `--phases` stop every project container; the selection is parsed and then ignored
+
+**Status:** OPEN. Filed 2026-10-15 from dstdns (deep-review run, main 02ed2c8b), ciu 7.16.0. Severity High. Type: bugfix. Related to CIU-127 (`down --dir`, the per-stack stop), but CIU-127 assumed that profile-wide stop already worked.
+
+**Observed.** On dstdns main, with 26 project containers running (core, db, runner, apps, workers, identity, observability and seeded), the operator wanted to free memory while keeping the runner. They ran:
+`ciu down --profile apps --profile worker-io --profile worker-db --profile identity --profile observability --profile seeded`
+It printed `Active service profile(s): apps,worker-io,worker-db,identity,observability,seeded` and then stopped all 25 running containers. That included `vault`, `consul`, `redis` (profile `core`), `postgres`, `minio`, `pgadmin`, `adminer` (profile `db`) and `test-runner` (profile `runner`), none of which the named profiles select (`ciu profiles`). A detached gate chain waiting on that runner would have failed against a stopped container. Recovery: `ciu up --profile core --profile db --profile runner --deploy --healthcheck`. Volumes are preserved, so no data was lost.
+
+**Mechanism (source).**
+- `deploy.action_stop(config)` (`src/ciu/deploy.py:4413`) takes only `config`. It calls `_matching_containers(config)` (`:4337`), which lists running containers by the anchored `^{project}-{env}-` name prefix, and stops all of them in one `docker stop`.
+- The parsed profile/phase selection never reaches the stop action.
+- Meanwhile `cli.py:391`/`:406` document `--profile NAME   restrict to the named host profile (repeatable)` and `--phases N,M   restrict to the given phase numbers` for `ciu down`.
+
+**Why CIU owns it.** The selection grammar is CIU's, and so is the help text. A consumer cannot work around it except with raw `docker stop`, which AGENTS-style consumer contracts forbid (CIU is the lifecycle API). The defect turns a narrow, intended stop into a project-wide one without any warning: a silent widening, the most dangerous direction for a teardown verb.
+
+**Required contract.**
+- `ciu down --profile P [--profile Q]` and `ciu down --phases N,M` stop only the running containers of the stacks the selection resolves. Resolve each stack's `compose_project` from CIU's resolved identities and list containers by the exact `com.docker.compose.project` label, the same mechanism CIU-127 specifies for `--dir`.
+- A bare `ciu down` stays project-wide.
+- If a selection cannot be resolved, or restriction is not supported on a path (for example `--host`), the verb refuses with an error naming the flag. It never falls back to the whole project.
+
+**Oracles.**
+1. Two profiles with disjoint stacks, both running: `ciu down --profile A` leaves every container of B's stacks running and stops all of A's.
+2. `ciu down --phases N` stops only phase-N stacks.
+3. Bare `ciu down` still stops every project container (regression guard).
+4. An unknown profile name refuses before any `docker stop`.
+5. Controlled wrong implementation: today's `action_stop` passes oracle 3 and fails oracle 1, so a test that only checks "something was stopped" cannot pass for it.
+
+**SPEC owner.** S7.8 (`--stop`), S7.4 (host profiles), S10.2a (CIU-127 per-stack stop). v8 mapping: SPEC-V8 S14.1.3 `ciu down --realization R` must keep the same never-widen rule.
+
+## CIU-147 — a changed bind-mounted rendered config does not recreate the container, and `ciu up` reports success
+
+**Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (GUIDE B064 / dstdns backlog B064, first observed in dstdns package P60 on 2026-08-04), ciu 7.16.0. Severity Medium. Type: bugfix.
+
+**Observed.** A service reads a rendered file bind-mounted at `/etc/<svc>/config.toml`. After a re-render changed that file, `ciu up --dir <stack>` finished green and the container kept serving the old values. In P60 `GET .../settings/defaults` returned `{}` while a direct Consul KV read returned correct data, because the process had started 9 minutes before the config file it reads was re-rendered. Distinguishing observation: `docker inspect <container> --format '{{.State.StartedAt}}'` predates `stat -c %y` of the rendered file.
+
+**Mechanism (source).** Docker Compose decides to recreate a container from a hash of the service definition. A bind mount contributes its path, not its file content, so a content change leaves the hash equal. `src/ciu` never passes `--force-recreate` (no match in `src/` or `docs/SPEC.md`) and never compares the rendered file against the container's start time.
+
+**Why CIU owns it.** CIU renders the file, owns the `up` verb and reports its success. A consumer cannot detect the stale process from CIU's output and can only work around it with a raw `docker restart`, which AGENTS-style consumer contracts forbid.
+
+**Required contract.** When `ciu up` re-renders a file that is bind-mounted into a service and the file's content differs from the previous render, the service is recreated (or the verb names the stale service and refuses to report plain success). An unchanged render recreates nothing.
+
+**Oracles.**
+1. Render, `ciu up`, change one value in the config template, `ciu up` again: the container's `StartedAt` is newer than the second render's mtime and the process serves the new value.
+2. A second `ciu up` with no template change leaves `StartedAt` unchanged.
+3. Controlled wrong implementation: `--force-recreate` on every `up` passes oracle 1 and fails oracle 2.
+
+**SPEC owner.** S7.8 (stack deployment) and S8.3 (single-stack deployment).
+
+## CIU-148 — SPEC S15.20 and DESIGN-NOTES D8 cite a dstdns measurement doc that moved
+
+**Mechanism (source).** `docs/SPEC.md` S15.20 ("Full data: dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`") and `docs/DESIGN-NOTES.md` D8 (line 479) point at a dstdns file. dstdns docs-sync W20 merged that file into dstdns `docs/RESOURCE-GOVERNANCE.md` (section 6, dated measurements) and archived the original under `docs/archive/analyses/`.
+
+**Why CIU owns it.** The citations live in CIU's own docs.
+
+**Required contract.** Repoint both citations to dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6), or state the data inline.
+
+**Oracles.** `grep -rn KSM-OPTIN-MEASUREMENTS docs` in ciu is empty.
+
+**SPEC owner.** S15.20.

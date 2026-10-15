@@ -78,7 +78,7 @@ Invalid (each refused before any work with `LaneConfigError`, which becomes `ERR
 
 **B. `--pilot-jobs N`**
 - Native R2 accepts only `1`, as required for attributable cgroup event
-  windows (A-491/B156). It is refused without `--candidates-file`.
+  windows (A-491/B157). It is refused without `--candidates-file`.
 - The pilot cannot override the lane to run overlapping candidate windows.
 - The default when omitted is the lane's declared `jobs`.
 

@@ -1232,7 +1232,7 @@ its `CommandResult` is what `build_r0_claim` turns into the R0 claim). Every
 other execution of the lane's argv keeps `execute_plan`'s `result_report=None`
 default: a mutation candidate, whose whole signal is whether one full
 declared-order suite run fails (native R2 admits one candidate at a time under
-B156); R3's canary halves, whose
+B157); R3's canary halves, whose
 control/transform outcome answers "did injecting this defect change the
 judgement" rather than "did the wrapped suite pass"; and the
 `environment_command` probe, which is not the lane command at all.

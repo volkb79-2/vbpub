@@ -148,7 +148,8 @@ items:
   - {id: B145, title: "fork exhaustion (pids.max) is classified as killed: a lane at its process limit cannot produce a valid R2 kill", type: bugfix, component: mutation, context_estimate: medium}
   - {id: B146, title: "R0 failure summary reports generic NO_MEASUREMENT instead of naming R0 FAIL and the first failing test", type: bugfix, component: cli, context_estimate: small}
   - {id: B147, title: "Assay's hermetic Git environment drops image gc.autoDetach and permits detached automatic maintenance", type: bugfix, component: execution, context_estimate: small}
-  - {id: B156, title: "native R2 candidate event windows overlap when jobs > 1 and can attribute a limit event to the wrong mutant", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B156, title: "Ship the test-completeness acceptance contract (agent checklist and copyable prompt) as an assay consumer document, so every consumer stops carrying its own copy", type: feature, component: docs, context_estimate: small}
+  - {id: B157, title: "native R2 candidate event windows overlap when jobs > 1 and can attribute a limit event to the wrong mutant", type: bugfix, component: mutation, context_estimate: small}
   - {id: B158, title: "cold-witness refusal omits which untrusted pytest hook made the baseline unsupported", type: bugfix, component: mutation, context_estimate: small}
   - {id: B159, title: "the schema migration docs test requires hand-written CMRU release notes in an intentionally empty Unreleased section", type: bugfix, component: tests, context_estimate: small}
   - {id: B160, title: "SQL candidate discovery materializes every mutation site before applying the bounded candidate limit", type: bugfix, component: adapters, context_estimate: medium}
@@ -902,6 +903,12 @@ This is close to the "per-callable span" future feature already named in dstdns'
 D-044 and in assay's own roadmap chatter; the whole-**module** case is the cheaper
 first step and already has a live consumer waiting.
 
+
+**Note (dstdns W21, 2026-10-15):** dstdns's `testing-contstraints-with-assay.md`
+also names the callable-span report (`module:Class.method`, executable lines and
+branches that ran) as an optional supplementary review report that must not
+replace behavioural or mutation oracles. That is this entry's unshipped span
+half; the consumer-contract text itself is B156.
 ### Evidence available on request
 
 dstdns `main`: `assay.toml` `[lanes.redirect_chain]` (the stopgap form, with a
@@ -11413,7 +11420,7 @@ The acceptance items above are now owned as follows:
 
 **B110 acceptance (remaining after the split; revised for the current v15 wave):**
 - [ ] B111, B113, B114, B115, B117, B118, B108 phase 1 and the P7b gate modes are merged, independently reviewed, and gated. B112 is complete only if its current-tree timing redecision adopts a tier; B116 is included only if measurement shows the snapshot optimization is needed. B120 (P10b + P10c) is also merged if the survivor screen leaves any equivalents.
-- [ ] **The fixed pilot (plan §7)** ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, with one serial native-R2 worker under B156, within 90 minutes, stopped by 2 hours at the latest. It is a measurement only unless a fresh one-worker plan records Pilot GO.
+- [ ] **The fixed pilot (plan §7)** ran inside tester-unified under the unchanged 3 CPU / 2 GiB / 8 GiB envelope, with one serial native-R2 worker under B157, within 90 minutes, stopped by 2 hours at the latest. It is a measurement only unless a fresh one-worker plan records Pilot GO.
   - `reports/assay-B110-PILOT-REPORT.md` records:
     - the cold-kill rate with its interval;
     - the snapshot, collection and prefix distributions;
@@ -11426,7 +11433,7 @@ The acceptance items above are now owned as follows:
   - Consolidation cost is measured in B119, not in the pilot.
 - [ ] **Pilot GO (plan §8.1)** is recorded. NO-GO leads to an operator decision among B121, measured remote capacity (B119), or a further test-plan change; never to a longer timeout.
 - [ ] **Qualifying GO (plan §8.2)** is recorded after the screens and the ledger audit at X*.
-- [ ] The qualifying runbook (plan §9.3) is ready. The B105 lane remains at `jobs = 1` per B156; a pilot does not tune candidate concurrency.
+- [ ] The qualifying runbook (plan §9.3) is ready. The B105 lane remains at `jobs = 1` per B157; a pilot does not tune candidate concurrency.
 
 ## B111 — B110 P0: measured plan estimate, per-candidate resource/phase evidence, liveness-test leak, report-checker partial-scope refusal, snapshot guard tests
 
@@ -12459,7 +12466,7 @@ Advance the judge identity from `/9` to `/10` so mutation state produced under
 the prior attribution rule is a cold start.
 The cgroup-profiler dependency is tracked by [CP-20](../../scripts/cgroup-profiler/nyxloom-trove/backlog/CP-20-resource-observer-must-expose-local-and-hierarchical-event-coun.md).
 Native candidates also run serially (`jobs = 1`) until each candidate can
-receive independently attributable cgroup evidence; see B156.
+receive independently attributable cgroup evidence; see B157.
 
 **Superseded R2 segment (2026-10-12, RW-569):** The prior contract-1
 cgroup-profiler campaign was stopped after 581 saved candidate records (573
@@ -12515,7 +12522,7 @@ these event counters in R2 mutation classification.
   CONSUMERS describe the score/guard distinction, monitored events, sibling
   limitation, and governed cgroup placement.
 
-## B156 — native R2 candidate event windows overlap when `jobs > 1`
+## B157 — native R2 candidate event windows overlap when `jobs > 1`
 
 **Status: IN PROGRESS in the contract-2 release candidate (2026-10-12); exact-tip gates pending.**
 
@@ -12901,3 +12908,207 @@ with a non-exited leader or outliving descendants is not accepted as that
 bucket. (5) A hung state is accepted only with `timeout-killed` evidence and
 the existing complete liveness resource trace. (6) All config examples and
 documentation anchors remain valid.
+
+## B156 — ship the test-completeness acceptance contract as an assay consumer document
+
+**Status: OPEN.** Filed from dstdns W21 (docs-sync 2026-10-15, provenance
+`dstdns/docs/summaries/deep-review-2026-10-15/synthesis/workorders/W21.md`).
+dstdns carried this contract as a root file
+`testing-contstraints-with-assay.md` (adopted 2026-08-11 as the wave
+discriminator and cited from `assay.toml`). The contract is tool-generic: it
+states what an agent must show before a refactor, redesign or adoption is
+accepted, and how assay's R0-R3 evidence layers map onto it. A consumer repo is
+the wrong owner, so it moves here intact and the dstdns copy is deleted.
+
+**Observed mechanism:** nothing under `assay/docs/` (`DESIGN-GUIDE.md`,
+`CONSUMERS.md`, `INTERNAL-CONSUMERS.md`) carries a consumer-agent acceptance
+checklist or a copyable agent prompt. `CONSUMERS.md` teaches adoption mechanics;
+it does not state what makes a green lane sufficient evidence. Each consumer
+that wants the standard has to author its own copy, which then drifts from the
+verdict schema and rigor levels.
+
+**Why assay owns it:** the contract's table of evidence layers (R0 executes, R1
+changed-line coverage, R2 mutation, R3 canary) and its "safe adoption" steps
+(pinned `assay-v*` release, hash-verified install, `assay run ... --verdict-json`,
+`assay verify` as a record check only) are assay behaviour. Only assay can keep
+them true when the lanes change.
+
+**Proposed contract:** add the text below as `assay/docs/ACCEPTANCE-CONTRACT.md`,
+link it from `README.md` and `docs/CONSUMERS.md`, and keep its rigor-level table
+and adoption steps checked against `DESIGN-GUIDE.md` in the same change that
+alters either. Re-verify each statement against the current release before
+publishing; the text is as dstdns carried it on 2026-10-15. Two parts are
+already filed and need no new entry: the per-callable-span coverage report in
+"Test whole Python methods" is B005's unshipped half (noted on B005), and the
+whole-target floor is B005's shipped `judge.mode = "whole_target"`.
+
+**Oracles:**
+
+- The published document contains every numbered requirement (1-9), the
+  evidence table, the six adoption steps, the eleven-item checklist and the
+  copyable prompt of the text below, none dropped.
+- A docs test fails when the document names a rigor level, verdict flag or
+  command that `assay --help` or `DESIGN-GUIDE.md` does not define (controlled
+  wrong variant: rename `--verdict-json` in a copy and observe the failure).
+- The document states no capability assay lacks: the per-callable-span report is
+  worded as unshipped until B005's span half lands.
+
+**Spec owner:** `docs/DESIGN-GUIDE.md` (rigor levels), `docs/CONSUMERS.md`
+(adoption).
+
+### The contract text, verbatim from dstdns
+
+~~~~markdown
+# Test-completeness constraints with Assay
+
+Use this as the acceptance contract when asking an agent to refactor, redesign,
+or adopt an external project. It makes a green test command necessary but not
+sufficient. The goal is evidence that the new behaviour is correct, rejects
+wrong behaviour, and preserves the intended contracts at system boundaries.
+
+## The required standard
+
+The agent MUST satisfy all of the following for code it writes or materially
+changes:
+
+1. **Tests are behavioural.** Each requirement has an observable outcome and
+   at least one assertion that would fail for a plausible wrong implementation.
+   A mock may isolate a dependency, but it may not replace every real exercise
+   of the component under test.
+2. **Methods are exercised deliberately.** For every changed public method,
+   command, handler, state transition, or safety-critical private helper, test
+   the normal result, every meaningful branch, input boundaries, malformed or
+   absent input, failure/retry/timeout behaviour where applicable, and state or
+   side-effect invariants. A test that merely calls a method is not evidence.
+3. **Coverage is a floor, not the claim.** Require 100% changed executable-line
+   *and branch* coverage for the owned source roots. If the project has a
+   sustainable whole-project 100% requirement, retain it too; do not substitute
+   one metric for the other. Exclusions must be individually justified and
+   reviewed, never used to make a percentage pass.
+4. **Mutations are killed.** Run mutation testing for the changed or
+   safety-critical surface. Zero non-equivalent mutants may survive. Each
+   claimed equivalent mutant needs a short, specific equivalence rationale and
+   an attested record; “probably equivalent” is not sufficient.
+5. **Canaries prove the gate is discriminating.** Deliberately inject a
+   minimal defect in a disposable snapshot. The gate must fail for the intended
+   cause, not merely with any non-zero exit. Verify the real worktree's commit,
+   index, and bytes were unchanged afterwards.
+6. **Contracts are witnessed across boundaries.** Test the actual public
+   protocol at least once: CLI exit/status/output, HTTP/RPC request and
+   response, serialized configuration, database/queue message, filesystem
+   artifact, or container boundary as applicable. Include a consumer/provider
+   compatibility witness when another project consumes the result.
+7. **Negative and boundary paths are first-class.** Cover authorization,
+   invalid schema, missing config or secret, empty input, overflow/size and
+   timing boundaries, duplicate/reordered events, cancellation, and recovery
+   paths relevant to the design. Required facts must fail loudly—no silent
+   fallback invented by a test or implementation.
+8. **Regression tests are proven.** For each bug fixed, show the focused test
+   fails against the pre-fix revision and passes against the fix. For a pure
+   redesign, demonstrate a plausible wrong variant is rejected by the new
+   oracle or mutation/canary evidence.
+9. **The declared gate is authoritative.** Run the project's isolated,
+   runtime-faithful gate, never a convenient development-shell substitute.
+   Preserve the command, commit, logs, coverage artifact, Assay verdict, and
+   final outer exit status.
+
+## What Assay provides—and what it does not
+
+Assay turns a declared lane into a versioned, machine-readable verdict. Its
+rigor levels are useful evidence layers:
+
+| Evidence | Assay role | Still required from the agent/reviewer |
+| --- | --- | --- |
+| R0: tests execute | Runs the exact declared command and records its verdict. | Choose a representative, isolated command and write behavioural assertions. |
+| R1: changed-line coverage | Judges a real coverage artifact against the declared source roots and threshold. | Produce branch coverage too, decide source ownership, and inspect hollow tests. |
+| R2: mutation | Runs declared mutations in disposable Git snapshots. | Select meaningful operators/scope, investigate survivors, attest true equivalences. |
+| R3: canary | Tests that a known defect is rejected for its intended cause without changing the consumer tree. | Choose a cause-sensitive defect and review whether the failure proves the contract. |
+
+Assay does **not** infer requirements, decide which methods matter, prove a
+mock is realistic, or turn execution coverage into a semantic proof. Those are
+the agent's design and review obligations. Its immutable verdict makes the
+claims auditable and makes hollow/weak gates harder to hide behind.
+
+### “Test whole Python methods”
+
+No Assay change is needed to require this now: put each owned method in the
+test matrix above and use R1/R2/R3 as independent evidence. “Every method was
+entered” is a poor gate metric—decorators, generated functions, abstract
+methods, generators, and tiny forwarding methods make it ambiguous, while a
+fully entered method can still have an unasserted wrong result.
+
+An optional future Assay feature could accept explicit Python callable spans
+(for example `module:Class.method`) and report whether their executable lines
+and branches ran. That is useful as a review report, especially in a redesign,
+but should remain supplementary: it must not replace behavioural or mutation
+oracles. Do not claim that capability until Assay actually implements and gates
+it.
+
+## Safe Assay adoption
+
+1. Use a concrete `assay-v*` release. Download its wheel plus
+   `release-manifest.json`, verify the manifest, then install with
+   `pip --require-hashes`; or vendor the matching zipapp and verify its SHA-256.
+   Never float `latest`, and never bake an ambient Assay copy into a test image.
+2. Add a project-owned `assay.toml`. Begin with an R0 lane that is exactly the
+   project’s existing authoritative test command. It earns a trustworthy
+   recorded result, not a coverage claim.
+3. Add R1 only when that command emits a real coverage JSON artifact for the
+   chosen source roots. Set `fail_under = 100.0`, make branch coverage enabled,
+   and use an explicit base revision.
+4. Add R2/R3 with small declared budgets first. They run disposable Git
+   snapshots and therefore need clean Git state, enough scratch space, and
+   bounded timeouts. Keep their verdict artifacts as gate evidence.
+5. In a CMRU estate, put the exact pinned Assay invocation in that project’s
+   `cmru.toml` through `cmru tester-gate`; CMRU supplies the isolated
+   `tester-unified` boundary, while the project owns its lane and artifact.
+6. Run `assay run <lane> --file assay.toml --verdict-json <path>` as the gate
+   decision. `assay verify <path>` validates a recorded verdict only; it never
+   replaces the run.
+
+## Agent checklist
+
+The implementing agent must complete this checklist in its handoff/report.
+Unchecked items are a failed deliverable, not a suggestion.
+
+- [ ] I mapped every changed requirement and method/command to at least one
+  named behavioural test.
+- [ ] Each mapping has a normal result, relevant boundaries, invalid/missing
+  inputs, and relevant failure/recovery assertions.
+- [ ] I identified external contracts and added at least one real
+  consumer/provider, CLI, HTTP/RPC, artifact, or persistence witness for each.
+- [ ] I did not mock the component under test in every test of a behaviour.
+- [ ] I ran the old code or a deliberate wrong variant and observed each new
+  regression oracle fail before accepting it.
+- [ ] I produced and retained changed-line and branch coverage evidence at
+  100%; every exclusion is explicit, minimal, and justified.
+- [ ] I ran mutation testing over the changed/high-risk scope; there are no
+  surviving non-equivalent mutants, and every equivalence is attested.
+- [ ] I ran a disposable, cause-sensitive canary and recorded its expected
+  failing cause; the original worktree fingerprint is unchanged.
+- [ ] I ran the declared isolated gate, captured its final unmasked exit code,
+  and recorded the exact commit, command, artifacts, and logs.
+- [ ] I used a pinned, integrity-verified Assay release and retained its
+  machine-readable verdict.
+- [ ] I reviewed the diff adversarially for defaults/fallbacks, concurrency,
+  ordering, serialization, permissions, retries/timeouts, and cross-project
+  compatibility—not merely for line coverage.
+
+## Copyable agent prompt
+
+> Refactor/redesign this project to the stated target. Treat test completeness
+> as a delivery requirement, not a follow-up. For every changed behaviour,
+> write behavioural tests that assert correct results, boundaries, invalid and
+> missing inputs, failure/recovery paths, and real cross-component contracts.
+> Do not use mocks as the only witness of a behaviour. Require 100% changed
+> executable-line and branch coverage for owned code, with no unreviewed
+> exclusions; zero surviving non-equivalent mutation mutants (attest each true
+> equivalence); and a disposable cause-sensitive canary that fails for the
+> intended reason. Use the project’s pinned Assay lane and preserve its verdict,
+> coverage artifact, mutation/canary evidence, gate command, and final exit
+> code. Prove each regression test fails on the old/wrong implementation before
+> claiming it protects the fix. Finish with the checklist in this document,
+> mapping requirements to tests and explicitly listing any scope that cannot
+> yet meet the standard. A green development-shell run is not evidence; run the
+> declared isolated gate.
+~~~~

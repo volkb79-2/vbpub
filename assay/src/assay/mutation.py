@@ -3430,7 +3430,7 @@ def run_mutation(
     function is a public surface a caller may invoke directly, so
     :mod:`assay.config`'s load-time discipline for a real ``assay.toml``
     cannot be assumed to have already run here. Native R2 also requires
-    exactly one worker (B156); overlapping candidates would share cgroup
+    exactly one worker (B157); overlapping candidates would share cgroup
     event counters and make resource-event attribution ambiguous.
 
     Only when the baseline PASSES: collects every candidate site across

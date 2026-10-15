@@ -70,10 +70,14 @@ operator directs.
 For Claude CLI work, do not pass `--permission-mode plan`: it enters a
 planning interaction and may return asking what to work on instead of
 performing the assigned task. Never pass `--no-session-persistence`; keep
-sessions resumable and retain their session IDs. Resume a session for
-follow-ups on the same task or review scope to preserve its context and avoid
-repeating orientation. Start a separate persistent session for independent
-blind reviews or when the task or review target materially changes.
+sessions resumable and retain their session IDs. Before a follow-up, inspect
+`claude agents --json`: if the session is still running, use `claude attach
+<id>` and continue that conversation; `claude --resume` on a running
+background session starts a copy. Resume a stopped session by its full
+`sessionId`. Reuse the same session for follow-ups on the same task or review
+scope to preserve context and avoid repeating orientation. Start a separate
+persistent session for independent blind reviews or when the task or review
+target materially changes.
 
 When stdin carries the prompt, pass `-` as the prompt argument and do not also
 pass a positional prompt. Codex appends piped stdin to a positional prompt as a
@@ -176,6 +180,34 @@ with its current owner; proceed only after they have finished or explicitly
 arranged a safe handoff. If ownership or activity is unclear, do not restart
 it. Prefer a targeted repair that leaves the cockpit process alone, then
 verify the result without disrupting its session.
+
+## Host-side Python environment
+
+Before running host-side Python commands or a `bare-host` gate controller from
+the devcontainer, activate the estate venv:
+
+```bash
+. /home/vscode/.venv/bin/activate
+command -v python3   # must resolve inside /home/vscode/.venv/bin
+```
+
+An activated venv changes `PATH`; it does not change the interpreter a parent
+process is already running. A child launched as `python3` resolves that name
+from its inherited `PATH`, so a CMRU launcher running from the venv can still
+start a `run-gate.toml` child with `/usr/local/bin/python3` if the venv is not
+active or is later in `PATH`. Use the venv interpreter for host-side commands
+whose dependencies are installed there. If the child command names
+`/usr/local/bin/python3` explicitly, activation cannot redirect it; change the
+command to use the declared environment's interpreter.
+
+Python's `-I` flag does not prevent a venv interpreter from loading that venv's
+installed packages. It does ignore `PYTHONPATH` and user-site packages, so an
+isolated child must use the venv interpreter itself when it needs packages
+installed in `/home/vscode/.venv` (such as `cli-extended`).
+
+This applies to host-side orchestration and `bare-host` steps only. Test suites
+still run in their declared gate container; `tester-unified` uses
+`/opt/tester-venv/bin/python`, not the devcontainer's estate venv.
 
 ## Host cgroup placement for spawned containers
 This host runs real production workloads (game servers, edge/site infra)

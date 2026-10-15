@@ -53,14 +53,14 @@ This is a superset refusal: benign successful reclaim falls into the same status
 - Treat `memory max` as pressure telemetry, or let it invalidate only kills, followed by a retry run alone.
 - The remaining gap is real but small: an allocation that is not allowed to retry can return `ENOMEM` after a `max` event without an `oom` event. Close it with the retry, not by blanket invalidation.
 
-### HIGH-2 (plan/design): B156 rests on a premise that does not hold, and the v16 hard cut buys no safety
+### HIGH-2 (plan/design): B157 rests on a premise that does not hold, and the v16 hard cut buys no safety
 
 **Where:** `config.py:3123-3127`, `cli.py:741-747`, `mutation.py:3177-3199`, `verdict.py:3201-3207`, `verdict.schema.json` (`jobs.const = 1`), `reuse.py:14`.
 
 **Why the premise fails:**
 - The counters only ever increase, and a candidate's processes run inside its own before/after window. Every event that candidate causes is therefore inside its delta.
 - Overlapping windows can only add other candidates' events to a delta. They can produce false invalidations; they can never hide a candidate's own event or create a false kill.
-- B156's own text concedes this ("changing a valid mutation outcome into an infrastructure failure").
+- B157's own text concedes this ("changing a valid mutation outcome into an infrastructure failure").
 
 **Cost of the current choice:**
 - `jobs = 1` is a throughput and false-invalidation trade, yet it is encoded as a wire-schema constant with a hard cut to v16.
@@ -146,7 +146,7 @@ At `mutation.py:4300-4304`, the after-sample is read in `finally`. If it raises,
 
 **Fix:** prefer the stored error and report the observation failure as a diagnostic.
 
-### LOW-9: B156 is not enforced at the window itself
+### LOW-9: B157 is not enforced at the window itself
 
 `_run_mutation_impl` (`mutation.py:4075`) and `_execute_mutation_jobs` (`:4880`) still accept `jobs > 1`. A process-local "active window" guard in `_run_attempt` would enforce the real invariant and cover future bypasses. This is moot if HIGH-2's retry design is adopted.
 
@@ -243,7 +243,7 @@ There is one structural escape: if every child of `dev-gates` has a finite limit
   - make `memory max` non-invalidating, or kill-only with a retry alone;
   - turn ambiguity into a per-candidate bounded retry and `INCONCLUSIVE`, not a lane abort;
   - split the reason codes;
-  - adopt retry-on-overlap for B156, or at least drop the v16 cut;
+  - adopt retry-on-overlap for B157, or at least drop the v16 cut;
   - keep contract 1 or echo it in refusals;
   - allow a set of Hypothesis digests;
   - stop R0/R1 being invalidated by the R2 observer.
@@ -263,7 +263,7 @@ There is one structural escape: if every child of `dev-gates` has a finite limit
 
 **Promote:** B116 and B144 (serial throughput).
 **Explicitly defer:** B119, B120 (P10a REVISE), B121 (until step 5's data).
-**Fold into this wave:** B155 + B156 + B158 docs, already together.
+**Fold into this wave:** B155 + B157 + B158 docs, already together.
 
 ## 4. Verification and release matrix (none of this has been run)
 
@@ -336,7 +336,7 @@ Read-only again. The main correction is to HIGH-1: I overclaimed and have withdr
 - My claim that `max` rises *continuously* once a cgroup is full of page cache is unproven inference from kernel behaviour I could not check locally.
 - **Decisive probe:** in the exact B105 container shape (`--memory=2g --memory-swap=8g`, private namespace, `$CGROUP_PARENT_DEV_GATES`), run the R0 command twice back to back. Read the leaf `/sys/fs/cgroup/memory.events` around the second run, plus the observer's ancestor local counts. A positive `max` delta means every candidate in this setup crashes. That would be an availability problem, not a soundness problem.
 
-## 2. B156 and v16 (HIGH-2): main proof confirmed; "no safety gain" revised
+## 2. B157 and v16 (HIGH-2): main proof confirmed; "no safety gain" revised
 
 **Where the window sits:** the counters are read immediately around `execute_plan` (`mutation.py:4275-4313`). The after-read happens in `finally`, so exceptional exits are covered.
 
@@ -359,7 +359,7 @@ None of those is a candidate test process. Replay, cold and declared attempts ea
 **Contradicting evidence I under-weighted:**
 - Concurrent candidates can cause false kills **without any cgroup event**: CPU or I/O contention under the 3-CPU cap, `memory.high` throttling, shared external fixtures such as the PostgreSQL instance in SQL lanes, ports, and caches.
 - B145 never covered this. The old consumer guidance made it the consumer's job ("raise `jobs` only as far as your command tolerates concurrent execution").
-- `jobs = 1` does remove the interference Assay causes itself. So it has some correctness value, just not the "attribution" value B156 claims.
+- `jobs = 1` does remove the interference Assay causes itself. So it has some correctness value, just not the "attribution" value B157 claims.
 
 **Revised conclusion:**
 - A serial default or policy is defensible.

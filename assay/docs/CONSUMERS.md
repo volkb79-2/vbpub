@@ -3928,7 +3928,7 @@ counts its bytes, tracks activity, or knows which tool is running. A
 per-language live-test-progress adapter is a separate, larger item (B073) and
 is deliberately not part of this. The tick is armed only around the lane's own
 command, never around each mutant; candidate progress is already recorded per
-attempt, and native R2 currently runs one candidate at a time (B156). A
+attempt, and native R2 currently runs one candidate at a time (B157). A
 heartbeat write failure stops the heartbeat and nothing else; a diagnostic
 tick must never be able to kill a measured lane.
 
