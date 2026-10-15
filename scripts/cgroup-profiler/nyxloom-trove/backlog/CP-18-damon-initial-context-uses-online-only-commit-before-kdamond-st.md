@@ -92,3 +92,10 @@ overhead probes. The one-shot collector also treats a setup-time
 `DamonSessionError` as optional-evidence unavailability: it writes its ready
 sentinel and continues ordinary sampling so `cgprofile run` does not withhold
 the user's command while DAMON is unavailable (R-36h).
+
+**2026-10-15** — A live start/stop on the candidate daemon collected ordinary
+resource samples, but DAMON returned `EBUSY` and produced no `damon.jsonl`.
+The host showed `DAMON_STAT` enabled while `nr_kdamonds=0`, matching the
+documented global-DAMON conflict. The host setting was left unchanged, so the
+successful-DAMON-sample oracle remains pending. Evidence:
+`reports/cgprofile-CP18-CP19-LIVE-ACCEPTANCE-20261015.md`.
