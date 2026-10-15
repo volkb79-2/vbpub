@@ -20,7 +20,12 @@ def _installed_distribution(tmp_path: Path, direct_url) -> SimpleNamespace:
     module_path = package / "cli.py"
     module_path.write_text("release controller\n", encoding="utf-8")
     (metadata / "METADATA").write_text("Name: cmru\nVersion: 6.2.0\n", encoding="utf-8")
-    direct_url_text = direct_url if isinstance(direct_url, str) else json.dumps(direct_url)
+    # None models an installation with no direct_url.json at all.
+    direct_url_text = (
+        None if direct_url is None
+        else direct_url if isinstance(direct_url, str)
+        else json.dumps(direct_url)
+    )
     files = [
         Path("cmru/__init__.py"),
         Path("cmru/cli.py"),

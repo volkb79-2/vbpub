@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import logging
 import os
 import re
 import shlex
@@ -30,6 +31,7 @@ from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.credential_handoff import CredentialHandoff
 from cmru.cli_support import (
+    CMRU_LOGGER,
     TargetSelectionError,
     select_target_names,
     write_config_diagnostic,
@@ -172,6 +174,16 @@ def log_info(message: str) -> None:
 
 def log_warn(message: str) -> None:
     print(f"[WARN] {message}", flush=True)
+
+
+def log_debug(message: str) -> None:
+    """Emit a diagnostic through the shared CMRU logger.
+
+    Unlike ``log_info``, this prints nothing unless the invocation's log level
+    asks for debug output (``--debug``/``--log-level debug`` configure the
+    logger in the cli-extended runtime), so routine releases stay quiet.
+    """
+    logging.getLogger(CMRU_LOGGER).debug(message)
 
 
 def log_error(message: str) -> None:
@@ -4257,7 +4269,7 @@ def _run_release_gates(
 ) -> None:
     """Run every selected project's declared release gate before source promotion."""
     log_dir = repo_root / "logs"
-    gate_commit = candidate_sha or _git(repo_root, "rev-parse", "HEAD")
+    gate_commit = candidate_sha
     for name in project_names:
         project = configs[name]
         if not project.steps.get("run-tests"):
@@ -4265,6 +4277,10 @@ def _run_release_gates(
                 f"{name}: no release gate is declared ([project.{name}.steps.run-tests]); "
                 "cmru refuses to tag or publish without a meaningful tester-unified gate"
             )
+        if gate_commit is None:
+            # Only a declared gate needs the commit identity; a missing gate is
+            # a typed refusal that must not depend on a Git checkout.
+            gate_commit = _git(repo_root, "rev-parse", "HEAD")
         log_info(f"{name}: running required release gate")
         run_project_step(
             project, "run-tests", repo_root, log_dir,

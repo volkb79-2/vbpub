@@ -21,6 +21,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Use the full configured project-scope registry consistently for status, release tags, generated
   changelog headings, and release notes, so cross-project scopes cannot produce mismatched versions.
 - Explain that a Run-Gate development/local build fails CMRU's stable `24.0.0` release-gate floor and name the minimum stable SemVer required.
+- Fix a `NameError` that stopped every real `cmru release` while it recorded the installed controller identity: the audit line logged through an undefined `log_debug`. It now goes through the shared `cmru` logger at debug level.
+- Refuse a selected project with no declared `run-tests` gate as the typed pre-change refusal (exit 4) before CMRU reads any Git state, so the refusal no longer depends on the checkout being a Git worktree.
 
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
