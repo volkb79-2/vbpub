@@ -38,6 +38,25 @@ CMRU_WHEEL_BUILD_BODY = (
     "/tmp/internal-build-venv/bin/pip wheel --no-index --no-deps "
     "--no-build-isolation -w /tmp/internal-wheels /src/cmru"
 )
+# Host-facing tools, installed by capability: Debian's docker client/compose
+# packages are added only when the base lacks them (the MDT base ships Docker's
+# own, which they would clash with). It runs before any wheel input is copied.
+TESTER_HOST_TOOLS_RUN = (
+    'set -eu && packages="ca-certificates curl git jq openssh-client util-linux" '
+    '&& if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi '
+    '&& if ! docker compose version >/dev/null 2>&1; then packages="$packages docker-compose"; fi '
+    "&& apt-get update && apt-get install -y --no-install-recommends $packages "
+    "&& rm -rf /var/lib/apt/lists/* && docker --version && docker compose version "
+    "&& git --version && nsenter --version"
+)
+# Records the exact Run-Gate wheel identity in the image (readable by the release
+# lane). It writes only /etc and runs before any CMRU wheel input is copied.
+RUN_GATE_IDENTITY_FILE_RUN = (
+    "printf '{\"version\":\"%s\",\"sha256\":\"%s\"}\\n' "
+    '"${RUN_GATE_TESTER_VERSION}" "${RUN_GATE_TESTER_WHEEL_SHA256}" '
+    "> /etc/tester-unified-run-gate-wheel.json "
+    "&& chmod 0444 /etc/tester-unified-run-gate-wheel.json"
+)
 TESTER_GIT_MAINTENANCE_RUN = (
     "git config --system maintenance.autoDetach false && git config --system gc.autoDetach false "
     '&& test "$(git config --system --get maintenance.autoDetach)" = false '
@@ -195,10 +214,12 @@ NYXLOOM_FINAL_WHEEL_INSTALL_RUN_BODY = (
     "'self-contained OK')\" && rm -rf /tmp/wheels"
 )
 CMRU_PRE_SENSITIVE_RUN_BODIES = (
+    TESTER_HOST_TOOLS_RUN,
     CMRU_SOURCE_TREE_CLEAN_RUN,
     CMRU_VENV_CLEAN_RUN,
     TESTER_GIT_MAINTENANCE_RUN,
     RUN_GATE_VERSION_REQUIREMENT_RUN,
+    RUN_GATE_IDENTITY_FILE_RUN,
     RUN_GATE_WHEEL_INSTALL_RUN,
     TESTER_REQUIREMENTS_GENERATION_RUN,
     TESTER_DEPENDENCY_BOOTSTRAP_RUN,
@@ -3426,7 +3447,10 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
         "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
         "CMRU_TESTER_PIDS_LIMIT", "CMRU_TESTER_CGROUP_PROBE_IMAGE",
     ):
-        assert f"{key}={declared_env[key]}" in bootstrap
+        # The doc writes each declared value as a shell assignment; the value
+        # may be single-quoted (the digest-pinned probe image is).
+        value = declared_env[key]
+        assert f"{key}={value}" in bootstrap or f"{key}='{value}'" in bootstrap, key
     assert f"docker pull {declared_env['CMRU_TESTER_CGROUP_PROBE_IMAGE']}" in bootstrap
 
 
