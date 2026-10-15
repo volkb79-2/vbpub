@@ -1417,6 +1417,52 @@ class TestRG78ClosedExitTable:
         assert tomllib.loads(migrated)["environments"]["runner"]["mode"] == \
             "ephemeral"
 
+    def test_observer_refusal_follows_assay_a494_r2_only_shape(self):
+        """RG-104 is superseded by Assay A-494/A-496 (verdict v16, Assay >=
+        10.0.0): a missing cgroup hierarchy invalidates ONLY native R2. The
+        artifact keeps completed R0/R1 claims and the independent R3 claim and
+        stamps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on R2 alone,
+        which is the one shape Run-Gate accepts as an environment refusal.
+        The earlier whole-lane shape (every requested rigor stamped, before R0)
+        is no longer produced and is refused as a malformed claim set."""
+        provenance = {"name": "assay", "version": "10.0.0", "artifact": "wheel",
+                      "digest_algorithm": "sha256", "digest": "a" * 64}
+
+        def claims(**statuses):
+            return [
+                {"rigor": rigor, "source": "computed",
+                 "status": statuses.get(rigor, "PASS"),
+                 "verified_by_assay": True,
+                 "reason_code": ("CGROUP_OBSERVATION_UNAVAILABLE"
+                                 if statuses.get(rigor) == "NO_MEASUREMENT"
+                                 else None)}
+                for rigor in ("R0", "R1", "R2", "R3")
+            ]
+
+        def result(claim_set):
+            return run_gate.assay_lane_result(
+                3, "NO_MEASUREMENT", verdict_exit_code=3,
+                judge_provenance=provenance,
+                reason="CGROUP_OBSERVATION_UNAVAILABLE",
+                claims=claim_set, evidence=[])
+
+        # R0 PASS, R1 PASS, R2 refusal, R3 PASS: an infrastructure ERROR that
+        # names the observer, not a malformed-verdict reason and not a FAIL.
+        a494 = result(claims(R2="NO_MEASUREMENT"))
+        assert (a494.verdict, a494.reason, a494.assay_outcome) == (
+            "ERROR", "CGROUP_OBSERVATION_UNAVAILABLE", "NO_MEASUREMENT")
+        # The lower-rigor claims are read, not discarded: an adverse R0/R1/R3
+        # claim next to the R2 refusal still surfaces as a FAIL.
+        for rigor in ("R0", "R1", "R3"):
+            adverse = result(claims(R2="NO_MEASUREMENT", **{rigor: "FAIL"}))
+            assert (adverse.verdict, adverse.reason) == (
+                "FAIL", "assay-adverse-claim-alongside-observer-refusal"), rigor
+        # Pre-A-494 shape: the refusal on a non-R2 claim is not accepted.
+        for rigor in ("R0", "R1", "R3"):
+            stale = result(claims(R2="NO_MEASUREMENT", **{rigor: "NO_MEASUREMENT"}))
+            assert (stale.verdict, stale.reason) == (
+                "ERROR", "invalid-assay-observer-refusal-claim"), rigor
+
     def test_assay_outcomes_follow_the_closed_table_and_retain_raw_outcome(self):
         expected = {
             "PASS": (0, "PASS"), "FAIL": (1, "FAIL"),
