@@ -26,3 +26,7 @@ A release bump with an unchanged banner fails the check; a consumer copy that di
 
 ## Spec owner
 STANDARD (trove/skills layout), AGENTS.md root guide.
+
+## Updates
+
+**2026-10-15** — Reverse-direction evidence (dstdns docs-sync W04, dstdns@a85fc7bb, 2026-10-15). The CANONICAL vbpub skills nyxloom-carve, nyxloom-dispatch, nyxloom-merge-p and ciu-stack still describe retired consumer mechanics: caller-side flock gate slots, gate-base.sh, 'ciu worktree add', and Mode-A/B shared runners. Canonical merge-p step 1 also commits the D-record on main BEFORE the merge; dstdns AGENTS §3 item 7 puts it INSIDE the --no-ff --no-commit merge commit and commits nothing before the post-merge verdict. dstdns's vendored copies therefore cannot stay byte-identical to the canonical, so every substitution is now listed in each banner. A sync mechanism needs a canonical that tracks run-gate admission, native sequences and ciu worktree create --up, or a declared per-consumer override block (dstdns uses a trailing '## dstdns' section).
