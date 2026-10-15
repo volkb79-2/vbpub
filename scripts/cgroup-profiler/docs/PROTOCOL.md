@@ -243,12 +243,16 @@ thread identity, shared thread cgroup/credentials, and gates-slice membership;
 the request cannot choose a PID, cgroup path, or slice. A successful response
 contains only the complete canonical leaf-to-root cgroup-v2 ancestry, mount
 ID, limit presence/value pairs, both event-counter scopes, and effective
-local event maps at every path. It reports whether the regular event files
-are `hierarchical` or `local` under the verified mount's `pids_localevents`
-and `memory_localevents` modes. The observer reads the
-`.local` files when available; if a regular file is already local under the
-mount mode, it can supply equivalent local evidence when the `.local` file is
-unavailable. The response contains no process list, PID, or sibling cgroup data. See contract §9 for exact response
+local event maps at every path. Successful responses always report
+`pids_events_scope: "hierarchical"`; the observer refuses a mount using
+`pids_localevents`, because that option counts failed forks in the cgroup where
+the process tried to fork even when an ancestor's `pids.max` rejected it. That
+counter cannot identify the enforcing cgroup. `memory_events_scope` reports
+whether regular memory events are hierarchical or local under
+`memory_localevents`. The observer reads the `.local` files when available; if
+a regular memory file is already local under the mount mode, it can supply
+equivalent local evidence when the `.local` file is unavailable. The response
+contains no process list, PID, or sibling cgroup data. See contract §9 for exact response
 shapes and the verified private-cgroup-namespace path mapping.
 
 Assay configures this socket explicitly and consults it only after its local

@@ -95,10 +95,15 @@ memory = "1g"
 memory_swap = "16g"
 cpus = "3"
 
-# The implementation/release gate: every consumer (release steps, agents,
-# humans) runs THIS lane; none duplicates the sub-lane sequence. RG-1: every
-# sub-invocation carries --worktree {worktree} explicitly (cmru's [lanes.gate]
-# is the reference shape).
+# The COMPLETE gate: r0-r1, then the 24h r2, then r3. Agents and humans who want
+# full-source mutation evidence run THIS lane; none duplicates the sub-lane
+# sequence. RG-1: every sub-invocation carries --worktree {worktree} explicitly
+# (cmru's [lanes.gate] is the reference shape). CMRU's release gate is
+# deliberately narrower — cmru.toml runs only `run-gate r0-r1` and
+# `run-gate r3` — because the operator's release policy allows the long R2
+# campaign to be deferred. A release cut without running this lane to
+# completion (the initial 1.0.0 release) has NO completed full-source R2
+# verdict and must not claim one.
 [lanes.gate]
 kind = "command"
 environment = "bare-host"

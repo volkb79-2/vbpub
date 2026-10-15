@@ -254,7 +254,13 @@ refusal, not permission to rely on Docker's default parent.
 
 Assay B145 refuses to classify native R2 candidates when private cgroup
 namespaces hide an enforcing ancestor. With a cgprofile daemon that implements
-resource-observer contract 2 and a Run-Gate build that supports RG-89, opt the lane in:
+resource-observer contract 2 and a Run-Gate build that supports RG-89, opt the lane in.
+The host cgroup2 mount must not use `pids_localevents`; cgprofile refuses that
+mode because its fork-failure counter identifies the cgroup where a failed fork
+was attempted, not the ancestor whose `pids.max` blocked it. A refusal means the
+lane has no trustworthy pids-event attribution on that host. `memory_localevents`
+is supported and appears in the observer scope metadata; candidate-local memory
+events require the candidate cgroup to have no child cgroups.
 
 ```toml
 [lanes.assay-r2]
@@ -262,7 +268,15 @@ kind = "assay"
 assay_lane = "r2"
 environment = "tester-unified"
 resource_observer = "cgprofile"
+
+[lanes.assay-r2.resources]
+memory = "2g"
+pids = 8192
 ```
+
+Both ceilings are required: Run-Gate refuses to load an observer-backed lane
+without an explicit `resources.memory` and `resources.pids`, because candidate
+memory and PID limit events are only attributable against a declared ceiling.
 
 For native R2 in a tester container shared by Assay workers, serialize
 candidate windows in that lane's `assay.toml`:
@@ -599,10 +613,14 @@ Run these from `scripts/cgroup-profiler/`. The dry run shows the expanded
 `--request-base` argument without starting the judged lane. Before the long
 R2 run, inspect Assay's plan for the exact commit/tree and the intended
 source candidates. The `gate` lane passes the same base to its nested `r2`.
-The composite is the full RG-55 acceptance sequence and its result belongs to
-the exact tree it judges. CMRU's package-release gate is narrower: it runs
-`r0-r1` and `r3`, while the exact-tree R2 is a separate acceptance
-prerequisite for this wave and is not rerun automatically by `cmru release`.
+The composite is the complete Run-Gate lane: `r0-r1`, the 24-hour `r2`, then
+`r3`, and its result belongs to the exact tree it judges. CMRU's release gate
+(`cmru.toml` `steps.run-tests`) is narrower: it runs `run-gate r0-r1` and
+`run-gate r3` only and never runs R2. The operator's release policy allows the
+long full-source R2 campaign to be deferred, so **the initial 1.0.0 release
+has no completed full-source R2 verdict**; a release does not claim one. Run
+`run-gate --base "$P1_BASE" gate` when that evidence is wanted; see
+[release qualification](DESIGN-GUIDE.md#release-qualification-and-the-full-r2-gate).
 Run-gate can derive a different base when `--base` is omitted, so an omitted
 flag is not the P1 acceptance command. The rationale is in the
 [design guide](DESIGN-GUIDE.md#mutation-comparison-base).

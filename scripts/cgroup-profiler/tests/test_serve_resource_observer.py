@@ -75,8 +75,8 @@ def test_observer_dispatch_accepts_contract_2_without_changing_control_contract(
         lambda **kwargs: {
             "cgroup_version": 2,
             "thread_id": kwargs["thread_id"],
-            "pids_events_scope": "local",
-            "memory_events_scope": "hierarchical",
+            "pids_events_scope": "hierarchical",
+            "memory_events_scope": "local",
             "cgroups": [],
         },
     )
@@ -90,8 +90,8 @@ def test_observer_dispatch_accepts_contract_2_without_changing_control_contract(
         "contract": 2,
         "cgroup_version": 2,
         "thread_id": 42,
-        "pids_events_scope": "local",
-        "memory_events_scope": "hierarchical",
+        "pids_events_scope": "hierarchical",
+        "memory_events_scope": "local",
         "cgroups": [],
     }
 

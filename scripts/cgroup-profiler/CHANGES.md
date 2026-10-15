@@ -19,5 +19,17 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   consumer of the CGProfile interface; copied `run-gate.py` scripts are retired.
 - Gate R3 now declares memory and swap ceilings, so Run-Gate admits it against
   the gates-slice budget and Docker enforces its per-container limit.
+- The native R2 resource observer refuses a host cgroup2 mount using
+  `pids_localevents`: its fork-failure counter records the cgroup where the
+  fork was attempted, so it cannot identify which ancestor's `pids.max`
+  rejected it. Successful responses always report
+  `pids_events_scope = "hierarchical"`; `memory_localevents` remains supported.
+- Documentation: the native-R2 lane example declares the required
+  `resources.memory` and `resources.pids`.
+- Release qualification: CMRU's release gate runs `run-gate r0-r1` and
+  `run-gate r3` only. The complete Run-Gate `gate` lane additionally runs the
+  24-hour `r2` mutation campaign. The initial 1.0.0 release has no completed
+  full-source R2 verdict; the long R2 campaign was deferred under the
+  operator's release policy.
 
 <!-- cmru: release history -->

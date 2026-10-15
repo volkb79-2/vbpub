@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path
 from typing import Dict, Iterable, List
+
+import pytest
 
 import cgprofile as cg
 from lib import serve, summary
@@ -73,3 +76,73 @@ def test_package_contract_mirrors_canonical_contract_byte_for_byte():
     canonical = ROOT.parents[1] / "run-gate-project" / "nyxloom-trove" / "RG55-INTERFACE-CONTRACT.md"
     local = ROOT / "docs" / "RG55-INTERFACE-CONTRACT.md"
     assert local.read_bytes() == canonical.read_bytes()
+
+
+_OBSERVER_ENV = (
+    "schema_version = 1\n"
+    "[environments.tester-unified]\n"
+    'mode = "ephemeral"\n'
+    'image = "tester-unified:local"\n\n'
+)
+
+
+def _native_r2_lane_example() -> str:
+    text = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    blocks = [
+        body
+        for body in re.findall(r"```toml\s*\n(.*?)```", text, flags=re.DOTALL)
+        if 'resource_observer = "cgprofile"' in body
+    ]
+    assert len(blocks) == 1, "expected exactly one published native-R2 lane example"
+    return blocks[0]
+
+
+def _load_with_shipped_run_gate(tmp_path: Path, lane_text: str) -> None:
+    # The installed Run-Gate wheel is part of the tester-unified closure; import
+    # it for real so a missing wheel fails loudly rather than skipping the check.
+    import run_gate
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run-gate.toml").write_text(_OBSERVER_ENV + lane_text, encoding="utf-8")
+    run_gate.load_config(project)
+
+
+def test_published_native_r2_lane_example_loads_with_shipped_run_gate(tmp_path):
+    example = _native_r2_lane_example()
+    assert 'memory = "2g"' in example and "pids = 8192" in example
+    _load_with_shipped_run_gate(tmp_path, example)
+
+
+@pytest.mark.parametrize("missing", [r'memory = "2g"\n', r"pids = 8192\n"])
+def test_shipped_run_gate_rejects_the_example_without_either_resource_ceiling(
+    tmp_path, missing
+):
+    import run_gate
+
+    example = _native_r2_lane_example()
+    mutated = re.sub(missing, "", example, count=1)
+    assert mutated != example, "the example no longer declares the ceiling under test"
+    with pytest.raises(run_gate.GateError, match="requires explicit resources.memory and resources.pids"):
+        _load_with_shipped_run_gate(tmp_path, mutated)
+
+
+def test_release_gate_is_r0_r1_and_r3_only_and_complete_gate_includes_r2():
+    cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    argvs = [c["argv"] for c in cmru["steps"]["run-tests"]["commands"]]
+    assert argvs == [["run-gate", "r0-r1"], ["run-gate", "r3"]]
+    lanes = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
+    assert "r2" in lanes["gate"]["argv"][-1]
+    assert lanes["r2"]["budget"] == "24h"
+
+
+def test_every_release_surface_states_there_is_no_full_source_r2_verdict():
+    surfaces = (
+        ROOT / "CHANGES.md",
+        ROOT / "cmru.toml",
+        ROOT / "run-gate.toml",
+        *DOCS,
+    )
+    for path in surfaces:
+        flat = re.sub(r"\s+", " ", re.sub(r"\n\s*#", "\n", path.read_text(encoding="utf-8"))).lower()
+        assert "no completed full-source r2 verdict" in flat, path

@@ -293,8 +293,13 @@ unsampled sibling. The observer need not enumerate sibling destinations.
 Resource-observer contract 2 adds explicit scope metadata and the
 `pids.events.local` and `memory.events.local` values alongside the existing
 event files. The regular files can be hierarchical or local depending on the
-host mount's `pids_localevents` and `memory_localevents` options; contract 2
-reports those scopes so a consumer cannot silently mistake one for the other.
+host mount options. The observer refuses `pids_localevents`: its local fork
+failure count records where the process attempted to fork, not which cgroup's
+`pids.max` rejected the fork. That loses the distinction between a candidate
+limit and a shared ancestor limit. `memory_localevents` remains supported and
+is reported explicitly; when local memory counters are active on the candidate,
+the observer also proves the candidate has no child cgroups. These checks keep
+consumers from mistaking local event scope for local limit enforcement.
 Contract 2 is the only supported resource-observer version: accepting the old
 shape would let a client treat hierarchical counters as local evidence.
 Assay requests contract 2 because its candidate counter and ancestor-local
@@ -644,3 +649,22 @@ merge-commit base handling can change the resolved scope; the post-merge plan
 must be checked again rather than transferring a prior-tree count. The
 pasteable invocation is in
 [`CONSUMERS.md`](CONSUMERS.md#run-the-p1-review-gates).
+
+## Release qualification and the full R2 gate
+
+Two different things are called "the gate" and must not be conflated. CMRU's
+release gate is `cmru.toml` `steps.run-tests`: `run-gate r0-r1` (unit tests with
+100% line and branch coverage) and `run-gate r3` (canary rejection). The
+complete Run-Gate lane `gate` additionally runs `r2`, the Assay
+mutation-of-changed-lines campaign, whose budget is a 24-hour resumable window.
+R2 is kept out of the release gate because a campaign that long must not block
+every routine release, and because it judges one exact tree for one comparison
+base rather than the release range.
+
+The operator's release policy allows the full-source R2 campaign to be
+deferred. The consequence is stated plainly rather than implied: the initial
+1.0.0 release has no completed full-source R2 verdict, and nothing in this
+project's documentation, changelog or release configuration claims one. A
+later R2 result applies only to the exact tree and base it judged. Passing
+`r0-r1` and `r3` qualifies a release for exactly what those lanes test; it is
+not mutation evidence.

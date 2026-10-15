@@ -78,6 +78,10 @@ tester cgroup; an incomplete 24-hour window resumes on the same exact tree.
 See the
 [`design rationale`](docs/DESIGN-GUIDE.md#mutation-comparison-base) and
 [`exact commands`](docs/CONSUMERS.md#run-the-p1-review-gates).
+CMRU's release gate runs only `r0-r1` and `r3`; the complete Run-Gate `gate`
+lane also includes the 24-hour `r2` campaign. The initial 1.0.0 release has no
+completed full-source R2 verdict. See
+[release qualification](docs/DESIGN-GUIDE.md#release-qualification-and-the-full-r2-gate).
 
 ## Verbs
 
@@ -203,10 +207,14 @@ of at most 4096 bytes including the newline, with a five-second absolute deadlin
 See [the observer protocol](docs/PROTOCOL.md#8-native-r2-resource-observer-rg-89)
 and [adoption steps](docs/CONSUMERS.md#native-r2-resource-observer).
 Observer contract 2 returns regular event counters, effective local event
-counters, and the cgroup2 mount's `pids_localevents` and `memory_localevents` modes;
-the daemon's general control protocol remains contract 1. The resource
-observer requires contract 2; contract-1 observer requests receive an explicit
-unsupported-contract refusal.
+counters, and the cgroup2 mount's event modes; the daemon's general control
+protocol remains contract 1. The resource observer refuses a host mount using
+`pids_localevents`: that mode counts failed forks in the cgroup where the
+process tried to fork, even when an ancestor's `pids.max` rejected it, so it
+cannot attribute enforcement to the right cgroup. `memory_localevents` remains
+supported with the candidate-subgroup check described in the protocol. The
+resource observer requires contract 2; contract-1 observer requests receive an
+explicit unsupported-contract refusal.
 It also receives a read-only host `/proc` bind and an
 explicitly writable host cgroup-v2 view for opt-in P6 placement. The host
 system-bus socket is mounted only into the daemon; the read-only bind does not
