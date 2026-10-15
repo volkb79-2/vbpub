@@ -68,4 +68,5 @@ commands = [
 quiet = true
 commands = [
   { label = "cgprofile: push daemon image", argv = ["python3", "build-push.py", "--push"], cwd = "." },
+  { label = "cgprofile: publish tagged release notes", argv = ["cmru", "handler", "oci-image-release", "--prefix", "cgprofile", "--image", "ghcr.io/volkb79-2/cgprofile", "--cwd", "."], cwd = "." },
 ]
