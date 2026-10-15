@@ -38,6 +38,7 @@ def _project(root: Path, *, steps=None, generated=()):
         runner_steps=steps or {}, steps=steps or {}, commit_generated=generated,
         changelog=None, version=SimpleNamespace(strategy="scm"), git_tag=True,
         prefix="demo-v", build_step="build", scm_dist=None,
+        known_project_names=frozenset(),
     )
 
 

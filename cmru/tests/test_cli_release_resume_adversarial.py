@@ -75,10 +75,13 @@ def test_release_resume_cleans_workspace_and_reports_sync_failure(monkeypatch, t
     assert child[:2] == (
         "child", ["demo", "--discard", "logs", "--discard", "artifacts", "--config", "cmru.toml"],
     )
-    # The resumed child gets its credential over the handoff, not a copied file.
-    assert set(child[2]) == {"project_names", "credentials"}
+    # The resumed child gets its credential over the handoff, not a copied file,
+    # and the launcher's controller identity so the child can prove it is the same
+    # installed wheel (the conftest's neutral identity stands in for the real one).
+    assert set(child[2]) == {"project_names", "credentials", "controller_identity"}
     assert child[2]["project_names"] == ["demo"]
     assert isinstance(child[2]["credentials"], CredentialHandoff)
+    assert child[2]["controller_identity"]["distribution_sha256"] == "b" * 64
     assert calls[1:] == ["backup", "workspace", "forget"]
     output = capsys.readouterr().out
     assert "Could not sync local main automatically" in output

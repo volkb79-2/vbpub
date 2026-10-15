@@ -198,6 +198,7 @@ def _prepare(monkeypatch, tmp_path, planner):
     labels: list[str | None] = []
     project = SimpleNamespace(
         name="demo", steps={}, changelog="CHANGES.md", git_tag=True,
+        known_project_names=frozenset(),
     )
     monkeypatch.setattr(changelog, "generate_release_changelog", lambda *a, **k: False)
     monkeypatch.setattr(changelog, "pending_release_tag", planner)

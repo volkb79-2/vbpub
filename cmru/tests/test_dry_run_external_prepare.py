@@ -19,6 +19,7 @@ def test_dry_run_prepares_external_version_before_plan(monkeypatch, tmp_path, ca
         env={},
         project_root=tmp_path / "pwmcp",
         github_token="token",
+        known_project_names=frozenset(),
     )
     loaded = (
         tmp_path,

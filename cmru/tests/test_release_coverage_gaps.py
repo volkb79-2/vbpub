@@ -255,6 +255,7 @@ def test_cli_file_strategy_rechecks_the_changed_candidate(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **kwargs: calls.append("gate"))
     git_calls = []
     monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: (git_calls.append(1) or ("gated" if len(git_calls) == 1 else "candidate")))
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     monkeypatch.setattr("cmru.version.release_cmd", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_tag_on_head", lambda *args: None)
     cli._release_projects_sequentially(

@@ -443,6 +443,7 @@ def _project() -> SimpleNamespace:
             "cmru", "handler", "wheel-publish",
         ]}])},
         version=SimpleNamespace(strategy="scm", bump="conventional"),
+        known_project_names=frozenset(),
     )
 
 

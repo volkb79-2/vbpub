@@ -200,6 +200,15 @@ def test_transaction_child_retains_full_project_scope_registry(tmp_path, monkeyp
     monkeypatch.setenv("CMRU_WORKSPACE_PATH", str(candidate))
     monkeypatch.setenv("CMRU_SOURCE_GIT_ROOT", str(tmp_path))
     monkeypatch.setenv("CMRU_TRANSACTION_PROJECTS", "alpha")
+    # A transaction child never reads a credential file (it fails closed without
+    # its parent's handoff), so give the simulated child the handoff the parent
+    # would have sent. This test is about the scope registry, not credentials.
+    from cmru import credential_handoff
+
+    monkeypatch.setattr(
+        credential_handoff, "_CACHE",
+        credential_handoff.CredentialHandoff(root="test-credential"),
+    )
 
     _root, projects, *_rest = cli.load_config(orchestration)
 
@@ -497,7 +506,15 @@ def test_status_uses_current_directory_orchestration_without_a_shim(tmp_path, mo
 
     cli.main(["status", "alpha"])
 
-    assert calls == [(tmp_path, ["alpha"], {"minor": False, "major": False, "set_version": None, "ref": "HEAD"})]
+    # status resolves the plan against the full loaded registry, so the library
+    # is handed the configs and their scope names alongside the version flags.
+    (root, selected, forwarded), = calls
+    known_projects = forwarded.pop("known_projects")
+    known_project_names = forwarded.pop("known_project_names")
+    assert (root, selected) == (tmp_path, ["alpha"])
+    assert forwarded == {"minor": False, "major": False, "set_version": None, "ref": "HEAD"}
+    assert list(known_projects) == ["alpha"]
+    assert known_project_names == known_projects["alpha"].known_project_names
 
 
 def test_unknown_verb_exits_2():

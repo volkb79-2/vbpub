@@ -104,10 +104,21 @@ class _Env:
         bin_dir = root / "bin"
         bin_dir.mkdir()
         wrapper = bin_dir / "cmru"
+        # The release controller must be the installed CMRU wheel, and this
+        # harness runs the source under test. The wrapper therefore swaps only
+        # the installed-wheel provenance probe for the neutral identity the unit
+        # suite also uses (``conftest.NEUTRAL_RELEASE_CONTROLLER_IDENTITY``); the
+        # launcher hands it to the real child exactly as it hands over a real one.
+        # That probe has its own tests (``test_release_controller``).
         wrapper.write_text(
             "#!/bin/sh\n"
             f'PYTHONPATH="{os.pathsep.join(sources)}" exec "{sys.executable}" '
-            '-c "import sys; from cmru.cli import main; sys.exit(main())" "$@"\n'
+            '-c "import sys, cmru.cli as cli; '
+            "cli._record_release_controller_identity = lambda phase: {"
+            "'version': '6.2.0', 'wheel_sha256': 'a' * 64, "
+            "'distribution_sha256': 'b' * 64, "
+            "'module_path': '/site-packages/cmru/cli.py'}; "
+            'sys.exit(cli.main())" "$@"\n'
         )
         wrapper.chmod(0o755)
         self.env = {

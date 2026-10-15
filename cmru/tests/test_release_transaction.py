@@ -96,6 +96,7 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
         steps=steps or {},
         project_root=Path(name),
         github_token="test-credential",
+        known_project_names=frozenset(),
     )
 
 
@@ -3424,12 +3425,26 @@ def test_resolve_versions_from_git_clears_stale_pretend_version_and_normalises_d
             os.environ.pop(env_untagged, None)
 
 
-def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_fresh_tag():
+def _independent_clone_stands_in_for_the_linked_worktree(monkeypatch):
+    """``clone_workspace`` makes an independent clone, not a linked worktree.
+
+    The candidate-source verification (``_assert_release_gate_source_matches_
+    commit``) reads a linked worktree's Git pointers and has its own tests against
+    real worktrees (``test_cli_orchestration_adversarial``). These sequencing tests
+    cover tag/gate/build ordering, so they stub only that seam.
+    """
+    monkeypatch.setattr(
+        cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None,
+    )
+
+
+def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_fresh_tag(monkeypatch):
     """The actual bug this whole feature exists to fix: an OCI-image-style project
     (here 'beta', git_tag=False) that resolves a sibling wheel-style project's
     (here 'alpha') release must see alpha's tag as ALREADY published — not the
     previous run's — because alpha's entire cycle (prepare/gate/promote/tag/
     build/publish) finishes before beta's cycle starts."""
+    _independent_clone_stands_in_for_the_linked_worktree(monkeypatch)
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/seq")
         (workspace_path / "beta").mkdir()
@@ -3490,6 +3505,7 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
 
 
 def test_release_stops_before_publisher_when_release_tag_push_fails(monkeypatch):
+    _independent_clone_stands_in_for_the_linked_worktree(monkeypatch)
     with _OriginAndClone() as h:
         branch = "cmru/release/tag-push-failure"
         workspace_path = h.clone_workspace(branch)
@@ -3539,7 +3555,7 @@ def test_release_stops_before_publisher_when_release_tag_push_fails(monkeypatch)
         assert _git("rev-parse", "main", cwd=h.origin) == _git("rev-parse", "main", cwd=h.repo_root)
 
 
-def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success():
+def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success(monkeypatch):
     """alpha finishes fully (it has no prepare step, so its cycle commits
     nothing — its checkpoint equals the run's starting base). beta's prepare
     commits, but beta's gate (which runs after prepare) fails, so beta advances
@@ -3547,6 +3563,7 @@ def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success()
     checkpoint written after alpha, not "wherever HEAD currently is" — proving
     the checkpoint deliberately excludes beta's unpromoted local commit rather
     than just tracking HEAD."""
+    _independent_clone_stands_in_for_the_linked_worktree(monkeypatch)
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/partial")
         (workspace_path / "beta").mkdir()
@@ -3601,13 +3618,14 @@ def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success()
         assert "alpha-v0.1.0" in _git("tag", "--list", "alpha-v*", cwd=h.origin)
 
 
-def test_release_projects_sequentially_seeds_checkpoint_from_this_runs_base_not_a_stale_one():
+def test_release_projects_sequentially_seeds_checkpoint_from_this_runs_base_not_a_stale_one(monkeypatch):
     """--resume reuses the SAME branch token as the failed attempt it's continuing,
     so a stale .progress file from that earlier attempt is still on disk under
     this run's token. Without seeding the checkpoint to *this* run's own base at
     the top of the loop, a later failure would read that stale (older) value and
     could revert past a commit the operator made while fixing things up for the
     resume — see the review finding this test locks in."""
+    _independent_clone_stands_in_for_the_linked_worktree(monkeypatch)
     with _OriginAndClone() as h:
         workspace_path = h.clone_workspace("cmru/release/resume-token")
         (workspace_path / ".gitignore").write_text("logs/\n")

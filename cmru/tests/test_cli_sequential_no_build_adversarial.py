@@ -19,6 +19,7 @@ def test_sequential_untagged_no_build_skips_publish_and_records_progress(monkeyp
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *args, **kwargs: calls.append("backup"))
     monkeypatch.setattr(cli, "_run_untagged_project", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("build")))
     monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "b" * 40)
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     released = cli._release_projects_sequentially(
         tmp_path, {"demo": project}, workspace, ["demo"],
         github_config=cli.GitHubConfig("o", "r", "t", "user"),
@@ -49,6 +50,7 @@ def test_sequential_tagged_no_build_persists_tag_without_project_publish(monkeyp
     monkeypatch.setattr(cli, "_push_tags", lambda *args, **kwargs: calls.append("push-tag"))
     monkeypatch.setattr(cli, "_run_project_steps", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("build/publish")))
     monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "b" * 40)
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     released = cli._release_projects_sequentially(
         tmp_path, {"demo": project}, workspace, ["demo"],
         github_config=cli.GitHubConfig("o", "r", "t", "user"),
@@ -87,6 +89,7 @@ def test_sequential_publishes_before_promoting_exact_candidate(monkeypatch, tmp_
     )
     monkeypatch.setattr(transaction, "promote_workspace", lambda *args, **kwargs: calls.append("promote"))
     monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "b" * 40)
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
 
     assert cli._release_projects_sequentially(
         tmp_path, {"demo": project}, workspace, ["demo"],
