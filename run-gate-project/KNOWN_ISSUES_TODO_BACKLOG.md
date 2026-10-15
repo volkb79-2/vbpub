@@ -112,6 +112,7 @@ SPEC §9.
 | RG-99 | concurrent lanes in one exec container race on the fixed `/tmp/run-gate-gitconfig` (`git config --global --replace-all` lock), and the loser is reported as a product FAIL (exit 255) instead of a setup ERROR | Major | OPEN (filed 2026-10-15, dstdns deep review; amended same day: consumer direction is ephemeral one-lane containers, which removes the race by construction; the exec-mode fix stays required; network attachment for ephemeral lanes is planned in ciu v8 gate environments, SPEC-V8 S7.8.1/S16; secrets stay with ciu) |
 | RG-100 | `[assay.import]` is resolved eagerly: with the runner down, `--list`, host-only lanes and docs lanes all ERROR (`import could not read the judge inventory`) | Minor | OPEN (filed 2026-10-15, dstdns deep review C04 F12) |
 | RG-101 | SPEC.md:126 still calls `bare-host` a built-in name while SPEC.md:263 and RG-78 make it an ordinary name needing `mode = "host"`; the load refusal does not name `run-gate migrate-modes` | Minor | OPEN (filed 2026-10-15, dstdns deep review) |
+| RG-103 | `run-gate doctor` crashes with `KeyError: 'environment'` when the config declares a `kind = "sequence"` lane: the per-lane environment pass calls `resolve_environment`, which reads `lane["environment"]`, a key R-07/RG-74 forbid on sequences | Major | OPEN (filed 2026-10-15, dstdns P242 under the 24.0.0 candidate) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6058,3 +6059,17 @@ No action is requested from run-gate beyond the exec-mode fix above. dstdns revi
 **Oracles.** A doc test asserts SPEC.md makes no built-in claim for `bare-host`; an error-text test requires the migration hint for that name.
 
 **SPEC owner.** R-07 / R-78.
+
+## RG-103 — `run-gate doctor` crashes on any config that declares a `kind = "sequence"` lane
+
+**Status:** OPEN. Filed 2026-10-15 from dstdns package P242 (consumer cutover to native sequences), with the run-gate 24.0.0 candidate wheel. Severity Major: every consumer that adopts RG-74 native sequences loses `doctor`, the documented pre-flight before debugging a gate.
+
+**Observed.** In the dstdns cutover worktree, whose `[lanes.gate]` is `kind = "sequence"` with no `environment` (R-07/RG-74 forbid one on a sequence), `run-gate doctor --worktree "$PWD"` passed its first four checks (docker, ticket image, published admission count, slice) and then died: `KeyError: 'environment'` in `resolve_environment` (`run_gate.py`: `name = lane["environment"]`), called from `cmd_doctor`'s per-lane environment pass (`resolve_environment(lanes[name], ...)` at about line 8746 of the installed 24.0.0 module). `sequence_environments()` already handles sequences correctly by visiting members; the doctor pass does not use it.
+
+**Why run-gate owns it.** The configuration is valid by run-gate's own validator; a traceback for a legal declaration is the RG-28 class.
+
+**Proposed contract.** The doctor's per-lane environment pass skips sequence lanes (or resolves them through `sequence_environments()`), and reports per member. No traceback for any config that `--list` accepts.
+
+**Oracles.** A fixture config with a sequence lane whose members use two environments: `doctor` exits with its normal summary and checks both member environments once; the current implementation raises `KeyError` (controlled wrong implementation). A property test: every config accepted by the loader runs `doctor` without an uncaught exception.
+
+**SPEC owner.** R-07, RG-74 (sequences), the doctor contract (RG-64). Related: RG-28.
