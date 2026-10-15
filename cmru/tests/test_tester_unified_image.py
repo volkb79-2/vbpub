@@ -147,15 +147,15 @@ assert reported == f"run-gate {run_gate_version}\n", reported
 released = metadata.version("cli-extended")
 if os.environ["CLI_EXTENDED_RESOLVE"] == "local":
     # Zero-release mode: the operator-built wheel (sha256-verified above) carries a
-    # +local version segment so it can never be mistaken for, or equal, a release.
-    assert "+" in released, f"cli-extended {released} has no +local segment: not a local build"
+    # PEP 440 local version segment so it cannot be mistaken for a stable release.
+    assert "+" in released, f"cli-extended {released} has no local version segment"
 else:
     assert "+" not in released, f"cli-extended {released} is a local build, not the release"
 assert any(r.startswith("cli-extended") for r in metadata.requires("cmru") or ()), (
     "cmru's wheel does not declare cli-extended as a dependency"
 )
 print("cmru local, Run-Gate installed:", run_gate_version,
-      "; cli-extended release:", released)
+      "; cli-extended identity:", released)
 PY'''
 # The run-uid identity block as the Dockerfile declares it (da06e52de gave the
 # uid its own group 1003 instead of squatting on the host's docker gid 994),
@@ -309,8 +309,9 @@ def test_generator_refuses_internal_names_in_extras_and_build_requires(tmp_path)
 ])
 def test_generator_skips_every_cli_extended_line_so_none_reaches_pip(tmp_path, line, capsys):
     """D8: cmru declares cli-extended as a real dependency. The line must be
-    SKIPPED (not refused, not printed): the image installs the released wheel
-    by sha256, and a PyPI-default pip is never asked for the name."""
+    SKIPPED (not refused, not printed): the image installs a verified release
+    wheel by default or an explicit local bootstrap wheel, and a PyPI-default
+    pip is never asked for the name."""
     _all_projects(
         tmp_path,
         cmru=(
@@ -2583,8 +2584,8 @@ def test_dockerignore_admits_every_file_the_offline_build_needs(path):
 @pytest.mark.parametrize("path", _nyxloom_cli_extended_wheel_inputs())
 def test_dockerignore_admits_cli_extended_wheel_inputs_for_nyxloom(path):
     # The same repo-root context serves Nyxloom's source-built wheel. The
-    # tester-unified Dockerfile still uses only the released wheel and does
-    # not COPY these sources; see the Dockerfile-specific assertions above.
+    # tester-unified Dockerfile still installs a wheel input and does not COPY
+    # these sources; see the Dockerfile-specific assertions above.
     assert _dockerignore_included(path, _dockerignore_rules(NYXLOOM_DOCKERFILE)), path
 
 
@@ -3343,6 +3344,64 @@ def test_tester_unified_build_instructions_use_the_exact_wheel_builder():
     assert 'cmru handler wheel-build --cwd "$checkout/run-gate-project"' in audit_launcher
     assert "run-gate-wheel-version.py" in readme
     assert "run-gate-wheel-version.py" in builder
+
+
+def test_zero_release_image_base_and_cli_extended_source_are_explicit():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(
+        encoding="utf-8",
+    )
+    readme = (REPO_ROOT / "tester-unified" / "README.md").read_text("utf-8")
+    design = (REPO_ROOT / "tester-unified" / "docs" / "DESIGN-GUIDE.md").read_text("utf-8")
+    consumers = (REPO_ROOT / "tester-unified" / "docs" / "CONSUMERS.md").read_text("utf-8")
+    bootstrap = (REPO_ROOT / "docs" / "BOOTSTRAP-FROM-ZERO.md").read_text("utf-8")
+
+    assert re.search(
+        r"^ARG TESTER_UNIFIED_BASE_IMAGE=ghcr\.io/volkb79-2/modern-debian-tools-python-debug-"
+        r"vsc-devcontainer:trixie-py3\.14-php8\.5-latest$",
+        dockerfile,
+        re.MULTILINE,
+    )
+    assert "FROM ${TESTER_UNIFIED_BASE_IMAGE}" in dockerfile
+    assert "docker-compose" in dockerfile and "docker compose version" in dockerfile
+    assert "docker-cli docker-compose" in dockerfile
+    assert '--base-image) base_image=${2:?}; shift 2 ;;' in builder
+    assert 'build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE=$base_image")' in builder
+    assert 'tester_gate_args+=(--image "$base_image")' in builder
+    assert 'cmru tester-gate "${tester_gate_args[@]}" /bin/true' in builder
+    assert '--cli-extended-resolve) cli_extended_resolve=${2:?}; shift 2 ;;' in builder
+    assert 'build_args+=(--build-arg "CLI_EXTENDED_WHEEL_SHA256=$cli_extended_sha256")' in builder
+    assert '--no-cache) no_cache=1; shift ;;' in builder
+    assert "mcr.microsoft.com/devcontainers/python:3.14-trixie" in readme
+    assert "mcr.microsoft.com/devcontainers/python:3.14-trixie" in consumers
+    assert "first-release bootstrapping" in design
+    assert "before `tester-unified:local` exists" in readme
+    assert "pre-existing" in consumers and "tester-unified:local" in consumers
+    orchestration = tomllib.loads(
+        (REPO_ROOT / "cmru.orchestration.toml").read_text("utf-8"),
+    )
+    declared_env = orchestration["orchestration"]["defaults"]["env"]
+    for key in (
+        "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
+        "CMRU_TESTER_PIDS_LIMIT", "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+    ):
+        assert f"{key}={declared_env[key]}" in bootstrap
+    assert f"docker pull {declared_env['CMRU_TESTER_CGROUP_PROBE_IMAGE']}" in bootstrap
+
+
+def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
+    dockerfile = (REPO_ROOT / "wheel-builder" / "Dockerfile").read_text("utf-8")
+    readme = (REPO_ROOT / "cmru" / "README.md").read_text("utf-8")
+    design = (REPO_ROOT / "cmru" / "docs" / "DESIGN-GUIDE.md").read_text("utf-8")
+    consumers = (REPO_ROOT / "cmru" / "docs" / "CONSUMERS.md").read_text("utf-8")
+
+    assert "ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie" in dockerfile
+    assert "FROM ${WHEEL_BUILDER_BASE_IMAGE}" in dockerfile
+    assert "apt-get install -y --no-install-recommends ca-certificates git passwd" in dockerfile
+    assert "ghcr.io/volkb79-2/modern-debian-tools-python-debug" not in dockerfile
+    for document in (readme, design, consumers):
+        assert "CMRU_BOOTSTRAP_CLI_EXTENDED=source" in document
+        assert "BOOTSTRAP-FROM-ZERO.md" in document
 
 def test_tester_unified_venvs_are_cleared_before_creation():
     instructions = _dockerfile_instructions_by_stage(

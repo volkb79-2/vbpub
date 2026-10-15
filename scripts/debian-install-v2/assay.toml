@@ -56,7 +56,7 @@ source_roots = ["debian_install_v2"]
 base = "origin/main"
 
 [lanes.r2.judge.mutation]
-jobs = 1
+jobs = 2
 max_mutants = 320
 operators = [
   "python:compare-swap",

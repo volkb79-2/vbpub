@@ -783,6 +783,12 @@ _RESERVED_CREDENTIAL_ENV = frozenset({
 _RESERVED_CMRU_INTERNAL_ENV = frozenset({
     "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD",
     "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
+    # The release launcher binds its installed controller to the child before
+    # any project gate can run; project config may not forge that identity.
+    "CMRU_RELEASE_CONTROLLER_VERSION",
+    "CMRU_RELEASE_CONTROLLER_WHEEL_SHA256",
+    "CMRU_RELEASE_CONTROLLER_FILES_SHA256",
+    "CMRU_RELEASE_GATE_COMMIT",
     # Exact tagged candidate identity injected only into release artifact and
     # publisher steps; project env must not be able to shadow the source CMRU
     # already gated and tagged.

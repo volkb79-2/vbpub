@@ -124,7 +124,22 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     docker = fake_bin / "docker"
-    docker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    docker_log = tmp_path / "docker.log"
+    builder_marker = tmp_path / "wheel-builder-ready"
+    docker.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = "buildx" ] && [ "$2" = "build" ]; then\n'
+        f'  printf "%s\\n" "$*" >> "{docker_log}"\n'
+        f'  touch "{builder_marker}"\n'
+        '  exit 0\n'
+        'fi\n'
+        'if [ "$1" = "image" ]; then\n'
+        f'  if [ -f "{builder_marker}" ]; then echo python-wheel-builder; else echo wrong-image; fi\n'
+        '  exit 0\n'
+        'fi\n'
+        'exit 0\n',
+        encoding="utf-8",
+    )
     docker.chmod(0o755)
     # Records the handlers launch (the one call under test) and runs every other
     # interpreter call (floor read, digest, unpack) with the real interpreter.
@@ -171,7 +186,10 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     env.pop("CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256", None)
     env.pop("CMRU_BOOTSTRAP_CLI_EXTENDED", None)
     env.pop("CMRU_BOOTSTRAP_CLI_EXTENDED_SOURCE_VERSION", None)
-    return {"repo_root": repo_root, "bootstrap": bootstrap, "record": record, "env": env}
+    return {
+        "repo_root": repo_root, "bootstrap": bootstrap, "record": record,
+        "docker_log": docker_log, "builder_marker": builder_marker, "env": env,
+    }
 
 
 def _run_bootstrap(tree) -> subprocess.CompletedProcess[str]:
@@ -206,8 +224,26 @@ def test_fresh_checkout_bootstrap_is_the_only_source_build_launcher():
     assert "CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256" in source and "fetch-cli-extended.py" in source
     assert "SOURCE_DATE_EPOCH" in source and "log -1 --format=%ct" in source
     assert "CMRU_DOCKER_CGROUP_PARENT" in source
+    assert "org.vbpub.wheel-builder.kind" in source
+    assert 'python-wheel-builder' in source
+    dockerfile = (REPO_ROOT / "wheel-builder" / "Dockerfile").read_text(encoding="utf-8")
+    assert 'LABEL org.vbpub.wheel-builder.kind="python-wheel-builder"' in dockerfile
     assert 'CMRU_WHEEL_BUILDER_IMAGE:-wheel-builder:local' not in source
     assert 'CMRU_WHEEL_BUILDER_IMAGE' in source
+
+
+def test_bootstrap_rebuilds_an_existing_tag_that_is_not_the_declared_wheel_builder(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest)
+
+    _run_bootstrap(tree)
+
+    docker_commands = Path(tree["docker_log"]).read_text(encoding="utf-8")
+    assert "buildx build --load --pull --cgroup-parent test.slice" in docker_commands
+    assert "wheel-builder/Dockerfile" in docker_commands
+    assert "-t wheel-builder:test" in docker_commands
+    assert Path(tree["builder_marker"]).is_file()
 
 
 def test_bootstrap_runs_python_isolated_with_the_verified_released_wheel_and_commit_epoch(tmp_path):
@@ -539,6 +575,29 @@ def test_bootstrap_derives_the_dev_version_like_the_wheel_build_beyond_the_tag(t
 def test_bootstrap_honours_the_scm_pretend_version_override(tmp_path):
     lines, raw = _probe_bootstrap(tmp_path, SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU="9.8.7")
     assert lines.get("DIST") == "9.8.7" and lines.get("IDENTITY") == "9.8.7", raw
+
+
+def test_tagless_bootstrap_accepts_an_explicit_temporary_cmru_version(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(tree["repo_root"]), "tag", "-d", "cmru-v1.2.3"],
+        check=True, capture_output=True,
+    )
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    probe_out = tmp_path / "probe.txt"
+    tree["env"].update(
+        CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel),
+        CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest,
+        SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU="0.0.0+bootstrap.source",
+        CMRU_TEST_PROBE_PY=str(_bare_interpreter()),
+        CMRU_TEST_PROBE_OUT=str(probe_out),
+        CMRU_TEST_PROBE_CODE="import importlib.metadata as m; print(m.version('cmru'))",
+    )
+    tree["env"].pop("SETUPTOOLS_SCM_PRETEND_VERSION", None)
+
+    _run_bootstrap(tree)
+
+    assert probe_out.read_text("utf-8").strip() == "0.0.0+bootstrap.source"
 
 
 def test_bootstrap_refuses_when_no_cmru_version_can_be_derived(tmp_path):

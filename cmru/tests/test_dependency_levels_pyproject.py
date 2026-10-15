@@ -177,9 +177,35 @@ class TestRealEstate:
         report = self._report()
         assert report.ok, report.errors
         assert report.levels["cli-extended"] == 0
-        assert report.levels["cmru"] == 1
-        assert report.levels["modern-debian-tools-python-debug"] == max(report.levels.values())
-        assert all(report.levels[name] == 2 for name in ("ciu", "run-gate-project", "assay", "topos"))
+        assert report.levels["cgroup-profiler"] == 0
+        assert report.levels["run-gate-project"] == 1
+        assert report.levels["cmru"] == 2
+        assert report.levels["nyxloom"] == 1
+        assert report.levels["modern-debian-tools-python-debug"] == max(report.levels.values()) == 3
+        assert all(report.levels[name] == 0 for name in (
+            "ciu", "assay", "topos", "cgroup-profiler", "pwmcp", "tls-edge",
+        ))
+
+    def test_source_bootstrapped_release_controller_is_not_a_release_edge(self):
+        forge = self._forge()
+        dependencies = forge.orchestration.dependencies
+        # These projects invoke CMRU as their release controller but do not
+        # consume its published wheel. The controller is bootstrapped from
+        # this checkout's source, so it must not force them after the CMRU
+        # release.
+        for project in (
+            "ciu", "assay", "topos", "run-gate-project", "cgroup-profiler",
+            "pwmcp", "tls-edge",
+        ):
+            assert "cmru" not in dependencies[project], project
+        # CMRU's own release gate, conversely, requires the stable Run-Gate
+        # artifact and tester image, so it must follow Run-Gate in a fresh
+        # release sequence.
+        assert set(dependencies["cmru"]) == {"cli-extended", "run-gate-project"}
+        assert set(dependencies["run-gate-project"]) == {"cgroup-profiler"}
+        order = list(forge.orchestration.project_order)
+        assert order.index("cgroup-profiler") < order.index("run-gate-project")
+        assert order.index("run-gate-project") < order.index("cmru")
 
     def test_removing_the_cmru_to_cli_extended_edge_fails_the_preflight(self):
         declared = {name: list(deps) for name, deps in self._forge().orchestration.dependencies.items()}

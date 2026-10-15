@@ -1,5 +1,5 @@
 # =============================================================================
-# debian-install gate lanes — parsed ONLY by Run-Gate CLI (one parser, D-110).
+# debian-install gate lanes — parsed ONLY by the installed Run-Gate CLI (D-110).
 # r0-r1, r2 and r3 are the standard 3-tier lane matrix (see scripts/
 # LANE-MATRIX-PROGRESS.md) and are host-scoped because they exercise
 # dry-run and fake-command boundaries only; no disk/systemd mutation is

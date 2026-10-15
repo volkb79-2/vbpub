@@ -2219,13 +2219,13 @@ def _check_b145_resource_limit_evidence(
         )
         return
 
-    positive_delta = False
-    for name, raw_delta in (
-        ("pids_events.max", pids["max"]),
-        ("memory_events.max", memory["max"]),
-        ("memory_events.oom", memory["oom"]),
-        ("memory_events.oom_kill", memory["oom_kill"]),
-        ("memory_events.oom_group_kill", memory["oom_group_kill"]),
+    positive_limit_delta = False
+    for name, raw_delta, invalidates_candidate in (
+        ("pids_events.max", pids["max"], True),
+        ("memory_events.max", memory["max"], False),
+        ("memory_events.oom", memory["oom"], True),
+        ("memory_events.oom_kill", memory["oom_kill"], True),
+        ("memory_events.oom_group_kill", memory["oom_group_kill"], True),
     ):
         if not isinstance(raw_delta, dict) or set(raw_delta) != {
             "before", "after", "delta"
@@ -2250,10 +2250,12 @@ def _check_b145_resource_limit_evidence(
                 f"native mutation.{bucket} entry has inconsistent {name} counter arithmetic"
             )
             continue
-        positive_delta = positive_delta or delta > 0
-    if positive_delta and bucket != "crashed":
+        positive_limit_delta = positive_limit_delta or (
+            invalidates_candidate and delta > 0
+        )
+    if positive_limit_delta and bucket != "crashed":
         failures.append(
-            f"native mutation.{bucket} entry has a positive cgroup resource-limit "
+            f"native mutation.{bucket} entry has a positive failed-fork or OOM "
             "counter delta; it cannot be classified as a test kill or survival"
         )
 

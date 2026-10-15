@@ -587,6 +587,15 @@ disconnect-or-refuse-named (never silently kept), and the post-clean
 invariant re-reads Docker STATE rather than trusting command exit codes or
 diagnostic text.
 
+Host-directory deletion follows a separate proof boundary. A nonzero
+`docker compose down` is not evidence that no service is using the bind mount;
+CIU continues only after an exact project-label query succeeds and finds no
+containers. An unavailable query is indeterminate and stops cleanup. Before
+using the privileged root helper, CIU also refuses symlinked `vol-*` paths and
+checks the resolved path remains under the stack directory. This keeps a
+cleanup failure recoverable and prevents a path link from widening the
+deletion target.
+
 ## Why there is no compose project without `-p` (CIU-46 cutover)
 
 The pre-CIU-46 fallback let a config-less shipped stack run under docker's

@@ -65,6 +65,39 @@ a different image. Never run the
 bootstrap through an editable checkout: uncommitted files and whichever source
 tree happens to be mounted are not release evidence.
 
+### Run-Gate compatibility bootstrap before CGProfile
+
+The current root `run-gate.root.toml` declares `image_env`, which is supported
+by the Run-Gate source in this wave but is rejected by the previously published
+Run-Gate wheel. A CGProfile-first release therefore needs a temporary local
+Run-Gate bootstrap after the reviewed source commit has reached
+`origin/main` and the CMRU bootstrap above is installed. This bootstrap is not
+a publication; it only lets CGProfile's registered Run-Gate lanes use the
+configuration declared by the same commit.
+
+From a checkout at the exact reviewed `origin/main` commit:
+
+```bash
+git rev-parse HEAD
+git rev-parse origin/main
+cmru handler wheel-build --cwd run-gate-project
+python3 tester-unified/run-gate-wheel-version.py run-gate-project/dist --json
+tester-unified/build-image.sh \
+  --wheel-dir run-gate-project/dist \
+  --tag tester-unified:run-gate-bootstrap
+docker image inspect --format '{{.Id}}' tester-unified:run-gate-bootstrap
+```
+
+Install the one wheel identified by that output into the estate venv, verify
+`run-gate --version`, and set `RUN_GATE_TESTER_UNIFIED_IMAGE` to the inspected
+image ID for the CGProfile release. Record the source commit, wheel SHA-256,
+and image ID in the release log. The image ID makes Run-Gate's lane selection
+independent of later movement of the temporary tag. Release CGProfile with
+`cmru release cgroup-profiler --set-version 1.0.0`, then release Run-Gate as its
+own project. Run-Gate's own CMRU release gate prepares and tests the exact wheel
+it will publish; after publication, use that public wheel and a newly built
+tester image for the CMRU release described above.
+
 cmru then creates the release worktree and reports concise orchestration progress
 to your terminal. Full project subprocess output is line-flushed into the root
 audit log and transaction-local `<project>/logs/cmru/<step>.log` files; use

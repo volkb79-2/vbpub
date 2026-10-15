@@ -62,6 +62,18 @@ def test_release_controller_records_noneditable_wheel_and_installed_files(
     ).hexdigest()
 
 
+def test_installed_controller_identity_is_available_when_self_release_loads_source(
+    tmp_path, monkeypatch,
+):
+    installed = _installed_distribution(tmp_path, _wheel_url())
+    monkeypatch.setattr(release_controller, "distribution", lambda name: installed)
+
+    identity = release_controller.installed_release_controller_identity()
+
+    assert identity["module_path"] == str(installed.module_path.resolve())
+    assert identity["wheel_sha256"] == "a" * 64
+
+
 def test_release_controller_accepts_legacy_pep610_archive_hash(tmp_path, monkeypatch):
     installed = _installed_distribution(tmp_path, {
         "url": "file:///wheelhouse/cmru-6.2.0-py3-none-any.whl",
@@ -102,7 +114,7 @@ def test_release_controller_refuses_source_module_or_missing_module(
     with pytest.raises(RuntimeError, match="active CLI module"):
         release_controller.release_controller_identity(source_module)
 
-    with pytest.raises(RuntimeError, match="cannot resolve the installed CMRU CLI module"):
+    with pytest.raises(RuntimeError, match="cannot resolve the active CMRU CLI module"):
         release_controller.release_controller_identity(tmp_path / "missing.py")
 
 
@@ -229,3 +241,98 @@ def test_release_launcher_refuses_unproven_controller_before_workspace(
     assert exited.value.code == 1
     assert errors == ["editable controller"]
     assert workspace_calls == []
+
+
+def test_transaction_child_requires_launcher_controller_identity(monkeypatch, tmp_path):
+    identity = {
+        "version": "6.2.0",
+        "wheel_sha256": "a" * 64,
+        "distribution_sha256": "b" * 64,
+        "module_path": "/site-packages/cmru/cli.py",
+    }
+    monkeypatch.setenv(transaction.RELEASE_CONTROLLER_VERSION_ENV, "6.2.0")
+    monkeypatch.setenv(transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV, "a" * 64)
+    monkeypatch.setenv(transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV, "b" * 64)
+    monkeypatch.setattr(cli, "_record_release_controller_identity", lambda _phase: identity)
+
+    assert cli._release_child_controller_identity(tmp_path, ["demo"]) == identity
+
+    changed = {**identity, "distribution_sha256": "c" * 64}
+    monkeypatch.setattr(cli, "_record_release_controller_identity", lambda _phase: changed)
+    with pytest.raises(RuntimeError, match="changed between launcher and transaction"):
+        cli._release_child_controller_identity(tmp_path, ["demo"])
+
+
+def test_self_release_compares_installed_bootstrap_wheel_to_launcher(monkeypatch, tmp_path):
+    identity = {
+        "version": "6.2.0",
+        "wheel_sha256": "a" * 64,
+        "distribution_sha256": "b" * 64,
+        "module_path": "/site-packages/cmru/cli.py",
+    }
+    monkeypatch.setenv(transaction.RELEASE_CONTROLLER_VERSION_ENV, "6.2.0")
+    monkeypatch.setenv(transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV, "a" * 64)
+    monkeypatch.setenv(transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV, "b" * 64)
+    candidate_module = tmp_path / "cmru" / "src" / "cmru" / "cli.py"
+    candidate_module.parent.mkdir(parents=True)
+    candidate_module.write_text("# candidate controller\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "__file__", str(candidate_module))
+    calls = []
+    monkeypatch.setattr(
+        cli, "_record_installed_release_controller_identity",
+        lambda phase: calls.append(phase) or identity,
+    )
+
+    assert cli._release_child_controller_identity(tmp_path, ["cmru"]) == identity
+    assert calls == ["transaction"]
+
+
+@pytest.mark.release_controller_provenance
+def test_release_child_accepts_candidate_source_loaded_by_transaction_pythonpath(
+    monkeypatch, tmp_path,
+):
+    from cmru import version
+
+    installed = _installed_distribution(tmp_path, _wheel_url())
+    monkeypatch.setattr(release_controller, "distribution", lambda _name: installed)
+    identity = release_controller.installed_release_controller_identity()
+    monkeypatch.setenv(transaction.RELEASE_CONTROLLER_VERSION_ENV, identity["version"])
+    monkeypatch.setenv(
+        transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV, identity["wheel_sha256"],
+    )
+    monkeypatch.setenv(
+        transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV,
+        identity["distribution_sha256"],
+    )
+    candidate_source = tmp_path / "cmru" / "src"
+    candidate_module = candidate_source / "cmru" / "cli.py"
+    candidate_module.parent.mkdir(parents=True)
+    candidate_module.write_text("# selected transaction source\n", encoding="utf-8")
+    monkeypatch.setattr(cli, "__file__", str(candidate_module))
+    monkeypatch.setenv("PYTHONPATH", str(candidate_source))
+
+    class ReachedReleasePlan(Exception):
+        pass
+
+    def stop_at_release_plan(*_args, **_kwargs):
+        raise ReachedReleasePlan
+
+    monkeypatch.setattr(version, "detect_changed_projects", stop_at_release_plan)
+    vargs = SimpleNamespace(
+        dry_run=False,
+        allow_tag_ahead_of_head=False,
+        allow_stale_tool_deps=False,
+    )
+
+    with pytest.raises(ReachedReleasePlan):
+        cli._release_child(
+            vargs,
+            tmp_path,
+            configs={},
+            ordered={"cmru": object()},
+            project_order=["cmru"],
+            selected_names=["cmru"],
+            github_config=None,
+            env_config={},
+            git_auth=None,
+        )

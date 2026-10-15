@@ -8,6 +8,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - KI-78 stages pending notes inside every tagged candidate's dated section before the gate and tag; direct publishers read the matching tag rather than mutable changelog files. `--no-build` and image-only releases retain notes in the tagged changelog without creating a GitHub Release body.
 - Real `cmru release` transactions require a non-editable CMRU wheel controller and record its wheel and installed-file digests in the release logs; `--dry-run` remains source-checkout friendly.
 - CMRU's aggregate gate uses Run-Gate SemVer as its compatibility floor and retained judge identity; it no longer treats a source revision counter as a compatibility version.
+- CMRU can make its first release without a prior CMRU tag: it verifies an empty origin tag set, runs whole-source R0/R1/R3, and records the whole-source R2 follow-up.
 - The native-R2 mutation lane requests contract-2 cgroup resource-event evidence; other tester lanes declare memory and PID limits but do not yet produce event evidence (KI-77). The 6.2.0 release candidate uses `gate-provisional`, so it records an explicit R2 deferral and contains no mutation resource-event evidence (KI-79).
 
 ### Fixed

@@ -162,9 +162,13 @@ def test_release_gates_require_run_tests_and_dispatch_declared_gate(tmp_path, mo
         cli._run_release_gates(tmp_path, {"demo": missing}, ["demo"])
     project = _project(tmp_path, steps={"run-tests": object()})
     calls = []
-    monkeypatch.setattr(cli, "run_project_step", lambda *args: calls.append(args[1]))
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "a" * 40)
+    monkeypatch.setattr(
+        cli, "run_project_step",
+        lambda *args, **kwargs: calls.append((args[1], kwargs.get("protected_env"))),
+    )
     cli._run_release_gates(tmp_path, {"demo": project}, ["demo"])
-    assert calls == ["run-tests"]
+    assert calls == [("run-tests", {"CMRU_RELEASE_GATE_COMMIT": "a" * 40})]
 
 
 def test_untagged_project_refuses_build_side_effect_after_artifact_step(tmp_path, monkeypatch):

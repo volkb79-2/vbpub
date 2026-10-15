@@ -169,7 +169,14 @@ def _fixture(tmp_path: Path, monkeypatch):
     calls = []
 
     def load_components():
-        def build_facts(repo_root, project_root, *, git_auth, assay_git):
+        def published_release_state(repo_root, *, git_auth):
+            assert repo_root == repo
+            assert git_auth is auth
+            return "cmru-v6.1.0", {"cmru-v6.1.0": "1" * 40}
+
+        def build_facts(
+            repo_root, project_root, *, git_auth, assay_git, remote_tag_commits,
+        ):
             count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
             assert any(
                 os.environ.get(f"GIT_CONFIG_KEY_{index}") == "core.hooksPath"
@@ -180,12 +187,14 @@ def _fixture(tmp_path: Path, monkeypatch):
             assert project_root == project
             assert git_auth is auth
             assert assay_git is git
+            assert remote_tag_commits == {"cmru-v6.1.0": "1" * 40}
             assert root_secret.is_file() and not root_secret.is_symlink()
             assert project_secret.is_file() and not project_secret.is_symlink()
             return {"head": "abc", "selected_tag": "cmru-v1.0.0"}
 
         baseline = SimpleNamespace(
             _repository_git_auth=lambda root: auth,
+            published_release_state=published_release_state,
             build_facts=build_facts,
         )
         return git, baseline
@@ -242,6 +251,91 @@ def test_assay_source_preflight_runs_before_loading_release_components_and_lanes
     assert events == ["assay-source-preflight", "load-components", *LANES]
     assert sys.pycache_prefix == prior_cache_prefix
     assert os.environ.get("PYTHONPYCACHEPREFIX") == prior_cache_env
+
+
+def test_first_release_uses_whole_source_lane_and_records_actionable_r2_follow_up(
+    tmp_path, monkeypatch, capsys,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    (repo / "cmru" / "CHANGES.md").write_text(
+        "# Changelog\n\n## [0.1.0] - 2026-10-15\n\n- first release\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "cmru/CHANGES.md")
+    _git(repo, "commit", "--quiet", "-m", "prepare first CMRU release")
+    monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", _git(repo, "rev-parse", "HEAD"))
+    original_load = run_release_gate._load_components
+
+    def load_without_published_stable_tag():
+        git, baseline = original_load()
+        baseline.published_release_state = lambda _root, *, git_auth: (None, {})
+        return git, baseline
+
+    monkeypatch.setattr(run_release_gate, "_load_components", load_without_published_stable_tag)
+    assert run_release_gate.run_release_gate(
+        repo, temp_parent=private_root, postpone_mutation="KI-79",
+    ) == 0
+    assert calls == [
+        "ref-probe", "installed-wheel-live", "assay-first-release", "coverage", "canary",
+    ]
+    marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
+    record = json.loads(marker.read_text(encoding="utf-8"))
+    assert record["schema_version"] == 2
+    assert record["tracking_id"] == "FIRST-RELEASE-R2"
+    assert record["target_version"] == "0.1.0"
+    assert record["baseline_state"] == "no-published-stable-release"
+    assert record["follow_up_lane"] == "assay-first-release-r2"
+    assert "whole-source R2" in record["reason"]
+    assert "FIRST-RELEASE-R2" in capsys.readouterr().err
+
+
+def test_first_release_refuses_without_protected_candidate_commit_before_any_lane(
+    tmp_path, monkeypatch,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    (repo / "cmru" / "CHANGES.md").write_text(
+        "# Changelog\n\n## [0.1.0] - 2026-10-15\n\n- first release\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", "cmru/CHANGES.md")
+    _git(repo, "commit", "--quiet", "-m", "prepare first CMRU release")
+    original_load = run_release_gate._load_components
+
+    def load_without_published_stable_tag():
+        git, baseline = original_load()
+        baseline.published_release_state = lambda _root, *, git_auth: (None, {})
+        return git, baseline
+
+    monkeypatch.setattr(run_release_gate, "_load_components", load_without_published_stable_tag)
+    monkeypatch.delenv("CMRU_RELEASE_GATE_COMMIT", raising=False)
+    with pytest.raises(RuntimeError, match="only inside CMRU's protected release transaction"):
+        run_release_gate.run_release_gate(
+            repo, temp_parent=private_root, postpone_mutation="KI-79",
+        )
+    assert calls == []
+
+
+def test_first_release_refuses_when_origin_tag_query_fails_instead_of_claiming_empty(
+    tmp_path, monkeypatch,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    original_load = run_release_gate._load_components
+
+    def load_with_unavailable_origin():
+        git, baseline = original_load()
+
+        def fail(_root, *, git_auth):
+            raise RuntimeError("cannot list CMRU release tags on origin")
+
+        baseline.published_release_state = fail
+        return git, baseline
+
+    monkeypatch.setattr(run_release_gate, "_load_components", load_with_unavailable_origin)
+    with pytest.raises(RuntimeError, match="cannot list CMRU release tags on origin"):
+        run_release_gate.run_release_gate(
+            repo, temp_parent=private_root, postpone_mutation="KI-79",
+        )
+    assert calls == []
 
 
 @pytest.mark.parametrize("ignored", [False, True])
@@ -1042,6 +1136,69 @@ def test_release_gate_requires_a_stable_run_gate_at_the_declared_floor(
         assert identity["installed_payload_sha256"] == payload_sha256
 
 
+def test_release_gate_reads_legacy_pep610_archive_hash_from_installed_wheel(
+    tmp_path, monkeypatch,
+):
+    import venv
+
+    environment = tmp_path / "candidate-venv"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    interpreter = environment / "bin" / "python"
+    site_packages = environment / "lib" / (
+        f"python{sys.version_info.major}.{sys.version_info.minor}"
+    ) / "site-packages"
+    site_packages.mkdir(parents=True)
+    dist_info = site_packages / "run_gate-24.0.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: run-gate\nVersion: 24.0.0\n",
+        encoding="utf-8",
+    )
+    (site_packages / "run_gate.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (site_packages / "run_gate_admission.py").write_text("VALUE = 2\n", encoding="utf-8")
+    (dist_info / "RECORD").write_text(
+        "run_gate.py,,\nrun_gate_admission.py,,\n", encoding="utf-8",
+    )
+    wheel = tmp_path / "run_gate-24.0.0-py3-none-any.whl"
+    wheel.write_bytes(b"legacy direct-url wheel bytes")
+    wheel_sha256 = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    (tmp_path / "cmru").mkdir()
+    direct_url_path = dist_info / "direct_url.json"
+    direct_url_path.write_text(json.dumps({
+        "url": wheel.as_uri(),
+        "archive_info": {"hash": f"sha256={wheel_sha256}"},
+        "dir_info": {"editable": False},
+    }), encoding="utf-8")
+
+    launcher = environment / "bin" / "run-gate"
+    launcher.write_text(f"#!{interpreter}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    original_run = subprocess.run
+
+    def run(argv, **kwargs):
+        if argv[0] == str(launcher):
+            return subprocess.CompletedProcess(argv, 0, stdout="run-gate 24.0.0\n", stderr="")
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(run_release_gate.shutil, "which", lambda _name: str(launcher))
+    monkeypatch.setattr(run_release_gate.subprocess, "run", run)
+
+    identity = run_release_gate._check_run_gate_identity(tmp_path)
+
+    assert identity["installed_wheel_sha256"] == wheel_sha256
+
+    direct_url_path.write_text(json.dumps({
+        "url": wheel.as_uri(),
+        "archive_info": {
+            "hash": f"sha256={wheel_sha256}",
+            "hashes": {"sha256": "f" * 64},
+        },
+        "dir_info": {"editable": False},
+    }), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="not proven to come from a non-editable wheel"):
+        run_release_gate._check_run_gate_identity(tmp_path)
+
+
 def test_release_gate_refuses_when_run_gate_is_missing(tmp_path, monkeypatch):
     monkeypatch.setattr(run_release_gate.shutil, "which", lambda _name: None)
     with pytest.raises(RuntimeError, match="requires the installed run-gate CLI"):
@@ -1059,6 +1216,7 @@ def _mock_run_gate_release_artifact_inputs(
     asset_url="https://example.invalid/run-gate.whl", image_id=None,
     docker_error=None, configured_image="tester-unified:configured",
     run_gate_config_text=None, write_run_gate_config=True,
+    provider_prefix="run-gate-v",
 ):
     from cmru import config as cmru_config
     from cmru import tool_deps
@@ -1091,7 +1249,7 @@ def _mock_run_gate_release_artifact_inputs(
             )
     forge = SimpleNamespace(
         projects=(
-            {"run-gate-project": SimpleNamespace(prefix="run-gate-v")}
+            {"run-gate-project": SimpleNamespace(prefix=provider_prefix)}
             if provider_present else {}
         ),
         github=SimpleNamespace(owner="volkb79-2", repo="vbpub", token="test-token"),
@@ -1112,7 +1270,7 @@ def _mock_run_gate_release_artifact_inputs(
     }
     wheel_asset = {"name": wheel_name, "browser_download_url": asset_url}
     release = {
-        "tag_name": release_tag or f"run-gate-v{version}",
+        "tag_name": release_tag or f"{provider_prefix}{version}",
         "draft": release_draft,
         "prerelease": release_prerelease,
         "assets": [
@@ -1124,7 +1282,10 @@ def _mock_run_gate_release_artifact_inputs(
     }
 
     def get_release(path, **_kwargs):
-        assert path == "/repos/volkb79-2/vbpub/releases/tags/run-gate-v24.0.0"
+        assert path == (
+            "/repos/volkb79-2/vbpub/releases/tags/"
+            f"{provider_prefix}24.0.0"
+        )
         if release_error is not None:
             raise release_error
         return None if release_result is None else release
@@ -1185,6 +1346,28 @@ def test_release_gate_binds_installed_and_tester_run_gate_to_published_wheel(
         "docker", "image", "inspect", "--format", "{{json .}}",
         "tester-unified:release",
     ]]
+
+
+def test_release_gate_uses_prefix_from_the_repository_cmru_project_config(
+    tmp_path, monkeypatch,
+):
+    project_config = tomllib.loads(
+        (ROOT.parent / "run-gate-project" / "cmru.toml").read_text(
+            encoding="utf-8",
+        )
+    )
+    prefix = project_config["project"]["prefix"]
+    assert prefix == "run-gate-v"
+    monkeypatch.setenv("RUN_GATE_IMAGE_FOR_TEST", "tester-unified:release")
+    release, wheel_sha, _docker_calls = _mock_run_gate_release_artifact_inputs(
+        tmp_path, monkeypatch, provider_prefix=prefix,
+    )
+
+    run_release_gate._check_run_gate_release_artifacts(
+        tmp_path, _matching_release_identity(wheel_sha),
+    )
+
+    assert release["tag_name"] == f"{prefix}24.0.0"
 
 
 @pytest.mark.parametrize(
@@ -1554,6 +1737,22 @@ def test_release_gate_refuses_when_tester_image_changes_during_a_lane(
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
 
     assert calls == ["lane"]
+
+
+def test_run_gate_identity_recheck_preserves_published_payload_digest(
+    tmp_path, monkeypatch,
+):
+    expected = _gate_identity()
+    monkeypatch.setattr(
+        run_release_gate, "_check_run_gate_identity",
+        lambda _root: _base_run_gate_identity(),
+    )
+    monkeypatch.setattr(
+        run_release_gate, "_check_tester_image_identity",
+        lambda _root, **_kwargs: _tester_image_identity(),
+    )
+
+    assert run_release_gate._recheck_run_gate_identity(tmp_path, expected) == expected
 
 
 def test_a_silent_ref_detector_fails_the_gate(tmp_path, monkeypatch):

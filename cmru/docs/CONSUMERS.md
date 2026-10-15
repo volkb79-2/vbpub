@@ -29,6 +29,24 @@ a separate short `-h` spelling.
 build), not a separately versioned operator entrypoint, so it is outside this
 top-level identity surface. Project steps use `cmru handler <verb>`.
 
+### Building the first wheel from source
+
+For a checkout with no published `cli-extended` or CMRU release, build both
+wheels from this repository and install the commands printed by the script:
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
+  CMRU_BOOTSTRAP_CLI_EXTENDED=source ./cmru/build-initial-standalone.sh
+```
+
+The source mode is explicit, creates a `+bootstrap.source` library wheel at
+CMRU's declared dependency floor, and never activates as a fallback. The
+temporary CMRU version covers a checkout with no CMRU tag. The script verifies
+the wheel-builder image label and rebuilds its configured tag from Microsoft's
+upstream Python base if the image is absent or belongs to another build.
+The [zero-release procedure](../../docs/BOOTSTRAP-FROM-ZERO.md) covers the
+tester image and project release order after this bootstrap.
+
 ---
 
 ## Git version for local tag inspection
@@ -714,6 +732,24 @@ KI-79. That release therefore has no mutation event evidence. Run `run-gate
 gate` when full R2 evidence is required; that lane includes the mutation
 campaign.
 
+For a CMRU repository with no published stable `cmru-vX.Y.Z` tag, the
+protected `gate-provisional` release workflow first verifies that origin was
+successfully queried and found empty. It then substitutes the whole-source
+`cmru-first-release` lane for the ordinary changed-line `assay` lane. The
+first-release marker identifies `run-gate assay-first-release-r2` as the
+pending mutation campaign. Run it against the released source commit after the
+first tag exists:
+
+```sh
+cd cmru
+run-gate assay-first-release-r2
+```
+
+This follow-up uses a literal whole-source target list, so it requires no
+previous CMRU tag. An inaccessible origin is an error and never selects this
+path. The automated choice and its exact-commit restriction are described in
+the [first-release design](DESIGN-GUIDE.md#first-release-has-no-historical-diff-baseline).
+
 The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0
 (full tests), R1 (100% line and branch coverage), and R3 (import-break
@@ -1067,9 +1103,20 @@ ambient values from every other project step, and project and step configuration
 cannot override these protected values. The pair is source-consistency metadata,
 not an authentication token or proof of CMRU provenance.
 
+During a release gate, CMRU supplies the candidate SHA as the protected
+`CMRU_RELEASE_GATE_COMMIT`. Release preparation steps can use it to bind a
+pre-tag receipt to the exact candidate. CMRU clears ambient values on other
+steps, and project configuration cannot set this name.
+
 A build that derives artifact identity from Git should check `HEAD` and the local
 tag against both values, then build from that exact commit. Invoke `cmru release`
 for publication; do not set the values manually.
+
+CMRU verifies that tracked source still matches the candidate around the gate,
+build, and publish steps. It refuses `assume-unchanged` and `skip-worktree`
+index flags, which can make Git status hide edits. Build outputs and logs should
+be ignored or declared as commit-bound evidence; do not have a release step
+rewrite tracked source.
 
 Put this check in a tagged artifact step before building. It verifies both the
 checked-out commit and the local tag after peeling annotated tags:

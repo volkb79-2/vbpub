@@ -247,6 +247,9 @@ def test_every_milestone_is_posted_with_the_common_prefix(tmp_path, monkeypatch)
     installer.install()
     installer.resume()
     # failure in each stage
+    # The completed-install guard has its own focused tests. Bypass it here so
+    # this test can exercise the stage-one failure notification path.
+    monkeypatch.setattr(installer, "_refuse_completed_install", lambda: None)
     monkeypatch.setattr(installer, "_stage1", lambda: (_ for _ in ()).throw(RuntimeError(f"boom via {HOOK}")))
     installer._notify_stage = "stage1"
     with pytest.raises(RuntimeError):

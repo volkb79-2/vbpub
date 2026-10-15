@@ -256,6 +256,41 @@ def test_remote_baseline_preparation_uses_scoped_cmru_git_auth_without_exporting
     assert "test-only-publisher-token" not in json.dumps(facts)
 
 
+def test_published_release_state_distinguishes_stable_from_prerelease_tags(
+    monkeypatch, tmp_path,
+):
+    tags = {
+        "cmru-v1.2.0-rc.1": "a" * 40,
+        "cmru-v1.0.0": "b" * 40,
+        "cmru-v1.1.0": "c" * 40,
+    }
+    monkeypatch.setattr(prepare_assay_baseline, "_remote_tag_commits", lambda *_args: tags)
+
+    latest, observed = prepare_assay_baseline.published_release_state(
+        tmp_path, git_auth=object(),
+    )
+
+    assert latest == "cmru-v1.1.0"
+    assert observed == tags
+
+
+def test_published_release_state_accepts_only_successfully_observed_empty_origin_as_first_release(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(prepare_assay_baseline, "_remote_tag_commits", lambda *_args: {})
+    assert prepare_assay_baseline.published_release_state(
+        tmp_path, git_auth=object(),
+    ) == (None, {})
+
+    def unavailable(*_args):
+        raise RuntimeError("cannot list CMRU release tags on origin")
+
+    monkeypatch.setattr(prepare_assay_baseline, "_remote_tag_commits", unavailable)
+    import pytest
+    with pytest.raises(RuntimeError, match="cannot list CMRU release tags on origin"):
+        prepare_assay_baseline.published_release_state(tmp_path, git_auth=object())
+
+
 def test_remote_tag_listing_refuses_malformed_or_conflicting_records(
     monkeypatch, tmp_path,
 ):

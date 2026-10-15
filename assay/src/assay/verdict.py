@@ -382,7 +382,8 @@ __all__ = [
 #: names absent at run time. Present passthrough values are redacted in
 #: `env_effective` and fingerprinted in `env_effective_passthrough_sha256`.
 #: Native R2 outcomes also carry cgroup v2 process-limit and OOM event deltas;
-#: any positive delta must be classified as `crashed`. These v14 additions
+#: positive failed-fork or OOM-related deltas must be classified as `crashed`,
+#: while `memory.events:max` is retained as telemetry. These v14 additions
 #: ship together before the first v14 release; `assay verify` refuses v13.
 #:
 #: **Bumped 14 -> 15 (B114/B110 P3).** Native R2 policy records whether
@@ -1917,15 +1918,16 @@ class MutantOutcome:
     execution: MutationExecution | None = None
     #: (B145/schema v14) Exact cgroup v2 process-limit and OOM counter
     #: deltas observed around this native candidate's full command. A
-    #: positive delta during that command requires the `crashed` bucket; a
-    #: positive delta during witness-prefix replay instead stops the lane
-    #: with payload-free `ERROR/EXEC_FAILED` before retry. A `budget_exceeded`
-    #: candidate whose full command did not start carries the shared
-    #: zero-duration sweep-close sample. Replacement materialization or a
-    #: witness-prefix replay may already have run; that sample does not
+    #: positive failed-fork or OOM-related delta during that command requires
+    #: the `crashed` bucket; `memory.events:max` remains telemetry. A positive
+    #: failed-fork or OOM-related delta during witness-prefix replay instead
+    #: stops the lane with payload-free `ERROR/EXEC_FAILED` before retry. A
+    #: `budget_exceeded` candidate whose full command did not start carries
+    #: the shared zero-duration sweep-close sample. Replacement materialization
+    #: or a witness-prefix replay may already have run; that sample does not
     #: describe the earlier work. Native outcomes always carry this object,
-    #: including zero deltas. Ingested outcomes have no per-candidate
-    #: execution and therefore cannot carry this field.
+    #: including zero deltas. Ingested outcomes have no per-candidate execution
+    #: and therefore cannot carry this field.
     resource_limit_evidence: ResourceLimitEvidence | None = None
     #: B162/schema v16: process-tree proof for each native executed candidate.
     process_tree_evidence: ProcessTreeEvidence | None = None

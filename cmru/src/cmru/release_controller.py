@@ -12,14 +12,8 @@ from typing import Mapping
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
-def release_controller_identity(module_path: Path) -> Mapping[str, str]:
-    """Require CMRU's release code to come from an intact, non-editable wheel.
-
-    The release verb starts a second CMRU process inside its retained candidate
-    worktree. Binding the running module to an installed wheel makes the
-    controller reproducible across that re-exec and records its identity in
-    both the caller and transaction logs.
-    """
+def installed_release_controller_identity() -> Mapping[str, str]:
+    """Return the identity of the installed, intact, non-editable CMRU wheel."""
     try:
         installed = distribution("cmru")
     except PackageNotFoundError as exc:
@@ -29,15 +23,9 @@ def release_controller_identity(module_path: Path) -> Mapping[str, str]:
     if not files:
         raise RuntimeError("CMRU distribution has no installed file manifest")
     try:
-        running_module = module_path.resolve(strict=True)
         installed_module = Path(installed.locate_file("cmru/cli.py")).resolve(strict=True)
     except OSError as exc:
         raise RuntimeError(f"cannot resolve the installed CMRU CLI module: {exc}") from exc
-    if running_module != installed_module:
-        raise RuntimeError(
-            "CMRU release must run from its installed wheel; the active CLI module "
-            f"is {running_module}, while the distribution module is {installed_module}"
-        )
 
     direct_url_text = installed.read_text("direct_url.json")
     if direct_url_text is None:
@@ -94,5 +82,21 @@ def release_controller_identity(module_path: Path) -> Mapping[str, str]:
         "version": installed.version,
         "wheel_sha256": wheel_sha256,
         "distribution_sha256": digest.hexdigest(),
-        "module_path": str(running_module),
+        "module_path": str(installed_module),
     }
+
+
+def release_controller_identity(module_path: Path) -> Mapping[str, str]:
+    """Require the active release controller to be the installed CMRU wheel."""
+    identity = installed_release_controller_identity()
+    try:
+        running_module = module_path.resolve(strict=True)
+    except OSError as exc:
+        raise RuntimeError(f"cannot resolve the active CMRU CLI module: {exc}") from exc
+    installed_module = Path(identity["module_path"])
+    if running_module != installed_module:
+        raise RuntimeError(
+            "CMRU release must run from its installed wheel; the active CLI module "
+            f"is {running_module}, while the distribution module is {installed_module}"
+        )
+    return identity

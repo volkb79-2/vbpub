@@ -271,7 +271,6 @@ def _install(args: Any, runtime: Any) -> int:
     # just stage one. Host inspection and the plan preview used to sit
     # outside it, so an invalid-but-parseable config died silently.
     with installer.failure_guard("stage1"):
-        installer._refuse_completed_install()
         installer.inspect()
         plan = installer.show_plan()
     if not actions.dry_run:

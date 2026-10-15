@@ -205,11 +205,20 @@ def test_cli_native_logging_and_candidate_integrity_edges(tmp_path, monkeypatch)
 
     monkeypatch.setattr(cli, "_git", lambda *_args: "actual")
     with pytest.raises(RuntimeError, match="moved HEAD"):
-        cli._assert_release_candidate_unchanged(tmp_path, "demo", "expected")
+        cli._assert_release_candidate_unchanged(
+            tmp_path, "demo", "expected", phase="after build",
+        )
     monkeypatch.setattr(cli, "_git", lambda *_args: "same")
-    monkeypatch.setattr(cli, "_worktree_changed_paths", lambda *_args: ["tracked.txt"])
+    monkeypatch.setattr(
+        cli, "_assert_release_gate_source_matches_commit",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("candidate source after build has non-ignored changes")
+        ),
+    )
     with pytest.raises(RuntimeError, match="non-ignored changes"):
-        cli._assert_release_candidate_unchanged(tmp_path, "demo", "same")
+        cli._assert_release_candidate_unchanged(
+            tmp_path, "demo", "same", phase="after build",
+        )
 
     marker = object()
     monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: marker)

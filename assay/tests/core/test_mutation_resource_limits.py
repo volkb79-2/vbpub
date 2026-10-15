@@ -826,11 +826,10 @@ def test_ingested_outcome_cannot_claim_local_resource_evidence():
     "evidence",
     [
         _evidence(pids=(0, 1)),
-        _evidence(memory_max=(0, 1)),
         _evidence(oom=(0, 1)),
     ],
 )
-def test_raw_verifier_rejects_a_positive_counter_delta_in_killed(evidence):
+def test_raw_verifier_rejects_a_positive_limit_counter_delta_in_killed(evidence):
     entry = native_outcome(
         path="src/mod.py",
         lineno=1,
@@ -846,8 +845,27 @@ def test_raw_verifier_rejects_a_positive_counter_delta_in_killed(evidence):
     _check_b145_resource_limit_evidence("killed", entry, failures)
 
     assert any(
-        "positive cgroup resource-limit counter delta" in item for item in failures
+        "positive failed-fork or OOM counter delta" in item for item in failures
     )
+
+
+@pytest.mark.parametrize("bucket", ["killed", "survived"])
+def test_raw_verifier_accepts_positive_memory_max_telemetry(bucket):
+    entry = native_outcome(
+        path="src/mod.py",
+        lineno=1,
+        start_byte=0,
+        end_byte=1,
+        replacement_sha256="a" * 64,
+        operator="python:compare-swap",
+        description="x < y",
+    ).to_dict()
+    entry["resource_limit_evidence"] = _evidence(memory_max=(0, 1)).to_dict()
+    failures: list[str] = []
+
+    _check_b145_resource_limit_evidence(bucket, entry, failures)
+
+    assert failures == []
 
 
 def test_raw_verifier_accepts_a_positive_counter_delta_in_crashed():

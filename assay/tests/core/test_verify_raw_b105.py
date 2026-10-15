@@ -786,6 +786,17 @@ def test_raw_reconstructor_reaches_optional_judge_and_helper_fields():
     assert raw_verify.verify_document(document) == []
 
 
+def test_verify_document_accepts_positive_memory_max_telemetry_in_killed():
+    fixture = TESTS_ROOT / "fixtures" / "verdicts" / "r2_pass.json"
+    document = json.loads(fixture.read_text(encoding="utf-8"))
+    counter = document["claims"][0]["mutation"]["killed"][0][
+        "resource_limit_evidence"
+    ]["memory_events"]["max"]
+    counter.update(before=0, after=1, delta=1)
+
+    assert raw_verify.verify_document(document) == []
+
+
 def test_raw_outcome_owner_reports_an_unassigned_reason_if_the_catalog_drifts(
     monkeypatch,
 ):

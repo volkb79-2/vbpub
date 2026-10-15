@@ -255,6 +255,19 @@ bound launcher (`cmru standards` flags the module form). `python -m cmru.bundle`
 cmru.runner`, and module aliases for the three operator scripts are retired;
 they now refuse with a pointer to the supported command or library API.
 
+The first CMRU wheel can be built before either CMRU or `cli-extended` has a
+release. `build-initial-standalone.sh` has an explicit source mode that builds
+`cli-extended` from the same checkout at CMRU's declared runtime floor and
+marks it `+bootstrap.source`. The standalone wheel-builder uses Microsoft's
+upstream Python base, so this bootstrap does not depend on MDT's published
+image. The bootstrap verifies the builder image's dedicated label and
+rebuilds a missing or mismatched tag from this Dockerfile, rather than
+mistaking an unrelated local tag for the builder. In a checkout with no CMRU tag, the operator supplies a temporary local
+version for the bootstrap controller; that version is not a release tag or
+published artifact. The graph keeps actual package and release-gate prerequisites separate
+from the source-built CMRU controller used to run other projects' release
+commands. See the [zero-release procedure](../../docs/BOOTSTRAP-FROM-ZERO.md).
+
 The reusable `cmru.bundle.run_bundle` and `cmru.runner.run_step` functions
 remain supported Python APIs. PWMCP consumes the bundle API, and MDT's
 `build-push.py` consumes the runner API. Use `cmru run --step NAME` for a direct operator invocation. CMRU does
@@ -451,6 +464,17 @@ lookup. Publication must use the supported `cmru release` workflow.
 The values are reserved so project configuration cannot replace the identity
 CMRU supplies to tagged artifact steps.
 
+The release gate also receives the selected commit as the protected
+`CMRU_RELEASE_GATE_COMMIT`. This lets a package prepare a commit-bound test
+receipt before CMRU assigns a release tag. CMRU clears ambient values of this
+name on ordinary steps and refuses project configuration that tries to set it.
+
+CMRU also rechecks the candidate source around every gate, build, and publish
+step. `git status` alone is insufficient because `assume-unchanged` and
+`skip-worktree` index flags can hide modified files. CMRU refuses those flags
+and compares tracked file bytes and modes with the candidate commit before it
+trusts a step; ignored logs and generated artifacts remain permitted.
+
 ## Git transport authentication
 
 The repository-root credential also covers CMRU's own GitHub HTTPS reads and writes. A release
@@ -578,6 +602,26 @@ observation; the current command lanes declare resource ceilings but do not
 collect event evidence. Declaring an observer on a lane with no observer client
 would add a daemon dependency without detecting OOM or process-limit events, so
 KI-77 tracks actual event capture for those lanes before they opt in.
+
+### First release has no historical diff baseline
+
+A first stable release has no previous release commit to use for changed-source
+R1 or tag-based R2. The gate queries origin through CMRU's credential-scoped
+Git transport and distinguishes a successful empty stable-tag list from a
+failed query. Only the former selects the registered whole-source
+`cmru-first-release` Assay lane, and only inside the protected CMRU release
+transaction whose candidate SHA matches HEAD. The lane names every tracked
+production module explicitly and is checked against the source tree, so an
+added module cannot silently fall outside the claim. The gate does not invent
+a baseline from `main`, a local-only tag, or another project's release.
+
+The first-release R2 campaign remains a separate, explicit whole-source
+follow-up. The release marker points to `run-gate assay-first-release-r2`, which
+uses the same declared source list and does not need a previous tag. This keeps
+the release claim honest while allowing the long mutation campaign to run
+after the first stable tag exists. Once a stable CMRU release is published,
+subsequent release candidates return to the normal pinned R1 and tag-based R2
+paths.
 
 #### Mutation process-tree isolation
 

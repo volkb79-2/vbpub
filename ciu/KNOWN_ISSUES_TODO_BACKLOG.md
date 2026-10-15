@@ -585,8 +585,11 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-134 | Worktree removal can finish `ciu clean` and then fail deleting the checkout due to protected descendants, leaving a partial Git/CIU lifecycle state with no supported root-assisted retry | High | OPEN — add permission-specific, consented retry through the existing S6.5 helper and truthful partial-state reporting |
 | CIU-135 | Managed worktree overlay recovery, reset retries, network ownership, and explicit `ensure` constraints can be ambiguous or silently ignored | Medium | OPEN — implementation now folds Review 05 recovery, startup, root-selection, and final-network-check findings; registered gate and final review remain |
 | CIU-136 | `ciu resolve` does not report live attached networks, aliases, derived URLs, or a nonzero status for an absent service | Medium | OPEN — extend the existing service-discovery follow-up from CIU-118 / nyxloom NL-38 |
+| CIU-137 | `ciu clean` can delete host data after failed Compose teardown or follow a symlinked `vol-*` path outside the stack | High | IN PROGRESS — exact-project inspection and stack-contained path checks are implemented; registered gate pending |
+| CIU-138 | Worktree removal cleans only the selected nested CIU root before deleting a checkout containing other committed roots | High | OPEN — clean every exact committed root under its own identity; preserve checkout and records on any incomplete clean |
 | CIU-139 | `ciu resolve --root-folder P` (and likely `ciu exec`) does not seed its environment from P's instance record, so an unprimed shell fails with missing `INSTANCE_ID`/`REPO_ROOT`/... while `ciu env print --root-folder P` succeeds | Medium | OPEN (filed 2026-10-15, dstdns deep review C04 F06) |
 | CIU-140 | Private locked env generation prints a traceback for expected workspace errors | Low | IN PROGRESS — candidate fix and regression test; registered CIU gate and final review pending |
+| CIU-141 | No stack-scoped one-shot `ciu run`; gate lanes must reuse a persistent service or launch containers outside CIU's rendered network/secrets/mount/cgroup/user contract | Medium | OPEN — proposed v7 package after the current release wave; exact lifecycle and Run-Gate identity handoff contract required |
 | CIU-142 | A managed worktree that is rebased keeps its spent `fork_point_sha` in `ciu.worktree-instance.json`, and no `ciu worktree` verb re-records it, so run-gate's derived base (SPEC R-35a: merge-base must equal the recorded fork point) refuses `NOT_RUN no-base` and every later gate needs a hand-passed `--base` | Medium | OPEN (filed 2026-10-15, dstdns P242, ciu 7.16.0) |
 
 
@@ -4464,9 +4467,10 @@ stack root; show the minimum config and `ciu init`/`ciu up` sequence; use the
 generated environment export; demonstrate read-only input and writable output
 mounts; and explain how to find and run a command in the selected service.
 Clarify the boundary between a normal project bridge with no published ports
-and Docker's stricter `--internal` network mode. If ordinary stacks need a
-supported stack-scoped one-shot `exec` command, record that as a separate
-product/API decision rather than making consumers depend on Docker labels.
+and Docker's stricter `--internal` network mode. The stack-scoped one-shot
+`ciu run` product/API decision is now tracked separately as CIU-141; this
+recipe should use that supported command once it ships rather than making
+consumers depend on Docker labels.
 
 The gap surfaced while preparing an MDB inspection stack in
 `mh-access-to-web`; the workflow succeeded using CIU 7.15.0 and a small
@@ -5291,6 +5295,30 @@ additional findings from the final follow-up review; all are folded into the
 isolated implementation and regression oracles. The exact candidate still
 needs its registered CIU gate and a final read-only review before merge.
 
+## CIU-137 — `ciu clean` must prove teardown and host-path safety before deleting data
+
+**Status:** implementation and focused regressions are in the integrated release candidate; registered CIU gate and final review pending. Severity: high (cleanup can erase a bind-mounted data directory while a service remains active).
+
+**Observed:** `docker compose down` failure was logged as a warning, after which CIU deleted `vol-*` host directories and rendered configuration. A nonzero teardown can leave project containers running against those directories. Separately, `_rmtree_with_fallback` resolves a symlinked `vol-*` path to its target before invoking the root helper, so a link inside a stack could widen deletion to an unrelated host directory.
+
+**Required contract:** after a failed Compose teardown, CIU may continue only when an exact `com.docker.compose.project=<project>` container query succeeds and returns no containers. A remaining container, failed query, or unavailable Docker daemon must stop before host-directory and rendered-config deletion. Before deleting volume directories, CIU refuses symlinked `vol-*` entries and verifies every resolved target remains under the resolved stack directory. Errors name the project/path and state which cleanup data was preserved.
+
+**Oracles:** (1) a stale project with no containers is allowed to continue after a successful exact-label query; (2) one remaining container stops cleanup and preserves host data/config; (3) an inspection error is indeterminate, stops cleanup, and preserves both; (4) a `vol-*` symlink to an external directory is refused without invoking the root helper or deleting the target; (5) ordinary in-stack directories still use the existing native/DooD removal path.
+
+**File list:** `src/ciu/engine.py`, focused reset tests, `README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `docs/SPEC.md`, and this backlog.
+
+## CIU-138 — worktree removal must clean every committed nested CIU root
+
+**Status:** open; found in the 2026-10-15 broad release review. Severity: high (other nested stacks can keep containers and host data after their checkout is removed).
+
+**Observed:** worktree allocation prepares every committed nested CIU root, while removal currently invokes `ciu clean` only for the selected root (or skips clean for a rootless family record) before deleting the whole checkout.
+
+**Required contract:** discover the committed roots from the exact target worktree HEAD; verify each root's identity and clean it under its own environment. Any discovery, identity, or cleanup failure must preserve the checkout and lifecycle records. Release only the lease for a root whose clean succeeded. A truly rootless checkout remains removable without inventing a root.
+
+**Oracles:** (1) two committed roots both receive cleanup before shared Git removal; (2) a sibling-root failure preserves checkout and records while reporting prior successful roots; (3) an unreadable or mismatched root refuses before deleting any checkout; (4) a rootless managed worktree still removes without invoking a guessed cleanup.
+
+**File list:** `src/ciu/worktree.py`, worktree lifecycle tests, `README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `docs/SPEC.md`, and this backlog.
+
 ## CIU-139 — `ciu resolve --root-folder` does not seed its environment from the selected checkout's instance record
 
 **Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (auditor C04, finding F06), ciu 7.16.0. Severity Medium. Related to the CIU-118 follow-up (branch-local entry "service-discovery gaps in `ciu resolve`", whose Gap 4 measured results only "with the primed environment").
@@ -5319,6 +5347,22 @@ fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, D
 **Chosen behavior:** route the private child through a private helper that catches only `WorkspaceEnvError`, prints the same concise error form as the CLI, and returns exit 1. Unexpected programming errors still retain their traceback.
 
 **Oracle:** a focused test forces `WorkspaceEnvError` through the private helper and asserts the exact stderr line and exit code; a neighboring test verifies the allocation-lock bypass remains private and does not add a user-facing CLI flag.
+
+## CIU-141 — Run one command in a fresh container from a rendered CIU service
+
+**Status:** OPEN — proposed v7 package after the current release wave. Severity: Medium. Type: feature. Spec owners: S10.8 (CLI surface), S8 (Compose execution). Related: CIU-113 (consumer recipe), CIU-118 (`resolve`/`exec`), CIU-139 (root-scoped environment), RG-99 and RG-102.
+
+**Observed.** CIU v7 can resolve and `exec` into an already-running service, while `ciu up` starts its declared service persistently. A test-runner does not need to stay up between lanes: its existing Compose service declaration already carries the instance network, CIU-rendered secrets, mounts (including dstdns P242's state volume), cgroup parent and user. Launching each lane with `docker compose run --rm` can use that same declaration to create a uniquely named, one-shot container for one lane and remove it on completion. Keeping a shared runner alive creates avoidable shared `/tmp`, process-reaping and cross-lane-state risks.
+
+**Why CIU owns it.** The service declaration and its rendered environment are CIU's authority. A consumer-side `docker compose run` wrapper would repeat root/profile selection, compose-project naming, secret rendering and network/cgroup setup. `ciu run` is a v7 lifecycle primitive: it does not require cross-instance bindings, byte-budget admission, or the v8 realization graph. The v8 gate environment should build on this primitive rather than replace it.
+
+**Proposed contract.** Add `ciu run [--root-folder P] [--profile NAME ...] <stack>[:<service>] -- ARGV...`. Resolve the exact selected root, instance record, profile and rendered Compose service using CIU's existing source of truth; support an unprimed shell by deriving identity from that selected root's record (coordinate with CIU-139). Pass the command as argv without a shell and return its exact exit status. For ordinary foreground use, use Compose's one-shot `run --rm` lifecycle with a unique container identity; the selected service's declared user, network, secrets, mounts, working directory and cgroup placement remain authoritative. A missing or ambiguous service refuses before launch; omitted service selection may proceed only if the selected stack resolves to exactly one runnable service. The operation must not require the test-runner service itself to be `up`. Define whether dependencies are started or suppressed, whether service aliases or published ports are needed, and how signals and TTY behavior map to Compose; do not silently invent different lifecycle semantics.
+
+**Run-Gate handoff.** CIU remains the container launcher and lifecycle owner; Run-Gate owns the lane argv, deadlines, state-root preflight, verdict mapping, evidence and cgprofile observer session. For observer-aware callers, CIU must send lifecycle records over a dedicated machine-readable channel (for example, JSONL on an explicitly selected file descriptor), never mixed with lane stdout/stderr. The protocol must report the exact container ID as soon as it is known, then the raw command status and cleanup result. Run-Gate must not infer identity from stdout, container-name substrings, or a later best-effort search. The observed detached path must keep the container until CIU has collected its raw status and Run-Gate has stopped the observer, then remove it explicitly; Compose `--rm` cannot race ahead and erase the result. Specify recovery for a controller that dies before cleanup. A detached `compose run` by itself does not prove the observer has attached before a short lane exits: specify and test the start/observer ordering, including an immediate-exit command, before claiming R2 coverage from lane start. For RG-89/R2, the service declaration or a narrowly typed one-shot attachment must make the read-only observer socket available. This lifecycle event and observer boundary is the coupling-heavy acceptance requirement for RG-102.
+
+**Oracles.** (1) An unprimed `ciu run --root-folder P` resolves P's recorded identity and exact rendered service. (2) A fixture service with network, CIU secret, read-only and writable mounts, cgroup parent and non-root user retains all of them in the one-shot invocation. (3) Two concurrent invocations produce distinct container IDs and each reaches its own command body; each runs as the declared user, with no shared process or temporary directory. (4) Missing/ambiguous service, missing identity, render failure, and unavailable Docker refuse with named remedies before any lane body runs. (5) Child exit status, stdin/stdout/TTY behavior and interruption cleanup are preserved; secret values never appear in CIU output. (6) A live registered acceptance proves the one-shot attaches to the declared instance network, sees only CIU-rendered secrets, uses the declared mounts/cgroup/user, and is removed on success, failure and interruption. (7) A Run-Gate integration probe receives a structured exact-ID event, preserves the lane's output streams and raw status, and starts/stops the RG-89 observer without output scraping. (8) Include a very short or immediate-exit lane to prove the lifecycle event, observer attachment ordering, terminal status collection and cleanup cannot race; if sampling must cover work from its first instruction, the launch protocol must provide an explicit readiness barrier and demonstrate it in the live acceptance. (9) Kill the controller before cleanup and verify CIU can identify and safely reap the abandoned one-shot without affecting a concurrently running invocation.
+
+**File list.** `src/ciu/cli.py`, the CIU compose execution boundary in `src/ciu/engine.py`/`src/ciu/deploy.py`, `docs/SPEC.md` S10.8/S8, README, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `CHANGES.md`, this backlog, focused CLI/render/lifecycle tests and the registered CIU live acceptance lane. Coordinate the Run-Gate side through RG-102; do not merge only a consumer shell wrapper.
 
 ## CIU-142 — no way to re-record a managed worktree's fork point after a legitimate rebase
 

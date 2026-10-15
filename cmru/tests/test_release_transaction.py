@@ -169,15 +169,20 @@ def test_build_step_config_defaults_every_project_subprocess_to_quiet():
 
 def test_required_gate_runs_declared_command(tmp_path, monkeypatch):
     project = _project("alpha", steps={"run-tests": [object()]})
-    calls: list[tuple[str, Path]] = []
+    calls: list[tuple[str, Path, object]] = []
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "a" * 40)
     monkeypatch.setattr(
         cli, "run_project_step",
-        lambda _project, step, root, _logs: calls.append((step, root)),
+        lambda _project, step, root, _logs, **kwargs: calls.append(
+            (step, root, kwargs.get("protected_env")),
+        ),
     )
 
     cli._run_release_gates(tmp_path, {"alpha": project}, ["alpha"])
 
-    assert calls == [("run-tests", tmp_path)]
+    assert calls == [
+        ("run-tests", tmp_path, {"CMRU_RELEASE_GATE_COMMIT": "a" * 40}),
+    ]
 
 
 def test_prepare_commits_only_declared_generated_paths(tmp_path, monkeypatch):
@@ -2016,6 +2021,33 @@ def test_run_child_marks_process_as_transaction_child(tmp_path, monkeypatch):
     assert observed["cwd"] == workspace.path
     assert observed["env"][transaction.CHILD_ENV] == "1"
     assert observed["env"][transaction.BRANCH_ENV] == workspace.branch
+
+
+def test_run_child_passes_launcher_controller_identity_to_transaction(
+    tmp_path, monkeypatch,
+):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "release", "cmru-release-identity", "b" * 40,
+    )
+    identity = {
+        "version": "6.2.0",
+        "wheel_sha256": "a" * 64,
+        "distribution_sha256": "c" * 64,
+    }
+    observed = {}
+
+    def fake_run(_command, **kwargs):
+        observed.update(kwargs["env"])
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(transaction.subprocess, "run", fake_run)
+    assert transaction.run_child(
+        workspace, ["demo"], controller_identity=identity,
+    ) == 0
+
+    assert observed[transaction.RELEASE_CONTROLLER_VERSION_ENV] == "6.2.0"
+    assert observed[transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV] == "a" * 64
+    assert observed[transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV] == "c" * 64
 
 
 def test_resume_requires_operator_fixes_to_be_committed_on_retained_branch():
