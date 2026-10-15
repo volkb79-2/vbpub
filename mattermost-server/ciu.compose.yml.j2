@@ -219,13 +219,10 @@ services:
       # secret.
       MM_SERVICESETTINGS_ENABLEMULTIFACTORAUTHENTICATION: "true"
       MM_SERVICESETTINGS_ENFORCEMULTIFACTORAUTHENTICATION: "false"
-      # EnableSecurityFixAlert defaults TRUE and is a telemetry channel —
-      # it reports this server's version and deployment shape to Mattermost.
-      # The README already claims "no telemetry" and MM_LOGSETTINGS_
-      # ENABLEDIAGNOSTICS is already false; leaving this one on made that
-      # claim untrue. The cost is stated rather than hidden: nobody will mail
-      # this instance about a CVE, so the image tag is the operator's only
-      # notification channel and bumping it stays a deliberate act.
+      # EnableSecurityFixAlert defaults TRUE and sends a daily server summary
+      # for Mattermost's security-fix alerts. This opt-out keeps that metadata
+      # path disabled. The cost is explicit: this instance receives no such
+      # alerts, and no SMTP is configured for email notifications.
       MM_SERVICESETTINGS_ENABLESECURITYFIXALERT: "false"
       # ── Directory disclosure (PrivacySettings) ──────────────────────────
       # Both default TRUE. Measured consequence: any authenticated account —
@@ -288,14 +285,22 @@ services:
       # `ciu.defaults.toml.j2`'s `enable_file_attachments` for the full
       # reasoning, including the named-volume residual it leaves open).
       MM_FILESETTINGS_ENABLEFILEATTACHMENTS: "{{ 'true' if mattermost.enable_file_attachments else 'false' }}"
-      # The whole plugin framework is off: the image ships prepackaged
-      # plugins (playbooks, the AI agent) that start their own processes and
-      # run their own DB migrations on first boot — none of which a
-      # notification sink needs, all of which are charged to this
-      # container's 2g memory cgroup on a shared host.
-      MM_PLUGINSETTINGS_ENABLE: "false"
+      # Calls is the only enabled plugin. Explicit states prevent bundled
+      # integrations, Playbooks, AI, and the usage-survey plugin from being
+      # enabled when the framework is turned on for Calls.
+      MM_PLUGINSETTINGS_ENABLE: "{{ 'true' if mattermost.calls.enabled else 'false' }}"
+      MM_PLUGINSETTINGS_PLUGINSTATES: '{"com.mattermost.calls":{"Enable":{{ "true" if mattermost.calls.enabled else "false" }}} ,"playbooks":{"Enable":false},"mattermost-ai":{"Enable":false},"focalboard":{"Enable":false},"com.mattermost.plugin-channel-export":{"Enable":false},"github":{"Enable":false},"com.github.manland.mattermost-plugin-gitlab":{"Enable":false},"jira":{"Enable":false},"com.mattermost.mattermost-plugin-metrics":{"Enable":false},"com.mattermost.mscalendar":{"Enable":false},"com.mattermost.msteamsmeetings":{"Enable":false},"mattermost-plugin-servicenow":{"Enable":false},"com.mattermost.user-survey":{"Enable":false},"zoom":{"Enable":false}}'
       MM_PLUGINSETTINGS_ENABLEUPLOADS: "false"
       MM_PLUGINSETTINGS_ENABLEMARKETPLACE: "false"
+      MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE: "false"
+{% if mattermost.calls.enabled %}
+      MM_CALLS_DEFAULT_ENABLED: "true"
+      MM_CALLS_ALLOW_SCREEN_SHARING: "{{ 'true' if mattermost.calls.allow_screen_sharing else 'false' }}"
+      MM_CALLS_UDP_SERVER_PORT: "{{ mattermost.calls.port }}"
+      MM_CALLS_TCP_SERVER_PORT: "{{ mattermost.calls.port }}"
+      MM_CALLS_ICE_HOST_OVERRIDE: "{{ mattermost.public_host }}"
+      MM_CALLS_ICE_HOST_PORT_OVERRIDE: "{{ mattermost.calls.public_port }}"
+{% endif %}
       MM_LOGSETTINGS_ENABLEDIAGNOSTICS: "false"
       MM_LOGSETTINGS_CONSOLELEVEL: "INFO"
     volumes:
@@ -322,15 +327,18 @@ services:
       #         here (residual, stated not buried — see the flag's own
       #         comment in ciu.defaults.toml.j2).
       - mattermost-data:/mattermost/data
-      #   plugins / client-plugins: the plugin framework is off entirely
-      #         (MM_PLUGINSETTINGS_ENABLE=false). These two exist ONLY because
-      #         the image declares VOLUME on both paths — dropping them would
-      #         hand Docker two anonymous volumes per recreate instead. Named
-      #         volumes, deliberately.
+      #   plugins / client-plugins: these exist because the image declares
+      #         VOLUME on both paths — dropping them would hand Docker two
+      #         anonymous volumes per recreate. Only Calls is enabled; the
+      #         explicit plugin-state map disables the other bundled IDs.
       - mattermost-plugins:/mattermost/plugins
       - mattermost-client-plugins:/mattermost/client/plugins
     expose:
       - "{{ mattermost.app.port }}"
+{% if mattermost.calls.enabled %}
+      - "{{ mattermost.calls.port }}/tcp"
+      - "{{ mattermost.calls.port }}/udp"
+{% endif %}
     networks:
       - internal
 {% if mattermost.expose_public %}
@@ -352,6 +360,17 @@ services:
       traefik.http.routers.nyxloom-mattermost.rule: "Host(`{{ mattermost.public_host }}`)"
       traefik.http.routers.nyxloom-mattermost.entrypoints: "websecure"
       traefik.http.services.nyxloom-mattermost.loadbalancer.server.port: "{{ mattermost.app.port }}"
+{% if mattermost.calls.enabled %}
+      # Calls media is raw L4 traffic, not HTTPS. Route the TCP fallback and
+      # UDP media transport to the plugin's in-container listener.
+      traefik.tcp.routers.nyxloom-mattermost-calls-tcp.rule: "HostSNI(`*`)"
+      traefik.tcp.routers.nyxloom-mattermost-calls-tcp.entrypoints: "mattermost-calls-tcp"
+      traefik.tcp.routers.nyxloom-mattermost-calls-tcp.service: "nyxloom-mattermost-calls-tcp"
+      traefik.tcp.services.nyxloom-mattermost-calls-tcp.loadbalancer.server.port: "{{ mattermost.calls.port }}"
+      traefik.udp.routers.nyxloom-mattermost-calls-udp.entrypoints: "mattermost-calls-udp"
+      traefik.udp.routers.nyxloom-mattermost-calls-udp.service: "nyxloom-mattermost-calls-udp"
+      traefik.udp.services.nyxloom-mattermost-calls-udp.loadbalancer.server.port: "{{ mattermost.calls.port }}"
+{% endif %}
 {% endif %}
     logging:
       driver: json-file

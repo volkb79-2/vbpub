@@ -10,8 +10,10 @@ read from) nyxloom's Mattermost instance — `scripts/netcup` /
 
 - Public URL: `https://mattermost.gstammtisch.dchive.de` (valid Let's Encrypt
   cert, HTTP/2, rate-limited).
-- Self-hosted Mattermost Team Edition, dedicated to nyxloom. No marketplace,
-  no plugins, no OAuth2 provider, no email/SMTP, no self-signup.
+- Self-hosted Mattermost Team Edition, dedicated to nyxloom. Calls is the only
+  enabled bundled plugin; Marketplace access and plugin uploads are disabled.
+  There is no OAuth2 provider, email/SMTP, or public self-signup. See the
+  [Calls consumer guide](docs/CONSUMERS.md).
 - Every producer gets its **own account**, scoped to exactly the channel(s)
   it needs — never a shared credential, never `nyxloom-operator`/
   `nyxloom-admin` (those are human/bootstrap accounts and are never handed

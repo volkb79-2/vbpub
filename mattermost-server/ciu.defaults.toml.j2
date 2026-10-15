@@ -17,27 +17,12 @@
 name = "mattermost"
 container_prefix = "{% if deploy is defined %}{{ deploy.project_name }}-{{ deploy.environment_tag }}{% else %}mattermost{% endif %}"
 
-# ── Network exposure — DELIBERATELY OFF BY DEFAULT ──────────────────────
-# false: no tls-edge router labels, no ingress_public join, no host ports —
-# the stack is reachable only from its own private bridge network. This is
-# the safe default for a NEW public endpoint nobody has confirmed yet; it
-# is also enough for nyxloom's own delivery path once nyxloomd runs on the
-# same network, since the incoming webhook is a plain HTTP POST.
-# true: publishes `public_host` through tls-edge exactly like ntfy does
-# (needed for mobile/desktop clients and off-host browser access — the same
-# reason ntfy had to be publicly reachable). Flipping it is an operator
-# decision: the hostname must exist in DNS (the wildcard A record covers
-# it) and Mattermost then faces the internet with the locked-down posture
-# below (no open server, no self-signup, no attachments, no plugin
-# uploads/marketplace) plus nyxloom-P110's hardening (no OAuth2 provider,
-# 168h web sessions, rate limiting keyed on X-Forwarded-For, no email/full
-# name disclosure). Personal access tokens are NO LONGER part of that list:
-# they were enabled in the same cutover for the intake bridge's `rest`
-# transport -- see `enable_user_access_tokens` below for what that widens.
-#
-# TRUE as of the 2026-09-09 go-public cutover (README.md "Going public",
-# step 3), executed after steps 0-2b landed the hardening and closed
-# `alerts`. Reversible on its own: set false and `ciu up`.
+# ── Public endpoint, privately managed membership ───────────────────────
+# `expose_public` controls network reachability, not account creation. This
+# instance is reachable over HTTPS from outside the host so our clients can
+# use it; Mattermost user creation over the API is disabled below and the
+# CIU hook provisions accounts. We mint and distribute the users and
+# credentials ourselves.
 expose_public = true
 # Public hostname routed by tls-edge when expose_public = true. Same domain
 # convention as ntfy's nyxloom.{{ env.PUBLIC_FQDN }}.
@@ -111,6 +96,15 @@ image = "mattermost/mattermost-team-edition"
 image_tag = "11.10.1"
 # In-container HTTP port; never published on the host.
 port = 8065
+
+[mattermost.calls]
+# Built-in Calls is the only bundled plugin enabled for this instance. Its
+# media listeners remain inside Mattermost; tls-edge publishes them over
+# TCP and UDP on the configured public port.
+enabled = true
+port = 8443
+public_port = 8443
+allow_screen_sharing = true
 
 # ── Bind-mounted hostdirs (S6.1/S6.3/S6.7(a)) — nyxloom-P107 ────────────────
 # `path = ""` auto-generates <stack>/vol-mattermost-<purpose>, which is what
@@ -426,10 +420,9 @@ channel = "installs"
 user = "nyxloom-installer"
 display_name = "host-installer"
 description = "scripts/netcup + debian-install-v2 host installation progress"
-# Tracks MM_SERVICESETTINGS_SITEURL. While `expose_public = false` that is the
-# internal address, so this URL is NOT yet reachable from an install host —
-# the credential is provisioned and waiting, and becomes usable in the same
-# edit that flips `expose_public`. Said out loud in the README too.
+# Tracks MM_SERVICESETTINGS_SITEURL. With this stack's public HTTPS endpoint,
+# it is reachable from install hosts; the internal URL is used only if
+# exposure is deliberately disabled.
 url_base = "siteurl"
 
 # nyxloom-P109 (B9): the intake bridge's REPLY path. Three webhooks now, and

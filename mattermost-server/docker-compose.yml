@@ -39,7 +39,8 @@
 # The remaining three named volumes (mattermost-data / -plugins /
 # -client-plugins) DO still diverge by compose project — nyxloom-mattermost_*
 # here vs <container_prefix>-mattermost_* under ciu. mattermost-plugins /
-# -client-plugins are empty in practice (the plugin framework is disabled);
+# -client-plugins are empty in practice in this legacy fallback (the plugin
+# framework is disabled here; the supported CIU deployment enables Calls);
 # mattermost-data is NOT — file attachments are enabled (nyxloom-P111) and
 # the ciu path's copy holds real uploads. The divergence is recorded rather
 # than fixed because a from-scratch fallback run starts with its own empty
@@ -181,8 +182,8 @@ services:
       #    this pre-rendered fallback carries the SAME values by hand, the
       #    same way it carries governance caps by hand — and drifting apart
       #    is the same trap NL-6 was.
-      #    Rendered for expose_public = false (no proxy in front), which is
-      #    why VARYBYREMOTEADDR is "true" and VARYBYHEADER is absent.
+      #    This legacy fallback has no proxy in front, which is why
+      #    VARYBYREMOTEADDR is "true" and VARYBYHEADER is absent.
       MM_SERVICESETTINGS_ENABLEOAUTHSERVICEPROVIDER: "false"
       MM_SERVICESETTINGS_ENABLEAPITEAMDELETION: "false"
       MM_SERVICESETTINGS_ENABLEAPIUSERDELETION: "false"

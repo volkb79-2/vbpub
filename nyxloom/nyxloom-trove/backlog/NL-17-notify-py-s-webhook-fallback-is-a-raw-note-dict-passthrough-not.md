@@ -3,11 +3,13 @@ kind: backlog-entry
 schema_version: 1
 id: NL-17
 title: "notify.py's webhook fallback is a raw note-dict passthrough, not a per-backend adapter -- cannot actually target Mattermost/Slack today"
-status: open
+status: obsolete
 type: "feature"
 severity: "low"
 provenance: "operator request, live session 2026-09-08, during nyxloom-P103 ntfy-redeploy follow-up"
 filed_date: "2026-09-08"
+closed_date: "2026-10-15"
+closed_reason: "Superseded by NL-45: operator direction on 2026-10-15 is to remove the generic [notify] configuration and notification subsystem from Nyxloom, so the adapter expansion request is no longer current."
 ---
 
 ## Observed mechanism and reproduction

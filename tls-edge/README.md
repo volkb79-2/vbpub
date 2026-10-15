@@ -1,12 +1,15 @@
 # tls-edge
 
 tls-edge provides TLS termination as a shared host service: one hardened
-Traefik v3 container terminates HTTPS (ports 443 + 8443; port 80 off by
-default) for all Docker Compose stacks on a host.  Consumers join the shared
-`ingress_public` network and declare four labels — TLS certificates are handled
-entirely by the edge, including automatic issuance and zero-downtime renewal via
-Let's Encrypt.  A docker-socket-proxy (POST denied) shields the Docker API from
-Traefik.
+Traefik v3 container handles HTTPS (ports 443 and 8443 by default; port 80
+off by default) for Docker Compose stacks on a host. Optional Mattermost Calls
+support adds raw TCP and UDP media forwarding on a configured public port.
+Consumers join the shared `ingress_public` network and declare labels — TLS
+certificates are handled by the edge, including automatic issuance and
+zero-downtime renewal via Let's Encrypt. A docker-socket-proxy (POST denied)
+shields the Docker API from Traefik. See the
+[Calls design guide](docs/DESIGN-GUIDE.md) and
+[consumer instructions](docs/CONSUMERS.md).
 
 ---
 
@@ -448,6 +451,9 @@ The tarball contains a single top-level directory `tls-edge-v<ver>/` so
 - **ARCHITECTURE.md** — full design rationale: network model, TLS strategy,
   proxy selection, socket security, container hardening, renewal mechanisms,
   future options.
+- **docs/DESIGN-GUIDE.md** — rationale for the optional TCP/UDP Calls listener.
+- **docs/CONSUMERS.md** — how to route a service's raw media protocols through
+  tls-edge and which firewall ports are needed.
 - **CONSUMER_GUIDE.md** — step-by-step onboarding for service teams: label
   reference, consumer patterns (A/B/C), verification commands.
 - **KNOWN_ISSUES_TODO_BACKLOG.md** — current limitations, workarounds, and roadmap items.

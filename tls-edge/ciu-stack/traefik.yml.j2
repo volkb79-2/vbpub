@@ -89,6 +89,16 @@ entryPoints:
 {% else %}
       tls: {}
 {% endif %}
+{% if tls_edge.calls.enabled %}
+
+  # Mattermost Calls media: UDP is preferred, TCP is the fallback. The
+  # public TCP port maps to a distinct container port because :8443/TCP is
+  # already the websecure-alt HTTPS entrypoint.
+  mattermost-calls-tcp:
+    address: ":{{ tls_edge.calls.tcp_internal_port }}"
+  mattermost-calls-udp:
+    address: ":{{ tls_edge.calls.udp_internal_port }}/udp"
+{% endif %}
 {% if acme %}
 
 # ─── ACME (Let's Encrypt) ─────────────────────────────────────────────────────
