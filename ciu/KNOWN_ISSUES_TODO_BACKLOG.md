@@ -587,6 +587,8 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-136 | `ciu resolve` does not report live attached networks, aliases, derived URLs, or a nonzero status for an absent service | Medium | OPEN — extend the existing service-discovery follow-up from CIU-118 / nyxloom NL-38 |
 | CIU-137 | `ciu clean` can delete host data after failed Compose teardown or follow a symlinked `vol-*` path outside the stack | High | IN PROGRESS — exact-project inspection and stack-contained path checks are implemented; registered gate pending |
 | CIU-138 | Worktree removal cleans only the selected nested CIU root before deleting a checkout containing other committed roots | High | OPEN — clean every exact committed root under its own identity; preserve checkout and records on any incomplete clean |
+| CIU-139 | `ciu resolve --root-folder P` (and likely `ciu exec`) does not seed its environment from P's instance record, so an unprimed shell fails with missing `INSTANCE_ID`/`REPO_ROOT`/... while `ciu env print --root-folder P` succeeds | Medium | OPEN (filed 2026-10-15, dstdns deep review C04 F06) |
+| CIU-140 | Private locked env generation prints a traceback for expected workspace errors | Low | IN PROGRESS — candidate fix and regression test; registered CIU gate and final review pending |
 
 
 The approved milestone decisions and serial package order are in
@@ -5290,7 +5292,7 @@ additional findings from the final follow-up review; all are folded into the
 isolated implementation and regression oracles. The exact candidate still
 needs its registered CIU gate and a final read-only review before merge.
 
-## CIU-136 — private locked env generation prints a traceback for expected workspace errors
+## CIU-140 — private locked env generation prints a traceback for expected workspace errors
 
 **Status:** fix and regression test in the 2026-10-14 release candidate; registered CIU gate and final review pending. Severity: low (diagnostic quality; the operation still fails closed).
 
@@ -5323,3 +5325,21 @@ needs its registered CIU gate and a final read-only review before merge.
 **Oracles:** (1) two committed roots both receive cleanup before shared Git removal; (2) a sibling-root failure preserves checkout and records while reporting prior successful roots; (3) an unreadable or mismatched root refuses before deleting any checkout; (4) a rootless managed worktree still removes without invoking a guessed cleanup.
 
 **File list:** `src/ciu/worktree.py`, worktree lifecycle tests, `README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `docs/SPEC.md`, and this backlog.
+## CIU-139 — `ciu resolve --root-folder` does not seed its environment from the selected checkout's instance record
+
+**Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (auditor C04, finding F06), ciu 7.16.0. Severity Medium. Related to the CIU-118 follow-up (branch-local entry "service-discovery gaps in `ciu resolve`", whose Gap 4 measured results only "with the primed environment").
+
+**Observed.** In an unprimed shell:
+
+```
+env -i HOME=$HOME PATH=$PATH ciu resolve --root-folder /workspaces/dstdns \
+  --profile test --stack tools/test-runner --service test-runner --json
+```
+
+fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, DOCKER_NETWORK_INTERNAL, INSTANCE_ID, PHYSICAL_REPO_ROOT, PUBLIC_FQDN, REPO_NAME, REPO_ROOT`. `ciu env print --root-folder /workspaces/dstdns` exits 0 in the same shell. This contradicts the S3.1b / consumer promise that ciu seeds its own environment from `ciu.instance.generated.toml` (dstdns D-645). The dstdns cutover branch wraps it (`scripts/ciu_resolve.py` `read_ciu_env()`), and the raw commands its docs show fail for any agent whose shell was not primed. `ciu exec` likely shares the render path (not run: it would execute in a live container).
+
+**Proposed contract.** `resolve` and `exec` seed from the selected root's instance record exactly as `up` and `env print` do; if the record is absent they refuse naming it and the verb that creates it.
+
+**Oracles.** Unprimed-shell `resolve --root-folder P` returns P's identities; run from an unrelated cwd it still resolves P (a cwd-seeded implementation fails this); with the record deleted it refuses with the remedy.
+
+**SPEC owner.** S3.1b (instance record), the CIU-118 resolve/exec contract.
