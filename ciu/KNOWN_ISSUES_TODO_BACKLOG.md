@@ -583,6 +583,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-132 | Outdated-identity guard blocks a stopped stack's data-preserving migration and is not told ownership drift or stale persisted hostnames | High | OPEN |
 | CIU-133 | `ciu up` hangs forever at "STEP 10/17 Resolving and materializing secrets" for a stack that IS its own ciu root (stack files in the root directory, the `mattermost/` and `pwmcp/` layout) when any GEN_LOCAL secret is declared. **Observed (2026-10-07, `ciu up --dir mattermost -y`):** `/proc/locks` listed the same PID as both holder and waiter (`->`), wchan `locks_lock_inode_wait`. `secrets/materialize.py::materialize` took `_flock(stack_dir/.ciu/lock)` and then `_flock(repo_root/.ciu/lock)`; with `stack_dir == repo_root` both are one file, flock locks an open file description, so the second `os.open()` + `LOCK_EX` blocked on the process's own first lock | High | FIXED 2026-10-07 (`dca8e1f75`): the project lock is taken only when `realpath(stack_lock) != realpath(project_lock)`, so a symlinked stack dir that resolves to the root is also covered; the stack lock already serializes the project store in that layout. Order for distinct files is unchanged (stack, then project, S4.26). **Oracle:** `tests/tests/test_ciu_materialize_self_root_lock.py` — real-flock subprocess with an 8 s timeout for `stack_dir == repo_root` and for a symlink to the root (both FAIL by timeout with the fix reverted, PASS with it), plus a `_flock` spy asserting both locks, stack first, for distinct paths. Sweep of every other `.ciu/lock` / flock site (`persist_hook_secret`, `materialize_host_secrets`, `worktree._allocation_lock`, `worktree_budget_slot`, `workspace_lock`) found no other same-file nesting |
 | CIU-134 | Worktree removal can finish `ciu clean` and then fail deleting the checkout due to protected descendants, leaving a partial Git/CIU lifecycle state with no supported root-assisted retry | High | OPEN — add permission-specific, consented retry through the existing S6.5 helper and truthful partial-state reporting |
+| CIU-139 | `ciu resolve --root-folder P` (and likely `ciu exec`) does not seed its environment from P's instance record, so an unprimed shell fails with missing `INSTANCE_ID`/`REPO_ROOT`/... while `ciu env print --root-folder P` succeeds | Medium | OPEN (filed 2026-10-15, dstdns deep review C04 F06) |
 
 
 The approved milestone decisions and serial package order are in
@@ -5046,3 +5047,22 @@ Severity: High (a lifecycle command can complete resource cleanup but leave a br
 **Implementation note.** CIU already has the S6.5 root helper for permission-protected hostdir deletion. Reuse that governed mechanism through a narrowly-scoped recovery callback; do not add a host-escape dependency or ask operators to repair the checkout manually. The shared lifecycle may need an explicit recovery callback/result so it can complete exact-path Git registration cleanup after Git's initial removal partially fails, while keeping the checkout and records inspectable on any failed retry.
 
 **Disposition:** OPEN. The affected checkout was removed with the existing host root helper after preserving its remaining evidence. No code or Git identity records were edited as part of the manual recovery.
+
+## CIU-139 — `ciu resolve --root-folder` does not seed its environment from the selected checkout's instance record
+
+**Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (auditor C04, finding F06), ciu 7.16.0. Severity Medium. Related to the CIU-118 follow-up (branch-local entry "service-discovery gaps in `ciu resolve`", whose Gap 4 measured results only "with the primed environment").
+
+**Observed.** In an unprimed shell:
+
+```
+env -i HOME=$HOME PATH=$PATH ciu resolve --root-folder /workspaces/dstdns \
+  --profile test --stack tools/test-runner --service test-runner --json
+```
+
+fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, DOCKER_NETWORK_INTERNAL, INSTANCE_ID, PHYSICAL_REPO_ROOT, PUBLIC_FQDN, REPO_NAME, REPO_ROOT`. `ciu env print --root-folder /workspaces/dstdns` exits 0 in the same shell. This contradicts the S3.1b / consumer promise that ciu seeds its own environment from `ciu.instance.generated.toml` (dstdns D-645). The dstdns cutover branch wraps it (`scripts/ciu_resolve.py` `read_ciu_env()`), and the raw commands its docs show fail for any agent whose shell was not primed. `ciu exec` likely shares the render path (not run: it would execute in a live container).
+
+**Proposed contract.** `resolve` and `exec` seed from the selected root's instance record exactly as `up` and `env print` do; if the record is absent they refuse naming it and the verb that creates it.
+
+**Oracles.** Unprimed-shell `resolve --root-folder P` returns P's identities; run from an unrelated cwd it still resolves P (a cwd-seeded implementation fails this); with the record deleted it refuses with the remedy.
+
+**SPEC owner.** S3.1b (instance record), the CIU-118 resolve/exec contract.

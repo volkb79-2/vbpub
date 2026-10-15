@@ -108,6 +108,10 @@ SPEC §9.
 | RG-88 | footprint disclosure assumes `damon.hot_bytes` is an object; a valid unavailable-DAMON summary with `hot_bytes: null` raises during cleanup formatting, discards otherwise valid profile resources, and emits `profiling cleanup crashed` while leaving the lane verdict unchanged | Minor | IN PROGRESS (rev 56; reproduced by RG-55 cgroup-profiler r0-r1 on 2026-10-07; formatter guard and regression test are in the candidate; final package acceptance and release pending) |
 | RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | OPEN (filed 2026-10-07 after Assay 8.0.0 B145 preflight stopped RG-55 R2 with zero candidates; preserve private cgroup namespace) |
 | RG-90 | Run-Gate reads append-only Assay progress across invocation boundaries: an old candidate can appear current, and resumed campaign indexes paired with a reset elapsed clock can produce a false rate/ETA | Minor | FIXED (rev 60: latest-run fencing, run-local rates, and no ETA without a trustworthy current-run `pending_total`; regression tests cover legacy and current-run shapes) |
+| RG-98 | RG-85 regression: `TMPDIR=<state_root>` is exported to the Assay judge process itself, so with the default in-repo `.run-gate` root Assay's isolation scratch root lands inside `repo_top` and every snapshot-isolated Assay lane ERRORs (`scratch_root must be outside repo_top`) | Major | OPEN (filed 2026-10-15 from the dstdns deep review; observed with the 24.0.0 candidate wheel) |
+| RG-99 | concurrent lanes in one exec container race on the fixed `/tmp/run-gate-gitconfig` (`git config --global --replace-all` lock), and the loser is reported as a product FAIL (exit 255) instead of a setup ERROR | Major | OPEN (filed 2026-10-15, dstdns deep review) |
+| RG-100 | `[assay.import]` is resolved eagerly: with the runner down, `--list`, host-only lanes and docs lanes all ERROR (`import could not read the judge inventory`) | Minor | OPEN (filed 2026-10-15, dstdns deep review C04 F12) |
+| RG-101 | SPEC.md:126 still calls `bare-host` a built-in name while SPEC.md:263 and RG-78 make it an ordinary name needing `mode = "host"`; the load refusal does not name `run-gate migrate-modes` | Minor | OPEN (filed 2026-10-15, dstdns deep review) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -5985,3 +5989,62 @@ low run-relative elapsed time reports rate and ETA from current-run candidate
 events and pending work. Same-run movement, re-attach silence, torn-line
 handling, malformed/missing current-run `pending_total`, and legacy streams
 without headers continue to pass.
+
+## RG-98 — RG-85 regression: the Assay judge inherits `TMPDIR=<state_root>`, so an in-repo state root puts Assay's isolation scratch inside `repo_top`
+
+**Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (`dstdns@305d8519`, from-scratch measurement campaign). Observed with run-gate 24.0.0, the unreleased candidate wheel built from `.worktrees/tool-release-wave-fixes-20261014`. Severity Major: every snapshot-isolated Assay lane of a consumer that keeps the default in-repo `.run-gate` root ERRORs before R0.
+
+**Observed.** dstdns lane `assay-dlq` (and 35 other R0/R1 lanes) ERROR in about 3 s. The inner argv run-gate builds ends with:
+
+```
+TMPDIR=/workspaces/dstdns/.run-gate GIT_CEILING_DIRECTORIES=/workspaces/dstdns/.run-gate \
+  python3 tools/assay/assay-7.2.0.pyz run durable_dlq --file assay.toml ... --state-dir /workspaces/dstdns/.run-gate/assay-state
+```
+
+Assay's `default_scratch_root()` (`assay/src/assay/runner.py:376`) is `tempfile.TemporaryDirectory(prefix="assay-p23-")`, so it follows `TMPDIR` into `/workspaces/dstdns/.run-gate/`. `IsolationSpec.__post_init__` (`assay/src/assay/isolation.py:209-210`, same check in 7.2.0 and on assay main) then raises `ValueError: scratch_root must be outside repo_top`. The verdict file is never written and run-gate reports `verdict ERROR ... assay verdict unavailable`. The same lanes passed in dstdns's last green composite (D-671, run-gate 23.x, before RG-85).
+
+**Why run-gate owns it.** RG-85's fix was meant to direct pytest's temporary files and the Git ceiling at the verified state mount. It exports both onto the judge's own process, which also governs Assay's own scratch allocation. Assay's rule that scratch must be outside the repository is a deliberate isolation invariant (a snapshot must not see its own scratch), not a defect.
+
+**Proposed contract.** Either (a) the state-root-derived `TMPDIR`/`GIT_CEILING_DIRECTORIES` reach only the lane's pytest child (via the Assay lane env / passthrough RG-85 already requires), never the judge process; or (b) preflight refuses, before any `docker exec`, when the resolved state root is inside the judged repository for a lane whose judge isolates, with a remedy naming a durable mount outside the worktree. A silent ERROR from inside Assay is never the outcome.
+
+**Oracles.** A registered fixture with the default in-repo state root and an isolating Assay lane reaches R0 and PASSes; the current implementation (export on the judge process) ERRORs that fixture (controlled wrong implementation). RG-85's own oracles still hold (pytest temp and ceiling under the verified root). If (b) is chosen, the refusal happens with exit status NOT_RUN/ERROR and the remedy text, with no container command executed.
+
+**SPEC owner.** R-19a / the Assay inner-argv construction (`build_assay_inner`), R-49 (state mount). Related: RG-85 (this regresses its fix), RG-49.
+
+## RG-99 — concurrent lanes in one exec container race on the fixed `/tmp/run-gate-gitconfig`
+
+**Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (run-gate 24.0.0 candidate). Severity Major: a setup collision becomes a false product FAIL.
+
+**Observed.** dstdns launched `test-runner` and `schema` at the same second into the same persistent exec runner (`dstdns-<id>-test-runner`). Both inner argvs run `export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig && git config --global --replace-all safe.directory '*'`. Git takes `/tmp/run-gate-gitconfig.lock` exclusively; the loser prints `error: could not lock config file /tmp/run-gate-gitconfig: File exists`, `set -e` stops the lane, and run-gate reports `verdict FAIL; exit_code 255` after 2 s. RG-80 admission explicitly permits more than one gate per daemon, and consumers with one exec runner per worktree run several lanes in it.
+
+**Why run-gate owns it.** The inner argv and this side-channel file are run-gate's (introduced by RG-22's `--replace-all` fix). RG-22 itself recorded the lock-free alternative.
+
+**Proposed contract.** Inject `safe.directory` through `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=safe.directory`, `GIT_CONFIG_VALUE_0=*` (no file, no lock), or use a per-session file name. Any failure before the lane body maps to ERROR, never FAIL.
+
+**Oracles.** Parallel-start test: two lanes started simultaneously in one container both reach their bodies, repeated 100 times; the fixed-path implementation fails it (controlled wrong implementation). A forced setup failure yields ERROR with the setup step named.
+
+**SPEC owner.** R-19a (Git isolation), R-78 closed result table. Related: RG-22.
+
+## RG-100 — `[assay.import]` is resolved eagerly, so a stopped runner breaks `--list` and host-only lanes
+
+**Status:** OPEN. Filed 2026-10-15 (dstdns deep review, auditor C04 F12). Severity Minor.
+
+**Observed.** With the dstdns cutover branch's config (which declares `[assay.import] environment = "test-runner"`) and the runner container absent, `run-gate run-gate-docs --dry-run` (a host-only lane) returned ERROR: `[assay] import could not read the judge inventory`. `run-gate --list` fails the same way.
+
+**Proposed contract.** Resolve the import only when an imported lane or an assay lane is selected (or when `--list` is asked to expand imports); otherwise list imported names as unresolved with the reason. Selecting an imported lane with the runner down refuses with a remedy.
+
+**Oracles.** Runner absent: a host lane's `--dry-run` succeeds; `--list` exits 0 and marks imports unresolved; selecting an imported lane refuses with the remedy. An eager implementation fails the first two.
+
+**SPEC owner.** R-49 (`[assay.import]`, RG-76).
+
+## RG-101 — SPEC still calls `bare-host` built-in; the load refusal does not name the migration
+
+**Status:** OPEN. Filed 2026-10-15 (dstdns deep review). Severity Minor.
+
+**Observed.** `SPEC.md:126-127` says "`host` and `bare-host` are both built-in names (never definable)". `SPEC.md:263` and RG-78 (CHANGES 23.10.0) say `bare-host` is an ordinary name that must be declared `mode = "host"`. dstdns's seven `bare-host` lanes, including its composite `gate`, ERROR at load with `environment 'bare-host' is not defined in .../run-gate.toml (no central run-gate.root.toml exists)`, which does not mention `run-gate migrate-modes`.
+
+**Proposed contract.** Correct SPEC.md:126-127. The undefined-environment refusal for the name `bare-host` names `run-gate migrate-modes PATH` and the one-table fix `[environments.bare-host] mode = "host"`.
+
+**Oracles.** A doc test asserts SPEC.md makes no built-in claim for `bare-host`; an error-text test requires the migration hint for that name.
+
+**SPEC owner.** R-07 / R-78.
