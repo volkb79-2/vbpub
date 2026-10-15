@@ -11,10 +11,23 @@ A version mismatch causes protocol errors at connect time.
 `bundle/pwmcp.contract.json`, then install the bundled source and exact
 contract version:
 
+The client depends on the **`cli-extended`** wheel (`cli-extended>=0.3.0`, the shared CLI
+layer under the `pwmcp` command). It is published to GitHub Releases only, never PyPI: the
+bare name is unclaimed there, so install it first from its release (URL and sha256 from
+`cli-extended-latest/latest.json`, verified like the bundle), then the client. pip finds the
+requirement already satisfied and never queries an index for it:
+
 ```bash
+# 1. the released cli-extended wheel, sha256-verified, installed without any index
+python -m pip install --no-index --no-deps ./cli_extended-<version>-py3-none-any.whl
+# 2. the bundled client and the exact Playwright version from the contract
 PW_VER=$(python -c 'import json; print(json.load(open("pwmcp.contract.json"))["playwright"]["python"])')
 pip install "playwright==$PW_VER" ./client
 ```
+
+A wheelhouse works too: `pip install --no-index --find-links ./wheelhouse ./client` (the
+wheelhouse then holds the cli-extended wheel and Playwright's own dependencies). Without the
+library the client install fails with `cli-extended` named as the missing requirement.
 
 Do **not** run `playwright install` — browser binaries belong in the pwmcp container,
 not in your project.
@@ -361,4 +374,19 @@ curl -X POST http://pwmcp:8939/browser/restart
 curl http://pwmcp:8939/browser/health
 ```
 
-The standalone `pwmcp` CLI keeps parser diagnostics identifiable: the first line is `PWMCP <version> — client utility`, using the client package's existing metadata version.
+The standalone `pwmcp` CLI is built on the shared cli-extended grammar (full reference and
+reviewed semantics: [CLI-SPEC.md](CLI-SPEC.md)):
+
+```bash
+pwmcp --version                       # one line: pwmcp <version>
+pwmcp contract [--json]               # the server contract as JSON
+pwmcp doctor [--check NAME] [--json]  # named checks: contract, playwright, skills
+pwmcp skills install                  # install the packaged pwmcp-fetch agent skill
+```
+
+Help starts with `PWMCP <version> — client utility`. A usage error prints the `[ERROR]`
+diagnostic first, then the identity-headed usage, and exits 2; an unreachable or malformed
+contract is a one-line `[ERROR]` with exit 1 (never a traceback; add `--traceback` for the
+stack of an unexpected failure). `pwmcp doctor` reports one `[OK]`/`[WARN]`/`[FAIL]` line per
+check instead of the former single `ok release=... playwright=... ws=...` line; the same
+facts are in the `contract` and `playwright` check summaries and in `--json`.

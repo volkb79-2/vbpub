@@ -319,10 +319,15 @@ version-intersection invariant and Schemathesis is not applicable.
 
 ### CLI diagnostics
 
-The `pwmcp` client parser prefixes help, usage, missing-argument, unknown-
-argument, and configuration diagnostics with `PWMCP <version> — client utility`
-as line 1. Installed clients read `pwmcp-client` metadata; a source checkout
-uses the version already declared in its client project metadata. The installed
-client also accepts `pwmcp --version`; it prints exactly one `pwmcp <version>`
-line on stdout, exits 0, and writes nothing to stderr. Normal command output is
-unchanged.
+The `pwmcp` client is registered on the shared cli-extended grammar (`contract`,
+`doctor`, `skills`; see [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md)). Help starts with
+`PWMCP <version> — client utility`; a usage error prints its `[ERROR]` diagnostic first,
+then the identity-headed usage, and exits 2. The version has one source,
+`client/src/pwmcp_client/VERSION`, which is also the wheel's metadata version; the CLI
+refuses to run if installed metadata and that file disagree (no literal fallback).
+`pwmcp --version` prints exactly one `pwmcp <version>` line on stdout, exits 0, and writes
+nothing to stderr. `pwmcp contract` output is unchanged; `pwmcp doctor` now reports named
+checks (`contract`, `playwright`, `skills`). The client wheel depends on the `cli-extended`
+wheel, which is published to GitHub Releases only; install it first (see
+[`docs/USAGE.md`](docs/USAGE.md)). The release-step scripts (`build-push.py`,
+`scripts/*.py`) use the same installed library and accept `--dry-run`.

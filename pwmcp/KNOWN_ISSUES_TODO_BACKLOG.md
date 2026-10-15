@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-05 (PWMCP-02 filed).
+Last updated: 2026-10-07 (PWMCP-02 fixed).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -31,7 +31,16 @@ proposal only; implementation shape and security boundaries still need review.
 
 ## PWMCP-02 — Adopt cli-extended (unified adoption, order 5 of 8)
 
-**Status: PLANNED (filed 2026-10-05 by the cli-extended unified-adoption program, W10).**
+**Status: FIXED 2026-10-07 (branch `pwmcp-clix`; controller merges and releases).**
+
+**Observed / fix / oracle (evidence in [`docs/PWMCP-02-REPORT.md`](docs/PWMCP-02-REPORT.md)).**
+
+- **Observed:** the mechanism section below (hand-rolled argparse with a `choices` list, a literal `"0.1.0"` fallback, tracebacks from `contract`/`doctor`, `dependencies = []`, four scripts with their own parsers and a `sys.path.insert` toward `cmru/src`).
+- **Fix:** the client CLI is registered on `CliRegistry` (`contract`, shared `doctor` with `contract`/`playwright`/`skills` checks, `skills` via `register_skills_verbs`), identity through `CliIdentity.resolve` (`client/src/pwmcp_client/VERSION` is the wheel's dynamic version, metadata and file must agree), `unexpected_exceptions="report"`, domain failures as `CliFailure`; `cli-extended>=0.3.0` is declared in `client/pyproject.toml` with its floor reason; the skill moved to package data; surface lifecycle configured in `client/pyproject.toml` (`docs/CLI-SPEC.md`, `docs/cli-review.toml` with 59 cases, `docs/cli-surface.json`); `build-push.py` and the three `scripts/` files register a single-command CLI through `scripts/_vars.py` `script_cli` (`--dry-run`, no `--yes`: non-interactive CMRU steps) and import the installed `cli_extended` and `cmru` (the `sys.path.insert` toward `cmru/src` is gone: cmru's own wheel requires `cli-extended`, so any interpreter that runs these scripts under CMRU has both); `cli-extended` added to pwmcp's `depends_on` in `cmru.orchestration.toml`.
+- **Oracle:** `./run-gate.py r1` PASS at 100% line and branch coverage of the judged targets; `cli-extended audit` 15 pass / 0 fail / 0 manual; `cli-extended surface check` passes; `assert_cli_contract` against the real `python -m pwmcp_client.cli`; plants (exit code, vendoring, `sys.path`, literal version fallback, stale surface) each fail a named test. Intentional behavior changes are listed in the report.
+- **Not covered / follow-ups:** deploy of a released pwmcp (client wheel plus bundle) is the controller's; cmru KI-70 (preflight does not read the nested `client/pyproject.toml`, so the `depends_on` edge is declared by hand); CLI-EXT-32 (audit AC-25 piecewise-path gap). PWMCP-01 (`pwmcp inspect`) is untouched and can now register its verb with the library from the start.
+
+Original plan (filed 2026-10-05 by the cli-extended unified-adoption program, W10):
 
 **Source documents.** [`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](../libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md) (decisions CX-D1..CX-D12, section "W10 - planned adoptions") and [`libraries/cli-extended/docs/ADOPTION-CHECKLIST.md`](../libraries/cli-extended/docs/ADOPTION-CHECKLIST.md) (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session. Land this before PWMCP-01 so the proposed `pwmcp inspect` verb is registered with the library from the start instead of added to a hand-rolled parser.
 

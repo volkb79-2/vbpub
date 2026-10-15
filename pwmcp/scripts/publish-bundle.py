@@ -18,19 +18,19 @@ Publish strategy (implemented by publish_versioned in the keystone):
 """
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
 
-# ── Keystone import ──────────────────────────────────────────────────────────
-# parents[2] from pwmcp/scripts/publish-bundle.py == the vbpub repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cmru" / "src"))
-from cmru.release import GitHubReleases, publish_versioned  # noqa: E402
+from cli_extended import RegisteredCli
+# Keystone import: the INSTALLED cmru package (CX-D3 / PWMCP-02), not cmru/src.
+from cmru.release import GitHubReleases, publish_versioned
 
-# Strict prepared-coordinate loader. Insert the script dir explicitly: the cmru/src
-# insert above pushed sys.path[0] off it, so a bare ``import _vars`` would be fragile.
+# Strict prepared-coordinate loader and shared script registration. Insert the script
+# dir explicitly so a bare ``import _vars`` also works when this file is loaded by path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _vars import load_vars  # noqa: E402
+from _vars import load_vars, run_script, script_cli  # noqa: E402
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
 DIST_DIR = PWMCP_DIR / "dist"
@@ -56,7 +56,7 @@ def find_bundle(dist_dir: Path, pwmcp_version: str) -> Path:
     return expected
 
 
-def main() -> None:
+def _publish(_args: argparse.Namespace) -> None:
     load_vars()
 
     pwmcp_version = os.environ.get("PWMCP_VERSION", "")
@@ -88,6 +88,21 @@ def main() -> None:
         log(f"PWMCP_BUNDLE_ASSET_URL={result['asset_url']}")
     if result.get("release_tag"):
         log(f"Next step: git tag -a {result['release_tag']} -m 'pwmcp {pwmcp_version}' && git push origin {result['release_tag']}")
+
+
+def build_cli() -> RegisteredCli:
+    """Import-safe registration: this script takes no operands."""
+    return script_cli(
+        "publish-bundle.py",
+        long_name="stack bundle publish",
+        description="Publish the prepared pwmcp stack bundle to GitHub Releases (immutable release plus latest pointer).",
+        handler=_publish,
+        preview=lambda _args: "would publish dist/pwmcp-<version>.tar.xz as the immutable pwmcp release and refresh pwmcp-latest",
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_script(build_cli(), argv)
 
 
 if __name__ == "__main__":

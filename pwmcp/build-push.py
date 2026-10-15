@@ -26,14 +26,18 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from cli_extended import OptionSpec, RegisteredCli
+from cmru.ghcr import GitHubPackages
+
 PWMCP_DIR = Path(__file__).resolve().parent
 BUILD_CONFIG = PWMCP_DIR / "cmru.toml"
 
-# Strict prepared-coordinate loader (pwmcp/scripts/_vars.py).
+# Strict prepared-coordinate loader and the shared script registration
+# (pwmcp/scripts/_vars.py). `cli_extended` and `cmru` are the INSTALLED packages
+# (CX-D3): this script runs under CMRU, which brings both; gate lanes keep PYTHONPATH
+# on the worktree's own sources only.
 sys.path.insert(0, str(PWMCP_DIR / "scripts"))
-from _vars import load_vars  # noqa: E402
-sys.path.insert(0, str(PWMCP_DIR.parent / "cmru" / "src"))
-from cmru.ghcr import GitHubPackages  # noqa: E402
+from _vars import load_vars, run_script, script_cli  # noqa: E402
 
 
 def log(msg: str) -> None:
@@ -198,17 +202,51 @@ def do_push() -> None:
     log("Push complete.")
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Build/push pwmcp images")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--build", action="store_true", help="Build images locally")
-    group.add_argument("--push", action="store_true", help="Push images to GHCR")
-    args = parser.parse_args()
-
+def _handle(args: argparse.Namespace) -> None:
     if args.build:
         do_build()
     else:
         do_push()
+
+
+def _preview(args: argparse.Namespace) -> str:
+    if args.build:
+        return "would build the pwmcp images locally through the managed BuildKit builder"
+    return "would log in to ghcr.io, push the pwmcp images and sync GHCR package visibility"
+
+
+def build_cli() -> RegisteredCli:
+    """Import-safe registration of the script's grammar (``--build`` | ``--push``)."""
+    return script_cli(
+        "build-push.py",
+        long_name="image build and push",
+        description="Build or push the pwmcp-playwright images through the managed BuildKit builder.",
+        handler=_handle,
+        preview=_preview,
+        options=(
+            OptionSpec(
+                ("--build",),
+                "build images locally",
+                group="OPERATION",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="operation",
+                mutually_exclusive_required=True,
+            ),
+            OptionSpec(
+                ("--push",),
+                "log in to GHCR and push the images",
+                group="OPERATION",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="operation",
+                mutually_exclusive_required=True,
+            ),
+        ),
+        examples=("python3 build-push.py --build", "python3 build-push.py --push"),
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_script(build_cli(), argv)
 
 
 if __name__ == "__main__":

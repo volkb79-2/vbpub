@@ -4,10 +4,21 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pwmcp-client"
-version = "0.1.0"
+# The single version source is src/pwmcp_client/VERSION (see [tool.setuptools.dynamic]):
+# installed metadata and the CLI identity (CliIdentity.resolve) read the same value and
+# must agree, so there is no literal fallback anywhere.
+dynamic = ["version"]
 description = "Python consumer helpers for a GitHub-released pwmcp server"
 requires-python = ">=3.11"
-dependencies = []
+# cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never vendored.
+# Floor 0.3.0: the first release whose `register_skills_verbs` forwards the consumer's
+# global options (`--contract`) to the `skills` child registry (CLI-EXT-26), which the
+# `pwmcp skills` group needs; it also carries CliIdentity.resolve, register_doctor and
+# the cli_extended.testing helpers this CLI and its tests use (same floor as cmru).
+# It is published to GitHub Releases only; the bare name is unclaimed on PyPI, so every
+# install of this wheel MUST be `--no-index --find-links <wheelhouse>` or follow an
+# explicit `pip install cli-extended` from the release wheel (CX-D2); see docs/USAGE.md.
+dependencies = ["cli-extended>=0.3.0"]
 
 [project.optional-dependencies]
 pytest = ["pytest>=8"]
@@ -15,5 +26,29 @@ pytest = ["pytest>=8"]
 [project.scripts]
 pwmcp = "pwmcp_client.cli:main"
 
+# Surface lifecycle (cli-extended AC-16..AC-18): the operator-facing `pwmcp` CLI is the
+# only catalogued CLI. The release-step scripts (build-push.py, scripts/*.py) are
+# internal CMRU steps on the same library registration (scripts/_vars.py) and are
+# covered by tests/test_script_cli.py instead. Paths are relative to this file; run
+# `cli-extended surface check` from pwmcp/ with the client installed or PYTHONPATH=client/src.
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "pwmcp"
+factory = "pwmcp_client.cli:build_cli"
+review = "../docs/cli-review.toml"
+manifest = "../docs/cli-surface.json"
+spec = "../docs/CLI-SPEC.md"
+findings = "../docs/cli-review-findings.toml"
+
+[tool.setuptools.dynamic]
+version = {file = ["src/pwmcp_client/VERSION"]}
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# VERSION and the agent skills ship as package data (AC-01, AC-19): `pwmcp skills install`
+# always matches the installed wheel, and the CLI identity can read VERSION beside the code.
+[tool.setuptools.package-data]
+pwmcp_client = ["VERSION", "skills/**/*"]

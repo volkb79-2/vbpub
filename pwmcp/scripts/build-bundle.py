@@ -8,21 +8,24 @@ Output: pwmcp/dist/pwmcp-<version>.tar.gz
 """
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
 
+from cli_extended import RegisteredCli
+from cmru.bundle import run_bundle
+
 PWMCP_DIR = Path(__file__).resolve().parent.parent
 BUNDLE_TOML = PWMCP_DIR / "bundle.toml"
 
-CIU_FORGE_SRC = PWMCP_DIR.parent / "cmru" / "src"
+# Strict prepared-coordinate loader and shared script registration (sibling _vars.py).
+# `cli_extended` and `cmru` are the INSTALLED packages (CX-D3), not source paths.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _vars import load_vars, run_script, script_cli  # noqa: E402
 
-# Strict prepared-coordinate loader (sibling _vars.py in pwmcp/scripts/).
-sys.path.insert(0, str(Path(__file__).resolve().parent))  # ensure script dir wins for _vars
-from _vars import load_vars  # noqa: E402
 
-
-def main() -> None:
+def _build(_args: argparse.Namespace) -> None:
     load_vars()
 
     pwmcp_version = os.environ.get("PWMCP_VERSION", "")
@@ -32,11 +35,23 @@ def main() -> None:
 
     print(f"[INFO] Building bundle for pwmcp-{pwmcp_version}")
 
-    sys.path.insert(0, str(CIU_FORGE_SRC))
-    from cmru.bundle import run_bundle  # noqa: PLC0415
-
     archive = run_bundle(BUNDLE_TOML)
     print(f"[INFO] Bundle: {archive}")
+
+
+def build_cli() -> RegisteredCli:
+    """Import-safe registration: this script takes no operands."""
+    return script_cli(
+        "build-bundle.py",
+        long_name="stack bundle build",
+        description="Build the consumer-facing pwmcp stack bundle into dist/ from the prepared coordinate.",
+        handler=_build,
+        preview=lambda _args: "would build dist/pwmcp-<version>.tar.xz from bundle.toml",
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_script(build_cli(), argv)
 
 
 if __name__ == "__main__":

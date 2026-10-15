@@ -1,0 +1,2133 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:pwmcp/contract/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:pwmcp/contract/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/contract",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/contract/--contract"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:5d8a6a4b5e215a7df4a9716e4d31e76196dccdd4613e0979c9cde0770148408d"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/contract/option-spelling/option:route:entrypoint:pwmcp/contract/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/contract/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/contract",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/contract/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:7facdf40ef2ab2f27816aaa36dbd33826b32f2eda81ee55b672715712b22551b"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/contract/option-spelling/option:route:entrypoint:pwmcp/contract/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/contract/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/contract",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/contract/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:bae1d28c1ce174c4772bef5304e4d9dfb6a974dc452bd40804988fbc1c9ad6eb"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/contract/option-spelling/option:route:entrypoint:pwmcp/contract/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/contract/--json"
+      ],
+      "route_id": "route:entrypoint:pwmcp/contract",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/contract/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:a4d4ffab5970ee4f162ddc263aaba2d74676e451027e11770dd818f7509aea50"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/doctor/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:pwmcp/doctor/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/doctor",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/doctor/--contract"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:bc091694a931e1833afd409949bba5151d88e26de07380dd391f418f8e04889d"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--check/--check",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/doctor/--check"
+      ],
+      "route_id": "route:entrypoint:pwmcp/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/doctor/--check",
+        "spelling": "--check"
+      },
+      "signature": "sha256:0cb77b885e1f91b5e3ee0120b6a8eab4d0a10fdfc1ac1f7f6cf8b86a9b8b5c33"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/doctor/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/doctor/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:4e2d7f48f051dc0e603988fa6d0c86a6e9e93fcaf97586d610fb4495a0537ebe"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/doctor/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/doctor/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:807ba53bc2a658268086e5f1f53161395cf519423feb2311da16669275bb6bf1"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/doctor/option-spelling/option:route:entrypoint:pwmcp/doctor/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/doctor/--json"
+      ],
+      "route_id": "route:entrypoint:pwmcp/doctor",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/doctor/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:c3b7da443f20feb7c1e00e5ecfddf4616eb7ea17e30a027810a30fb5ed32a4f4"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/check/--dest/option:route:entrypoint:pwmcp/skills/check/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--dest",
+        "option:route:entrypoint:pwmcp/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:pwmcp/skills/check/--dest",
+          "option:route:entrypoint:pwmcp/skills/check/--harness"
+        ]
+      },
+      "signature": "sha256:17d19bd3fff8858c62f9aec308412496e840689b24f0df61775e2a5f85db80bb"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/exclusive-member/target/option:route:entrypoint:pwmcp/skills/check/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--dest"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:pwmcp/skills/check/--dest"
+      },
+      "signature": "sha256:8d58a741d21384e03351cfd58edbada89253e089c10450875fe5519613f355b7"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/exclusive-member/target/option:route:entrypoint:pwmcp/skills/check/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:pwmcp/skills/check/--harness"
+      },
+      "signature": "sha256:89c04ee747e47b51f82bd50409c2d73c39fe933cdabb0ca0c83620a1c9f1a51d"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/skills/check/--contract"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:76d3782510d5dccf5b6a06214ee6978f9146762a58995015841e48c33f0697c1"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/option-choice/option:route:entrypoint:pwmcp/skills/check/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:pwmcp/skills/check/--harness"
+      },
+      "signature": "sha256:ae3ef4a2588b2dfda7e58744275145bee34bcea673ca4d518e4709543e3dd54b"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/option-choice/option:route:entrypoint:pwmcp/skills/check/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:pwmcp/skills/check/--harness"
+      },
+      "signature": "sha256:0578d7c828e4148dd569888a1254f0ccea4cea480027ff5520873c4e2d7ec968"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/option-choice/option:route:entrypoint:pwmcp/skills/check/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:pwmcp/skills/check/--harness"
+      },
+      "signature": "sha256:50559fbf013686a6914de17104a9f48fff58ea11d29cd7430d4ba345d5ed2464"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/check/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:a7302f5599e8b264797698e0ff528a49d0e77507137a1ced32711f2986a55691"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/check/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6b7ac1dc68e5dec64e6aa26b7a3c5811039727d609fbaab8a56b2b68d4564423"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--dest"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/check/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:5478497de04aa9948497ccfa0c1bfba989a9a515a91b8a686f88d9f190d3300f"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/check/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:05e7e09e6811bd26d506e4e78479fe7528df9cf5e39dbb2c6635ceab623f5b81"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/check/option-spelling/option:route:entrypoint:pwmcp/skills/check/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/check/--json"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/check/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:81afe11cebfe2836355adf11b8a91c8dfc02a525d9107a353eb02dfd2140112c"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/install/--dest/option:route:entrypoint:pwmcp/skills/install/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--dest",
+        "option:route:entrypoint:pwmcp/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:pwmcp/skills/install/--dest",
+          "option:route:entrypoint:pwmcp/skills/install/--harness"
+        ]
+      },
+      "signature": "sha256:c14380ddd27b434d8457a709802004164979108b04e230447149d4bcf35c4aeb"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/exclusive-member/target/option:route:entrypoint:pwmcp/skills/install/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--dest"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:pwmcp/skills/install/--dest"
+      },
+      "signature": "sha256:9accadb266e6764e877b9320f0c0c31fcfe1d5caba398a19aedd482457699ae8"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/exclusive-member/target/option:route:entrypoint:pwmcp/skills/install/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:pwmcp/skills/install/--harness"
+      },
+      "signature": "sha256:00364712f2bf9ea9b0684a9c60bb0e549a5d1bb39b000bb8bfe27e2a8f46a46d"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--contract",
+        "option:route:entrypoint:pwmcp/skills/install/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/skills/install/--contract",
+          "option:route:entrypoint:pwmcp/skills/install/--overwrite-modified"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:9452006f3360fcb50f36be3da36e8d7b9dd68c2bb3f0ba9af96440f3dd345108"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/option-choice/option:route:entrypoint:pwmcp/skills/install/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:pwmcp/skills/install/--harness"
+      },
+      "signature": "sha256:303d0f6e2faebd2b1de930a017e3faeeb3057a51b165263b8e3b2f5c482f006e"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/option-choice/option:route:entrypoint:pwmcp/skills/install/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:pwmcp/skills/install/--harness"
+      },
+      "signature": "sha256:aec0c38fd8b97b897cfbc59dacd10fffcba323136e22152fca9cd40f4d9f5f42"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/option-choice/option:route:entrypoint:pwmcp/skills/install/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:pwmcp/skills/install/--harness"
+      },
+      "signature": "sha256:d444e9b2be65ebf1a9965e872d1a0109e2e5f27798d1c9241ad259e74d5bc4e6"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/install/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:e2e51b52bb38b22c8178c3620c2826711a99685979a87aebd96b4ea261710418"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/install/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6131e808ef18c7e39dc95cc5a46f81cd04ca6a0bfc861970b629508d7918f1dd"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--dest"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/install/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:bb116df421e1fa5906c734b9e5b9a451da369a7806ae74afcf47e57b20557af8"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--dry-run"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/install/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:00365891d1260c745afa8823ae93bee90ee219775b31a02fae118b53870dc41a"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/install/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:b16a9360efcda57bafbc414a651430d84e67ad1c8bc9e683bc2ca4cbd8fd30b4"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/install/option-spelling/option:route:entrypoint:pwmcp/skills/install/--overwrite-modified/--overwrite-modified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/install/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/install",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/install/--overwrite-modified",
+        "spelling": "--overwrite-modified"
+      },
+      "signature": "sha256:325699fddf6a74d61da69a0df500f08befe3bd555bb61f19c3cc312ec953dad4"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/list/--dest/option:route:entrypoint:pwmcp/skills/list/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--dest",
+        "option:route:entrypoint:pwmcp/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:pwmcp/skills/list/--dest",
+          "option:route:entrypoint:pwmcp/skills/list/--harness"
+        ]
+      },
+      "signature": "sha256:80c08831f42d8bfacf77596ed72b943e6cbf8a5cbb8917e89d27ca60642b9cc6"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/exclusive-member/target/option:route:entrypoint:pwmcp/skills/list/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--dest"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:pwmcp/skills/list/--dest"
+      },
+      "signature": "sha256:9106388706022e9fb44b5622a222380817a14ed1d0fb968eade5d592ffc84864"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/exclusive-member/target/option:route:entrypoint:pwmcp/skills/list/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:pwmcp/skills/list/--harness"
+      },
+      "signature": "sha256:ef766212762f54528d8fdb8e8fbbf5b440de89a0023d86ea2092ed5665c12806"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/skills/list/--contract"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:9c8997a23b7850a31d48b8a887b5145d15f6beb875a592b2178d2b90a130ed7f"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/option-choice/option:route:entrypoint:pwmcp/skills/list/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:pwmcp/skills/list/--harness"
+      },
+      "signature": "sha256:6040b424eb92bcc00d7fa075802f010bbbbe7f040c8f788c8ee6fbb5ce2cbb86"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/option-choice/option:route:entrypoint:pwmcp/skills/list/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:pwmcp/skills/list/--harness"
+      },
+      "signature": "sha256:6c5282e88d620e5e5eda87c9aa18b0c3058fdf67c7ce8194fbdf9ddc7c3a9d0c"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/option-choice/option:route:entrypoint:pwmcp/skills/list/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:pwmcp/skills/list/--harness"
+      },
+      "signature": "sha256:0635a42c5df66288dc8f2e072262f4dc29c1fc74fcc610dc608eb0004feae448"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/list/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:d710565b8f18d78d5969c05f56cec3af7c10b7de3927c510fa9c560b963b063a"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/list/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:50066428332c0e01c872076cdabc5df7fba9f3e5528587500b3b0e7f8b314a58"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--dest"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/list/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:9db3d894e3148b7b2f08d0b76558adb0d4f3c12a2a96b7f20c7791a51d7fea93"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/list/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:fbf931a13b7ffee741631d774021fc200f2a31eb879d587fd0235caf0a210a09"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/list/option-spelling/option:route:entrypoint:pwmcp/skills/list/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/list/--json"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/list",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/list/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:2e17b719e9322ca8663c2728f7251538a3d962b4fe9f51605c1a99faf745b44f"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/uninstall/--dest/option:route:entrypoint:pwmcp/skills/uninstall/--harness",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--dest",
+        "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "options": [
+          "option:route:entrypoint:pwmcp/skills/uninstall/--dest",
+          "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+        ]
+      },
+      "signature": "sha256:15b2a36d5157eff953d6ea4f6967941ce3c5c44af607ae3b955c3c3c9b0fc56f"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/exclusive-member/target/option:route:entrypoint:pwmcp/skills/uninstall/--dest",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--dest"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:pwmcp/skills/uninstall/--dest"
+      },
+      "signature": "sha256:23cf0289dc2d5d943040e18aadd7e9a4ff3c0533dab68a96e36862f51c6b0e40"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/exclusive-member/target/option:route:entrypoint:pwmcp/skills/uninstall/--harness",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "group_id": "target",
+        "required": false,
+        "selected_option": "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      },
+      "signature": "sha256:e2b215476d6f275bb6df131d92bd7108f34daf4aad8e8771a5a4bf1775763350"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--contract",
+        "option:route:entrypoint:pwmcp/skills/uninstall/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/skills/uninstall/--contract",
+          "option:route:entrypoint:pwmcp/skills/uninstall/--overwrite-modified"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:7456a2a344341a14ae29fdd83387683b1035cffbdc7e9da89875ab4ece695cdd"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/option-choice/option:route:entrypoint:pwmcp/skills/uninstall/--harness/389432cbf8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "choice": "claude",
+        "option_id": "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      },
+      "signature": "sha256:24b9757c4336490375b8e87e49c017f423f5041433377673ae224cb6b0d2a3d9"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/option-choice/option:route:entrypoint:pwmcp/skills/uninstall/--harness/5cf7504d97",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "choice": "all",
+        "option_id": "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      },
+      "signature": "sha256:728af97a82f1a7dc1a93f332d1e84978c6f2f48523958b43917e923ff7152c31"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/option-choice/option:route:entrypoint:pwmcp/skills/uninstall/--harness/bc42532430",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "choice": "agents",
+        "option_id": "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      },
+      "signature": "sha256:64c455077ec14f6ddb6886f058151c0e78667dde19c621b9734ba706a88f34ec"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/uninstall/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:9978e2924966e0fc7eb7f29ce8c5b5c3ed21ed2147683d338fbfb85a659df1a2"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/uninstall/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:ef8abbadda061d2be2dc67ae2e3db5f72a3e01073f15dd61dfdb0622cefc3dd7"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--dest/--dest",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--dest"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/uninstall/--dest",
+        "spelling": "--dest"
+      },
+      "signature": "sha256:9bfd251bebb9da6410c51b6fc4e7cde2669e74658a8b34c4790d38dd1423eafc"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--dry-run"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/uninstall/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:53a07a276e9a1baa4fc2e4e52d379d62a74115422946cab43ba874e99691e51d"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--harness/--harness",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--harness"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/uninstall/--harness",
+        "spelling": "--harness"
+      },
+      "signature": "sha256:8f8f402d60f2e33c424d376a2f772e754f1fb734977df8b697fc417700cd15c8"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/skills/uninstall/option-spelling/option:route:entrypoint:pwmcp/skills/uninstall/--overwrite-modified/--overwrite-modified",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/skills/uninstall/--overwrite-modified"
+      ],
+      "route_id": "route:entrypoint:pwmcp/skills/uninstall",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/skills/uninstall/--overwrite-modified",
+        "spelling": "--overwrite-modified"
+      },
+      "signature": "sha256:33fc6feb12425836f38ab7b8139c903da88012768c73634f8c467bf49b701244"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "pwmcp",
+    "display_name": "PWMCP",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:pwmcp",
+    "long_name": "client utility",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "pwmcp",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/contract/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "contract"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "print the pwmcp server contract (release, Playwright version, endpoints, limits) as JSON",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:pwmcp/contract",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "contract"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "contract"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "print the pwmcp server contract (release, Playwright version, endpoints, limits) as JSON",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/doctor/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--check",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "run only this check (repeatable)",
+          "dest": "check",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--check"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/doctor/--check",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "default": null
+          },
+          "parser_path": [
+            "doctor"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "check that the pwmcp contract is reachable and the installed Playwright matches it",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:pwmcp/doctor",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "doctor"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "doctor"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "check that the pwmcp contract is reachable and the installed Playwright matches it",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "install, check, or remove this tool's packaged agent skills",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:pwmcp/skills",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:pwmcp/skills/install",
+        "route:entrypoint:pwmcp/skills/uninstall",
+        "route:entrypoint:pwmcp/skills/check",
+        "route:entrypoint:pwmcp/skills/list"
+      ],
+      "summary": "install, check, or remove this tool's packaged agent skills",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/check/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/check/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/check/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "exit 1 unless every packaged skill is current",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:pwmcp/skills/check",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "check"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "check"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "exit 1 unless every packaged skill is current",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/install/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/install/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/install/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--overwrite-modified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "replace skills you modified locally",
+          "dest": "overwrite_modified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--overwrite-modified"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/install/--overwrite-modified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "install or update the packaged skills, removing orphans",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:pwmcp/skills/install",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "install"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "install"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "install or update the packaged skills, removing orphans [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/list/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/list/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/list/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "list packaged skills and their installed state",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:pwmcp/skills/list",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "list"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "list"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list packaged skills and their installed state",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/uninstall/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--harness",
+          "choices": [
+            "claude",
+            "agents",
+            "all"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "target harness: claude, agents or all (default: all)",
+          "dest": "harness",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--harness"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/uninstall/--harness",
+          "kind": "option",
+          "metavar": "HARNESS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "claude",
+              "agents",
+              "all"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dest",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "use exactly this directory instead of a harness directory",
+          "dest": "dest",
+          "effective_default": null,
+          "exclusive_group": "target",
+          "exclusive_required": false,
+          "flags": [
+            "--dest"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/uninstall/--dest",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--overwrite-modified",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "replace skills you modified locally",
+          "dest": "overwrite_modified",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--overwrite-modified"
+          ],
+          "help_group": "TARGET",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/skills/uninstall/--overwrite-modified",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "install, check, or remove this tool's packaged agent skills",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "skills",
+          "summary": "install, check, or remove this tool's packaged agent skills",
+          "synopsis": null
+        }
+      ],
+      "description": "remove the skills this tool installed",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:pwmcp/skills/uninstall",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "skills",
+            "uninstall"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "skills",
+        "uninstall"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "remove the skills this tool installed [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}
