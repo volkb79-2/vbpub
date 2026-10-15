@@ -586,6 +586,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-139 | `ciu resolve --root-folder P` (and likely `ciu exec`) does not seed its environment from P's instance record, so an unprimed shell fails with missing `INSTANCE_ID`/`REPO_ROOT`/... while `ciu env print --root-folder P` succeeds | Medium | OPEN (filed 2026-10-15, dstdns deep review C04 F06) |
 | CIU-142 | A managed worktree that is rebased keeps its spent `fork_point_sha` in `ciu.worktree-instance.json`, and no `ciu worktree` verb re-records it, so run-gate's derived base (SPEC R-35a: merge-base must equal the recorded fork point) refuses `NOT_RUN no-base` and every later gate needs a hand-passed `--base` | Medium | OPEN (filed 2026-10-15, dstdns P242, ciu 7.16.0) |
 | CIU-144 | `ciu resolve --json` and `ciu check --json` in a linked worktree put the `[CIU-117] project-built images use worktree tag suffix ...` notice on STDOUT ahead of the JSON document whenever a selected stack declares Compose `build:` (`engine.scope_worktree_compose_images` bare `print`, `engine.py:1278`), so every JSON consumer fails to parse; a regression of CIU-84's S13.4a sweep | Medium | OPEN (filed 2026-10-15, dstdns P243, ciu 7.16.0) |
+| CIU-146 | `ciu down --profile NAME` (and `--phases`) stops EVERY project container: `action_stop` matches the whole `^{project}-{env}-` prefix and never reads the selection, while `ciu down --help` says `--profile` restricts to the named host profile | High | OPEN. Filed 2026-10-15 from dstdns (deep-review run, main 02ed2c8b), ciu 7.16.0. See the CIU-146 section |
 
 
 The approved milestone decisions and serial package order are in
@@ -5127,3 +5128,32 @@ fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, D
 4. Controlled wrong implementation: deleting the notice entirely passes oracle 1 but fails the stderr half of it, so the test must assert the notice moved, not vanished.
 
 **SPEC owner.** S18 (resolve data surface), S13.4a (check JSON contract), S6 CIU-117 worktree image isolation.
+
+## CIU-146 — `ciu down --profile` / `--phases` stop every project container; the selection is parsed and then ignored
+
+**Status:** OPEN. Filed 2026-10-15 from dstdns (deep-review run, main 02ed2c8b), ciu 7.16.0. Severity High. Type: bugfix. Related to CIU-127 (`down --dir`, the per-stack stop), but CIU-127 assumed that profile-wide stop already worked.
+
+**Observed.** On dstdns main, with 26 project containers running (core, db, runner, apps, workers, identity, observability and seeded), the operator wanted to free memory while keeping the runner. They ran:
+`ciu down --profile apps --profile worker-io --profile worker-db --profile identity --profile observability --profile seeded`
+It printed `Active service profile(s): apps,worker-io,worker-db,identity,observability,seeded` and then stopped all 25 running containers. That included `vault`, `consul`, `redis` (profile `core`), `postgres`, `minio`, `pgadmin`, `adminer` (profile `db`) and `test-runner` (profile `runner`), none of which the named profiles select (`ciu profiles`). A detached gate chain waiting on that runner would have failed against a stopped container. Recovery: `ciu up --profile core --profile db --profile runner --deploy --healthcheck`. Volumes are preserved, so no data was lost.
+
+**Mechanism (source).**
+- `deploy.action_stop(config)` (`src/ciu/deploy.py:4413`) takes only `config`. It calls `_matching_containers(config)` (`:4337`), which lists running containers by the anchored `^{project}-{env}-` name prefix, and stops all of them in one `docker stop`.
+- The parsed profile/phase selection never reaches the stop action.
+- Meanwhile `cli.py:391`/`:406` document `--profile NAME   restrict to the named host profile (repeatable)` and `--phases N,M   restrict to the given phase numbers` for `ciu down`.
+
+**Why CIU owns it.** The selection grammar is CIU's, and so is the help text. A consumer cannot work around it except with raw `docker stop`, which AGENTS-style consumer contracts forbid (CIU is the lifecycle API). The defect turns a narrow, intended stop into a project-wide one without any warning: a silent widening, the most dangerous direction for a teardown verb.
+
+**Required contract.**
+- `ciu down --profile P [--profile Q]` and `ciu down --phases N,M` stop only the running containers of the stacks the selection resolves. Resolve each stack's `compose_project` from CIU's resolved identities and list containers by the exact `com.docker.compose.project` label, the same mechanism CIU-127 specifies for `--dir`.
+- A bare `ciu down` stays project-wide.
+- If a selection cannot be resolved, or restriction is not supported on a path (for example `--host`), the verb refuses with an error naming the flag. It never falls back to the whole project.
+
+**Oracles.**
+1. Two profiles with disjoint stacks, both running: `ciu down --profile A` leaves every container of B's stacks running and stops all of A's.
+2. `ciu down --phases N` stops only phase-N stacks.
+3. Bare `ciu down` still stops every project container (regression guard).
+4. An unknown profile name refuses before any `docker stop`.
+5. Controlled wrong implementation: today's `action_stop` passes oracle 3 and fails oracle 1, so a test that only checks "something was stopped" cannot pass for it.
+
+**SPEC owner.** S7.8 (`--stop`), S7.4 (host profiles), S10.2a (CIU-127 per-stack stop). v8 mapping: SPEC-V8 S14.1.3 `ciu down --realization R` must keep the same never-widen rule.
