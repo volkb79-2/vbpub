@@ -113,6 +113,7 @@ SPEC §9.
 | RG-100 | `[assay.import]` is resolved eagerly: with the runner down, `--list`, host-only lanes and docs lanes all ERROR (`import could not read the judge inventory`) | Minor | OPEN (filed 2026-10-15, dstdns deep review C04 F12) |
 | RG-101 | SPEC.md:126 still calls `bare-host` a built-in name while SPEC.md:263 and RG-78 make it an ordinary name needing `mode = "host"`; the load refusal does not name `run-gate migrate-modes` | Minor | OPEN (filed 2026-10-15, dstdns deep review) |
 | RG-103 | `run-gate doctor` crashes with `KeyError: 'environment'` when the config declares a `kind = "sequence"` lane: the per-lane environment pass calls `resolve_environment`, which reads `lane["environment"]`, a key R-07/RG-74 forbid on sequences | Major | OPEN (filed 2026-10-15, dstdns P242 under the 24.0.0 candidate) |
+| RG-104 | The observer-unavailable rollup rejects Assay's own pre-R0 refusal: Assay (B148/A-484) refuses the whole lane before R0 and stamps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on every requested rigor, but `_observer_unavailable_rollup` accepts the reason only on an R2 claim, so a correct environment refusal surfaces as ERROR `invalid-assay-observer-refusal-claim` (a malformed-verdict reason) | Minor | OPEN (filed 2026-10-15, dstdns P242 under the 24.0.0 candidate) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6073,3 +6074,17 @@ No action is requested from run-gate beyond the exec-mode fix above. dstdns revi
 **Oracles.** A fixture config with a sequence lane whose members use two environments: `doctor` exits with its normal summary and checks both member environments once; the current implementation raises `KeyError` (controlled wrong implementation). A property test: every config accepted by the loader runs `doctor` without an uncaught exception.
 
 **SPEC owner.** R-07, RG-74 (sequences), the doctor contract (RG-64). Related: RG-28.
+
+## RG-104 — the observer-unavailable rollup rejects Assay's own pre-R0 lane-wide refusal
+
+**Status:** OPEN. Filed 2026-10-15 from dstdns package P242, with the run-gate 24.0.0 candidate wheel and Assay 9.0.0. Present unchanged on `tool-release-integrated-20261015` and `cmru-release-readiness-20261015` (`run_gate.py:383-384`, `:407`). Severity Minor: the lane verdict is ERROR either way (fail-closed, never green), but the reason tells the operator the judge emitted a malformed verdict when it emitted the documented environment refusal.
+
+**Observed.** dstdns lane `worker_io_main_r2_compare` (rigors R0+R2, exec-mode runner in a private cgroup namespace). Assay's verdict (`.run-gate/failed/worker_io_main_r2_compare/<run>/verdict.json`): `outcome NO_MEASUREMENT`, `reason_code CGROUP_OBSERVATION_UNAVAILABLE`, claims `[(R0, NO_MEASUREMENT, CGROUP_OBSERVATION_UNAVAILABLE), (R2, NO_MEASUREMENT, CGROUP_OBSERVATION_UNAVAILABLE)]`, evidence `[]`. run-gate maps it to lane verdict ERROR with reason `invalid-assay-observer-refusal-claim`, because `_observer_unavailable_rollup` returns that reason for any claim carrying the refusal on a rigor other than R2.
+
+**Why run-gate owns it.** Assay's contract is deliberate and documented: B148/A-484 (`assay/docs/DESIGN-GUIDE.md` "NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE", `assay/nyxloom-trove/4-backlog.md` "Chosen contract: Before R0, probe ... refuse") makes the refusal a pre-R0, lane-wide environment refusal, so R0 is never measured and its claim carries the same pair. The rollup was written for the earlier shape, in which R0 ran and only R2 refused late.
+
+**Proposed contract.** Recognise the lane-wide form: when every computed claim is `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` and there is no adverse evidence, the lane is ERROR with an infrastructure reason (for example `assay-observer-unavailable`) and the RG-89 remedy text. Keep the current refusal-only-on-R2 path for verdicts where R0 was measured, and keep rejecting a refusal on a rigor that was not requested or a refusal mixed with a contradicting R0 status.
+
+**Oracles.** Fixtures: (a) Assay 9.0.0's lane-wide refusal (R0+R2 both refused) maps to ERROR with the infrastructure reason; (b) R0 PASS + R2 refused keeps today's behaviour; (c) R0 FAIL + R2 refused stays FAIL (an adverse claim is never hidden); (d) a refusal on R1 when only R0+R2 were requested stays `invalid-...`. The current implementation fails (a) (controlled wrong implementation). Pin the fixture to a real Assay 9.0.0 verdict so the next shape change in either tool trips the test.
+
+**SPEC owner.** The assay-verdict mapping (RG-89 observer refusal), Assay B148/A-484. Related: RG-89, RG-102.
