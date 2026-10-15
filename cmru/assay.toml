@@ -224,6 +224,21 @@ targets = [
 format = "coverage-py-json"
 artifact = "coverage.json"
 
+[lanes.cmru-first-release-r2.judge.mutation]
+# This lane runs after the initial stable release, when it has no prior
+# CMRU release baseline to compare. Keep its whole-source R2 policy aligned
+# with Assay's own serial Python qualification campaign.
+jobs = 1
+max_mutants = 10000
+operators = [
+  "python:compare-swap",
+  "python:boolop-swap",
+  "python:bool-const-flip",
+  "python:falsy-swap",
+]
+budget_per_candidate = "auto"
+liveness = true
+
 [lanes.cmru-first-release-r2.judge.canary]
 mechanism = "import-break"
 target = "src/cmru/config.py"

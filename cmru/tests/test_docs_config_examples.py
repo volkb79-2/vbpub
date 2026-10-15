@@ -128,6 +128,20 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert first_lane["judge"]["targets"] == expected_whole_source
         assert first_lane["judge"]["coverage"]["artifact"] == "coverage.json"
 
+    first_r2_mutation = assay_config["cmru-first-release-r2"]["judge"]["mutation"]
+    assert first_r2_mutation == {
+        "jobs": 1,
+        "max_mutants": 10000,
+        "operators": [
+            "python:compare-swap",
+            "python:boolop-swap",
+            "python:bool-const-flip",
+            "python:falsy-swap",
+        ],
+        "budget_per_candidate": "auto",
+        "liveness": True,
+    }
+
     for document in (ROOT / "docs" / "SPEC.md", ROOT / "docs" / "DESIGN-GUIDE.md"):
         assert f'`{lane["judge"]["base"]}`' in document.read_text(encoding="utf-8")
 
