@@ -116,7 +116,7 @@ SPEC §9.
 | RG-96 | selftest diff coverage treats a symlink-to-module migration as a full-file addition | Major | FIXED IN CANDIDATE; registered coverage gate and independent reviews pending |
 | RG-97 | `--check-env` silently treats unreadable or undecodable Python sources as a complete scan | Minor | IMPLEMENTED in the integrated candidate; exact gates, independent review, and release pending |
 | RG-98 | RG-85 regression: `TMPDIR=<state_root>` is exported to the Assay judge process itself, so with the default in-repo `.run-gate` root Assay's isolation scratch root lands inside `repo_top` and every snapshot-isolated Assay lane ERRORs (`scratch_root must be outside repo_top`) | Major | OPEN (filed 2026-10-15 from the dstdns deep review; observed with the 24.0.0 candidate wheel) |
-| RG-99 | concurrent lanes in one exec container race on the fixed `/tmp/run-gate-gitconfig` (`git config --global --replace-all` lock), and the loser is reported as a product FAIL (exit 255) instead of a setup ERROR | Major | OPEN (filed 2026-10-15, dstdns deep review) |
+| RG-99 | concurrent lanes in one exec container race on the fixed `/tmp/run-gate-gitconfig` (`git config --global --replace-all` lock), and the loser is reported as a product FAIL (exit 255) instead of a setup ERROR | Major | OPEN (filed 2026-10-15, dstdns deep review; amended same day: consumer direction is ephemeral one-lane containers, which removes the race by construction; the exec-mode fix stays required; network attachment for ephemeral lanes is planned in ciu v8 gate environments, SPEC-V8 S7.8.1/S16; secrets stay with ciu) |
 | RG-100 | `[assay.import]` is resolved eagerly: with the runner down, `--list`, host-only lanes and docs lanes all ERROR (`import could not read the judge inventory`) | Minor | OPEN (filed 2026-10-15, dstdns deep review C04 F12) |
 | RG-101 | SPEC.md:126 still calls `bare-host` a built-in name while SPEC.md:263 and RG-78 make it an ordinary name needing `mode = "host"`; the load refusal does not name `run-gate migrate-modes` | Minor | OPEN (filed 2026-10-15, dstdns deep review) |
 ---
@@ -6241,6 +6241,16 @@ Assay's `default_scratch_root()` (`assay/src/assay/runner.py:376`) is `tempfile.
 **Oracles.** Parallel-start test: two lanes started simultaneously in one container both reach their bodies, repeated 100 times; the fixed-path implementation fails it (controlled wrong implementation). A forced setup failure yields ERROR with the setup step named.
 
 **SPEC owner.** R-19a (Git isolation), R-78 closed result table. Related: RG-22.
+
+**Amendment (2026-10-15, dstdns operator direction).** The consumer-side remedy is architectural, not a lock: **one user per test container**. dstdns will move its lanes to `mode = "ephemeral"`, with a fresh container per lane invocation from the selected worktree's image. That removes this race by construction, together with the shared-`/tmp` collisions across persistent runners, PID-1 zombie accumulation (RG-84 class), and cross-lane leftovers. It also opens the RG-89 observer path, which accepts only ephemeral environments.
+
+This entry stays OPEN because exec mode remains supported and any concurrent exec consumer still hits it. The lock-free `GIT_CONFIG_COUNT` injection is still the right exec-mode fix; no lock file, no mutual exclusion.
+
+**Where the ephemeral move belongs (corrected 2026-10-15; this replaces the same-day "(a)/(b) decision needed" paragraph).** Joining an ephemeral lane container to a ciu instance network is not a technical gap: Docker can do it. It is a ciu-run-gate integration item that ciu v8 already designs. SPEC-V8 S7.8.1 makes a gate environment a binding consumer (`[resolved.bindings.env.<e>]`, `network = "instance"`), and S16 runs `ephemeral` lanes under the gate slice. That is not built yet.
+
+Secrets are not a run-gate concern and need no hand-off. A lane container is a workload of the ciu instance it tests, and it receives credentials through ciu's secret directives like any other instance service. A test instance bound to another running stack (dstdns D-651 Q9, shareability) is a ciu binding/realization question, and its credentials come with that binding.
+
+No action is requested from run-gate beyond the exec-mode fix above. dstdns revisits the ephemeral move once the current tool release wave has landed.
 
 ## RG-100 — `[assay.import]` is resolved eagerly, so a stopped runner breaks `--list` and host-only lanes
 
