@@ -17626,6 +17626,19 @@ class TestReattachedRunHistory:
         assert 3599 <= rec["duration_seconds"] <= 3610
         assert rec["history_eligible"] is True
 
+    def test_adopting_run_preserves_its_image_selection_evidence(self, tmp_path):
+        repo, proj = make_history_repo(tmp_path)
+        rec = run_gate.start_run_record("suite", repo, repo)
+        selection = {
+            "effective_image": "tester-unified:candidate",
+            "image_id": "sha256:" + "a" * 64,
+            "image_id_status": "observed",
+        }
+        run_gate.adopt_inflight_start(
+            rec, {"started_at": "2026-09-02T11:00:00Z",
+                  "image_selection": selection})
+        assert rec["image_selection"] == selection
+
     def test_a_record_without_an_epoch_keeps_the_client_clock(self, tmp_path):
         repo, proj = make_history_repo(tmp_path)
         rec = run_gate.start_run_record("suite", repo, repo)
@@ -23135,6 +23148,55 @@ class TestEphemeralProfilingWiring:
             "image_id_error": None,
         }
 
+
+    @pytest.mark.parametrize("exception", [
+        OSError("docker is unavailable"),
+        subprocess.TimeoutExpired("docker inspect", 10),
+    ])
+    def test_inspect_container_image_id_reports_command_failures(
+            self, monkeypatch, exception):
+        def fail_run(*args, **kwargs):
+            raise exception
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fail_run)
+        image_id, error = run_gate.inspect_container_image_id(
+            "docker", "run-gate-candidate")
+        assert image_id is None
+        assert error.startswith(f"{type(exception).__name__}:")
+
+    @pytest.mark.parametrize(("result", "expected"), [
+        (subprocess.CompletedProcess(
+            ["docker"], 1, stdout="", stderr="daemon unavailable"),
+         "docker inspect exited 1: daemon unavailable"),
+        (subprocess.CompletedProcess(
+            ["docker"], 0, stdout="sha256:short\n", stderr=""),
+         "docker inspect returned an invalid image ID: 'sha256:short'"),
+    ])
+    def test_inspect_container_image_id_rejects_unusable_identity(
+            self, monkeypatch, result, expected):
+        monkeypatch.setattr(run_gate.subprocess, "run",
+                            lambda *args, **kwargs: result)
+        image_id, error = run_gate.inspect_container_image_id(
+            "docker", "run-gate-candidate")
+        assert image_id is None
+        assert error == expected
+
+    def test_disclose_image_selection_names_declared_image_when_unset(
+            self, capsys):
+        run_gate.disclose_image_selection({
+            "declared_image": "tester-unified:local",
+            "effective_image": "tester-unified:local",
+            "override_env": "RUN_GATE_TESTER_UNIFIED_IMAGE",
+            "override_applied": False,
+            "image_id": None,
+            "image_id_status": "not-observed",
+            "image_id_error": None,
+        })
+        assert capsys.readouterr().out == (
+            "run-gate: image selection: tester-unified:local from declared "
+            "image (override $RUN_GATE_TESTER_UNIFIED_IMAGE unset); declared "
+            "tester-unified:local\n")
+
     def test_disabled_lane_has_no_token_and_no_profiling_calls(
             self, tmp_path, monkeypatch):
         # `RUN_GATE_PROFILE=off` stays set (the module autouse default) --
@@ -26447,6 +26509,17 @@ class TestRG78AndRG76DirectOracles:
             Path("run-gate.toml"), central_path)
         assert resolved["image"] == "runner:v1"
         assert "central run-gate.root.toml" in source
+        monkeypatch.delenv("TESTER_IMAGE", raising=False)
+        resolved, _ = run_gate.resolve_environment(
+            {"environment": "candidate"}, "unit", {}, central,
+            Path("run-gate.toml"), central_path)
+        assert resolved["image"] == "tester:local"
+        assert resolved["_image_selection"] == {
+            "declared_image": "tester:local",
+            "override_env": "TESTER_IMAGE",
+            "override_applied": False,
+            "effective_image": "tester:local",
+        }
         monkeypatch.setenv("TESTER_IMAGE", "tester:candidate")
         resolved, _ = run_gate.resolve_environment(
             {"environment": "candidate"}, "unit", {}, central,
