@@ -7949,8 +7949,13 @@ class TestRG103SequenceDoctor:
             run_gate.load_config_snapshot(proj)
         lanes = dict(cfg["lanes"])
         lanes["no-env"] = {"kind": "command", "argv": ["true"]}
+        lanes["bad-environment"] = {
+            "kind": "command", "environment": "undeclared",
+            "argv": ["true"],
+        }
         lanes["broken"] = {"kind": "sequence",
-                           "lanes": ["ghost", "no-env", "loop"]}
+                           "lanes": ["ghost", "no-env", "bad-environment",
+                                     "loop"]}
         lanes["loop"] = {"kind": "sequence", "lanes": ["broken"]}
         lanes["empty"] = {"kind": "sequence", "lanes": []}
         code = run_gate.cmd_doctor(lanes, proj, cfg, central, cfg_path,
@@ -7961,6 +7966,8 @@ class TestRG103SequenceDoctor:
                 "declared lane") in out
         assert "[FAIL] sequence 'broken' member 'no-env': declares no " \
             "environment" in out
+        assert ("[FAIL] sequence 'broken' member 'bad-environment':" in out
+                and "undeclared" in out)
         assert "[FAIL] sequence 'broken': sequence cycle through 'broken'" \
             in out
         assert "[FAIL] sequence 'empty': sequence 'empty' has no member " \
