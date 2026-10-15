@@ -85,9 +85,9 @@ same network at all.
 - `expose:` documents that a port is available but does NOT publish it.
   It is only reachable from containers on the same Docker network.
 
-**Implication**: only the edge proxy should use `ports:` for 443/8443 (and
-optionally 80).  Consumer services use `expose:` so Traefik can route to them
-without making them independently reachable from the internet.
+**Implication**: only the edge proxy should use `ports:` for public HTTPS and
+optional media listeners. Consumer services use `expose:` so Traefik can route
+to them without publishing their own host ports.
 
 ### `127.0.0.1` is per-network-namespace, not per-host
 
@@ -504,11 +504,18 @@ ambiguous.  At least one discriminator is required.
 
 ### Decision: support both subdomain and port-based routing
 
-Two Traefik entrypoints are defined:
+Two HTTP/TLS Traefik entrypoints are defined:
 - `websecure` on port 443: used for subdomain routing.
 - `websecure-alt` on port 8443: used for port-based routing when a subdomain
   is not resolvable to this host or (in static mode) not in the certificate
   SAN list.
+
+When Mattermost Calls support is enabled, two raw L4 entrypoints are added:
+one TCP and one UDP. The default feature is off. On the gstammtisch host, the
+public port 8443 is used for both Calls protocols, while alternate HTTPS is
+published on 9443 and still reaches Traefik's internal TCP 8443. Calls TCP
+uses internal TCP 8444; Calls UDP uses internal UDP 8443. These are distinct
+protocol sockets, so the numeric port can be reused safely.
 
 Consumers choose which entrypoint to use via labels.  The same Traefik instance
 serves both.
@@ -800,9 +807,8 @@ If two containers attempt to publish the same host port (e.g., both `ports: - "4
 - Docker rejects the second `docker compose up` with:
   `Bind for 0.0.0.0:443 failed: port is already allocated`
 - The first stack retains the binding; the second fails to start.
-- **Rule**: only the `edge-proxy` stack may publish host ports 443 and 8443
-  (and optionally 80 if `expose_http` is enabled).  Consumer stacks must use
-  `expose:` only.
+- **Rule**: only the `edge-proxy` stack may publish host HTTPS, optional HTTP,
+  and explicitly configured L4 media ports. Consumer stacks use `expose:` only.
 
 ### Traefik router rule collision (proxy level)
 

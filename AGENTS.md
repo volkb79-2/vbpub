@@ -65,6 +65,16 @@ For a Luna-routed task, use the same stdin form with `-m gpt-6-luna` and
 `-c 'model_reasoning_effort="xhigh"'`; choose `.codex` or `.codex2` as the
 operator directs.
 
+### Claude review sessions
+
+For Claude reviews, do not pass `--permission-mode plan`: it enters a planning
+interaction and may return asking what to work on instead of performing the
+assigned review. Never pass `--no-session-persistence`; keep review sessions
+resumable and retain their session IDs. When a follow-up concerns the same
+review scope and target revision, resume that session to preserve its context
+and avoid repeating orientation. Start a separate persistent session for an
+independent blind review or when the review target materially changes.
+
 When stdin carries the prompt, pass `-` as the prompt argument and do not also
 pass a positional prompt. Codex appends piped stdin to a positional prompt as a
 `<stdin>` block; some versions can also wait on inherited non-TTY stdin when a
