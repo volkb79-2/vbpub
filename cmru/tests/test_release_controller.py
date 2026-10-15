@@ -203,7 +203,8 @@ def test_release_launcher_records_controller_identity_before_transaction(
     )
     with pytest.raises(SystemExit) as exited:
         cli._release_launcher(
-            [], vargs, tmp_path / "cmru.orchestration.toml", tmp_path, {}, {}, [],
+            [], vargs, tmp_path / "cmru.orchestration.toml", tmp_path,
+            {"demo": SimpleNamespace(name="demo")}, {}, [],
             ["demo"], ["demo"], None, None, github_config=None,
         )
 

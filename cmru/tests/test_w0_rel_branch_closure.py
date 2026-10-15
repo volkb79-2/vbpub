@@ -135,7 +135,7 @@ class _Steps:
             if fail_on in steps:
                 raise RuntimeError(f"{fail_on} failed")
 
-        def unchanged(*_args):
+        def unchanged(*_args, **_kwargs):
             if unchanged_fails:
                 raise RuntimeError("candidate moved")
 

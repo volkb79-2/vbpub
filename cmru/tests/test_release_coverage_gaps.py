@@ -254,7 +254,15 @@ def test_cli_file_strategy_rechecks_the_changed_candidate(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **kwargs: calls.append("gate"))
     git_calls = []
-    monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: (git_calls.append(1) or ("gated" if len(git_calls) == 1 else "candidate")))
+
+    def fake_git(*_args, **_kwargs):
+        # HEAD is read before and after the gate (it must not move: both
+        # "gated"), then after versioning, where the file strategy has committed
+        # a version bump ("candidate") that the gate must judge again.
+        git_calls.append(1)
+        return "gated" if len(git_calls) <= 2 else "candidate"
+
+    monkeypatch.setattr(cli, "_git", fake_git)
     monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     monkeypatch.setattr("cmru.version.release_cmd", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_tag_on_head", lambda *args: None)

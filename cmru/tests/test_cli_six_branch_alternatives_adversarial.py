@@ -42,7 +42,7 @@ def test_sequential_no_tag_no_build_skips_build_and_checkpoints(monkeypatch, tmp
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_run_release_gates", lambda *args: None)
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **_kw: None)
     monkeypatch.setattr(transaction, "promote_workspace", lambda *args, **kwargs: None)
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: None)

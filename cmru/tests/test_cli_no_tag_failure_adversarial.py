@@ -9,7 +9,7 @@ def test_sequential_tagged_release_fails_closed_when_no_tag_reaches_head(monkeyp
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_run_release_gates", lambda *args: None)
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **_kw: None)
     monkeypatch.setattr(transaction, "promote_workspace", lambda *args, **kwargs: None)
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "a" * 40)
