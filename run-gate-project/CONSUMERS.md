@@ -313,15 +313,29 @@ that launches it. Such a wrapper must preserve the inherited
 does not grant placement or daemon-control authority.
 
 For a command-wrapped qualification such as Assay's B105 self-qualification,
-the declaration is:
+the declaration is complete as shown — the observer opt-in requires the
+ephemeral environment and both ceilings (`memory = "2g"` and `pids = 8192`, the
+caps B105's own container wrapper applies), and the config is refused at load
+without them:
 
+<!-- run-gate-config -->
 ```toml
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+
 [lanes.self-qualification]
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification"]
 resource_observer = "cgprofile"
 clean_tree = true
+
+[lanes.self-qualification.resources]
+memory = "2g"
+pids = 8192
 ```
 
 Before starting the lane, Run-Gate queries cgprofile's control `version`

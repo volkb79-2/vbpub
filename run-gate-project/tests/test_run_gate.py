@@ -3621,7 +3621,12 @@ exit 0
         inside.mkdir()
         monkeypatch.setenv("TMPDIR", str(inside))
         assert run_gate.main(["ui-unit"]) != 0
-        assert "scratch_root must be outside repo_top" in capfd.readouterr().err
+        # Run-Gate merges the judge's stderr into the lane output it tees to
+        # stdout, so the refusal and the closed result are both on stdout.
+        captured = capfd.readouterr()
+        assert "scratch_root must be outside repo_top" in captured.out
+        assert "verdict ERROR" in captured.out
+        assert "JUDGE-REACHED-R0" not in captured.out
 
 
 class TestExecDisclosure:
@@ -4290,7 +4295,12 @@ class TestPinVersionVerify:
 
     def test_undeclared_version_never_probes(self):  # controlled wrong impl
         inner = run_gate.build_assay_inner(self._lane(None), Path("/proj"), Path("/repo"))
-        assert "--version" not in inner
+        # Only the JUDGE's version probe is the pin claim under test. The
+        # inner script legitimately probes `git --version` for the
+        # safe.directory floor (RG-99), so a bare `--version` is not evidence.
+        assert "./tools/assay/assay.pyz --version" not in inner
+        assert "version probe failed" not in inner
+        assert "version mismatch" not in inner
 
     def _live_proj(self, tmp_path, reported_version: str) -> Path:
         """Project whose fake pinned artifact reports `reported_version`."""
@@ -27399,6 +27409,12 @@ class TestRG78AndRG76DirectOracles:
         names, then load and resolve the same lane with the shipped loader."""
         project = tmp_path / "proj"
         project.mkdir()
+        # pytest's basetemp can sit under a repository that has its own
+        # `run-gate.root.toml` declaring these names; the nearest central
+        # config wins, so give the fixture a nearer, empty one. Otherwise the
+        # legacy name is already declared and there is nothing to refuse.
+        near_root = tmp_path / run_gate.ROOT_CONFIG_NAME
+        near_root.write_text("schema_version = 1\n")
         (project / "run-gate.toml").write_text(textwrap.dedent(f"""\
             schema_version = 1
             [lanes.docs]
@@ -27410,6 +27426,8 @@ class TestRG78AndRG76DirectOracles:
         def resolve():
             cfg, project_path, central, central_path, *_rest = \
                 run_gate.load_config_snapshot(project)
+            assert central_path.resolve() == near_root.resolve()
+            assert not central.get("environments")
             return run_gate.resolve_environment(
                 cfg["lanes"]["docs"], "docs", cfg, central, project_path,
                 central_path)
@@ -28620,6 +28638,50 @@ class TestUserDocumentationOracles:
             if fence is None:
                 lines.append(line)
         return "\n".join(lines)
+
+    def _observer_wrapper_example(self) -> str:
+        """The exact TOML text of CONSUMERS' command-wrapper observer example."""
+        matches = [source for _line, _tagged, source in
+                   self._toml_fences(RUN_GATE_DIR / "CONSUMERS.md")
+                   if "[lanes.self-qualification]" in source]
+        assert len(matches) == 1, "expected one documented observer wrapper"
+        return matches[0]
+
+    def _load_observer_example(self, tmp_path: Path, source: str):
+        """Run documented config text through the effective loader.
+
+        A nearer, empty central config keeps the result independent of any
+        `run-gate.root.toml` above pytest's basetemp: the example must stand
+        on its own declared environment."""
+        (tmp_path / run_gate.ROOT_CONFIG_NAME).write_text("schema_version = 1\n")
+        project = tmp_path / "consumer"
+        project.mkdir()
+        (project / run_gate.CONFIG_NAME).write_text(source)
+        return run_gate.load_config_snapshot(project)
+
+    def test_observer_wrapper_example_loads_with_both_documented_caps(
+            self, tmp_path):
+        source = self._observer_wrapper_example()
+        cfg, cfg_path, central, central_path, *_rest = \
+            self._load_observer_example(tmp_path, source)
+        lane = cfg["lanes"]["self-qualification"]
+        assert lane["resource_observer"] == "cgprofile"
+        assert lane["resources"] == {"memory": "2g", "pids": 8192}
+        env, _source = run_gate.resolve_environment(
+            lane, "self-qualification", cfg, central, cfg_path, central_path)
+        assert env["mode"] == "ephemeral"
+        assert env["image"] == "tester-unified:local"
+
+    @pytest.mark.parametrize("cap", ['memory = "2g"', "pids = 8192"])
+    def test_observer_wrapper_example_is_refused_without_either_cap(
+            self, tmp_path, cap):
+        """Fails if the loader stops requiring a cap, and — through the
+        extracted text — if the documented example stops carrying one."""
+        source = self._observer_wrapper_example()
+        assert source.count(cap) == 1, f"documented example lost {cap!r}"
+        with pytest.raises(run_gate.GateError,
+                           match="resources.memory and resources.pids"):
+            self._load_observer_example(tmp_path, source.replace(cap, ""))
 
     def test_run_gate_config_examples_load_with_current_schema(self):
         parsed_examples = 0
