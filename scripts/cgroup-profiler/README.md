@@ -59,6 +59,17 @@ revision value and the Dockerfile refuses before installing packages. See the
 deployed image's version and OCI source revision against the release tag using
 the [CIU deployment guide](docs/CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 
+A CMRU release also publishes a **GitHub Release body** for `cgprofile-v<version>`: it
+opens with the exact pull instruction (`docker pull ghcr.io/volkb79-2/cgprofile:<version>`)
+and then carries that version's dated section of `CHANGES.md`, including any pending
+`[Unreleased]` and migration notes, which CMRU folds into the tagged candidate. It is written
+by `cmru handler oci-image-release`, the **last command** of the push step, so it runs only
+after `build-push.py --push` has pushed the image; it writes release metadata only and never
+builds or pushes. `cmru release --dry-run` previews that exact body, and CMRU refuses a
+misconfigured handler before any release side effect. See the
+[design](docs/DESIGN-GUIDE.md#the-github-release-body-for-the-published-image) and the
+[pasteable preview](docs/CONSUMERS.md#preview-the-github-release-body).
+
 - **`ATTACH-GUIDE.md`** — how to wrap or attach this to a gate in any repo.
   Start there if you want to use it.
 - **`DESIGN.md`** — architecture and module contracts. Start there if you want

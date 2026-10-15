@@ -32,4 +32,21 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   full-source R2 verdict; the long R2 campaign was deferred under the
   operator's release policy.
 
+### Documentation
+- The README, design guide and consumer guide now describe the GitHub Release body CMRU
+  publishes for each release (`cmru handler oci-image-release`, the last command of the push
+  step, after the image push): its pull instruction and tagged notes, the
+  `cmru release --dry-run` preview, and what CMRU verifies before and after writing it.
+
+### Migration
+- Native R2 consumers that use CGProfile resource observation must move to
+  observer contract 2 and the observer-only endpoint
+  `/run/cgprofile/observer/resource-observer.sock`. Contract-1 resource
+  observer requests are refused; the separate daemon control protocol remains
+  contract 1 on `/run/cgprofile/ctl.sock`.
+- Host observer setup must provision the `cgprofile-observer` group and
+  `/run/cgprofile/observer` as `0751 root:cgprofile-observer`. On vbpub hosts,
+  apply MDT's observer-only host setup before using the endpoint. This is
+  required only for lanes configured to use the native R2 observer.
+
 <!-- cmru: release history -->

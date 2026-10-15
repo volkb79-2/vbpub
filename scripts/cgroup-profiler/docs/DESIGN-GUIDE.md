@@ -625,6 +625,40 @@ manually exporting either value.
 The pasteable CIU pin and verification command live in
 [`CONSUMERS.md`](CONSUMERS.md#deploy-a-published-daemon-image-with-ciu).
 
+## The GitHub Release body for the published image
+
+The image on GHCR is cgprofile's only released artifact: nothing is uploaded to the GitHub
+Release, so the wheel-style body (artifact name, SHA256) has nothing true to say, and
+without a handler the `cgprofile-v<version>` release would have no body at all. CMRU's
+`oci-image-release` handler fills that gap. CGProfile's push step therefore has two commands,
+in this order:
+
+1. `build-push.py --push`, which pushes the release image;
+2. `cmru handler oci-image-release --prefix cgprofile --image ghcr.io/volkb79-2/cgprofile
+   --cwd .`, which writes the release body.
+
+The order is the contract, not a convention: the body announces an image, so it must follow
+the push of that image, and CMRU refuses (before any release side effect) a configuration in
+which anything follows it. The handler derives `:<version>` from the protected
+`CMRU_RELEASE_TAG` and reads the notes from the protected candidate commit's
+`cgroup-profiler/CHANGES.md`, so the pull instruction and the notes always describe the tag
+that was gated. Its `--image` repeats the registered release coordinate with an explicit
+`ghcr.io` registry (a bare `owner/name` would be read by Docker as a Docker Hub namespace),
+and it is the image `build-push.py` pushes, not a second source of truth: change one and the
+published pull instruction no longer matches the image.
+
+What CMRU checks before any side effect, and what it cannot: it validates the handler's
+`--prefix`, `--image` and `--cwd`, and that it is the last command, for the selected project
+before any prepare step, gate, tag or image push; `cmru release --dry-run` runs the same check
+and prints the complete body. After it writes, it reads the release back and succeeds only if
+the release has the same ID and tag, exactly the intended body, and the Git tag is still at
+the release commit. GitHub cannot make that atomic with creating the release, so a difference
+is reported as "the release was written and not rolled back" for inspection; the workflow
+narrows that window and reports it honestly rather than claiming to prevent partial public
+publication. The notes are the tagged changelog section, never `[Unreleased]` read later,
+so a failed or retried release cannot publish different notes than its tag carries. The
+[preview and ordering recipe](CONSUMERS.md#preview-the-github-release-body) is pasteable.
+
 ## Decisions intentionally left outside this repair
 
 This repair does not invent policy for the S1–S5 follow-up surfaces. Those

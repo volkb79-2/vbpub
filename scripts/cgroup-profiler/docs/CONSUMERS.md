@@ -67,6 +67,45 @@ binds. If `/run/cgprofile` is missing, CIU refuses a missing source rather
 than creating an empty directory; host setup must also provision the observer
 subdirectory before the contract-2 listener can start.
 
+### Preview the GitHub Release body
+
+A CMRU release also publishes the GitHub Release body for `cgprofile-v<version>`: the pull
+instruction, then that version's dated section of `CHANGES.md` (pending `[Unreleased]` and
+`### Migration` notes are folded into it in the release candidate). Preview the exact text
+before releasing, from the repository root:
+
+```bash
+cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0 --dry-run
+```
+
+The preview prints the complete body between `----- begin release body -----` and
+`----- end release body -----`, beginning with:
+
+```text
+**Image:** `ghcr.io/volkb79-2/cgprofile:1.0.0`
+
+Pull: `docker pull ghcr.io/volkb79-2/cgprofile:1.0.0`
+
+## [1.0.0] - <date>
+```
+
+It uses the same builder as the release, leaves `CHANGES.md` unchanged, and has no artifact
+name or SHA256 because CGProfile uploads no asset. The body is written by the last command of
+`[steps.push]` in `cmru.toml`, which must stay after the image push:
+
+```text
+build-push.py --push                      # pushes ghcr.io/volkb79-2/cgprofile:<version>
+cmru handler oci-image-release --prefix cgprofile --image ghcr.io/volkb79-2/cgprofile --cwd .
+```
+
+Do not add a command after it or reorder them: CMRU refuses a release (and the dry run) before
+any prepare step, gate, tag or image push when the handler is malformed, not last, names a
+prefix other than `cgprofile`, or gives an image without an explicit registry. Never run the
+handler by hand; it needs the protected release identity that only `cmru release` supplies.
+If a release reports that the GitHub Release "was written" but could not be verified, the
+image is already published: inspect the `cgprofile-v<version>` release and its tag before
+retrying (see the [design note](DESIGN-GUIDE.md#the-github-release-body-for-the-published-image)).
+
 ## One-shot collector behavior
 
 If `cgprofile run` or `attach` requests DAMON while the host's `nr_kdamonds`
