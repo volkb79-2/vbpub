@@ -21,16 +21,49 @@ while saved-record compatibility is answered by the record's schema and
 provenance contract. See the [user-facing version contract](../CONSUMERS.md#distribution-installed-wheel-and-semver)
 and [CLI overview](../README.md#distribution-installed-wheel).
 
-## Changed-line coverage follows content across renames
+## Release coverage uses a fixed tag baseline and follows content across renames
 
-The selftest coverage floor compares executable lines changed since the
-selected base. Git must identify renames before Run-Gate filters the diff to
+The selftest release coverage floor compares executable lines changed since
+the newest reachable stable `run-gate-vX.Y.Z` tag. The tag remains a fixed
+baseline after the candidate merges to `main`; a `main` merge-base would become
+the candidate itself and report no changed source lines. On the first stable
+release, the selftest's explicit `--allow-first-release` policy reports the
+diff check as `SKIPPED` when no stable tag exists. The test suite still runs,
+and the separate `assay-r1` campaign supplies whole-source line-and-branch
+qualification before merge. If stable tags exist but none are reachable from
+the candidate, the check remains an error. Git must identify renames before Run-Gate filters the diff to
 `run_gate.py`. A path-limited diff hides the deleted path from rename
 detection; when a compatibility symlink becomes the wheel module, Git then
 reports every line in the module as newly added. The gate uses rename and
 rewrite detection on the project diff, then applies its source filter to the
 parsed paths. This keeps the denominator tied to changed content while still
-ignoring unrelated files. See the [release-gate description](../README.md#version-probe).
+ignoring unrelated files. See the [release-gate description](../README.md#version-probe)
+and [consumer adoption note](../CONSUMERS.md#release-coverage-baseline).
+
+## The release gate tests the published wheel
+
+The CMRU `run-tests` step reads the new dated version section prepared in
+`CHANGES.md` and refuses a section at or behind the newest release tag. It
+requires CMRU's protected `CMRU_RELEASE_GATE_COMMIT` and verifies that it
+matches the selected checkout, so a dated heading alone cannot stamp a stable
+version onto an unrelated or manually prepared tree. For a first release, no
+prior stable tag exists; the protected CMRU transaction may use its prepared
+version as the initial stable identity. It then
+builds that wheel through CMRU's wheel builder and builds a uniquely tagged
+`tester-unified` image from those exact wheel bytes. The selftest selects that
+tag through `image_env`, leaving the shared `:local` tag alone. Before pytest,
+the running gate checks the image labels, installed module paths and bytes,
+distribution version, and the installed CLI's `--version` result against the
+candidate receipt. After tagging, CMRU rebuilds the wheel from
+the same candidate commit and refuses to publish if its version, filename,
+digest, or tester image identity differs. This connects the bytes that ran in
+the gate to the bytes attached to the release rather than treating matching
+version strings as artifact identity.
+
+The receipt is stored under the candidate's ignored `.assay/` directory and
+names the exact commit, wheel, and image. A normal local `run-gate selftest`
+does not require a release receipt; CMRU sets the receipt variable only for its
+release transaction. See the [consumer release workflow](../CONSUMERS.md#exact-wheel-release-verification).
 
 ## A worktree is the complete judgment boundary
 
@@ -78,6 +111,22 @@ prepares release-baseline facts. That protects the aggregate controller's
 credential-bearing Git operation; the Run-Gate mount protects later host Git
 operations after a tester lane.
 
+## Concurrent exec lanes use read-only Git safety
+
+Run-Gate needs `safe.directory=*` because a container user may differ from the
+host owner of the mounted checkout. Writing that setting with `git config
+--global` creates a shared lock file in the runner. Two concurrent `docker
+exec` lanes can then race during setup, and the loser can look like a product
+failure. Run-Gate instead passes the setting through Git's `GIT_CONFIG_COUNT`
+environment interface. Each lane process sees the value without writing a
+config file, lock file, or adding mutual exclusion. Test containers are
+single-user environments; this contract covers Run-Gate's own safety setting,
+not arbitrary global Git configuration writes performed by lane bodies.
+
+RG-99 remains open until concurrent lane commands have been observed inside
+the same live runner container. See [SPEC.md R-19a](../SPEC.md#5-execution-contract)
+and the [consumer guidance](../CONSUMERS.md#exec-mode-git-safety).
+
 ## The runner belongs to the judged worktree
 
 An exec lane uses a persistent runner managed by that project's deployment
@@ -116,6 +165,19 @@ inserts the old implicit choice as literal config text, preserving comments
 and requiring the operator to review the resulting diff. It migrates one
 file per call so a project config and an ancestor `run-gate.root.toml` can be
 checked independently.
+
+## Per-invocation image identity
+
+Release gates must not replace a shared mutable image tag while proving which
+wheel they tested. `image_env` is available only to ephemeral environments:
+the Run-Gate process that starts the lane can select that invocation's image,
+but an `exec` lane cannot replace the image of a persistent container. The
+named host variable overrides the declared `image` when set and non-empty; when
+unset, the declared value remains in effect. A set but empty value refuses.
+Run-Gate prints the override source and effective image, then records that
+selection and the actual Docker image ID in the lane history. This binds a
+receipt-specific candidate to its evidence without moving a shared tag and
+makes an environment override visible during later review.
 
 ## PID 1 and cgroup resource events
 
@@ -323,6 +385,16 @@ stale or forged, while the process can fail after writing its verdict. This
 comparison keeps both facts visible and fails closed only on an actual
 inconsistency.
 
+## Env drift does not certify unreadable source
+
+`--check-env` is a heuristic scan, so its result is only as complete as the
+Python files it can read. A syntax error can use the documented line-regex
+fallback; an I/O or decoding error cannot be scanned at all. Run-Gate names
+that file and marks the overall scan incomplete instead of folding missing
+input into a clean zero-reference result. The drift scan remains advisory:
+it does not decide whether a lane is allowed to run, while a toolchain failure
+still keeps its existing exit status.
+
 ## Preflight probes preserve lane context
 
 An Assay inventory or toolchain probe must reach the same ephemeral
@@ -330,6 +402,17 @@ environment as its judged lane. It uses the lane's configured container user
 and the same operator extra mounts. Without those, an imported Assay command
 or tool can be unavailable to preflight even though it is present in the
 actual lane, or a probe can pass under permissions the lane does not have.
+
+## Imported lanes are resolved only when needed
+
+An inventory import depends on a live Assay judge. Requiring that judge merely
+to list lanes or run an unrelated local command turns a stopped optional
+runner into a project-wide outage. Run-Gate therefore resolves inventory for
+an imported lane selection, a local sequence that references an imported
+lane, or `--check-env`; read-only listing keeps its stable three-column output
+and marks imports unresolved on stderr. When the judge is unavailable, a
+selected imported lane still fails with the runner remedy. This keeps unknown
+inventory distinct from an empty inventory and avoids guessing imported names.
 
 ## Source-backed Assay identifies code as source
 
@@ -563,6 +646,14 @@ creates the root nor pretends it can certify the future lane user's access.
 The first live lane in those environments creates the root and checks access.
 A configured `state_root` or an `exec` environment is checked
 through its declared runner, never by host-statting a container path.
+For an Assay lane whose inventory declares R1, R2, or R3, the selected root
+must also be outside the judged worktree. Run-Gate sets `TMPDIR` so pytest
+uses the verified durable path, but Assay itself reads the same variable when
+choosing snapshot scratch. An in-tree default such as
+`<checkout>/.run-gate` would therefore violate Assay's snapshot boundary.
+Run-Gate checks the selected judge's inventory and returns NOT_RUN/`state-mount`
+with an external-mount remedy before invoking that lane; R0-only lanes retain
+the default in-repository root.
 When the default `<checkout>/.run-gate` path is not mounted there, the result
 is NOT_RUN/`state-mount` with the required read-write mount named. A container
 environment can set `state_root` when its durable mount uses another path;

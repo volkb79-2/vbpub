@@ -661,9 +661,11 @@ def test_bk_run_needs_at_least_one_lane(token_file, git_repo):
     assert "at least one lane" in res.stderr
 
 
-def test_bk_run_refuses_outside_a_git_work_tree(token_file, tmp_path):
+def test_bk_run_refuses_outside_a_git_work_tree(token_file, tmp_path,
+                                               monkeypatch):
     outside = tmp_path / "nogit"
     outside.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     res = _bk("--dry-run", "run", "selftest", token_file=token_file, cwd=outside)
     assert res.returncode == 2
     assert "git work tree" in res.stderr

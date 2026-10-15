@@ -120,6 +120,14 @@ environment-down, environment-mismatch, env-missing, external-missing,
 external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
 judge-digest, provenance-mismatch, and state-mount.
 
+Container lanes receive Git's `safe.directory=*` through per-process
+`GIT_CONFIG_COUNT` variables. Run-Gate writes no global config or lock file,
+so its setup does not contend on a shared config lock. RG-99 remains open
+until concurrent exec-mode acceptance is complete. Use one user per test
+container. See the
+[design rationale](docs/DESIGN-GUIDE.md#concurrent-exec-lanes-use-read-only-git-safety)
+and [consumer guidance](CONSUMERS.md#exec-mode-git-safety).
+
 Every `[environments.<name>]` declares `mode = "ephemeral"`, `"exec"`, or
 `"host"`. Names carry no behavior: `host` is an ordinary name and is a
 container only when its declaration says `mode = "ephemeral"`; `mode = "host"`
@@ -134,6 +142,18 @@ run-gate migrate-modes run-gate.root.toml  # when this repo has one
 The tool refuses a missing mode. Review the diff, then migrate wrapper
 assumptions separately. See the [mode rationale](docs/DESIGN-GUIDE.md#runner-modes-name-the-runtime-contract) and the
 [consumer migration steps](CONSUMERS.md#closed-results-and-runner-mode-migration).
+
+Ephemeral container environments may also declare `image_env = "NAME"`. If
+that environment variable is set, its non-empty value selects the image for
+that invocation; if unset, the declared `image` remains in effect. This lets a
+release gate use a receipt-specific image without replacing a shared tag such
+as `tester-unified:local`. Run-Gate prints the override source and effective
+image, then records the declared image, selected value, and actual Docker image
+ID (or why it could not be read) in `run-gate history --json`. The override is
+read by the Run-Gate process that starts the container and is not forwarded
+into it. See the
+[image identity rationale](docs/DESIGN-GUIDE.md#per-invocation-image-identity)
+and [consumer example](CONSUMERS.md#per-invocation-image-selection).
 
 ### PID 1 and cgroup resource failures
 
@@ -177,6 +197,10 @@ from `assay lanes --json` with
 lanes inherit the shared command and pin; a project lane with the same name
 overrides it. This is the v7 shape chosen to carry directly into CIU v8's
 `[testing.judge] import` contract. See the [consumer example](CONSUMERS.md#shared-assay-lane-imports).
+Run-Gate asks for inventory only when it needs an imported lane or when
+`--check-env` requests the full lane set. Listing and unrelated local lanes
+remain usable if a persistent judge is stopped; `--list` reports unresolved
+imports on stderr and keeps its three-column machine-readable output.
 
 An assay lane can pass `--reuse-from PATH`, repeatable `--rejudge ID`, and
 `--rejudge-outcome BUCKET` to one selected Assay run. A command lane accepts
@@ -203,6 +227,14 @@ Assay 5.2.0. Read the
 [state contract](CONSUMERS.md#resume-progress-and-durable-assay-state) and
 [mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
 before removing an ephemeral worktree.
+
+An Assay lane whose inventory declares R1, R2, or R3 also needs its selected
+`state_root` outside the judged worktree. Assay uses `TMPDIR` for its own
+snapshot scratch as well as passing it to pytest; keeping the default
+`<checkout>/.run-gate` inside an ordinary checkout would put that scratch
+inside the repository. Run-Gate refuses that combination before starting the
+lane and names the durable external mount to configure. R0-only lanes can use
+the default in-repo root.
 
 Projects inside the checkout keep their relative path key. A project outside
 the checkout uses a separate `assay-state-external/<sha256>` path based on its
@@ -266,16 +298,31 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
 1. **`selftest`** — the release gate (`cmru.toml [steps.run-tests]`
    points at it; a release cannot be tagged unless it passes). It owns a
    capped `tester-unified` container and runs from the selected worktree's
-   project directory. In `tester-unified`, it runs
-   `python3 -m pytest tests -q --cov=. --cov-branch` directly, followed by
+   project directory. When CMRU releases this package, the run-tests step first
+   builds the prepared-version wheel and tester image from those exact bytes,
+   then writes a commit-bound receipt. The lane checks that image identity
+   before testing. Wheel/image preparation requires CMRU's protected
+   `CMRU_RELEASE_GATE_COMMIT` to match the selected checkout; a manual command
+   cannot stamp a stable release version onto an unrelated tree. In `tester-unified`, it runs
+   `/opt/tester-venv/bin/python -m pytest tests -q --cov=. --cov-branch`, followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since `main`. The comparison detects renames before filtering to
+   since the newest reachable stable `run-gate-vX.Y.Z` release tag. On the
+   first stable release, when no stable Run-Gate tag exists, it reports the
+   diff check as `SKIPPED` because there is no released source baseline; the
+   separately run `assay-r1` campaign remains the whole-source line-and-branch
+   qualification before merge. A stable tag that exists but is unreachable is
+   still an error. This immutable baseline stays meaningful after merge; using `main` there would
+   resolve the merge base to the candidate itself and hide the release's
+   source changes. The comparison detects renames before filtering to
    `run_gate.py`, so replacing the retired compatibility symlink does not
-   make the whole module appear new; see the [coverage design](docs/DESIGN-GUIDE.md#changed-line-coverage-follows-content-across-renames).
+   make the whole module appear new; see the [coverage design](docs/DESIGN-GUIDE.md#release-coverage-uses-a-fixed-tag-baseline-and-follows-content-across-renames)
+   and [consumer adoption note](CONSUMERS.md#release-coverage-baseline).
    The release contract deliberately does not claim a
    whole-project 100% floor; the separate `assay-r1` lane is the broader
-   line-and-branch judge.
+   line-and-branch judge. After the gate and tag, CMRU rebuilds the wheel and
+   refuses publication unless its version and SHA-256 still match the receipted
+   wheel and tester image; see [the exact-wheel release design](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel).
 2. **`assay-r1`** (RG-55 wave, package P2, C2) — the stricter, SECOND
    judge in its own `tester-unified` container: the selected worktree's
    assay source running the same test command, `assay.toml [lanes.r1]`
@@ -460,9 +507,9 @@ the tool's reason to exist and MUST be implemented + tested:
   paths so worktree gitfiles resolve — when no alias is derivable (bare
   host, `phys == repo`) the lane refuses instead of silently collapsing to
   one mount; declare the second view via
-  `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`;
-  `git config --global safe.directory '*'`
-  inside the gate container.
+  `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`. Run-Gate supplies
+  `safe.directory=*` through per-process Git environment variables; no global
+  config write is needed.
 - **Mounts (RG-86):** an ephemeral container sees ONLY the judged worktree
   (all its own files, git-ignored ones included) plus the git common dir
   (read-write, ciu v8 SPEC S16.4.9), `<repo>/.run-gate` for assay state, and
@@ -497,7 +544,9 @@ the tool's reason to exist and MUST be implemented + tested:
   relying on it must migrate (CONSUMERS.md "BREAKING CHANGE"), because its
   absence produces a false GREEN, not an error. `--check-env` sweeps the
   project's Python for env reads no lane forwards or requires, including
-  reads wrapped in the project's own helper functions.
+  reads wrapped in the project's own helper functions. It names unreadable
+  files and marks the scan incomplete; see the
+  [design rationale](docs/DESIGN-GUIDE.md#env-drift-does-not-certify-unreadable-source).
 - **Clean tree:** refuse a dirty judged tree by default (assay lanes get this
   from assay; command lanes get it from the tool) — a gate over uncommitted
   state is not evidence.
@@ -600,6 +649,14 @@ drives lanes. Run `run-gate --version` to read its SemVer compatibility
 identity. There is no consumer script to copy, symlink, or synchronize.
 The [design guide](docs/DESIGN-GUIDE.md#semver-names-the-installed-tool)
 explains why release SemVer replaces the old copied-script revision marker.
+
+#### Breaking migration in 24.0.0
+
+Replace any copied `run-gate.py` file or symlink with the released Run-Gate
+wheel. Invoke `run-gate <lane>` from the project directory that owns
+`run-gate.toml`, and use `run-gate --version` to check the installed SemVer
+floor. Integer `__revision__` values and saved `revision` fields remain only
+as provenance; they are not compatibility versions.
 
 Project lane declarations remain in `run-gate.toml`; the installed command
 loads that file from the current project directory. Internal revision values

@@ -131,12 +131,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   ancestor `run-gate.toml` is always a project-local file and is ignored by
   this lookup.
 - **environment** — a named container/host execution fact set: `image`
-  (required), `cgroup_slice` or `cgroup_slice_env` (at most one, optional), `mode` (optional, `"ephemeral"`
-  or `"exec"`, default `"ephemeral"`), `forward_env` (optional list of
-  environment-variable names). `host` and `bare-host` are both built-in
-  names (never definable), and swapped roles in the host/bare-host flip
-  (RG-43): `host` (the
-  default) resolves to a synthetic environment — `image` is
+  (required for container modes), `image_env` (optional valid environment
+  variable name selecting an invocation-specific image in `ephemeral` mode),
+  `cgroup_slice` or `cgroup_slice_env` (at most one, optional), `mode`
+  (required, exactly one of
+  `"ephemeral"`, `"exec"`, or `"host"`), `forward_env` (optional list of
+  environment-variable names). The names `host` and `bare-host` are ordinary
+  names; neither has built-in behavior. RG-43 reversed the old meaning of
+  those names: `host` commonly names the default container environment and
+  runs through a synthetic environment — `image` is
   `DEFAULT_HOST_IMAGE` unless `$RUN_GATE_HOST_IMAGE` overrides it, no
   `cgroup_slice` declared (resolves from `$CGROUP_PARENT_DEV_GATES`,
   same as any named environment with no declared slice) — and runs through
@@ -284,9 +287,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `exec` requires `image` and runs inside a PERSISTENT runner this tool never
   starts or stops; `host` is a bare subprocess and forbids `image`. An
   environment named `host` is a container only when it explicitly declares
-  `mode = "ephemeral"`; `bare-host` is an ordinary name, not a built-in.
-  `run-gate migrate-modes PATH` mechanically inserts missing modes in one
-  config while preserving comments. `cgroup_slice` (optional non-empty
+  `mode = "ephemeral"`; `bare-host` is also an ordinary name, not a built-in.
+  To preserve the old bare-host behavior, declare
+  `[environments.bare-host] mode = "host"`; `run-gate migrate-modes PATH`
+  can materialize legacy names and insert missing mode declarations in one
+  config while preserving comments. `image_env` (optional valid
+  environment-variable name for `ephemeral` mode only; when present in the
+  process environment, its non-empty value overrides `image` for this
+  invocation; an unset variable uses the declared image; the variable is not
+  forwarded into the container), `cgroup_slice` (optional non-empty
   string) or `cgroup_slice_env` (optional valid environment-variable name;
   the two are mutually exclusive), `container_name` (optional non-empty string — an
   exec-mode environment's persistent runner, when it is not derivable from
@@ -437,6 +446,21 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   central one entirely (same name = project wins, no field merging); an
   undefined name → error naming the lane and BOTH candidate files. The
   environment's origin (project vs central + path) is printed (R-05).
+  `image_env` is legal only for `mode = "ephemeral"`; if the selected
+  environment declares it and that variable is present but empty, refuse
+  instead of silently falling back; otherwise a non-empty override selects
+  the invocation's image and the declared `image` remains the fallback only
+  when the variable is absent.
+
+  A lane history record for this environment carries an `image_selection`
+  object with the environment name and source, declared image, override
+  variable and whether it applied, effective image, and the immutable image ID
+  read from the created container. If Docker cannot provide that ID, the
+  record carries `image_id_status = "unavailable"` and the inspection reason.
+  If the container never starts, the status remains `"not-observed"`. The same
+  object is kept in the inflight record so a reattached run reports the
+  original selection instead of the current config. Older inflight records
+  without it do not inherit an image claim from the new config.
 
 - `R-22` **Shared central lanes (RG-16):** a central config may define
   `[lanes.*]`, schema-validated wherever it lives. The EFFECTIVE lane set of
@@ -527,8 +551,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   gate cgroup's `pids.max`. `--rm` is never used (explicit `docker rm -f` in
   a finally). The init flag is lifecycle hygiene, not a substitute for the
   cgroup placement or resource limits.
-- `R-16` **Inner command** (both kinds) starts `set -euo pipefail && git
-  config --global safe.directory '*' && ...`. Command kind: the lane argv
+- `R-16` **Inner command** (both kinds) starts `set -euo pipefail`, injects
+  `safe.directory=*` through Git's `GIT_CONFIG_COUNT` environment interface,
+  then runs the lane body. It does not write a global Git config file. Command
+  kind: the lane argv
   (`{worktree}`-substituted, shell-quoted) appended. Assay kind: source mode
   first installs the selected worktree's `assay/` package with no dependency
   resolution; explicit mode instead verifies each pin. Then `cd <effective
@@ -560,9 +586,9 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   on it — a traceback for a legal config, which `R-04` calls a defect; this
   fix now applies to every `mode = "host"` lane) (R-21). A command host-mode
   lane uses no docker and no safe.directory — that trap is container-specific;
-  an assay host-mode lane inherits the shared inner, whose
-  `GIT_CONFIG_GLOBAL` isolation (`R-19a`) keeps that write out of the
-  operator's own git config. Raw status mapping remains identical on every
+  an assay host-mode lane inherits the shared inner, whose read-only
+  `GIT_CONFIG_COUNT` injection (`R-19a`) does not write the operator's Git
+  config. Raw status mapping remains identical on every
   runner through R-04; the environment mode does not select an exit code.
 - `R-42` **Explicit environment modes replace built-in-name behavior**
   (RG-78, operator ruling D-654): every environment declares `mode`.
@@ -612,8 +638,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   names (duplicates and globs are refused). The shared `[assay].command` and
   non-empty `[assay].pins` are required. Each selected inventory entry creates
   one assay lane using its name and the import environment; explicit project
-  lanes override imported names. A failed or malformed inventory is an error,
-  never an empty import. The table shape matches CIU v8 S16.3's import object.
+  lanes override imported names. Inventory is resolved only when a selected
+  imported lane or a local sequence needs it, or when `--check-env` requests
+  the full set. `--list` and unrelated local lane runs do not require the
+  judge; an unavailable inventory is reported as unresolved on stderr while
+  `--list` preserves its three-column output. An explicit imported name may
+  be shown as unresolved; `lanes = "all"` never invents names. Selecting an
+  imported lane with an unavailable judge is an infrastructure ERROR with a
+  remedy. A malformed inventory remains an error, never an empty import. The
+  table shape matches CIU v8 S16.3's import object.
 - `R-50` **Daemon-wide gate count admission (RG-80, CIU v8 S21 count mode).**
   `[admission]` is project-local, has closed keys `enabled` (default false),
   `ticket_image` (required when enabled; already local; must run `/bin/true`),
@@ -697,16 +730,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `admission set` refuses to replace it rather than prescribing that command
   as a false repair.
 
-- `R-19a` **safe.directory scope:** both ephemeral and exec inner commands set
-  `GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig` before running `git config
-  --global --replace-all safe.directory '*'`. This avoids writing to
-  `~/.gitconfig`, which may be read-only or shared across containers.
-  `--replace-all` (RG-22) makes the write idempotent regardless of prior
-  state: a plain single-value `git config --global safe.directory '*'` fails
-  with "cannot overwrite multiple values" the moment the isolated gitconfig
-  already carries more than one `safe.directory` entry — reachable in
-  practice wherever exec-mode reuses that file across invocations sharing a
-  host or another process writes to it under the same `GIT_CONFIG_GLOBAL`.
+- `R-19a` **safe.directory scope:** inner commands inject
+  `safe.directory=*` with Git's `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0`, and
+  `GIT_CONFIG_VALUE_0` environment variables. This read-only injection creates
+  no config file or lock and adds no mutual exclusion. Concurrent lanes in an
+  exec runner therefore do not contend on Run-Gate's safe-directory setup.
+  Test containers are single-user environments; Run-Gate does not isolate
+  arbitrary global Git writes made by lane bodies. RG-99 remains open until
+  the concurrent exec-mode acceptance is complete.
 - `R-20` `budget` is parsed and enforced as a hard wall-clock bound beginning
   at admission, after shared-infrastructure and exec-runner locks have been
   acquired. Lock queue time is excluded (RG-63); when count admission is
@@ -779,7 +810,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   indirection the pass does not model — so a clean sweep is evidence, never
   a certificate, and `--check-env` stays advisory. A source file that does
   not parse is reported as such and falls back to the old line regex: "could
-  not read it" is never rendered as "there is nothing there".
+  not read it" is never rendered as "there is nothing there". A Python file
+  that cannot be read or decoded is named in the report and marks the scan
+  `INCOMPLETE`; the advisory exit status stays unchanged, and a zero count
+  does not certify sources the scanner could not inspect.
 
 - `R-25` **Override-reachability guard (RG-1):** a container command lane
   (ephemeral or exec) invoked with `--worktree` whose argv contains NO
@@ -904,8 +938,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   outer gate launcher owns host-side placement verification;
   physical-path
   derivability from mountinfo (bare-host view = warning naming
-  `$RUN_GATE_MOUNT_ALIAS`); git worktree resolution and `/tmp`
-  writability for `GIT_CONFIG_GLOBAL`; referenced images present locally
+  `$RUN_GATE_MOUNT_ALIAS`); git worktree resolution; referenced images present locally
   (advisory — a missing image may legitimately pull). One `[OK]`/`[WARN]`/
   `[FAIL]`/`[SKIP]`/`[INFO]` line per check plus a summary counting all
   five (`INFO`, `R-44c`, names a NEXT STEP rather than a defect — e.g. "no
@@ -1595,7 +1628,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     chowns an explicitly configured root inside an exec runner: CIU (or the
     environment owner) must mount the durable host directory read-write.
     The inner command creates only per-project descendants beneath this
-    checked root. An unknown probe result is ERROR,
+    checked root. When the root is lexically inside the selected worktree,
+    Run-Gate also asks the selected Assay judge for that lane's declared rigor.
+    If it includes R1, R2, or R3, Run-Gate refuses with NOT_RUN/`state-mount`
+    before the lane command: `TMPDIR` reaches the Assay judge so pytest can
+    use the verified state mount, and Assay also uses `TMPDIR` for snapshot
+    scratch, which must be outside `repo_top`. Configure and mount an absolute
+    durable `state_root` outside the judged worktree. R0-only lanes may keep
+    the default in-repository root. An unknown inventory or malformed rigor
+    result is ERROR; Run-Gate does not guess. An unknown state probe result is ERROR,
     never a writable-root certification. For `doctor`, a confirmed missing
     or unwritable root is FAIL and an indeterminate probe is SKIP.
 
