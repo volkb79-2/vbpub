@@ -754,14 +754,18 @@ Success has this shape (values abbreviated):
  ]}
 ```
 
-`pids_events_scope` and `memory_events_scope` are each `hierarchical` or
-`local`, derived from the verified cgroup2 mount's superblock options. The
-`.local` maps are always local, regardless of those options. When the local
-file is unavailable but the regular file is local under the verified mount
-mode, the regular file supplies equivalent local evidence. If a localevents
-mode is active for a controller with a candidate event file, the observer
-refuses contract 2 when the peer's candidate cgroup has child cgroups, since
-the local file then cannot prove the whole candidate subtree.
+`pids_events_scope` is always `hierarchical` in a successful response. The
+observer refuses contract 2 when `pids_localevents` is enabled: in that mode
+the pids event records a failed fork in the cgroup where the process attempted
+it, including failures caused by an ancestor's limit, and cannot identify which
+`pids.max` enforced the failure. `memory_events_scope` is `hierarchical` or
+`local`, derived from the verified mount options. The `.local` maps are always
+local, regardless of those options. When a local memory file is unavailable
+but the regular memory file is local under the verified mount mode, that
+regular file supplies equivalent local evidence. If `memory_localevents` is
+active and the candidate has a memory event file, the observer refuses contract
+2 when the candidate has child cgroups, since its local file then cannot prove
+the whole candidate subtree.
 
 `cgroups` is ordered from the peer's leaf through every ancestor to `/`.
 Each entry carries the canonical hierarchy path, selected mount ID, limit
