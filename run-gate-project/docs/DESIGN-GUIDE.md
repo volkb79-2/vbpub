@@ -26,9 +26,12 @@ and [CLI overview](../README.md#distribution-installed-wheel).
 The selftest release coverage floor compares executable lines changed since
 the newest reachable stable `run-gate-vX.Y.Z` tag. The tag remains a fixed
 baseline after the candidate merges to `main`; a `main` merge-base would become
-the candidate itself and report no changed source lines. The explicit
-`latest-release-tag` base refuses when the checkout has no reachable stable
-Run-Gate release tag. Git must identify renames before Run-Gate filters the diff to
+the candidate itself and report no changed source lines. On the first stable
+release, the selftest's explicit `--allow-first-release` policy reports the
+diff check as `SKIPPED` when no stable tag exists. The test suite still runs,
+and the separate `assay-r1` campaign supplies whole-source line-and-branch
+qualification before merge. If stable tags exist but none are reachable from
+the candidate, the check remains an error. Git must identify renames before Run-Gate filters the diff to
 `run_gate.py`. A path-limited diff hides the deleted path from rename
 detection; when a compatibility symlink becomes the wheel module, Git then
 reports every line in the module as newly added. The gate uses rename and
@@ -43,7 +46,9 @@ The CMRU `run-tests` step reads the new dated version section prepared in
 `CHANGES.md` and refuses a section at or behind the newest release tag. It
 requires CMRU's protected `CMRU_RELEASE_GATE_COMMIT` and verifies that it
 matches the selected checkout, so a dated heading alone cannot stamp a stable
-version onto an unrelated or manually prepared tree. It then
+version onto an unrelated or manually prepared tree. For a first release, no
+prior stable tag exists; the protected CMRU transaction may use its prepared
+version as the initial stable identity. It then
 builds that wheel through CMRU's wheel builder and builds a uniquely tagged
 `tester-unified` image from those exact wheel bytes. The selftest selects that
 tag through `image_env`, leaving the shared `:local` tag alone. Before pytest,

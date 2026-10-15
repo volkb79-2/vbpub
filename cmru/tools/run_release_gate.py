@@ -38,6 +38,9 @@ _RUN_GATE_MODULE_FILES = ("run_gate.py", "run_gate_admission.py")
 # inside this gate's fresh, snapshot-bound manifest. The plain `installed-wheel`
 # lane stays runnable directly (it bypasses the secret boundary, as documented).
 LIVE_WHEEL_LANE = "installed-wheel-live"
+FIRST_RELEASE_ASSAY_LANE = "assay-first-release"
+FIRST_RELEASE_R2_FOLLOW_UP_LANE = "assay-first-release-r2"
+FIRST_RELEASE_POSTPONEMENT_ID = "FIRST-RELEASE-R2"
 # Every directory the gate puts on ``sys.path`` (or whose scripts it runs), so a
 # stray top-level module such as ``cmru/src/json.py`` is as visible as a
 # package helper.
@@ -744,6 +747,11 @@ POSTPONE_REASON = (
     "operator-approved provisional release of CMRU 6.2.0: the R2 mutation lane "
     "was skipped and must be run afterwards against the released tag"
 )
+FIRST_RELEASE_POSTPONE_REASON = (
+    "first CMRU release has no earlier published source baseline; whole-source R0/R1/R3 ran, "
+    "and whole-source R2 must be run afterwards with "
+    f"`run-gate {FIRST_RELEASE_R2_FOLLOW_UP_LANE}`"
+)
 POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": "6.2.0"}
 
 
@@ -779,8 +787,22 @@ def _prepared_release_version(project_root: Path) -> str | None:
     return None
 
 
-def _validate_postponement(project_root: Path, tracking_id: str) -> str:
-    """Allow the documented R2 deferral only for its one planned release."""
+def _validate_postponement(
+    project_root: Path, tracking_id: str, *, first_release: bool = False,
+) -> str:
+    """Allow a documented first-release or KI-79 R2 deferral."""
+    if first_release:
+        if tracking_id != FIRST_RELEASE_POSTPONEMENT_ID:
+            raise RuntimeError(
+                "a CMRU checkout with no published stable release must use the "
+                f"{FIRST_RELEASE_POSTPONEMENT_ID} whole-source R2 follow-up"
+            )
+        observed_version = _prepared_release_version(project_root)
+        if observed_version is None:
+            raise RuntimeError(
+                "first-release R2 deferral requires a dated, prepared CMRU release heading"
+            )
+        return observed_version
     expected_version = POSTPONEMENT_RELEASE_VERSIONS.get(tracking_id)
     if expected_version is None:
         raise RuntimeError(
@@ -796,7 +818,9 @@ def _validate_postponement(project_root: Path, tracking_id: str) -> str:
     return observed_version
 
 
-def _record_postponement(project_root: Path, tracking_id: str) -> Path:
+def _record_postponement(
+    project_root: Path, tracking_id: str, *, first_release: bool = False,
+) -> Path:
     """Write the retained marker saying the mutation lane was skipped, and WARN.
 
     The marker lives under ``.assay`` so cmru's ``evidence_paths`` retain it
@@ -805,16 +829,20 @@ def _record_postponement(project_root: Path, tracking_id: str) -> Path:
     marker = project_root / POSTPONED_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
     candidate_commit = _git_output(project_root.parent, "rev-parse", "HEAD").decode("ascii").strip()
-    target_version = _validate_postponement(project_root, tracking_id)
+    target_version = _validate_postponement(
+        project_root, tracking_id, first_release=first_release,
+    )
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
         "lane": "mutation",
         "status": "postponed",
         "tracking_id": tracking_id,
         "candidate_commit": candidate_commit,
         "target_version": target_version,
+        "baseline_state": "no-published-stable-release" if first_release else "prior-release-available",
+        "follow_up_lane": FIRST_RELEASE_R2_FOLLOW_UP_LANE if first_release else "mutation",
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "reason": POSTPONE_REASON,
+        "reason": FIRST_RELEASE_POSTPONE_REASON if first_release else POSTPONE_REASON,
     }
     marker.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(
@@ -946,8 +974,6 @@ def _run_release_gate_with_private_cache(
         raise RuntimeError(
             f"release gate helper is not running from the selected worktree: {PROJECT_ROOT}"
         )
-    if postpone_mutation is not None:
-        _validate_postponement(project_root, postpone_mutation)
     _assert_no_untracked_gate_code(repo_root)
     _preflight_assay_source(repo_root)
     assay_git, baseline = _load_components()
@@ -1009,6 +1035,39 @@ def _run_locked_gate(
 ) -> int:
     _assert_no_untracked_gate_code(repo_root)
     auth = baseline._repository_git_auth(repo_root)
+    latest_stable_tag, remote_tags = baseline.published_release_state(
+        repo_root, git_auth=auth,
+    )
+    first_release = latest_stable_tag is None
+    if first_release:
+        if postpone_mutation is None:
+            raise RuntimeError(
+                "origin has no published stable CMRU release tag, so the changed-source "
+                "mutation baseline does not exist; release through `gate-provisional` to "
+                "run whole-source R0/R1/R3 and record the required whole-source R2 follow-up"
+            )
+        if postpone_mutation != "KI-79":
+            raise RuntimeError(
+                "origin has no published stable CMRU release tag; only the release workflow's "
+                "provisional R2 deferral can select the whole-source first-release gate"
+            )
+        expected_commit = _git_output(repo_root, "rev-parse", "HEAD").decode("ascii").strip()
+        protected_commit = os.environ.get("CMRU_RELEASE_GATE_COMMIT", "")
+        if protected_commit != expected_commit:
+            raise RuntimeError(
+                "whole-source first-release qualification is permitted only inside CMRU's "
+                "protected release transaction with CMRU_RELEASE_GATE_COMMIT equal to HEAD"
+            )
+        effective_postponement = FIRST_RELEASE_POSTPONEMENT_ID
+        _validate_postponement(
+            project_root, effective_postponement, first_release=True,
+        )
+        assay_lane = FIRST_RELEASE_ASSAY_LANE
+    else:
+        effective_postponement = postpone_mutation
+        assay_lane = "assay"
+        if postpone_mutation is not None:
+            _validate_postponement(project_root, postpone_mutation)
     lane_environment = _lane_environment()
     from cmru import gate_snapshot
 
@@ -1021,17 +1080,19 @@ def _run_locked_gate(
     )
     if result:
         return result
-    for lane in (LIVE_WHEEL_LANE, "assay", "coverage"):
+    for lane in (LIVE_WHEEL_LANE, assay_lane, "coverage"):
         result = _run_snapshot_lane(
             repo_root, lane, lane_environment, snapshot, gate_snapshot,
         )
         if result:
             return result
 
-    if postpone_mutation is not None:
+    if effective_postponement is not None:
         # Provisional gate: ONLY the mutation lane (and its remote-facts
         # preparation) is skipped; the postponement is recorded as evidence.
-        _record_postponement(project_root, postpone_mutation)
+        _record_postponement(
+            project_root, effective_postponement, first_release=first_release,
+        )
     else:
         # A full gate never leaves an earlier provisional marker behind.
         (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
@@ -1043,6 +1104,7 @@ def _run_locked_gate(
                 project_root,
                 git_auth=auth,
                 assay_git=assay_git,
+                remote_tag_commits=remote_tags,
             )
         facts_json = json.dumps(facts, separators=(",", ":"), sort_keys=True)
         if auth.token and auth.token in facts_json:

@@ -16,11 +16,26 @@
 #
 # Build from the repo root using `tester-unified/build-image.sh`; it supplies
 # the exact Run-Gate wheel as a named build context and verifies its version
-# and digest during the image build.
+# and digest during the image build. The default base is the published MDT
+# cockpit image; a zero-release bootstrap may explicitly use the upstream
+# Python devcontainer base, which has no vbpub release dependency.
 # The repo-root .dockerignore whitelists the project sources in this context.
-FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+ARG TESTER_UNIFIED_BASE_IMAGE=ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+FROM ${TESTER_UNIFIED_BASE_IMAGE}
 
 USER root
+
+# Keep host-facing tools explicit so the zero-release build can use the
+# upstream Python base without inheriting a published vbpub image. Docker is a
+# client only; the launcher supplies the host socket when a lane needs it.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates curl docker.io docker-compose git jq openssh-client util-linux \
+ && rm -rf /var/lib/apt/lists/* \
+ && docker --version \
+ && docker compose version \
+ && git --version \
+ && nsenter --version
 
 # git's detached auto-maintenance (`git gc --auto` / `git maintenance run
 # --auto` after a commit) forks a daemon that is orphaned to PID 1. A gate
@@ -93,7 +108,7 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 #           --build-arg CLI_EXTENDED_WHEEL_SHA256=<its sha256>   (the existing arg).
 #           The digest is verified with sha256sum, the wheel goes in the same
 #           `--no-index --no-deps` way, and the post-install assertion requires a
-#           `+local` version (a release has none). Never a fallback: pinned stays
+#           PEP 440 local version (a stable release has none). Never a fallback: pinned stays
 #           the default and fails by itself when the pinned release is missing.
 ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
@@ -199,8 +214,9 @@ RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/in
 
 # Build-time assertion (BG-05): `worktree` and cmru resolve from THIS image's
 # locally built cmru wheel (a PyPI release can never carry the +tester.unified
-# local version segment), and cli_extended is the RELEASED wheel, not a local
-# build and not an index install; cmru's metadata must require it.
+# local version segment), and cli_extended matches the selected resolver mode:
+# a stable published wheel by default, or an explicitly supplied local wheel.
+# cmru's metadata must require cli-extended.
 RUN /opt/tester-venv/bin/python - <<'PY'
 import importlib.metadata as metadata
 import os
@@ -240,15 +256,15 @@ assert reported == f"run-gate {run_gate_version}\n", reported
 released = metadata.version("cli-extended")
 if os.environ["CLI_EXTENDED_RESOLVE"] == "local":
     # Zero-release mode: the operator-built wheel (sha256-verified above) carries a
-    # +local version segment so it can never be mistaken for, or equal, a release.
-    assert "+" in released, f"cli-extended {released} has no +local segment: not a local build"
+    # PEP 440 local version segment so it cannot be mistaken for a stable release.
+    assert "+" in released, f"cli-extended {released} has no local version segment"
 else:
     assert "+" not in released, f"cli-extended {released} is a local build, not the release"
 assert any(r.startswith("cli-extended") for r in metadata.requires("cmru") or ()), (
     "cmru's wheel does not declare cli-extended as a dependency"
 )
 print("cmru local, Run-Gate installed:", run_gate_version,
-      "; cli-extended release:", released)
+      "; cli-extended identity:", released)
 PY
 
 # The container runs as uid 1003 (to match the host-owned bind mounts), which

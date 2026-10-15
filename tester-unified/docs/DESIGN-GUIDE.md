@@ -50,6 +50,13 @@ host-systemd probe, and passes it to Buildx. The loaded image carries the exact
 Run-Gate wheel version and digest as labels; the builder checks those labels
 before reporting success.
 
+The default base is MDT's published devcontainer image for parity with the
+cockpit. The explicit `--base-image` override supports first-release
+bootstrapping: it lets the tester image start from the upstream Python
+devcontainer while vbpub has no released images. The Dockerfile installs its
+small host-tool set itself. A missing MDT release never triggers an implicit
+fallback; the base choice is visible in the build command.
+
 The wheel supplies the command entrypoint; the bind-mounted checkout supplies
 lane configuration and judged project files. CIU's release gate also compares
 the installed Run-Gate module bytes with the selected checkout and refuses a

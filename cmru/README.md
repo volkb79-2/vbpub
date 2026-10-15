@@ -74,19 +74,29 @@ several repositories below it. A nested orchestration file starts a new root.
 To build CMRU itself before any CMRU wheel is installed, use the supported
 fresh-checkout bootstrap script. It imports handlers from `src`; the wheel bytes
 are built in the dedicated `wheel-builder` image, so the host does not need the
-`build` package. The handlers also need `cli_extended`, so the script first obtains
-the released cli-extended wheel, verifies its sha256 and unpacks it into a private
-temporary directory on `PYTHONPATH` (nothing is installed into `$CMRU_BOOTSTRAP_PYTHON`):
-either `CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL` plus `CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256`
-(offline), or the release pointer through `tester-unified/fetch-cli-extended.py`.
-A digest mismatch stops the bootstrap before anything is built:
+`build` package. The image is built from Microsoft's upstream Python base and
+does not need a released vbpub image. The handlers also need `cli_extended`,
+so the script normally obtains the released wheel, verifies its sha256, and
+unpacks it into a private temporary directory on `PYTHONPATH` (nothing is
+installed into `$CMRU_BOOTSTRAP_PYTHON`). For a zero-release estate, explicitly
+set `CMRU_BOOTSTRAP_CLI_EXTENDED=source`; the script builds the library from
+this checkout at CMRU's declared floor with a `+bootstrap.source` suffix. If
+the checkout has no `cmru-v*` tag, also supply an explicit temporary CMRU
+version with `SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU`. It never falls back
+from a missing release automatically. The offline form is
+`CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL` plus
+`CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256`. A digest mismatch stops the bootstrap
+before anything is built:
 
 ```bash
-cd /workspaces/vbpub/cmru
-./build-initial-standalone.sh
+cd /workspaces/vbpub
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
+  CMRU_BOOTSTRAP_CLI_EXTENDED=source ./cmru/build-initial-standalone.sh
 ```
 
 The image is defined by [`wheel-builder/Dockerfile`](../wheel-builder/Dockerfile).
+For the complete zero-release sequence and dependency order, see
+[`docs/BOOTSTRAP-FROM-ZERO.md`](../docs/BOOTSTRAP-FROM-ZERO.md).
 The script prints the manual virtual-environment install commands (cli-extended wheel
 first, then cmru, both `--no-index --no-deps`) after it produces the wheel; once
 installed, all subsequent builds use the `cmru` console script.
@@ -784,6 +794,13 @@ tracks that gap. The current 6.2.0 release candidate selects
 and canary checks, then records the operator-approved R2 deferral under KI-79.
 It therefore records no mutation event evidence. The full `gate` lane remains
 available for the post-release mutation campaign.
+If origin has no published stable CMRU tag, the same protected provisional
+release workflow instead runs the explicit whole-source `assay-first-release`
+lane. It does not fabricate a diff base. The gate records that whole-source R2
+is still due and names `run-gate assay-first-release-r2` as its follow-up; a
+failed or inaccessible origin query is an error, never an empty release history.
+See the [first-release design](docs/DESIGN-GUIDE.md#first-release-has-no-historical-diff-baseline)
+and [release steps](docs/CONSUMERS.md#the-cmru-r0-r3-gate).
 The registered `gate` lane queries every CMRU release tag on origin through
 CMRU's credential-scoped Git transport, then forwards only token-free tag and
 commit facts to the `cmru-mutation` tester environment as

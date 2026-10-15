@@ -541,6 +541,29 @@ def test_bootstrap_honours_the_scm_pretend_version_override(tmp_path):
     assert lines.get("DIST") == "9.8.7" and lines.get("IDENTITY") == "9.8.7", raw
 
 
+def test_tagless_bootstrap_accepts_an_explicit_temporary_cmru_version(tmp_path):
+    tree = _bootstrap_tree(tmp_path)
+    subprocess.run(
+        ["git", "-C", str(tree["repo_root"]), "tag", "-d", "cmru-v1.2.3"],
+        check=True, capture_output=True,
+    )
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    probe_out = tmp_path / "probe.txt"
+    tree["env"].update(
+        CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel),
+        CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest,
+        SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU="0.0.0+bootstrap.source",
+        CMRU_TEST_PROBE_PY=str(_bare_interpreter()),
+        CMRU_TEST_PROBE_OUT=str(probe_out),
+        CMRU_TEST_PROBE_CODE="import importlib.metadata as m; print(m.version('cmru'))",
+    )
+    tree["env"].pop("SETUPTOOLS_SCM_PRETEND_VERSION", None)
+
+    _run_bootstrap(tree)
+
+    assert probe_out.read_text("utf-8").strip() == "0.0.0+bootstrap.source"
+
+
 def test_bootstrap_refuses_when_no_cmru_version_can_be_derived(tmp_path):
     tree = _bootstrap_tree(tmp_path)
     subprocess.run(["git", "-C", str(tree["repo_root"]), "tag", "-d", "cmru-v1.2.3"], check=True, capture_output=True)

@@ -10,10 +10,13 @@ import importlib.metadata
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
+from zipfile import BadZipFile, ZipFile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +48,10 @@ class ReleaseCandidateError(RuntimeError):
     """Release inputs or their recorded artifact identities disagree."""
 
 
+class NoStableReleaseTag(ReleaseCandidateError):
+    """No prior stable Run-Gate release exists in this checkout."""
+
+
 def _git(*args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(REPOSITORY_ROOT), *args],
@@ -60,8 +67,16 @@ def _git(*args: str) -> str:
     return result.stdout.strip()
 
 
-def prepared_release_version(changes_path: Path) -> str:
-    """Read the dated version CMRU prepared for this candidate."""
+def prepared_release_version(
+    changes_path: Path, *, allow_first_release: bool = False,
+) -> str:
+    """Read the dated version CMRU prepared for this candidate.
+
+    A first stable release has no previous tag to compare against. That case is
+    accepted only by the protected CMRU release transaction, after
+    :func:`prepare` has bound its gate commit to this checkout. Ordinary local
+    calls still require a stable baseline.
+    """
     source = REPOSITORY_ROOT / "cmru" / "src"
     source_entry = str(source)
     added_source = source_entry not in sys.path
@@ -97,7 +112,12 @@ def prepared_release_version(changes_path: Path) -> str:
         raise ReleaseCandidateError(
             f"{changes_path} has no dated stable release section prepared by CMRU"
         )
-    latest = _latest_release_tag()
+    try:
+        latest = _latest_release_tag()
+    except NoStableReleaseTag:
+        if not allow_first_release:
+            raise
+        return prepared_version
     if _semver_key(prepared_version) <= _semver_key(latest[1]):
         raise ReleaseCandidateError(
             f"prepared Run-Gate version {prepared_version} is not newer than "
@@ -122,7 +142,7 @@ def _latest_release_tag() -> tuple[str, str]:
             version = match.group(1)
             stable.append((_semver_key(version), tag, version))
     if not stable:
-        raise ReleaseCandidateError(
+        raise NoStableReleaseTag(
             "cannot prove the prepared Run-Gate version is new: no stable "
             "run-gate-vX.Y.Z release tag is available in this checkout"
         )
@@ -233,6 +253,134 @@ def _write_receipt(record: dict[str, str], path: Path) -> None:
     os.replace(temporary, path)
 
 
+def _build_cli_extended_source_wheel() -> tuple[Path, str]:
+    """Build the declared CMRU runtime dependency from this checkout's source.
+
+    This explicit bootstrap path lets the first Run-Gate release build its
+    tester image before cli-extended has a published wheel. It does not change
+    the normal pinned/latest image modes.
+    """
+    cmru_pyproject = REPOSITORY_ROOT / "cmru" / "pyproject.toml"
+    try:
+        document = tomllib.loads(cmru_pyproject.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise ReleaseCandidateError(
+            f"cannot read CMRU runtime requirements from {cmru_pyproject}: {exc}"
+        ) from exc
+    requirement = re.compile(r"cli[-_.]extended\s*>=\s*([0-9]+(?:\.[0-9]+)*)\Z", re.I)
+    project = document.get("project")
+    dependencies = project.get("dependencies") if isinstance(project, dict) else None
+    if not isinstance(dependencies, list):
+        raise ReleaseCandidateError(
+            f"{cmru_pyproject} has no project.dependencies list"
+        )
+    floor = next((
+        match.group(1)
+        for item in dependencies
+        if isinstance(item, str) and (match := requirement.fullmatch(item.strip()))
+    ), None)
+    if floor is None:
+        raise ReleaseCandidateError(
+            f"{cmru_pyproject} declares no cli-extended>=<floor> runtime dependency"
+        )
+
+    version = f"{floor}+bootstrap.source"
+    source = REPOSITORY_ROOT / "libraries" / "cli-extended"
+    dist = source / "dist"
+    epoch = _git("log", "-1", "--format=%ct")
+    env = os.environ.copy()
+    env["SOURCE_DATE_EPOCH"] = epoch
+    env["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED"] = version
+    result = subprocess.run(
+        ["cmru", "handler", "wheel-build", "--cwd", str(source)],
+        cwd=REPOSITORY_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise ReleaseCandidateError(
+            "cannot build cli-extended from the selected checkout for the "
+            f"first-release tester image: {result.stderr.strip()[:500]}"
+        )
+    expected = sorted(dist.glob(f"cli_extended-{version}-*.whl"))
+    if len(expected) != 1:
+        raise ReleaseCandidateError(
+            f"expected one cli-extended {version} source wheel under {dist}; found {len(expected)}"
+        )
+    wheel = expected[0]
+    try:
+        payload = wheel.read_bytes()
+        with ZipFile(wheel) as archive:
+            metadata_files = [
+                name for name in archive.namelist()
+                if name.endswith(".dist-info/METADATA")
+            ]
+            if len(metadata_files) != 1:
+                raise ReleaseCandidateError(
+                    f"cli-extended source wheel {wheel.name} has {len(metadata_files)} METADATA files"
+                )
+            metadata = archive.read(metadata_files[0]).decode("utf-8")
+    except (OSError, UnicodeError, ValueError, BadZipFile, KeyError) as exc:
+        raise ReleaseCandidateError(
+            f"cannot verify cli-extended source wheel {wheel}: {exc}"
+        ) from exc
+    if not re.search(rf"(?m)^Name: cli[-_.]extended\s*$", metadata, re.I):
+        raise ReleaseCandidateError(f"{wheel.name} is not a cli-extended wheel")
+    observed_version = re.search(r"(?m)^Version: ([^\r\n]+)$", metadata)
+    if observed_version is None or observed_version.group(1) != version:
+        raise ReleaseCandidateError(
+            f"cli-extended source wheel version is "
+            f"{observed_version.group(1) if observed_version else '(missing)'!r}, "
+            f"expected {version!r}"
+        )
+
+    digest = hashlib.sha256(payload).hexdigest()
+    local_wheels = REPOSITORY_ROOT / "tester-unified" / "local-wheel"
+    local_wheels.mkdir(parents=True, exist_ok=True)
+    target = local_wheels / wheel.name
+    unrelated = [
+        path for path in local_wheels.glob("cli_extended-*.whl")
+        if path != target
+    ]
+    if unrelated:
+        raise ReleaseCandidateError(
+            "tester-unified/local-wheel contains another cli-extended wheel; "
+            "remove the stale bootstrap input before retrying: "
+            + ", ".join(path.name for path in unrelated)
+        )
+    shutil.copy2(wheel, target)
+    return target, digest
+
+
+def _tester_image_build_command(image_tag: str) -> list[str]:
+    command = [
+        str(REPOSITORY_ROOT / "tester-unified" / "build-image.sh"),
+        "--wheel-dir", str(PROJECT_ROOT / "dist"),
+        "--tag", image_tag,
+    ]
+    base_image = os.environ.get("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", "").strip()
+    if base_image:
+        command.extend(["--base-image", base_image])
+    cli_extended_mode = os.environ.get(
+        "RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "",
+    ).strip()
+    if cli_extended_mode == "source":
+        _wheel_path, cli_extended_sha256 = _build_cli_extended_source_wheel()
+        command.extend([
+            "--cli-extended-resolve", "local",
+            "--cli-extended-wheel-sha256", cli_extended_sha256,
+        ])
+    elif cli_extended_mode in {"pinned", "latest"}:
+        command.extend(["--cli-extended-resolve", cli_extended_mode])
+    elif cli_extended_mode:
+        raise ReleaseCandidateError(
+            "RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE must be source, pinned or latest"
+        )
+    return command
+
+
 def _candidate_wheel_path(receipt: dict[str, str]) -> Path:
     """Resolve and verify the exact wheel named by a prepared receipt."""
     try:
@@ -330,7 +478,9 @@ def prepare(image_tag: str | None = None) -> dict[str, str]:
             "CMRU release-gate commit does not match the selected Run-Gate checkout: "
             f"expected {gate_commit}, observed {commit}"
         )
-    version = prepared_release_version(PROJECT_ROOT / "CHANGES.md")
+    version = prepared_release_version(
+        PROJECT_ROOT / "CHANGES.md", allow_first_release=True,
+    )
     image_tag = image_tag or f"tester-unified:run-gate-candidate-{commit[:12]}"
     epoch = _git("log", "-1", "--format=%ct")
     env = os.environ.copy()
@@ -348,11 +498,7 @@ def prepare(image_tag: str | None = None) -> dict[str, str]:
             f"built Run-Gate wheel {wheel['version']} does not match prepared release {version}"
         )
     subprocess.run(
-        [
-            str(REPOSITORY_ROOT / "tester-unified" / "build-image.sh"),
-            "--wheel-dir", str(PROJECT_ROOT / "dist"),
-            "--tag", image_tag,
-        ],
+        _tester_image_build_command(image_tag),
         cwd=REPOSITORY_ROOT,
         env=env,
         check=True,

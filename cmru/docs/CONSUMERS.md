@@ -29,6 +29,23 @@ a separate short `-h` spelling.
 build), not a separately versioned operator entrypoint, so it is outside this
 top-level identity surface. Project steps use `cmru handler <verb>`.
 
+### Building the first wheel from source
+
+For a checkout with no published `cli-extended` or CMRU release, build both
+wheels from this repository and install the commands printed by the script:
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
+  CMRU_BOOTSTRAP_CLI_EXTENDED=source ./cmru/build-initial-standalone.sh
+```
+
+The source mode is explicit, creates a `+bootstrap.source` library wheel at
+CMRU's declared dependency floor, and never activates as a fallback. The
+temporary CMRU version covers a checkout with no CMRU tag. The
+wheel-builder image is built from Microsoft's upstream Python base when absent.
+The [zero-release procedure](../../docs/BOOTSTRAP-FROM-ZERO.md) covers the
+tester image and project release order after this bootstrap.
+
 ---
 
 ## Git version for local tag inspection
@@ -713,6 +730,24 @@ lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
 KI-79. That release therefore has no mutation event evidence. Run `run-gate
 gate` when full R2 evidence is required; that lane includes the mutation
 campaign.
+
+For a CMRU repository with no published stable `cmru-vX.Y.Z` tag, the
+protected `gate-provisional` release workflow first verifies that origin was
+successfully queried and found empty. It then substitutes the whole-source
+`cmru-first-release` lane for the ordinary changed-line `assay` lane. The
+first-release marker identifies `run-gate assay-first-release-r2` as the
+pending mutation campaign. Run it against the released source commit after the
+first tag exists:
+
+```sh
+cd cmru
+run-gate assay-first-release-r2
+```
+
+This follow-up uses a literal whole-source target list, so it requires no
+previous CMRU tag. An inaccessible origin is an error and never selects this
+path. The automated choice and its exact-commit restriction are described in
+the [first-release design](DESIGN-GUIDE.md#first-release-has-no-historical-diff-baseline).
 
 The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0

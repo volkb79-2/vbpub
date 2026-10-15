@@ -1884,12 +1884,21 @@ the merge-base collapse to the candidate itself and hide its source changes.
 The lane invokes its coverage helper this way:
 
 ```console
-python tools/coverage_gate.py --repo . --base latest-release-tag \\
-  --coverage-json coverage.json --source run_gate.py
+python tools/coverage_gate.py --repo . --base latest-release-tag \
+  --allow-first-release --coverage-json coverage.json --source run_gate.py
 ```
 
-The helper refuses if Git history has no reachable stable Run-Gate release
-tag, because it cannot derive a trustworthy release baseline in that state.
+On the first stable release, when no stable Run-Gate tag exists, the explicit
+`--allow-first-release` option reports this diff check as `SKIPPED`: there is
+no released source baseline to compare. The test suite still runs, and the
+separate `assay-r1` lane must supply whole-source line-and-branch
+qualification before merge. If stable tags exist but none are reachable from
+the candidate, the helper still errors rather than treating that as a first
+release. Later releases always compare against the newest reachable stable
+tag and enforce the same 100% changed-line floor.
+For the first stable release, run `run-gate assay-r1` from the project root
+against the reviewed source; this whole-source line-and-branch lane supplies
+the qualification that has no prior release diff baseline.
 See the [design rationale](docs/DESIGN-GUIDE.md#release-coverage-uses-a-fixed-tag-baseline-and-follows-content-across-renames)
 and [release-gate overview](README.md#version-probe).
 
@@ -1906,6 +1915,22 @@ receipt. Keep the package, wheel, and image steps inside this release workflow
 so the gate and published asset refer to the same candidate commit and bytes.
 See the [design rationale](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel)
 and [tester image build procedure](../tester-unified/README.md).
+
+For a first-party zero-release bootstrap, the release transaction can build
+its tester inputs from the selected repository source and an upstream Python
+base. Set both choices explicitly:
+
+```bash
+RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie \\
+RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE=source \
+  cmru release run-gate-project --set-version 24.0.0
+```
+
+The source mode builds the CMRU runtime's `cli-extended` wheel from the same
+transaction checkout and verifies its digest before installing it in the
+tester image. With either variable unset, the normal configured base and
+dependency mode apply; a missing first-party artifact does not trigger a
+fallback.
 
 
 ## Anti-goals (read before extending)

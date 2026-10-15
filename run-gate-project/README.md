@@ -287,8 +287,12 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    `/opt/tester-venv/bin/python -m pytest tests -q --cov=. --cov-branch`, followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since the newest reachable stable `run-gate-vX.Y.Z` release tag. This
-   immutable baseline stays meaningful after merge; using `main` there would
+   since the newest reachable stable `run-gate-vX.Y.Z` release tag. On the
+   first stable release, when no stable Run-Gate tag exists, it reports the
+   diff check as `SKIPPED` because there is no released source baseline; the
+   separately run `assay-r1` campaign remains the whole-source line-and-branch
+   qualification before merge. A stable tag that exists but is unreachable is
+   still an error. This immutable baseline stays meaningful after merge; using `main` there would
    resolve the merge base to the candidate itself and hide the release's
    source changes. The comparison detects renames before filtering to
    `run_gate.py`, so replacing the retired compatibility symlink does not

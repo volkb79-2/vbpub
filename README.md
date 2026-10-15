@@ -104,10 +104,12 @@ cmru --help
 cmru dependencies
 ```
 
-The script builds `wheel-builder:local` automatically when that image is absent. It
-does not require `cmru.handlers` to be installed: it adds `cmru/src` only for the
-bootstrap process. After installation, the `cmru` console script is the canonical
-interface for this repository and for each individual project.
+The script builds `wheel-builder:local` automatically when that image is absent.
+The wheel-builder uses Microsoft's upstream Python image rather than a published
+vbpub image, so it can build the first CMRU and library wheels from source. The
+script does not require `cmru.handlers` to be installed: it adds `cmru/src` only
+for the bootstrap process. After installation, the `cmru` console script is the
+canonical interface for this repository and for each individual project.
 
 Before running a release gate, ensure the dedicated gate image is built from
 [`tester-unified/Dockerfile`](tester-unified/Dockerfile), and keep gate

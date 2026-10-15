@@ -13,6 +13,31 @@ version and digest, and installs that wheel into the image. It requires
 CMRU's `tester-gate` probe, passes the same parent to Buildx, and checks the
 loaded image labels against the wheel's version and SHA-256.
 
+For a zero-release bootstrap, choose the upstream Python base explicitly so
+building the gate image does not require MDT's published image. Bootstrap CMRU
+and cli-extended from this checkout first, then pass the digest that command
+prints for its source-built cli-extended wheel:
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
+  CMRU_BOOTSTRAP_CLI_EXTENDED=source cmru/build-initial-standalone.sh
+cp libraries/cli-extended/dist/cli_extended-*.whl tester-unified/local-wheel/
+CLI_EXTENDED_SHA256='<source-wheel sha256 printed by the bootstrap command>'
+tester-unified/build-image.sh \
+  --base-image mcr.microsoft.com/devcontainers/python:3.14-trixie \
+  --cli-extended-resolve local \
+  --cli-extended-wheel-sha256 "$CLI_EXTENDED_SHA256" \
+  --wheel-dir run-gate-project/dist \
+  --tag tester-unified:bootstrap
+```
+
+Before running a release gate, point Run-Gate at the immutable image ID:
+
+```bash
+RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:bootstrap)"
+export RUN_GATE_TESTER_UNIFIED_IMAGE
+```
+
 ```bash
 tester-unified/run --workdir run-gate-project -- run-gate selftest
 tester-unified/run --workdir run-gate-project -- run-gate --base BASE_SHA assay-r1

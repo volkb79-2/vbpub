@@ -5,9 +5,13 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 wheel_dir="$repo_root/run-gate-project/dist"
 image_tag="tester-unified:local"
 cgroup_parent="${CGROUP_PARENT_DEV_GATES:-}"
+base_image=""
+cli_extended_resolve=""
+cli_extended_sha256=""
+no_cache=0
 
 usage() {
-  echo "usage: $0 [--wheel-dir DIR] [--tag IMAGE] [--cgroup-parent SLICE]" >&2
+  echo "usage: $0 [--wheel-dir DIR] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX] [--no-cache] [--cgroup-parent SLICE]" >&2
   exit 2
 }
 
@@ -15,14 +19,53 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --wheel-dir) wheel_dir=${2:?}; shift 2 ;;
     --tag) image_tag=${2:?}; shift 2 ;;
+    --base-image) base_image=${2:?}; shift 2 ;;
+    --cli-extended-resolve) cli_extended_resolve=${2:?}; shift 2 ;;
+    --cli-extended-wheel-sha256) cli_extended_sha256=${2:?}; shift 2 ;;
+    --no-cache) no_cache=1; shift ;;
     --cgroup-parent) cgroup_parent=${2:?}; shift 2 ;;
     -h|--help)
-      echo "usage: $0 [--wheel-dir DIR] [--tag IMAGE] [--cgroup-parent SLICE]"
+      echo "usage: $0 [--wheel-dir DIR] [--tag IMAGE] [--base-image IMAGE] [--cli-extended-resolve pinned|latest|local] [--cli-extended-wheel-sha256 HEX] [--no-cache] [--cgroup-parent SLICE]"
       exit 0
       ;;
     *) usage ;;
   esac
 done
+
+build_args=()
+if [[ -n "$base_image" ]]; then
+  build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE=$base_image")
+fi
+if (( no_cache )); then
+  build_args+=(--no-cache)
+fi
+case "$cli_extended_resolve" in
+  "")
+    [[ -z "$cli_extended_sha256" ]] || {
+      echo "--cli-extended-wheel-sha256 requires --cli-extended-resolve local" >&2
+      exit 2
+    }
+    ;;
+  pinned|latest)
+    [[ -z "$cli_extended_sha256" ]] || {
+      echo "--cli-extended-wheel-sha256 is valid only with --cli-extended-resolve local" >&2
+      exit 2
+    }
+    build_args+=(--build-arg "CLI_EXTENDED_RESOLVE=$cli_extended_resolve")
+    ;;
+  local)
+    [[ "$cli_extended_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+      echo "--cli-extended-resolve local requires --cli-extended-wheel-sha256 with 64 lowercase hex digits" >&2
+      exit 2
+    }
+    build_args+=(--build-arg "CLI_EXTENDED_RESOLVE=local")
+    build_args+=(--build-arg "CLI_EXTENDED_WHEEL_SHA256=$cli_extended_sha256")
+    ;;
+  *)
+    echo "--cli-extended-resolve must be pinned, latest or local" >&2
+    exit 2
+    ;;
+esac
 
 if [[ -z "$cgroup_parent" ]]; then
   echo "CGROUP_PARENT_DEV_GATES or --cgroup-parent is required; refusing an ungoverned image build" >&2
@@ -58,6 +101,7 @@ printf '%s  %s\n' "$run_gate_sha256" "$wheel_stage/$run_gate_filename" \
   }
 
 docker buildx build --load --cgroup-parent "$cgroup_parent" \
+  "${build_args[@]}" \
   --build-context "run-gate-wheel=$wheel_stage" \
   --build-arg "RUN_GATE_TESTER_VERSION=$run_gate_version" \
   --build-arg "RUN_GATE_TESTER_WHEEL_SHA256=$run_gate_sha256" \

@@ -39,6 +39,93 @@ def _completed(stdout="", stderr="", returncode=0):
     return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
 
 
+def test_release_image_bootstrap_uses_only_explicit_overrides(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(
+        release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project",
+    )
+    monkeypatch.setenv(
+        "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE",
+        "mcr.microsoft.com/devcontainers/python:3.14-trixie",
+    )
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "source")
+    monkeypatch.setattr(
+        release_candidate, "_build_cli_extended_source_wheel",
+        lambda: (tmp_path / "cli-extended.whl", "a" * 64),
+    )
+
+    command = release_candidate._tester_image_build_command("tester-unified:first")
+
+    assert command == [
+        str(tmp_path / "tester-unified" / "build-image.sh"),
+        "--wheel-dir", str(tmp_path / "run-gate-project" / "dist"),
+        "--tag", "tester-unified:first",
+        "--base-image", "mcr.microsoft.com/devcontainers/python:3.14-trixie",
+        "--cli-extended-resolve", "local",
+        "--cli-extended-wheel-sha256", "a" * 64,
+    ]
+
+    monkeypatch.delenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE")
+    monkeypatch.delenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE")
+    command = release_candidate._tester_image_build_command("tester-unified:normal")
+    assert command == [
+        str(tmp_path / "tester-unified" / "build-image.sh"),
+        "--wheel-dir", str(tmp_path / "run-gate-project" / "dist"),
+        "--tag", "tester-unified:normal",
+    ]
+
+
+def test_release_image_bootstrap_rejects_an_unknown_cli_extended_mode(monkeypatch):
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "automatic")
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="must be source, pinned or latest",
+    ):
+        release_candidate._tester_image_build_command("tester-unified:bad")
+
+
+def test_source_bootstrap_builds_and_digest_checks_cli_extended_from_checkout(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(
+        release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project",
+    )
+    cmru_root = tmp_path / "cmru"
+    cmru_root.mkdir()
+    (cmru_root / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["cli-extended>=0.3.0"]\n',
+        encoding="utf-8",
+    )
+    source = tmp_path / "libraries" / "cli-extended"
+    dist = source / "dist"
+    local_wheels = tmp_path / "tester-unified" / "local-wheel"
+    expected_wheel = dist / "cli_extended-0.3.0+bootstrap.source-py3-none-any.whl"
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: "1760486400")
+
+    def fake_run(argv, *, cwd, env, check, capture_output, text):
+        assert argv == ["cmru", "handler", "wheel-build", "--cwd", str(source)]
+        assert cwd == tmp_path
+        assert env["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED"] == "0.3.0+bootstrap.source"
+        assert env["SOURCE_DATE_EPOCH"] == "1760486400"
+        dist.mkdir(parents=True, exist_ok=True)
+        with ZipFile(expected_wheel, "w") as archive:
+            archive.writestr(
+                "cli_extended-0.3.0+bootstrap.source.dist-info/METADATA",
+                "Name: cli-extended\nVersion: 0.3.0+bootstrap.source\n",
+            )
+        return _completed()
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", fake_run)
+
+    wheel, digest = release_candidate._build_cli_extended_source_wheel()
+
+    assert wheel == local_wheels / expected_wheel.name
+    assert wheel.read_bytes() == expected_wheel.read_bytes()
+    assert digest == hashlib.sha256(expected_wheel.read_bytes()).hexdigest()
+
+
 def test_prepared_release_version_uses_first_dated_stable_section(monkeypatch, tmp_path):
     changes = tmp_path / "CHANGES.md"
     changes.write_text(
@@ -69,6 +156,19 @@ def test_prepared_release_version_refuses_a_heading_that_is_already_released(mon
     monkeypatch.setattr(release_candidate, "_git", lambda *args: "run-gate-v24.0.0" if args[0] == "tag" else "")
     with pytest.raises(release_candidate.ReleaseCandidateError, match="not newer than the latest release tag"):
         release_candidate.prepared_release_version(changes)
+
+
+def test_prepared_release_version_allows_an_explicit_first_release(monkeypatch, tmp_path):
+    changes = tmp_path / "CHANGES.md"
+    changes.write_text("## [24.0.0] - 2026-10-14\n\nFirst stable release.\n", encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "_git", lambda *args: "")
+
+    with pytest.raises(release_candidate.NoStableReleaseTag, match="no stable.*release tag"):
+        release_candidate.prepared_release_version(changes)
+
+    assert release_candidate.prepared_release_version(
+        changes, allow_first_release=True,
+    ) == "24.0.0"
 
 
 def test_prepared_release_version_refuses_unreleased_only_changelog(tmp_path):
