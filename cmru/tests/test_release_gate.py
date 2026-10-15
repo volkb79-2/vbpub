@@ -57,10 +57,20 @@ LANES = [
 
 
 def _sample_run_gate_wheel() -> bytes:
+    """Deterministic wheel bytes.
+
+    ``ZipFile.writestr(name, ...)`` stamps the current time into each entry, so
+    the archive (and its SHA-256) changed whenever a second boundary passed
+    between computing the expected identity and rechecking it mid-gate. Fixed
+    entry timestamps make every call return the same bytes.
+    """
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w") as archive:
-        archive.writestr("run_gate.py", b"wheel run gate module\n")
-        archive.writestr("run_gate_admission.py", b"wheel admission module\n")
+        for name, content in (
+            ("run_gate.py", b"wheel run gate module\n"),
+            ("run_gate_admission.py", b"wheel admission module\n"),
+        ):
+            archive.writestr(zipfile.ZipInfo(name, date_time=(2026, 10, 15, 0, 0, 0)), content)
     return output.getvalue()
 
 
@@ -1592,7 +1602,11 @@ def test_a_lane_cannot_move_or_delete_an_existing_release_tag(tmp_path, monkeypa
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
-    with pytest.raises(RuntimeError, match="moved or deleted existing release tag"):
+    # The refusal names the exact protected ref a lane moved or deleted.
+    with pytest.raises(
+        RuntimeError,
+        match=rf"protected release ref refs/tags/{tag} changed during release-gate execution",
+    ):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
     assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage"]
 
