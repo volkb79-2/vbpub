@@ -106,9 +106,9 @@ CMRU and `cli-extended` wheels it built. Install exactly those wheels
 exists until you do, and the zero-release guide's step 1 shows the commands.
 For the complete zero-release sequence and dependency order, see
 [`docs/BOOTSTRAP-FROM-ZERO.md`](../docs/BOOTSTRAP-FROM-ZERO.md).
-The script prints the manual virtual-environment install commands (cli-extended wheel
-first, then cmru, both `--no-index --no-deps`) after it produces the wheel; once
-installed, all subsequent builds use the `cmru` console script.
+The script also prints the source and install commands using those recorded paths.
+After installing the two wheels, all subsequent builds use the `cmru` console
+script.
 
 The wheel installs the operator command `cmru`. It also carries the bootstrap-only `python -m cmru.handlers`
 alias (it runs the same `cmru handler` builder; project steps and the templates always use
