@@ -108,7 +108,12 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   released 0.3.0 wheel; to bump, copy `url`/`sha256` from
   `cli-extended-latest/latest.json` into those defaults and rebuild).
   `--cli-extended-resolve latest` is the explicit opt-in that reads the
-  pointer instead (also pass `--no-cache`).
+  pointer instead (also pass `--no-cache`); it additionally REQUIRES
+  `--cli-extended-wheel-sha256 <the published wheel's digest>`, and the build refuses a
+  pointer or download that names any other bytes, so no mode installs unverified bytes.
+  Every image carries `org.vbpub.cli-extended.wheel-sha256`, the digest of the wheel it
+  installed (the Dockerfile pin, the `local` digest, or the `latest` digest), verified
+  against the installed file during the build and re-read by `build-image.sh` afterwards.
   `--cli-extended-resolve local` on `build-image.sh` is the ZERO-RELEASE path (three modes
   in all: `pinned` default, `latest`, `local`; see `docs/BOOTSTRAP-FROM-ZERO.md`):
   with no release to fetch, build the wheel with cmru's own wheel builder

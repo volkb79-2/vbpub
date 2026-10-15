@@ -55,12 +55,15 @@ def test_a_finished_deferred_gate_is_machine_readably_provisional(tmp_path, monk
     assert deferred["lane"] == "mutation"
     assert deferred["tracking_id"] == POSTPONE
     assert deferred["reason"] == run_release_gate.POSTPONE_REASON
-    assert deferred["follow_up_lane"] == "mutation"
+    # The standalone `mutation` lane cannot run without gate-prepared baseline
+    # facts; the documented follow-up is the full Run-Gate `gate`.
+    assert deferred["follow_up_lane"] == "gate"
     assert [item["id"] for item in deferred["follow_up_prerequisites"]] == [
         "release-tag-branch", "cgprofile-observer", "d4-capacity-evidence",
     ]
     marker = json.loads(_paths(repo)[1].read_text(encoding="utf-8"))
     assert marker["result"] == "provisional" and marker["status"] == "postponed"
+    assert marker["follow_up_lane"] == "gate"
     assert marker["follow_up_prerequisites"] == deferred["follow_up_prerequisites"]
     assert marker["candidate_commit"] == _git(repo, "rev-parse", "HEAD") == manifest["source_commit"]
     report = capsys.readouterr().err
@@ -145,3 +148,158 @@ def test_a_full_gate_never_carries_a_deferral_field_value(tmp_path, monkeypatch)
 
     manifest = _manifest(repo)
     assert manifest["state"] == "passed" and manifest["deferred_lanes"] == []
+
+
+# --- cleanup failure after every lane passed must not leave success-shaped evidence ---
+
+def _assert_no_success_shaped_evidence(repo) -> None:
+    assert not _paths(repo)[1].exists()
+    manifest = _manifest(repo)
+    assert manifest["state"] == "failed"
+    assert manifest["deferred_lanes"] == []
+
+
+@pytest.mark.parametrize("postpone", [POSTPONE, None], ids=["provisional", "full"])
+def test_a_failed_canary_removal_after_all_lanes_pass_fails_the_gate_without_success_evidence(
+    tmp_path, monkeypatch, postpone,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    from cmru import gate_snapshot
+
+    def tampered(_snapshot):
+        raise RuntimeError("release-gate source canary path changed during the live lane probe")
+
+    monkeypatch.setattr(gate_snapshot, "remove_source_canary", tampered)
+
+    with pytest.raises(RuntimeError, match="source canary path changed"):
+        _gate(repo, private_root, postpone=postpone)
+
+    assert calls[-1] == "canary"  # every lane did pass first
+    _assert_no_success_shaped_evidence(repo)
+
+
+@pytest.mark.parametrize("postpone", [POSTPONE, None], ids=["provisional", "full"])
+def test_a_failed_snapshot_close_after_all_lanes_pass_fails_the_gate_without_success_evidence(
+    tmp_path, monkeypatch, postpone,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    from cmru import gate_snapshot
+    real_close = gate_snapshot.close_gate_snapshot
+
+    def failing_close(snapshot):
+        real_close(snapshot)
+        raise RuntimeError("lease release failed")
+
+    monkeypatch.setattr(gate_snapshot, "close_gate_snapshot", failing_close)
+
+    with pytest.raises(RuntimeError, match="lease release failed"):
+        _gate(repo, private_root, postpone=postpone)
+
+    assert calls[-1] == "canary"
+    _assert_no_success_shaped_evidence(repo)
+
+
+def test_main_returns_failure_when_cleanup_fails_after_a_provisional_run(
+    tmp_path, monkeypatch, capsys,
+):
+    repo, private_root, _calls = _recording_gate(tmp_path, monkeypatch)
+    from cmru import gate_snapshot
+    original = run_release_gate.run_release_gate
+    monkeypatch.setattr(
+        run_release_gate, "run_release_gate",
+        lambda worktree, *, postpone_mutation=None: original(
+            worktree, temp_parent=private_root, postpone_mutation=postpone_mutation,
+        ),
+    )
+    monkeypatch.setattr(
+        gate_snapshot, "remove_source_canary",
+        lambda _snapshot: (_ for _ in ()).throw(RuntimeError("canary replaced")),
+    )
+
+    assert run_release_gate.main(["--worktree", str(repo), "--postpone-mutation", POSTPONE]) == 1
+
+    assert "canary replaced" in capsys.readouterr().err
+    _assert_no_success_shaped_evidence(repo)
+
+
+def test_both_cleanup_steps_run_even_when_the_first_fails(tmp_path, monkeypatch):
+    repo, private_root, _calls = _recording_gate(tmp_path, monkeypatch)
+    from cmru import gate_snapshot
+    closed = []
+    real_close = gate_snapshot.close_gate_snapshot
+    monkeypatch.setattr(
+        gate_snapshot, "remove_source_canary",
+        lambda _snapshot: (_ for _ in ()).throw(RuntimeError("canary replaced")),
+    )
+    monkeypatch.setattr(
+        gate_snapshot, "close_gate_snapshot",
+        lambda snapshot: (closed.append(True), real_close(snapshot))[1],
+    )
+
+    with pytest.raises(RuntimeError, match="canary replaced"):
+        _gate(repo, private_root, postpone=POSTPONE)
+
+    assert closed == [True]  # the lease was still released
+
+
+# --- an invalid invocation preserves the previous valid run's evidence ---
+
+def _evidence_bytes(repo) -> tuple[bytes, bytes]:
+    manifest, marker = _paths(repo)
+    return manifest.read_bytes(), marker.read_bytes()
+
+
+def test_an_invocation_refused_before_a_new_gate_starts_preserves_the_previous_evidence(
+    tmp_path, monkeypatch,
+):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    assert _gate(repo, private_root, postpone=POSTPONE) == 0
+    before = _evidence_bytes(repo)
+    calls.clear()
+
+    # An unauthorized tracking id is refused by input validation.
+    with pytest.raises(RuntimeError, match="is not authorized for a release"):
+        _gate(repo, private_root, postpone="KI-62")
+
+    assert calls == []  # no lane ran
+    assert _evidence_bytes(repo) == before  # nothing was deleted or rewritten
+
+
+def test_a_resume_refused_for_a_different_run_gate_identity_preserves_the_previous_evidence(
+    tmp_path, monkeypatch,
+):
+    from tests.test_release_gate import _base_run_gate_identity
+
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    assert _gate(repo, private_root, postpone=POSTPONE) == 0
+    before = _evidence_bytes(repo)
+    calls.clear()
+    monkeypatch.setattr(
+        run_release_gate, "_check_run_gate_identity",
+        lambda _root: _base_run_gate_identity("23.12.0"),
+    )
+
+    with pytest.raises(RuntimeError, match="judged by a different Run-Gate identity"):
+        _gate(repo, private_root, postpone=POSTPONE)
+
+    assert calls == []
+    assert _evidence_bytes(repo) == before
+
+
+def test_a_valid_new_gate_clears_stale_success_state_before_any_lane_runs(tmp_path, monkeypatch):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    assert _gate(repo, private_root, postpone=POSTPONE) == 0
+    manifest_path, marker = _paths(repo)
+    seen_at_first_lane = []
+
+    def observe(lane):
+        if lane == "ref-probe":
+            seen_at_first_lane.append((marker.exists(), json.loads(
+                manifest_path.read_text(encoding="utf-8"))["state"]))
+
+    _fail_lane(monkeypatch, calls, failing="", observe=observe)
+
+    assert _gate(repo, private_root, postpone=POSTPONE) == 0
+
+    # The first lane saw neither the old marker nor a success-shaped manifest.
+    assert seen_at_first_lane == [(False, "running")]

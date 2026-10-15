@@ -2033,6 +2033,14 @@ tester image. With either variable unset, the normal configured base and
 dependency mode apply; a missing first-party artifact does not trigger a
 fallback.
 
+After `cli-extended` has been released, use `RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE=pinned`
+(the Dockerfile pin names the released asset) or `latest`. `latest` follows a mutable pointer, so
+it also requires `RUN_GATE_TESTER_CLI_EXTENDED_SHA256` to be the published wheel's SHA-256
+(for example `CLI_EXTENDED_RELEASED_SHA256` from CMRU's release-identity check); the tooling
+refuses to build without it, passes it to `tester-unified/build-image.sh`, and, before the gate
+may use the image, requires its `org.vbpub.cli-extended.wheel-sha256` label to equal the
+expected digest (the supplied digest for `source`/`latest`, the Dockerfile pin otherwise).
+
 
 ## Anti-goals (read before extending)
 

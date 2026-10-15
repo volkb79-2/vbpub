@@ -653,7 +653,8 @@ def test_bootstrap_with_an_unverified_slice_starts_no_buildx_and_no_handler(tmp_
     result = _run_bootstrap(tree)
 
     assert result.returncode == 2
-    assert "test.slice is not a verified host slice" in result.stderr
+    assert "cgroup parent verification of test.slice did not succeed" in result.stderr
+    assert "CMRU_TESTER_CGROUP_PROBE_IMAGE" in result.stderr  # the config inputs are named, not just the slice
     assert not Path(tree["docker_log"]).exists()  # no Buildx
     assert not Path(tree["builder_marker"]).exists()
     assert not Path(tree["record"]).exists()  # cmru.handlers wheel-build never launched

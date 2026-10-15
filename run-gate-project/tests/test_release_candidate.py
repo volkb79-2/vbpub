@@ -384,14 +384,12 @@ def test_source_bootstrap_replaces_its_own_previous_local_wheel(monkeypatch, tmp
     assert digest == hashlib.sha256(built["path"].read_bytes()).hexdigest()
 
 
-@pytest.mark.parametrize("mode", ["pinned", "latest"])
-def test_release_image_bootstrap_passes_pinned_and_latest_modes_through(
-    monkeypatch, tmp_path, mode,
-):
+def test_release_image_bootstrap_passes_pinned_mode_through(monkeypatch, tmp_path):
     monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
     monkeypatch.setattr(release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project")
     monkeypatch.delenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", raising=False)
-    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", f" {mode} ")
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", " pinned ")
+    mode = "pinned"
     monkeypatch.setattr(
         release_candidate, "_build_cli_extended_source_wheel",
         lambda: pytest.fail("only source mode builds a wheel from the checkout"),
@@ -405,6 +403,131 @@ def test_release_image_bootstrap_passes_pinned_and_latest_modes_through(
         "--tag", "tester-unified:mode",
         "--cli-extended-resolve", mode,
     ]
+
+
+PUBLISHED = "c" * 64
+OLD_PIN = "a" * 64
+
+
+def test_latest_mode_passes_the_published_digest_to_the_builder(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project")
+    monkeypatch.delenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", raising=False)
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", " latest ")
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", f" {PUBLISHED} ")
+
+    command = release_candidate._tester_image_build_command("tester-unified:mode")
+
+    assert command == [
+        str(tmp_path / "tester-unified" / "build-image.sh"),
+        "--wheel-dir", str(tmp_path / "run-gate-project" / "dist"),
+        "--tag", "tester-unified:mode",
+        "--cli-extended-resolve", "latest",
+        "--cli-extended-wheel-sha256", PUBLISHED,
+    ]
+    assert release_candidate._expected_cli_extended_sha256(command) == PUBLISHED
+
+
+@pytest.mark.parametrize("digest", [None, "", "abc", "C" * 64, "c" * 63])
+def test_latest_mode_refuses_to_build_without_a_valid_published_digest(monkeypatch, digest):
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "latest")
+    if digest is None:
+        monkeypatch.delenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", raising=False)
+    else:
+        monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", digest)
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError, match="requires RUN_GATE_TESTER_CLI_EXTENDED_SHA256",
+    ):
+        release_candidate._tester_image_build_command("tester-unified:bad")
+
+
+def test_expected_cli_extended_digest_follows_the_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    dockerfile = tmp_path / "tester-unified" / "Dockerfile"
+    dockerfile.parent.mkdir()
+    dockerfile.write_text(
+        "ARG CLI_EXTENDED_RESOLVE=pinned\nARG CLI_EXTENDED_WHEEL_SHA256=" + OLD_PIN + "\n",
+        encoding="utf-8",
+    )
+    # pinned and the default install the Dockerfile's pinned wheel ...
+    assert release_candidate._expected_cli_extended_sha256(["b", "--tag", "t"]) == OLD_PIN
+    assert release_candidate._expected_cli_extended_sha256(
+        ["b", "--cli-extended-resolve", "pinned"],
+    ) == OLD_PIN
+    # ... source (local) and latest install exactly the digest they pass.
+    assert release_candidate._expected_cli_extended_sha256(
+        ["b", "--cli-extended-resolve", "local", "--cli-extended-wheel-sha256", PUBLISHED],
+    ) == PUBLISHED
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="no pinned cli-extended digest"):
+        release_candidate._expected_cli_extended_sha256(["b"])
+
+
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        ({}, "no valid org.vbpub.cli-extended.wheel-sha256 label"),
+        ({"org.vbpub.cli-extended.wheel-sha256": "nope"}, "no valid org.vbpub.cli-extended"),
+        ({"org.vbpub.cli-extended.wheel-sha256": PUBLISHED}, None),
+    ],
+)
+def test_image_cli_extended_label_must_be_a_digest(monkeypatch, labels, message):
+    monkeypatch.setattr(
+        release_candidate.subprocess, "run",
+        lambda *_args, **_kwargs: _completed(json.dumps(labels)),
+    )
+    if message is None:
+        assert release_candidate._image_cli_extended_sha256("tester-unified:x") == PUBLISHED
+        return
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+        release_candidate._image_cli_extended_sha256("tester-unified:x")
+
+
+def _prepare_with_label(monkeypatch, tmp_path, *, mode, label):
+    wheel = {"version": "24.0.0", "filename": "run_gate-24.0.0-py3-none-any.whl", "sha256": "a" * 64}
+    monkeypatch.setattr(
+        release_candidate, "prepared_release_version", lambda _path, **_kwargs: "24.0.0",
+    )
+    monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
+    monkeypatch.setattr(
+        release_candidate, "_git", lambda *args: "1700000000" if args[0] == "log" else "1" * 40,
+    )
+    monkeypatch.setattr(release_candidate, "_wheel_identity", lambda: wheel.copy())
+    monkeypatch.setattr(
+        release_candidate, "_image_identity",
+        lambda _tag: {"version": "24.0.0", "sha256": "a" * 64},
+    )
+    monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    monkeypatch.setattr(release_candidate, "_image_cli_extended_sha256", lambda _tag: label)
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", mode)
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", PUBLISHED)
+    results = iter((_completed(), _completed(), _completed("sha256:" + "b" * 64)))
+    monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
+    return release_candidate.prepare
+
+
+def test_prepare_accepts_a_latest_image_labelled_with_the_published_digest(monkeypatch, tmp_path):
+    prepare = _prepare_with_label(monkeypatch, tmp_path, mode="latest", label=PUBLISHED)
+
+    prepare()
+
+    assert (tmp_path / "receipt.json").is_file()
+
+
+def test_prepare_refuses_a_latest_image_that_kept_the_old_pinned_bytes(monkeypatch, tmp_path):
+    """The newly published wheel differs from the old pin: an image labelled with
+    the old digest must be refused before the gate may use it, and no receipt is
+    written."""
+    prepare = _prepare_with_label(monkeypatch, tmp_path, mode="latest", label=OLD_PIN)
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=f"installed cli-extended wheel sha256 {OLD_PIN}, expected {PUBLISHED}",
+    ):
+        prepare()
+
+    assert not (tmp_path / "receipt.json").exists()
 
 
 def test_prepared_release_version_uses_first_dated_stable_section(monkeypatch, tmp_path):
@@ -910,6 +1033,10 @@ def test_prepare_records_the_exact_wheel_and_tester_image(monkeypatch, tmp_path,
         lambda _tag: {"version": "24.0.0", "sha256": "a" * 64},
     )
     monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    monkeypatch.setattr(
+        release_candidate, "_image_cli_extended_sha256",
+        lambda _tag: release_candidate._dockerfile_cli_extended_pin(),
+    )
     results = iter((_completed(), _completed(), _completed(image_id)))
     monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
 
@@ -974,6 +1101,10 @@ def test_prepare_refuses_mismatched_build_and_image(
     monkeypatch.setattr(release_candidate, "_wheel_identity", lambda: wheel)
     monkeypatch.setattr(release_candidate, "_image_identity", lambda _tag: image_identity)
     monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    monkeypatch.setattr(
+        release_candidate, "_image_cli_extended_sha256",
+        lambda _tag: release_candidate._dockerfile_cli_extended_pin(),
+    )
     results = iter((_completed(), _completed(), image_result))
     monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
 

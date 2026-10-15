@@ -39,6 +39,13 @@ tester-unified/build-image.sh \
   --tag tester-unified:bootstrap
 ```
 
+Every image carries an `org.vbpub.cli-extended.wheel-sha256` label naming the exact
+`cli-extended` wheel it installed, and `build-image.sh` fails if that label differs from the
+expected digest. After a real `cli-extended` release, rebuild with
+`--cli-extended-resolve latest --cli-extended-wheel-sha256 "$PUBLISHED_SHA256" --no-cache`
+(`latest` is refused without the published digest) or with `pinned` once the Dockerfile's
+pinned defaults name the released asset.
+
 Before running a release gate, point Run-Gate at the immutable image ID:
 
 ```bash

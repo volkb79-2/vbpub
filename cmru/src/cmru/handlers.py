@@ -419,11 +419,17 @@ def require_installed_cgroup_parent(cgroup_parent: str, cwd: Path) -> None:
     pinned privileged ``nsenter`` container; never a local ``systemctl`` from a
     cockpit that has no view of the host's systemd).
 
-    The probe container itself must not start in the slice being verified, so
-    it is placed in the gates tier already declared for every CMRU gate
+    The probe container is placed in the declared gates tier
     (``CMRU_TESTER_CGROUP_PARENT``); the probe image is the declared
-    digest-pinned ``CMRU_TESTER_CGROUP_PROBE_IMAGE``. Either input missing, or
-    any uncertainty (no docker, probe failure, unknown LoadState), refuses.
+    digest-pinned ``CMRU_TESTER_CGROUP_PROBE_IMAGE``. That probe parent is
+    verified FIRST with ``tester-gate``'s own self-check contract
+    (``check_slice_unit(parent, image, parent)``: the short, read-only probe
+    runs in the slice it is asking about, and a typo'd name is still caught
+    because it reads an empty ``FragmentPath``). Only a probe parent that
+    answers affirmatively is then used to probe the build slice, so a typo'd
+    gates tier is reported instead of silently hosting every probe. Either
+    input missing, or any uncertainty (no docker, probe failure, unknown
+    LoadState) for either slice, refuses.
     """
     from cmru import tester_gate
 
@@ -446,6 +452,17 @@ def require_installed_cgroup_parent(cgroup_parent: str, cwd: Path) -> None:
         )
         raise SystemExit(exit_codes.PREREQ_MISSING)
     pinned_image = tester_gate.require_digest_pinned(probe_image, "cgroup probe image")
+    parent_ok, parent_note = tester_gate.check_slice_unit(
+        probe_parent, pinned_image, probe_parent,
+    )
+    if parent_ok is not True:
+        print(
+            f"[ERROR] wheel-build refuses to launch: {probe_parent_name}={probe_parent!r} "
+            f"is not a verified host slice, so it cannot host the probe that checks "
+            f"{cgroup_parent!r} ({parent_note})",
+            file=sys.stderr,
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
     exists, note = tester_gate.check_slice_unit(cgroup_parent, pinned_image, probe_parent)
     if exists is not True:
         print(

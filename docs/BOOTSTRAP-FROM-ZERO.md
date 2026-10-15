@@ -46,10 +46,24 @@ and the CGProfile → Run-Gate → CMRU gate prerequisites.
 
 ## Steps from an empty release set
 
-Prerequisites: Docker/Buildx, a governed background parent for the standalone
-wheel build (`CMRU_BOOTSTRAP_CGROUP_PARENT` or
-`$CGROUP_PARENT_DEV_BACKGROUND`), `$CGROUP_PARENT_DEV_GATES` for tester-image
-builds, gates and the host-slice probe's own placement, the configured
+Prerequisites: Docker/Buildx, a governed background parent for the builds, the
+gates tier, and the probe image. The exact inputs differ by command, so set all
+of them in the shell that runs these steps:
+
+- `build-initial-standalone.sh` (step 1) reads `CMRU_BOOTSTRAP_CGROUP_PARENT`,
+  else `$CGROUP_PARENT_DEV_BACKGROUND`. It exports its choice only to its own
+  child builds.
+- `cmru handler wheel-build` (steps 2 and the release steps) does **not** read
+  `CMRU_BOOTSTRAP_CGROUP_PARENT`. It needs `CMRU_DOCKER_CGROUP_PARENT` or
+  `$CGROUP_PARENT_DEV_BACKGROUND`; with only the bootstrap variable set it
+  refuses at step 2 (safe, but surprising), so export
+  `$CGROUP_PARENT_DEV_BACKGROUND` once for the whole procedure.
+- `$CGROUP_PARENT_DEV_GATES` is expanded into `CMRU_TESTER_CGROUP_PARENT` by
+  `cmru.orchestration.toml`. It places tester-image builds, gates and the
+  host-slice probe, and it is itself verified first (with the probe's own
+  short self-check) before it is trusted to host the probe of the build slice.
+
+Also required: the configured
 digest-pinned CMRU host-probe image pulled locally, the Python environment you
 choose to own the `cmru` command (`ESTATE_PYTHON`, below; in the estate
 cockpit `/home/vscode/.venv/bin/python`), and network access to the upstream
@@ -110,7 +124,9 @@ supplies the whole-source line-and-branch qualification.
    `cli_extended-*.whl` produced above into the git-ignored
    `tester-unified/local-wheel/`. Build the Run-Gate wheel from the selected
    commit using the planned stable version (the example is for the current
-   24.0.0 candidate); its path is derived from what the build produced:
+   24.0.0 candidate); its path is derived from what the build produced. The
+   handler needs the build parent from the prerequisites
+   (`$CGROUP_PARENT_DEV_BACKGROUND` or `CMRU_DOCKER_CGROUP_PARENT`):
 
    ```bash
    mkdir -p tester-unified/local-wheel
@@ -137,7 +153,11 @@ supplies the whole-source line-and-branch qualification.
    "$ESTATE_PYTHON" -m pip install --force-reinstall --no-deps "$RUN_GATE_CANDIDATE_WHEEL"
    ```
 
-   The builder checks the supplied Run-Gate wheel and image labels. The
+   The builder checks the supplied Run-Gate wheel and image labels, and every
+   image it builds carries `org.vbpub.cli-extended.wheel-sha256`, the digest of
+   the exact `cli-extended` wheel installed (here the source wheel's
+   `$BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256`); it re-reads that label after the
+   build and fails on a difference. The
    explicit upstream base is also used for the builder's unprivileged CMRU
    preflight, so this step does not require a pre-existing
    `tester-unified:local` image. The privileged host-systemd slice probe still
@@ -165,38 +185,57 @@ supplies the whole-source line-and-branch qualification.
    The stable wheel is a *different file* from the bootstrap one, and the
    Dockerfile's embedded `pinned` default still names whatever `cli-extended`
    asset was current when it was last edited. Do not build a tester image in
-   `pinned` mode now without checking. `cmru release` printed the published
-   wheel's identity (`CLI-EXTENDED_WHEEL_SHA256=` and
-   `CLI-EXTENDED_WHEEL_ASSET_URL=`); carry that digest into the check below. It
+   `pinned` mode now without checking. The `cli-extended` push step is quiet
+   (`quiet = true`), so `cmru release` does not print the published wheel's
+   identity on the terminal; its output is in the root audit log
+   `cmru.release.log` and the transaction-local `logs/cmru/<step>.log`
+   (`--show-run-details` also streams it). Read the digest from there, then
+   carry it into the check below:
+
+   ```bash
+   grep -E 'CLI-EXTENDED_WHEEL_(SHA256|ASSET_URL)=' cmru.release.log
+   ```
+
+   The check
    refuses when the `cli-extended-latest` pointer does not name that same
    digest (it never reads an unreachable or stale pointer as "nothing
    released"), and otherwise prints the resolve mode that is safe for the
    Dockerfile's current pin:
 
    ```bash
-   CLI_EXTENDED_RELEASED_SHA256='<CLI-EXTENDED_WHEEL_SHA256 printed by cmru release>'
+   CLI_EXTENDED_RELEASED_SHA256='<CLI-EXTENDED_WHEEL_SHA256 value from cmru.release.log>'
    unset CLI_EXTENDED_RESOLVE
    identity="$(python3 cmru/tools/cli_extended_release_identity.py \
      --released-sha256 "$CLI_EXTENDED_RELEASED_SHA256" \
      --dockerfile tester-unified/Dockerfile)"
    eval "$identity"
    echo "Dockerfile pin: $CLI_EXTENDED_DOCKERFILE_PIN; resolve mode: $CLI_EXTENDED_RESOLVE"
+   cx_resolve=(--cli-extended-resolve "${CLI_EXTENDED_RESOLVE:?the identity check above must succeed}")
+   if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then
+     # `latest` is only accepted together with the published digest: the build
+     # refuses a pointer or download that names any other bytes.
+     cx_resolve+=(--cli-extended-wheel-sha256 "$CLI_EXTENDED_RELEASED_SHA256")
+   fi
    tester-unified/build-image.sh \
      --base-image mcr.microsoft.com/devcontainers/python:3.14-trixie \
-     --cli-extended-resolve "${CLI_EXTENDED_RESOLVE:?the identity check above must succeed}" --no-cache \
+     "${cx_resolve[@]}" --no-cache \
      --wheel-dir run-gate-project/dist \
      --tag tester-unified:cli-extended-released
    python3 cmru/tools/cli_extended_release_identity.py \
      --released-sha256 "$CLI_EXTENDED_RELEASED_SHA256" \
      --dockerfile tester-unified/Dockerfile > /dev/null
+   test "$(docker image inspect --format '{{index .Config.Labels "org.vbpub.cli-extended.wheel-sha256"}}' \
+     tester-unified:cli-extended-released)" = "$CLI_EXTENDED_RELEASED_SHA256"
    RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:cli-extended-released)"
    export RUN_GATE_TESTER_UNIFIED_IMAGE
    ```
 
-   A stale pin yields `latest`: the image's fetcher downloads the asset the
-   pointer names and verifies that asset's own SHA-256 before installing it, and
-   the check run again after the build proves the pointer still names the
-   digest `cmru release` printed. Once the Dockerfile's three pinned defaults
+   A stale pin yields `latest`, which the builder accepts only together with the
+   published digest: the image's fetcher refuses a pointer that names other
+   bytes, downloads the asset and requires it to hash to that digest before
+   installing it, and the image is labelled with the digest it verified. The
+   builder and the `test` above both read that label back, and the check run
+   again after the build proves the pointer still names the published digest. Once the Dockerfile's three pinned defaults
    are updated to the released URL and digest in a reviewed commit, the same
    check reports `current` and `pinned` is valid again. Use the released-bytes
    image from here on; the bootstrap image carries only the source wheel.
@@ -209,29 +248,42 @@ supplies the whole-source line-and-branch qualification.
    image from the exact release transaction checkout; pass the resolve mode
    from step 3 through `RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE` (a stale pin must
    not make that rebuild reinstall the old bytes), and use the upstream base
-   explicitly. Do not switch back to the source bootstrap wheel:
+   explicitly. In `latest` mode Run-Gate's release tooling also requires the
+   published digest (`RUN_GATE_TESTER_CLI_EXTENDED_SHA256`), refuses to build
+   without it, and inspects the built image's
+   `org.vbpub.cli-extended.wheel-sha256` label before the gate may use the
+   image. Do not switch back to the source bootstrap wheel. Each command pins
+   its own image, so it is correct to run them from different shells:
 
    ```bash
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:cli-extended-released)" \
    RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE="${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}" \
+   RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}" \
      cmru release cgroup-profiler --set-version 1.0.0
    RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE="${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}" \
+   RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}" \
    RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie \
      cmru release run-gate-project --set-version 24.0.0
    ```
 
    The first Run-Gate release publishes the artifact that CMRU's own release
    gate requires. CMRU retains the exact published wheel in the release
-   transaction's `artifacts/` output and prints its path. Use that retained
+   transaction's `artifacts/<project>/` output and records its path in
+   `cmru.release.log`. Use that retained
    file to rebuild the image and install the host CLI; use the exact Run-Gate
    wheel, while the checked resolve mode keeps the released cli-extended
    runtime wheel:
 
    ```bash
-   RUN_GATE_RELEASE_WHEEL='<exact wheel path printed by cmru>'
+   RUN_GATE_RELEASE_WHEEL='<exact wheel path from cmru.release.log>'
    "$ESTATE_PYTHON" -m pip install --force-reinstall --no-deps "$RUN_GATE_RELEASE_WHEEL"
+   cx_resolve=(--cli-extended-resolve "${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}")
+   if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then
+     cx_resolve+=(--cli-extended-wheel-sha256 "${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}")
+   fi
    tester-unified/build-image.sh \
      --base-image mcr.microsoft.com/devcontainers/python:3.14-trixie \
-     --cli-extended-resolve "${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}" --no-cache \
+     "${cx_resolve[@]}" --no-cache \
      --wheel-dir "$(dirname "$RUN_GATE_RELEASE_WHEEL")" \
      --tag tester-unified:run-gate-release
    RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:run-gate-release)"

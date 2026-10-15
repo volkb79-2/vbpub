@@ -109,7 +109,11 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 # --no-cache, the unchanged RUN text would otherwise reuse the cached wheel).
 # THREE MODES (CLI_EXTENDED_RESOLVE):
 #   pinned  (DEFAULT) the released asset named by the two pin args above.
-#   latest  the `cli-extended-latest/latest.json` pointer (opt-in).
+#   latest  the `cli-extended-latest/latest.json` pointer (opt-in). The caller must
+#           also pass the PUBLISHED digest as CLI_EXTENDED_WHEEL_SHA256 (build-image.sh
+#           requires --cli-extended-wheel-sha256): a pointer naming other bytes, or
+#           downloaded bytes that hash differently, fail the build, so no mode installs
+#           unverified bytes.
 #   local   ZERO-RELEASE path: no release exists to fetch, so install a LOCALLY BUILT
 #           wheel from the build context instead. Build it with cmru's own wheel
 #           builder (`CMRU_BOOTSTRAP_CLI_EXTENDED=source` in cmru/build-initial-
@@ -126,6 +130,11 @@ ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
 ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.3.0/cli_extended-0.3.0-py3-none-any.whl
 ARG CLI_EXTENDED_WHEEL_SHA256=a0f80f1b614bcaf81fac235aa3a7f42f20eccac06f82311a6d8d5a725eea5f50
+# CLI_EXTENDED_WHEEL_SHA256 is, in EVERY mode, the digest the installed wheel must
+# have: the repository pin (pinned), the supplied digest (local) or the published
+# digest the caller names (latest, which refuses to resolve without it). The label
+# records it, and the install RUN below verifies the actual wheel file against it.
+LABEL org.vbpub.cli-extended.wheel-sha256="${CLI_EXTENDED_WHEEL_SHA256}"
 # Exact identity of the Run-Gate wheel supplied through the named build context.
 # The image installs those exact wheel bytes; the version and digest are
 # independently checked before installation and against installed metadata.
@@ -147,7 +156,7 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
       > /tmp/internal-build-requirements.txt \
  && case "${CLI_EXTENDED_RESOLVE}" in \
       pinned) set -- --wheel-url "${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; \
-      latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; \
+      latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" --expect-sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; \
       local) set -- ;; \
       *) echo "CLI_EXTENDED_RESOLVE must be pinned, latest or local" >&2; exit 1 ;; \
     esac \
@@ -160,7 +169,10 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
     else \
       /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
         --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; \
-    fi
+    fi \
+ && set -- /tmp/cli-extended-release/cli_extended-*.whl \
+ && [ "$#" -eq 1 ] && [ -f "$1" ] \
+ && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -
 
 # `venv` preserves existing contents. Start with empty environments so files
 # or `.pth` configuration inherited from a changed base image cannot affect

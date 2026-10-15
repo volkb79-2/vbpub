@@ -452,7 +452,10 @@ non-empty `FragmentPath`, probed on the Docker host through the same pinned prob
 `tester-gate`, placed in `CMRU_TESTER_CGROUP_PARENT`) before it starts any build container; a
 typo'd slice, an absent probe input, or an unavailable probe refuses with exit 3 and starts
 nothing. `publish --from-checkout` refuses a release-prose source unless the local
-`<prefix>-v<version>` tag points at the same commit as origin's tag of that name. These are release inputs, not CMRU defaults; pin immutable
+`<prefix>-v<version>` tag points at the same commit as origin's tag of that name.
+Before it probes the build slice, `wheel-build` verifies the probe's own placement
+(`CMRU_TESTER_CGROUP_PARENT`) with `tester-gate`'s self-check, so a typo'd gates tier is
+reported (naming that variable) rather than silently hosting every probe. These are release inputs, not CMRU defaults; pin immutable
 digests in a production contract. Direct calls from a registered project resolve the
 central orchestration environment even when they run outside a release step. See the
 [configuration resolution design](docs/DESIGN-GUIDE.md#direct-wheel-build-uses-the-declared-image).
@@ -816,7 +819,12 @@ retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) 
 tracking id, follow-up lane and prerequisites, and the marker
 `.assay/mutation-postponed-cmru.json` says `result: "provisional"`. A failed lane or canary
 leaves neither record, and a full `gate` records `state: "passed"` with an empty
-`deferred_lanes` and removes any stale marker. The follow-up needs
+`deferred_lanes` and removes any stale marker. The recorded follow-up lane is `gate`
+(the standalone `mutation` lane cannot run without the aggregate gate's baseline facts).
+Success is decided only after cleanup: if removing the planted canary or releasing the
+snapshot fails after every lane passed, the gate exits non-zero, the marker is removed and the
+manifest says `failed`. An invocation refused before a new gate starts (for example an
+unauthorized tracking id) leaves the previous run's evidence untouched. The follow-up needs
 a branch created at the published release tag (so the exact tagged source is judged), the CGProfile host observer deployed and reachable, and the D-4 capacity evidence the Run-Gate follow-up lane requires (defined by the Run-Gate RG-55 program, not by CMRU).
 If origin has no published stable CMRU tag, the same protected provisional
 release workflow instead runs the explicit whole-source `assay-first-release`

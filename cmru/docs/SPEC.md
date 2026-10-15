@@ -1656,10 +1656,21 @@ exits 0 after every required non-mutation lane and the final canary pass, and re
   (a full gate records `"passed"`; any other outcome `"failed"`, `"interrupted"` or
   `"incomplete"`), and `deferred_lanes` is a list whose entries are `{lane: "mutation",
   tracking_id, reason, follow_up_lane, follow_up_prerequisites: [{id, requirement}]}`. It is
-  `[]` for every state other than `"provisional"`.
+  `[]` for every state other than `"provisional"`. `follow_up_lane` is `gate` (the full
+  Run-Gate `gate`: the standalone `mutation` lane refuses to run without the baseline facts only
+  the aggregate gate prepares) or, for a first release with no published stable tag,
+  `assay-first-release-r2`.
 - `cmru/.assay/mutation-postponed-cmru.json` (`schema_version` 3): the earlier fields plus
-  `result: "provisional"` and `follow_up_prerequisites`. It is deleted when any gate starts and
-  written only after the canary succeeds, so a failed gate leaves none.
+  `result: "provisional"` and `follow_up_prerequisites`. It is deleted when a valid new gate
+  starts and written only after the canary succeeds, so a failed gate leaves none.
+
+Success is decided only after cleanup succeeds. Snapshot finalization (planted-canary removal
+and lease release) runs after the lanes; if either fails after a claimed `passed` or
+`provisional`, the gate rewrites the manifest as `failed` with `deferred_lanes: []`, deletes
+the marker and exits non-zero. Input validation (tracking id, release-version, first-release and
+Run-Gate-identity checks) runs before any evidence is touched, so an invocation refused there
+leaves the previous valid run's marker and manifest exactly as they were; a valid new gate
+removes the stale marker before its first lane.
 
 `follow_up_prerequisites` ids are `release-tag-branch`, `cgprofile-observer` and
 `d4-capacity-evidence`. A provisional record is never an R2 pass.

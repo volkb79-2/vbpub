@@ -863,7 +863,9 @@ def _record_postponement(
     target_version = _validate_postponement(
         project_root, tracking_id, first_release=first_release,
     )
-    follow_up_lane = FIRST_RELEASE_R2_FOLLOW_UP_LANE if first_release else "mutation"
+    # The standalone `mutation` lane refuses to run without the baseline facts
+    # only the aggregate gate prepares, so the documented follow-up is `gate`.
+    follow_up_lane = FIRST_RELEASE_R2_FOLLOW_UP_LANE if first_release else "gate"
     reason = FIRST_RELEASE_POSTPONE_REASON if first_release else POSTPONE_REASON
     deferral = {
         "lane": "mutation",
@@ -1034,8 +1036,13 @@ def _run_release_gate_with_private_cache(
         _assert_no_untracked_gate_code(repo_root)
         from cmru import gate_snapshot
 
+        # Every input check runs BEFORE the snapshot is opened or any evidence
+        # is touched: an invocation refused here leaves the previous run's
+        # commit-bound marker and manifest exactly as they were.
+        plan = _plan_gate(repo_root, project_root, baseline, postpone_mutation)
         snapshot = gate_snapshot.open_gate_snapshot(repo_root)
         state = "incomplete"
+        started = False
         try:
             if snapshot.run_gate_identity and snapshot.run_gate_identity != run_gate_identity:
                 raise RuntimeError(
@@ -1043,6 +1050,11 @@ def _run_release_gate_with_private_cache(
                     "remove the finished snapshot and start a fresh gate"
                 )
             snapshot.run_gate_identity = run_gate_identity
+            # A valid new gate starts here. Whatever an earlier run left behind
+            # (success-shaped marker or manifest field) is stale from now on.
+            snapshot.deferred_lanes = []
+            (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
+            started = True
             gate_snapshot.plant_source_canary(snapshot)
             gate_snapshot.write_snapshot_manifest(snapshot, "running")
             try:
@@ -1052,7 +1064,7 @@ def _run_release_gate_with_private_cache(
                     baseline,
                     assay_git,
                     snapshot,
-                    postpone_mutation,
+                    plan,
                 )
             except (GateInterrupted, KeyboardInterrupt):
                 state = "interrupted"
@@ -1068,23 +1080,47 @@ def _run_release_gate_with_private_cache(
                 state = "passed"
             return result
         finally:
-            try:
-                try:
-                    gate_snapshot.remove_source_canary(snapshot)
-                finally:
-                    gate_snapshot.write_snapshot_manifest(snapshot, state)
-            finally:
-                gate_snapshot.close_gate_snapshot(snapshot)
+            # Success is decided only after cleanup succeeded: `state` is a
+            # claim until _finish_gate_snapshot has run.
+            _finish_gate_snapshot(gate_snapshot, snapshot, project_root, state, started)
 
 
-def _run_locked_gate(
-    repo_root: Path,
-    project_root: Path,
-    baseline,
-    assay_git,
-    snapshot,
-    postpone_mutation: str | None = None,
-) -> int:
+def _finish_gate_snapshot(gate_snapshot, snapshot, project_root: Path, state: str, started: bool) -> None:
+    """Clean up the snapshot, then persist the final evidence.
+
+    Both cleanup steps always run. A cleanup failure after a claimed success
+    (``passed`` / ``provisional``) turns the run into ``failed``: the marker is
+    removed, ``deferred_lanes`` is cleared and the failure is re-raised so the
+    gate returns non-zero. No success-shaped record can survive it.
+    """
+    errors: list[BaseException] = []
+    steps = (
+        (gate_snapshot.remove_source_canary, gate_snapshot.close_gate_snapshot)
+        if started else (gate_snapshot.close_gate_snapshot,)
+    )
+    for step in steps:
+        try:
+            step(snapshot)
+        except BaseException as exc:  # noqa: BLE001 - every step must run, then we re-raise
+            errors.append(exc)
+    if started:
+        if errors and state in ("passed", "provisional"):
+            state = "failed"
+        marker = project_root / POSTPONED_MARKER
+        if state != "provisional":
+            marker.unlink(missing_ok=True)
+            snapshot.deferred_lanes = []
+        try:
+            gate_snapshot.write_snapshot_manifest(snapshot, state)
+        except BaseException as exc:  # noqa: BLE001
+            marker.unlink(missing_ok=True)  # no marker without its manifest
+            errors.append(exc)
+    if errors:
+        raise errors[0]
+
+
+def _plan_gate(repo_root: Path, project_root: Path, baseline, postpone_mutation: str | None) -> dict:
+    """Resolve and validate everything a new gate needs, touching no evidence."""
     _assert_no_untracked_gate_code(repo_root)
     auth = baseline._repository_git_auth(repo_root)
     latest_stable_tag, remote_tags = baseline.published_release_state(
@@ -1120,13 +1156,31 @@ def _run_locked_gate(
         assay_lane = "assay"
         if postpone_mutation is not None:
             _validate_postponement(project_root, postpone_mutation)
+    return {
+        "auth": auth,
+        "remote_tags": remote_tags,
+        "first_release": first_release,
+        "effective_postponement": effective_postponement,
+        "assay_lane": assay_lane,
+    }
+
+
+def _run_locked_gate(
+    repo_root: Path,
+    project_root: Path,
+    baseline,
+    assay_git,
+    snapshot,
+    plan: dict,
+) -> int:
+    _assert_no_untracked_gate_code(repo_root)
+    auth = plan["auth"]
+    remote_tags = plan["remote_tags"]
+    first_release = plan["first_release"]
+    effective_postponement = plan["effective_postponement"]
+    assay_lane = plan["assay_lane"]
     lane_environment = _lane_environment()
     from cmru import gate_snapshot
-
-    # Deferral evidence is written only by a gate that finishes. Whatever an
-    # earlier run left behind (marker or manifest field) is stale from here on.
-    snapshot.deferred_lanes = []
-    (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
 
     # Live detector probe first: a lane that writes a protected ref from inside
     # the real tester container must be seen by the gate, or no later lane's

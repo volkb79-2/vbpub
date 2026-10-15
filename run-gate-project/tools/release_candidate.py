@@ -25,6 +25,9 @@ RECEIPT_PATH = PROJECT_ROOT / ".assay" / "run-gate-release-wheel.json"
 IMAGE_IDENTITY_PATH = Path("/etc/tester-unified-run-gate-wheel.json")
 IMAGE_VERSION_LABEL = "org.vbpub.run-gate.version"
 IMAGE_SHA256_LABEL = "org.vbpub.run-gate.wheel-sha256"
+CLI_EXTENDED_SHA256_LABEL = "org.vbpub.cli-extended.wheel-sha256"
+CLI_EXTENDED_SHA256_ENV = "RUN_GATE_TESTER_CLI_EXTENDED_SHA256"
+_SHA256_HEX = re.compile(r"[0-9a-f]{64}\Z")
 _CANDIDATE_SELFTEST_CODE = "\n".join((
     "import importlib.metadata",
     "from pathlib import Path",
@@ -210,6 +213,63 @@ def _image_identity(image_tag: str) -> dict[str, str]:
     return identity
 
 
+def _image_cli_extended_sha256(image_tag: str) -> str:
+    """The cli-extended wheel digest the built tester image says it installed."""
+    result = subprocess.run(
+        ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", image_tag],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode:
+        raise ReleaseCandidateError(
+            f"cannot inspect tester image {image_tag!r}: {result.stderr.strip()[:300]}"
+        )
+    try:
+        labels = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise ReleaseCandidateError(f"tester image {image_tag!r} returned malformed labels") from exc
+    value = labels.get(CLI_EXTENDED_SHA256_LABEL) if isinstance(labels, dict) else None
+    if not isinstance(value, str) or not _SHA256_HEX.match(value):
+        raise ReleaseCandidateError(
+            f"tester image {image_tag!r} has no valid {CLI_EXTENDED_SHA256_LABEL} label"
+        )
+    return value
+
+
+def _dockerfile_cli_extended_pin() -> str:
+    """The cli-extended wheel digest ``tester-unified/Dockerfile`` pins by default."""
+    dockerfile = REPOSITORY_ROOT / "tester-unified" / "Dockerfile"
+    try:
+        text = dockerfile.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReleaseCandidateError(f"cannot read {dockerfile}: {exc}") from exc
+    match = re.search(r"^ARG CLI_EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$", text, re.MULTILINE)
+    if match is None:
+        raise ReleaseCandidateError(f"{dockerfile} declares no pinned cli-extended digest")
+    return match.group(1)
+
+
+def _expected_cli_extended_sha256(command: list[str]) -> str:
+    """The digest the built image must label, from the exact builder command.
+
+    A digest passed to the builder (source/local and latest) is the expectation;
+    the pinned/default modes install the Dockerfile's pinned wheel.
+    """
+    if "--cli-extended-wheel-sha256" in command:
+        return command[command.index("--cli-extended-wheel-sha256") + 1]
+    return _dockerfile_cli_extended_pin()
+
+
+def _require_cli_extended_label(image_tag: str, expected: str) -> None:
+    observed = _image_cli_extended_sha256(image_tag)
+    if observed != expected:
+        raise ReleaseCandidateError(
+            f"tester image {image_tag!r} installed cli-extended wheel sha256 {observed}, "
+            f"expected {expected}"
+        )
+
+
 def _require_same_wheel(identity: dict[str, str], expected: dict[str, str], where: str) -> None:
     for field in ("version", "sha256"):
         if identity.get(field) != expected.get(field):
@@ -372,8 +432,22 @@ def _tester_image_build_command(image_tag: str) -> list[str]:
             "--cli-extended-resolve", "local",
             "--cli-extended-wheel-sha256", cli_extended_sha256,
         ])
-    elif cli_extended_mode in {"pinned", "latest"}:
-        command.extend(["--cli-extended-resolve", cli_extended_mode])
+    elif cli_extended_mode == "latest":
+        # `latest` follows a mutable pointer, so it is only accepted together with
+        # the digest of the wheel that was actually published; the image build
+        # refuses any other bytes and labels the digest it verified.
+        published = os.environ.get(CLI_EXTENDED_SHA256_ENV, "").strip()
+        if not _SHA256_HEX.match(published):
+            raise ReleaseCandidateError(
+                f"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE=latest requires {CLI_EXTENDED_SHA256_ENV} "
+                "to be the published cli-extended wheel's 64-hex SHA-256 (the "
+                "CLI_EXTENDED_RELEASED_SHA256 the release-identity check verified)"
+            )
+        command.extend([
+            "--cli-extended-resolve", "latest", "--cli-extended-wheel-sha256", published,
+        ])
+    elif cli_extended_mode == "pinned":
+        command.extend(["--cli-extended-resolve", "pinned"])
     elif cli_extended_mode:
         raise ReleaseCandidateError(
             "RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE must be source, pinned or latest"
@@ -497,13 +571,17 @@ def prepare(image_tag: str | None = None) -> dict[str, str]:
         raise ReleaseCandidateError(
             f"built Run-Gate wheel {wheel['version']} does not match prepared release {version}"
         )
+    build_command = _tester_image_build_command(image_tag)
     subprocess.run(
-        _tester_image_build_command(image_tag),
+        build_command,
         cwd=REPOSITORY_ROOT,
         env=env,
         check=True,
     )
     _require_same_wheel(_image_identity(image_tag), wheel, "tester image")
+    # The image must name the exact cli-extended bytes this build was bound to
+    # before the gate may use it.
+    _require_cli_extended_label(image_tag, _expected_cli_extended_sha256(build_command))
     image_result = subprocess.run(
         ["docker", "image", "inspect", "--format", "{{.Id}}", image_tag],
         check=False,

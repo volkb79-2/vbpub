@@ -396,7 +396,12 @@ unverified workload) and a cockpit-local filesystem/`systemctl` check (asks the 
 kernel). The probe is placed in the already-declared gates tier
 (`CMRU_TESTER_CGROUP_PARENT`), its image is the declared digest-pinned
 `CMRU_TESTER_CGROUP_PROBE_IMAGE`; either input missing, or any uncertainty, refuses. The
-residual trust root is that gates tier, which every `tester-gate` launch verifies.
+probe parent is itself verified first with `tester-gate`'s own self-check
+(`check_slice_unit(parent, image, parent)`: a short, read-only probe placed in the slice it
+asks about; a typo'd name is still caught because it reads an empty `FragmentPath`), and
+only an affirmative answer lets it host the probe of the build slice. A typo'd gates tier
+therefore refuses naming `CMRU_TESTER_CGROUP_PARENT` with no builder started, instead of
+silently hosting every probe. This adds no public input.
 
 ### Direct publish binds notes to the published tag
 
@@ -628,8 +633,14 @@ continues to run R2. A provisional marker is evidence of a deferral, never a
 mutation pass: the marker and the snapshot manifest's `deferred_lanes` are written only after
 every required non-mutation lane and the final canary succeeded (so a failed canary can leave
 no success-shaped record), the manifest `state` is `provisional` rather than `passed`, and a
-gate start deletes any earlier marker. Rejected: keeping `state: "passed"` and relying on the
-marker alone (a reader of the manifest would see an unqualified pass). The native-R2 mutation lane declares contract-2 event
+valid new gate start deletes any earlier marker, while an invocation refused by input
+validation (before a new gate starts) preserves the previous run's evidence. Success is decided
+only after snapshot cleanup: a cleanup failure after the lanes passed rewrites the manifest as
+`failed`, removes the marker and fails the gate, because the canary-replaced signal is exactly
+what cleanup exists to catch. The recorded follow-up is the full `gate`, not the standalone
+`mutation` lane, which cannot run without gate-prepared baseline facts. Rejected: keeping
+`state: "passed"` and relying on the marker alone (a reader of the manifest would see an
+unqualified pass). The native-R2 mutation lane declares contract-2 event
 observation; the current command lanes declare resource ceilings but do not
 collect event evidence. Declaring an observer on a lane with no observer client
 would add a daemon dependency without detecting OOM or process-limit events, so

@@ -192,13 +192,22 @@ if [[ "${cli_extended_mode}" == "source" ]]; then
     # Zero-release path only: cli-extended does not exist as a wheel yet.
     verify_pythonpath="${verify_pythonpath}:${repo_root}/libraries/cli-extended/src"
 fi
+# A refusal (SystemExit) prints its own specific reason; any other failure
+# (unreadable cmru.orchestration.toml, an unset ${CGROUP_PARENT_DEV_GATES}
+# reference, an import error) is reported as itself, not as a bad slice.
 PYTHONPATH="${verify_pythonpath}" "${python_bin}" -s -c '
 import sys
 from pathlib import Path
 from cmru import handlers
-handlers.require_installed_cgroup_parent(sys.argv[1], Path(sys.argv[2]))
+try:
+    handlers.require_installed_cgroup_parent(sys.argv[1], Path(sys.argv[2]))
+except Exception as exc:
+    print(f"[ERROR] cannot verify the cgroup parent: {type(exc).__name__}: {exc}", file=sys.stderr)
+    raise SystemExit(2)
 ' "${cgroup_parent}" "${project_dir}" || {
-    echo "[ERROR] cgroup parent ${cgroup_parent} is not a verified host slice; no build was started" >&2
+    echo "[ERROR] cgroup parent verification of ${cgroup_parent} did not succeed (see the message above: a refused or" >&2
+    echo "        unverified slice, a missing or unreadable probe input such as CMRU_TESTER_CGROUP_PROBE_IMAGE," >&2
+    echo "        CMRU_TESTER_CGROUP_PARENT / \$CGROUP_PARENT_DEV_GATES or cmru.orchestration.toml, or an unavailable probe); no build was started" >&2
     exit 2
 }
 

@@ -85,7 +85,8 @@ TESTER_REQUIREMENTS_GENERATION_RUN = (
     "> /tmp/internal-build-requirements.txt && "
     'case "${CLI_EXTENDED_RESOLVE}" in pinned) set -- --wheel-url '
     '"${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; '
-    'latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; local) set -- ;; '
+    'latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" '
+    '--expect-sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; local) set -- ;; '
     '*) echo "CLI_EXTENDED_RESOLVE must be pinned, latest or local" >&2; exit 1 ;; '
     'esac && if [ "${CLI_EXTENDED_RESOLVE}" = local ]; then '
     'set -- /tmp/cli-extended-local/cli_extended-*.whl; '
@@ -97,7 +98,9 @@ TESTER_REQUIREMENTS_GENERATION_RUN = (
     '>&2; exit 1; }; mkdir -p /tmp/cli-extended-release && cp "$1" '
     '/tmp/cli-extended-release/; else '
     '/usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py '
-    '--dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; fi'
+    '--dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; fi && '
+    'set -- /tmp/cli-extended-release/cli_extended-*.whl && [ "$#" -eq 1 ] && '
+    '[ -f "$1" ] && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -'
 )
 TESTER_DEPENDENCY_BOOTSTRAP_RUN = (
     "/usr/local/bin/python3.14 -m venv --copies /opt/tester-venv && "
@@ -1477,7 +1480,14 @@ def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_
     # pinned branch passes the pin, latest branch passes only the pointer, anything else fails the build.
     assert re.search(r'pinned\) set -- --wheel-url "\$\{CLI_EXTENDED_WHEEL_URL\}" '
                      r'--sha256 "\$\{CLI_EXTENDED_WHEEL_SHA256\}" ;;', flat)
-    assert re.search(r'latest\) set -- --pointer-url "\$\{CLI_EXTENDED_POINTER_URL\}" ;;', flat)
+    # latest passes the pointer AND the digest the caller must name (never unverified bytes).
+    assert re.search(r'latest\) set -- --pointer-url "\$\{CLI_EXTENDED_POINTER_URL\}" '
+                     r'--expect-sha256 "\$\{CLI_EXTENDED_WHEEL_SHA256\}" ;;', flat)
+    # every mode verifies the wheel file actually installed against that digest
+    assert re.search(r'fi && set -- /tmp/cli-extended-release/cli_extended-\*\.whl && \[ "\$#" -eq 1 \] '
+                     r'&& \[ -f "\$1" \] && echo "\$\{CLI_EXTENDED_WHEEL_SHA256\}  \$1" \| sha256sum -c -', flat)
+    assert re.search(r'^LABEL org\.vbpub\.cli-extended\.wheel-sha256="\$\{CLI_EXTENDED_WHEEL_SHA256\}"$',
+                     text, re.MULTILINE)
     assert re.search(r'\*\) echo "[^"]*" >&2; exit 1 ;;', flat)
     assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"' in flat
 
@@ -1600,6 +1610,50 @@ def test_fetcher_installs_nothing_unless_the_pointer_digest_matches(tmp_path):
     with pytest.raises(SystemExit, match="sha256 mismatch"):
         fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, tmp_path / "bad", "0.2.0", tampered)
     assert not (tmp_path / "bad").exists()  # nothing written before the digest matched
+
+
+def test_fetcher_expected_digest_accepts_only_the_published_bytes(tmp_path):
+    """The caller's published digest binds `latest` to exact bytes: a pointer that
+    names other bytes is refused before any download, and a download that does not
+    hash to the expected digest is refused before any file exists."""
+    fetcher = _load_fetcher()
+    fetch, digest = _fake_release()
+    ok = fetcher.fetch_wheel(
+        fetcher.POINTER_URL, None, None, tmp_path / "ok", "0.2.0", fetch, expect_sha256=digest,
+    )
+    assert ok.read_bytes() == b"wheel-bytes"
+
+    # The newly released bytes differ from what the pointer (and the old pin) name.
+    stale = "e" * 64
+    with pytest.raises(SystemExit, match="names sha256 " + digest + ", not the expected " + stale):
+        fetcher.fetch_wheel(
+            fetcher.POINTER_URL, None, None, tmp_path / "stale", "0.2.0", fetch, expect_sha256=stale,
+        )
+    assert not (tmp_path / "stale").exists()
+
+    # A pointer that vouches for the expected digest but serves different bytes.
+    lying, _ = _fake_release(sha256=stale)
+    with pytest.raises(SystemExit, match="sha256 mismatch"):
+        fetcher.fetch_wheel(
+            fetcher.POINTER_URL, None, None, tmp_path / "lying", "0.2.0", lying, expect_sha256=stale,
+        )
+    assert not (tmp_path / "lying").exists()
+
+    # An invalid expectation is refused, not ignored.
+    with pytest.raises(SystemExit, match="--expect-sha256 has no valid sha256"):
+        fetcher.fetch_wheel(
+            fetcher.POINTER_URL, None, None, tmp_path / "bad", "0.2.0", fetch, expect_sha256="XYZ",
+        )
+
+
+def test_fetcher_expected_digest_also_binds_a_pinned_wheel_url(tmp_path):
+    fetcher = _load_fetcher()
+    fetch, digest = _fake_release()
+    with pytest.raises(SystemExit, match="not the expected"):
+        fetcher.fetch_wheel(
+            fetcher.POINTER_URL, _BASE + _WHEEL_NAME, digest, tmp_path / "x", "0.2.0", fetch,
+            expect_sha256="f" * 64,
+        )
 
 
 @pytest.mark.parametrize("digest", [None, "", "abc", "A" * 64, 7])

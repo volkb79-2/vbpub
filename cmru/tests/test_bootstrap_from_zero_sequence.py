@@ -306,9 +306,20 @@ def _step_three_tree(tmp_path: Path, pin_sha: str, pointer_sha: str) -> tuple[Pa
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     docker = fake_bin / "docker"
-    docker.write_text('#!/bin/sh\necho "sha256:image-$$"\n', encoding="utf-8")
+    docker.write_text(
+        "#!/bin/sh\n"
+        'case "$*" in\n'
+        '  *org.vbpub.cli-extended.wheel-sha256*) echo "$FAKE_CLI_EXTENDED_LABEL";;\n'
+        '  *) echo "sha256:image-$$";;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
     docker.chmod(0o755)
-    env = {"PATH": f"{fake_bin}:{os.environ['PATH']}", "HOME": str(tmp_path)}
+    env = {
+        "PATH": f"{fake_bin}:{os.environ['PATH']}", "HOME": str(tmp_path),
+        # What the (fake) built image's cli-extended label says it installed.
+        "FAKE_CLI_EXTENDED_LABEL": NEW_SHA,
+    }
     return root, env, log
 
 
@@ -319,7 +330,7 @@ def _run_step_three_identity_block(root: Path, env: dict[str, str], released: st
     assert block.count(needle) == 2  # the pre-build check and the post-build re-check
     block = block.replace(needle, needle + " --pointer-file latest.json")
     block = block.replace(
-        "CLI_EXTENDED_RELEASED_SHA256='<CLI-EXTENDED_WHEEL_SHA256 printed by cmru release>'",
+        "CLI_EXTENDED_RELEASED_SHA256='<CLI-EXTENDED_WHEEL_SHA256 value from cmru.release.log>'",
         f"CLI_EXTENDED_RELEASED_SHA256='{released}'",
     )
     assert released in block
@@ -338,6 +349,8 @@ def test_step_three_rebuilds_the_image_from_the_released_bytes_when_the_pin_is_s
     assert result.returncode == 0, result.stderr
     (command,) = log.read_text(encoding="utf-8").splitlines()
     assert "--cli-extended-resolve latest" in command and "--no-cache" in command
+    # `latest` is only ever built with the published digest, never unverified.
+    assert f"--cli-extended-wheel-sha256 {NEW_SHA}" in command
     assert "--cli-extended-resolve pinned" not in command
     assert "--tag tester-unified:cli-extended-released" in command
     assert "Dockerfile pin: stale; resolve mode: latest" in result.stdout
@@ -351,3 +364,44 @@ def test_step_three_never_builds_when_the_pointer_lags_the_published_release(tmp
 
     assert result.returncode == 2
     assert not log.exists()  # build-image.sh was never reached
+
+
+@_needs_repo
+def test_step_three_refuses_an_image_whose_label_names_other_bytes(tmp_path):
+    root, env, log = _step_three_tree(tmp_path, pin_sha=OLD_PIN_SHA, pointer_sha=NEW_SHA)
+    env["FAKE_CLI_EXTENDED_LABEL"] = OLD_PIN_SHA  # the image kept the old pinned bytes
+
+    result = _run_step_three_identity_block(root, env, NEW_SHA)
+
+    assert result.returncode != 0
+    assert "tester-unified:cli-extended-released" in log.read_text(encoding="utf-8")  # built, then refused
+
+
+@_needs_repo
+def test_step_three_pinned_mode_passes_no_digest_flag_when_the_pin_is_current(tmp_path):
+    root, env, log = _step_three_tree(tmp_path, pin_sha=NEW_SHA, pointer_sha=NEW_SHA)
+
+    result = _run_step_three_identity_block(root, env, NEW_SHA)
+
+    assert result.returncode == 0, result.stderr
+    (command,) = log.read_text(encoding="utf-8").splitlines()
+    assert "--cli-extended-resolve pinned" in command
+    assert "--cli-extended-wheel-sha256" not in command
+
+
+@_needs_repo
+def test_the_guide_names_the_log_interface_and_the_exact_cgroup_inputs():
+    text = GUIDE.read_text(encoding="utf-8")
+    flat = " ".join(text.split())
+    # step 3 reads the published identity from the release log, not the terminal
+    assert "cmru.release.log" in text and "grep -E 'CLI-EXTENDED_WHEEL_(SHA256|ASSET_URL)=' cmru.release.log" in text
+    assert "`quiet = true`" in text
+    # wheel-build does not read the bootstrap-only variable
+    assert "does **not** read `CMRU_BOOTSTRAP_CGROUP_PARENT`" in flat
+    assert "`CMRU_DOCKER_CGROUP_PARENT` or `$CGROUP_PARENT_DEV_BACKGROUND`" in flat
+    # each release command pins its own image
+    cgprofile = next(
+        block for block in _step_blocks(4) if "cmru release cgroup-profiler" in block
+    )
+    assert "RUN_GATE_TESTER_UNIFIED_IMAGE=" in cgprofile.split("cmru release cgroup-profiler")[0]
+    assert "RUN_GATE_TESTER_CLI_EXTENDED_SHA256=" in cgprofile
