@@ -277,21 +277,24 @@ def _configured_wheel_builder_image(cwd: Path) -> str:
 
     forge = load_forge_config(config_path)
     values = dict(forge.env)
-    if forge.orchestration is not None:
-        matches: list[tuple[int, str]] = []
-        for name, path in forge.orchestration.project_configs.items():
-            project_root = path.resolve().parent
-            try:
-                cwd.relative_to(project_root)
-            except ValueError:
-                continue
-            matches.append((len(project_root.parts), name))
-        if not matches:
-            raise ValueError(
-                f"{cwd} is not inside a project registered by {config_path}"
-            )
-        project_name = max(matches, key=lambda item: item[0])[1]
-        values.update(forge.projects[project_name].env)
+    if forge.orchestration is None:
+        raise RuntimeError(
+            f"{config_path}: strict CMRU config loader returned no project registry"
+        )
+    matches: list[tuple[int, str]] = []
+    for name, path in forge.orchestration.project_configs.items():
+        project_root = path.resolve().parent
+        try:
+            cwd.relative_to(project_root)
+        except ValueError:
+            continue
+        matches.append((len(project_root.parts), name))
+    if not matches:
+        raise ValueError(
+            f"{cwd} is not inside a project registered by {config_path}"
+        )
+    project_name = max(matches, key=lambda item: item[0])[1]
+    values.update(forge.projects[project_name].env)
 
     return str(values.get(_WHEEL_BUILDER_IMAGE_ENV, "") or "").strip()
 

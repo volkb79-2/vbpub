@@ -162,6 +162,24 @@ def test_wheel_builder_image_from_config_refuses_a_directory_outside_every_proje
     )
 
 
+def test_wheel_builder_image_refuses_loader_without_project_registry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config_path = tmp_path / "cmru.orchestration.toml"
+    config_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "cmru.config.load_forge_config",
+        lambda _path: SimpleNamespace(env={}, orchestration=None, projects={}),
+    )
+
+    with pytest.raises(RuntimeError) as refused:
+        handlers._configured_wheel_builder_image(tmp_path)
+
+    assert str(refused.value) == (
+        f"{config_path}: strict CMRU config loader returned no project registry"
+    )
+
+
 def test_check_build_prerequisites_explicit_builder_image_is_accepted(monkeypatch):
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:test")
     monkeypatch.setattr(handlers.shutil, "which", lambda _name: "/usr/bin/docker")
