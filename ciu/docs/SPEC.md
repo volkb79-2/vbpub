@@ -949,6 +949,17 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   wipe completes; it MUST NOT abort on `Permission denied` and leave data
   un-wiped (the daemon is root even when the operator is not).
 
+  **Teardown failure and path boundary (CIU-137, normative).** If
+  `docker compose down` exits nonzero, CIU MUST inspect containers with the
+  exact `com.docker.compose.project=<project>` label before deleting a host
+  `vol-*` directory or rendered cleanup file. It may continue only if that
+  inspection exits zero and returns no containers. If inspection fails or
+  finds any container, `clean` MUST fail before deleting host directories or
+  rendered config, and name that it preserved those paths. Before deletion,
+  CIU MUST reject a symlinked `vol-*` entry and prove each resolved directory
+  remains within the resolved stack directory. A path that cannot be resolved
+  or proven contained MUST be preserved and reported as an error.
+
   **DooD path routing (CIU-9, normative).** `vol-*` removal MUST resolve the
   physical path (S1.4) *before* deciding how to remove the directory, not
   merely as a `PermissionError` fallback. When `to_physical_path(vol_dir) !=

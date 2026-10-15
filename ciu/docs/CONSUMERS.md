@@ -732,6 +732,14 @@ cannot be disconnected is NAMED and the clean exits 1 — it is never silently
 kept. The main workspace keeps its own workspace network (your devcontainer
 lives on it) and says so twice: a `kept:` line and the final success line.
 
+If `docker compose down` fails, CIU checks all containers carrying that exact
+Compose project label before removing any host `vol-*` directory or rendered
+configuration. It continues only when the query succeeds and returns no
+containers. If containers remain or Docker cannot answer, `ciu clean` exits
+with an error and keeps the host directories and cleanup files for retry.
+Symlinked `vol-*` paths are refused before deletion so the root helper cannot
+follow a link and erase data outside the stack directory.
+
 **Shipped stacks without deploy tags (CIU-46).** A stack deployed via
 `ciu up --dir <stack> --shipped` on a checkout whose config sets neither
 `deploy.project_name` nor `deploy.environment_tag` runs under the

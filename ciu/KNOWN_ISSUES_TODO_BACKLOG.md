@@ -585,6 +585,8 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-134 | Worktree removal can finish `ciu clean` and then fail deleting the checkout due to protected descendants, leaving a partial Git/CIU lifecycle state with no supported root-assisted retry | High | OPEN — add permission-specific, consented retry through the existing S6.5 helper and truthful partial-state reporting |
 | CIU-135 | Managed worktree overlay recovery, reset retries, network ownership, and explicit `ensure` constraints can be ambiguous or silently ignored | Medium | OPEN — implementation now folds Review 05 recovery, startup, root-selection, and final-network-check findings; registered gate and final review remain |
 | CIU-136 | `ciu resolve` does not report live attached networks, aliases, derived URLs, or a nonzero status for an absent service | Medium | OPEN — extend the existing service-discovery follow-up from CIU-118 / nyxloom NL-38 |
+| CIU-137 | `ciu clean` can delete host data after failed Compose teardown or follow a symlinked `vol-*` path outside the stack | High | IN PROGRESS — exact-project inspection and stack-contained path checks are implemented; registered gate pending |
+| CIU-138 | Worktree removal cleans only the selected nested CIU root before deleting a checkout containing other committed roots | High | OPEN — clean every exact committed root under its own identity; preserve checkout and records on any incomplete clean |
 
 
 The approved milestone decisions and serial package order are in
@@ -5297,3 +5299,27 @@ needs its registered CIU gate and a final read-only review before merge.
 **Chosen behavior:** route the private child through a private helper that catches only `WorkspaceEnvError`, prints the same concise error form as the CLI, and returns exit 1. Unexpected programming errors still retain their traceback.
 
 **Oracle:** a focused test forces `WorkspaceEnvError` through the private helper and asserts the exact stderr line and exit code; a neighboring test verifies the allocation-lock bypass remains private and does not add a user-facing CLI flag.
+
+## CIU-137 — `ciu clean` must prove teardown and host-path safety before deleting data
+
+**Status:** implementation and focused regressions are in the integrated release candidate; registered CIU gate and final review pending. Severity: high (cleanup can erase a bind-mounted data directory while a service remains active).
+
+**Observed:** `docker compose down` failure was logged as a warning, after which CIU deleted `vol-*` host directories and rendered configuration. A nonzero teardown can leave project containers running against those directories. Separately, `_rmtree_with_fallback` resolves a symlinked `vol-*` path to its target before invoking the root helper, so a link inside a stack could widen deletion to an unrelated host directory.
+
+**Required contract:** after a failed Compose teardown, CIU may continue only when an exact `com.docker.compose.project=<project>` container query succeeds and returns no containers. A remaining container, failed query, or unavailable Docker daemon must stop before host-directory and rendered-config deletion. Before deleting volume directories, CIU refuses symlinked `vol-*` entries and verifies every resolved target remains under the resolved stack directory. Errors name the project/path and state which cleanup data was preserved.
+
+**Oracles:** (1) a stale project with no containers is allowed to continue after a successful exact-label query; (2) one remaining container stops cleanup and preserves host data/config; (3) an inspection error is indeterminate, stops cleanup, and preserves both; (4) a `vol-*` symlink to an external directory is refused without invoking the root helper or deleting the target; (5) ordinary in-stack directories still use the existing native/DooD removal path.
+
+**File list:** `src/ciu/engine.py`, focused reset tests, `README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `docs/SPEC.md`, and this backlog.
+
+## CIU-138 — worktree removal must clean every committed nested CIU root
+
+**Status:** open; found in the 2026-10-15 broad release review. Severity: high (other nested stacks can keep containers and host data after their checkout is removed).
+
+**Observed:** worktree allocation prepares every committed nested CIU root, while removal currently invokes `ciu clean` only for the selected root (or skips clean for a rootless family record) before deleting the whole checkout.
+
+**Required contract:** discover the committed roots from the exact target worktree HEAD; verify each root's identity and clean it under its own environment. Any discovery, identity, or cleanup failure must preserve the checkout and lifecycle records. Release only the lease for a root whose clean succeeded. A truly rootless checkout remains removable without inventing a root.
+
+**Oracles:** (1) two committed roots both receive cleanup before shared Git removal; (2) a sibling-root failure preserves checkout and records while reporting prior successful roots; (3) an unreadable or mismatched root refuses before deleting any checkout; (4) a rootless managed worktree still removes without invoking a guessed cleanup.
+
+**File list:** `src/ciu/worktree.py`, worktree lifecycle tests, `README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `docs/SPEC.md`, and this backlog.
