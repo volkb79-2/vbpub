@@ -24478,7 +24478,9 @@ class TestExecLaneProfilingWiring:
         shim.write_text(body)
         docker = shutil.which("docker")
         env = {"forward_env": []}
-        lane = {"kind": "command", "argv": ["true"]}
+        lane = {
+            "kind": "command", "environment": "fixture", "argv": ["true"],
+        }
         code = run_gate.run_exec_lane(
             lane, "suite", repo, repo, repo, env, "test-env",
             "the-runner", "test-src", "test-remedy", None, "no-slice",
@@ -30479,7 +30481,7 @@ class TestRunGateR1DirectCoverage:
         monkeypatch.setenv("FORWARDED", "secret-value")
         monkeypatch.setenv("EMPTY_FORWARD", "")
         monkeypatch.delenv("ABSENT_FORWARD", raising=False)
-        lane = {"kind": "command", "argv": ["true"],
+        lane = {"kind": "command", "environment": "tester-unified", "argv": ["true"],
                 "resources": {"memory_swap": "2g"}}
         env = {"mode": "ephemeral", "image": "runner:local",
                "user": "1000:1000",

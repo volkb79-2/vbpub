@@ -236,6 +236,7 @@ pids = 8192                          # required local ceiling for pids.events at
 Use `image_env` on an **ephemeral** environment when a workflow must select an
 image by immutable ID or receipt-specific tag:
 
+<!-- run-gate-config -->
 ```toml
 schema_version = 1
 

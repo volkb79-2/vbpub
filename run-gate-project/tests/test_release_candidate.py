@@ -751,7 +751,7 @@ def test_run_selftest_ignores_pythonpath_shadow_and_uses_installed_wheel(
     site_packages = candidate_env / "lib" / (
         f"python{sys.version_info.major}.{sys.version_info.minor}"
     ) / "site-packages"
-    site_packages.mkdir(parents=True)
+    site_packages.mkdir(parents=True, exist_ok=True)
     dist_info = site_packages / "run_gate-24.0.0.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
