@@ -133,15 +133,39 @@ def test_runner_run_step_requires_one_project_and_declared_step(monkeypatch, tmp
         runner.run_step(cfg, "tests")
 
 
-def test_handlers_wheel_build_refuses_disappearing_builder_image(monkeypatch, tmp_path):
+def test_handlers_wheel_build_runs_the_image_its_prerequisite_check_resolved(monkeypatch, tmp_path):
+    """The builder image is resolved ONCE, by the prerequisite check, and that exact
+    value is what runs.
+
+    It used to be re-read from the environment after the check, so a variable that
+    vanished in between surfaced as a "disappeared" refusal. Now the check returns the
+    verified image and the build never reads the environment again: a vanished
+    variable cannot swap or lose the image.
+    """
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "builder@sha256:abc")
-    monkeypatch.setattr(handlers, "_check_build_prerequisites", lambda: None)
+    resolved = []
+
+    def check(cwd):
+        resolved.append(cwd)
+        image = "builder@sha256:abc"
+        monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+        return image
+
+    monkeypatch.setattr(handlers, "_check_build_prerequisites", check)
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_docker_cgroup_parent", lambda: "dev.slice")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda path: str(path))
-    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
-    with pytest.raises(RuntimeError, match="disappeared"):
-        handlers.cmd_wheel_build(SimpleNamespace(cwd=str(tmp_path)))
+    monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", lambda _source, **_kw: [])
+    monkeypatch.setattr(handlers, "_git_toplevel", lambda _cwd: None)
+    calls = []
+    monkeypatch.setattr(handlers.subprocess, "run", lambda argv, **kw: calls.append(argv))
+
+    handlers.cmd_wheel_build(SimpleNamespace(cwd=str(tmp_path)))
+
+    assert resolved == [tmp_path.resolve()]
+    (argv,) = calls
+    assert "builder@sha256:abc" in argv
+    assert handlers._WHEEL_BUILDER_IMAGE_ENV not in handlers.os.environ
 
 
 def test_release_wheel_metadata_requires_version_field(tmp_path):

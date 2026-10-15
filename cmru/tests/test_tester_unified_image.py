@@ -587,6 +587,36 @@ def _dockerfile_from_base(instruction: str) -> str:
     return parts[base_index].lower()
 
 
+def _dockerfile_global_arg_defaults(text: str) -> dict[str, str]:
+    """Defaults of the ``ARG`` instructions declared before the first ``FROM``."""
+    defaults: dict[str, str] = {}
+    for instruction in _dockerfile_logical_instructions(text):
+        if re.match(r"(?i)^FROM(?:[ \t]|$)", instruction):
+            break
+        match = re.match(r"(?i)^ARG[ \t]+([A-Za-z_][A-Za-z0-9_]*)=(.*)$", instruction)
+        if match:
+            value = match.group(2).strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            defaults[match.group(1)] = value
+    return defaults
+
+
+def _expand_dockerfile_base(base: str, defaults: dict[str, str]) -> str:
+    """Expand ``$NAME``/``${NAME}`` in a FROM base from declared global ARG defaults.
+
+    A reference with no declared default stays unexpanded, so the caller still
+    refuses to certify an unresolved base.
+    """
+    lowered = {name.lower(): value.lower() for name, value in defaults.items()}
+
+    def replace(match: re.Match) -> str:
+        name = (match.group(1) or match.group(2)).lower()
+        return lowered.get(name, match.group(0))
+
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", replace, base)
+
+
 def _assert_no_mutating_instructions_after_install(
     instructions: list[tuple[int, str, int, str]],
     *,
@@ -691,7 +721,10 @@ def _dockerfile_copy_specs_before_command(
     }
     if run_sensitive_sources and selected_stage_ordinal is not None:
         from_instruction = stage_from_instructions[selected_stage_ordinal]
-        base = _dockerfile_from_base(from_instruction)
+        base = _expand_dockerfile_base(
+            _dockerfile_from_base(from_instruction),
+            _dockerfile_global_arg_defaults(text),
+        )
         prior_stage_selectors = {
             selector.lower()
             for ordinal, selector, _index, _instruction in instructions
@@ -1483,7 +1516,8 @@ def test_resolve_modes_are_pinned_default_latest_and_local_and_local_asserts_a_l
         assert re.search(rf"^#\s+{mode}\b", header, re.MULTILINE), mode
     assert "COPY tester-unified/local-wheel/ /tmp/cli-extended-local/" in text
     readme = (REPO_ROOT / "tester-unified" / "README.md").read_text("utf-8")
-    assert "CLI_EXTENDED_RESOLVE=local" in readme and "local-wheel" in readme
+    # The README documents the local mode through the supported builder's flag.
+    assert "--cli-extended-resolve local" in readme and "local-wheel" in readme
 
 
 def test_dockerignore_admits_the_local_wheel_input_and_gitignore_keeps_wheels_out():
@@ -3342,7 +3376,10 @@ def test_tester_unified_build_instructions_use_the_exact_wheel_builder():
     assert "tester-unified/build-image.sh" in profiler_gate
     assert '"$checkout/tester-unified/build-image.sh"' in audit_launcher
     assert 'cmru handler wheel-build --cwd "$checkout/run-gate-project"' in audit_launcher
-    assert "run-gate-wheel-version.py" in readme
+    # The README tells operators the builder checks the exact wheel's version and
+    # digest; the version helper itself is an implementation detail of the builder.
+    flat_readme = " ".join(readme.split())
+    assert "version and SHA-256 are checked during the build" in flat_readme
     assert "run-gate-wheel-version.py" in builder
 
 
@@ -3374,9 +3411,13 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
     assert '--no-cache) no_cache=1; shift ;;' in builder
     assert "mcr.microsoft.com/devcontainers/python:3.14-trixie" in readme
     assert "mcr.microsoft.com/devcontainers/python:3.14-trixie" in consumers
-    assert "first-release bootstrapping" in design
-    assert "before `tester-unified:local` exists" in readme
-    assert "pre-existing" in consumers and "tester-unified:local" in consumers
+    # Prose wraps differently over time; compare whitespace-normalized text.
+    flat_design = " ".join(design.split())
+    flat_readme = " ".join(readme.split())
+    flat_consumers = " ".join(consumers.split())
+    assert "first-release bootstrapping" in flat_design
+    assert "before `tester-unified:local` exists" in flat_readme
+    assert "does not depend on an existing `tester-unified:local` image" in flat_consumers
     orchestration = tomllib.loads(
         (REPO_ROOT / "cmru.orchestration.toml").read_text("utf-8"),
     )

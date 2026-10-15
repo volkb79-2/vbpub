@@ -256,7 +256,8 @@ cmru.runner`, and module aliases for the three operator scripts are retired;
 they now refuse with a pointer to the supported command or library API.
 
 The first CMRU wheel can be built before either CMRU or `cli-extended` has a
-release. `build-initial-standalone.sh` has an explicit source mode that builds
+release. `build-initial-standalone.sh` has an explicit source mode, selected with
+`CMRU_BOOTSTRAP_CLI_EXTENDED=source`, that builds
 `cli-extended` from the same checkout at CMRU's declared runtime floor and
 marks it `+bootstrap.source`. The standalone wheel-builder uses Microsoft's
 upstream Python base, so this bootstrap does not depend on MDT's published

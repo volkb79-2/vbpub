@@ -163,7 +163,12 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         "coverage", "mutation", "canary",
     ):
         lane = gate["lanes"][name]
-        assert lane["resource_observer"] == "cgprofile"
+        # Only the R2 (mutation) lane is observed by cgprofile; the other lanes
+        # keep resource ceilings but mount no observer socket (08632f747).
+        if name == "mutation":
+            assert lane["resource_observer"] == "cgprofile"
+        else:
+            assert "resource_observer" not in lane
         assert lane["resources"]["pids"] == 8192
         assert lane["resources"]["memory"] == "2g"
     release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")

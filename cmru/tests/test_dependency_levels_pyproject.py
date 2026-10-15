@@ -274,7 +274,16 @@ def test_the_bootstrap_doc_order_agrees_with_the_graph():
 @_DOC_SKIP
 def test_a_doc_whose_order_disagrees_with_the_graph_is_detected():
     text = DOC.read_text(encoding="utf-8")
-    swapped = text.replace("L0: cli-extended\nL1: cmru", "L0: cmru\nL1: cli-extended")
+    # Swap the members of the first and third levels: a lower level then names a
+    # project that the graph releases later, whatever the current membership is.
+    first = re.search(r"(?m)^L0: (.*)$", text)
+    third = re.search(r"(?m)^L2: (.*)$", text)
+    assert first and third
+    swapped = (
+        text.replace(first.group(0), "L0: @@", 1)
+        .replace(third.group(0), f"L2: {first.group(1)}", 1)
+        .replace("L0: @@", f"L0: {third.group(1)}", 1)
+    )
     assert swapped != text
     with pytest.raises(AssertionError):
         _check_doc(swapped)

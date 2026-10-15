@@ -840,6 +840,10 @@ def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
         "# Changelog\n\n## [6.2.1] - 2026-10-15\n\n- later release\n",
         encoding="utf-8",
     )
+    # The gate judges an exact commit and refuses a dirty tracked tree before it
+    # reaches the postponement check, so the later release is committed.
+    _git(repo, "add", "cmru/CHANGES.md")
+    _git(repo, "commit", "--quiet", "-m", "prepare a later release")
 
     with pytest.raises(RuntimeError, match="authorized only for CMRU 6.2.0"):
         run_release_gate.run_release_gate(
@@ -1147,7 +1151,7 @@ def test_release_gate_reads_legacy_pep610_archive_hash_from_installed_wheel(
     site_packages = environment / "lib" / (
         f"python{sys.version_info.major}.{sys.version_info.minor}"
     ) / "site-packages"
-    site_packages.mkdir(parents=True)
+    site_packages.mkdir(parents=True, exist_ok=True)
     dist_info = site_packages / "run_gate-24.0.0.dist-info"
     dist_info.mkdir()
     (dist_info / "METADATA").write_text(
@@ -1413,9 +1417,9 @@ def test_release_gate_uses_prefix_from_the_repository_cmru_project_config(
             "Id": "bad-image-id",
             "Config": {"Labels": {
                 "org.vbpub.run-gate.version": "24.0.0",
-                "org.vbpub.run-gate.wheel-sha256": hashlib.sha256(
-                    b"published Run-Gate wheel"
-                ).hexdigest(),
+                # The labels must name the published wheel so that the
+                # identity check reaches the image-ID validation it targets.
+                "org.vbpub.run-gate.wheel-sha256": _sample_wheel_sha256(),
             }},
         })}, "image ID is malformed"),
         ({"docker_returncode": 1, "docker_stderr": "No such image"}, "cannot inspect tester-unified image"),

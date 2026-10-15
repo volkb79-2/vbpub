@@ -463,7 +463,10 @@ def test_lane_output_validation_names_each_kind_of_unapproved_residue(tmp_path, 
         (root / "cmru" / "cmru.secret.toml").unlink()
 
         (root / "README.md").write_text("tampered\n", encoding="utf-8")
-        with pytest.raises(RuntimeError, match="changed tracked snapshot files or HEAD"):
+        # The byte-level comparison with the exact commit runs first and names the file.
+        with pytest.raises(
+            RuntimeError, match=r"tracked snapshot file differs from exact commit .*README\.md",
+        ):
             validate()
         _git(root, "checkout", "--quiet", "--", "README.md")
 
