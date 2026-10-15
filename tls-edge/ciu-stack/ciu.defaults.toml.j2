@@ -67,6 +67,15 @@ https_alt = 8443
 # "acme-http" (HTTP-01 challenge).
 expose_http = false
 
+[tls_edge.calls]
+# Optional raw media listeners for Mattermost Calls. Disabled for normal
+# tls-edge deployments. If enabled, TCP and UDP share one public port; TCP
+# uses its own Traefik container entrypoint so it cannot collide with HTTPS.
+enabled = false
+public_port = 8444
+tcp_internal_port = 8444
+udp_internal_port = 8443
+
 [tls_edge.runtime]
 # systemd slice (cgroup parent) for both containers, e.g. "edge.slice".
 # With the systemd cgroup driver Docker creates the slice on demand, so no
