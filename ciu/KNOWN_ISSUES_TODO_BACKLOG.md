@@ -587,6 +587,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-142 | A managed worktree that is rebased keeps its spent `fork_point_sha` in `ciu.worktree-instance.json`, and no `ciu worktree` verb re-records it, so run-gate's derived base (SPEC R-35a: merge-base must equal the recorded fork point) refuses `NOT_RUN no-base` and every later gate needs a hand-passed `--base` | Medium | OPEN (filed 2026-10-15, dstdns P242, ciu 7.16.0) |
 | CIU-144 | `ciu resolve --json` and `ciu check --json` in a linked worktree put the `[CIU-117] project-built images use worktree tag suffix ...` notice on STDOUT ahead of the JSON document whenever a selected stack declares Compose `build:` (`engine.scope_worktree_compose_images` bare `print`, `engine.py:1278`), so every JSON consumer fails to parse; a regression of CIU-84's S13.4a sweep | Medium | OPEN (filed 2026-10-15, dstdns P243, ciu 7.16.0) |
 | CIU-146 | `ciu down --profile NAME` (and `--phases`) stops EVERY project container: `action_stop` matches the whole `^{project}-{env}-` prefix and never reads the selection, while `ciu down --help` says `--profile` restricts to the named host profile | High | OPEN. Filed 2026-10-15 from dstdns (deep-review run, main 02ed2c8b), ciu 7.16.0. See the CIU-146 section |
+| CIU-147 | `ciu up` reports success for a stack whose rendered, bind-mounted config file changed, while the running container keeps serving the OLD config: Compose's recreate diff hashes the service definition, not the content of a bind-mounted file, and CIU never forces a recreate or warns | Medium | OPEN |
 
 
 The approved milestone decisions and serial package order are in
@@ -5157,3 +5158,22 @@ It printed `Active service profile(s): apps,worker-io,worker-db,identity,observa
 5. Controlled wrong implementation: today's `action_stop` passes oracle 3 and fails oracle 1, so a test that only checks "something was stopped" cannot pass for it.
 
 **SPEC owner.** S7.8 (`--stop`), S7.4 (host profiles), S10.2a (CIU-127 per-stack stop). v8 mapping: SPEC-V8 S14.1.3 `ciu down --realization R` must keep the same never-widen rule.
+
+## CIU-147 — a changed bind-mounted rendered config does not recreate the container, and `ciu up` reports success
+
+**Status:** OPEN. Filed 2026-10-15 from the dstdns deep review (GUIDE B064 / dstdns backlog B064, first observed in dstdns package P60 on 2026-08-04), ciu 7.16.0. Severity Medium. Type: bugfix.
+
+**Observed.** A service reads a rendered file bind-mounted at `/etc/<svc>/config.toml`. After a re-render changed that file, `ciu up --dir <stack>` finished green and the container kept serving the old values. In P60 `GET .../settings/defaults` returned `{}` while a direct Consul KV read returned correct data, because the process had started 9 minutes before the config file it reads was re-rendered. Distinguishing observation: `docker inspect <container> --format '{{.State.StartedAt}}'` predates `stat -c %y` of the rendered file.
+
+**Mechanism (source).** Docker Compose decides to recreate a container from a hash of the service definition. A bind mount contributes its path, not its file content, so a content change leaves the hash equal. `src/ciu` never passes `--force-recreate` (no match in `src/` or `docs/SPEC.md`) and never compares the rendered file against the container's start time.
+
+**Why CIU owns it.** CIU renders the file, owns the `up` verb and reports its success. A consumer cannot detect the stale process from CIU's output and can only work around it with a raw `docker restart`, which AGENTS-style consumer contracts forbid.
+
+**Required contract.** When `ciu up` re-renders a file that is bind-mounted into a service and the file's content differs from the previous render, the service is recreated (or the verb names the stale service and refuses to report plain success). An unchanged render recreates nothing.
+
+**Oracles.**
+1. Render, `ciu up`, change one value in the config template, `ciu up` again: the container's `StartedAt` is newer than the second render's mtime and the process serves the new value.
+2. A second `ciu up` with no template change leaves `StartedAt` unchanged.
+3. Controlled wrong implementation: `--force-recreate` on every `up` passes oracle 1 and fails oracle 2.
+
+**SPEC owner.** S7.8 (stack deployment) and S8.3 (single-stack deployment).
