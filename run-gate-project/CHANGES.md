@@ -47,18 +47,43 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   and checks that the installed wheel modules and CLI match the candidate.
 - Fix: give the R1 and R3 tester containers explicit memory and swap ceilings,
   so gate admission accounts for their use and Docker applies per-container bounds.
-- Fix: refuse an R1-R3 Assay lane when its selected state root is inside the
-  judged worktree, before Assay can fail on in-tree snapshot scratch; configure
-  a durable mount outside that worktree (RG-98).
-- Fix: inject Git `safe.directory` only through `GIT_CONFIG_COUNT`, with no
-  global config file, lock file, or mutual-exclusion mechanism. RG-99 remains
-  open until concurrent exec-mode acceptance is complete.
-- Fix: resolve imported Assay inventory only for imported lane selection,
-  sequences that use an imported lane, or `--check-env`; listing and unrelated
-  local lanes remain available when a persistent judge is stopped (RG-100).
-- Docs/fix: correct the `bare-host` mode contract and include the exact
-  migration command and `[environments.bare-host] mode = "host"` remedy in an
-  undefined-environment refusal (RG-101).
+- Fix (behavior change): the Assay judge no longer inherits the state-root
+  path as `TMPDIR` when that root is inside the judged worktree, so the default
+  in-repo `.run-gate` root works for snapshot-isolated R1-R3 lanes instead of
+  ERRORing before R0 on Assay's scratch rule (RG-98). The path is exported as
+  `RUN_GATE_TMPDIR` (always) and as `TMPDIR` only for a root outside the judged
+  worktree. A lane whose test command relied on `TMPDIR` from `env_passthrough`
+  with an in-worktree root now maps `RUN_GATE_TMPDIR` in `assay.toml`
+  (`TMPDIR = "required-env:RUN_GATE_TMPDIR"` under `[lanes.<n>.infrastructure]`;
+  CONSUMERS). The interim preflight refusal and its judge-inventory probe are
+  removed.
+- Fix: inject Git `safe.directory` only through `GIT_CONFIG_COUNT`, appended at
+  the count the lane's environment already carries instead of overwriting index
+  0, with no global config file, lock file, or mutual-exclusion mechanism
+  (RG-99). Supported Git floor 2.38: an older `git` is refused at lane start-up
+  with exit 2 naming the floor, and a non-integer `GIT_CONFIG_COUNT` is
+  refused rather than clobbered. Lanes no longer pin `GIT_CONFIG_GLOBAL`. Live
+  concurrent exec-mode acceptance remains open.
+- Fix: help, `--list` and an omitted lane never resolve imported Assay
+  inventory; `doctor`, `--check-env`, and `history` / `footprint` over every
+  lane (including `footprint --write`) do, and refuse with the runner remedy
+  when the judge is unavailable instead of reporting a clean result or writing
+  a manifest without the imported lanes (RG-100).
+- Docs/fix: correct the `bare-host` mode contract; the undefined-environment
+  refusal now names the exact declaration for `bare-host` and for `host`, and a
+  `migrate-modes` command that the loader accepts (the central config for an
+  inherited lane); `migrate-modes` also materializes names referenced only by
+  `[assay]` / `[assay.import]` (RG-101).
+- Fix: `doctor` no longer crashes with `KeyError: 'environment'` on a
+  `kind = "sequence"` lane; it reports each member with its environment facts
+  and names malformed members, and `--check-env` skips the sequence itself
+  (RG-103).
+- Fix: the tester image installs Debian `docker-cli` / `docker-compose` only
+  when the base lacks a Docker client or compose plugin, so the MDT base's
+  `docker-ce-cli` / `docker-compose-plugin` are no longer overwritten or
+  rejected by dpkg; both bases are covered by an executable oracle.
+- Docs: fix the doubled backslash in the CONSUMERS zero-release bootstrap
+  example.
 <!-- cmru: release history -->
 
 ## [23.10.0] - 2026-10-07

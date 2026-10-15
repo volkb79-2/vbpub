@@ -27,7 +27,9 @@ tester-unified/build-image.sh \
 ```
 
 The Dockerfile installs and checks its required host-facing tools on either
-base. CMRU, Assay, project sources, and the exact Run-Gate wheel still come
+base, installing only what the base lacks: the MDT base already carries Docker's
+`docker-ce-cli` and `docker-compose-plugin` and keeps them, while the upstream
+Python base gets Debian's `docker-cli` and `docker-compose`. CMRU, Assay, project sources, and the exact Run-Gate wheel still come
 from the selected vbpub checkout. Set the lane image to its immutable ID before
 running release gates:
 

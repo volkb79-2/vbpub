@@ -1726,6 +1726,15 @@ def migrate_environment_modes_text(text: str, *,
     for lane in lanes.values():
         if isinstance(lane, dict) and isinstance(lane.get("environment"), str):
             references.add(lane["environment"])
+    # Assay lanes inherit their environment from `[assay]`, and an imported
+    # inventory runs in `[assay.import].environment`; neither names a lane,
+    # yet a legacy name there refuses at resolution exactly like a lane's.
+    assay_policy = before.get("assay")
+    if isinstance(assay_policy, dict):
+        for holder in (assay_policy, assay_policy.get("import")):
+            if isinstance(holder, dict) and isinstance(
+                    holder.get("environment"), str):
+                references.add(holder["environment"])
     added: dict[str, dict] = {}
     for name in sorted(references & {HOST_ENV, BARE_HOST_ENV}):
         if name in environments or name in known:
@@ -2049,12 +2058,25 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
         message = (f"[lanes.{lane_name}] in {project_path}: environment "
                    f"'{name}' is not defined in {project_path} (no central "
                    f"{ROOT_CONFIG_NAME} exists)")
-    if name == "bare-host":
-        message += (" Legacy 'bare-host' is not a built-in environment; "
-                    "declare [environments.bare-host] with mode = \"host\", "
-                    "or run `run-gate migrate-modes "
-                    f"{shlex.quote(str(project_path))}` to materialize the "
-                    "legacy name and insert its mode in this config.")
+    if name in (HOST_ENV, BARE_HOST_ENV):
+        # RG-101: name the remedy that the loader will actually accept for
+        # THIS lane. `migrate-modes` materializes a legacy name only in the
+        # config it is pointed at, from the lanes that config declares; a
+        # lane inherited from the central config is therefore migrated there.
+        inherited = (lane_name in central.get("lanes", {})
+                     and lane_name not in project.get("lanes", {})
+                     and central_path is not None)
+        target = central_path if inherited else project_path
+        if name == BARE_HOST_ENV:
+            declaration = '[environments.bare-host] with mode = "host"'
+        else:
+            declaration = ('[environments.host] with mode = "ephemeral" and '
+                           'an image')
+        message += (f" Legacy '{name}' is not a built-in environment; "
+                    f"declare {declaration}, or run `run-gate migrate-modes "
+                    f"{shlex.quote(str(target))}` to materialize the legacy "
+                    "name and insert its mode in the config that declares "
+                    "this lane.")
     fail(message)
 
 
@@ -7001,6 +7023,8 @@ def cmd_check_env(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     covered = {CGROUP_ENV_VAR}
     environment_resolution_errors = 0
     for name, lane in lanes.items():
+        if lane.get("kind") == "sequence":
+            continue  # RG-103: no environment of its own; members are lanes
         covered.update(lane.get("required_env", []))
         try:
             env, _ = resolve_environment(lane, name, cfg, central,
@@ -7625,6 +7649,51 @@ def unresolved_import_placeholders(settings: dict,
                "assay_lane": name, "_import_unresolved": True}
         for name in sorted(names) if name not in declared_lanes
     }
+
+
+_NO_LANE_FACT_VERBS = frozenset({
+    "admission", "validate-pointers", "migrate-modes", "status"})
+
+
+def assay_import_resolution_required(args, declared_lanes: dict,
+                                     import_spec: dict) -> bool:
+    """RG-100: does THIS invocation need the judge's lane inventory?
+
+    Resolving an `[assay.import]` costs a judge round trip and fails when the
+    runner is down. Pay it only when the answer depends on it:
+
+    * help, `--list` and an omitted lane only DISPLAY names, so they never
+      probe (imported names appear as unresolved placeholders);
+    * verbs with no lane facts (`admission`, `status`, ...) never probe;
+    * `doctor`, `--check-env`, and a `history`/`footprint` over every lane
+      (no filter) need the full lane set -- answering from the declared
+      lanes alone would be a clean-looking report that silently omits the
+      imported ones, or a manifest written without their entries;
+    * a named lane needs the inventory only when it is not declared locally
+      (it may be an imported name);
+    * running a lane needs it for an undeclared name, or for a sequence that
+      reaches an imported member.
+    """
+    if args.check_env:
+        return True
+    lane = args.lane
+    if lane == "doctor":
+        return True
+    if lane in ("history", "footprint"):
+        named = [args.target] if args.target else []
+        if lane == "footprint":
+            named += list(args.footprint_lanes or [])
+        return not named or any(name not in declared_lanes for name in named)
+    if lane in _NO_LANE_FACT_VERBS:
+        return False
+    if args.list or args.help or lane is None:
+        return False
+    selected = declared_lanes.get(lane)
+    if selected is None:
+        return True
+    return (selected.get("kind") == "sequence"
+            and sequence_requires_assay_import(lane, declared_lanes,
+                                               import_spec))
 
 
 def sequence_requires_assay_import(name: str, declared_lanes: dict,
@@ -8839,6 +8908,39 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     # 2. per-environment facts: resolution + slice LoadState
     env_cache: dict[str, tuple[dict, str]] = {}
     for name in sorted(lanes):
+        if lanes[name].get("kind") == "sequence":
+            # RG-103: a sequence owns no environment (R-07/RG-74 forbid the
+            # key); its members run in theirs. Report each member's
+            # environment facts here instead of resolving a key that cannot
+            # exist; a member that is itself a lane is also checked on its
+            # own in this loop.
+            leaves, problems = sequence_leaf_members(name, lanes)
+            for problem in problems:
+                record("FAIL", f"sequence {name!r}", problem)
+            for member in leaves:
+                member_lane = lanes[member]
+                if not isinstance(member_lane.get("environment"), str):
+                    record("FAIL", f"sequence {name!r} member {member!r}",
+                           "declares no environment — a member must name the "
+                           "environment it runs in")
+                    continue
+                try:
+                    member_env, member_source = resolve_environment(
+                        member_lane, member, cfg, central, cfg_path,
+                        central_path)
+                except GateError as exc:
+                    record("FAIL", f"sequence {name!r} member {member!r}",
+                           str(exc))
+                    continue
+                record("OK", f"sequence {name!r} member {member!r}",
+                       f"environment {member_lane['environment']!r}: mode "
+                       f"{member_env.get('mode') or 'host'} "
+                       f"(declared {member_source})")
+            continue
+        if not isinstance(lanes[name].get("environment"), str):
+            record("FAIL", f"lane {name!r} environment",
+                   "no environment is declared for this lane")
+            continue
         try:
             env, env_source = resolve_environment(lanes[name], name, cfg,
                                                  central, cfg_path, central_path)
@@ -8892,8 +8994,9 @@ def cmd_doctor(lanes: dict, project_dir: Path, cfg: dict, central: dict,
     # even for a lane whose environment failed to resolve above.
     argv_lanes = []
     for n in sorted(lanes):
-        if lanes[n]["kind"] != "command":
-            continue
+        if lanes[n]["kind"] != "command" \
+                or not isinstance(lanes[n].get("environment"), str):
+            continue  # a lane with no environment is reported above
         try:
             resolved_env, _ = resolve_environment(lanes[n], n, cfg, central,
                                                   cfg_path, central_path)
@@ -9925,47 +10028,6 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
         return
     state_root = assay_state_root(repo, env)
     state_dir = assay_state_dir(repo, project_dir, env.get("state_root"))
-    if assay_state_root_is_inside_worktree(state_root, worktree):
-        cached_inventory = lane.get("_assay_inventory")
-        if (isinstance(cached_inventory, dict)
-                and isinstance(cached_inventory.get("entry"), dict)):
-            entry = cached_inventory["entry"]
-            assay_version = cached_inventory.get("assay_version")
-            why = None
-        else:
-            entry, assay_version, why = assay_inventory_entry(
-                lane, env, env_name, repo, worktree, env_source, project_dir,
-                resolved_container_name=resolved_container_name)
-        if entry is None:
-            fail_infra(
-                f"cannot determine whether Assay lane "
-                f"{lane.get('assay_lane', '?')!r} requires snapshot "
-                f"isolation before using in-worktree state root "
-                f"'{state_root}': {why or 'judge inventory unavailable'}")
-        rigor = entry.get("rigor")
-        if (not isinstance(rigor, list)
-                or not rigor
-                or any(not isinstance(item, str)
-                       or item not in {"R0", "R1", "R2", "R3"}
-                       for item in rigor)):
-            fail_infra(
-                f"Assay lane {lane.get('assay_lane', '?')!r} returned "
-                f"invalid rigor in inventory from Assay {assay_version!r}; "
-                "run-gate will not guess whether its snapshot scratch "
-                "needs to be outside the worktree")
-        if any(item in {"R1", "R2", "R3"} for item in rigor):
-            remedy = (
-                f"set [environments.{env_name}].state_root to a durable "
-                "absolute path outside the judged worktree and mount that "
-                "path read-write in the selected runner; then retry")
-            raise GateNotRunError(
-                "state-mount",
-                f"lane {lane.get('assay_lane', '?')!r} declares "
-                f"{', '.join(rigor)} and needs Assay snapshot scratch "
-                f"outside the judged worktree, but state_root "
-                f"'{state_root}' is inside '{worktree}'. Run-Gate sets "
-                "TMPDIR to state_root; Assay follows it for its own "
-                f"scratch and would ERROR before R0. {remedy}")
     if not env or env.get("mode") == "host":
         if dry_run:
             action = "would check"
@@ -10294,6 +10356,54 @@ def clear_previous_assay_verdict(lane: dict, project_dir: Path, repo: Path,
                         f"{verdict_path}: {exc}") from exc
 
 
+# RG-99: Git honors `safe.directory` from environment (command-line scope)
+# config only from this release (2.38, "protected configuration"); an older
+# Git silently ignores the injection and the lane then dies on "dubious
+# ownership" as an apparent product FAIL.
+GIT_ENV_CONFIG_MINIMUM = (2, 38)
+
+
+def git_safe_directory_setup() -> list[str]:
+    """Shell statements that inject `safe.directory=*` into the lane's Git.
+
+    Lock-free and file-free by construction (RG-99): the entry rides on
+    `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n`, appended at
+    the count the runner's environment ALREADY carries so entries a runner
+    or a pre-existing wrapper injected survive. Nothing is written to disk,
+    so concurrent lanes in one exec container cannot race. The count is read
+    in the lane's own shell because only that environment knows it (an exec
+    runner's environment is not the controller's).
+    """
+    floor_major, floor_minor = GIT_ENV_CONFIG_MINIMUM
+    floor = f"{floor_major}.{floor_minor}"
+    return [
+        '__rg_git_n="${GIT_CONFIG_COUNT:-0}"',
+        "case \"$__rg_git_n\" in ''|*[!0-9]*|0?*) "
+        "echo \"run-gate: GIT_CONFIG_COUNT='$__rg_git_n' is not a plain "
+        "non-negative integer; refusing to append safe.directory to an "
+        "unreadable Git config environment\" >&2; exit 2;; esac",
+        # An absent git needs no injection and is not this script's concern;
+        # a present git too old to read command-line safe.directory is
+        # refused HERE, by name, rather than failing later as "dubious
+        # ownership" inside the lane.
+        "if command -v git >/dev/null 2>&1; then "
+        "__rg_git_v=\"$(git --version 2>/dev/null | "
+        "sed -n 's/^git version \\([0-9][0-9]*\\)\\.\\([0-9][0-9]*\\).*/\\1 \\2/p')\"; "
+        "if [ -n \"$__rg_git_v\" ]; then "
+        "read -r __rg_git_major __rg_git_minor <<< \"$__rg_git_v\"; "
+        f"if [ \"$__rg_git_major\" -lt {floor_major} ] || "
+        f"{{ [ \"$__rg_git_major\" -eq {floor_major} ] && "
+        f"[ \"$__rg_git_minor\" -lt {floor_minor} ]; }}; then "
+        "echo \"run-gate: git $__rg_git_major.$__rg_git_minor is older than "
+        f"{floor}; it ignores safe.directory from the environment, so the "
+        "lane would fail as 'dubious ownership'. Use an image with git >= "
+        f"{floor}\" >&2; exit 2; fi; fi; fi",
+        'export "GIT_CONFIG_KEY_${__rg_git_n}=safe.directory" '
+        '"GIT_CONFIG_VALUE_${__rg_git_n}=*" '
+        '"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"',
+    ]
+
+
 def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                       request_base: str | None = None,
                       worktree: Path | None = None,
@@ -10323,9 +10433,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
              f"cd {shlex.quote(str(project_dir))}",
              "mkdir -p .assay",
              f"rm -f -- {shlex.quote(verdict)}",
-             "export GIT_CONFIG_COUNT=1",
-             "export GIT_CONFIG_KEY_0=safe.directory",
-             "export GIT_CONFIG_VALUE_0='*'",
+             *git_safe_directory_setup(),
              *assay_source_setup(lane, selected_worktree, project_dir)]
     for pin_name, pin in lane.get("pins", {}).items():
         sha = Path(pin["sha256"])
@@ -10435,9 +10543,25 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     # path, which varies by host and worktree. Derive both values from the
     # state mount already verified above; the consumer assay.toml forwards
     # these names through its explicit env_passthrough list.
+    #
+    # RG-98: the assignment prefix lands in the JUDGE's own environment, and
+    # Assay allocates its snapshot scratch under `tempfile`'s TMPDIR -- a
+    # root that must lie OUTSIDE the judged repository. A state root inside
+    # the judged worktree (the default `<checkout>/.run-gate`) therefore may
+    # not become the judge's TMPDIR: every snapshot-isolated lane would
+    # ERROR before R0. In that case the test command's path travels under
+    # RUN_GATE_TMPDIR only, which Assay ignores; the lane maps it onto the
+    # child's TMPDIR through its own `[lanes.<n>.infrastructure]` fact
+    # (`TMPDIR = "required-env:RUN_GATE_TMPDIR"`). With an external root both
+    # are the same safe path, so TMPDIR is still exported and a lane that
+    # forwards it by `env_passthrough` keeps working unchanged.
     quoted_temp_root = shlex.quote(str(state_root_path))
-    parts.append(f"TMPDIR={quoted_temp_root} "
-                 f"GIT_CEILING_DIRECTORIES={quoted_temp_root} "
+    judge_env = [f"RUN_GATE_TMPDIR={quoted_temp_root}",
+                 f"GIT_CEILING_DIRECTORIES={quoted_temp_root}"]
+    if not assay_state_root_is_inside_worktree(state_root_path,
+                                               selected_worktree):
+        judge_env.insert(0, f"TMPDIR={quoted_temp_root}")
+    parts.append(f"{' '.join(judge_env)} "
                  f"{command} {shlex.join(run_argv)}")
     return " && ".join(parts)
 
@@ -10445,9 +10569,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
 def build_command_inner(lane: dict, worktree: Path,
                         base: str | None = None) -> str:
     return " && ".join(["set -euo pipefail",
-                        "export GIT_CONFIG_COUNT=1",
-                        "export GIT_CONFIG_KEY_0=safe.directory",
-                        "export GIT_CONFIG_VALUE_0='*'",
+                        *git_safe_directory_setup(),
                         shlex.join(lane_command_argv(lane, worktree, base))])
 
 
@@ -13528,6 +13650,44 @@ def sequence_environment_names(name: str, lanes: dict) -> list[str]:
     return sorted(environments)
 
 
+def sequence_leaf_members(name: str, lanes: dict
+                          ) -> tuple[list[str], list[str]]:
+    """(leaf member names in order, problems) for one sequence.
+
+    Unlike `sequence_environment_names`, which trusts a loaded config, this
+    never raises on a malformed shape: a preflight that reads the lane table
+    must report a missing member, a cycle or an empty member list, not crash
+    with a KeyError that hides every other finding.
+    """
+    leaves: list[str] = []
+    problems: list[str] = []
+    visiting: list[str] = []
+
+    def visit(current: str) -> None:
+        lane = lanes.get(current)
+        if not isinstance(lane, dict):
+            problems.append(f"member {current!r} is not a declared lane")
+            return
+        if lane.get("kind") != "sequence":
+            if current not in leaves:
+                leaves.append(current)
+            return
+        if current in visiting:
+            problems.append(f"sequence cycle through {current!r}")
+            return
+        members = lane.get("lanes")
+        if not isinstance(members, list) or not members:
+            problems.append(f"sequence {current!r} has no member list")
+            return
+        visiting.append(current)
+        for member in members:
+            visit(member)
+        visiting.pop()
+
+    visit(name)
+    return leaves, problems
+
+
 def usage(lanes: dict, inherited: set[str] | None = None) -> str:
     inherited = inherited or set()
     table = sorted(lanes.items())
@@ -14421,35 +14581,24 @@ def _dispatch(argv: list[str] | None = None, *,
         import_unresolved_reason = None
         import_spec = assay_defaults.get("import")
         if isinstance(import_spec, dict):
-            selected = declared_lanes.get(args.lane) \
-                if isinstance(args.lane, str) else None
-            utility_lane = args.lane in {
-                "admission", "doctor", "history", "footprint",
-                "validate-pointers", "migrate-modes", "status",
-            }
-            should_resolve_import = (
-                args.list or args.check_env or args.help or args.lane is None
-                or (isinstance(selected, dict)
-                    and selected.get("kind") == "sequence"
-                    and sequence_requires_assay_import(
-                        args.lane, declared_lanes, import_spec))
-                or (selected is None and not utility_lane))
-            if should_resolve_import:
+            if assay_import_resolution_required(args, declared_lanes,
+                                                import_spec):
+                # Resolution failure is never softened here (RG-100): a
+                # verb that needs the inventory must not answer from the
+                # declared lanes alone -- no clean-looking doctor report, no
+                # partial footprint manifest.
                 import_repo, import_worktree, import_toplevel = \
                     resolve_repo_and_worktree(project_dir, args.worktree)
                 import_project = effective_project_dir(
                     project_dir, import_toplevel, import_worktree)
-                try:
-                    imported_lanes = discover_imported_assay_lanes(
-                        assay_defaults, cfg, central, cfg_path, central_path,
-                        import_repo, import_worktree, import_project)
-                except AssayImportUnavailable as exc:
-                    if args.list or args.help or args.lane is None:
-                        imported_lanes = unresolved_import_placeholders(
-                            assay_defaults, declared_lanes)
-                        import_unresolved_reason = str(exc)
-                    else:
-                        raise
+                imported_lanes = discover_imported_assay_lanes(
+                    assay_defaults, cfg, central, cfg_path, central_path,
+                    import_repo, import_worktree, import_project)
+            elif args.list or args.help or args.lane is None:
+                import_unresolved_reason = (
+                    "not queried (lane listing and help never probe the "
+                    "judge); `run-gate doctor` or running an imported lane "
+                    "resolves the inventory")
         # RG-16/RG-76: lane listing and unrelated local lanes do not require
         # an Assay judge round trip. Imported names are placeholders only for
         # those read-only reports; selecting one, or a sequence that uses one,

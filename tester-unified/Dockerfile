@@ -28,9 +28,21 @@ USER root
 # Keep host-facing tools explicit so the zero-release build can use the
 # upstream Python base without inheriting a published vbpub image. Docker is a
 # client only; the launcher supplies the host socket when a lane needs it.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      ca-certificates curl docker-cli docker-compose git jq openssh-client util-linux \
+#
+# Install only what the base lacks. The MDT base already ships Docker's own
+# `docker-ce-cli` and `docker-compose-plugin`; Debian's `docker-cli` and
+# `docker-compose` own the same files (/usr/bin/docker and the compose
+# plugin), so installing them over it makes dpkg refuse the overwrite or, if
+# apt resolves the clash, silently swaps the gate image's Docker client. On
+# the upstream Python base neither exists and `docker-cli docker-compose` are
+# installed from Debian. Each is decided by the capability it provides, not by
+# a package name: `docker` on PATH, and `docker compose version` answering.
+RUN set -eu \
+ && packages="ca-certificates curl git jq openssh-client util-linux" \
+ && if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi \
+ && if ! docker compose version >/dev/null 2>&1; then packages="$packages docker-compose"; fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends $packages \
  && rm -rf /var/lib/apt/lists/* \
  && docker --version \
  && docker compose version \

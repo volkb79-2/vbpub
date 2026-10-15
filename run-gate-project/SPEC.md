@@ -137,16 +137,19 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   (required, exactly one of
   `"ephemeral"`, `"exec"`, or `"host"`), `forward_env` (optional list of
   environment-variable names). The names `host` and `bare-host` are ordinary
-  names; neither has built-in behavior. RG-43 reversed the old meaning of
-  those names: `host` commonly names the default container environment and
-  runs through a synthetic environment — `image` is
-  `DEFAULT_HOST_IMAGE` unless `$RUN_GATE_HOST_IMAGE` overrides it, no
-  `cgroup_slice` declared (resolves from `$CGROUP_PARENT_DEV_GATES`,
-  same as any named environment with no declared slice) — and runs through
-  the normal container lane. `bare-host` means "no container": the literal
-  pre-rev-24 `host` behavior, for the rare lane that must observe the real
-  host rather than a container's view of it (mountinfo-sensitive tests are
-  the known case — see run-gate-project's own `run-gate.toml`).
+  names; neither has built-in behavior, and neither exists unless a config
+  declares it (RG-101). RG-43 reversed the old meaning of those names, and by
+  convention `host` names the default container environment
+  (`[environments.host] mode = "ephemeral"` with an `image`;
+  `$RUN_GATE_HOST_IMAGE` overrides that image for the declared `host`) while
+  `bare-host` names the "no container" environment, declared as
+  `[environments.bare-host] mode = "host"`: the literal pre-rev-24 `host`
+  behavior, for the rare lane that must observe the real host rather than a
+  container's view of it (mountinfo-sensitive tests are the known case — see
+  run-gate-project's own `run-gate.toml`). A lane naming either one without
+  declaring it is refused at resolution with the exact declaration to add and
+  the `run-gate migrate-modes <config>` command that materializes it (in the
+  central config when the lane is inherited from there).
 - **judged worktree** — the git toplevel containing the project dir, unless
   `--worktree` overrides (the daemon case).
 - **repo root** — the checkout owning the shared `.git` (for a linked
@@ -290,8 +293,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `mode = "ephemeral"`; `bare-host` is also an ordinary name, not a built-in.
   To preserve the old bare-host behavior, declare
   `[environments.bare-host] mode = "host"`; `run-gate migrate-modes PATH`
-  can materialize legacy names and insert missing mode declarations in one
-  config while preserving comments. `image_env` (optional valid
+  can materialize legacy names (referenced by a lane, `[assay]` or
+  `[assay.import]`) and insert missing mode declarations in one config while
+  preserving comments; it acts on the file it is given, so a lane inherited
+  from the central config is migrated in `run-gate.root.toml`, and the
+  refusal names that file. `image_env` (optional valid
   environment-variable name for `ephemeral` mode only; when present in the
   process environment, its non-empty value overrides `image` for this
   invocation; an unset variable uses the declared image; the variable is not
@@ -639,14 +645,24 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   non-empty `[assay].pins` are required. Each selected inventory entry creates
   one assay lane using its name and the import environment; explicit project
   lanes override imported names. Inventory is resolved only when a selected
-  imported lane or a local sequence needs it, or when `--check-env` requests
-  the full set. `--list` and unrelated local lane runs do not require the
-  judge; an unavailable inventory is reported as unresolved on stderr while
-  `--list` preserves its three-column output. An explicit imported name may
-  be shown as unresolved; `lanes = "all"` never invents names. Selecting an
-  imported lane with an unavailable judge is an infrastructure ERROR with a
-  remedy. A malformed inventory remains an error, never an empty import. The
-  table shape matches CIU v8 S16.3's import object.
+  imported lane or a local sequence needs it, or when a verb's answer covers
+  every lane. **Never probed (RG-100):** help, `--list`, an omitted lane, the
+  verbs with no lane facts (`admission`, `status`, `validate-pointers`,
+  `migrate-modes`) and runs of local lanes; `--list` preserves its
+  three-column output and says on stderr that the import was not queried. An
+  explicit imported name is shown as an unresolved placeholder; `lanes = "all"`
+  never invents names. **Always resolved:** `doctor`, `--check-env`, and
+  `history` / `footprint` without a lane filter (including `footprint
+  --write`), because answering from the declared lanes alone would be a
+  clean-looking report that omits imported lanes or a manifest written
+  without their entries; a named `history` / `footprint` lane is resolved
+  only when it is not declared locally (it may be an imported name). When
+  resolution is needed and the judge is unavailable, the verb refuses with an
+  infrastructure ERROR and a remedy: it prints no clean result, answers
+  nothing partially and writes no manifest. Selecting an imported lane with an
+  unavailable judge is the same ERROR. A malformed inventory remains an
+  error, never an empty import. The table shape matches CIU v8 S16.3's import
+  object.
 - `R-50` **Daemon-wide gate count admission (RG-80, CIU v8 S21 count mode).**
   `[admission]` is project-local, has closed keys `enabled` (default false),
   `ticket_image` (required when enabled; already local; must run `/bin/true`),
@@ -730,14 +746,29 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `admission set` refuses to replace it rather than prescribing that command
   as a false repair.
 
-- `R-19a` **safe.directory scope:** inner commands inject
-  `safe.directory=*` with Git's `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0`, and
-  `GIT_CONFIG_VALUE_0` environment variables. This read-only injection creates
-  no config file or lock and adds no mutual exclusion. Concurrent lanes in an
-  exec runner therefore do not contend on Run-Gate's safe-directory setup.
-  Test containers are single-user environments; Run-Gate does not isolate
-  arbitrary global Git writes made by lane bodies. RG-99 remains open until
-  the concurrent exec-mode acceptance is complete.
+- `R-19a` **safe.directory scope (RG-99):** inner commands inject
+  `safe.directory=*` with Git's `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_<n>`, and
+  `GIT_CONFIG_VALUE_<n>` environment variables, where `<n>` is the
+  `GIT_CONFIG_COUNT` the lane's own environment already carries (0 when
+  unset): the entry is APPENDED, so entries a runner or wrapper injected keep
+  their indexes and the count becomes `<n>+1`. A count that is not a plain
+  non-negative integer (`abc`, `-1`, `08`, a trailing space) is refused by the
+  inner command with exit 2 before the lane body runs, never overwritten. This
+  injection creates no config file or lock and adds no mutual exclusion.
+  Concurrent lanes in an exec runner therefore do not contend on Run-Gate's
+  safe-directory setup. **Supported Git floor: 2.38.** Git honors
+  `safe.directory` from command-line-scope configuration (which the
+  environment variables are) only from that release; an older Git ignores the
+  entry silently and the lane dies as "dubious ownership". When `git` is on
+  the lane's PATH and reports an older version, the inner command refuses with
+  exit 2 and names the floor; an absent `git` or an unparseable banner is
+  left to Git itself. Test containers are single-user environments; Run-Gate
+  does not isolate arbitrary global Git writes made by lane bodies, and the
+  lane no longer pins `GIT_CONFIG_GLOBAL`, so a lane reads the user's own
+  global Git configuration as it would outside Run-Gate. Acceptance: Git's
+  own ownership check, forced to see a foreign owner with
+  `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`, rejects the repository without the
+  injection and accepts it with it.
 - `R-20` `budget` is parsed and enforced as a hard wall-clock bound beginning
   at admission, after shared-infrastructure and exec-runner locks have been
   acquired. Lock queue time is excluded (RG-63); when count admission is
@@ -939,7 +970,17 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   physical-path
   derivability from mountinfo (bare-host view = warning naming
   `$RUN_GATE_MOUNT_ALIAS`); git worktree resolution; referenced images present locally
-  (advisory — a missing image may legitimately pull). One `[OK]`/`[WARN]`/
+  (advisory — a missing image may legitimately pull). **Sequence lanes
+  (RG-103):** a `kind = "sequence"` lane owns no environment (`R-07`/RG-74
+  forbid the key), so doctor never resolves one for it. It instead walks the
+  sequence's members transitively and reports each leaf member with its
+  environment facts (`[OK] sequence 'gate' member 'unit': environment
+  'tester-unified': mode ephemeral (declared ...)`); a member that is not a
+  declared lane, a cycle, an empty member list, a member with no
+  environment, or a member whose environment cannot resolve is a named
+  `[FAIL]`, never a crash and never a silently skipped lane. The members are
+  also checked as lanes in their own right, and `--check-env` skips the
+  sequence itself for the same reason. One `[OK]`/`[WARN]`/
   `[FAIL]`/`[SKIP]`/`[INFO]` line per check plus a summary counting all
   five (`INFO`, `R-44c`, names a NEXT STEP rather than a defect — e.g. "no
   footprint manifest yet"); exit 2
@@ -1628,17 +1669,25 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     chowns an explicitly configured root inside an exec runner: CIU (or the
     environment owner) must mount the durable host directory read-write.
     The inner command creates only per-project descendants beneath this
-    checked root. When the root is lexically inside the selected worktree,
-    Run-Gate also asks the selected Assay judge for that lane's declared rigor.
-    If it includes R1, R2, or R3, Run-Gate refuses with NOT_RUN/`state-mount`
-    before the lane command: `TMPDIR` reaches the Assay judge so pytest can
-    use the verified state mount, and Assay also uses `TMPDIR` for snapshot
-    scratch, which must be outside `repo_top`. Configure and mount an absolute
-    durable `state_root` outside the judged worktree. R0-only lanes may keep
-    the default in-repository root. An unknown inventory or malformed rigor
-    result is ERROR; Run-Gate does not guess. An unknown state probe result is ERROR,
-    never a writable-root certification. For `doctor`, a confirmed missing
-    or unwritable root is FAIL and an indeterminate probe is SKIP.
+    checked root. **Judge scratch isolation (RG-98).** The assignments that
+    prefix the Assay command are the JUDGE's own environment, and Assay
+    allocates its snapshot scratch under `TMPDIR`; that scratch must lie
+    outside `repo_top` (the judged worktree). Run-Gate therefore exports the
+    state-root-derived path as `RUN_GATE_TMPDIR` always, and as `TMPDIR` only
+    when the state root is NOT lexically inside the selected worktree. The
+    default `<checkout>/.run-gate` of a primary checkout is inside it, so
+    there the judge keeps the operator's own `TMPDIR` and a snapshot-isolated
+    lane reaches R0; no preflight refusal or inventory probe is involved, and
+    R0-only and R1-R3 lanes are treated alike. `GIT_CEILING_DIRECTORIES` is
+    still exported on the judge (it does not move scratch). A lane whose test
+    command needs the verified state path as its own `TMPDIR` maps it with an
+    Assay infrastructure fact, `TMPDIR = "required-env:RUN_GATE_TMPDIR"`
+    (CONSUMERS); a lane that already forwards `TMPDIR` by `env_passthrough`
+    keeps working whenever its state root is outside the judged worktree
+    (external `state_root`, or a linked worktree beneath the main checkout).
+    An unknown state probe result is ERROR, never a writable-root
+    certification. For `doctor`, a confirmed missing or unwritable root is
+    FAIL and an indeterminate probe is SKIP.
 
 - `R-39` **Re-attach: a lane's container outlives its client, and is found
   again (RG-35).** A container lane runs detached (`R-15`) and is removed by

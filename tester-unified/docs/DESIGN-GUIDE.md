@@ -63,6 +63,18 @@ devcontainer while vbpub has no released images. The Dockerfile installs its
 small host-tool set itself. A missing MDT release never triggers an implicit
 fallback; the base choice is visible in the build command.
 
+The Docker client is installed by capability, not unconditionally. Debian's
+`docker-cli` / `docker-compose` own the same files as Docker's `docker-ce-cli` /
+`docker-compose-plugin` that the MDT base ships, so installing them over the
+MDT base makes dpkg refuse the overwrite or, if apt resolved the clash, quietly
+swaps the gate's Docker client. The step therefore installs `docker-cli` only
+when `docker` is absent from PATH and `docker-compose` only when
+`docker compose version` does not answer, then verifies both. Both base
+variants are covered by an executable oracle
+(`run-gate-project/tests/test_tester_unified_base_variants.py`) that runs the
+Dockerfile's real RUN step against a dpkg-style ownership clash; building an
+image on each base remains a release-lane activity.
+
 The wheel supplies the command entrypoint; the bind-mounted checkout supplies
 lane configuration and judged project files. CIU's release gate also compares
 the installed Run-Gate module bytes with the selected checkout and refuses a

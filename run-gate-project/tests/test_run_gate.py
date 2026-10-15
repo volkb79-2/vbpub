@@ -2228,9 +2228,8 @@ class TestArgvConstruction:
         assert run_call[-4:-2] == ["tester-unified:local", "bash"]
         inner = run_call[-1]
         assert inner.startswith("set -euo pipefail && ")
-        assert "export GIT_CONFIG_COUNT=1" in inner
-        assert "export GIT_CONFIG_KEY_0=safe.directory" in inner
-        assert "export GIT_CONFIG_VALUE_0='*'" in inner
+        assert 'export "GIT_CONFIG_KEY_${__rg_git_n}=safe.directory"' in inner
+        assert '"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"' in inner
         assert "git config --global --replace-all safe.directory" not in inner
         assert f"cd {wt}/proj && echo gate-ran" in inner  # {worktree} substituted
         # transparency: the docker argv is printed, never buried
@@ -2319,7 +2318,11 @@ class TestArgvConstruction:
         assert "--file assay.toml --verdict-json .assay/verdict-ciu.json" in inner
         assert "/opt/tester-venv/bin/python tools/assay/assay-6.1.0.pyz run ciu" \
             in inner
-        assert f"TMPDIR={repo / '.run-gate'}" in inner
+        # RG-98: the default root is inside the judged checkout, so the JUDGE
+        # does not get it as TMPDIR; the test command's path travels as
+        # RUN_GATE_TMPDIR.
+        assert not re.search(r"(?<![A-Z_])TMPDIR=", inner)
+        assert f"RUN_GATE_TMPDIR={repo / '.run-gate'}" in inner
         assert f"GIT_CEILING_DIRECTORIES={repo / '.run-gate'}" in inner
         assert f"verdict artifact: {proj}/.assay/verdict-ciu.json" in proc.stdout
 
@@ -3344,46 +3347,281 @@ class TestExtraMounts:
             run_gate.extra_mount_flags()
 
 
-def test_safe_directory_uses_only_count_injection():
-    inner = run_gate.build_command_inner(
-        {"argv": ["echo"]}, Path("/wt"))
-    assert "export GIT_CONFIG_COUNT=1" in inner
-    assert "export GIT_CONFIG_KEY_0=safe.directory" in inner
-    assert "export GIT_CONFIG_VALUE_0='*'" in inner
-    assert "GIT_CONFIG_GLOBAL" not in inner
-    assert "run-gate-gitconfig" not in inner
-    assert "trap " not in inner
-    assert "git config --global" not in inner
+class TestRG99LockFreeSafeDirectory:
+    """RG-99: `safe.directory` reaches the lane's Git through the environment
+    only -- no config file, no lock, no mutex -- appended AFTER any
+    `GIT_CONFIG_COUNT` entries the runner already carries, and the supported
+    Git floor is enforced by name. These run the built script under real
+    bash and real Git; a string match on the constructed environment proves
+    construction, not that Git accepts the entry."""
 
+    @staticmethod
+    def _clean_env(tmp_path, **extra):
+        """A Git environment with no ambient config that could mask the
+        injection (a global `safe.directory`, or inherited count entries)."""
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith("GIT_")}
+        env.update({"HOME": str(home), "XDG_CONFIG_HOME": str(home),
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_CONFIG_GLOBAL": os.devnull})
+        env.update(extra)
+        return env
 
-def test_parallel_lanes_use_lock_free_safe_directory_injection(tmp_path):
-    """RG-99: concurrent commands in one runner need no config file or lock."""
-    inners = [
-        run_gate.build_command_inner(
-            {"argv": ["bash", "-c", "git config --get safe.directory && "
-                      "printf alpha"]},
-            tmp_path),
-        run_gate.build_command_inner(
-            {"argv": ["bash", "-c", "git config --get safe.directory && "
-                      "printf beta"]},
-            tmp_path),
-    ]
-    for inner in inners:
-        assert "export GIT_CONFIG_COUNT=1" in inner
-        assert "export GIT_CONFIG_KEY_0=safe.directory" in inner
-        assert "export GIT_CONFIG_VALUE_0='*'" in inner
-        assert "GIT_CONFIG_GLOBAL" not in inner
-        assert "run-gate-gitconfig" not in inner
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(
-            lambda inner: subprocess.run(
-                ["bash", "-c", inner], cwd=tmp_path,
-                capture_output=True, text=True),
-            inners))
-    for label, result in zip(("alpha", "beta"), results):
+    @staticmethod
+    def _inner(*shell: str) -> str:
+        return run_gate.build_command_inner(
+            {"argv": ["bash", "-c", "; ".join(shell)]}, Path("/wt"))
+
+    def test_construction_has_no_file_lock_or_global_config(self):
+        inner = self._inner("true")
+        for forbidden in ("GIT_CONFIG_GLOBAL", "run-gate-gitconfig", "trap ",
+                          "git config --global", "flock", "mkdir -p /tmp"):
+            assert forbidden not in inner
+        assert "safe.directory" in inner
+
+    def test_empty_environment_gets_one_entry_at_index_zero(self, tmp_path):
+        result = subprocess.run(
+            ["bash", "-c", self._inner(
+                'printf "COUNT=%s\\n" "$GIT_CONFIG_COUNT"',
+                'git config --get-all safe.directory')],
+            cwd=tmp_path, capture_output=True, text=True,
+            env=self._clean_env(tmp_path))
         assert result.returncode == 0, result.stderr
-        assert "*" in result.stdout
-        assert label in result.stdout
+        assert result.stdout.splitlines() == ["COUNT=1", "*"]
+
+    def test_preexisting_entries_are_kept_and_the_entry_is_appended(
+            self, tmp_path):
+        env = self._clean_env(
+            tmp_path, GIT_CONFIG_COUNT="2",
+            GIT_CONFIG_KEY_0="user.name", GIT_CONFIG_VALUE_0="runner-set",
+            GIT_CONFIG_KEY_1="core.abbrev", GIT_CONFIG_VALUE_1="9")
+        result = subprocess.run(
+            ["bash", "-c", self._inner(
+                'printf "COUNT=%s\\n" "$GIT_CONFIG_COUNT"',
+                'git config --get user.name',
+                'git config --get core.abbrev',
+                'git config --get-all safe.directory')],
+            cwd=tmp_path, capture_output=True, text=True, env=env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.splitlines() == [
+            "COUNT=3", "runner-set", "9", "*"]
+
+    @pytest.mark.parametrize("count", ["abc", "-1", "08", "1.5", "2 "])
+    def test_unreadable_count_is_refused_before_the_command_runs(
+            self, tmp_path, count):
+        result = subprocess.run(
+            ["bash", "-c", self._inner("echo COMMAND-RAN")],
+            cwd=tmp_path, capture_output=True, text=True,
+            env=self._clean_env(tmp_path, GIT_CONFIG_COUNT=count))
+        assert result.returncode == 2
+        assert "COMMAND-RAN" not in result.stdout
+        assert "GIT_CONFIG_COUNT" in result.stderr
+        assert "not a plain non-negative integer" in result.stderr
+
+    def test_git_accepts_the_injected_entry_for_a_foreign_owner(
+            self, tmp_path):
+        """The behavioural oracle: Git's own ownership check, forced to see
+        a foreign owner, rejects the repository without the injection and
+        accepts it with the injection."""
+        repo = tmp_path / "owned-elsewhere"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True,
+                       env=self._clean_env(tmp_path))
+        env = self._clean_env(tmp_path, GIT_TEST_ASSUME_DIFFERENT_OWNER="1")
+        baseline = subprocess.run(
+            ["git", "-C", str(repo), "status", "--short"],
+            capture_output=True, text=True, env=env)
+        assert baseline.returncode != 0
+        assert "dubious ownership" in baseline.stderr
+        injected = subprocess.run(
+            ["bash", "-c", run_gate.build_command_inner(
+                {"argv": ["git", "-C", str(repo), "status", "--short"]},
+                repo)],
+            capture_output=True, text=True, env=env)
+        assert injected.returncode == 0, injected.stderr
+        assert "dubious ownership" not in injected.stderr
+
+    def test_injection_keeps_preexisting_entries_visible_to_git_itself(
+            self, tmp_path):
+        """With a foreign owner AND a runner-supplied entry, both must reach
+        Git: overwriting index 0 (the pre-RG-99 shape) loses the runner's."""
+        repo = tmp_path / "owned-elsewhere"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True,
+                       env=self._clean_env(tmp_path))
+        env = self._clean_env(
+            tmp_path, GIT_TEST_ASSUME_DIFFERENT_OWNER="1",
+            GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="user.name",
+            GIT_CONFIG_VALUE_0="runner-set")
+        result = subprocess.run(
+            ["bash", "-c", run_gate.build_command_inner(
+                {"argv": ["git", "-C", str(repo), "config", "user.name"]},
+                repo)],
+            capture_output=True, text=True, env=env)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "runner-set"
+
+    @pytest.mark.parametrize(("version", "accepted"), [
+        ("2.37.9", False), ("2.30.0", False), ("1.9.0", False),
+        ("2.38.0", True), ("2.38.1.windows.2", True), ("2.55.0", True),
+        ("3.0.1", True),
+    ])
+    def test_git_below_the_floor_is_refused_by_name(
+            self, tmp_path, version, accepted):
+        shim = tmp_path / "bin"
+        shim.mkdir()
+        fake_git = shim / "git"
+        fake_git.write_text(f"#!/bin/sh\necho 'git version {version}'\n")
+        fake_git.chmod(0o755)
+        env = self._clean_env(tmp_path, PATH=f"{shim}:/usr/bin:/bin")
+        result = subprocess.run(
+            ["bash", "-c", self._inner("echo COMMAND-RAN")],
+            cwd=tmp_path, capture_output=True, text=True, env=env)
+        if accepted:
+            assert result.returncode == 0, result.stderr
+            assert "COMMAND-RAN" in result.stdout
+        else:
+            assert result.returncode == 2
+            assert "COMMAND-RAN" not in result.stdout
+            assert "older than 2.38" in result.stderr
+            assert "dubious ownership" in result.stderr
+
+    def test_missing_or_unparseable_git_does_not_block_a_gitless_lane(
+            self, tmp_path):
+        # An image without git needs no injection; a git whose banner cannot
+        # be parsed is left to Git itself to judge.
+        for banner in (None, "git, but not as you know it"):
+            shim = tmp_path / f"bin-{banner is None}"
+            shim.mkdir()
+            for tool in ("bash", "sed", "echo"):
+                located = shutil.which(tool)
+                if located and not (shim / tool).exists():
+                    (shim / tool).symlink_to(located)
+            if banner is not None:
+                fake_git = shim / "git"
+                fake_git.write_text(f"#!/bin/sh\necho '{banner}'\n")
+                fake_git.chmod(0o755)
+            result = subprocess.run(
+                ["bash", "-c", self._inner("echo COMMAND-RAN")],
+                cwd=tmp_path, capture_output=True, text=True,
+                env=self._clean_env(tmp_path, PATH=str(shim)))
+            assert result.returncode == 0, result.stderr
+            assert "COMMAND-RAN" in result.stdout
+
+    def test_concurrent_lanes_share_no_file_and_each_sees_the_entry(
+            self, tmp_path):
+        """Two lanes in one runner at once: no shared `/tmp` config file or
+        lock exists to race on, so both observe the entry and neither fails."""
+        inners = [self._inner(
+            f'git config --get safe.directory; printf {label}')
+            for label in ("alpha", "beta")]
+        before = set(Path(tempfile.gettempdir()).glob("run-gate-gitconfig*"))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(
+                lambda inner: subprocess.run(
+                    ["bash", "-c", inner], cwd=tmp_path,
+                    capture_output=True, text=True,
+                    env=self._clean_env(tmp_path)),
+                inners))
+        for label, result in zip(("alpha", "beta"), results):
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.splitlines()[0] == "*"
+            assert label in result.stdout
+        after = set(Path(tempfile.gettempdir()).glob("run-gate-gitconfig*"))
+        assert after == before
+
+    def test_assay_inner_uses_the_same_injection(self, tmp_path):
+        inner = run_gate.build_assay_inner(
+            {"assay_lane": "r1", "assay_command": ["assay"], "pins": {}},
+            tmp_path / "proj", tmp_path, worktree=tmp_path)
+        assert inner.count('"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"') == 1
+        for forbidden in ("GIT_CONFIG_GLOBAL", "run-gate-gitconfig",
+                          "git config --global"):
+            assert forbidden not in inner
+
+
+class TestRG98JudgeScratchIsolation:
+    """RG-98: with the default in-repo `<checkout>/.run-gate` state root, a
+    snapshot-isolated Assay lane must reach R0.
+
+    The fake judge reproduces the one Assay rule at issue and nothing more:
+    it allocates its scratch the way `tempfile` does (TMPDIR, else the
+    system default) and refuses, as Assay's `IsolationSpec` does, a scratch
+    root inside the judged repository. The lane runs through the real
+    `run_bare_host_lane`, so the real inner script, state-root preflight and
+    environment hand-off are exercised -- not a constructed string."""
+
+    _JUDGE = """\
+#!/bin/sh
+case "$*" in
+  *"lanes --json"*) cat <<'JSON'
+@INVENTORY@
+JSON
+    exit 0 ;;
+  *--version*) echo "assay 9.0.0"; exit 0 ;;
+esac
+top=$(git rev-parse --show-toplevel)
+scratch=$(@PYTHON@ -c 'import tempfile; print(tempfile.mkdtemp(prefix="assay-p23-"))')
+case "$scratch" in
+  "$top"/*)
+    echo "ValueError: scratch_root must be outside repo_top ($scratch)" >&2
+    exit 2 ;;
+esac
+rm -rf "$scratch"
+echo "JUDGE-REACHED-R0"
+echo "JUDGE-TMPDIR=${TMPDIR-unset}"
+echo "CHILD-TMPDIR=$(TMPDIR="${RUN_GATE_TMPDIR-unset}" sh -c 'printf %s "$TMPDIR"')"
+exit 0
+"""
+
+    def _project(self, tmp_path, monkeypatch):
+        cfg = ASSAY_LANE_CFG.replace('environment = "tester-unified"',
+                                     'environment = "bare-host"', 1)
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, cfg)
+        (proj / "assay.toml").write_text("# judged by the fake judge\n")
+        commit_all(repo, "assay config")
+        ambient = tmp_path / "ambient-tmp"
+        ambient.mkdir()
+        monkeypatch.setenv("TMPDIR", str(ambient))
+        monkeypatch.setattr(run_gate, "physical_path",
+                            lambda p, **k: Path("/phys/host/root"))
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        fake_docker(tmp_path, monkeypatch)
+        body = (self._JUDGE
+                .replace("@INVENTORY@", _inventory(rigor=["R0", "R1"]))
+                .replace("@PYTHON@", shlex.quote(sys.executable)))
+        install_fake_assay(monkeypatch, body)
+        return repo, proj, ambient
+
+    def test_default_in_repo_state_root_reaches_r0(
+            self, tmp_path, monkeypatch, capfd):
+        repo, _proj, ambient = self._project(tmp_path, monkeypatch)
+        assert not (repo / ".run-gate").exists()
+        assert run_gate.main(["ui-unit"]) == 0
+        out = capfd.readouterr()
+        assert "scratch_root must be outside repo_top" not in out.err
+        assert "JUDGE-REACHED-R0" in out.out
+        # the judge keeps the operator's own TMPDIR (outside the repository)
+        assert f"JUDGE-TMPDIR={ambient}" in out.out
+        # ... while the test command still gets the verified state path
+        child = re.search(r"CHILD-TMPDIR=(\S+)", out.out).group(1)
+        assert os.path.realpath(child) == os.path.realpath(repo / ".run-gate")
+        assert (repo / ".run-gate").is_dir()
+
+    def test_regression_control_judge_tmpdir_in_repo_would_error(
+            self, tmp_path, monkeypatch, capfd):
+        """The fixture can fail: pointing the judge's TMPDIR at the in-repo
+        root (the RG-85 behaviour) reproduces the observed ERROR."""
+        repo, _proj, _ambient = self._project(tmp_path, monkeypatch)
+        inside = repo / ".run-gate"
+        inside.mkdir()
+        monkeypatch.setenv("TMPDIR", str(inside))
+        assert run_gate.main(["ui-unit"]) != 0
+        assert "scratch_root must be outside repo_top" in capfd.readouterr().err
 
 
 class TestExecDisclosure:
@@ -3533,7 +3771,7 @@ class TestExecInnerWiring:
         exec_calls = docker_execs(log)
         inner = exec_calls[0][-1]
         assert "echo gate-ran" in inner
-        assert "export GIT_CONFIG_COUNT=1" in inner
+        assert '"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"' in inner
         assert "GIT_CONFIG_GLOBAL" not in inner
 
     def test_exec_assay_lane_builds_assay_inner_not_crash(self, tmp_path, monkeypatch):
@@ -3566,7 +3804,7 @@ class TestExecInnerWiring:
         exec_calls = lane_execs(log)   # never the RG-26 inventory probe
         inner = exec_calls[0][-1]
         assert "--file assay.toml" in inner
-        assert "export GIT_CONFIG_COUNT=1" in inner
+        assert '"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"' in inner
         assert "GIT_CONFIG_GLOBAL" not in inner
 
 
@@ -3574,9 +3812,8 @@ def test_assay_inner_uses_only_count_injection():
     inner = run_gate.build_assay_inner(
         {"assay_lane": "x", "assay_command": ["assay"], "pins": {}},
         Path("/proj"), Path("/repo"))
-    assert "export GIT_CONFIG_COUNT=1" in inner
-    assert "export GIT_CONFIG_KEY_0=safe.directory" in inner
-    assert "export GIT_CONFIG_VALUE_0='*'" in inner
+    assert 'export "GIT_CONFIG_KEY_${__rg_git_n}=safe.directory"' in inner
+    assert '"GIT_CONFIG_COUNT=$((__rg_git_n + 1))"' in inner
     assert "GIT_CONFIG_GLOBAL" not in inner
     assert "run-gate-gitconfig" not in inner
     assert "trap " not in inner
@@ -3584,16 +3821,51 @@ def test_assay_inner_uses_only_count_injection():
 
 
 def test_assay_inner_derives_test_temp_and_git_ceiling_from_state_root(tmp_path):
+    """An EXTERNAL state root is safe as the judge's own TMPDIR (Assay's
+    snapshot scratch lands outside the judged repository), so it keeps both
+    names and a lane that forwards TMPDIR by `env_passthrough` is unchanged."""
     repo = tmp_path / "checkout with spaces"
     project = repo / "run-gate-project"
-    state_root = repo / "durable state"
+    state_root = tmp_path / "durable state"
     inner = run_gate.build_assay_inner(
         {"assay_lane": "r1", "assay_command": ["assay"], "pins": {}},
         project, repo, state_root=state_root)
     assignment = shlex.quote(str(state_root))
     assert f"TMPDIR={assignment}" in inner
+    assert f"RUN_GATE_TMPDIR={assignment}" in inner
     assert f"GIT_CEILING_DIRECTORIES={assignment}" in inner
     assert "/worktree/.run-gate" not in inner
+
+
+def test_assay_inner_keeps_an_in_worktree_state_root_off_the_judge_tmpdir(
+        tmp_path):
+    """RG-98: a state root inside the judged worktree must never become the
+    judge's TMPDIR -- Assay would put its snapshot scratch inside the
+    repository and ERROR before R0. The path stays available as
+    RUN_GATE_TMPDIR for the test command."""
+    repo = tmp_path / "checkout with spaces"
+    project = repo / "run-gate-project"
+    for state_root in (None, repo / "durable state", repo / ".run-gate"):
+        inner = run_gate.build_assay_inner(
+            {"assay_lane": "r1", "assay_command": ["assay"], "pins": {}},
+            project, repo, state_root=state_root)
+        expected = shlex.quote(str(state_root or repo / ".run-gate"))
+        assert not re.search(r"(?<![A-Z_])TMPDIR=", inner)
+        assert f"RUN_GATE_TMPDIR={expected}" in inner
+        assert f"GIT_CEILING_DIRECTORIES={expected}" in inner
+
+
+def test_assay_inner_judges_a_linked_worktree_against_the_main_state_root(
+        tmp_path):
+    """The default root belongs to the checkout owning the shared `.git`; a
+    linked worktree beneath it is a different judged tree, so the root is
+    outside it and TMPDIR is exported exactly as before."""
+    repo = tmp_path / "main"
+    worktree = repo / ".worktrees" / "feature"
+    inner = run_gate.build_assay_inner(
+        {"assay_lane": "r1", "assay_command": ["assay"], "pins": {}},
+        worktree / "proj", repo, worktree=worktree)
+    assert f"TMPDIR={repo / '.run-gate'} " in inner
 
 
 def test_bare_host_assay_creates_default_state_root_for_fresh_checkout(
@@ -7585,6 +7857,135 @@ class TestLinkedWorktreeHostLaneWarning:
         assert "host-lane git view (RG-21)" not in capsys.readouterr().out
 
 
+class TestRG103SequenceDoctor:
+    """RG-103: `doctor` (and `--check-env`) crashed with `KeyError:
+    'environment'` on any config declaring a `kind = "sequence"` lane,
+    because the per-lane pass resolved an environment a sequence is forbidden
+    to declare (R-07/RG-74)."""
+
+    SEQUENCE_CFG = """\
+        schema_version = 1
+
+        [environments.tester-unified]
+        mode = "ephemeral"
+        image = "tester-unified:local"
+
+        [environments.bare-host]
+        mode = "host"
+
+        [lanes.unit]
+        kind = "command"
+        environment = "tester-unified"
+        argv = ["bash", "-c", "true"]
+        clean_tree = false
+
+        [lanes.docs]
+        kind = "command"
+        environment = "bare-host"
+        argv = ["bash", "-c", "true"]
+        clean_tree = false
+
+        [lanes.inner]
+        kind = "sequence"
+        lanes = ["docs"]
+
+        [lanes.gate]
+        kind = "sequence"
+        lanes = ["unit", "inner"]
+    """
+
+    def test_doctor_reports_each_member_with_its_environment_facts(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.SEQUENCE_CFG)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert "Traceback" not in proc.stderr and "KeyError" not in proc.stderr
+        out = proc.stdout
+        assert ("[OK] sequence 'gate' member 'unit': environment "
+                "'tester-unified': mode ephemeral") in out
+        # transitive through the nested sequence, in its own (host) mode
+        assert ("[OK] sequence 'gate' member 'docs': environment "
+                "'bare-host': mode host") in out
+        assert "[OK] sequence 'inner' member 'docs'" in out
+        # the members are also checked as lanes in their own right
+        assert "[OK] slice for env tester-unified" in out
+
+    def test_a_member_whose_environment_cannot_resolve_is_a_failure(
+            self, tmp_path, monkeypatch):
+        repo = make_repo(tmp_path)
+        cfg = self.SEQUENCE_CFG.replace(
+            'environment = "tester-unified"', 'environment = "undeclared"', 1)
+        proj = make_project(repo, cfg)
+        fake_docker(tmp_path, monkeypatch)
+        proc = run_tool(proj, "doctor")
+        assert proc.returncode == 2
+        assert "Traceback" not in proc.stderr
+        assert "[FAIL] sequence 'gate' member 'unit'" in proc.stdout
+        assert "undeclared" in proc.stdout
+
+    def test_malformed_members_are_reported_never_a_crash(
+            self, tmp_path, monkeypatch, capsys):
+        """Shapes the loader refuses, handed straight to the verb: a missing
+        member, a member with no environment, a cycle and an empty list are
+        each a named FAIL, and every other finding is still produced."""
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.SEQUENCE_CFG)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        cfg, cfg_path, central, central_path, *_rest = \
+            run_gate.load_config_snapshot(proj)
+        lanes = dict(cfg["lanes"])
+        lanes["no-env"] = {"kind": "command", "argv": ["true"]}
+        lanes["broken"] = {"kind": "sequence",
+                           "lanes": ["ghost", "no-env", "loop"]}
+        lanes["loop"] = {"kind": "sequence", "lanes": ["broken"]}
+        lanes["empty"] = {"kind": "sequence", "lanes": []}
+        code = run_gate.cmd_doctor(lanes, proj, cfg, central, cfg_path,
+                                   central_path)
+        out = capsys.readouterr().out
+        assert code == 2
+        assert ("[FAIL] sequence 'broken': member 'ghost' is not a "
+                "declared lane") in out
+        assert "[FAIL] sequence 'broken' member 'no-env': declares no " \
+            "environment" in out
+        assert "[FAIL] sequence 'broken': sequence cycle through 'broken'" \
+            in out
+        assert "[FAIL] sequence 'empty': sequence 'empty' has no member " \
+            "list" in out
+        assert "[FAIL] lane 'no-env' environment: no environment is " \
+            "declared for this lane" in out
+        assert "[OK] sequence 'gate' member 'unit'" in out   # others intact
+
+    def test_check_env_skips_sequences_and_still_covers_members(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        proj = make_project(repo, self.SEQUENCE_CFG)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        assert run_gate.main(["--check-env"]) == 0
+        assert "KeyError" not in capsys.readouterr().err
+
+    def test_sequence_leaf_members_orders_deduplicates_and_flags_defects(self):
+        lanes = {
+            "a": {"kind": "command", "environment": "e"},
+            "b": {"kind": "command", "environment": "e"},
+            "top": {"kind": "sequence", "lanes": ["a", "mid", "a"]},
+            "mid": {"kind": "sequence", "lanes": ["b", "a"]},
+        }
+        assert run_gate.sequence_leaf_members("top", lanes) == (
+            ["a", "b"], [])
+        assert run_gate.sequence_leaf_members("a", lanes) == (["a"], [])
+        lanes["bad"] = {"kind": "sequence", "lanes": "not-a-list"}
+        assert run_gate.sequence_leaf_members("bad", lanes) == (
+            [], ["sequence 'bad' has no member list"])
+        assert run_gate.sequence_leaf_members("missing", lanes) == (
+            [], ["member 'missing' is not a declared lane"])
+
+
 def _inventory(**over) -> str:
     """One assay 3.2.0 inventory entry, shell-quoted into a fake judge."""
     entry = {"name": "ui_unit", "scope": "S1", "rigor": ["R0"],
@@ -10905,28 +11306,44 @@ class TestRG76AssayLaneImports:
             in result.reason
         assert record_path.exists()
 
-    def test_import_all_lists_inventory_and_keeps_tsv_shape(self, tmp_path,
-                                                              monkeypatch,
-                                                              capsys):
+    def test_import_all_listing_does_not_probe_and_says_so(
+            self, tmp_path, monkeypatch, capsys):
+        """RG-100: `--list` is a display; it never asks the judge. An `all`
+        import therefore contributes no rows, and the listing says the import
+        was not queried instead of implying the declared lanes are all."""
         self._project(tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail("--list must not probe"))
         assert run_gate.main(["--list"]) == 0
         captured = capsys.readouterr()
-        rows = captured.out.splitlines()
-        assert rows == ["alpha\tassay\tbare-host",
-                        "beta\tassay\tbare-host",
-                        "gamma\tassay\tbare-host"]
-        assert "imported assay lanes: alpha, beta, gamma" in captured.err
+        assert captured.out.splitlines() == []
+        assert "assay import unresolved: not queried" in captured.err
+
+    def test_import_all_resolves_inventory_for_a_verb_that_needs_every_lane(
+            self, tmp_path, monkeypatch, capsys):
+        """The same project, asked by a verb whose answer covers every lane,
+        does resolve the inventory and reports all three imported lanes."""
+        self._project(tmp_path, monkeypatch)
+        assert run_gate.main(["history", "--json"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert sorted(report["lanes"]) == ["alpha", "beta", "gamma"]
 
     def test_explicit_lane_overrides_import_and_name_lists_are_exact(
             self, tmp_path, monkeypatch, capsys):
         self._project(tmp_path, monkeypatch, imported=["alpha", "beta"],
                       override=True)
+        assert run_gate.main(["history", "--json"]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert sorted(report["lanes"]) == ["alpha", "beta"]
         assert run_gate.main(["--list"]) == 0
         captured = capsys.readouterr()
+        # names the import lists explicitly show as unresolved placeholders;
+        # the explicit command lane overrides the imported `beta`
         assert "beta\tcommand\tbare-host" in captured.out
         assert "alpha\tassay\tbare-host" in captured.out
         assert "gamma\t" not in captured.out
-        assert "imported assay lanes: alpha" in captured.err
+        assert "imported assay lane names unresolved: alpha" in captured.err
 
     def test_list_and_local_host_lane_do_not_require_stopped_import_runner(
             self, tmp_path, monkeypatch, capsys):
@@ -10970,7 +11387,7 @@ class TestRG76AssayLaneImports:
         local = capsys.readouterr()
         assert "DRY RUN" in local.out
         assert "alpha\tassay" not in local.out
-        assert len(calls) == 1  # only the best-effort `--list` query
+        assert calls == []  # neither `--list` nor a local lane asks the judge
 
     def test_selected_imported_lane_refuses_with_runner_remedy_when_stopped(
             self, tmp_path, monkeypatch, capsys):
@@ -11074,10 +11491,114 @@ class TestRG76AssayLaneImports:
             #!/bin/sh
             echo '{"inventory_schema":1,"lanes":[{"name":"alpha"}]}'
             """)
-        assert run_gate.main(["--list"]) == 0
+        assert run_gate.main(["history", "--json"]) == 0
         captured = capsys.readouterr()
-        assert captured.out.splitlines() == ["alpha\tassay\tbare-host"]
+        assert sorted(json.loads(captured.out)["lanes"]) == ["alpha"]
         assert "beta" not in captured.err and "gamma" not in captured.err
+
+    @staticmethod
+    def _spy_on_cmd(monkeypatch, name):
+        seen = []
+
+        def spy(lanes, *_args, **_kwargs):
+            seen.append(sorted(lanes))
+            return 0
+
+        monkeypatch.setattr(run_gate, name, spy)
+        return seen
+
+    def test_doctor_footprint_and_history_receive_the_imported_lanes(
+            self, tmp_path, monkeypatch, capsys):
+        """RG-100: the lane set these verbs act on includes the imported
+        lanes; answering from the declared lanes alone made `doctor` report a
+        clean result that skipped them and `footprint --write` drop them."""
+        self._project(tmp_path, monkeypatch)
+        for verb, cmd, argv in (
+                ("doctor", "cmd_doctor", ["doctor"]),
+                ("footprint", "cmd_footprint", ["footprint", "--json"]),
+                ("history", "cmd_history", ["history", "--json"])):
+            seen = self._spy_on_cmd(monkeypatch, cmd)
+            assert run_gate.main(argv) == 0, verb
+            assert seen == [["alpha", "beta", "gamma"]], verb
+        capsys.readouterr()
+
+    @pytest.mark.parametrize("argv", [
+        ["doctor"], ["--check-env"], ["history"], ["history", "--json"],
+        ["footprint"], ["footprint", "--write"],
+        ["history", "gamma"], ["footprint", "gamma"],
+        ["footprint", "--write", "--lane", "gamma"],
+    ])
+    def test_unavailable_inventory_refuses_instead_of_answering_partially(
+            self, tmp_path, monkeypatch, capsys, argv):
+        """With the judge unreachable these verbs must not report from the
+        declared lanes alone: no clean doctor/check-env, no history or
+        footprint answer, and no manifest file is written."""
+        repo, project, _fake = self._project(tmp_path, monkeypatch)
+        def unavailable(*_args, **_kwargs):
+            raise run_gate.AssayImportUnavailable(
+                "[assay] import could not read the judge inventory: "
+                "fixture runner down; start the runner")
+        monkeypatch.setattr(run_gate, "discover_imported_assay_lanes",
+                            unavailable)
+        for name in ("cmd_doctor", "cmd_check_env", "cmd_history",
+                     "cmd_footprint"):
+            monkeypatch.setattr(
+                run_gate, name, lambda *_a, **_k: pytest.fail(
+                    "must not answer without the inventory"))
+        assert run_gate.main(argv) == 2
+        assert "could not read the judge inventory" in capsys.readouterr().err
+        assert not run_gate.footprint_manifest_path(project).exists()
+
+    def test_declared_lane_queries_do_not_need_the_inventory(
+            self, tmp_path, monkeypatch, capsys):
+        """A superset refusal would cry wolf: asking about a lane declared
+        locally never needs the judge, so a stopped runner must not block it."""
+        self._project(tmp_path, monkeypatch, imported=["alpha"], override=True)
+        monkeypatch.setattr(
+            run_gate, "discover_imported_assay_lanes",
+            lambda *_args, **_kwargs: pytest.fail("declared lane: no probe"))
+        assert run_gate.main(["history", "beta", "--json"]) == 0
+        assert sorted(json.loads(capsys.readouterr().out)["lanes"]) == ["beta"]
+        assert run_gate.main(["footprint", "beta", "--json"]) == 0
+
+    def test_resolution_requirement_matrix(self):
+        declared = {
+            "local": {"kind": "command"},
+            "seq-imported": {"kind": "sequence", "lanes": ["remote"]},
+            "seq-local": {"kind": "sequence", "lanes": ["local"]},
+        }
+        spec = {"environment": "runner", "lanes": "all"}
+
+        def required(lane=None, target=None, *, list_=False, help_=False,
+                     check_env=False, footprint_lanes=None):
+            args = SimpleNamespace(
+                lane=lane, target=target, list=list_, help=help_,
+                check_env=check_env, footprint_lanes=footprint_lanes)
+            return run_gate.assay_import_resolution_required(
+                args, declared, spec)
+
+        # display-only paths never probe
+        assert not required(list_=True)
+        assert not required(help_=True)
+        assert not required()
+        for verb in ("admission", "validate-pointers", "migrate-modes",
+                     "status"):
+            assert not required(verb)
+        # every-lane verbs always do
+        assert required("doctor")
+        assert required(check_env=True)
+        assert required("history") and required("footprint")
+        # named lanes only when they could be imported names
+        assert not required("history", "local")
+        assert required("history", "remote")
+        assert not required("footprint", "local")
+        assert not required("footprint", footprint_lanes=["local"])
+        assert required("footprint", footprint_lanes=["local", "remote"])
+        # running a lane
+        assert not required("local")
+        assert required("remote")
+        assert required("seq-imported")
+        assert not required("seq-local")
 
     def test_import_policy_rejects_non_v8_shapes_and_unknown_fields(self):
         base = {"command": ["assay"],
@@ -13979,119 +14500,26 @@ class TestResumeAndProgressAlways:
         assert run_gate.ASSAY_STATE_UNAVAILABLE in calls[1][-1]
         assert "mkdir" not in calls[1][-1] and "chown" not in calls[1][-1]
 
-    def test_default_in_repo_root_refuses_snapshot_lane_before_lane_exec(
-            self, monkeypatch, tmp_path):
-        """RG-98 consumer fixture: an R1 lane with the default `.run-gate`
-        root gets an actionable preflight refusal before its verdict is
-        cleared or its judge command is started."""
-        repo = tmp_path / "consumer"
-        project = repo / "service"
-        project.mkdir(parents=True)
-        calls = []
-
-        def run(argv, **_kwargs):
-            calls.append(list(argv))
-            return subprocess.CompletedProcess(argv, 0, "runner-1\n", "")
-
-        def inventory(*_args, **_kwargs):
-            return {"name": "r1", "rigor": ["R0", "R1"]}, "9.0.0", None
-
-        cleared = []
-        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
-        monkeypatch.setattr(run_gate.subprocess, "run", run)
-        monkeypatch.setattr(run_gate, "assay_inventory_entry", inventory)
-        monkeypatch.setattr(
-            run_gate, "clear_previous_assay_verdict",
-            lambda *_args, **_kwargs: cleared.append(True))
-        lane = {**self._LANE, "kind": "assay", "environment": "runner",
-                "assay_lane": "r1", "assay_command": ["assay"]}
-        env = {"mode": "exec", "image": "runner:local"}
-
-        with pytest.raises(run_gate.GateNotRunError) as exc:
-            run_gate.run_exec_lane(
-                lane, "r1", project, repo, repo, env,
-                "[environments.runner]", "runner-1", "declared container_name",
-                "ciu up --dir test-runner", None, "no cgroup slice for exec",
-                run_record=None, profile_plan={"enabled": False})
-
-        assert exc.value.reason == "state-mount"
-        assert "inside" in str(exc.value)
-        assert "TMPDIR" in str(exc.value)
-        assert "durable absolute path outside the judged worktree" in str(exc.value)
-        assert calls == [["/bin/docker", "ps", "--format", "{{.Names}}"]]
-        assert not cleared
-
-    def test_default_in_repo_root_refuses_unknown_inventory_as_infrastructure(
-            self, monkeypatch, tmp_path):
-        repo = tmp_path / "consumer"
-        project = repo / "service"
-        project.mkdir(parents=True)
-        monkeypatch.setattr(
-            run_gate, "assay_inventory_entry",
-            lambda *_args, **_kwargs:
-            (None, "9.0.0", "fixture inventory failure"))
-
-        with pytest.raises(run_gate.GateInfraError,
-                           match="cannot determine whether Assay lane"):
-            run_gate.assure_assay_state_root(
-                "/bin/docker",
-                {"kind": "assay", "assay_lane": "unit",
-                 "assay_command": ["assay"]},
-                {"mode": "exec", "image": "runner:local"}, "runner",
-                "fixture", repo, project, repo, "",
-                resolved_container_name="runner-1")
-
-    @pytest.mark.parametrize("rigor", [None, [], ["R4"], ["R0", 7]])
-    def test_default_in_repo_root_refuses_invalid_inventory_rigor(
-            self, monkeypatch, tmp_path, rigor):
-        repo = tmp_path / "consumer"
-        project = repo / "service"
-        project.mkdir(parents=True)
-        monkeypatch.setattr(
-            run_gate, "assay_inventory_entry",
-            lambda *_args, **_kwargs:
-            ({"name": "unit", "rigor": rigor}, "9.0.0", None))
-
-        with pytest.raises(run_gate.GateInfraError,
-                           match="returned invalid rigor"):
-            run_gate.assure_assay_state_root(
-                "/bin/docker",
-                {"kind": "assay", "assay_lane": "unit",
-                 "assay_command": ["assay"]},
-                {"mode": "exec", "image": "runner:local"}, "runner",
-                "fixture", repo, project, repo, "",
-                resolved_container_name="runner-1")
-
-    def test_in_repo_root_still_allows_r0_and_external_root_allows_r1(
+    def test_in_repo_state_root_never_reaches_preflight_as_a_refusal(
             self, monkeypatch, tmp_path, capsys):
+        """RG-98: an in-worktree state root is no longer refused, so the
+        preflight needs no judge inventory probe at all. The scratch hazard is
+        removed where it arose, in the judge's environment (see
+        `TestRG98JudgeScratchIsolation`)."""
         repo = tmp_path / "consumer"
         project = repo / "service"
         project.mkdir(parents=True)
-        env = {"mode": "exec", "image": "runner:local"}
         monkeypatch.setattr(
             run_gate, "assay_inventory_entry",
             lambda *_args, **_kwargs:
-            ({"name": "r0", "rigor": ["R0"]}, "9.0.0", None))
+            pytest.fail("the state-root preflight must not probe the judge"))
         monkeypatch.setattr(run_gate, "probe_assay_state_root",
                             lambda *_args, **_kwargs: (True, None))
-
-        run_gate.assure_assay_state_root(
-            "/bin/docker", {"kind": "assay", "assay_lane": "r0",
-                             "assay_command": ["assay"], "pins": []},
-            env, "runner", "fixture", repo, project, repo, "",
-            resolved_container_name="runner-1")
-        assert "assay state root:" in capsys.readouterr().out
-
-        external = {**env, "state_root": "/persist/run-gate"}
-        monkeypatch.setattr(
-            run_gate, "assay_inventory_entry",
-            lambda *_args, **_kwargs:
-            pytest.fail("an external state root needs no isolation probe"))
         run_gate.assure_assay_state_root(
             "/bin/docker", {"kind": "assay", "assay_lane": "r1",
                              "assay_command": ["assay"], "pins": []},
-            external, "runner", "fixture", repo, project, repo, "",
-            resolved_container_name="runner-1")
+            {"mode": "exec", "image": "runner:local"}, "runner", "fixture",
+            repo, project, repo, "", resolved_container_name="runner-1")
         assert "assay state root:" in capsys.readouterr().out
 
     @pytest.mark.parametrize(("env", "runner"), [
@@ -26934,6 +27362,80 @@ class TestRG78AndRG76DirectOracles:
         assert "[environments.bare-host]" in message
         assert 'mode = "host"' in message
         assert "run-gate migrate-modes run-gate.toml" in message
+
+    def test_undefined_legacy_host_names_its_own_declaration_and_migration(
+            self):
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(
+                {"environment": "host"}, "docs", {}, {},
+                Path("run-gate.toml"), None)
+        message = str(exc.value)
+        assert "[environments.host]" in message
+        assert 'mode = "ephemeral"' in message
+        assert "run-gate migrate-modes run-gate.toml" in message
+        assert 'mode = "host"' not in message
+
+    def test_inherited_central_lane_is_migrated_in_the_central_config(self):
+        central_path = Path("/estate/run-gate.root.toml")
+        central = {"lanes": {"docs": {"environment": "bare-host"}}}
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(
+                {"environment": "bare-host"}, "docs", {"lanes": {}},
+                central, Path("/estate/app/run-gate.toml"), central_path)
+        assert f"run-gate migrate-modes {central_path}" in str(exc.value)
+        # a project lane that shadows the central one is migrated locally
+        with pytest.raises(run_gate.GateError) as exc:
+            run_gate.resolve_environment(
+                {"environment": "bare-host"}, "docs",
+                {"lanes": {"docs": {"environment": "bare-host"}}},
+                central, Path("/estate/app/run-gate.toml"), central_path)
+        assert "run-gate migrate-modes /estate/app/run-gate.toml" in str(
+            exc.value)
+
+    @pytest.mark.parametrize("legacy", ["bare-host", "host"])
+    def test_named_migration_makes_the_loader_accept_the_lane(
+            self, tmp_path, legacy):
+        """The remedy the refusal prints must WORK: run the exact command it
+        names, then load and resolve the same lane with the shipped loader."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / "run-gate.toml").write_text(textwrap.dedent(f"""\
+            schema_version = 1
+            [lanes.docs]
+            kind = "command"
+            environment = "{legacy}"
+            argv = ["true"]
+            """))
+
+        def resolve():
+            cfg, project_path, central, central_path, *_rest = \
+                run_gate.load_config_snapshot(project)
+            return run_gate.resolve_environment(
+                cfg["lanes"]["docs"], "docs", cfg, central, project_path,
+                central_path)
+
+        with pytest.raises(run_gate.GateError) as exc:
+            resolve()
+        command = re.search(r"`run-gate (migrate-modes [^`]+)`",
+                            str(exc.value)).group(1)
+        assert command == f"migrate-modes {project / 'run-gate.toml'}"
+        assert run_gate.main(command.split()) == 0
+        resolved, _source = resolve()
+        if legacy == "bare-host":
+            assert resolved == {}                 # mode = "host"
+        else:
+            assert resolved["mode"] == "ephemeral"
+
+    def test_migrate_modes_materializes_names_referenced_only_by_assay_policy(
+            self):
+        for table in ("[assay]\nenvironment = \"bare-host\"\n",
+                      "[assay.import]\nenvironment = \"bare-host\"\n"
+                      "lanes = \"all\"\n"):
+            text = "schema_version = 1\n" + table
+            migrated, changed = run_gate.migrate_environment_modes_text(text)
+            assert changed
+            assert tomllib.loads(migrated)["environments"] == {
+                "bare-host": {"mode": "host"}}
 
     def test_environment_image_override_requires_valid_name_and_container_mode(self):
         for value in ("", "1IMAGE", "IMAGE-NAME"):
