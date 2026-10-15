@@ -319,8 +319,9 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
   the gate and tag (KI-78).** For a CMRU GitHub Release-body handler, the text is appended
   verbatim inside the generated dated version section, then the exact tagged section is used
   in the GitHub Release body (`--dry-run` prints that same body). The release tag and body
-  therefore describe the same notes. `--no-build` and image-only publishers still carry the
-  notes in the tagged changelog, but do not publish a GitHub Release body. Failed gates,
+  therefore describe the same notes. `--no-build`, and an image push without
+  `oci-image-release`, still carry the notes in the tagged changelog but publish no GitHub
+  Release body (see "Image-only release bodies" below). Failed gates,
   builds, publishes, and promotions leave source `main`'s `[Unreleased]` unchanged. No
   post-publish changelog commit is needed. The project's configured
   changelog path remains excluded from change detection. This replaces the KI-30 refusal;
@@ -343,6 +344,59 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
   notes (KI-75) live in that section, so advancing `source-end` in the same commit is how they
   survive. Text that is not release notes can still be curated AFTER the release (a
   post-release commit, keeping the markers intact).
+
+### Image-only release bodies (`oci-image-release`, KI-78)
+
+For a project whose artifact is an OCI image pushed by its own `push` commands, the
+GitHub Release body is published by `cmru handler oci-image-release --prefix <prefix>
+--image <registry/repository> --cwd <dir>`, which must be the LAST command of the same
+`push` step, after the image push. It runs at the ordinary publication point of the order
+above, so its preconditions are facts CMRU has already established by then.
+
+**Checked before any side effect.** In the release child, right after the plan names the
+projects to ship and before the tool-dependency check, any `prepare` step, any gate, any
+tag or any image push, CMRU validates the configured command of EVERY project it will ship
+with one function (`_validated_oci_release_image`); `cmru release --dry-run` calls it too
+and refuses identically, leaving the changelog bytes unchanged, and each project's
+preparation repeats it before running its `prepare` step. An invalid command is a typed
+refusal (exit 4) that marks the plan refused, so no candidate is retained. It refuses a
+malformed, duplicate, missing or unexpected `--prefix`/`--image`/`--cwd`; a prefix other
+than the project's release prefix without `-v`; an `--image` with a tag or digest; a
+`--cwd` that, resolved from the command's declared `cwd` against the project root derived
+from the candidate, is not the project root holding the changelog (an absolute path is
+refused); any command after it in the push step; an untagged project; a push step whose
+`bake_set_*`/`no_cache_env` appends runner arguments; and another body handler in the
+step. These checks keep a bad configuration out of a release. They do not make the
+publication atomic.
+
+At the handler, the remaining preconditions are:
+
+1. The release tag is already on `origin` at the gated candidate commit (the explicit tag
+   step pushed it before build and publish), and the protected `CMRU_RELEASE_TAG`,
+   `CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_NOTES_SOURCE` are set for the step. The handler
+   derives the image tag from `CMRU_RELEASE_TAG` and reads the changelog section from
+   `CMRU_RELEASE_COMMIT`, never the working tree.
+2. Before any release mutation it checks that the remote tag exists and equals that
+   commit, and that an existing release is for that tag and does not target another commit.
+   Any absent, malformed or mismatched value refuses; it never creates, moves or deletes a
+   Git ref. A missing Release is created under that tag and commit; an existing one has
+   only its name and body rewritten, after it is re-fetched and its exact release ID, tag
+   identity and remote tag target are verified again immediately before the PATCH (a change
+   there sends nothing and refuses). No asset is listed, deleted or uploaded. After the
+   write it reads the release (for an update) and the remote tag back. GitHub offers no
+   conditional update and cannot make the tag check atomic with a create, so a change seen
+   only in that read-back is reported as `was written, but ...`: the release may stay in
+   place with the new body, nothing is rolled back, and it must be inspected before any
+   retry.
+3. It is publication: once the `push` step has begun, a failure follows
+   [Post-publication recovery](#post-publication-recovery) and never rolls the tag back.
+   The handler itself is idempotent: running it again for the same tag and commit only
+   rewrites the body of the same release and leaves every asset alone.
+
+The step cannot also hold `wheel-publish`, `tarball-publish` or a second
+`oci-image-release` (the later body would overwrite the earlier one); that is refused by
+the same up-front validation, before any side effect. `--no-build` runs no `push` step, so
+it creates no body (its configuration is still validated).
 
 ### Post-publication recovery
 

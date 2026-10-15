@@ -4,8 +4,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- `cmru handler oci-image-release --prefix <prefix> --image <registry/repository> --cwd <dir>` (KI-78): an image-only CMRU release now publishes a GitHub Release body with the tagged changelog notes and explicit `docker pull <image>:<version>` instructions (no artifact name or SHA256). Place it after the project's image push; it writes release metadata only (never builds, pushes, tags or touches an asset), derives the image tag from the protected release tag, reads the notes from the protected candidate commit, and refuses before any change when the release identity is absent or malformed, the remote tag is missing or at another commit, or an existing release targets another commit; an existing release is re-fetched and re-verified immediately before its body is edited. It must be the last command of the push step, and CMRU validates its `--prefix`/`--image`/`--cwd`, its position and the one-body-handler rule for every shipped project before any prepare step, gate, tag or image push (`--dry-run` runs the same check). A tag or release change detected only after the write (GitHub cannot make that atomic) is reported as `was written` with the release left in place, not rolled back. `cmru release --dry-run` prints the same complete body, with no placeholders.
+
 ### Changed
-- KI-78 stages pending notes inside every tagged candidate's dated section before the gate and tag; direct publishers read the matching tag rather than mutable changelog files. `--no-build` and image-only releases retain notes in the tagged changelog without creating a GitHub Release body.
+- KI-78 stages pending notes inside every tagged candidate's dated section before the gate and tag; direct publishers read the matching tag rather than mutable changelog files. `--no-build`, and an image push without `oci-image-release`, retain notes in the tagged changelog without creating a GitHub Release body.
 - Real `cmru release` transactions require a non-editable CMRU wheel controller and record its wheel and installed-file digests in the release logs; `--dry-run` remains source-checkout friendly.
 - CMRU's aggregate gate uses Run-Gate SemVer as its compatibility floor and retained judge identity; it no longer treats a source revision counter as a compatibility version.
 - CMRU can make its first release without a prior CMRU tag: it verifies an empty origin tag set, runs whole-source R0/R1/R3, and records the whole-source R2 follow-up.

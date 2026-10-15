@@ -19,17 +19,19 @@ import fnmatch
 import glob
 import hashlib
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
 from cmru import exit_codes
 from cmru.release import (
     GitHubReleases,
+    build_oci_image_release_body,
     find_artifact,
     find_built_wheel,
     is_release_version,
@@ -886,6 +888,76 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
     print("[INFO] OCI image push complete")
 
 
+def _refuse_oci_release(message: str) -> NoReturn:
+    print(f"[ERROR] oci-image-release: {message}", file=sys.stderr)
+    raise SystemExit(exit_codes.REFUSED)
+
+
+def _protected_oci_release_identity(prefix: str) -> tuple[str, str, str]:
+    """``(tag, commit, version)`` from CMRU's protected release environment.
+
+    The image tag is DERIVED from the protected release tag; nothing is
+    guessed, defaulted, or read from the working tree. An absent, malformed or
+    mismatched value refuses before any GitHub call.
+    """
+    tag = (os.environ.get("CMRU_RELEASE_TAG") or "").strip()
+    commit = (os.environ.get("CMRU_RELEASE_COMMIT") or "").strip()
+    missing = [
+        name for name, value in
+        (("CMRU_RELEASE_TAG", tag), ("CMRU_RELEASE_COMMIT", commit)) if not value
+    ]
+    if missing:
+        _refuse_oci_release(
+            f"{' and '.join(missing)} not set. This handler publishes release metadata "
+            "for a tagged release only: place it in the `push` step of a project released "
+            "with `cmru release`, which supplies the release tag and candidate commit. "
+            "Do not export them by hand."
+        )
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        _refuse_oci_release(
+            f"CMRU_RELEASE_COMMIT={commit!r} is not a full 40-hex commit id"
+        )
+    marker = f"{prefix}-v"
+    version = tag[len(marker):] if tag.startswith(marker) else ""
+    if not version:
+        _refuse_oci_release(
+            f"CMRU_RELEASE_TAG={tag!r} is not a {marker}<version> tag for --prefix {prefix!r}"
+        )
+    if not is_release_version(version):
+        _refuse_oci_release(
+            f"CMRU_RELEASE_TAG={tag!r} names the non-release version {version!r}"
+        )
+    return tag, commit, version
+
+
+def cmd_oci_image_release(args: argparse.Namespace) -> None:
+    """Publish the GitHub Release body for an image the project's own step pushed.
+
+    Release metadata only: this handler never builds or pushes the image and
+    uploads no asset. The image coordinate (``--image`` plus ``:<version>``) and
+    the notes are bound to CMRU's protected release tag and candidate commit;
+    the changelog section is read from that commit, never the working tree.
+    """
+    cwd = Path(args.cwd).resolve()
+    tag, commit, version = _protected_oci_release_identity(args.prefix)
+    try:
+        declaration = declared_source()
+        release_notes = load_release_notes(cwd, declaration, version, commit=commit)
+        body = build_oci_image_release_body(args.image, version, release_notes=release_notes)
+    except ReleaseNotesError as exc:
+        print(f"[ERROR] release notes: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.REFUSED) from None
+    except ValueError as exc:
+        _refuse_oci_release(str(exc))
+
+    token = _require_env("GITHUB_PUSH_PAT")
+    owner = _require_env("GITHUB_USERNAME")
+    repo = _require_env("GITHUB_REPO")
+    gh = GitHubReleases(owner, repo, token)
+    gh.publish_release_body(tag, tag, body, tag_commit=commit)
+    print(f"[INFO] Published release notes for {args.image}:{version} under {tag}")
+
+
 def handlers_cli():
     from cli_extended import OptionSpec, VerbGroup, VerbSpec
     from cmru.cli_support import cmru_registry
@@ -938,6 +1010,11 @@ def handlers_cli():
             required_path("--cwd", "project directory (holds bake file)"),
             required_path("--bake-file", "path to bake HCL file"),
             required_name("--bake-target", "bake target name (not a project target)", "NAME"),
+        )),
+        ("oci-image-release", "Publish the GitHub Release body for a pushed OCI image.", cmd_oci_image_release, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+            required_name("--image", "image repository without tag or digest, <registry>/<repository>", "REPOSITORY"),
+            required_path("--cwd", "project directory (holds the changelog)"),
         )),
     )
     for name, description, handler, options in commands:

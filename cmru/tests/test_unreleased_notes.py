@@ -375,6 +375,8 @@ def test_duplicate_version_headings_in_a_generated_changelog_refuse(tmp_path):
 @pytest.mark.parametrize("argv, expected", [
     (["cmru", "handler", "wheel-publish"], True),
     (["cmru", "handler", "tarball-publish"], True),
+    (["cmru", "handler", "oci-image-release"], True),
+    (["cmru", "handler", "oci-image-push"], False),
     (["cmru", "handler", "unsupported"], False),
     (["python", "-m", "cmru.handlers", "wheel-publish"], False),
     (["cmru"], False),

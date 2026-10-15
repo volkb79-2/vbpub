@@ -4418,18 +4418,208 @@ def _commit_prepared_generated(
     return True
 
 
-_RELEASE_BODY_HANDLERS = frozenset({"wheel-publish", "tarball-publish"})
+_RELEASE_BODY_HANDLERS = frozenset({"wheel-publish", "tarball-publish", "oci-image-release"})
+_OCI_RELEASE_HANDLER = "oci-image-release"
 
 
-def _has_cmru_github_release_body(project) -> bool:
-    """Whether the declared push step uses a CMRU handler that publishes notes."""
+def _release_body_handler_argv(project) -> tuple[str, ...] | None:
+    """The first CMRU release-body handler in the push step, as ``(handler, *options)``.
+
+    ``oci-image-release`` owns the whole GitHub Release body and replaces
+    whatever an earlier body handler wrote, so it cannot share a push step with
+    another body handler (nor repeat): that is refused before any side effect.
+    """
     step = (getattr(project, "runner_steps", None) or {}).get("push")
+    found: list[tuple[str, ...]] = []
     for command in getattr(step, "commands", ()):
         argv = command.get("argv", ()) if isinstance(command, dict) else ()
         if len(argv) >= 3 and [str(item) for item in argv[:2]] == ["cmru", "handler"]:
             if str(argv[2]) in _RELEASE_BODY_HANDLERS:
-                return True
-    return False
+                found.append(tuple(str(item) for item in argv[2:]))
+    if any(item[0] == _OCI_RELEASE_HANDLER for item in found) and len(found) > 1:
+        raise RefusedBeforeChange(
+            f"{getattr(project, 'name', 'project')}: `{_OCI_RELEASE_HANDLER}` writes the whole "
+            "GitHub Release body, so its push step cannot also run another CMRU "
+            "release-body handler (wheel-publish, tarball-publish or a second "
+            f"{_OCI_RELEASE_HANDLER}): the later one would overwrite the earlier body"
+        )
+    return found[0] if found else None
+
+
+def _has_cmru_github_release_body(project) -> bool:
+    """Whether the declared push step uses a CMRU handler that publishes notes."""
+    return _release_body_handler_argv(project) is not None
+
+
+_OCI_RELEASE_OPTIONS = ("--prefix", "--image", "--cwd")
+
+
+def _parse_oci_release_options(options: Sequence[str]) -> dict[str, str]:
+    """Strictly parse the three options of ``oci-image-release``; ``ValueError`` if malformed.
+
+    Exactly one each of ``--prefix``, ``--image`` and ``--cwd`` (``--flag V`` or
+    ``--flag=V``), non-empty, and nothing else: an unknown flag, a stray
+    positional, a duplicate, a missing value or a missing option is refused.
+    """
+    found: dict[str, str] = {}
+    index = 0
+    while index < len(options):
+        token = options[index]
+        flag, equals, inline = token.partition("=")
+        if flag not in _OCI_RELEASE_OPTIONS:
+            raise ValueError(
+                f"unexpected argument {token!r}; the only options are "
+                f"{', '.join(_OCI_RELEASE_OPTIONS)}"
+            )
+        if flag in found:
+            raise ValueError(f"{flag} is given more than once")
+        if equals:
+            value = inline
+            index += 1
+        else:
+            if index + 1 >= len(options):
+                raise ValueError(f"{flag} has no value")
+            value = options[index + 1]
+            index += 2
+        if not value:
+            raise ValueError(f"{flag} has an empty value")
+        if value.startswith("-"):
+            raise ValueError(f"{flag} value {value!r} looks like an option, not a value")
+        found[flag] = value
+    missing = [flag for flag in _OCI_RELEASE_OPTIONS if flag not in found]
+    if missing:
+        raise ValueError(f"missing required option(s): {', '.join(missing)}")
+    return found
+
+
+def _project_release_prefix(project) -> str:
+    """The project's release prefix without ``-v`` (``<prefix>-v<version>`` is its tag)."""
+    return (getattr(project, "prefix", None) or f"{project.name}-v").removesuffix("-v")
+
+
+def _validated_oci_release_image(project, repo_root: Path) -> str | None:
+    """Validate a configured ``oci-image-release`` command; return its ``--image``.
+
+    ``None`` when the project's push step has no such command. EVERY check is made
+    from CMRU's declared config and the candidate worktree, before any prepare
+    step, gate, tag, image push or other release side effect; ``cmru release
+    --dry-run`` calls this same function, so a preview refuses exactly what the
+    release would. A violation raises ``RefusedBeforeChange``:
+
+    * the body-handler conflict rule (one release-body handler per push step);
+    * the project is tagged (the protected release identity exists only then);
+    * exactly one well-formed ``--prefix``/``--image``/``--cwd`` and nothing else;
+    * ``--prefix`` is the project's release prefix without ``-v``;
+    * ``--image`` is a repository reference without a tag or digest;
+    * the step appends no runner arguments (``bake_set_*``/``no_cache_env`` add
+      tokens to every command's argv, which would corrupt this one's);
+    * the command is the LAST of the push step (it publishes externally visible
+      metadata, so it must follow the image push and nothing may follow it);
+    * ``--cwd`` (relative, resolved from the command's declared ``cwd`` within
+      the project root derived from the candidate) is the project root that holds
+      the declared changelog.
+    """
+    from cmru.changelog import _validate_changelog_path
+    from cmru.release import validate_oci_image_repository
+    from cmru.runner import resolve_path
+
+    argv = _release_body_handler_argv(project)
+    if argv is None or argv[0] != _OCI_RELEASE_HANDLER:
+        return None
+    name = getattr(project, "name", "project")
+
+    def refuse(detail: str) -> NoReturn:
+        raise RefusedBeforeChange(f"{name}: `{_OCI_RELEASE_HANDLER}`: {detail}")
+
+    if not getattr(project, "git_tag", True):
+        refuse(
+            "the project has no git tag (release.git_tag = false), so there is no "
+            "protected release tag or commit for it to publish against"
+        )
+    try:
+        options = _parse_oci_release_options(argv[1:])
+    except ValueError as exc:
+        refuse(str(exc))
+    expected_prefix = _project_release_prefix(project)
+    if options["--prefix"] != expected_prefix:
+        refuse(
+            f"--prefix {options['--prefix']!r} must be this project's release prefix "
+            f"without -v, {expected_prefix!r}"
+        )
+    try:
+        image = validate_oci_image_repository(options["--image"])
+    except ValueError as exc:
+        refuse(str(exc))
+
+    step = (getattr(project, "runner_steps", None) or {}).get("push")
+    if getattr(step, "no_cache_env", None) or (
+        getattr(step, "bake_set_prefix", None) and getattr(step, "bake_set_vars", None)
+    ):
+        refuse(
+            "the push step declares bake_set_prefix/bake_set_vars or no_cache_env, which "
+            "make the runner append arguments to every command in the step and would "
+            "corrupt this command's argv after the image was pushed"
+        )
+
+    commands = _push_commands(project)
+    position = next(
+        index for index, command in enumerate(commands)
+        if _command_handler(command) == _OCI_RELEASE_HANDLER
+    )
+    if position != len(commands) - 1:
+        following = commands[position + 1]
+        refuse(
+            "it publishes externally visible release metadata, so it must be the LAST "
+            f"command of the push step, after the image push; "
+            f"{len(commands) - 1 - position} command(s) follow it, starting with "
+            f"{following.get('label', 'an unlabelled command') if isinstance(following, dict) else following!r}"
+        )
+
+    command = commands[position]
+    raw_cwd = command.get("cwd") if isinstance(command, dict) else None
+    if not isinstance(raw_cwd, str) or not raw_cwd.strip():
+        refuse("the command declares no working directory (cwd)")
+    if Path(raw_cwd).is_absolute() or Path(options["--cwd"]).is_absolute():
+        refuse(
+            "the command's cwd and --cwd must be relative: an absolute path would bake a "
+            "candidate-specific location into the project configuration"
+        )
+    project_root = resolve_cwd(repo_root, _project_working_directory(project)).resolve()
+    target = (resolve_path(project_root, raw_cwd) / options["--cwd"]).resolve()
+    if target != project_root:
+        refuse(
+            f"--cwd {options['--cwd']!r}, resolved from the command's cwd {raw_cwd!r}, is "
+            f"not the project root {_project_working_directory(project)!r} that holds the "
+            "changelog; use --cwd . with cwd = \".\""
+        )
+    if getattr(project, "changelog", None):
+        try:
+            _validate_changelog_path(project, repo_root).relative_to(target)
+        except ValueError:
+            refuse(f"--cwd does not contain the declared changelog {project.changelog!r}")
+    return image
+
+
+def _validate_release_body_handlers(
+    repo_root: Path, configs: Mapping[str, "ProjectConfig"], names: Sequence[str],
+) -> None:
+    """Validate every named project's release-body handlers before ANY of them is released."""
+    for name in names:
+        _validated_oci_release_image(configs[name], repo_root)
+
+
+def _push_commands(project) -> list:
+    """The command tables of the project's declared ``push`` step (possibly empty)."""
+    step = (getattr(project, "runner_steps", None) or {}).get("push")
+    return list(getattr(step, "commands", ()))
+
+
+def _command_handler(command) -> str | None:
+    """The CMRU handler a ``cmru handler <name> ...`` command table runs, else ``None``."""
+    argv = command.get("argv", ()) if isinstance(command, dict) else ()
+    if len(argv) >= 3 and [str(item) for item in argv[:2]] == ["cmru", "handler"]:
+        return str(argv[2])
+    return None
 
 
 def _fold_pending_release_notes(repo_root: Path, project, version: str) -> bool:
@@ -4478,7 +4668,7 @@ def _preview_release_bodies(
     before a build; they appear as marked placeholders.
     """
     from cmru.changelog import _validate_changelog_path, generate_release_changelog
-    from cmru.release import build_release_body
+    from cmru.release import build_oci_image_release_body, build_release_body
     from cmru.release_notes import ARTIFACT_PLACEHOLDER, SHA256_PLACEHOLDER
 
     # The release plan knows every project in the Git family, including scopes
@@ -4492,9 +4682,14 @@ def _preview_release_bodies(
 
     for name in project_names:
         project = configs[name]
+        # The SAME validator the release preparation runs, before anything else
+        # (even for a project this preview would otherwise skip), so a dry run
+        # refuses exactly what the release would refuse, before any change.
+        oci_image = _validated_oci_release_image(project, repo_root)
         if not getattr(project, "changelog", None) or not getattr(project, "git_tag", True):
             continue
-        has_release_body = _has_cmru_github_release_body(project)
+        handler_argv = _release_body_handler_argv(project)
+        has_release_body = handler_argv is not None
         path = _validate_changelog_path(project, repo_root)
         original = path.read_bytes() if path.exists() else None
         try:
@@ -4507,7 +4702,7 @@ def _preview_release_bodies(
                 path.unlink(missing_ok=True)
             else:
                 path.write_bytes(original)
-        prefix = (getattr(project, "prefix", None) or f"{name}-v").removesuffix("-v")
+        prefix = _project_release_prefix(project)
         if no_build or not has_release_body:
             reason = (
                 "--no-build skips publication" if no_build else
@@ -4520,6 +4715,23 @@ def _preview_release_bodies(
             print("----- begin release notes section -----")
             print(notes.text)
             print("----- end release notes section -----")
+            continue
+        if oci_image is not None:
+            image = oci_image
+            try:
+                body = build_oci_image_release_body(image, notes.version, release_notes=notes)
+            except ValueError as exc:
+                raise RefusedBeforeChange(f"{name}: {_OCI_RELEASE_HANDLER}: {exc}") from exc
+            log_info(
+                f"[DRY RUN] {name}: GitHub Release body for {prefix}-v{notes.version} "
+                f"(image {image}:{notes.version}, published by `{_OCI_RELEASE_HANDLER}` after "
+                f"the image push; curated section from {project.changelog}; pending notes, when "
+                "present, are folded into this version section in the candidate before its gate "
+                "and tag):"
+            )
+            print("----- begin release body -----")
+            print(body)
+            print("----- end release body -----")
             continue
         body = build_release_body(
             prefix, notes.version, artifact_name=ARTIFACT_PLACEHOLDER,
@@ -4552,6 +4764,9 @@ def _prepare_release_projects(
     log_dir = repo_root / "logs"
     for name in project_names:
         project = configs[name]
+        # Refuse an invalid release-body handler (conflict, config, order, root)
+        # before the project's `prepare` step or any other side effect.
+        _validated_oci_release_image(project, repo_root)
         if "prepare" in project.steps:
             log_info(f"{name}: preparing release inputs")
             run_project_step(project, "prepare", repo_root, log_dir)
@@ -5834,6 +6049,18 @@ def _release_child(
     # its exact baseline and reason, not a second, bare name-only list here.
     # This also runs identically whether or not --dry-run is set (KI-14):
     # the plan above is computed once, before the dry-run/real branch below.
+
+    # A configured release-body handler (`oci-image-release`) is validated for
+    # EVERY project this run ships before ANY project's cycle starts, so an
+    # invalid handler in a later project cannot be discovered after an earlier
+    # project was tagged, pushed or published. Same typed refusal and same
+    # validator as the dry-run preview and per-project preparation use.
+    try:
+        _validate_release_body_handlers(repo_root, configs, release_names)
+    except RefusedBeforeChange as exc:
+        log_error(str(exc))
+        transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+        sys.exit(exit_codes.REFUSED)
 
     # S15: declared tool dependencies for external/copy consumers
     # are verified here, alongside the tag-preflight above -- same phase (no

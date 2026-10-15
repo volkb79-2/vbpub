@@ -511,15 +511,37 @@ release tag.
 
 ### The GitHub Release body carries the version's curated notes
 
-A GitHub Release published by a CMRU handler (`wheel-publish`, `tarball-publish`) is the
+A GitHub Release published by a CMRU handler (`wheel-publish`, `tarball-publish`,
+`oci-image-release`) is the
 generated install/artifact block (artifact name, SHA256, verification and
-resolve-latest instructions) followed by the **exact `## [X.Y.Z] - YYYY-MM-DD`
+resolve-latest instructions; for an image, its pull coordinate instead) followed by the **exact `## [X.Y.Z] - YYYY-MM-DD`
 section of the project's changelog for the version being released**, verbatim. Pending
 `## [Unreleased]` entries, including migration notes, are folded into that dated section
 in the disposable release candidate before its gate and tag. The publisher reads the
 section from the exact tagged commit, so the tag and release body carry the same notes.
-Every tagged release carries the notes in its changelog; `--no-build` and image-only
-publishers do not create a GitHub Release body. The candidate reaches `main` only after a
+Every tagged release carries the notes in its changelog; `--no-build` never creates a
+GitHub Release body. An **image-only release** (the project's own step pushes an OCI
+image and uploads nothing to GitHub) publishes a body when its `push` step runs
+`cmru handler oci-image-release --prefix <prefix> --image <registry/repository> --cwd <dir>`
+after the image push: the body opens with the exact `<registry/repository>:<version>`
+coordinate and its `docker pull` command (the version comes from the protected release
+tag; there is no artifact name or SHA256), then carries the same tagged changelog
+section. The handler writes release metadata only: it never builds or pushes an image
+and never changes an uploaded asset, so a retry only refreshes the body. Because it
+publishes externally visible metadata it must be the **last command** of the push step,
+after the image push. **Before any side effect** (any `prepare` step, gate, tag or image
+push) CMRU validates the configured command for every project it will ship: exactly one
+`--prefix` (the project's release prefix without `-v`), `--image` (a repository with no
+tag or digest) and `--cwd` (relative, resolving to the project root that holds the
+changelog), nothing else, no command after it, and no other release-body handler in the
+same step. `cmru release --dry-run` runs the same validator and refuses identically.
+Those checks prevent a bad configuration from reaching the release; they do **not** make
+publication atomic. Before it writes, the handler re-verifies the release and the remote
+tag and refuses with no change if either differs. GitHub cannot make that check atomic with
+creating or editing a release, so a tag or release change found only AFTER the write is
+reported with the release left in place and must be inspected before a retry (nothing is
+rolled back). An image push without the handler still has the notes in its tagged
+changelog but no GitHub Release body. The candidate reaches `main` only after a
 successful publish and promotion; gate, build, publish, and promotion failures leave the
 source branch's `[Unreleased]` unchanged. A dry run prints
 the complete body between `----- begin release body -----` and `----- end release body -----`
@@ -529,11 +551,16 @@ changelog path, and those paths remain
 excluded from change detection. A project that opted out (`changelog = false`) gets the
 generated body alone. A changelog without exactly one dated, non-empty section for that
 version **refuses before the gate, tag or upload** instead of publishing a body without
-notes. `cmru release --dry-run` uses the same builder as the publisher; only the artifact
-file name and SHA256, which exist only after the build, appear as marked placeholders.
-A `--notes-env` text only replaces the opening line and cannot bypass the changelog
-section. See [why](docs/DESIGN-GUIDE.md#release-bodies-carry-the-versions-curated-notes)
-and the [adoption recipe](docs/CONSUMERS.md#release-bodies-and-curated-notes).
+notes. `cmru release --dry-run` uses the same builder as the publisher; for a wheel or
+tarball only the artifact file name and SHA256, which exist only after the build, appear
+as marked placeholders, and an `oci-image-release` preview is the complete body with no
+placeholder at all.
+A `--notes-env` text (`wheel-publish`, `tarball-publish`) only replaces the opening line
+and cannot bypass the changelog section. See
+[why](docs/DESIGN-GUIDE.md#release-bodies-carry-the-versions-curated-notes) and the
+[adoption recipe](docs/CONSUMERS.md#release-bodies-and-curated-notes); for images, see
+[why `oci-image-release`](docs/DESIGN-GUIDE.md#image-only-releases-get-a-body-through-oci-image-release-ki-78)
+and its [adoption recipe](docs/CONSUMERS.md#image-only-releases-publish-the-body-with-oci-image-release).
 
 ## Reproducibility & the commit model
 

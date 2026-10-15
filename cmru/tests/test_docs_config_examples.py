@@ -39,7 +39,8 @@ def test_every_documented_toml_example_is_current_toml_and_versioned(tmp_path):
     # The consumer document owns the only complete config pair. README and the
     # secret-file example; README and the design guide link to those rather than
     # publishing partial TOML fragments that cannot pass the installed reader.
-    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 3}
+    # Its fourth block is the `oci-image-release` push-step excerpt (KI-78).
+    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 4}
 
 
 def test_runtime_vocabulary_and_workspace_contract_are_documented():

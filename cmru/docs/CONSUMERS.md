@@ -941,9 +941,9 @@ your changelog's exact section for that version. What you do:
    ```
 
 3. Check it before you release: `cmru release <name> --dry-run` prints the complete body
-   between `----- begin release body -----` and `----- end release body -----`; the artifact
-   file name and SHA256 are the only placeholders. The real publisher builds the body with
-   the same function.
+   between `----- begin release body -----` and `----- end release body -----`; for a wheel
+   or tarball the artifact file name and SHA256 are the only placeholders (an image-only
+   release has none, see below). The real publisher builds the body with the same function.
 
 A missing, undated, duplicated, empty or wrong-version section refuses before the gate,
 tag or upload with a message naming the file and the sections it did find. Do not edit a
@@ -969,9 +969,9 @@ section in every tagged release candidate before the gate and tag:
 ```
 
 `cmru release <name> --dry-run` previews the body with those notes inside the dated section
-when a CMRU GitHub Release-body handler will publish it. For `--no-build` and image-only
-publishers, it previews the tagged changelog section instead; no GitHub Release body is
-published. In every case the release candidate commits the folded section before the gate,
+when a CMRU GitHub Release-body handler will publish it. For `--no-build`, and for an image
+push without `oci-image-release`, it previews the tagged changelog section instead; no
+GitHub Release body is published. In every case the release candidate commits the folded section before the gate,
 and its tag carries those notes. The candidate reaches `main` only after a successful publish
 and promotion. A failed gate, build, publish or promotion leaves the source branch's
 notes under `[Unreleased]`. This removes the need to park notes outside the changelog
@@ -987,8 +987,90 @@ parked entries under their `### Added/Changed/Fixed/Documentation` groups; leave
 `[Unreleased]` empty. Pin the version with `--set-version X.Y.Z` if the planner could
 choose another. Then run `cmru release <name> --dry-run` from the pushed `main` and check
 that the body ends with exactly those entries and that nothing refuses. A project whose
-publish step is an image push (no CMRU handler) has no GitHub Release body; its notes are
-still present in the tagged changelog.
+publish step is an image push without `oci-image-release` has no GitHub Release body; its
+notes are still present in the tagged changelog.
+
+#### Image-only releases: publish the body with `oci-image-release`
+
+A project whose immutable artifact is an OCI image that its own build step pushes (nothing
+is uploaded to GitHub) gets a GitHub Release body when its `push` step runs
+`oci-image-release` AFTER the image push. Paste the command into the step that already
+pushes the image:
+
+```toml
+schema_version = 1
+
+# Excerpt of the project's cmru.toml; the rest is as in the example at the top of this guide.
+[steps.push]
+quiet = true
+commands = [
+  { label = "push image", argv = ["cmru", "handler", "oci-image-push", "--cwd", ".", "--bake-file", "docker-bake.hcl", "--bake-target", "release"], cwd = "." },
+  { label = "release notes", argv = ["cmru", "handler", "oci-image-release", "--prefix", "example-image", "--image", "ghcr.io/your-owner/example-image", "--cwd", "."], cwd = "." },
+]
+```
+
+What it does and requires:
+
+- It must be the **last command** of the `push` step, after the command that pushes the
+  image, because it publishes externally visible metadata. Pass `--cwd .` with `cwd = "."`
+  as above: `--cwd` is resolved from the command's own `cwd` and must land on the project
+  root (the directory of the project's `cmru.toml`, which holds the changelog). Use only
+  relative paths; an absolute one would bake one candidate's location into a file every
+  candidate shares and is refused.
+- **Checked before anything happens.** For every project a release will ship, CMRU
+  validates the command before any `prepare` step, gate, tag or image push, and
+  `cmru release --dry-run` runs the same check and refuses identically (the changelog is
+  left untouched). It refuses: a missing, duplicate, empty or unknown option (the only
+  options are `--prefix`, `--image` and `--cwd`, each exactly once, `--flag value` or
+  `--flag=value`); a `--prefix` other than the project's release prefix without `-v`; an
+  `--image` with a tag or digest or not shaped `<registry>/<repository>`; a `--cwd` that is
+  not the project root; any command after it in the push step (for example an image push
+  listed after it); a project with `release.git_tag = false`; a push step that sets
+  `bake_set_prefix`/`bake_set_vars` or `no_cache_env`, which make the runner append
+  arguments to every command in the step; and another CMRU release-body handler in the same
+  step.
+- The image tag is the release version, taken from the protected `CMRU_RELEASE_TAG`
+  (`example-image-v1.4.0` becomes `ghcr.io/your-owner/example-image:1.4.0`). Run it only
+  through `cmru release`, which supplies `CMRU_RELEASE_TAG`, `CMRU_RELEASE_COMMIT` and
+  `CMRU_RELEASE_NOTES_SOURCE`; started by hand it refuses and names the missing value. Do
+  not export them.
+- The body opens with the exact coordinate and its pull command, then carries the tagged
+  changelog section (the same notes the tag holds):
+
+  ```text
+  **Image:** `ghcr.io/your-owner/example-image:1.4.0`
+
+  Pull: `docker pull ghcr.io/your-owner/example-image:1.4.0`
+
+  ## [1.4.0] - 2026-10-15
+  ...
+  ```
+
+  There is no artifact name or SHA256. `cmru release <name> --dry-run` prints this very
+  body, complete and without placeholders.
+- It writes release metadata only. It does not build or push the image (the step before it
+  does), it never uploads, deletes or replaces an asset, and a retry simply rewrites the
+  body of the same release. It requires the release tag to be on the remote at exactly the
+  candidate commit (`cmru release` pushes it first) and refuses, before changing anything,
+  if the tag is absent or points elsewhere or if an existing release targets another commit.
+  For an existing release it re-fetches the release and re-checks its ID, tag and the remote
+  tag target immediately before it edits the body, and sends nothing if any of them changed.
+- **What it cannot prevent.** GitHub cannot make the tag check atomic with creating or
+  editing a release, so a tag or release change that happens in that instant is detected only
+  by the read-back after the write. The error then says the release **was written**, that
+  nothing was rolled back, and to inspect the release and the tag before retrying; the
+  release may exist with the new body. The validation above stops bad configuration from
+  reaching a release; it does not make publication atomic, and it does not undo an image
+  that was already pushed if a later step fails.
+- The push step may hold only one body handler. Combining `oci-image-release` with
+  `wheel-publish`, `tarball-publish` or a second `oci-image-release` is refused before the
+  release starts, because the later handler would overwrite the earlier body.
+- `--no-build` still publishes nothing (no image, no body); its dry run previews the changelog
+  section. A push step that only pushes the image keeps the notes in the tagged changelog and
+  has no GitHub Release body.
+
+Why it works this way: see the
+[design note](DESIGN-GUIDE.md#image-only-releases-get-a-body-through-oci-image-release-ki-78).
 
 ---
 
