@@ -109,7 +109,7 @@ SPEC §9.
 | RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | OPEN (filed 2026-10-07 after Assay 8.0.0 B145 preflight stopped RG-55 R2 with zero candidates; preserve private cgroup namespace) |
 | RG-90 | Run-Gate reads append-only Assay progress across invocation boundaries: an old candidate can appear current, and resumed campaign indexes paired with a reset elapsed clock can produce a false rate/ETA | Minor | FIXED (rev 60: latest-run fencing, run-local rates, and no ETA without a trustworthy current-run `pending_total`; regression tests cover legacy and current-run shapes) |
 | RG-98 | RG-85 regression: `TMPDIR=<state_root>` is exported to the Assay judge process itself, so with the default in-repo `.run-gate` root Assay's isolation scratch root lands inside `repo_top` and every snapshot-isolated Assay lane ERRORs (`scratch_root must be outside repo_top`) | Major | OPEN (filed 2026-10-15 from the dstdns deep review; observed with the 24.0.0 candidate wheel) |
-| RG-99 | concurrent lanes in one exec container race on the fixed `/tmp/run-gate-gitconfig` (`git config --global --replace-all` lock), and the loser is reported as a product FAIL (exit 255) instead of a setup ERROR | Major | OPEN (filed 2026-10-15, dstdns deep review; amended same day: consumer direction is ephemeral one-lane containers, which removes the race by construction; the exec-mode fix stays required; pre-v8 gap: ephemeral environments cannot join a ciu instance network) |
+| RG-99 | concurrent lanes in one exec container race on the fixed `/tmp/run-gate-gitconfig` (`git config --global --replace-all` lock), and the loser is reported as a product FAIL (exit 255) instead of a setup ERROR | Major | OPEN (filed 2026-10-15, dstdns deep review; amended same day: consumer direction is ephemeral one-lane containers, which removes the race by construction; the exec-mode fix stays required; network attachment for ephemeral lanes is planned in ciu v8 gate environments, SPEC-V8 S7.8.1/S16; secrets stay with ciu) |
 | RG-100 | `[assay.import]` is resolved eagerly: with the runner down, `--list`, host-only lanes and docs lanes all ERROR (`import could not read the judge inventory`) | Minor | OPEN (filed 2026-10-15, dstdns deep review C04 F12) |
 | RG-101 | SPEC.md:126 still calls `bare-host` a built-in name while SPEC.md:263 and RG-78 make it an ordinary name needing `mode = "host"`; the load refusal does not name `run-gate migrate-modes` | Minor | OPEN (filed 2026-10-15, dstdns deep review) |
 ---
@@ -6029,15 +6029,11 @@ Assay's `default_scratch_root()` (`assay/src/assay/runner.py:376`) is `tempfile.
 
 This entry stays OPEN because exec mode remains supported and any concurrent exec consumer still hits it. The lock-free `GIT_CONFIG_COUNT` injection is still the right exec-mode fix; no lock file, no mutual exclusion.
 
-**Gap that blocks the consumer move before ciu v8.** R-07 gives an ephemeral environment `image`, `cgroup_slice`, `forward_env` and `state_root`, but no way to:
-- join a ciu instance's network. Exec mode derives its runner from `ciu.global.toml`; nothing equivalent exists for an ephemeral container's network;
-- receive ciu-resolved secrets (vault-backed `ASK_VAULT` values) other than forwarding host environment values.
+**Where the ephemeral move belongs (corrected 2026-10-15; this replaces the same-day "(a)/(b) decision needed" paragraph).** Joining an ephemeral lane container to a ciu instance network is not a technical gap: Docker can do it. It is a ciu-run-gate integration item that ciu v8 already designs. SPEC-V8 S7.8.1 makes a gate environment a binding consumer (`[resolved.bindings.env.<e>]`, `network = "instance"`), and S16 runs `ephemeral` lanes under the gate slice. That is not built yet.
 
-A ciu-managed consumer whose lanes need the instance's postgres, redis and vault therefore cannot go ephemeral without hand-written docker arguments.
+Secrets are not a run-gate concern and need no hand-off. A lane container is a workload of the ciu instance it tests, and it receives credentials through ciu's secret directives like any other instance service. A test instance bound to another running stack (dstdns D-651 Q9, shareability) is a ciu binding/realization question, and its credentials come with that binding.
 
-The planned owner is ciu v8 `ciu gate` (SPEC-V8 S16; the lane container joins the instance network, CIU-72 family), which is not built. Decision needed from the run-gate/ciu owners:
-- (a) a pre-v8 bridge, e.g. an ephemeral `network` derived from the selected worktree's `ciu.global.toml` / `ciu resolve`, plus a secrets hand-off; or
-- (b) dstdns stays on exec mode, with the `GIT_CONFIG_COUNT` fix, until `ciu gate` ships.
+No action is requested from run-gate beyond the exec-mode fix above. dstdns revisits the ephemeral move once the current tool release wave has landed.
 
 ## RG-100 — `[assay.import]` is resolved eagerly, so a stopped runner breaks `--list` and host-only lanes
 
