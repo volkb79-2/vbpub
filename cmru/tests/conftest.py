@@ -68,6 +68,7 @@ def _neutral_release_controller_provenance(request, monkeypatch):
             "module_path": "/site-packages/cmru/cli.py",
         },
     )
+    yield
 
 
 @pytest.fixture(autouse=True)
