@@ -588,6 +588,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-144 | `ciu resolve --json` and `ciu check --json` in a linked worktree put the `[CIU-117] project-built images use worktree tag suffix ...` notice on STDOUT ahead of the JSON document whenever a selected stack declares Compose `build:` (`engine.scope_worktree_compose_images` bare `print`, `engine.py:1278`), so every JSON consumer fails to parse; a regression of CIU-84's S13.4a sweep | Medium | OPEN (filed 2026-10-15, dstdns P243, ciu 7.16.0) |
 | CIU-146 | `ciu down --profile NAME` (and `--phases`) stops EVERY project container: `action_stop` matches the whole `^{project}-{env}-` prefix and never reads the selection, while `ciu down --help` says `--profile` restricts to the named host profile | High | OPEN. Filed 2026-10-15 from dstdns (deep-review run, main 02ed2c8b), ciu 7.16.0. See the CIU-146 section |
 | CIU-147 | `ciu up` reports success for a stack whose rendered, bind-mounted config file changed, while the running container keeps serving the OLD config: Compose's recreate diff hashes the service definition, not the content of a bind-mounted file, and CIU never forces a recreate or warns | Medium | OPEN |
+| CIU-148 | `docs/SPEC.md` S15.20 and `docs/DESIGN-NOTES.md` D8 cite dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`, which dstdns merged into `docs/RESOURCE-GOVERNANCE.md` (dstdns docs-sync W20) | Low | OPEN |
 
 
 The approved milestone decisions and serial package order are in
@@ -5177,3 +5178,15 @@ It printed `Active service profile(s): apps,worker-io,worker-db,identity,observa
 3. Controlled wrong implementation: `--force-recreate` on every `up` passes oracle 1 and fails oracle 2.
 
 **SPEC owner.** S7.8 (stack deployment) and S8.3 (single-stack deployment).
+
+## CIU-148 — SPEC S15.20 and DESIGN-NOTES D8 cite a dstdns measurement doc that moved
+
+**Mechanism (source).** `docs/SPEC.md` S15.20 ("Full data: dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`") and `docs/DESIGN-NOTES.md` D8 (line 479) point at a dstdns file. dstdns docs-sync W20 merged that file into dstdns `docs/RESOURCE-GOVERNANCE.md` (section 6, dated measurements) and archived the original under `docs/archive/analyses/`.
+
+**Why CIU owns it.** The citations live in CIU's own docs.
+
+**Required contract.** Repoint both citations to dstdns `docs/RESOURCE-GOVERNANCE.md` (sections 4 and 6), or state the data inline.
+
+**Oracles.** `grep -rn KSM-OPTIN-MEASUREMENTS docs` in ciu is empty.
+
+**SPEC owner.** S15.20.
