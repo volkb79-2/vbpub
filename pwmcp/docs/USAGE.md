@@ -32,6 +32,53 @@ library the client install fails with `cli-extended` named as the missing requir
 Do **not** run `playwright install` — browser binaries belong in the pwmcp container,
 not in your project.
 
+## Install a standalone CIU instance
+
+For an independent instance at `/srv/pwmcp-instance`, create the install root
+owned by the user who will run CIU, then use the generated CMRU installer. It verifies
+the versioned release bundle and its SHA-256 sidecar, then installs the bundled
+client and exact Playwright wheel offline:
+
+```bash
+sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /srv/pwmcp-instance
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
+  | XDG_DATA_HOME=/srv python3 - install --scope user
+export PATH="/srv/pwmcp-instance/bin:$PATH"
+cd /srv/pwmcp-instance
+ciu up
+```
+
+For an image that owns `/srv`, the same user-scope command works without the
+ownership setup line. Keep `/srv/pwmcp-instance/bin` on `PATH` in later shells
+to use the `pwmcp` launcher. To update, replace `install` with `update`, add
+the launcher directory to `PATH`, and run `ciu up` again.
+
+The standalone root is independent of a consuming project's CIU root. The
+internal network remains unauthenticated, matching PWMCP's existing internal
+policy. CIU attaches the current devcontainer to that network; agents there can
+use `http://pwmcp:8931/mcp`, while Python clients and the `pwmcp inspect`
+command use `ws://pwmcp:3000/`.
+
+## Inspect a webpage with the client CLI
+
+The release installs a `pwmcp` command alongside the Python client library. It
+opens pages in PWMCP's remote browser, so the devcontainer needs no local
+browser binaries:
+
+```bash
+pwmcp inspect https://example.com
+pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format screenshot --output page.png --full-page
+pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
+```
+
+`--format` accepts `text`, `snapshot`, or `screenshot`. `--wait-until` accepts
+`commit`, `domcontentloaded`, `load`, or `networkidle`. Text and snapshots go to
+stdout unless `--output PATH` is given; screenshots require `--output` and a
+`.png`, `.jpg`, or `.jpeg` suffix. `--wait-for SELECTOR` waits for a visible
+CSS selector, and `--timeout-ms` controls navigation and selector waits.
+
 ## Unified Image: Three Services, One Hostname
 
 The unified image exposes three endpoints from the single service alias `pwmcp`:

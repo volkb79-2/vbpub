@@ -1,4 +1,83 @@
-# PWMCP test consumers
+# PWMCP consumers
+
+## Install and update
+
+The install user needs CIU, Docker access, and Python 3.11 or newer with
+`venv`/`ensurepip` available (`python3-venv` on Debian).
+
+Install the current PWMCP release as an independent CIU root at
+`/srv/pwmcp-instance`. The same user must own the root so `ciu up` can create
+its generated workspace facts and rendered files:
+
+```bash
+sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /srv/pwmcp-instance
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
+  | XDG_DATA_HOME=/srv python3 - install --scope user
+export PATH="/srv/pwmcp-instance/bin:$PATH"
+cd /srv/pwmcp-instance
+ciu up
+```
+
+To update the install, run:
+
+```bash
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
+  | XDG_DATA_HOME=/srv python3 - update --scope user
+export PATH="/srv/pwmcp-instance/bin:$PATH"
+cd /srv/pwmcp-instance
+ciu up
+```
+
+An image that owns `/srv` can omit the first `sudo install` line. A root-owned
+system-scope install is also supported; run CIU as the principal that can
+write the installed root.
+
+For an MDT devcontainer built with PWMCP included, `/srv/pwmcp-instance` and
+the `pwmcp` launcher are already present. Start the instance with `ciu up` in
+that directory. CIU connects the devcontainer to the instance network so an
+agent running there can use `http://pwmcp:8931/mcp`. The native Playwright
+endpoint is `ws://pwmcp:3000/`.
+
+The internal deployment intentionally has no authentication or host-published
+ports, matching PWMCP's existing internal-network policy. Keep consumers on
+the CIU network created for this instance.
+
+## Inspect a webpage
+
+Use the bundled CLI to read a rendered page through PWMCP's managed remote
+browser:
+
+```bash
+pwmcp inspect https://example.com
+pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format screenshot --output page.png --full-page
+pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
+```
+
+`--format` accepts `text`, `snapshot`, and `screenshot`. `--wait-until` accepts
+`commit`, `domcontentloaded`, `load`, and `networkidle`. The default output is
+rendered body text. `snapshot` writes an ARIA snapshot; `screenshot` requires
+`--output PATH` ending in `.png`, `.jpg`, or `.jpeg`. `--wait-for SELECTOR`
+waits for a visible CSS selector; `--timeout-ms` sets the wait timeout.
+
+An MCP client on the same network can use this server entry:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "pwmcp": {
+        "type": "http",
+        "url": "http://pwmcp:8931/mcp"
+      }
+    }
+  }
+}
+```
+
+## Release gates
 
 Run the release-equivalent suite with:
 

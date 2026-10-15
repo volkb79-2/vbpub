@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
 from cli_extended import RegisteredCli
 # Keystone import: the INSTALLED cmru package (CX-D3 / PWMCP-02), not cmru/src.
-from cmru.release import GitHubReleases, publish_versioned
+from cmru.release import GitHubReleases, publish_versioned, write_sha256_sidecar
 
 # Strict prepared-coordinate loader and shared script registration. Insert the script
 # dir explicitly so a bare ``import _vars`` also works when this file is loaded by path.
@@ -34,6 +35,7 @@ from _vars import load_vars, run_script, script_cli  # noqa: E402
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
 DIST_DIR = PWMCP_DIR / "dist"
+GET_PY = PWMCP_DIR / "get.py"
 
 
 def log(msg: str) -> None:
@@ -72,6 +74,11 @@ def _publish(_args: argparse.Namespace) -> None:
         fail("GITHUB_USERNAME and GITHUB_REPO are required")
 
     bundle_path = find_bundle(DIST_DIR, pwmcp_version)
+    if not GET_PY.is_file():
+        fail("pwmcp/get.py is missing; render it with `cmru get-py pwmcp` and commit it first")
+    get_py_asset = DIST_DIR / "get.py"
+    shutil.copy2(GET_PY, get_py_asset)
+    get_py_sidecar = write_sha256_sidecar(get_py_asset)
 
     gh = GitHubReleases(owner, repo, token)
     result = publish_versioned(
@@ -80,6 +87,7 @@ def _publish(_args: argparse.Namespace) -> None:
         version=pwmcp_version,
         asset_path=bundle_path,
         notes=f"pwmcp {pwmcp_version}",
+        extra_assets=[get_py_asset, get_py_sidecar],
         latest_pointer=True,
     )
 
@@ -97,7 +105,7 @@ def build_cli() -> RegisteredCli:
         long_name="stack bundle publish",
         description="Publish the prepared pwmcp stack bundle to GitHub Releases (immutable release plus latest pointer).",
         handler=_publish,
-        preview=lambda _args: "would publish dist/pwmcp-<version>.tar.xz as the immutable pwmcp release and refresh pwmcp-latest",
+        preview=lambda _args: "would publish the PWMCP bundle and get.py (+ SHA256 sidecars) as the immutable release and refresh pwmcp-latest",
     )
 
 

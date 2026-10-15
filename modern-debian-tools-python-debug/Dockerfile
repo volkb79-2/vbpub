@@ -84,6 +84,11 @@ ARG ENABLE_KSM_OPTIN="true"
 ARG KSM_OPTIN_LD_PRELOAD="/usr/local/lib/ksm-optin.so"
 ARG GITHUB_USERNAME
 ARG GITHUB_REPO
+ARG PWMCP_VERSION
+ARG PWMCP_GETPY_URL
+ARG PWMCP_GETPY_SHA256
+ARG PWMCP_CONTRACT_URL
+ARG PWMCP_CONTRACT_SHA256
 ARG CIU_WHEEL_TAG
 ARG CIU_WHEEL_ASSET_NAME
 # CIU_WHEEL_URL: direct download URL for the .whl from the immutable ciu-v<semver> release.
@@ -121,6 +126,7 @@ COPY package-manifests-versioned /tmp/package-manifests-versioned
 COPY customization /tmp/customization
 COPY scripts/manifest_sections.py /tmp/manifest_sections.py
 COPY scripts/mdt_cli.py /tmp/mdt_cli.py
+COPY scripts/install_pwmcp_instance.py /tmp/install_pwmcp_instance.py
 COPY ai-cli-tools.list /tmp/ai-cli-tools.list
 COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py
 
@@ -138,7 +144,8 @@ RUN set -euo pipefail; \
 # unprivileged vscode install layers below.
 RUN set -euo pipefail; \
     chmod -R a+rX /tmp/pip /tmp/requirements; \
-    chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py /tmp/mdt_cli.py
+    chmod a+r /tmp/ai-cli-tools.list /tmp/install_ai_cli_tools.py \
+        /tmp/install_pwmcp_instance.py /tmp/mdt_cli.py
 
 # Core system packages
 RUN set -euo pipefail; \
@@ -738,6 +745,17 @@ ENV VIRTUAL_ENV="/home/vscode/.venv"
 ENV PATH="/home/vscode/.venv/bin:${PATH}"
 
 USER root
+RUN install -d -m 0755 -o vscode -g vscode /srv
+USER vscode
+RUN python3 /tmp/install_pwmcp_instance.py \
+        --getpy-url "${PWMCP_GETPY_URL}" \
+        --getpy-sha256 "${PWMCP_GETPY_SHA256}" \
+        --contract-url "${PWMCP_CONTRACT_URL}" \
+        --contract-sha256 "${PWMCP_CONTRACT_SHA256}" \
+        --version "${PWMCP_VERSION}"
+USER root
+ENV PATH="/srv/pwmcp-instance/bin:${PATH}"
+RUN rm -f /tmp/install_pwmcp_instance.py
 RUN rm -f /tmp/install_ai_cli_tools.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env
 RUN set -euo pipefail; \
         cat > /etc/profile.d/dstdns-venv.sh << 'EOF'

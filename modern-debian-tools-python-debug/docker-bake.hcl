@@ -130,6 +130,23 @@ variable "OCI_CREATED" {
   default = "unknown"
 }
 
+// Commit-pinned PWMCP installer and bundle embedded in the image.
+variable "PWMCP_VERSION" {
+  default = ""
+}
+variable "PWMCP_GETPY_URL" {
+  default = ""
+}
+variable "PWMCP_GETPY_SHA256" {
+  default = ""
+}
+variable "PWMCP_CONTRACT_URL" {
+  default = ""
+}
+variable "PWMCP_CONTRACT_SHA256" {
+  default = ""
+}
+
 // === Devcontainer release metadata =======================================
 // Stable devcontainer release identifier copied into image labels by the resolver.
 variable "DEVCONTAINERS_RELEASE_STABLE" {
@@ -544,6 +561,11 @@ target "base" {
     YQ_VERSION = "${YQ_VERSION}"
     GITHUB_USERNAME = "${GITHUB_USERNAME}"
     GITHUB_REPO = "${GITHUB_REPO}"
+    PWMCP_VERSION = "${PWMCP_VERSION}"
+    PWMCP_GETPY_URL = "${PWMCP_GETPY_URL}"
+    PWMCP_GETPY_SHA256 = "${PWMCP_GETPY_SHA256}"
+    PWMCP_CONTRACT_URL = "${PWMCP_CONTRACT_URL}"
+    PWMCP_CONTRACT_SHA256 = "${PWMCP_CONTRACT_SHA256}"
     CIU_WHEEL_TAG = "${CIU_WHEEL_TAG}"
     CIU_WHEEL_ASSET_NAME = "${CIU_WHEEL_ASSET_NAME}"
     CIU_WHEEL_URL = "${CIU_WHEEL_URL}"

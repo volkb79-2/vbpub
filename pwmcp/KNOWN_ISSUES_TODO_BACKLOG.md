@@ -3,31 +3,29 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-07 (PWMCP-02 fixed).
+Last updated: 2026-10-15 (PWMCP-01 implemented; PWMCP-02 fixed).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
-**Status: OPEN — candidate.**
+**Status: IMPLEMENTED 2026-10-15; release-gate verification pending.**
 
-Consumers sometimes need one page's JavaScript-rendered text or screenshot
-without writing a browser client. Today the `pwmcp` command only exposes
-`doctor` and `contract`; consumers must either call MCP tools directly or
-install the release-bundled Python client plus the matching Playwright package
-and write a `BrowserLease` script. Raw MCP SDK snippets also couple consumers
-to transport and SDK API details.
+Consumers needed one page's JavaScript-rendered text or screenshot without
+writing a browser client. Before this change, the CLI exposed only `doctor` and
+`contract`; consumers had to call MCP tools directly or install the
+release-bundled Python client plus matching Playwright package and write a
+`BrowserLease` script. Raw MCP SDK snippets also coupled consumers to transport
+and SDK API details.
 
-Consider adding a small command such as `pwmcp inspect URL --format text|snapshot|screenshot --output PATH` 
-that connects to
-the existing remote browser and can return rendered body text, an accessibility
-snapshot, or a screenshot. It should reuse the release contract and managed
-browser lease, support an explicit wait condition, clean up the lease on every
-exit path, and avoid requiring local browser binaries. The current use case
-that surfaced this gap was reading a JavaScript-rendered GitHub project page
-from a devcontainer.
+Implemented as a registered `pwmcp inspect URL` verb using `BrowserLease` and
+the matching Playwright package from the release bundle. It returns rendered
+body text, an ARIA snapshot, or a screenshot; supports navigation and visible
+selector waits; and closes the managed lease on exit. It does not require local
+browser binaries. The standalone CMRU install also ships this CLI and makes
+the service available to agents over the existing internal network.
 
-Acceptance should include a documented one-command consumer example and a
-repeatable output mode suitable for saving a page snapshot to a file. This is a
-proposal only; implementation shape and security boundaries still need review.
+The consumer examples, output formats, wait states, standalone install/update
+flow, and internal MCP endpoint are documented in the README and consumer
+guide. PWMCP's release gate has not been run in this work session.
 
 ## PWMCP-02 — Adopt cli-extended (unified adoption, order 5 of 8)
 
@@ -38,7 +36,7 @@ proposal only; implementation shape and security boundaries still need review.
 - **Observed:** the mechanism section below (hand-rolled argparse with a `choices` list, a literal `"0.1.0"` fallback, tracebacks from `contract`/`doctor`, `dependencies = []`, four scripts with their own parsers and a `sys.path.insert` toward `cmru/src`).
 - **Fix:** the client CLI is registered on `CliRegistry` (`contract`, shared `doctor` with `contract`/`playwright`/`skills` checks, `skills` via `register_skills_verbs`), identity through `CliIdentity.resolve` (`client/src/pwmcp_client/VERSION` is the wheel's dynamic version, metadata and file must agree), `unexpected_exceptions="report"`, domain failures as `CliFailure`; `cli-extended>=0.3.0` is declared in `client/pyproject.toml` with its floor reason; the skill moved to package data; surface lifecycle configured in `client/pyproject.toml` (`docs/CLI-SPEC.md`, `docs/cli-review.toml` with 59 cases, `docs/cli-surface.json`); `build-push.py` and the three `scripts/` files register a single-command CLI through `scripts/_vars.py` `script_cli` (`--dry-run`, no `--yes`: non-interactive CMRU steps) and import the installed `cli_extended` and `cmru` (the `sys.path.insert` toward `cmru/src` is gone: cmru's own wheel requires `cli-extended`, so any interpreter that runs these scripts under CMRU has both); `cli-extended` added to pwmcp's `depends_on` in `cmru.orchestration.toml`.
 - **Oracle:** `./run-gate.py r1` PASS at 100% line and branch coverage of the judged targets; `cli-extended audit` 15 pass / 0 fail / 0 manual; `cli-extended surface check` passes; `assert_cli_contract` against the real `python -m pwmcp_client.cli`; plants (exit code, vendoring, `sys.path`, literal version fallback, stale surface) each fail a named test. Intentional behavior changes are listed in the report.
-- **Not covered / follow-ups:** deploy of a released pwmcp (client wheel plus bundle) is the controller's; cmru KI-70 (preflight does not read the nested `client/pyproject.toml`, so the `depends_on` edge is declared by hand); CLI-EXT-32 (audit AC-25 piecewise-path gap). PWMCP-01 (`pwmcp inspect`) is untouched and can now register its verb with the library from the start.
+- **Not covered / follow-ups:** deploy of a released pwmcp (client wheel plus bundle) is the controller's; cmru KI-70 (preflight does not read the nested `client/pyproject.toml`, so the `depends_on` edge is declared by hand); CLI-EXT-32 (audit AC-25 piecewise-path gap). PWMCP-01 is implemented separately in the 2026-10-15 instance work; its release-gate verification is pending.
 
 Original plan (filed 2026-10-05 by the cli-extended unified-adoption program, W10):
 

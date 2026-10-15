@@ -4,6 +4,15 @@
 
 - [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu) installed
 - Docker with Buildx plugin
+- Python 3.11 or newer with `venv` and `ensurepip` (for the bundled client install)
+
+## CMRU standalone install
+
+For an instance that serves the connected devcontainer itself, install the
+versioned release at `/srv/pwmcp-instance` with the generated CMRU installer,
+then run `ciu up` from that directory. The installer verifies the release
+bundle and its checksum before atomically installing it. See the
+[consumer install and update commands](CONSUMERS.md#install-and-update).
 
 ## Internal Mode (Dev / CI — Default)
 

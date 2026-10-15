@@ -4,6 +4,58 @@ This document is the pasteable adoption contract for MDT's host governance and
 managed BuildKit backend. Host setup is intentionally manual because it
 changes systemd, Docker, and cgroup policy.
 
+## PWMCP browser service
+
+The MDT image includes PWMCP at `/srv/pwmcp-instance`. Start it when you need
+the shared remote browser:
+
+```bash
+cd /srv/pwmcp-instance
+ciu up
+```
+
+The connected devcontainer joins the instance network. Configure an MCP client
+inside it with:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "pwmcp": {
+        "type": "http",
+        "url": "http://pwmcp:8931/mcp"
+      }
+    }
+  }
+}
+```
+
+The Playwright WebSocket endpoint is `ws://pwmcp:3000/`. The `pwmcp` CLI can
+inspect rendered pages through that remote browser:
+
+```bash
+pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format screenshot --output page.png --full-page
+```
+
+For the devcontainer that is already running while its image cannot be
+rebuilt, install the current release into `/srv` and start it manually:
+
+```bash
+sudo install -d -m 0755 -o vscode -g vscode /srv/pwmcp-instance
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
+  | XDG_DATA_HOME=/srv python3 - install --scope user
+export PATH="/srv/pwmcp-instance/bin:$PATH"
+cd /srv/pwmcp-instance
+ciu up
+```
+
+To update that install, replace `install` with `update` in the pipeline, add
+the launcher directory to `PATH`, then run `ciu up` again. The instance remains internal-only and unauthenticated,
+matching PWMCP's existing network policy. See
+[PWMCP's consumer guide](../../pwmcp/docs/CONSUMERS.md#install-and-update).
+
 ## Host prerequisite
 
 On the Docker host, review and apply the shipped host configuration:

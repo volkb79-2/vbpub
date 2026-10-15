@@ -59,6 +59,25 @@ The Docker tools are **clients only** — neither image runs a daemon. In the na
 Both families create the `vscode` user when the base does not, so consumers can use
 `remoteUser: "vscode"` with either.
 
+## PWMCP browser service
+
+MDT images include a PWMCP instance installed at `/srv/pwmcp-instance` and the
+`pwmcp` client CLI on `PATH`. Start the service from its CIU root when an agent
+or project needs browser automation:
+
+```bash
+cd /srv/pwmcp-instance
+ciu up
+pwmcp inspect https://example.com --format snapshot
+```
+
+Agents in the connected devcontainer can use the MCP endpoint
+`http://pwmcp:8931/mcp`; Playwright clients use `ws://pwmcp:3000/`. The service
+uses PWMCP's existing internal policy: no authentication and no host-published
+ports. The generated installer and exact client wheels are verified and
+versioned with PWMCP. See [MDT's PWMCP consumer guide](docs/CONSUMERS.md#pwmcp-browser-service)
+and [PWMCP's install and design notes](../pwmcp/README.md#standalone-instance-for-mdt-and-other-devcontainers).
+
 ## Tags and variants
 
 ```text

@@ -128,6 +128,257 @@
       "signature": "sha256:c3b7da443f20feb7c1e00e5ecfddf4616eb7ea17e30a027810a30fb5ed32a4f4"
     },
     {
+      "id": "case:route:entrypoint:pwmcp/inspect/argument-shape/argument:route:entrypoint:pwmcp/inspect/url",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:pwmcp/inspect/url"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:pwmcp/inspect/url"
+      },
+      "signature": "sha256:1f43d8cfc78ca9d53f6680bcc9c67e686cc3047851c82af2ad876fdccc27c310"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:pwmcp/inspect/url",
+        "option:route:entrypoint:pwmcp/inspect/--contract",
+        "option:route:entrypoint:pwmcp/inspect/--format",
+        "option:route:entrypoint:pwmcp/inspect/--wait-until",
+        "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
+        "option:route:entrypoint:pwmcp/inspect/--full-page"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:pwmcp/inspect/--contract",
+          "option:route:entrypoint:pwmcp/inspect/--format",
+          "option:route:entrypoint:pwmcp/inspect/--wait-until",
+          "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
+          "option:route:entrypoint:pwmcp/inspect/--full-page"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:pwmcp/inspect/url": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:pwmcp/inspect/url"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:bf464ec5a4d6e5c5095f4892b7ca9773db133d92b864bd5e8cec71bbbd092c4a"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "text",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
+      },
+      "signature": "sha256:38c1a425d6bd4c6b34f7decab05a6a66c085151cbacde9c50e7f8b1a8e786211"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/20ccb3d1c6",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "snapshot",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
+      },
+      "signature": "sha256:a5978cd6b93e04da4c8a81ecf411bc6fc3ca5d7b04fa7ef6eb4864c23ac7f062"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/cd172ffb54",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "screenshot",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
+      },
+      "signature": "sha256:67fec2ca65df8ba13aefb8f8f16dbbd0574012e29e9c29de4616da1cf8cb0816"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/528dd71551",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--wait-until"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "networkidle",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--wait-until"
+      },
+      "signature": "sha256:038dd7e39b04f65cbc29d7409a23f468c6929ca7964dd9beb4e47d3e3046c1f9"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/575b2613ea",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--wait-until"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "domcontentloaded",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--wait-until"
+      },
+      "signature": "sha256:d1783721db53d6f012ae588517690c3529a26070aad8004cf6a8ca97c4a08473"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/5ea9c58673",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--wait-until"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "commit",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--wait-until"
+      },
+      "signature": "sha256:d32196017773419319fb63c02441cd7b927ce6d52c93b1cc1a08d41fc29965fa"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/a4fcee2b70",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--wait-until"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "load",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--wait-until"
+      },
+      "signature": "sha256:b5099a517625e86bf0fde9f3d7a9b8227dc4a8e53c7772cb0bf8999343896622"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--contract/--contract",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--contract"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--contract",
+        "spelling": "--contract"
+      },
+      "signature": "sha256:970b22f0840b7fbd57956271e925531917342443e5e7fd243878252aab79eee4"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:1f2caa03269f325617b69b0ec346592bc877331f2ce9ce896f62b2ba7a9bc984"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--format/--format",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--format",
+        "spelling": "--format"
+      },
+      "signature": "sha256:1205ae0ec91535292ce8c6f42e70a2a67b71c5a5e51a66ddb2d214a1d44d5b30"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--full-page/--full-page",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--full-page"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--full-page",
+        "spelling": "--full-page"
+      },
+      "signature": "sha256:2ba90037d46ff98ce4d9a407a22cdf25a1f2a3dfbbedb24795630f2b3504e958"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--json"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:4e7b74620047c395a39709fbf1295774e8e2190cf1651538671df1d86fa95ef8"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--output/--output",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--output"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--output",
+        "spelling": "--output"
+      },
+      "signature": "sha256:2b86fb2da427db8248262d9a43ec9722c426b1993232d5f9aff7c745ce785a5d"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--timeout-ms/--timeout-ms",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--timeout-ms"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
+        "spelling": "--timeout-ms"
+      },
+      "signature": "sha256:9a4f9e0d5d493caccf9ed33e43fb3ce44aff2bd7ca40aa2c93360a14a481e728"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--wait-for/--wait-for",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--wait-for"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--wait-for",
+        "spelling": "--wait-for"
+      },
+      "signature": "sha256:2bc47db26ec82ed5c1b5ff94befa43178746513aa943a3e1665c4b49e95010be"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--wait-until/--wait-until",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--wait-until"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--wait-until",
+        "spelling": "--wait-until"
+      },
+      "signature": "sha256:9200057479e4fe21594325ee014371c99a67908d401e759b99331122657a44e6"
+    },
+    {
       "id": "case:route:entrypoint:pwmcp/skills/check/exclusive-conflict/target/option:route:entrypoint:pwmcp/skills/check/--dest/option:route:entrypoint:pwmcp/skills/check/--harness",
       "kind": "exclusive-conflict",
       "members": [
@@ -1101,6 +1352,385 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "check that the pwmcp contract is reachable and the installed Playwright matches it",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--contract",
+          "choices": null,
+          "const": null,
+          "default": {
+            "kind": "suppressed"
+          },
+          "default_present": true,
+          "description": "pwmcp contract URL or JSON file",
+          "dest": "contract",
+          "effective_default": "http://pwmcp:3000/contract",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--contract"
+          ],
+          "help_group": "CONTRACT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--contract",
+          "kind": "option",
+          "metavar": "URL_OR_FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "http://pwmcp:3000/contract"
+          },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": true,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "global",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "absolute HTTP or HTTPS page URL to open in the remote browser",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:pwmcp/inspect/url",
+          "kind": "argument",
+          "metavar": "URL",
+          "minimum_values": 1,
+          "name": "url",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "inspect"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--format",
+          "choices": [
+            "text",
+            "snapshot",
+            "screenshot"
+          ],
+          "const": null,
+          "default": "text",
+          "default_present": true,
+          "description": "output rendered body text, an ARIA snapshot, or a PNG/JPEG screenshot",
+          "dest": "format",
+          "effective_default": "text",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--format"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--format",
+          "kind": "option",
+          "metavar": "FORMAT",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "text",
+              "snapshot",
+              "screenshot"
+            ],
+            "default": "text"
+          },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--output",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "write the result to a file instead of stdout (required for screenshots)",
+          "dest": "output",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--output"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--output",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--wait-until",
+          "choices": [
+            "commit",
+            "domcontentloaded",
+            "load",
+            "networkidle"
+          ],
+          "const": null,
+          "default": "load",
+          "default_present": true,
+          "description": "navigation condition before inspection",
+          "dest": "wait_until",
+          "effective_default": "load",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--wait-until"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--wait-until",
+          "kind": "option",
+          "metavar": "STATE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "commit",
+              "domcontentloaded",
+              "load",
+              "networkidle"
+            ],
+            "default": "load"
+          },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--wait-for",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "CSS selector that must become visible before inspection",
+          "dest": "wait_for",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--wait-for"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--wait-for",
+          "kind": "option",
+          "metavar": "SELECTOR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--timeout-ms",
+          "choices": null,
+          "const": null,
+          "default": 30000,
+          "default_present": true,
+          "description": "navigation and selector timeout in milliseconds",
+          "dest": "timeout_ms",
+          "effective_default": 30000,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--timeout-ms"
+          ],
+          "help_group": "WAIT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
+          "kind": "option",
+          "metavar": "MILLISECONDS",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 30000,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--full-page",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "capture the full scrollable page when taking a screenshot",
+          "dest": "full_page",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--full-page"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--full-page",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "inspect a rendered webpage through the remote PWMCP browser",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:pwmcp/inspect",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "inspect"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "inspect"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "inspect a rendered webpage through the remote PWMCP browser",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

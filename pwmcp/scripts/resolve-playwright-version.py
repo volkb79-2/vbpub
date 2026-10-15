@@ -60,6 +60,7 @@ TOML_OVERRIDE_FILE = PWMCP_DIR / "ciu.toml.j2"
 BAKE_FILE = PWMCP_DIR / "docker-bake.hcl"
 RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 CONTRACT_FILE = PWMCP_DIR / "pwmcp.contract.json"
+CLIENT_REQUIREMENTS_FILE = PWMCP_DIR / "client" / "requirements-runtime.txt"
 DOCKERFILE = PWMCP_DIR / "containers" / "pwmcp" / "Dockerfile"
 LIGHTHOUSE_PACKAGE_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package.json"
 LIGHTHOUSE_LOCK_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package-lock.json"
@@ -396,6 +397,50 @@ def update_contract(path: Path, *, release: str, playwright_version: str) -> Non
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 
 
+def update_client_runtime_requirements(path: Path, playwright_version: str) -> None:
+    """Keep the installable client's Playwright dependency at the contract version."""
+    lines = [
+        line.partition("#")[0].strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.partition("#")[0].strip()
+    ]
+    cli_requirements = [
+        line for line in lines
+        if re.fullmatch(r"cli[-_.]extended\s*>=\s*\d+(?:\.\d+)*", line, re.IGNORECASE)
+    ]
+    if len(cli_requirements) != 1:
+        fail(
+            f"{path.name} must declare exactly one cli-extended minimum requirement "
+            "before the client dependency can be refreshed"
+        )
+    path.write_text(
+        "# CMRU checks this exact Playwright pin against pwmcp.contract.json.\n"
+        f"{cli_requirements[0]}\n"
+        f"playwright=={playwright_version}\n",
+        encoding="utf-8",
+    )
+
+
+def check_client_runtime_requirements(playwright_version: str) -> None:
+    lines = [
+        line.partition("#")[0].strip()
+        for line in CLIENT_REQUIREMENTS_FILE.read_text(encoding="utf-8").splitlines()
+        if line.partition("#")[0].strip()
+    ]
+    cli_requirements = [
+        line for line in lines
+        if re.fullmatch(r"cli[-_.]extended\s*>=\s*\d+(?:\.\d+)*", line, re.IGNORECASE)
+    ]
+    if len(cli_requirements) != 1 or lines != [
+        cli_requirements[0] if cli_requirements else "",
+        f"playwright=={playwright_version}",
+    ]:
+        fail(
+            f"{CLIENT_REQUIREMENTS_FILE.relative_to(PWMCP_DIR)} must declare one "
+            f"cli-extended minimum followed by playwright=={playwright_version}"
+        )
+
+
 # Non-auto-updated package pins: read from bake file to preserve current values.
 def _read_bake_var(name: str) -> str:
     """Read a single variable default from docker-bake.hcl."""
@@ -504,6 +549,7 @@ def check_committed_inputs() -> None:
             f"{CONTRACT_FILE.name} playwright.python={contract_playwright.get('python')!r} "
             f"does not match committed Playwright version {playwright_version!r}"
         )
+    check_client_runtime_requirements(playwright_version)
     expected_protocol = ".".join(playwright_version.split(".")[:2])
     if contract_playwright.get("protocol") != expected_protocol:
         fail(
@@ -647,6 +693,9 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
 
     log(f"Updating {CONTRACT_FILE.name}...")
     update_contract(CONTRACT_FILE, release=pwmcp_version, playwright_version=agreed_version)
+
+    log(f"Updating {CLIENT_REQUIREMENTS_FILE.relative_to(PWMCP_DIR)}...")
+    update_client_runtime_requirements(CLIENT_REQUIREMENTS_FILE, agreed_version)
 
     log(f"Writing {RELEASE_VARS_FILE.name}...")
     pw_mcp_ver = _read_bake_var("PLAYWRIGHT_MCP_VERSION")
