@@ -70,7 +70,11 @@ supplies the whole-source line-and-branch qualification.
    `cmru-v*` tag. It prints exact commands to install both wheels. The wheel SHA-256 is
    printed in the log and is needed for the tester image below. The default
    `release` mode still refuses when no `cli-extended` release exists; source
-   mode is an explicit bootstrap choice, never an automatic fallback.
+   mode is an explicit bootstrap choice, never an automatic fallback. Before
+   building, the script checks the configured wheel-builder image's dedicated
+   label; a missing or mismatched image is built from `wheel-builder/Dockerfile`
+   on Microsoft's upstream Python base. A local MDT image tag cannot be reused
+   as the builder by accident.
 
 2. **Build the first tester image from source inputs.** Copy the one
    `cli_extended-*.whl` produced above into the git-ignored
@@ -107,24 +111,28 @@ supplies the whole-source line-and-branch qualification.
    CMRU's declared `cli-extended>=0.3.0` floor:
 
    ```bash
-   cmru release cli-extended --set-version 0.3.0
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:bootstrap)" \
+     cmru release cli-extended --set-version 0.3.0
    ```
 
    This release is gated with the source-built `cli-extended` wheel above. The
    source suffix distinguishes the bootstrap wheel from the stable artifact.
+   The command pins the image built in step 2 even if you run the code blocks
+   from different shells.
 
 4. **Release CGProfile and then Run-Gate with the source-bootstrapped CMRU
    controller.** CGProfile uses the candidate Run-Gate wheel and tester image
    from step 2. The graph places Run-Gate after CGProfile because Run-Gate's
-   R2 qualification uses CGProfile's observer. For the Run-Gate release, its CMRU gate rebuilds the candidate
-   wheel and tester image from the exact release transaction checkout. Set the
-   upstream base and explicit source mode so the gate does not try to fetch a
-   first-party image or cli-extended release:
+   R2 qualification uses CGProfile's observer. For the Run-Gate release, its
+   CMRU gate rebuilds the candidate wheel and tester image from the exact
+   release transaction checkout. Use the upstream base explicitly. The stable
+   `cli-extended` release now exists, so keep the tester builder's default
+   digest-pinned release mode; do not switch back to the source bootstrap wheel:
 
    ```bash
-   cmru release cgroup-profiler --set-version 1.0.0
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:bootstrap)" \
+     cmru release cgroup-profiler --set-version 1.0.0
    RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie \
-   RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE=source \
      cmru release run-gate-project --set-version 24.0.0
    ```
 
@@ -160,18 +168,21 @@ supplies the whole-source line-and-branch qualification.
    whole-source R2 as deferred, with an explicit post-release lane:
 
    ```bash
-   cmru release cmru --set-version 0.1.0
-   cd cmru
-   run-gate assay-first-release-r2
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:run-gate-release)" \
+     cmru release cmru --set-version 0.1.0
    ```
 
-   Run the R2 campaign against the newly released source commit; it declares
-   every production module and uses no prior tag. Then return to the repository
-   root and release the remaining changed projects in graph order, for example
-   `cmru release ciu,assay`. MDT is last because its published image stages the
-   first-party wheels from earlier levels. Each normal transaction remains one
-   project at a time, with CMRU responsible for tagging, building, publishing,
-   and promoting each release.
+   The post-release R2 follow-up declares every production module and uses no
+   prior tag. It also needs the CGProfile host observer to be deployed and
+   reachable. After releasing CIU, deploy the released CGProfile image through
+   the declared CIU workflow and verify the observer before running
+   `run-gate assay-first-release-r2` from `cmru/`. This qualification can stay
+   deferred until that deployment exists; do not interpret the provisional
+   release gate as an R2 result. Release the remaining projects in graph order;
+   MDT is last because its published image stages the first-party wheels from
+   earlier levels. Keep each release transaction scoped to one project so
+   CMRU can verify the newly published prerequisites before moving to its
+   consumers.
 
 ## Bootstrap boundaries
 

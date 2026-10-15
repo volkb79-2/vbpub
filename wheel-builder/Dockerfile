@@ -25,6 +25,8 @@
 ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie
 FROM ${WHEEL_BUILDER_BASE_IMAGE}
 
+LABEL org.vbpub.wheel-builder.kind="python-wheel-builder"
+
 USER root
 
 # setuptools-scm asks Git for the source version inside the builder. Keep this

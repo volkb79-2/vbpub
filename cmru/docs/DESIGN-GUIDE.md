@@ -260,7 +260,9 @@ release. `build-initial-standalone.sh` has an explicit source mode that builds
 `cli-extended` from the same checkout at CMRU's declared runtime floor and
 marks it `+bootstrap.source`. The standalone wheel-builder uses Microsoft's
 upstream Python base, so this bootstrap does not depend on MDT's published
-image. In a checkout with no CMRU tag, the operator supplies a temporary local
+image. The bootstrap verifies the builder image's dedicated label and
+rebuilds a missing or mismatched tag from this Dockerfile, rather than
+mistaking an unrelated local tag for the builder. In a checkout with no CMRU tag, the operator supplies a temporary local
 version for the bootstrap controller; that version is not a release tag or
 published artifact. The graph keeps actual package and release-gate prerequisites separate
 from the source-built CMRU controller used to run other projects' release

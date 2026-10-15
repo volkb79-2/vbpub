@@ -41,8 +41,9 @@ SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
 
 The source mode is explicit, creates a `+bootstrap.source` library wheel at
 CMRU's declared dependency floor, and never activates as a fallback. The
-temporary CMRU version covers a checkout with no CMRU tag. The
-wheel-builder image is built from Microsoft's upstream Python base when absent.
+temporary CMRU version covers a checkout with no CMRU tag. The script verifies
+the wheel-builder image label and rebuilds its configured tag from Microsoft's
+upstream Python base if the image is absent or belongs to another build.
 The [zero-release procedure](../../docs/BOOTSTRAP-FROM-ZERO.md) covers the
 tester image and project release order after this bootstrap.
 

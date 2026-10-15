@@ -39,9 +39,8 @@ registry = ["ghcr.io"]
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
 [orchestration]
-# LEVELS (`cmru dependencies` prints the derived level table):
-#   L0 projects with no first-party release prerequisite
-#   | L1 cmru and nyxloom | L2 modern-debian-tools-python-debug.
+# The generated dependency graph above is the current level table; do not keep
+# a second manually-maintained level summary here.
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.

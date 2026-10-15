@@ -95,6 +95,10 @@ SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
 ```
 
 The image is defined by [`wheel-builder/Dockerfile`](../wheel-builder/Dockerfile).
+The bootstrap script checks its `org.vbpub.wheel-builder.kind` label and
+rebuilds the configured image tag from that Dockerfile when the tag is missing
+or points to a different image; an MDT devcontainer tag cannot silently stand
+in for the source-built wheel builder.
 For the complete zero-release sequence and dependency order, see
 [`docs/BOOTSTRAP-FROM-ZERO.md`](../docs/BOOTSTRAP-FROM-ZERO.md).
 The script prints the manual virtual-environment install commands (cli-extended wheel

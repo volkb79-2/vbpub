@@ -50,13 +50,29 @@ if [[ -z "${cgroup_parent}" ]]; then
     exit 2
 fi
 
-if ! docker image inspect "${builder_image}" >/dev/null 2>&1; then
-    echo "[INFO] Building ${builder_image} from wheel-builder/Dockerfile" >&2
-    docker build \
+builder_kind=""
+if docker image inspect "${builder_image}" >/dev/null 2>&1; then
+    builder_kind="$(docker image inspect \
+        --format '{{index .Config.Labels "org.vbpub.wheel-builder.kind"}}' \
+        "${builder_image}" 2>/dev/null || true)"
+fi
+if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
+    echo "[INFO] Building ${builder_image} from wheel-builder/Dockerfile (image label is ${builder_kind:-missing})" >&2
+    docker build --pull \
         --cgroup-parent "${cgroup_parent}" \
         -f "${repo_root}/wheel-builder/Dockerfile" \
         -t "${builder_image}" \
         "${repo_root}"
+    builder_kind="$(docker image inspect \
+        --format '{{index .Config.Labels "org.vbpub.wheel-builder.kind"}}' \
+        "${builder_image}" 2>/dev/null)" || {
+        echo "[ERROR] cannot verify the rebuilt wheel-builder image ${builder_image}" >&2
+        exit 2
+    }
+    if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
+        echo "[ERROR] rebuilt image ${builder_image} has unexpected wheel-builder label ${builder_kind:-missing}" >&2
+        exit 2
+    fi
 fi
 
 # cmru depends on the cli-extended WHEEL (KI-51 / CX-D1: never vendored, never from
