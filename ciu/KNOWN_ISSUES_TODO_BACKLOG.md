@@ -586,6 +586,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-135 | Managed worktree overlay recovery, reset retries, network ownership, and explicit `ensure` constraints can be ambiguous or silently ignored | Medium | OPEN — implementation now folds Review 05 recovery, startup, root-selection, and final-network-check findings; registered gate and final review remain |
 | CIU-136 | `ciu resolve` does not report live attached networks, aliases, derived URLs, or a nonzero status for an absent service | Medium | OPEN — extend the existing service-discovery follow-up from CIU-118 / nyxloom NL-38 |
 | CIU-139 | `ciu resolve --root-folder P` (and likely `ciu exec`) does not seed its environment from P's instance record, so an unprimed shell fails with missing `INSTANCE_ID`/`REPO_ROOT`/... while `ciu env print --root-folder P` succeeds | Medium | OPEN (filed 2026-10-15, dstdns deep review C04 F06) |
+| CIU-142 | A managed worktree that is rebased keeps its spent `fork_point_sha` in `ciu.worktree-instance.json`, and no `ciu worktree` verb re-records it, so run-gate's derived base (SPEC R-35a: merge-base must equal the recorded fork point) refuses `NOT_RUN no-base` and every later gate needs a hand-passed `--base` | Medium | OPEN (filed 2026-10-15, dstdns P242, ciu 7.16.0) |
 
 
 The approved milestone decisions and serial package order are in
@@ -5307,3 +5308,26 @@ fails with `Missing required environment values ... CONTAINER_UID, DOCKER_GID, D
 **Oracles.** Unprimed-shell `resolve --root-folder P` returns P's identities; run from an unrelated cwd it still resolves P (a cwd-seeded implementation fails this); with the record deleted it refuses with the remedy.
 
 **SPEC owner.** S3.1b (instance record), the CIU-118 resolve/exec contract.
+
+## CIU-142 — no way to re-record a managed worktree's fork point after a legitimate rebase
+
+**Status:** OPEN. Filed 2026-10-15 from dstdns package P242 (a 2026-10-04 branch rebased onto current main), ciu 7.16.0 with the run-gate 24.0.0 candidate. Severity Medium. Not a duplicate of CIU-106 or the other fork-point entries, which cover creation and repair, not rebase. Allocated after checking `cmru-release-readiness-20261015`, which already uses CIU-140 and CIU-141.
+
+**Observed.** The worktree record says `fork_point_sha f20fde93...`. After `git rebase main`, `merge-base(main, HEAD)` is `305d8519`. `run-gate gate --worktree "$PWD"` then refuses with `NOT_RUN no-base`, because run-gate SPEC R-35a derives a worktree base only when the merge-base EQUALS the record's fork point. That refusal is correct: a stale record must not choose a base silently. But the only remedy is a hand-passed `--base <sha>` on every later gate invocation. `ciu worktree --help` lists create/adopt/ensure/rm/list/inspect/lease/branches/reap/up/exec; `ensure` repairs from the saved allocation commit and does not re-fork.
+
+**Why ciu owns it.** The record is ciu's (S6 worktree lifecycle). run-gate only reads it, and it is right to fail closed.
+
+**Proposed contract.** A verb such as `ciu worktree refork [<path>] [--onto <trunk-ref>]`:
+- It refuses unless the configured trunk is an ancestor of HEAD.
+- It refuses on a dirty tree.
+- It records the new fork point (`merge-base(trunk, HEAD)`) with a timestamp and the previous value.
+- It is idempotent.
+- Optionally, `ciu worktree inspect` flags a record whose fork point is no longer the merge-base, naming the verb.
+
+**Oracles.**
+- A fixture worktree, rebased onto a newer trunk: after `refork`, run-gate derives the base without `--base`.
+- `refork` refuses when trunk is not an ancestor (a branch that diverged, not one that was rebased).
+- `inspect` reports the stale record before `refork` and a clean record after it.
+- A wrong implementation that writes `HEAD` as the fork point fails the first oracle (the base would equal HEAD, so the changed-line diff would be empty).
+
+**SPEC owner.** S6 worktree lifecycle (instance record); consumer contract run-gate R-35a.
