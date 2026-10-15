@@ -161,6 +161,34 @@ When installing a locally built wheel for inspection or a bounded local test,
 use the estate venv: `/home/vscode/.venv/bin/python -m pip install ...`.
 `/home/vscode/.local` is not the wheel installation environment.
 
+## Host-side Python environment
+
+Before running host-side Python commands or a `bare-host` gate controller from
+the devcontainer, activate the estate venv:
+
+```bash
+. /home/vscode/.venv/bin/activate
+command -v python3   # must resolve inside /home/vscode/.venv/bin
+```
+
+An activated venv changes `PATH`; it does not change the interpreter a parent
+process is already running. A child launched as `python3` resolves that name
+from its inherited `PATH`, so a CMRU launcher running from the venv can still
+start a `run-gate.toml` child with `/usr/local/bin/python3` if the venv is not
+active or is later in `PATH`. Use the venv interpreter for host-side commands
+whose dependencies are installed there. If the child command names
+`/usr/local/bin/python3` explicitly, activation cannot redirect it; change the
+command to use the declared environment's interpreter.
+
+Python's `-I` flag does not prevent a venv interpreter from loading that venv's
+installed packages. It does ignore `PYTHONPATH` and user-site packages, so an
+isolated child must use the venv interpreter itself when it needs packages
+installed in `/home/vscode/.venv` (such as `cli-extended`).
+
+This applies to host-side orchestration and `bare-host` steps only. Test suites
+still run in their declared gate container; `tester-unified` uses
+`/opt/tester-venv/bin/python`, not the devcontainer's estate venv.
+
 ## Host cgroup placement for spawned containers
 This host runs real production workloads (game servers, edge/site infra)
 alongside dev/test/build work, so any container you or a tool starts must be
