@@ -56,6 +56,9 @@ services:
       PWMCP_BROWSER_MODE: "{{ pwmcp.unified.browser_mode }}"
       PWMCP_RUN_SERVER_PORT: "{{ pwmcp.unified.ws_port }}"
       PWMCP_RUN_SERVER_UPSTREAM_PORT: "{{ pwmcp.run_server.upstream_port }}"
+      # Validate the external Host before proxying, then use loopback Host and
+      # Origin for the run-server's private upstream connection.
+      PWMCP_RUN_SERVER_ALLOWED_HOSTS: "{{ pwmcp.unified.name }}:{{ pwmcp.unified.ws_port }},{{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}:{{ pwmcp.unified.ws_port }}{% for alias in pwmcp.consumer.aliases %},{{ alias }}:{{ pwmcp.unified.ws_port }}{% endfor %}{% if pwmcp.external.enabled and pwmcp.external.unified_host %},{{ pwmcp.external.unified_host }}{% endif %}"
       PWMCP_RUN_SERVER_ADMIN_PORT: "{{ pwmcp.run_server.admin_port }}"
       PWMCP_RUN_SERVER_DEFAULT_LEASE_S: "{{ pwmcp.run_server.default_lease_s }}"
       PWMCP_RUN_SERVER_MAX_LEASE_S: "{{ pwmcp.run_server.max_lease_s }}"

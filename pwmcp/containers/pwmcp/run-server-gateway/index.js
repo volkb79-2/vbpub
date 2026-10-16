@@ -27,6 +27,14 @@ const idleRecycle = positiveInt("PWMCP_RUN_SERVER_IDLE_RECYCLE_S", 30);
 if (defaultLease > maxLease) throw new Error("default lease exceeds maximum lease");
 
 const contractPath = process.env.PWMCP_CONTRACT_PATH || "/opt/pwmcp/contract.json";
+const allowedHosts = new Set([
+  `localhost:${publicPort}`,
+  `127.0.0.1:${publicPort}`,
+  ...(process.env.PWMCP_RUN_SERVER_ALLOWED_HOSTS || "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean),
+]);
 const sessions = new Map();
 let recycleTimer = null;
 
@@ -105,6 +113,11 @@ function requestHandler(req, res) {
 
 const gateway = http.createServer(requestHandler);
 gateway.on("upgrade", (req, client, head) => {
+  const requestHost = String(req.headers.host || "").trim().toLowerCase();
+  if (!allowedHosts.has(requestHost)) {
+    client.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+    return;
+  }
   if (sessions.size >= maxClients) {
     client.end("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
     return;
@@ -131,8 +144,12 @@ gateway.on("upgrade", (req, client, head) => {
   upstream.once("connect", () => {
     let upgrade = `${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`;
     for (let index = 0; index < req.rawHeaders.length; index += 2) {
-      upgrade += `${req.rawHeaders[index]}: ${req.rawHeaders[index + 1]}\r\n`;
+      const headerName = req.rawHeaders[index];
+      if (headerName.toLowerCase() === "host" || headerName.toLowerCase() === "origin") continue;
+      upgrade += `${headerName}: ${req.rawHeaders[index + 1]}\r\n`;
     }
+    upgrade += `Host: 127.0.0.1:${upstreamPort}\r\n`;
+    upgrade += `Origin: http://127.0.0.1:${upstreamPort}\r\n`;
     upstream.write(`${upgrade}\r\n`);
     if (head.length) upstream.write(head);
     client.pipe(upstream).pipe(client);
@@ -167,8 +184,9 @@ gateway.listen(publicPort, "0.0.0.0", () => {
 admin.listen(adminPort, "0.0.0.0", () => process.stdout.write(`[gateway] admin port=${adminPort}\n`));
 
 function shutdown() {
-  if (recycleTimer) clearTimeout(recycleTimer);
   for (const session of [...sessions.values()]) closeSession(session, "shutdown");
+  if (recycleTimer) clearTimeout(recycleTimer);
+  recycleTimer = null;
   gateway.close();
   admin.close();
 }

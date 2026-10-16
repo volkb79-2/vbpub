@@ -47,6 +47,11 @@ identity and internal network, then start the instance with `ciu up`. Later
 starts and updates use the existing generated facts. CIU joins the devcontainer
 to the instance network so an agent running there can use
 `http://pwmcp:8931/mcp`. The native Playwright endpoint is `ws://pwmcp:3000/`.
+The `pwmcp inspect` CLI uses that native endpoint; for example,
+`pwmcp inspect https://example.com` reads the rendered page from the service browser. An agent
+can use the MCP endpoint at the same time through its MCP client configuration
+below. The internal service remains unauthenticated for any process on the
+shared CIU network, matching PWMCP's existing internal policy.
 
 The internal deployment intentionally has no authentication or host-published
 ports, matching PWMCP's existing internal-network policy. Keep consumers on

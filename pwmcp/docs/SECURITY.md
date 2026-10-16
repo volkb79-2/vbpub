@@ -33,6 +33,14 @@ from Compose `ports` and Traefik routes. Anyone on the internal network can
 close sessions or restart the run-server, so it must remain inside that trust
 boundary. Client-requested leases cannot raise the server-configured maximum.
 
+The port 3000 gateway checks the requested `Host` against the CIU-derived
+service and consumer alias names before it opens the loopback upstream
+connection. It also includes the configured external hostname when external
+routing is enabled. Once accepted, the gateway rewrites `Host` and `Origin` to
+the loopback upstream values required by Playwright. The allowlist is a
+DNS-rebinding safeguard, not authentication; access from the trusted internal
+network remains unauthenticated as before.
+
 ## External Mode Access Control
 
 In external mode, access is controlled by:

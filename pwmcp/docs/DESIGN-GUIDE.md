@@ -32,6 +32,19 @@ local image and pulls only when the host cache lacks it. This keeps cold
 deployments self-provisioning while allowing a locally built, not-yet-published
 image to serve the standalone acceptance run.
 
+## Run-server host validation
+
+The run-server gateway listens on the internal service port while Playwright's
+actual server stays on loopback. It accepts the service name, CIU container
+name, configured consumer aliases, and (when external routing is enabled) the
+configured public hostname. Unknown `Host` values are rejected before an
+upstream connection is opened. For accepted requests, the gateway rewrites
+`Host` and `Origin` to the loopback upstream address because Playwright rejects
+the container DNS name even though the gateway deliberately exposes that
+service to its CIU network. Rewriting only after the allowlist check retains
+hostname validation without changing the established unauthenticated,
+internal-network access policy. See [security controls](SECURITY.md#internal-mode-access-control).
+
 ## Client dependency projections
 
 The client wheel declares its runtime dependencies directly in
