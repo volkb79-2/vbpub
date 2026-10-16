@@ -16,6 +16,8 @@ curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
   | XDG_DATA_HOME=/srv python3 - install --scope user
 export PATH="/srv/pwmcp-instance/bin:$PATH"
 cd /srv/pwmcp-instance
+# First run only: record this devcontainer's CIU identity and network.
+ciu env generate
 ciu up
 ```
 
@@ -35,10 +37,12 @@ system-scope install is also supported; run CIU as the principal that can
 write the installed root.
 
 For an MDT devcontainer built with PWMCP included, `/srv/pwmcp-instance` and
-the `pwmcp` launcher are already present. Start the instance with `ciu up` in
-that directory. CIU connects the devcontainer to the instance network so an
-agent running there can use `http://pwmcp:8931/mcp`. The native Playwright
-endpoint is `ws://pwmcp:3000/`.
+the `pwmcp` launcher are already present. On the first start, run
+`ciu env generate` in that directory to record the devcontainer's machine
+identity and internal network, then start the instance with `ciu up`. Later
+starts and updates use the existing generated facts. CIU joins the devcontainer
+to the instance network so an agent running there can use
+`http://pwmcp:8931/mcp`. The native Playwright endpoint is `ws://pwmcp:3000/`.
 
 The internal deployment intentionally has no authentication or host-published
 ports, matching PWMCP's existing internal-network policy. Keep consumers on

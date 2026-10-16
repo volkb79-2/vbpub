@@ -12,6 +12,7 @@ ROOT_LINKS = {
     "ciu.global.defaults.toml.j2": "standalone/ciu.global.defaults.toml.j2",
     "ciu.compose.yml.j2": "ciu.compose.yml.j2",
     "ciu.defaults.toml.j2": "ciu.defaults.toml.j2",
+    "ciu.toml.j2": "standalone/ciu.install.override.toml.j2",
 }
 
 
