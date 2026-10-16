@@ -318,15 +318,15 @@ Applied in both modes:
 Versioned bundles are published to GitHub Releases under the `pwmcp-v<version>` tag:
 
 ```
-pwmcp-v1.63.0-r3
-  pwmcp-1.63.0-r3.tar.xz          ← the deployment bundle
-  pwmcp-1.63.0-r3.tar.xz.sha256   ← sha256sum-verifiable sidecar
+pwmcp-v1.63.0-r4
+  pwmcp-1.63.0-r4.tar.xz          ← the deployment bundle
+  pwmcp-1.63.0-r4.tar.xz.sha256   ← sha256sum-verifiable sidecar
 ```
 
 The release notes embed the SHA256 digest. Verify any downloaded bundle with:
 
 ```bash
-sha256sum -c pwmcp-1.63.0-r3.tar.xz.sha256
+sha256sum -c pwmcp-1.63.0-r4.tar.xz.sha256
 ```
 
 "Latest" is resolved programmatically by scanning `pwmcp-v*` releases and picking the highest semver — this works in a monorepo where GitHub's repo-global "Latest" badge cannot be per-project. The thin `pwmcp-latest` release contains only `latest.json` (a JSON redirect pointing at the versioned release); it does **not** duplicate the heavy bundle asset. Development consumers use that stable manifest URL to rebuild automatically; production consumers may choose an immutable version/digest.
@@ -334,7 +334,7 @@ sha256sum -c pwmcp-1.63.0-r3.tar.xz.sha256
 ### Downloading a specific version
 
 ```bash
-VERSION="1.63.0-r3"
+VERSION="1.63.0-r4"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
   -o "pwmcp-${VERSION}.tar.xz"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
