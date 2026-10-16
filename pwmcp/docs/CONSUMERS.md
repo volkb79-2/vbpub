@@ -52,6 +52,11 @@ The internal deployment intentionally has no authentication or host-published
 ports, matching PWMCP's existing internal-network policy. Keep consumers on
 the CIU network created for this instance.
 
+The Compose configuration uses its version-pinned image from the local Docker
+cache when present and pulls that tag when it is absent. A locally built image
+with the configured tag can therefore be used before that tag is available from
+the registry.
+
 ## Inspect a webpage
 
 Use the bundled CLI to read a rendered page through PWMCP's managed remote

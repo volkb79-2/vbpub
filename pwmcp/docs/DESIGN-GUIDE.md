@@ -27,6 +27,11 @@ and does not try to create or own it. Keeping these installed-root choices
 separate preserves the existing sub-stack and maintainer-build policies, where
 the consumer or maintainer owns network and resource governance.
 
+The image tag is a prepared version coordinate, so Compose uses a matching
+local image and pulls only when the host cache lacks it. This keeps cold
+deployments self-provisioning while allowing a locally built, not-yet-published
+image to serve the standalone acceptance run.
+
 ## Client dependency projections
 
 The client wheel declares its runtime dependencies directly in
