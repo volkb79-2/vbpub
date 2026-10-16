@@ -184,8 +184,9 @@ gateway.listen(publicPort, "0.0.0.0", () => {
 admin.listen(adminPort, "0.0.0.0", () => process.stdout.write(`[gateway] admin port=${adminPort}\n`));
 
 function shutdown() {
-  if (recycleTimer) clearTimeout(recycleTimer);
   for (const session of [...sessions.values()]) closeSession(session, "shutdown");
+  if (recycleTimer) clearTimeout(recycleTimer);
+  recycleTimer = null;
   gateway.close();
   admin.close();
 }
