@@ -72,6 +72,7 @@ pwmcp inspect https://example.com
 pwmcp inspect https://example.com --format snapshot --output page.yml
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
+pwmcp inspect https://nas.example --ignore-https-errors
 ```
 
 `--format` accepts `text`, `snapshot`, and `screenshot`. `--wait-until` accepts
@@ -79,6 +80,11 @@ pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentl
 rendered body text. `snapshot` writes an ARIA snapshot; `screenshot` requires
 `--output PATH` ending in `.png`, `.jpg`, or `.jpeg`. `--wait-for SELECTOR`
 waits for a visible CSS selector; `--timeout-ms` sets the wait timeout.
+For a trusted device with a known self-signed or otherwise invalid certificate,
+`--ignore-https-errors` opts into certificate bypass for HTTPS requests in this
+inspection's temporary browser context. This includes redirects and page
+resources loaded from other hosts; the option does not change PWMCP's service
+or browser defaults. See the [design rationale](DESIGN-GUIDE.md#certificate-errors-during-inspection).
 
 An MCP client on the same network can use this server entry:
 

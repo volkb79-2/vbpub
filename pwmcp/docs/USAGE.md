@@ -71,6 +71,7 @@ pwmcp inspect https://example.com
 pwmcp inspect https://example.com --format snapshot --output page.yml
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
+pwmcp inspect https://nas.example --ignore-https-errors
 ```
 
 `--format` accepts `text`, `snapshot`, or `screenshot`. `--wait-until` accepts
@@ -78,6 +79,11 @@ pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentl
 stdout unless `--output PATH` is given; screenshots require `--output` and a
 `.png`, `.jpg`, or `.jpeg` suffix. `--wait-for SELECTOR` waits for a visible
 CSS selector, and `--timeout-ms` controls navigation and selector waits.
+`--ignore-https-errors` opts into accepting invalid HTTPS certificates for all
+HTTPS requests in this one-shot browser context, including redirects and page
+resources. Use it only for a trusted target with a known certificate problem;
+it does not change PWMCP service defaults. See the
+[design rationale](DESIGN-GUIDE.md#certificate-errors-during-inspection).
 
 ## Unified Image: Three Services, One Hostname
 

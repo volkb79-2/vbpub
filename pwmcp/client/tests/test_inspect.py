@@ -23,6 +23,8 @@ def _install_cli_browser(
         "locators": [],
         "wait_for": [],
         "screenshots": [],
+        "context_options": [],
+        "context_closed": [],
         "closed": [],
     }
 
@@ -55,9 +57,17 @@ def _install_cli_browser(
             calls["screenshots"].append(kwargs)
             return b"fake image bytes"
 
-    class FakeBrowser:
+    class FakeContext:
         def new_page(self) -> FakePage:
             return FakePage()
+
+        def close(self) -> None:
+            calls["context_closed"].append(True)
+
+    class FakeBrowser:
+        def new_context(self, *, ignore_https_errors: bool) -> FakeContext:
+            calls["context_options"].append({"ignore_https_errors": ignore_https_errors})
+            return FakeContext()
 
     class FakeLease:
         browser = FakeBrowser()
@@ -118,7 +128,23 @@ def test_inspect_text_navigates_remotely_waits_and_closes_lease(
     }]
     assert calls["locators"] == ["#content", "body"]
     assert calls["wait_for"] == [{"state": "visible", "timeout": 4000}]
+    assert calls["context_options"] == [{"ignore_https_errors": False}]
+    assert calls["context_closed"] == [True]
     assert calls["closed"] == [True]
+
+
+def test_inspect_can_ignore_https_errors_for_its_context(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(monkeypatch)
+    assert cli_module.main([
+        "inspect", "https://self-signed.example", "--ignore-https-errors"
+    ]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "rendered page text\n"
+    assert captured.err == ""
+    assert calls["context_options"] == [{"ignore_https_errors": True}]
+    assert calls["context_closed"] == [True]
 
 
 def test_inspect_snapshot_writes_a_trailing_newline_to_output(
@@ -223,6 +249,7 @@ def test_inspect_reports_remote_browser_failures(
     assert "pwmcp inspect failed:" in captured.err
     assert "check that PWMCP is running" in captured.err
     assert calls["closed"] == ([] if failure == "connect" else [True])
+    assert calls["context_closed"] == ([] if failure == "connect" else [True])
 
 
 def test_inspect_reports_output_write_failure(
