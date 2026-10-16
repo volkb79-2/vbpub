@@ -297,10 +297,9 @@ def test_generated_installer_wheel_projection_matches_cmru_config() -> None:
     tree = ast.parse((PWMCP / "get.py").read_text(encoding="utf-8"))
     assignment = next(
         node for node in tree.body
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "WHEEL_SPECS"
-            for target in node.targets
-        )
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "WHEEL_SPECS"
     )
     actual = [tuple(item) for item in ast.literal_eval(assignment.value)]
     assert actual == expected
