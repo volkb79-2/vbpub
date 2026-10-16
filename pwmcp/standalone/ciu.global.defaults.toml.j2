@@ -1,0 +1,29 @@
+# Standalone CIU root installed at /srv/pwmcp-instance by the CMRU get.py
+# adapter. Keep this separate from the sub-stack bundle defaults.
+
+[deploy]
+project_name = "pwmcp"
+environment_tag = "$INSTANCE_ID"
+network_name = "$DOCKER_NETWORK_INTERNAL"
+log_level = "INFO"
+
+[deploy.env.shared]
+CONTAINER_UID = "$CONTAINER_UID"
+CONTAINER_GID = "$DOCKER_GID"
+DOCKER_GID = "$DOCKER_GID"
+
+# Use the devcontainer's configured background tier. CIU refuses deployment
+# when this required environment fact is absent or names an unloaded slice.
+[governance]
+enabled = true
+cgroup_parent = "$CGROUP_PARENT_DEV_BACKGROUND"
+mem_limit = "4g"
+
+[ciu]
+standalone_root = true
+require_certs = false
+require_fqdn = false
+auto_connect_network = true
+
+[state]
+initialized = false

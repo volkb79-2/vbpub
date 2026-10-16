@@ -11,13 +11,73 @@ A version mismatch causes protocol errors at connect time.
 `bundle/pwmcp.contract.json`, then install the bundled source and exact
 contract version:
 
+The client depends on the **`cli-extended`** wheel (`cli-extended>=0.3.0`, the shared CLI
+layer under the `pwmcp` command). It is published to GitHub Releases only, never PyPI: the
+bare name is unclaimed there, so install it first from its release (URL and sha256 from
+`cli-extended-latest/latest.json`, verified like the bundle), then the client. pip finds the
+requirement already satisfied and never queries an index for it:
+
 ```bash
+# 1. the released cli-extended wheel, sha256-verified, installed without any index
+python -m pip install --no-index --no-deps ./cli_extended-<version>-py3-none-any.whl
+# 2. the bundled client and the exact Playwright version from the contract
 PW_VER=$(python -c 'import json; print(json.load(open("pwmcp.contract.json"))["playwright"]["python"])')
 pip install "playwright==$PW_VER" ./client
 ```
 
+A wheelhouse works too: `pip install --no-index --find-links ./wheelhouse ./client` (the
+wheelhouse then holds the cli-extended wheel and Playwright's own dependencies). Without the
+library the client install fails with `cli-extended` named as the missing requirement.
+
 Do **not** run `playwright install` — browser binaries belong in the pwmcp container,
 not in your project.
+
+## Install a standalone CIU instance
+
+For an independent instance at `/srv/pwmcp-instance`, create the install root
+owned by the user who will run CIU, then use the generated CMRU installer. It verifies
+the versioned release bundle and its SHA-256 sidecar, then installs the bundled
+client and exact Playwright wheel offline:
+
+```bash
+sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /srv/pwmcp-instance
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
+  | XDG_DATA_HOME=/srv python3 - install --scope user
+export PATH="/srv/pwmcp-instance/bin:$PATH"
+cd /srv/pwmcp-instance
+ciu up
+```
+
+For an image that owns `/srv`, the same user-scope command works without the
+ownership setup line. Keep `/srv/pwmcp-instance/bin` on `PATH` in later shells
+to use the `pwmcp` launcher. To update, replace `install` with `update`, add
+the launcher directory to `PATH`, and run `ciu up` again.
+
+The standalone root is independent of a consuming project's CIU root. The
+internal network remains unauthenticated, matching PWMCP's existing internal
+policy. CIU attaches the current devcontainer to that network; agents there can
+use `http://pwmcp:8931/mcp`, while Python clients and the `pwmcp inspect`
+command use `ws://pwmcp:3000/`.
+
+## Inspect a webpage with the client CLI
+
+The release installs a `pwmcp` command alongside the Python client library. It
+opens pages in PWMCP's remote browser, so the devcontainer needs no local
+browser binaries:
+
+```bash
+pwmcp inspect https://example.com
+pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format screenshot --output page.png --full-page
+pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
+```
+
+`--format` accepts `text`, `snapshot`, or `screenshot`. `--wait-until` accepts
+`commit`, `domcontentloaded`, `load`, or `networkidle`. Text and snapshots go to
+stdout unless `--output PATH` is given; screenshots require `--output` and a
+`.png`, `.jpg`, or `.jpeg` suffix. `--wait-for SELECTOR` waits for a visible
+CSS selector, and `--timeout-ms` controls navigation and selector waits.
 
 ## Unified Image: Three Services, One Hostname
 
@@ -257,7 +317,7 @@ curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-latest/la
 
 ```bash
 # Pin a specific release:
-VERSION="1.62.0-r4"
+VERSION="1.63.0-r3"
 mkdir -p services/pwmcp
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
   -o "pwmcp-${VERSION}.tar.xz"
@@ -284,7 +344,7 @@ The unified container comes up as `pwmcp-pwmcp` (default project name `pwmcp`) o
 Download a newer bundle, verify it, re-read `playwright_version`, reinstall the pinned client, redeploy:
 
 ```bash
-VERSION="1.62.0-r1"
+VERSION="1.63.0-r3"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
   -o "pwmcp-${VERSION}.tar.xz"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
@@ -361,4 +421,19 @@ curl -X POST http://pwmcp:8939/browser/restart
 curl http://pwmcp:8939/browser/health
 ```
 
-The standalone `pwmcp` CLI keeps parser diagnostics identifiable: the first line is `PWMCP <version> — client utility`, using the client package's existing metadata version.
+The standalone `pwmcp` CLI is built on the shared cli-extended grammar (full reference and
+reviewed semantics: [CLI-SPEC.md](CLI-SPEC.md)):
+
+```bash
+pwmcp --version                       # one line: pwmcp <version>
+pwmcp contract [--json]               # the server contract as JSON
+pwmcp doctor [--check NAME] [--json]  # named checks: contract, playwright, skills
+pwmcp skills install                  # install the packaged pwmcp-fetch agent skill
+```
+
+Help starts with `PWMCP <version> — client utility`. A usage error prints the `[ERROR]`
+diagnostic first, then the identity-headed usage, and exits 2; an unreachable or malformed
+contract is a one-line `[ERROR]` with exit 1 (never a traceback; add `--traceback` for the
+stack of an unexpected failure). `pwmcp doctor` reports one `[OK]`/`[WARN]`/`[FAIL]` line per
+check instead of the former single `ok release=... playwright=... ws=...` line; the same
+facts are in the `contract` and `playwright` check summaries and in `--json`.

@@ -37,6 +37,25 @@ MDT has no owned HTTP/OpenAPI contract. Hypothesis is used for pure
 configuration invariants where generated values are meaningful; Schemathesis
 would add no evidence to this product.
 
+## PWMCP service in the image
+
+The MDT Dockerfile installs PWMCP from the same committed CMRU `get.py` and
+contract that its build inputs identify. The build helper records both source
+URLs at the exact repository commit and their SHA-256 digests; the helper
+rejects a mismatched download before running the installer. The installer
+then fetches the versioned PWMCP bundle, verifies its checksum and wheel
+manifest, and creates `/srv/pwmcp-instance` as a `vscode`-owned user-scope
+install. PWMCP is a declared release dependency, so the matching bundle exists
+before an MDT image build can consume it.
+
+The instance is preinstalled but does not start during image build. A user runs
+`ciu up` when browser service is needed. CIU's standalone root gives the
+service its own internal network and attaches the current devcontainer; this
+keeps the unauthenticated internal-network policy identical to PWMCP's other
+internal deployments. No host port is published. The installed `pwmcp` CLI
+uses the version-matched client and Playwright wheel in the same private venv.
+See the [pasteable consumer steps](CONSUMERS.md#pwmcp-browser-service).
+
 ## Managed BuildKit socket access
 
 The rootless BuildKit process creates its Unix socket with its container

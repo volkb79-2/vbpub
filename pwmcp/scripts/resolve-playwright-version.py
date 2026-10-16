@@ -9,9 +9,8 @@ Steps:
      not publishable until its matching base-image tag exists, and PWMCP's
      Python and npm consumers must agree on one version.
   3. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*).
-  4. Update ciu.defaults.toml.j2 and ciu.toml.j2 (playwright_version + image.tag).
-  5. Update the Dockerfile and docker-bake.hcl with the matching base-image digest.
-  6. Write cmru.vars for downstream scripts.
+  4. Update CIU configs, client dependency projections, Dockerfile, and bake defaults.
+  5. Write cmru.vars for downstream scripts.
 
 Outputs:
   pwmcp/cmru.vars  — KEY=VALUE env file consumed by build-bundle.py / publish-bundle.py
@@ -19,6 +18,7 @@ Outputs:
   ciu.defaults.toml.j2 — playwright_version and image.tag updated in-place (PyPI version)
   ciu.toml.j2          — same (kept in sync with defaults)
   docker-bake.hcl      — common-version defaults updated in-place
+  client/pyproject.toml and client/requirements-runtime.txt — exact runtime dependencies
 
 Consumer contract:
   - :latest and :latest-npm track the same reviewed version available from all
@@ -33,10 +33,19 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+from cli_extended import OptionSpec, RegisteredCli
+
+# Shared script registration (pwmcp/scripts/_vars.py), importing the INSTALLED
+# cli_extended (CX-D3). The explicit insert keeps a bare `import _vars` working when
+# this hyphenated file is loaded by path rather than run as a script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _vars import run_script, script_cli  # noqa: E402
 
 NPM_PLAYWRIGHT_URL = "https://registry.npmjs.org/playwright"
 PYPI_PLAYWRIGHT_URL = "https://pypi.org/pypi/playwright/json"
@@ -52,6 +61,8 @@ TOML_OVERRIDE_FILE = PWMCP_DIR / "ciu.toml.j2"
 BAKE_FILE = PWMCP_DIR / "docker-bake.hcl"
 RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 CONTRACT_FILE = PWMCP_DIR / "pwmcp.contract.json"
+CLIENT_REQUIREMENTS_FILE = PWMCP_DIR / "client" / "requirements-runtime.txt"
+CLIENT_PROJECT_FILE = PWMCP_DIR / "client" / "pyproject.toml"
 DOCKERFILE = PWMCP_DIR / "containers" / "pwmcp" / "Dockerfile"
 LIGHTHOUSE_PACKAGE_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package.json"
 LIGHTHOUSE_LOCK_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package-lock.json"
@@ -349,11 +360,22 @@ def update_bake_hcl(
     path.write_text(content, encoding="utf-8")
 
 
-def update_dockerfile(path: Path, image_digest: str) -> None:
-    """Update the authoritative base-image digest in Dockerfile ARG and FROM."""
+def update_dockerfile(path: Path, playwright_version: str, image_digest: str) -> None:
+    """Update the Dockerfile's Playwright version and base-image digest projection."""
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
         fail(f"Dockerfile base-image digest is not a sha256 digest: {image_digest!r}")
     content = path.read_text(encoding="utf-8")
+    content, version_matches = re.subn(
+        r"(^ARG PLAYWRIGHT_VERSION=)[^\s]+$",
+        rf"\g<1>{playwright_version}",
+        content,
+        flags=re.MULTILINE,
+    )
+    if version_matches != 1:
+        fail(
+            f"{path.name} must contain exactly one PLAYWRIGHT_VERSION ARG "
+            f"(found {version_matches})"
+        )
     content, arg_matches = re.subn(
         r"(^ARG PLAYWRIGHT_IMAGE_DIGEST=)[^\s]+$",
         rf"\g<1>{image_digest}",
@@ -386,6 +408,83 @@ def update_contract(path: Path, *, release: str, playwright_version: str) -> Non
     payload["playwright"]["python"] = playwright_version
     payload["playwright"]["protocol"] = ".".join(playwright_version.split(".")[:2])
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def update_client_runtime_requirements(path: Path, playwright_version: str) -> None:
+    """Keep the installable client's Playwright dependency at the contract version."""
+    lines = [
+        line.partition("#")[0].strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.partition("#")[0].strip()
+    ]
+    cli_requirements = [
+        line for line in lines
+        if re.fullmatch(r"cli[-_.]extended\s*>=\s*\d+(?:\.\d+)*", line, re.IGNORECASE)
+    ]
+    if len(cli_requirements) != 1:
+        fail(
+            f"{path.name} must declare exactly one cli-extended minimum requirement "
+            "before the client dependency can be refreshed"
+        )
+    content = CLIENT_PROJECT_FILE.read_text(encoding="utf-8")
+    project = tomllib.loads(content).get("project", {})
+    dependencies = project.get("dependencies")
+    current_pins = [
+        item for item in dependencies or []
+        if isinstance(item, str) and re.fullmatch(r"playwright==\d+\.\d+\.\d+", item)
+    ]
+    cli_pins = [
+        item for item in dependencies or []
+        if isinstance(item, str) and re.fullmatch(r"cli[-_.]extended\s*>=\s*\d+(?:\.\d+)*", item, re.IGNORECASE)
+    ]
+    if (
+        not isinstance(dependencies, list)
+        or len(current_pins) != 1
+        or len(cli_pins) != 1
+        or len(dependencies) != 2
+        or dependencies != lines
+    ):
+        fail(f"{CLIENT_PROJECT_FILE.name} must declare the dependencies listed in {path.name}")
+    updated, matches = re.subn(
+        rf"(?<![\w.-])playwright=={re.escape(current_pins[0].partition('==')[2])}(?![\w.-])",
+        f"playwright=={playwright_version}",
+        content,
+    )
+    if matches != 1:
+        fail(f"{CLIENT_PROJECT_FILE.name} must contain exactly one Playwright dependency pin")
+    path.write_text(
+        "# CMRU checks this exact Playwright pin against pwmcp.contract.json.\n"
+        f"{cli_requirements[0]}\n"
+        f"playwright=={playwright_version}\n",
+        encoding="utf-8",
+    )
+    CLIENT_PROJECT_FILE.write_text(updated, encoding="utf-8")
+
+
+def check_client_runtime_requirements(playwright_version: str) -> None:
+    lines = [
+        line.partition("#")[0].strip()
+        for line in CLIENT_REQUIREMENTS_FILE.read_text(encoding="utf-8").splitlines()
+        if line.partition("#")[0].strip()
+    ]
+    cli_requirements = [
+        line for line in lines
+        if re.fullmatch(r"cli[-_.]extended\s*>=\s*\d+(?:\.\d+)*", line, re.IGNORECASE)
+    ]
+    if len(cli_requirements) != 1 or lines != [
+        cli_requirements[0] if cli_requirements else "",
+        f"playwright=={playwright_version}",
+    ]:
+        fail(
+            f"{CLIENT_REQUIREMENTS_FILE.name} must declare one "
+            f"cli-extended minimum followed by playwright=={playwright_version}"
+        )
+    project = tomllib.loads(CLIENT_PROJECT_FILE.read_text(encoding="utf-8")).get("project", {})
+    if project.get("dependencies") != lines:
+        fail(
+            f"{CLIENT_PROJECT_FILE.name} dependencies must match "
+            f"{CLIENT_REQUIREMENTS_FILE.name}"
+        )
 
 
 # Non-auto-updated package pins: read from bake file to preserve current values.
@@ -496,6 +595,7 @@ def check_committed_inputs() -> None:
             f"{CONTRACT_FILE.name} playwright.python={contract_playwright.get('python')!r} "
             f"does not match committed Playwright version {playwright_version!r}"
         )
+    check_client_runtime_requirements(playwright_version)
     expected_protocol = ".".join(playwright_version.split(".")[:2])
     if contract_playwright.get("protocol") != expected_protocol:
         fail(
@@ -634,11 +734,14 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
     log(f"Updating {BAKE_FILE.name}...")
     update_bake_hcl(BAKE_FILE, agreed_version, pwmcp_version, image_digest)
 
-    log(f"Updating {DOCKERFILE.name} with base-image digest {image_digest}...")
-    update_dockerfile(DOCKERFILE, image_digest)
+    log(f"Updating {DOCKERFILE.name} with Playwright {agreed_version} and digest {image_digest}...")
+    update_dockerfile(DOCKERFILE, agreed_version, image_digest)
 
     log(f"Updating {CONTRACT_FILE.name}...")
     update_contract(CONTRACT_FILE, release=pwmcp_version, playwright_version=agreed_version)
+
+    log(f"Updating {CLIENT_REQUIREMENTS_FILE.name}...")
+    update_client_runtime_requirements(CLIENT_REQUIREMENTS_FILE, agreed_version)
 
     log(f"Writing {RELEASE_VARS_FILE.name}...")
     pw_mcp_ver = _read_bake_var("PLAYWRIGHT_MCP_VERSION")
@@ -654,32 +757,62 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
     log(f"Git tag to create after push: pwmcp-v{pwmcp_version}")
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(
-        description="Validate the committed PWMCP version projection or explicitly refresh it"
-    )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "--check",
-        action="store_true",
-        help="validate committed versions and write cmru.vars without contacting upstreams (default)",
-    )
-    mode.add_argument(
-        "--refresh",
-        action="store_true",
-        help="select the newest common upstream version at least 14 days old and rewrite the projection",
-    )
-    parser.add_argument(
-        "--age-window-days",
-        type=int,
-        default=TEMPORARY_AGE_WINDOW_DAYS,
-        help="temporary refresh age window until CMRU FEAT-03 owns version selection (default: 14)",
-    )
-    args = parser.parse_args(argv)
+def _handle(args: argparse.Namespace) -> None:
     if args.refresh:
         refresh_upstream_projection(args.age_window_days)
     else:
         check_committed_inputs()
+
+
+def _preview(args: argparse.Namespace) -> str:
+    if args.refresh:
+        return (
+            f"would select the newest common upstream version at least {args.age_window_days} "
+            "days old and rewrite the committed projection and cmru.vars"
+        )
+    return "would validate the committed version projection and write cmru.vars"
+
+
+def build_cli() -> RegisteredCli:
+    """Import-safe registration of the script's grammar (``--check`` | ``--refresh``)."""
+    return script_cli(
+        "resolve-playwright-version.py",
+        long_name="version projection",
+        description="Validate the committed PWMCP version projection or explicitly refresh it.",
+        handler=_handle,
+        preview=_preview,
+        options=(
+            OptionSpec(
+                ("--check",),
+                "validate committed versions and write cmru.vars without contacting upstreams (default)",
+                group="MODE",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="mode",
+            ),
+            OptionSpec(
+                ("--refresh",),
+                "select the newest common upstream version at least 14 days old and rewrite the projection",
+                group="MODE",
+                parser_kwargs={"action": "store_true"},
+                mutually_exclusive_group="mode",
+            ),
+            OptionSpec(
+                ("--age-window-days",),
+                "temporary refresh age window until CMRU FEAT-03 owns version selection",
+                group="MODE",
+                metavar="DAYS",
+                parser_kwargs={"type": int, "default": TEMPORARY_AGE_WINDOW_DAYS},
+            ),
+        ),
+        examples=(
+            "python3 scripts/resolve-playwright-version.py --check",
+            "python3 scripts/resolve-playwright-version.py --refresh",
+        ),
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_script(build_cli(), argv)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,8 @@ def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
     lock = tmp_path / "package-lock.json"
     contract = tmp_path / "contract.json"
     release_vars = tmp_path / "cmru.vars"
+    client_requirements = tmp_path / "client-requirements.txt"
+    client_project = tmp_path / "client-pyproject.toml"
     defaults.write_text(
         'image_distro = "noble"\nplaywright_version = "1.63.0"\n'
         '[pwmcp.unified.image]\ntag = "1.63.0-r3"\n', encoding="utf-8"
@@ -78,10 +80,18 @@ def _projection_fixture(tmp_path: Path) -> dict[str, Path]:
         "release": "1.63.0-r3",
         "playwright": {"python": "1.63.0", "protocol": "1.63"},
     }), encoding="utf-8")
+    client_requirements.write_text(
+        "cli-extended>=0.3.0\nplaywright==1.63.0\n", encoding="utf-8"
+    )
+    client_project.write_text(
+        '[project]\ndependencies = ["cli-extended>=0.3.0", "playwright==1.63.0"]\n',
+        encoding="utf-8",
+    )
     return {
         "defaults": defaults, "override": override, "bake": bake,
         "dockerfile": dockerfile, "package": package, "lock": lock,
         "contract": contract, "release_vars": release_vars,
+        "client_requirements": client_requirements, "client_project": client_project,
     }
 
 
@@ -98,6 +108,8 @@ def _bind_projection_fixture(
             "lock": "LIGHTHOUSE_LOCK_FILE",
             "contract": "CONTRACT_FILE",
             "release_vars": "RELEASE_VARS_FILE",
+            "client_requirements": "CLIENT_REQUIREMENTS_FILE",
+            "client_project": "CLIENT_PROJECT_FILE",
         }[name]
         monkeypatch.setattr(resolver, constant, path)
 
@@ -518,11 +530,13 @@ def test_update_helpers_rewrite_release_inputs(tmp_path: Path) -> None:
 
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.0.0\n"
         "ARG PLAYWRIGHT_IMAGE_DIGEST=sha256:" + "b" * 64 + "\n"
         "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
         encoding="utf-8",
     )
-    resolver.update_dockerfile(dockerfile, DIGEST)
+    resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
+    assert "ARG PLAYWRIGHT_VERSION=1.2.3" in dockerfile.read_text()
     assert f"ARG PLAYWRIGHT_IMAGE_DIGEST={DIGEST}" in dockerfile.read_text()
     assert "@${PLAYWRIGHT_IMAGE_DIGEST}" in dockerfile.read_text()
 
@@ -565,13 +579,35 @@ def test_update_helpers_refuse_template_drift(tmp_path: Path) -> None:
 
     dockerfile = tmp_path / "Dockerfile"
     with pytest.raises(SystemExit):
-        resolver.update_dockerfile(dockerfile, "not-a-digest")
-    dockerfile.write_text("FROM mcr.microsoft.com/playwright:broken\n", encoding="utf-8")
+        resolver.update_dockerfile(dockerfile, "1.2.3", "not-a-digest")
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n"
+        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
+        encoding="utf-8",
+    )
     with pytest.raises(SystemExit):
-        resolver.update_dockerfile(dockerfile, DIGEST)
-    dockerfile.write_text("ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n", encoding="utf-8")
+        resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.0.0\n"
+        "ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n"
+        "FROM mcr.microsoft.com/playwright:broken\n",
+        encoding="utf-8",
+    )
     with pytest.raises(SystemExit):
-        resolver.update_dockerfile(dockerfile, DIGEST)
+        resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.0.0\n"
+        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
+    dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=1.0.0\nARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
 
 
 def test_read_bake_var_and_release_vars(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -621,6 +657,8 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     dockerfile = tmp_path / "Dockerfile"
     release_vars = tmp_path / "vars"
     contract = tmp_path / "contract"
+    client_requirements = tmp_path / "client-requirements.txt"
+    client_project = tmp_path / "client-pyproject.toml"
     defaults.write_text(
         'image_distro = "noble"\nplaywright_version = "old"\n'
         '[pwmcp.unified.image]\ntag = "old"\n', encoding="utf-8"
@@ -636,17 +674,27 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
         'variable "LIGHTHOUSE_VERSION" { default = "13.4.0" }\n', encoding="utf-8"
     )
     dockerfile.write_text(
+        "ARG PLAYWRIGHT_VERSION=old\n"
         "ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n"
         "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
         encoding="utf-8",
     )
     contract.write_text(json.dumps(_payload()), encoding="utf-8")
+    client_requirements.write_text(
+        "cli-extended>=0.3.0\nplaywright==1.0.0\n", encoding="utf-8"
+    )
+    client_project.write_text(
+        '[project]\ndependencies = ["cli-extended>=0.3.0", "playwright==1.0.0"]\n',
+        encoding="utf-8",
+    )
     monkeypatch.setattr(resolver, "DEFAULTS_FILE", defaults)
     monkeypatch.setattr(resolver, "TOML_OVERRIDE_FILE", override)
     monkeypatch.setattr(resolver, "BAKE_FILE", bake)
     monkeypatch.setattr(resolver, "DOCKERFILE", dockerfile)
     monkeypatch.setattr(resolver, "RELEASE_VARS_FILE", release_vars)
     monkeypatch.setattr(resolver, "CONTRACT_FILE", contract)
+    monkeypatch.setattr(resolver, "CLIENT_REQUIREMENTS_FILE", client_requirements)
+    monkeypatch.setattr(resolver, "CLIENT_PROJECT_FILE", client_project)
     monkeypatch.setattr(resolver, "fetch_npm_versions", lambda: {"1.2.3"})
     monkeypatch.setattr(resolver, "fetch_pypi_versions", lambda: {"1.2.3"})
     monkeypatch.setattr(resolver, "fetch_mcr_versions", lambda distro: {"1.2.3"})
@@ -662,6 +710,8 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
     assert DIGEST in bake.read_text()
     assert "PWMCP_VERSION=1.2.3-r4" in release_vars.read_text()
     assert json.loads(contract.read_text())["release"] == "1.2.3-r4"
+    assert "playwright==1.2.3" in client_requirements.read_text()
+    assert '"playwright==1.2.3"' in client_project.read_text()
 
     override.unlink()
     resolver.main(["--refresh"])
@@ -670,75 +720,64 @@ def test_main_updates_all_prepared_outputs(tmp_path: Path, monkeypatch: pytest.M
 def test_check_committed_inputs_validates_projection_and_writes_vars(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    defaults = tmp_path / "defaults"
-    override = tmp_path / "override"
-    bake = tmp_path / "bake"
-    dockerfile = tmp_path / "Dockerfile"
-    package = tmp_path / "package.json"
-    lock = tmp_path / "package-lock.json"
-    contract = tmp_path / "contract.json"
-    release_vars = tmp_path / "cmru.vars"
-    defaults.write_text(
-        'image_distro = "noble"\nplaywright_version = "1.63.0"\n'
-        '[pwmcp.unified.image]\ntag = "1.63.0-r3"\n', encoding="utf-8"
-    )
-    override.write_text(defaults.read_text(), encoding="utf-8")
-    bake.write_text(
-        'variable "PLAYWRIGHT_VERSION" { default = "1.63.0" }\n'
-        f'variable "PLAYWRIGHT_IMAGE_DIGEST" {{ default = "{DIGEST}" }}\n'
-        'variable "PWMCP_VERSION" { default = "1.63.0-r3" }\n'
-        'variable "PLAYWRIGHT_MCP_VERSION" { default = "0.0.80" }\n'
-        'variable "CHROME_DEVTOOLS_MCP_VERSION" { default = "1.8.0" }\n'
-        'variable "MCP_PROXY_VERSION" { default = "6.7.14" }\n'
-        'variable "LIGHTHOUSE_VERSION" { default = "13.4.1" }\n', encoding="utf-8"
-    )
-    dockerfile.write_text(
-        "ARG PLAYWRIGHT_VERSION=1.63.0\n"
-        f"ARG PLAYWRIGHT_IMAGE_DIGEST={DIGEST}\n"
-        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n"
-        "ARG PLAYWRIGHT_MCP_VERSION=0.0.80\n"
-        "ARG CHROME_DEVTOOLS_MCP_VERSION=1.8.0\n"
-        "ARG MCP_PROXY_VERSION=6.7.14\n"
-        "ARG LIGHTHOUSE_VERSION=13.4.1\n",
-        encoding="utf-8",
-    )
-    package_payload = {
-        "dependencies": {
-            "@modelcontextprotocol/sdk": "1.30.0",
-            "chrome-launcher": "1.2.1",
-            "lighthouse": "13.4.1",
-        }
-    }
-    package.write_text(json.dumps(package_payload), encoding="utf-8")
-    lock.write_text(
-        json.dumps({
-            "lockfileVersion": 3,
-            "packages": {
-                "": {"dependencies": package_payload["dependencies"]},
-                **{
-                    f"node_modules/{name}": {"version": version}
-                    for name, version in package_payload["dependencies"].items()
-                },
-            },
-        }),
-        encoding="utf-8",
-    )
-    contract.write_text(
-        json.dumps({"release": "1.63.0-r3", "playwright": {"python": "1.63.0", "protocol": "1.63"}}),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(resolver, "DEFAULTS_FILE", defaults)
-    monkeypatch.setattr(resolver, "TOML_OVERRIDE_FILE", override)
-    monkeypatch.setattr(resolver, "BAKE_FILE", bake)
-    monkeypatch.setattr(resolver, "DOCKERFILE", dockerfile)
-    monkeypatch.setattr(resolver, "LIGHTHOUSE_PACKAGE_FILE", package)
-    monkeypatch.setattr(resolver, "LIGHTHOUSE_LOCK_FILE", lock)
-    monkeypatch.setattr(resolver, "CONTRACT_FILE", contract)
-    monkeypatch.setattr(resolver, "RELEASE_VARS_FILE", release_vars)
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
 
     resolver.main(["--check"])
 
-    assert "PWMCP_VERSION=1.63.0-r3" in release_vars.read_text()
+    assert "PWMCP_VERSION=1.63.0-r3" in files["release_vars"].read_text()
+
+
+def test_check_committed_inputs_refuses_runtime_dependency_projection_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    original = files["client_requirements"].read_text(encoding="utf-8")
+    for bad_requirements in (
+        "playwright==1.63.0\n",
+        "cli-extended>=0.3.0\ncli-extended>=0.3.0\nplaywright==1.63.0\n",
+        "cli-extended>=0.3.0\nplaywright==1.62.0\n",
+    ):
+        files["client_requirements"].write_text(bad_requirements, encoding="utf-8")
+        with pytest.raises(SystemExit):
+            resolver.main(["--check"])
+    files["client_requirements"].write_text(original, encoding="utf-8")
+
+
+def test_update_client_runtime_requirements_validates_before_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = _projection_fixture(tmp_path)
+    _bind_projection_fixture(monkeypatch, files)
+    original_requirements = files["client_requirements"].read_text(encoding="utf-8")
+    original_project = files["client_project"].read_text(encoding="utf-8")
+
+    files["client_requirements"].write_text("playwright==1.63.0\n", encoding="utf-8")
+    with pytest.raises(SystemExit):
+        resolver.update_client_runtime_requirements(files["client_requirements"], "1.64.0")
+    files["client_requirements"].write_text(original_requirements, encoding="utf-8")
+
+    files["client_project"].write_text(
+        original_project.replace("playwright==1.63.0", "playwright==1.62.0"),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.update_client_runtime_requirements(files["client_requirements"], "1.64.0")
+    assert files["client_requirements"].read_text(encoding="utf-8") == original_requirements
+    files["client_project"].write_text(original_project, encoding="utf-8")
+
+    original_subn = resolver.re.subn
+
+    def no_project_pin_match(pattern: str, replacement: str, content: str, *args: object, **kwargs: object):
+        if "playwright==" in pattern:
+            return content, 0
+        return original_subn(pattern, replacement, content, *args, **kwargs)
+
+    monkeypatch.setattr(resolver.re, "subn", no_project_pin_match)
+    with pytest.raises(SystemExit):
+        resolver.update_client_runtime_requirements(files["client_requirements"], "1.64.0")
+    assert files["client_requirements"].read_text(encoding="utf-8") == original_requirements
 
 
 def test_check_committed_inputs_refuses_contract_and_lock_drift(
@@ -758,6 +797,15 @@ def test_check_committed_inputs_refuses_contract_and_lock_drift(
         with pytest.raises(SystemExit):
             resolver.main(["--check"])
     files["contract"].write_text(json.dumps(good_contract), encoding="utf-8")
+
+    good_project = files["client_project"].read_text(encoding="utf-8")
+    files["client_project"].write_text(
+        good_project.replace("playwright==1.63.0", "playwright==1.62.0"),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.main(["--check"])
+    files["client_project"].write_text(good_project, encoding="utf-8")
 
     package = json.loads(files["package"].read_text())
     lock = json.loads(files["lock"].read_text())
@@ -828,6 +876,9 @@ def test_refresh_accepts_zero_age_window(
     monkeypatch.setattr(resolver, "compute_release_number", lambda version: 4)
     resolver.refresh_upstream_projection(0)
     assert "PWMCP_VERSION=1.2.3-r4" in files["release_vars"].read_text()
+    assert "ARG PLAYWRIGHT_VERSION=1.2.3" in files["dockerfile"].read_text()
+    assert "playwright==1.2.3" in files["client_requirements"].read_text()
+    assert '"playwright==1.2.3"' in files["client_project"].read_text()
 
 
 def test_resolver_module_entrypoint_runs_committed_check(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -18,22 +18,24 @@ Publish strategy (implemented by publish_versioned in the keystone):
 """
 from __future__ import annotations
 
+import argparse
 import os
+import shutil
 import sys
 from pathlib import Path
 
-# ── Keystone import ──────────────────────────────────────────────────────────
-# parents[2] from pwmcp/scripts/publish-bundle.py == the vbpub repo root.
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cmru" / "src"))
-from cmru.release import GitHubReleases, publish_versioned  # noqa: E402
+from cli_extended import RegisteredCli
+# Keystone import: the INSTALLED cmru package (CX-D3 / PWMCP-02), not cmru/src.
+from cmru.release import GitHubReleases, publish_versioned, write_sha256_sidecar
 
-# Strict prepared-coordinate loader. Insert the script dir explicitly: the cmru/src
-# insert above pushed sys.path[0] off it, so a bare ``import _vars`` would be fragile.
+# Strict prepared-coordinate loader and shared script registration. Insert the script
+# dir explicitly so a bare ``import _vars`` also works when this file is loaded by path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _vars import load_vars  # noqa: E402
+from _vars import load_vars, run_script, script_cli  # noqa: E402
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
 DIST_DIR = PWMCP_DIR / "dist"
+GET_PY = PWMCP_DIR / "get.py"
 
 
 def log(msg: str) -> None:
@@ -56,7 +58,7 @@ def find_bundle(dist_dir: Path, pwmcp_version: str) -> Path:
     return expected
 
 
-def main() -> None:
+def _publish(_args: argparse.Namespace) -> None:
     load_vars()
 
     pwmcp_version = os.environ.get("PWMCP_VERSION", "")
@@ -72,6 +74,11 @@ def main() -> None:
         fail("GITHUB_USERNAME and GITHUB_REPO are required")
 
     bundle_path = find_bundle(DIST_DIR, pwmcp_version)
+    if not GET_PY.is_file():
+        fail("pwmcp/get.py is missing; render it with `cmru get-py pwmcp` and commit it first")
+    get_py_asset = DIST_DIR / "get.py"
+    shutil.copy2(GET_PY, get_py_asset)
+    get_py_sidecar = write_sha256_sidecar(get_py_asset)
 
     gh = GitHubReleases(owner, repo, token)
     result = publish_versioned(
@@ -80,6 +87,7 @@ def main() -> None:
         version=pwmcp_version,
         asset_path=bundle_path,
         notes=f"pwmcp {pwmcp_version}",
+        extra_assets=[get_py_asset, get_py_sidecar],
         latest_pointer=True,
     )
 
@@ -88,6 +96,21 @@ def main() -> None:
         log(f"PWMCP_BUNDLE_ASSET_URL={result['asset_url']}")
     if result.get("release_tag"):
         log(f"Next step: git tag -a {result['release_tag']} -m 'pwmcp {pwmcp_version}' && git push origin {result['release_tag']}")
+
+
+def build_cli() -> RegisteredCli:
+    """Import-safe registration: this script takes no operands."""
+    return script_cli(
+        "publish-bundle.py",
+        long_name="stack bundle publish",
+        description="Publish the prepared pwmcp stack bundle to GitHub Releases (immutable release plus latest pointer).",
+        handler=_publish,
+        preview=lambda _args: "would publish the PWMCP bundle and get.py (+ SHA256 sidecars) as the immutable release and refresh pwmcp-latest",
+    )
+
+
+def main(argv: list[str] | None = None) -> None:
+    run_script(build_cli(), argv)
 
 
 if __name__ == "__main__":

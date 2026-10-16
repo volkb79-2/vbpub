@@ -4,6 +4,15 @@
 
 - [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu) installed
 - Docker with Buildx plugin
+- Python 3.11 or newer with `venv` and `ensurepip` (for the bundled client install)
+
+## CMRU standalone install
+
+For an instance that serves the connected devcontainer itself, install the
+versioned release at `/srv/pwmcp-instance` with the generated CMRU installer,
+then run `ciu up` from that directory. The installer verifies the release
+bundle and its checksum before atomically installing it. See the
+[consumer install and update commands](CONSUMERS.md#install-and-update).
 
 ## Internal Mode (Dev / CI — Default)
 
@@ -211,7 +220,7 @@ when reproducibility matters more than tracking latest.
 Every published bundle has a `.sha256` sidecar in the same release:
 
 ```bash
-VERSION="1.62.0-r4"
+VERSION="1.63.0-r3"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
   -o "pwmcp-${VERSION}.tar.xz.sha256"
 sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"

@@ -22,10 +22,10 @@ registry = ["ghcr.io"]
 #   run-gate-project <- cmru  (declared release order)
 #   assay <- cmru  (declared release order)
 #   topos <- cmru  (declared release order)
-#   nyxloom <- cmru  (declared release order)
-#   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, topos, nyxloom  (declared release order)
+#   nyxloom <- cli-extended, cmru  (declared release order)
+#   pwmcp <- cli-extended, cmru  (declared release order)
+#   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
-#   pwmcp <- cmru  (declared release order)
 #   tls-edge <- cmru  (declared release order)
 #   cgroup-profiler <- cmru  (declared release order)
 #
@@ -43,7 +43,7 @@ registry = ["ghcr.io"]
 #   (ciu, run-gate-project, assay, topos, nyxloom, pwmcp, tls-edge, cgroup-profiler)
 #   | L3 modern-debian-tools-python-debug (stages the wheels of L0-L2).
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "modern-debian-tools-python-debug", "pwmcp", "tls-edge", "cgroup-profiler"]
+project_order = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "pwmcp", "modern-debian-tools-python-debug", "tls-edge", "cgroup-profiler"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -173,12 +173,15 @@ depends_on = ["cli-extended", "cmru"]
 [orchestration.project.modern-debian-tools-python-debug]
 config = "modern-debian-tools-python-debug/cmru.toml"
 # cli-extended: cmru's wheel requires it and the image install is `pip --no-index`
-# (pip/wheels.list stages it).
-depends_on = ["cli-extended", "ciu", "cmru", "topos", "nyxloom"]
+# (pip/wheels.list stages it). PWMCP is also released first so the image can install
+# its exact CIU root and client CLI through the generated CMRU get.py.
+depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
 
 [orchestration.project.pwmcp]
 config = "pwmcp/cmru.toml"
-depends_on = ["cmru"]
+# cli-extended: the pwmcp-client wheel requires it (PWMCP-02, CX-D1) and the release scripts
+# import it, so the release preflight demands the declaration.
+depends_on = ["cli-extended", "cmru"]
 
 [orchestration.project.tls-edge]
 config = "tls-edge/cmru.toml"

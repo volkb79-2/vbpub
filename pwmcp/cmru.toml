@@ -21,13 +21,42 @@ bump = "conventional"
 [project.release]
 git_tag = true
 build_step = "build"
-commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "containers/pwmcp/Dockerfile", "pwmcp.contract.json"]
+commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "containers/pwmcp/Dockerfile", "pwmcp.contract.json", "client/requirements-runtime.txt", "client/pyproject.toml", "get.py"]
 artifact_dirs = ["dist"]
 evidence_paths = ["coverage.json", ".assay"]
+
+[project.installer]
+install_dir_system = "/srv/pwmcp-instance"
+install_dir_user = "pwmcp-instance"
+asset_suffix = ".tar.xz"
+entrypoint = "installer/adapter.py"
+required_commands = ["python3"]
+launchers = ["pwmcp"]
+
+[[project.installer.wheels]]
+path = "wheels/cli_extended-*.whl"
+distribution = "cli-extended"
+
+[[project.installer.wheels]]
+path = "wheels/greenlet-*.whl"
+distribution = "greenlet"
+
+[[project.installer.wheels]]
+path = "wheels/pyee-*.whl"
+distribution = "pyee"
+
+[[project.installer.wheels]]
+path = "wheels/playwright-*.whl"
+distribution = "playwright"
+
+[[project.installer.wheels]]
+path = "wheels/pwmcp_client-*.whl"
+distribution = "pwmcp-client"
 
 [steps.prepare]
 quiet = true
 commands = [
+  { label = "pwmcp: render CMRU get.py installer", argv = ["cmru", "get-py", "pwmcp", "--output", "get.py"], cwd = "." },
   { label = "pwmcp: validate committed publishable version inputs", argv = ["python3", "scripts/resolve-playwright-version.py", "--check"], cwd = "." },
 ]
 
@@ -41,6 +70,7 @@ commands = [
 quiet = true
 commands = [
   { label = "pwmcp: build Playwright server image", argv = ["python3", "build-push.py", "--build"], cwd = "." },
+  { label = "pwmcp: stage client and Playwright wheels", argv = ["python3", "scripts/prepare-client-wheels.py"], cwd = "." },
   { label = "pwmcp: build stack bundle", argv = ["python3", "scripts/build-bundle.py"], cwd = "." },
 ]
 

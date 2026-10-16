@@ -621,3 +621,25 @@ Remaining: make the README/CONSUMERS mention easier to find from the adoption
 checklist (the existing mentions are in the testing sections only).
 
 **Provenance:** CX-BACKLOG review round 1, 2026-10-06.
+
+## CLI-EXT-32 — audit AC-25 misses a library path built from path pieces
+
+**Status:** Open (found 2026-10-07 by pwmcp PWMCP-02). Size S.
+**Type:** Defect (heuristic gap)
+**Area:** Audit
+
+`_no_path_hacks` flags a source file only when its text contains the literal
+`libraries/cli-extended` and `sys.path` or `PYTHONPATH`. A hack spelled as path pieces,
+`sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "libraries" / "cli-extended" / "src"))`,
+contains neither the joined needle nor `PYTHONPATH`-adjacent text, so `cli-extended audit`
+reports AC-25 `pass` (verified as a plant in pwmcp's worktree; pwmcp's own test catches it with a
+pattern over the pieces).
+
+Ask: also flag `sys.path.insert|append` lines that mention both `"libraries"` and `"cli-extended"`
+(or `cli_extended` with a `src` component), or any `sys.path` mutation whose resolved target
+contains a `cli_extended` package directory. Keep the `allow-path-assertion` exemption.
+
+**Oracle:** a fixture source file with the piecewise insert above fails AC-25; the existing
+literal-needle fixtures and the marker exemption still behave as before.
+
+**Provenance:** pwmcp PWMCP-02 plants, 2026-10-07.

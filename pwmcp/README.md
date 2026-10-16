@@ -40,6 +40,53 @@ ciu -d .
 
 Services come up as one container: `<project>-<env>-pwmcp` on the project network.
 
+## Standalone instance for MDT and other devcontainers
+
+PWMCP publishes a CMRU `get.py` installer and a versioned, checksum-verified
+bundle. With CIU installed, create the install root owned by the user who will
+run CIU, install the current release there, then start it from that root:
+
+The install user needs Docker access and Python 3.11 or newer with `venv` and
+`ensurepip` available (`python3-venv` on Debian).
+
+```bash
+sudo install -d -m 0755 -o "$USER" -g "$(id -gn)" /srv/pwmcp-instance
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
+  | XDG_DATA_HOME=/srv python3 - install --scope user
+export PATH="/srv/pwmcp-instance/bin:$PATH"
+cd /srv/pwmcp-instance
+ciu up
+```
+
+To update the installed release and apply its Compose configuration:
+
+```bash
+set -o pipefail
+curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
+  | XDG_DATA_HOME=/srv python3 - update --scope user
+export PATH="/srv/pwmcp-instance/bin:$PATH"
+cd /srv/pwmcp-instance
+ciu up
+```
+
+The internal deployment keeps PWMCP's existing policy: no authentication and
+no host-published ports. CIU connects the devcontainer to the instance's
+internal Docker network, where its MCP endpoint is `http://pwmcp:8931/mcp` and
+its Playwright endpoint is `ws://pwmcp:3000/`. See the [consumer commands](docs/CONSUMERS.md)
+and the [standalone design](docs/DESIGN-GUIDE.md#standalone-ciu-root-and-installer).
+
+The bundled `pwmcp` CLI can inspect a remote page without installing browser
+binaries in the devcontainer:
+
+```bash
+pwmcp inspect https://example.com --format text
+pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format screenshot --output page.png --full-page
+```
+
+See [CLI usage and output choices](docs/CONSUMERS.md#inspect-a-webpage).
+
 ## Consumer Connection
 
 ### Playwright `connect()` (test suites)
@@ -253,15 +300,15 @@ Applied in both modes:
 Versioned bundles are published to GitHub Releases under the `pwmcp-v<version>` tag:
 
 ```
-pwmcp-v1.62.0-r4
-  pwmcp-1.62.0-r4.tar.xz          ← the deployment bundle
-  pwmcp-1.62.0-r4.tar.xz.sha256   ← sha256sum-verifiable sidecar
+pwmcp-v1.63.0-r3
+  pwmcp-1.63.0-r3.tar.xz          ← the deployment bundle
+  pwmcp-1.63.0-r3.tar.xz.sha256   ← sha256sum-verifiable sidecar
 ```
 
 The release notes embed the SHA256 digest. Verify any downloaded bundle with:
 
 ```bash
-sha256sum -c pwmcp-1.62.0-r4.tar.xz.sha256
+sha256sum -c pwmcp-1.63.0-r3.tar.xz.sha256
 ```
 
 "Latest" is resolved programmatically by scanning `pwmcp-v*` releases and picking the highest semver — this works in a monorepo where GitHub's repo-global "Latest" badge cannot be per-project. The thin `pwmcp-latest` release contains only `latest.json` (a JSON redirect pointing at the versioned release); it does **not** duplicate the heavy bundle asset. Development consumers use that stable manifest URL to rebuild automatically; production consumers may choose an immutable version/digest.
@@ -269,7 +316,7 @@ sha256sum -c pwmcp-1.62.0-r4.tar.xz.sha256
 ### Downloading a specific version
 
 ```bash
-VERSION="1.62.0-r4"
+VERSION="1.63.0-r3"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
   -o "pwmcp-${VERSION}.tar.xz"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
@@ -301,8 +348,8 @@ ciu-build -d . push-images
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — internal and external deploy procedures
 - [docs/SECURITY.md](docs/SECURITY.md) — browser isolation rationale and hardening
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details
-- [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why the release gate delegates judgment to Assay
-- [docs/CONSUMERS.md](docs/CONSUMERS.md) — commands for the R1 and resumable R2 lanes
+- [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why standalone roots and client bundles use these boundaries
+- [docs/CONSUMERS.md](docs/CONSUMERS.md) — installation, updates, CLI inspection, MCP, and release gates
 
 ## Testing
 
@@ -319,10 +366,15 @@ version-intersection invariant and Schemathesis is not applicable.
 
 ### CLI diagnostics
 
-The `pwmcp` client parser prefixes help, usage, missing-argument, unknown-
-argument, and configuration diagnostics with `PWMCP <version> — client utility`
-as line 1. Installed clients read `pwmcp-client` metadata; a source checkout
-uses the version already declared in its client project metadata. The installed
-client also accepts `pwmcp --version`; it prints exactly one `pwmcp <version>`
-line on stdout, exits 0, and writes nothing to stderr. Normal command output is
-unchanged.
+The `pwmcp` client is registered on the shared cli-extended grammar (`contract`,
+`doctor`, `inspect`, `skills`; see [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md)). Help starts with
+`PWMCP <version> — client utility`; a usage error prints its `[ERROR]` diagnostic first,
+then the identity-headed usage, and exits 2. The version has one source,
+`client/src/pwmcp_client/VERSION`, which is also the wheel's metadata version; the CLI
+refuses to run if installed metadata and that file disagree (no literal fallback).
+`pwmcp --version` prints exactly one `pwmcp <version>` line on stdout, exits 0, and writes
+nothing to stderr. `pwmcp contract` output is unchanged; `pwmcp doctor` now reports named
+checks (`contract`, `playwright`, `skills`). The client wheel depends on the `cli-extended`
+wheel, which is published to GitHub Releases only; install it first (see
+[`docs/USAGE.md`](docs/USAGE.md)). The release-step scripts (`build-push.py`,
+`scripts/*.py`) use the same installed library and accept `--dry-run`.

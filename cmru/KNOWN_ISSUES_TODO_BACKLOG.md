@@ -1792,3 +1792,11 @@ gate exercises the regression; README, DESIGN-GUIDE, CONSUMERS, and SPEC documen
 **Fix direction:** run-gate 23.10.0 shipped RG-NARROW (ephemeral lanes mount only the worktree under test plus a sanitized git common dir; main-checkout ephemeral lanes are refused without `--allow-main-checkout`). What remains: raise cmru's `run-gate` floor to 23.10.0 with the reason recorded, then delete the masking machinery (`_mask_secret_overlays`, `_secret_overlay_paths`, `_secret_overlay_lock`, their tests and mutants) and update the "Keeping release credentials out of gate containers" section of `docs/DESIGN-GUIDE.md` and the gate paragraph in `docs/CONSUMERS.md` to say no secret is reachable by construction.
 
 **Oracle:** with the masking removed, a gate run whose repository mount contains a sentinel `cmru.secret.toml` outside the worktree under test shows the sentinel unreadable from the tester container, and `grep -rn _mask_secret_overlays cmru/` finds nothing.
+
+### KI-70 — dependency preflight reads only `<project>/pyproject.toml`, so a project whose wheel lives in a subdirectory (pwmcp: `pwmcp/client/pyproject.toml`) can depend on a first-party wheel without declaring it — *open, severity: minor (found 2026-10-07 by pwmcp PWMCP-02)*
+
+**Observed:** `src/cmru/dependencies.py` (`_pyproject_requirements`, called at the `Path(project_root) / "pyproject.toml"` site) is the only source of the "requires first-party X" check. pwmcp ships its `pwmcp-client` wheel from `pwmcp/client/pyproject.toml` (project root `pwmcp/` has no `pyproject.toml`). With `cli-extended>=0.3.0` declared in that wheel's dependencies and `[orchestration.project.pwmcp] depends_on = ["cmru"]` (no `cli-extended`), `cmru dependencies` still reports `PREFLIGHT: PASS` (verified in the PWMCP-02 worktree by removing the edge again). nyxloom, whose wheel is at its project root, is guarded.
+
+**Fix direction:** let a project name its wheel pyproject(s) in `cmru.toml` (for example `[project] wheel_pyprojects = ["client/pyproject.toml"]`) and run the same requirement check over them, or document that the declaration is manual for nested wheels. pwmcp declares the edge by hand for now.
+
+**Oracle:** a fixture project whose nested `client/pyproject.toml` requires a first-party wheel not listed in `depends_on` fails the preflight naming the consumer, the provider and the nested file.

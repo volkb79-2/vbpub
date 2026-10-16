@@ -61,6 +61,7 @@ tester-unified/local-wheel/*.whl
 downloads/
 eggs/
 .eggs/
+/pwmcp/vendor/
 lib/
 lib64/
 # These `lib/` rules exist for venv layouts (venv/lib/...), but they also swallow

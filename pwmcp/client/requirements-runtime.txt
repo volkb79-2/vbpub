@@ -1,0 +1,3 @@
+# CMRU checks this exact Playwright pin against pwmcp.contract.json.
+cli-extended>=0.3.0
+playwright==1.63.0
