@@ -3,11 +3,11 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-16 (PWMCP-01 R1 verified; release and live acceptance pending).
+Last updated: 2026-10-16 (PWMCP-01 R1 and local CLI/MCP acceptance verified; public bundle publication pending).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
-**Status: IMPLEMENTED 2026-10-15; R1 PASS 2026-10-16; release and live acceptance pending.**
+**Status: IMPLEMENTED 2026-10-15; R1 PASS 2026-10-16; live CLI/MCP acceptance PASS 2026-10-16; public bundle publication pending.**
 
 Consumers needed one page's JavaScript-rendered text or screenshot without
 writing a browser client. Before this change, the CLI exposed only `doctor` and
@@ -28,7 +28,15 @@ flow, and internal MCP endpoint are documented in the README and consumer
 guide. The registered `./run-gate.py r1` passed in `tester-unified` on commit
 `d7caee83c479db157995c90d6730d76b18290ba9`: 247 tests passed, with 719/719
 statements and 206/206 branches covered across the seven judged targets. The
-versioned release and live CLI/MCP acceptance remain pending.
+updated R1 lane also passed on `f335b26b15cafd9a0292e037c52af951b0889fa5`.
+
+Live acceptance passed on 2026-10-16: after `ciu up` from
+`/srv/pwmcp-instance`, `pwmcp inspect https://example.com` returned rendered
+page text, and an MCP client initialized over Streamable HTTP, listed tools,
+navigated to the page, and retrieved its browser snapshot. The public bundle
+remains unpublished because the configured GHCR credential lacks
+`write:packages`; the local installer bundle and service image were deployed
+for this acceptance run.
 
 ## PWMCP-02 — Adopt cli-extended (unified adoption, order 5 of 8)
 
