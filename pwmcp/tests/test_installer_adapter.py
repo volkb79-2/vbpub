@@ -75,3 +75,10 @@ def test_standalone_root_declares_one_default_stack_on_the_shared_network() -> N
     services = root_defaults["deploy"]["phases"]["phase_1"]["services"]
     assert services == [{"path": ".", "name": "pwmcp", "enabled": True}]
     assert override["pwmcp"]["network"]["external_default"] is True
+
+
+def test_compose_reuses_the_exact_local_version_pinned_image() -> None:
+    compose = (PWMCP_ROOT / "ciu.compose.yml.j2").read_text(encoding="utf-8")
+
+    assert "pull_policy: missing" in compose
+    assert "pull_policy: always" not in compose

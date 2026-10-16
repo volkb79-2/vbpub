@@ -16,7 +16,9 @@ services:
     # chrome-devtools-mcp via mcp-proxy (:{{ pwmcp.unified.devtools_port }}) +
     # lighthouse-mcp via mcp-proxy (:{{ pwmcp.unified.lighthouse_port }}) in one container.
     image: {{ pwmcp.unified.image.registry }}/{{ pwmcp.unified.image.namespace }}/{{ pwmcp.unified.image.name }}:{{ pwmcp.unified.image.tag }}
-    pull_policy: always
+    # PWMCP images use a prepared, version-pinned tag. Reuse that exact local
+    # image when present; fetch it only on a cold host.
+    pull_policy: missing
     container_name: {{ deploy.project_name }}-{{ deploy.environment_tag }}-{{ pwmcp.unified.name }}
     # No command override — supervisord is the ENTRYPOINT; it manages all services.
     user: "{{ pwmcp.hardening.run_as_uid }}:{{ pwmcp.hardening.run_as_gid }}"

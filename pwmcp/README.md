@@ -82,6 +82,8 @@ PWMCP's existing policy: no authentication and no host-published ports. Its
 MCP endpoint is `http://pwmcp:8931/mcp` and its Playwright endpoint is
 `ws://pwmcp:3000/`. See the [consumer commands](docs/CONSUMERS.md) and the
 [standalone design](docs/DESIGN-GUIDE.md#standalone-ciu-root-and-installer).
+The Compose stack uses the exact version-pinned image from the local cache
+when available and pulls it on a cold host.
 
 The bundled `pwmcp` CLI can inspect a remote page without installing browser
 binaries in the devcontainer:

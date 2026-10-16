@@ -20,6 +20,8 @@ its checksum before atomically installing it. See the
 ## Internal Mode (Dev / CI — Default)
 
 The unified container (`pwmcp`) runs on the project Docker network with plain HTTP and no auth. Sibling containers reach all services by **container name** — never via `localhost`.
+Compose reuses the configured version-pinned image from the local cache and
+pulls the tag only when that image is absent.
 
 ### Network joining
 
