@@ -116,7 +116,12 @@ declared by the contract. This companion client is intentionally not on PyPI.
 Port 3000 is a policy gateway. Its defaults are two concurrent clients, a
 30-minute lease, a two-hour maximum, and a 30-second idle recycle. Override
 them in `[pwmcp.run_server]`. A client may request a lease, but it cannot exceed
-the server-side ceiling.
+the server-side ceiling. The gateway accepts only CIU-derived service names,
+consumer aliases, and the configured external hostname; it rewrites `Host` and
+`Origin` to the loopback run-server before forwarding. This does not change the
+internal policy: anyone on the internal network can use the service without
+authentication. See the [design guide](docs/DESIGN-GUIDE.md#run-server-host-validation)
+for why the proxy validates and rewrites these headers.
 
 ### MCP
 
