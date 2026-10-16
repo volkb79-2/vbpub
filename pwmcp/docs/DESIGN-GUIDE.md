@@ -76,3 +76,18 @@ on exit. This keeps browser binaries and browser process cleanup in PWMCP while
 giving an operator text, accessibility snapshot, or screenshot output from one
 command. `--wait-until` follows Playwright's navigation states, and
 `--wait-for` waits for a visible selector before reading the rendered page.
+
+### Certificate errors during inspection
+
+The CLI keeps normal certificate validation enabled by default. For a known,
+trusted device that uses a self-signed or otherwise invalid certificate,
+`pwmcp inspect URL --ignore-https-errors` creates a temporary Playwright
+browser context with `ignore_https_errors=True`. The context is closed with the
+inspection, so this does not change the shared service's browser or TLS policy.
+
+Playwright scopes this setting to a browser context rather than an individual
+hostname. It therefore covers redirects and HTTPS subresources from any host
+loaded by that page for this invocation. The CLI describes that scope directly
+and leaves the choice opt-in; a hostname-specific certificate bypass is not
+available through this Playwright context option. See the
+[consumer example](CONSUMERS.md#inspect-a-webpage).

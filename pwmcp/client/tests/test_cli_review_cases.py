@@ -60,7 +60,9 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    context_options: list[bool] = []
+
     class FakePlaywrightError(Exception):
         pass
 
@@ -84,8 +86,20 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> None:
         def screenshot(self, **_kwargs: object) -> bytes:
             return b"reviewed screenshot"
 
+    class FakeContext:
+        def new_page(self) -> FakePage:
+            return FakePage()
+
+        def close(self) -> None:
+            return None
+
+    class FakeBrowser:
+        def new_context(self, *, ignore_https_errors: bool) -> FakeContext:
+            context_options.append(ignore_https_errors)
+            return FakeContext()
+
     class FakeLease:
-        browser = types.SimpleNamespace(new_page=lambda: FakePage())
+        browser = FakeBrowser()
 
         def __enter__(self) -> "FakeLease":
             return self
@@ -105,6 +119,7 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "playwright", playwright)
     monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
     monkeypatch.setattr(cli_module, "BrowserLease", BrowserLeaseStub)
+    return context_options
 
 
 @pytest.mark.parametrize("row", _cases())
@@ -114,8 +129,9 @@ def test_reviewed_case(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    context_options: list[bool] = []
     if row["invocation"][0] == "inspect":
-        _install_review_browser(monkeypatch)
+        context_options = _install_review_browser(monkeypatch)
     status = cli_module.main(list(row["invocation"]))  # type: ignore[call-overload]
     captured = capsys.readouterr()
     assert status == row["expected_exit_status"], captured
@@ -123,6 +139,13 @@ def test_reviewed_case(
     assert row["expected_stderr_contains"] in captured.err, captured
     assert "Traceback" not in captured.err
     invocation = list(row["invocation"])
+    if invocation[0] == "inspect":
+        expected_context_options = (
+            ["--ignore-https-errors" in invocation]
+            if row["expected_exit_status"] == 0
+            else []
+        )
+        assert context_options == expected_context_options
     if "--output" in invocation:
         output = sandbox / invocation[invocation.index("--output") + 1]
         assert output.is_file()

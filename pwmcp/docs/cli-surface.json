@@ -148,7 +148,8 @@
         "option:route:entrypoint:pwmcp/inspect/--format",
         "option:route:entrypoint:pwmcp/inspect/--wait-until",
         "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
-        "option:route:entrypoint:pwmcp/inspect/--full-page"
+        "option:route:entrypoint:pwmcp/inspect/--full-page",
+        "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors"
       ],
       "route_id": "route:entrypoint:pwmcp/inspect",
       "shape": {
@@ -157,7 +158,8 @@
           "option:route:entrypoint:pwmcp/inspect/--format",
           "option:route:entrypoint:pwmcp/inspect/--wait-until",
           "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
-          "option:route:entrypoint:pwmcp/inspect/--full-page"
+          "option:route:entrypoint:pwmcp/inspect/--full-page",
+          "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:pwmcp/inspect/url": 1
@@ -168,7 +170,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:bf464ec5a4d6e5c5095f4892b7ca9773db133d92b864bd5e8cec71bbbd092c4a"
+      "signature": "sha256:77e2e991af2ae5e1452cf8e008082df929ef04d69f305e113b1c06fa98ce87c8"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d",
@@ -312,6 +314,19 @@
         "spelling": "--full-page"
       },
       "signature": "sha256:2ba90037d46ff98ce4d9a407a22cdf25a1f2a3dfbbedb24795630f2b3504e958"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--ignore-https-errors/--ignore-https-errors",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors",
+        "spelling": "--ignore-https-errors"
+      },
+      "signature": "sha256:c4bced7b30e2eb5a00419d4efac3f7c37898b716f8c869f035eece8e69c0efe4"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--json/--json",
@@ -1651,6 +1666,44 @@
           "help_group": "OUTPUT",
           "hidden": false,
           "id": "option:route:entrypoint:pwmcp/inspect/--full-page",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ignore-https-errors",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "accept invalid HTTPS certificates for any host in this inspection context",
+          "dest": "ignore_https_errors",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ignore-https-errors"
+          ],
+          "help_group": "TLS",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors",
           "kind": "option",
           "metavar": null,
           "minimum_values": 0,

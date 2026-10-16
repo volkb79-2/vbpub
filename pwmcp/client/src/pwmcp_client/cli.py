@@ -94,25 +94,31 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             label="pwmcp-inspect",
             timeout_ms=args.timeout_ms,
         ) as lease:
-            page = lease.browser.new_page()
-            page.goto(args.url, wait_until=args.wait_until, timeout=args.timeout_ms)
-            if args.wait_for:
-                page.locator(args.wait_for).wait_for(
-                    state="visible", timeout=args.timeout_ms
-                )
+            context = lease.browser.new_context(
+                ignore_https_errors=args.ignore_https_errors
+            )
+            try:
+                page = context.new_page()
+                page.goto(args.url, wait_until=args.wait_until, timeout=args.timeout_ms)
+                if args.wait_for:
+                    page.locator(args.wait_for).wait_for(
+                        state="visible", timeout=args.timeout_ms
+                    )
 
-            if args.format == "text":
-                payload = page.locator("body").inner_text(timeout=args.timeout_ms)
-            elif args.format == "snapshot":
-                payload = page.locator("body").aria_snapshot(timeout=args.timeout_ms)
-            else:
-                assert output_path is not None
-                payload = page.screenshot(
-                    full_page=args.full_page,
-                    type=image_type,
-                    animations="disabled",
-                    timeout=args.timeout_ms,
-                )
+                if args.format == "text":
+                    payload = page.locator("body").inner_text(timeout=args.timeout_ms)
+                elif args.format == "snapshot":
+                    payload = page.locator("body").aria_snapshot(timeout=args.timeout_ms)
+                else:
+                    assert output_path is not None
+                    payload = page.screenshot(
+                        full_page=args.full_page,
+                        type=image_type,
+                        animations="disabled",
+                        timeout=args.timeout_ms,
+                    )
+            finally:
+                context.close()
     except (PwmcpError, PlaywrightError, OSError, ValueError) as exc:
         raise CliFailure(
             f"pwmcp inspect failed: {exc}",
@@ -173,6 +179,7 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
             "pwmcp inspect https://example.com --format snapshot --output page.yml",
             "pwmcp inspect https://example.com --format screenshot --output page.png --full-page",
             "pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded",
+            "pwmcp inspect https://self-signed.example --ignore-https-errors",
         ),
         include_progress=False,
         arguments=(ArgumentSpec(
@@ -221,6 +228,12 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
                 ("--full-page",),
                 "capture the full scrollable page when taking a screenshot",
                 group="OUTPUT",
+                parser_kwargs={"action": "store_true"},
+            ),
+            OptionSpec(
+                ("--ignore-https-errors",),
+                "accept invalid HTTPS certificates for any host in this inspection context",
+                group="TLS",
                 parser_kwargs={"action": "store_true"},
             ),
         ),

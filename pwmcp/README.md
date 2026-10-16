@@ -92,9 +92,13 @@ binaries in the devcontainer:
 pwmcp inspect https://example.com --format text
 pwmcp inspect https://example.com --format snapshot --output page.yml
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
+pwmcp inspect https://self-signed.example --ignore-https-errors
 ```
 
-See [CLI usage and output choices](docs/CONSUMERS.md#inspect-a-webpage).
+Use `--ignore-https-errors` only for a trusted target with a known invalid
+certificate. It applies to HTTPS requests in that one inspection context.
+See [CLI usage and output choices](docs/CONSUMERS.md#inspect-a-webpage) and the
+[certificate-bypass design](docs/DESIGN-GUIDE.md#certificate-errors-during-inspection).
 
 ## Consumer Connection
 

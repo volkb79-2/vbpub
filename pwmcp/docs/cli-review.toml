@@ -785,14 +785,27 @@ test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-h
 id = "case:route:entrypoint:pwmcp/inspect/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:bf464ec5a4d6e5c5095f4892b7ca9773db133d92b864bd5e8cec71bbbd092c4a"
-rationale = "The required URL is the only operand; text output, load wait, and the standard timeout apply by default."
+reviewed_signature = "sha256:77e2e991af2ae5e1452cf8e008082df929ef04d69f305e113b1c06fa98ce87c8"
+rationale = "The required URL is the only operand; certificate verification stays enabled, with text output, load wait, and the standard timeout by default."
 invocation = ["inspect", "https://example.test"]
 expected_exit_status = 0
 expected_stdout_contains = "rendered page text"
 expected_stderr_contains = ""
 effects = ["Opens one remote browser lease, waits for the page to render, and prints its body text; the lease closes afterward."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--ignore-https-errors/--ignore-https-errors"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c4bced7b30e2eb5a00419d4efac3f7c37898b716f8c869f035eece8e69c0efe4"
+rationale = "A caller can opt into invalid-certificate acceptance for a trusted endpoint; the setting is limited to this inspection's temporary browser context."
+invocation = ["inspect", "https://example.test", "--ignore-https-errors", "--wait-until", "commit"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Creates one isolated Playwright context with ignore_https_errors enabled for this invocation, reads rendered text, then closes the context and lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---ignore-https-errors---wait-until-commit]"]
 
 [[cases]]
 id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d"
