@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-05 (PWMCP-02 filed).
+Last updated: 2026-10-16 (PWMCP-04 filed).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -74,3 +74,29 @@ proposal only; implementation shape and security boundaries still need review.
 **Required contract.** Examples use a placeholder (`<project>-<instance_id>-pwmcp`) and say how to resolve the real name, with `ciu resolve --json` or `docker ps --filter label=com.docker.compose.service=pwmcp`.
 
 **Oracle.** `grep -nE '[a-z0-9]+-[a-z0-9]{6}-(pwmcp|network)' .claude/skills/pwmcp-fetch/SKILL.md` finds no literal id.
+
+## PWMCP-04 — Recover transient browser WebSocket failures during worker recycle
+
+**Status: OPEN — candidate.**
+
+**Observed 2026-10-16.** With PWMCP `1.64.0-r1` and Playwright `1.64.0`, a direct
+`chromium.connect("ws://pwmcp:3000/")` call once failed with `socket hang up`
+and WebSocket close code `1006`. At the same time, `pwmcp doctor` passed the
+release and Playwright checks and Docker reported the PWMCP container healthy.
+The container log showed a `run-server` recycle and a gateway session closed
+with `reason=upstream_error`; the next `pwmcp inspect` call succeeded. This is
+evidence of a transient connection failure near worker recycling, not a
+confirmed root cause.
+
+**Required investigation.** Reproduce a client connection during the idle
+`run-server` recycle and determine whether the gateway should hold the request
+until a worker is ready or return a typed, retryable availability error. Make
+the supported Python `connect()` path resilient to that lifecycle edge, with a
+bounded retry only before a browser session is established. Page navigation
+and interaction failures must remain visible to the caller.
+
+**Oracle.** A repeatable test forces the worker recycle while clients connect.
+Each connection either succeeds or returns a documented retryable error, no
+orphan browser lease remains, and a page/action error is never retried as a
+connection startup failure. `pwmcp doctor` alone does not count as evidence for
+this lifecycle case.
