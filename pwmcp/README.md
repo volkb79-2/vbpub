@@ -72,6 +72,9 @@ cd /srv/pwmcp-instance
 ciu up
 ```
 
+The installer keeps the generated CIU identity and the instance's sparse
+`ciu.toml.j2` override across updates.
+
 The first `ciu env generate` records the devcontainer's CIU identity and
 internal network; later updates keep those generated facts. `ciu up` starts the
 root's PWMCP stack on that shared network. The internal deployment keeps

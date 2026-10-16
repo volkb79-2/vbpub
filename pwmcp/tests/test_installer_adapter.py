@@ -17,7 +17,7 @@ spec.loader.exec_module(adapter)
 
 def _release_tree(tmp_path: Path) -> tuple[Path, Path]:
     release_root = tmp_path / "releases" / "pwmcp-v1.63.0-r4" / "tree"
-    for release_path in adapter.ROOT_LINKS.values():
+    for release_path in [*adapter.ROOT_LINKS.values(), adapter.INSTALL_OVERRIDE]:
         target = release_root / release_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("# release input\n", encoding="utf-8")
@@ -35,18 +35,29 @@ def test_installer_adapter_links_all_standalone_ciu_inputs(tmp_path: Path) -> No
         assert link.is_symlink()
         assert link.readlink() == Path("current") / "tree" / release_path
 
-    # An update reuses the stable current/tree links instead of replacing them.
+    override = instance_root / adapter.INSTALL_OVERRIDE_NAME
+    assert override.is_file()
+    assert not override.is_symlink()
+    assert override.read_text(encoding="utf-8") == (
+        release_root / adapter.INSTALL_OVERRIDE
+    ).read_text(encoding="utf-8")
+
+    # An update reuses stable release links and leaves the site override alone.
+    override.write_text("# operator edit\n", encoding="utf-8")
     adapter._install_links(release_root)
     adapter._check_links(release_root)
+    assert override.read_text(encoding="utf-8") == "# operator edit\n"
 
 
 def test_installer_adapter_refuses_an_unowned_root_config(tmp_path: Path) -> None:
     release_root, instance_root = _release_tree(tmp_path)
-    config_link = instance_root / "ciu.toml.j2"
-    config_link.symlink_to("operator-owned.toml.j2")
+    config_link = instance_root / "ciu.compose.yml.j2"
+    config_link.symlink_to("operator-owned.yml.j2")
 
     with pytest.raises(FileExistsError, match="refusing to replace unrelated symlink"):
         adapter._install_links(release_root)
+
+    assert config_link.readlink() == Path("operator-owned.yml.j2")
 
 
 def test_standalone_root_declares_one_default_stack_on_the_shared_network() -> None:
