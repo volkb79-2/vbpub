@@ -83,10 +83,10 @@ Original plan (filed 2026-10-05 by the cli-extended unified-adoption program, W1
 
 ## PWMCP-03 — Opt-in invalid-certificate support for `pwmcp inspect`
 
-**Status: IMPLEMENTED 2026-10-16; focused tests, CLI surface review, and live-host acceptance pass; R1 pending.**
+**Status: IMPLEMENTED 2026-10-16; `cli-extended` audit and surface check pass; R1 PASS; live-host acceptance PASS.**
 
 **Observed.** `pwmcp inspect` failed with `ERR_CERT_AUTHORITY_INVALID` on the supplied TrueNAS host, while consumers could connect with Playwright by setting `ignore_https_errors=True` on their browser context.
 
 **Fix.** Add `pwmcp inspect URL --ignore-https-errors`. It creates a temporary Playwright context with certificate errors ignored only for that invocation, then closes the context and the managed browser lease. This setting is context-wide: redirects and HTTPS resources loaded from other hosts in the page are included. Certificate verification remains on by default, and PWMCP's shared service policy is unchanged.
 
-**Oracle.** Unit coverage proves the default passes `ignore_https_errors=False`, the option passes `True`, and the context closes on success and navigation failure. On 2026-10-16, the CLI reproduced the certificate failure without the flag, then returned the live sign-in form snapshot with the flag and a visible username-field wait. The initial root URL redirects to `/ui/signin`; waiting for `input[autocomplete="username"]` allows the JavaScript UI to hydrate before inspection. `cli-extended audit` and `surface check` pass. Full release-gate evidence is recorded after the R1 run.
+**Oracle.** Unit coverage proves the default passes `ignore_https_errors=False`, the option passes `True`, and the context closes on success and navigation failure. On 2026-10-16, the CLI reproduced the certificate failure without the flag, then returned the live sign-in form snapshot with the flag and a visible username-field wait. The initial root URL redirects to `/ui/signin`; waiting for `input[autocomplete="username"]` allows the JavaScript UI to hydrate before inspection. `cli-extended audit` passed 15/15 checks, `surface check` passed, and `./run-gate.py r1` passed on implementation commit `849129bfc8df05c35d31fad0a99349bbea51a49a`.
