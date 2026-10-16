@@ -218,7 +218,9 @@ def test_release_identity_comes_from_the_committed_contract_with_no_fallback(
 # --- the release-step bodies behind the registrations (not coverage-judged) ----------
 
 
-def test_build_bundle_body(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_build_bundle_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     module = _load(SCRIPTS / "build-bundle.py", "pwmcp_script_cli_build_bundle")
     monkeypatch.setattr(module, "load_vars", lambda: {})
     monkeypatch.delenv("PWMCP_VERSION", raising=False)
