@@ -581,6 +581,13 @@ def test_update_helpers_refuse_template_drift(tmp_path: Path) -> None:
     with pytest.raises(SystemExit):
         resolver.update_dockerfile(dockerfile, "1.2.3", "not-a-digest")
     dockerfile.write_text(
+        "ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n"
+        "FROM mcr.microsoft.com/playwright:v${PLAYWRIGHT_VERSION}-${PLAYWRIGHT_DISTRO}@${PLAYWRIGHT_IMAGE_DIGEST}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit):
+        resolver.update_dockerfile(dockerfile, "1.2.3", DIGEST)
+    dockerfile.write_text(
         "ARG PLAYWRIGHT_VERSION=1.0.0\n"
         "ARG PLAYWRIGHT_IMAGE_DIGEST=" + DIGEST + "\n"
         "FROM mcr.microsoft.com/playwright:broken\n",
