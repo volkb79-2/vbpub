@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 
@@ -238,6 +240,70 @@ def test_build_bundle_body(
     out = capsys.readouterr().out
     assert "Building bundle for pwmcp-1.2.3-r4" in out
     assert "bundle.tar.xz" in out
+
+
+def test_installer_wheel_projection_covers_every_bundled_wheel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load(SCRIPTS / "build-bundle.py", "pwmcp_script_cli_build_bundle_wheels")
+    bundle_root = tmp_path / "bundle"
+    wheels_dir = bundle_root / "wheels"
+    wheels_dir.mkdir(parents=True)
+    declared = wheels_dir / "pyee-13.0.1-py3-none-any.whl"
+    missing = wheels_dir / "typing_extensions-4.16.0-py3-none-any.whl"
+    declared.write_bytes(b"declared wheel")
+    missing.write_bytes(b"transitive wheel")
+
+    project_file = tmp_path / "cmru.toml"
+    project_file.write_text(
+        '[project.installer]\n'
+        'wheels = [\n'
+        '  { path = "wheels/pyee-*.whl", distribution = "pyee" },\n'
+        ']\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "PROJECT_TOML", project_file)
+    monkeypatch.setattr(module, "OUTPUT_BUNDLE", bundle_root)
+    monkeypatch.setattr(module, "build_bundle_manifest", lambda **_kwargs: {})
+    written: list[tuple[dict[str, object], Path]] = []
+    monkeypatch.setattr(
+        module,
+        "write_manifest",
+        lambda manifest, path: written.append((manifest, path)),
+    )
+
+    with pytest.raises(RuntimeError, match="missing from .*typing_extensions-4.16.0"):
+        module._write_installer_manifest("1.2.3-r1")
+
+    project_file.write_text(
+        '[project.installer]\n'
+        'wheels = [\n'
+        '  { path = "wheels/pyee-*.whl", distribution = "pyee" },\n'
+        '  { path = "wheels/typing_extensions-*.whl", distribution = "typing_extensions" },\n'
+        ']\n',
+        encoding="utf-8",
+    )
+    module._write_installer_manifest("1.2.3-r1")
+    assert written[0][0]["typing_extensions"]["wheel"] == missing.name
+    assert written[0][0]["pyee"]["wheel"] == declared.name
+
+
+def test_generated_installer_wheel_projection_matches_cmru_config() -> None:
+    config = tomllib.loads((PWMCP / "cmru.toml").read_text(encoding="utf-8"))
+    expected = [
+        (spec["path"], spec["distribution"])
+        for spec in config["project"]["installer"]["wheels"]
+    ]
+    tree = ast.parse((PWMCP / "get.py").read_text(encoding="utf-8"))
+    assignment = next(
+        node for node in tree.body
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "WHEEL_SPECS"
+    )
+    actual = [tuple(item) for item in ast.literal_eval(assignment.value)]
+    assert actual == expected
+    assert "typing_extensions" in {distribution for _, distribution in actual}
 
 
 def test_publish_bundle_body(

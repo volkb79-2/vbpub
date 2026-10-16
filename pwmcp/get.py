@@ -70,7 +70,7 @@ MANIFEST_PUBKEY  = ""
 REQUIRED_COMMANDS: List[str] = ["python3"]
 PRESERVE_PATHS: List[str]    = []
 # [(glob, distribution), ...] in install order (cli-extended is hoisted first at install).
-WHEEL_SPECS: List[Tuple[str, str]] = [["wheels/cli_extended-*.whl", "cli-extended"], ["wheels/greenlet-*.whl", "greenlet"], ["wheels/pyee-*.whl", "pyee"], ["wheels/playwright-*.whl", "playwright"], ["wheels/pwmcp_client-*.whl", "pwmcp-client"]]
+WHEEL_SPECS: List[Tuple[str, str]] = [["wheels/cli_extended-*.whl", "cli-extended"], ["wheels/greenlet-*.whl", "greenlet"], ["wheels/pyee-*.whl", "pyee"], ["wheels/typing_extensions-*.whl", "typing_extensions"], ["wheels/playwright-*.whl", "playwright"], ["wheels/pwmcp_client-*.whl", "pwmcp-client"]]
 # Commands exposed as <root>/bin/<cmd> -> ../current/venv/bin/<cmd>.
 LAUNCHERS: List[str] = ["pwmcp"]
 # Per-interpreter variants (S-REL.6). [] ⇒ one unambiguous single-asset release.
