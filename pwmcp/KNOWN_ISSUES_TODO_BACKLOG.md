@@ -3,11 +3,11 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-15 (PWMCP-01 implemented; PWMCP-02 fixed).
+Last updated: 2026-10-16 (PWMCP-01 R1 verified; release and live acceptance pending).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
-**Status: IMPLEMENTED 2026-10-15; release-gate verification pending.**
+**Status: IMPLEMENTED 2026-10-15; R1 PASS 2026-10-16; release and live acceptance pending.**
 
 Consumers needed one page's JavaScript-rendered text or screenshot without
 writing a browser client. Before this change, the CLI exposed only `doctor` and
@@ -25,7 +25,10 @@ the service available to agents over the existing internal network.
 
 The consumer examples, output formats, wait states, standalone install/update
 flow, and internal MCP endpoint are documented in the README and consumer
-guide. PWMCP's release gate has not been run in this work session.
+guide. The registered `./run-gate.py r1` passed in `tester-unified` on commit
+`d7caee83c479db157995c90d6730d76b18290ba9`: 247 tests passed, with 719/719
+statements and 206/206 branches covered across the seven judged targets. The
+versioned release and live CLI/MCP acceptance remain pending.
 
 ## PWMCP-02 — Adopt cli-extended (unified adoption, order 5 of 8)
 
