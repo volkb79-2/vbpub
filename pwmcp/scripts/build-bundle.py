@@ -34,6 +34,7 @@ def _write_installer_manifest(pwmcp_version: str) -> None:
         tag=f"pwmcp-v{pwmcp_version}",
         bundle_root=OUTPUT_BUNDLE,
     )
+    installer_wheels: set[Path] = set()
     for spec in wheel_specs:
         pattern = spec["path"]
         distribution = spec["distribution"]
@@ -46,11 +47,21 @@ def _write_installer_manifest(pwmcp_version: str) -> None:
                 f"expected one bundled wheel for {distribution!r} ({pattern}), got {len(matches)}"
             )
         wheel = matches[0]
+        installer_wheels.add(wheel.resolve())
         manifest[distribution] = {
             "wheel": wheel.name,
             "sha256": sha256_file(wheel),
             "size": wheel.stat().st_size,
         }
+    unlisted_wheels = sorted(
+        path for path in OUTPUT_BUNDLE.glob("wheels/*.whl")
+        if path.resolve() not in installer_wheels
+    )
+    if unlisted_wheels:
+        names = ", ".join(path.name for path in unlisted_wheels)
+        raise RuntimeError(
+            "bundle contains wheel(s) missing from [project.installer.wheels]: " + names
+        )
     write_manifest(manifest, OUTPUT_BUNDLE / "manifest.json")
 
 # Strict prepared-coordinate loader and shared script registration (sibling _vars.py).

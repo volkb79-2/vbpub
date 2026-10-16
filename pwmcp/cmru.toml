@@ -46,6 +46,10 @@ path = "wheels/pyee-*.whl"
 distribution = "pyee"
 
 [[project.installer.wheels]]
+path = "wheels/typing_extensions-*.whl"
+distribution = "typing_extensions"
+
+[[project.installer.wheels]]
 path = "wheels/playwright-*.whl"
 distribution = "playwright"
 
