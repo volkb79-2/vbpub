@@ -230,6 +230,8 @@ def test_build_bundle_body(monkeypatch: pytest.MonkeyPatch, capsys: pytest.Captu
     monkeypatch.setenv("PWMCP_VERSION", "1.2.3-r4")
     monkeypatch.setattr(module, "run_bundle", lambda toml: toml.parent / "dist" / "bundle.tar.xz")
     monkeypatch.setattr(module, "_write_installer_manifest", lambda version: None)
+    monkeypatch.setattr(module, "parse_config", lambda toml: toml)
+    monkeypatch.setattr(module, "create_archive", lambda _config: tmp_path / "bundle.tar.xz")
     module.main([])
     out = capsys.readouterr().out
     assert "Building bundle for pwmcp-1.2.3-r4" in out
