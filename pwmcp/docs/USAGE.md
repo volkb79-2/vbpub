@@ -317,7 +317,7 @@ curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-latest/la
 
 ```bash
 # Pin a specific release:
-VERSION="1.62.0-r4"
+VERSION="1.63.0-r3"
 mkdir -p services/pwmcp
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
   -o "pwmcp-${VERSION}.tar.xz"
@@ -344,7 +344,7 @@ The unified container comes up as `pwmcp-pwmcp` (default project name `pwmcp`) o
 Download a newer bundle, verify it, re-read `playwright_version`, reinstall the pinned client, redeploy:
 
 ```bash
-VERSION="1.62.0-r1"
+VERSION="1.63.0-r3"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
   -o "pwmcp-${VERSION}.tar.xz"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \

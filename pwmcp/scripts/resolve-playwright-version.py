@@ -9,9 +9,8 @@ Steps:
      not publishable until its matching base-image tag exists, and PWMCP's
      Python and npm consumers must agree on one version.
   3. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*).
-  4. Update ciu.defaults.toml.j2 and ciu.toml.j2 (playwright_version + image.tag).
-  5. Update the Dockerfile and docker-bake.hcl with the matching base-image digest.
-  6. Write cmru.vars for downstream scripts.
+  4. Update CIU configs, client dependency projections, Dockerfile, and bake defaults.
+  5. Write cmru.vars for downstream scripts.
 
 Outputs:
   pwmcp/cmru.vars  — KEY=VALUE env file consumed by build-bundle.py / publish-bundle.py
@@ -19,6 +18,7 @@ Outputs:
   ciu.defaults.toml.j2 — playwright_version and image.tag updated in-place (PyPI version)
   ciu.toml.j2          — same (kept in sync with defaults)
   docker-bake.hcl      — common-version defaults updated in-place
+  client/pyproject.toml and client/requirements-runtime.txt — exact runtime dependencies
 
 Consumer contract:
   - :latest and :latest-npm track the same reviewed version available from all
@@ -33,6 +33,7 @@ import re
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
@@ -61,6 +62,7 @@ BAKE_FILE = PWMCP_DIR / "docker-bake.hcl"
 RELEASE_VARS_FILE = PWMCP_DIR / "cmru.vars"
 CONTRACT_FILE = PWMCP_DIR / "pwmcp.contract.json"
 CLIENT_REQUIREMENTS_FILE = PWMCP_DIR / "client" / "requirements-runtime.txt"
+CLIENT_PROJECT_FILE = PWMCP_DIR / "client" / "pyproject.toml"
 DOCKERFILE = PWMCP_DIR / "containers" / "pwmcp" / "Dockerfile"
 LIGHTHOUSE_PACKAGE_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package.json"
 LIGHTHOUSE_LOCK_FILE = PWMCP_DIR / "containers" / "pwmcp" / "lighthouse-mcp" / "package-lock.json"
@@ -358,11 +360,22 @@ def update_bake_hcl(
     path.write_text(content, encoding="utf-8")
 
 
-def update_dockerfile(path: Path, image_digest: str) -> None:
-    """Update the authoritative base-image digest in Dockerfile ARG and FROM."""
+def update_dockerfile(path: Path, playwright_version: str, image_digest: str) -> None:
+    """Update the Dockerfile's Playwright version and base-image digest projection."""
     if re.fullmatch(r"sha256:[0-9a-f]{64}", image_digest) is None:
         fail(f"Dockerfile base-image digest is not a sha256 digest: {image_digest!r}")
     content = path.read_text(encoding="utf-8")
+    content, version_matches = re.subn(
+        r"(^ARG PLAYWRIGHT_VERSION=)[^\s]+$",
+        rf"\g<1>{playwright_version}",
+        content,
+        flags=re.MULTILINE,
+    )
+    if version_matches != 1:
+        fail(
+            f"{path.name} must contain exactly one PLAYWRIGHT_VERSION ARG "
+            f"(found {version_matches})"
+        )
     content, arg_matches = re.subn(
         r"(^ARG PLAYWRIGHT_IMAGE_DIGEST=)[^\s]+$",
         rf"\g<1>{image_digest}",
@@ -413,12 +426,39 @@ def update_client_runtime_requirements(path: Path, playwright_version: str) -> N
             f"{path.name} must declare exactly one cli-extended minimum requirement "
             "before the client dependency can be refreshed"
         )
+    content = CLIENT_PROJECT_FILE.read_text(encoding="utf-8")
+    project = tomllib.loads(content).get("project", {})
+    dependencies = project.get("dependencies")
+    current_pins = [
+        item for item in dependencies or []
+        if isinstance(item, str) and re.fullmatch(r"playwright==\d+\.\d+\.\d+", item)
+    ]
+    cli_pins = [
+        item for item in dependencies or []
+        if isinstance(item, str) and re.fullmatch(r"cli[-_.]extended\s*>=\s*\d+(?:\.\d+)*", item, re.IGNORECASE)
+    ]
+    if (
+        not isinstance(dependencies, list)
+        or len(current_pins) != 1
+        or len(cli_pins) != 1
+        or len(dependencies) != 2
+        or dependencies != lines
+    ):
+        fail(f"{CLIENT_PROJECT_FILE.name} must declare the dependencies listed in {path.name}")
+    updated, matches = re.subn(
+        rf"(?<![\w.-])playwright=={re.escape(current_pins[0].partition('==')[2])}(?![\w.-])",
+        f"playwright=={playwright_version}",
+        content,
+    )
+    if matches != 1:
+        fail(f"{CLIENT_PROJECT_FILE.name} must contain exactly one Playwright dependency pin")
     path.write_text(
         "# CMRU checks this exact Playwright pin against pwmcp.contract.json.\n"
         f"{cli_requirements[0]}\n"
         f"playwright=={playwright_version}\n",
         encoding="utf-8",
     )
+    CLIENT_PROJECT_FILE.write_text(updated, encoding="utf-8")
 
 
 def check_client_runtime_requirements(playwright_version: str) -> None:
@@ -436,8 +476,14 @@ def check_client_runtime_requirements(playwright_version: str) -> None:
         f"playwright=={playwright_version}",
     ]:
         fail(
-            f"{CLIENT_REQUIREMENTS_FILE.relative_to(PWMCP_DIR)} must declare one "
+            f"{CLIENT_REQUIREMENTS_FILE.name} must declare one "
             f"cli-extended minimum followed by playwright=={playwright_version}"
+        )
+    project = tomllib.loads(CLIENT_PROJECT_FILE.read_text(encoding="utf-8")).get("project", {})
+    if project.get("dependencies") != lines:
+        fail(
+            f"{CLIENT_PROJECT_FILE.name} dependencies must match "
+            f"{CLIENT_REQUIREMENTS_FILE.name}"
         )
 
 
@@ -688,13 +734,13 @@ def refresh_upstream_projection(age_window_days: int = TEMPORARY_AGE_WINDOW_DAYS
     log(f"Updating {BAKE_FILE.name}...")
     update_bake_hcl(BAKE_FILE, agreed_version, pwmcp_version, image_digest)
 
-    log(f"Updating {DOCKERFILE.name} with base-image digest {image_digest}...")
-    update_dockerfile(DOCKERFILE, image_digest)
+    log(f"Updating {DOCKERFILE.name} with Playwright {agreed_version} and digest {image_digest}...")
+    update_dockerfile(DOCKERFILE, agreed_version, image_digest)
 
     log(f"Updating {CONTRACT_FILE.name}...")
     update_contract(CONTRACT_FILE, release=pwmcp_version, playwright_version=agreed_version)
 
-    log(f"Updating {CLIENT_REQUIREMENTS_FILE.relative_to(PWMCP_DIR)}...")
+    log(f"Updating {CLIENT_REQUIREMENTS_FILE.name}...")
     update_client_runtime_requirements(CLIENT_REQUIREMENTS_FILE, agreed_version)
 
     log(f"Writing {RELEASE_VARS_FILE.name}...")

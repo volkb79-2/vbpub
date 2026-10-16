@@ -220,7 +220,7 @@ when reproducibility matters more than tracking latest.
 Every published bundle has a `.sha256` sidecar in the same release:
 
 ```bash
-VERSION="1.62.0-r4"
+VERSION="1.63.0-r3"
 curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
   -o "pwmcp-${VERSION}.tar.xz.sha256"
 sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"

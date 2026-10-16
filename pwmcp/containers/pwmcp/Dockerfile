@@ -15,7 +15,7 @@
 #
 # PLAYWRIGHT_VERSION MUST match the base image tag AND the version connect()
 # consumers install (`pip install playwright==<PLAYWRIGHT_VERSION>`).
-ARG PLAYWRIGHT_VERSION=1.62.0
+ARG PLAYWRIGHT_VERSION=1.63.0
 ARG PLAYWRIGHT_DISTRO=noble
 ARG PLAYWRIGHT_IMAGE_DIGEST=sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
 

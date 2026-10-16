@@ -7,17 +7,21 @@ name = "pwmcp-client"
 # The single version source is src/pwmcp_client/VERSION (see [tool.setuptools.dynamic]):
 # installed metadata and the CLI identity (CliIdentity.resolve) read the same value and
 # must agree, so there is no literal fallback anywhere.
-dynamic = ["dependencies", "version"]
+dynamic = ["version"]
 description = "Python consumer helpers for a GitHub-released pwmcp server"
 requires-python = ">=3.11"
+dependencies = [
+    "cli-extended>=0.3.0",
+    "playwright==1.63.0",
+]
 # cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never vendored.
 # Floor 0.3.0: the first release whose `register_skills_verbs` forwards the consumer's
 # global options (`--contract`) to the `skills` child registry (CLI-EXT-26), which the
 # `pwmcp skills` group needs; it also carries CliIdentity.resolve, register_doctor and
 # the cli_extended.testing helpers this CLI and its tests use (same floor as cmru).
-# Dependencies are read from requirements-runtime.txt. PWMCP's release check keeps its
-# Playwright pin aligned with pwmcp.contract.json; CMRU packages exact wheels for offline
-# installation. cli-extended is published on GitHub Releases only.
+# requirements-runtime.txt mirrors these runtime dependencies for CMRU's offline wheel
+# staging. The release resolver checks both projections against pwmcp.contract.json.
+# cli-extended is published on GitHub Releases only.
 
 [project.optional-dependencies]
 pytest = ["pytest>=8"]
@@ -43,7 +47,6 @@ findings = "../docs/cli-review-findings.toml"
 
 [tool.setuptools.dynamic]
 version = {file = ["src/pwmcp_client/VERSION"]}
-dependencies = {file = ["requirements-runtime.txt"]}
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -20,6 +20,14 @@ while CIU continues to find the root configuration. Keeping the standalone
 defaults separate preserves the existing sub-stack policy, where the consumer
 owns network and resource governance.
 
+## Client dependency projections
+
+The client wheel declares its runtime dependencies directly in
+`client/pyproject.toml`, so package metadata and CLI adoption checks see the
+same requirements. `client/requirements-runtime.txt` mirrors that list for
+offline wheel staging; the version resolver updates the exact Playwright pin
+in both files and refuses release preparation if they drift.
+
 CMRU's generated `get.py` installs the release-bundled wheels into a private
 environment with hashes from the bundle manifest and no package-index access.
 The bundled `pwmcp-client` and Playwright wheel are built from the same

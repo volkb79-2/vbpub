@@ -10,6 +10,8 @@ when an active case has no collected test.
 from __future__ import annotations
 
 import json
+import sys
+import types
 import tomllib
 from pathlib import Path
 
@@ -58,14 +60,76 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
+def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakePlaywrightError(Exception):
+        pass
+
+    class FakeLocator:
+        def inner_text(self, *, timeout: int) -> str:
+            return "rendered page text"
+
+        def aria_snapshot(self, *, timeout: int) -> str:
+            return '- heading "Sample page" [level=1]'
+
+        def wait_for(self, *, state: str, timeout: int) -> None:
+            return None
+
+    class FakePage:
+        def goto(self, _url: str, *, wait_until: str, timeout: int) -> None:
+            return None
+
+        def locator(self, _selector: str) -> FakeLocator:
+            return FakeLocator()
+
+        def screenshot(self, **_kwargs: object) -> bytes:
+            return b"reviewed screenshot"
+
+    class FakeLease:
+        browser = types.SimpleNamespace(new_page=lambda: FakePage())
+
+        def __enter__(self) -> "FakeLease":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+    class BrowserLeaseStub:
+        @classmethod
+        def connect(cls, **_kwargs: object) -> FakeLease:
+            return FakeLease()
+
+    sync_api = types.ModuleType("playwright.sync_api")
+    sync_api.Error = FakePlaywrightError
+    playwright = types.ModuleType("playwright")
+    playwright.sync_api = sync_api
+    monkeypatch.setitem(sys.modules, "playwright", playwright)
+    monkeypatch.setitem(sys.modules, "playwright.sync_api", sync_api)
+    monkeypatch.setattr(cli_module, "BrowserLease", BrowserLeaseStub)
+
+
 @pytest.mark.parametrize("row", _cases())
-def test_reviewed_case(row: dict[str, object], sandbox: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_reviewed_case(
+    row: dict[str, object],
+    sandbox: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if row["invocation"][0] == "inspect":
+        _install_review_browser(monkeypatch)
     status = cli_module.main(list(row["invocation"]))  # type: ignore[call-overload]
     captured = capsys.readouterr()
     assert status == row["expected_exit_status"], captured
     assert row["expected_stdout_contains"] in captured.out, captured
     assert row["expected_stderr_contains"] in captured.err, captured
     assert "Traceback" not in captured.err
+    invocation = list(row["invocation"])
+    if "--output" in invocation:
+        output = sandbox / invocation[invocation.index("--output") + 1]
+        assert output.is_file()
+        if output.suffix in {".png", ".jpg", ".jpeg"}:
+            assert output.read_bytes() == b"reviewed screenshot"
+        else:
+            assert output.read_text(encoding="utf-8") == "rendered page text\n"
 
 
 def test_catalog_invocations_are_unique_so_node_ids_are_stable() -> None:

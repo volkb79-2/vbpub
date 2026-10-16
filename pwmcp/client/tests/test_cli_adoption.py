@@ -71,13 +71,18 @@ def test_real_executable_obeys_cli_contract(tmp_path: Path) -> None:
     assert_cli_contract(
         invoke,
         IDENTITY,
-        ("contract", "doctor", "skills"),
+        ("contract", "doctor", "inspect", "skills"),
         invalid_invocations={
             "unknown verb": ["bogus"],
             "contract operand": ["contract", "extra"],
             "doctor bad check option": ["doctor", "--nope"],
+            "inspect missing URL": ["inspect"],
         },
-        known_verb_errors={"contract operand": "contract", "doctor bad check option": "doctor"},
+        known_verb_errors={
+            "contract operand": "contract",
+            "doctor bad check option": "doctor",
+            "inspect missing URL": "inspect",
+        },
     )
 
 
@@ -332,7 +337,15 @@ _HACK = re.compile(r"sys\.path\.(?:insert|append)|PYTHONPATH|libraries[/\\]cli-e
 def test_cli_extended_is_a_declared_wheel_dependency_with_a_floor_and_reason() -> None:
     text = (CLIENT / "pyproject.toml").read_text(encoding="utf-8")
     project = tomllib.loads(text)
-    assert project["project"]["dependencies"] == ["cli-extended>=0.3.0"]
+    runtime_requirements = [
+        line.partition("#")[0].strip()
+        for line in (CLIENT / "requirements-runtime.txt").read_text(encoding="utf-8").splitlines()
+        if line.partition("#")[0].strip()
+    ]
+    assert project["project"]["dependencies"] == runtime_requirements
+    assert runtime_requirements[0] == "cli-extended>=0.3.0"
+    contract = json.loads((PWMCP / "pwmcp.contract.json").read_text(encoding="utf-8"))
+    assert runtime_requirements[1] == f"playwright=={contract['playwright']['python']}"
     assert "package-dir" not in project["tool"]["setuptools"]
     assert "REAL wheel dependency" in text and "Floor 0.3.0" in text
 

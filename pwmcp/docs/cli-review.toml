@@ -767,3 +767,237 @@ expected_stdout_contains = "skipped pwmcp-fetch"
 expected_stderr_contains = ""
 effects = ["Removes the pwmcp-fetch skill this tool installed under the selected harness directories under HOME (or --dest)"]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[skills-uninstall---overwrite-modified]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/argument-shape/argument:route:entrypoint:pwmcp/inspect/url"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1f43d8cfc78ca9d53f6680bcc9c67e686cc3047851c82af2ad876fdccc27c310"
+rationale = "The URL argument supplies one absolute HTTP or HTTPS page for the remote browser."
+invocation = ["inspect", "https://example.test", "--timeout-ms", "15000"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Opens one remote browser lease, waits for the page to render, and prints its body text; the lease closes afterward."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---timeout-ms-15000]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bf464ec5a4d6e5c5095f4892b7ca9773db133d92b864bd5e8cec71bbbd092c4a"
+rationale = "The required URL is the only operand; text output, load wait, and the standard timeout apply by default."
+invocation = ["inspect", "https://example.test"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Opens one remote browser lease, waits for the page to render, and prints its body text; the lease closes afterward."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:38c1a425d6bd4c6b34f7decab05a6a66c085151cbacde9c50e7f8b1a8e786211"
+rationale = "Text mode is the default and emits the rendered body."
+invocation = ["inspect", "https://example.test", "--format", "text"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Reads and prints the rendered body text through one remote browser lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-text]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/20ccb3d1c6"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a5978cd6b93e04da4c8a81ecf411bc6fc3ca5d7b04fa7ef6eb4864c23ac7f062"
+rationale = "Snapshot mode exposes the rendered accessibility tree."
+invocation = ["inspect", "https://example.test", "--format", "snapshot"]
+expected_exit_status = 0
+expected_stdout_contains = "- heading \"Sample page\" [level=1]"
+expected_stderr_contains = ""
+effects = ["Reads and prints the body ARIA snapshot through one remote browser lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-snapshot]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/cd172ffb54"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:67fec2ca65df8ba13aefb8f8f16dbbd0574012e29e9c29de4616da1cf8cb0816"
+rationale = "A screenshot without a file path would discard the image, so the CLI requires --output."
+invocation = ["inspect", "https://example.test", "--format", "screenshot"]
+expected_exit_status = 1
+expected_stdout_contains = ""
+expected_stderr_contains = "--output is required when --format=screenshot"
+effects = ["Refuses before opening a browser because screenshot bytes need a destination file."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-screenshot]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/528dd71551"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:038dd7e39b04f65cbc29d7409a23f468c6929ca7964dd9beb4e47d3e3046c1f9"
+rationale = "networkidle is a supported Playwright navigation state."
+invocation = ["inspect", "https://example.test", "--wait-until", "networkidle"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for network idle before reading and printing body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until-networkidle]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/575b2613ea"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d1783721db53d6f012ae588517690c3529a26070aad8004cf6a8ca97c4a08473"
+rationale = "domcontentloaded is a supported Playwright navigation state."
+invocation = ["inspect", "https://example.test", "--wait-until", "domcontentloaded"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for DOM content to load before reading and printing body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until-domcontentloaded]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/5ea9c58673"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d32196017773419319fb63c02441cd7b927ce6d52c93b1cc1a08d41fc29965fa"
+rationale = "commit is a supported Playwright navigation state."
+invocation = ["inspect", "https://example.test", "--wait-until", "commit"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for navigation commit before reading and printing body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until-commit]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--wait-until/a4fcee2b70"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b5099a517625e86bf0fde9f3d7a9b8227dc4a8e53c7772cb0bf8999343896622"
+rationale = "load is a supported Playwright navigation state and the default."
+invocation = ["inspect", "https://example.test", "--wait-until", "load"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for the load event before reading and printing body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until-load]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--contract/--contract"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:970b22f0840b7fbd57956271e925531917342443e5e7fd243878252aab79eee4"
+rationale = "The invocation-wide --contract option is accepted after the inspect verb."
+invocation = ["inspect", "https://example.test", "--contract", "contract.json"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Uses the selected contract source to connect to the managed browser and prints rendered body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---contract-contract.json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1f2caa03269f325617b69b0ec346592bc877331f2ce9ce896f62b2ba7a9bc984"
+rationale = "--debug-raw remains available on read-only verbs."
+invocation = ["inspect", "https://example.test", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints rendered body text; the shared diagnostic control only lifts redaction and warns."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--format/--format"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1205ae0ec91535292ce8c6f42e70a2a67b71c5a5e51a66ddb2d214a1d44d5b30"
+rationale = "The equals form of --format is accepted."
+invocation = ["inspect", "https://example.test", "--format=text"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Prints rendered body text through one remote browser lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format=text]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--full-page/--full-page"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2ba90037d46ff98ce4d9a407a22cdf25a1f2a3dfbbedb24795630f2b3504e958"
+rationale = "--full-page selects the full scrollable page when screenshot mode is active."
+invocation = ["inspect", "https://example.test", "--format", "screenshot", "--output", "full.png", "--full-page"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "wrote screenshot output to full.png"
+effects = ["Writes a full-page screenshot to the selected PNG file and closes the remote browser lease."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-screenshot---output-full.png---full-page]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4e7b74620047c395a39709fbf1295774e8e2190cf1651538671df1d86fa95ef8"
+rationale = "--json is an invocation-wide output control accepted by inspect."
+invocation = ["inspect", "https://example.test", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Prints the body text in the shared machine-readable output mode."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---json]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--output/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2b86fb2da427db8248262d9a43ec9722c426b1993232d5f9aff7c745ce785a5d"
+rationale = "--output redirects text or snapshot results from stdout to the selected file."
+invocation = ["inspect", "https://example.test", "--output", "result.txt"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = "wrote text output to result.txt"
+effects = ["Writes rendered body text to result.txt and reports the destination."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---output-result.txt]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--timeout-ms/--timeout-ms"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9a4f9e0d5d493caccf9ed33e43fb3ce44aff2bd7ca40aa2c93360a14a481e728"
+rationale = "--timeout-ms accepts a positive integer timeout."
+invocation = ["inspect", "https://example.test", "--timeout-ms", "1234"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Uses a 1234 millisecond timeout for navigation and page reads."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---timeout-ms-1234]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--wait-for/--wait-for"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2bc47db26ec82ed5c1b5ff94befa43178746513aa943a3e1665c4b49e95010be"
+rationale = "--wait-for waits for the selected CSS locator to be visible."
+invocation = ["inspect", "https://example.test", "--wait-for", "#content"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for #content to become visible before reading rendered body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-for-#content]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--wait-until/--wait-until"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9200057479e4fe21594325ee014371c99a67908d401e759b99331122657a44e6"
+rationale = "The equals form of --wait-until is accepted."
+invocation = ["inspect", "https://example.test", "--wait-until=domcontentloaded"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = ""
+effects = ["Waits for DOM content to load before reading body text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---wait-until=domcontentloaded]"]
