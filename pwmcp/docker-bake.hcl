@@ -8,7 +8,7 @@ variable "NAMESPACE" {
 
 // One version is released only when npm, PyPI, and MCR all provide it.
 variable "PLAYWRIGHT_VERSION" {
-  default = "1.63.0"
+  default = "1.64.0"
 }
 
 variable "PLAYWRIGHT_DISTRO" {
@@ -18,7 +18,7 @@ variable "PLAYWRIGHT_DISTRO" {
 // Multi-arch manifest digest for the selected Playwright base image.
 // The resolver refreshes this together with PLAYWRIGHT_VERSION.
 variable "PLAYWRIGHT_IMAGE_DIGEST" {
-  default = "sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27"
+  default = "sha256:06a9939e57531807f8d5fd76ce44b53165ffb7d7501d87ab10e285c20b1e971f"
 }
 
 // @playwright/mcp pin (bundled MCP Streamable HTTP server).
@@ -44,7 +44,7 @@ variable "LIGHTHOUSE_VERSION" {
 
 // CMRU's prepared, Playwright-driven pwmcp release coordinate.
 variable "PWMCP_VERSION" {
-  default = "1.63.0-r4"
+  default = "1.64.0-r1"
 }
 
 variable "OCI_SOURCE" {

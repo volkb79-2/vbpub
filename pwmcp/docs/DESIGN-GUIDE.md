@@ -91,3 +91,11 @@ loaded by that page for this invocation. The CLI describes that scope directly
 and leaves the choice opt-in; a hostname-specific certificate bypass is not
 available through this Playwright context option. See the
 [consumer example](CONSUMERS.md#inspect-a-webpage).
+
+## Upstream version age window
+
+Until CMRU owns upstream selection, an explicit resolver refresh applies a
+two-day default age window to npm and PyPI publication timestamps. This lets
+the common 1.64.0 release pass once its latest required package upload is two
+days old, while keeping newly published packages out of routine selections.
+The threshold remains an explicit resolver option for deliberate exceptions.

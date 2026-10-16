@@ -276,7 +276,10 @@ The committed release projection records the Playwright version jointly
 available from npm, PyPI, and Microsoft Container Registry for the configured
 distribution. Release preparation validates that projection without silently
 selecting a newly published dependency; explicit upstream refresh belongs to
-the version-policy workflow.
+the version-policy workflow. Until CMRU owns that selection, an explicit
+`--refresh` requires the npm and PyPI releases to be at least two days old by
+default; the age window can be overridden for a deliberate refresh. See the
+[version selection rationale](docs/DESIGN-GUIDE.md#upstream-version-age-window).
 
 The selected MCR manifest digest is committed in the Dockerfile and
 `docker-bake.hcl` and is also written to the transaction-local `cmru.vars`.

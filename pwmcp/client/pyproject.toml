@@ -12,7 +12,7 @@ description = "Python consumer helpers for a GitHub-released pwmcp server"
 requires-python = ">=3.11"
 dependencies = [
     "cli-extended>=0.3.0",
-    "playwright==1.63.0",
+    "playwright==1.64.0",
 ]
 # cli-extended is a REAL wheel dependency (unified-adoption CX-D1), never vendored.
 # Floor 0.3.0: the first release whose `register_skills_verbs` forwards the consumer's

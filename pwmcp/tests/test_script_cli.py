@@ -132,7 +132,8 @@ def test_age_window_default_and_preview(monkeypatch: pytest.MonkeyPatch, capsys:
     monkeypatch.setattr(resolver, "refresh_upstream_projection", lambda days: pytest.fail("dry run must not refresh"))
     monkeypatch.setattr(resolver, "check_committed_inputs", lambda: pytest.fail("dry run must not check"))
     resolver.main(["--refresh", "--dry-run"])
-    assert f"at least {resolver.TEMPORARY_AGE_WINDOW_DAYS} days old" in capsys.readouterr().err
+    assert resolver.TEMPORARY_AGE_WINDOW_DAYS == 2
+    assert "at least 2 days old" in capsys.readouterr().err
     resolver.main(["--refresh", "--dry-run", "--age-window-days", "3"])
     assert "at least 3 days old" in capsys.readouterr().err
     resolver.main(["--dry-run"])

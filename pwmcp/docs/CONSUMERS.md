@@ -119,3 +119,18 @@ worktree. The resumable mutation lane is:
 It writes progress and verdict state below the git-ignored `.assay/` directory.
 Use the R1 lane for the normal CMRU release gate; run R2 separately when the
 long mutation campaign is useful.
+
+## Maintainer refresh of Playwright
+
+To select the newest stable Playwright version available from npm, PyPI, and
+the matching Microsoft image registry, run the version resolver from the
+`pwmcp/` directory. Its temporary default age window is two days; pass
+`--age-window-days DAYS` only when intentionally choosing a different cutoff:
+
+```bash
+python3 scripts/resolve-playwright-version.py --refresh
+```
+
+Review the generated version and digest changes, then use the supported CMRU
+release workflow. The reason for the two-day window is in the
+[design guide](DESIGN-GUIDE.md#upstream-version-age-window).
