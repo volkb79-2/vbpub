@@ -5,7 +5,7 @@ Steps:
   1. Fetch stable Playwright versions and publication times from npm and PyPI,
      plus available tags from Microsoft's official Playwright image registry.
   2. Select the highest version common to all three whose package publication
-     timestamps clear the temporary 14-day age window.  A package release is
+     timestamps clear the temporary 2-day default age window. A package release is
      not publishable until its matching base-image tag exists, and PWMCP's
      Python and npm consumers must agree on one version.
   3. Compute the next r<N> counter by scanning git tags (pwmcp-v<pw_ver>-r*).
@@ -53,7 +53,7 @@ MCR_PLAYWRIGHT_TAGS_URL = "https://mcr.microsoft.com/v2/playwright/tags/list?n=1
 MCR_PLAYWRIGHT_MANIFEST_URL = "https://mcr.microsoft.com/v2/playwright/manifests"
 TIMEOUT_SECONDS = 20
 RETRIES = 3
-TEMPORARY_AGE_WINDOW_DAYS = 14
+TEMPORARY_AGE_WINDOW_DAYS = 2
 
 PWMCP_DIR = Path(__file__).resolve().parent.parent
 DEFAULTS_FILE = PWMCP_DIR / "ciu.defaults.toml.j2"
@@ -791,7 +791,7 @@ def build_cli() -> RegisteredCli:
             ),
             OptionSpec(
                 ("--refresh",),
-                "select the newest common upstream version at least 14 days old and rewrite the projection",
+                f"select the newest common upstream version at least {TEMPORARY_AGE_WINDOW_DAYS} days old by default and rewrite the projection",
                 group="MODE",
                 parser_kwargs={"action": "store_true"},
                 mutually_exclusive_group="mode",

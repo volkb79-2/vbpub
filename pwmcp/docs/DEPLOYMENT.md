@@ -196,7 +196,8 @@ python3 scripts/resolve-playwright-version.py --check
 ```
 
 To deliberately refresh the projection, use the explicit upstream operation.
-It applies the configured temporary age window, updates
+It applies the temporary two-day default age window (overridable with
+`--age-window-days`), updates
 `ciu.defaults.toml.j2` (`unified.image.tag`), `ciu.toml.j2`, `docker-bake.hcl`,
 and the Dockerfile's Playwright manifest digest. Then complete the release:
 
