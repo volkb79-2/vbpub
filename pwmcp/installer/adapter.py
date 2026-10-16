@@ -12,8 +12,9 @@ ROOT_LINKS = {
     "ciu.global.defaults.toml.j2": "standalone/ciu.global.defaults.toml.j2",
     "ciu.compose.yml.j2": "ciu.compose.yml.j2",
     "ciu.defaults.toml.j2": "ciu.defaults.toml.j2",
-    "ciu.toml.j2": "standalone/ciu.install.override.toml.j2",
 }
+INSTALL_OVERRIDE = "standalone/ciu.install.override.toml.j2"
+INSTALL_OVERRIDE_NAME = "ciu.toml.j2"
 
 
 def _release_root(raw: str) -> Path:
@@ -29,9 +30,12 @@ def _release_root(raw: str) -> Path:
 
 def _install_links(release_root: Path) -> None:
     instance_root = release_root.parents[2]
-    for name, release_path in ROOT_LINKS.items():
+    release_paths = [*ROOT_LINKS.values(), INSTALL_OVERRIDE]
+    for release_path in release_paths:
         if not (release_root / release_path).is_file():
             raise FileNotFoundError(f"release is missing CIU root input: {release_path}")
+
+    for name, release_path in ROOT_LINKS.items():
         link = instance_root / name
         expected = Path("current") / "tree" / release_path
         if link.is_symlink():
@@ -41,6 +45,25 @@ def _install_links(release_root: Path) -> None:
         if os.path.lexists(link):
             raise FileExistsError(f"refusing to replace existing path {link}")
         link.symlink_to(expected)
+
+    # This is a sparse site override, not release content: seed it only once so
+    # an update can switch current/tree without a dangling link during the
+    # install transaction, and preserve any operator edits on later updates.
+    override = instance_root / INSTALL_OVERRIDE_NAME
+    if not os.path.lexists(override):
+        source = release_root / INSTALL_OVERRIDE
+        descriptor = os.open(override, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(source.read_bytes())
+                stream.flush()
+                os.fsync(stream.fileno())
+        except BaseException:
+            try:
+                override.unlink()
+            except FileNotFoundError:
+                pass
+            raise
 
 
 def _check_links(release_root: Path) -> None:
@@ -52,6 +75,12 @@ def _check_links(release_root: Path) -> None:
             raise RuntimeError(f"CIU root link is missing or changed: {link}")
         if not (release_root / release_path).is_file():
             raise FileNotFoundError(f"release is missing CIU root input: {release_path}")
+    override_source = release_root / INSTALL_OVERRIDE
+    if not override_source.is_file():
+        raise FileNotFoundError(f"release is missing CIU root input: {INSTALL_OVERRIDE}")
+    override = instance_root / INSTALL_OVERRIDE_NAME
+    if not override.is_file():
+        raise RuntimeError(f"standalone CIU override is missing: {override}")
 
 
 def main() -> int:

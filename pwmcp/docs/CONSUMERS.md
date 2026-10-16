@@ -36,6 +36,10 @@ An image that owns `/srv` can omit the first `sudo install` line. A root-owned
 system-scope install is also supported; run CIU as the principal that can
 write the installed root.
 
+The installer seeds the instance's sparse `ciu.toml.j2` override once, marking
+the existing internal network as external to this stack. It preserves that
+instance file on updates, so operator additions survive release changes.
+
 For an MDT devcontainer built with PWMCP included, `/srv/pwmcp-instance` and
 the `pwmcp` launcher are already present. On the first start, run
 `ciu env generate` in that directory to record the devcontainer's machine
