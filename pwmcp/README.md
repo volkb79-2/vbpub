@@ -56,6 +56,8 @@ curl -fsSL https://raw.githubusercontent.com/volkb79-2/vbpub/main/pwmcp/get.py \
   | XDG_DATA_HOME=/srv python3 - install --scope user
 export PATH="/srv/pwmcp-instance/bin:$PATH"
 cd /srv/pwmcp-instance
+# First run only: record this devcontainer's CIU identity and network.
+ciu env generate
 ciu up
 ```
 
@@ -70,11 +72,13 @@ cd /srv/pwmcp-instance
 ciu up
 ```
 
-The internal deployment keeps PWMCP's existing policy: no authentication and
-no host-published ports. CIU connects the devcontainer to the instance's
-internal Docker network, where its MCP endpoint is `http://pwmcp:8931/mcp` and
-its Playwright endpoint is `ws://pwmcp:3000/`. See the [consumer commands](docs/CONSUMERS.md)
-and the [standalone design](docs/DESIGN-GUIDE.md#standalone-ciu-root-and-installer).
+The first `ciu env generate` records the devcontainer's CIU identity and
+internal network; later updates keep those generated facts. `ciu up` starts the
+root's PWMCP stack on that shared network. The internal deployment keeps
+PWMCP's existing policy: no authentication and no host-published ports. Its
+MCP endpoint is `http://pwmcp:8931/mcp` and its Playwright endpoint is
+`ws://pwmcp:3000/`. See the [consumer commands](docs/CONSUMERS.md) and the
+[standalone design](docs/DESIGN-GUIDE.md#standalone-ciu-root-and-installer).
 
 The bundled `pwmcp` CLI can inspect a remote page without installing browser
 binaries in the devcontainer:

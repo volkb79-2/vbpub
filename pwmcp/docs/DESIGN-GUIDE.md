@@ -16,9 +16,13 @@ PWMCP can run as a sub-stack in a consumer's CIU root or as an independent
 `/srv/pwmcp-instance` root. The standalone release carries its own CIU defaults
 under `standalone/`; the CMRU adapter exposes those files through stable links
 to `current/tree`. This lets `get.py update` atomically switch the release
-while CIU continues to find the root configuration. Keeping the standalone
-defaults separate preserves the existing sub-stack policy, where the consumer
-owns network and resource governance.
+while CIU continues to find the root configuration. The standalone global
+defaults register the root directory as the one default deployment phase, so
+plain `ciu up` selects PWMCP. Its sparse stack override marks the devcontainer's
+generated internal network as external: the standalone root joins that network
+and does not try to create or own it. Keeping these installed-root choices
+separate preserves the existing sub-stack and maintainer-build policies, where
+the consumer or maintainer owns network and resource governance.
 
 ## Client dependency projections
 

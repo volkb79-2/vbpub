@@ -10,8 +10,11 @@
 
 For an instance that serves the connected devcontainer itself, install the
 versioned release at `/srv/pwmcp-instance` with the generated CMRU installer,
-then run `ciu up` from that directory. The installer verifies the release
-bundle and its checksum before atomically installing it. See the
+then run `ciu env generate` once from that directory to record the connected
+devcontainer's identity and internal network. Run `ciu up` to start the
+standalone root's registered PWMCP stack; later updates do not need the
+identity-generation step again. The installer verifies the release bundle and
+its checksum before atomically installing it. See the
 [consumer install and update commands](CONSUMERS.md#install-and-update).
 
 ## Internal Mode (Dev / CI — Default)
