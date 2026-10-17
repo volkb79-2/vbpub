@@ -183,14 +183,37 @@ git commit -q -m "concurrent change"
 git push -q origin HEAD:refs/heads/main
 """)
 
-    def release(self, *args: str) -> subprocess.CompletedProcess:
+    def release(self, *args: str, cwd: Path | None = None) -> subprocess.CompletedProcess:
         result = subprocess.run(
             ["cmru", "release", *args],
-            cwd=self.project, env=self.env, capture_output=True, text=True,
+            cwd=cwd or self.project, env=self.env, capture_output=True, text=True,
             timeout=300,
         )
         result.log = result.stdout + result.stderr
         return result
+
+    def feature_worktree_diverged_from_main(self, branch: str) -> tuple[Path, str, str, str]:
+        """Create a pushed feature worktree whose tip differs from both main tips."""
+        (self.repo / "local-main-only.txt").write_text("local main\n")
+        self.git("add", "local-main-only.txt")
+        self.git("commit", "-q", "-m", "chore: local-only main commit")
+        local_main = self.out("rev-parse", "main")
+
+        feature = self.root / "feature-worktree"
+        self.git("worktree", "add", "-q", "-b", branch, str(feature), "main")
+        (feature / "demo" / "feature.txt").write_text("feature source\n")
+        self.git("add", "demo/feature.txt", cwd=feature)
+        self.git("commit", "-q", "-m", "feat: feature source", cwd=feature)
+        source_commit = self.out("rev-parse", "HEAD", cwd=feature)
+        self.git("push", "-q", "origin", f"HEAD:refs/heads/{branch}", cwd=feature)
+
+        other = self.root / "other-main"
+        self.git("clone", "-q", str(self.origin), str(other), cwd=self.root)
+        (other / "remote-main-only.txt").write_text("remote main\n")
+        self.git("add", "remote-main-only.txt", cwd=other)
+        self.git("commit", "-q", "-m", "chore: remote-only main commit", cwd=other)
+        self.git("push", "-q", "origin", "HEAD:refs/heads/main", cwd=other)
+        return feature, source_commit, local_main, self.origin_main()
 
     def origin_tags(self) -> dict[str, str]:
         lines = self.out("ls-remote", "--tags", "origin").splitlines()
@@ -259,6 +282,46 @@ def test_rel15_fresh_release_end_to_end(e2e):
     assert "## [0.1.0]" in tagged_changelog
     assert "Preserve this migration note." in tagged_changelog
     assert "## [Unreleased]\n\n<!-- cmru: release history -->" in tagged_changelog
+
+
+def test_feature_worktree_release_keeps_both_main_tips_unchanged_and_retains_a_pr_candidate(e2e):
+    feature, source_commit, local_main, remote_main = e2e.feature_worktree_diverged_from_main(
+        "feature/cmru-release",
+    )
+    assert local_main != remote_main
+    assert e2e.out("rev-parse", "HEAD", cwd=feature) == source_commit
+
+    result = e2e.release("demo", "--from-worktree", cwd=feature / "demo")
+
+    assert result.returncode == 0, result.log
+    assert "did not update origin/main or local main" in result.log
+    assert "public while its PR may still be open or blocked" in result.log
+    assert e2e.out("rev-parse", "refs/heads/main") == local_main
+    assert e2e.origin_main() == remote_main
+    assert e2e.out("rev-parse", "refs/heads/feature/cmru-release") == source_commit
+    assert e2e.out("rev-parse", "HEAD", cwd=feature) == source_commit
+    assert e2e.out(
+        "--git-dir", str(e2e.origin), "rev-parse", f"refs/heads/feature/cmru-release",
+        cwd=e2e.root,
+    ) == source_commit
+
+    candidate_refs = [
+        ref.removeprefix("refs/heads/") for ref in e2e.origin_heads()
+        if ref.startswith("refs/heads/cmru-release-")
+    ]
+    assert len(candidate_refs) == 1, candidate_refs
+    candidate = candidate_refs[0]
+    candidate_tip = e2e.out(
+        "--git-dir", str(e2e.origin), "rev-parse", f"refs/heads/{candidate}",
+        cwd=e2e.root,
+    )
+    tagged_commit = e2e.out(
+        "--git-dir", str(e2e.origin), "rev-parse", f"refs/tags/{_TAG}^{{commit}}",
+        cwd=e2e.root,
+    )
+    assert candidate_tip == tagged_commit == e2e.published_commit.read_text().strip()
+    assert f"refs/heads/{candidate}" in e2e.origin_heads()
+    assert len(e2e.worktrees()) == 3  # main, caller feature, and retained CMRU PR candidate
 
 
 def test_rel08_release_inputs_commit_carries_the_candidate_trailer(e2e):
