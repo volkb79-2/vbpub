@@ -67,6 +67,13 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
         pass
 
     class FakeLocator:
+        def filter(self, *, visible: bool) -> "FakeLocator":
+            return self
+
+        @property
+        def first(self) -> "FakeLocator":
+            return self
+
         def inner_text(self, *, timeout: int) -> str:
             return "rendered page text"
 
