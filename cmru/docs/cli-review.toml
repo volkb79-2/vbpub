@@ -2342,8 +2342,8 @@ test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/exclusiv
 id = "case:route:entrypoint:cmru/release/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:3c52cb65002d40abe9f65b09e0bcf67e615e3c5ecbf4dca34640fef7c7798d32"
-rationale = "Nothing is required: a bare `release` is the atomic source-first release of the current project, with the version derived from the changelog/commits."
+reviewed_signature = "sha256:54f16141b6e58ff69c89bcb56c705f54a01460354c366dc9df84b8a8dffc3b35"
+rationale = "Nothing is required: `release` selects changed projects and derives versions. It uses origin/main by default; `--from-worktree` explicitly selects a matching pushed feature branch."
 invocation = ["release"]
 expected_exit_status = 2
 expected_stdout_contains = ""
@@ -2402,6 +2402,32 @@ expected_stdout_contains = ""
 expected_stderr_contains = "config file not found"
 effects = ["Stops at configuration discovery (exit 2); no guard runs."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--ahead-check-ref/--ahead-check-ref]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--from-worktree/--from-worktree"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2df5379436e091627593dfcf5605a0d8907007aadce9afa2db0a4f7589273544"
+rationale = "--from-worktree opts into releasing the exact clean named feature branch only when its fetched same-named origin ref matches HEAD; the generated release candidate remains separate."
+invocation = ["release", "--from-worktree"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is recognized, then configuration discovery refuses (exit 2); no branch, tag or publication is created."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--from-worktree/--from-worktree]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--secret-file/--secret-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2503c0ec2e0019b1f6261c95f62da31e8ab2b243987521c28a2ccbea8e5b1ed3"
+rationale = "--secret-file PATH explicitly selects the root credential document for this release; another worktree's secret is never read automatically."
+invocation = ["release", "--secret-file", "/tmp/cmru.secret.toml"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option is recognized, then configuration discovery refuses (exit 2); the named file is not read and no transaction starts."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--secret-file/--secret-file]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--allow-stale-tool-deps/--allow-stale-tool-deps"

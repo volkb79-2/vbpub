@@ -37,6 +37,7 @@ def _config(tmp_path, *, alpha_tool_deps=()):
 
 
 def _run_release(monkeypatch, tmp_path, extra_args, *, changed, alpha_tool_deps=()):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     config_path = tmp_path / "cmru.orchestration.toml"
     monkeypatch.setattr(cli, "_resolve_config", lambda _: config_path)
     monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))

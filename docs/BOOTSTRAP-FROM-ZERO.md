@@ -203,7 +203,14 @@ supplies the whole-source line-and-branch qualification.
    Dockerfile's current pin:
 
    ```bash
-   CLI_EXTENDED_RELEASED_SHA256='<CLI-EXTENDED_WHEEL_SHA256 value from cmru.release.log>'
+   mapfile -t released_digests < <(
+     sed -nE 's/^\[INFO\] CLI-EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$/\1/p' cmru.release.log
+   )
+   if [ "${#released_digests[@]}" -ne 1 ]; then
+     echo "Expected exactly one CLI-EXTENDED_WHEEL_SHA256 in cmru.release.log" >&2
+     exit 2
+   fi
+   CLI_EXTENDED_RELEASED_SHA256="${released_digests[0]}"
    unset CLI_EXTENDED_RESOLVE
    identity="$(python3 cmru/tools/cli_extended_release_identity.py \
      --released-sha256 "$CLI_EXTENDED_RELEASED_SHA256" \

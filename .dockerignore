@@ -83,6 +83,7 @@ libraries/worktree/tests
 **/.mypy_cache
 **/node_modules
 **/.worktrees
+**/nyxloom-trove/reports/**
 # cgroup-profiler ships a built venv and captured runs; neither belongs in a
 # build context (the venv alone is 500 MB).
 scripts/cgroup-profiler/venv

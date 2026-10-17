@@ -69,6 +69,10 @@ def _install_candidate_facts(monkeypatch, root, candidates):
         lambda _root, ws: ["alpha" if "-alpha-" in ws.branch else "beta"],
     )
     monkeypatch.setattr(transaction, "read_release_results", lambda _root, _ws: {})
+    # These fixtures model ordinary origin/main candidates. Their temporary
+    # paths are not Git repositories, so keep feature-source sidecar lookup
+    # explicit instead of letting the shared-worktree adapter inspect fake Git.
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_: None)
     monkeypatch.setattr(transaction, "read_release_progress", lambda _root, ws: ws.context.base_commit)
     monkeypatch.setattr(transaction, "read_release_tag_snapshot", lambda *_: {})
     monkeypatch.setattr(transaction, "read_release_tag_attempts", lambda *_: None)

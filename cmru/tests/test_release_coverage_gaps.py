@@ -19,6 +19,11 @@ from cmru import cli, cli_support, config, getpy, resolve as resolve_module, run
 from cmru.cli_support import select_target_names
 
 
+@pytest.fixture(autouse=True)
+def default_source_for_synthetic_release_workspaces(monkeypatch):
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+
+
 def _loaded(projects, order=None):
     order = list(order or projects)
     return (

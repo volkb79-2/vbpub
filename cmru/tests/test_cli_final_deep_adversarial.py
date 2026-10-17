@@ -37,6 +37,7 @@ def test_declared_generated_paths_match_exact_file_or_child_only():
 
 
 def test_release_sequentially_no_tag_no_build_records_nothing_but_checkpoints(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     project = _project(git_tag=False)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40)
     progress, calls = [], []
@@ -58,6 +59,7 @@ def test_release_sequentially_no_tag_no_build_records_nothing_but_checkpoints(mo
 
 
 def test_release_sequentially_tagged_no_build_records_tag_and_skips_artifact_steps(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     project = _project(git_tag=True)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path, "cmru/release/x", "a" * 40)
     results, pushed = [], []

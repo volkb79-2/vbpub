@@ -630,7 +630,10 @@ def load_config(
     retired central ``[project.<name>]`` shape and no second build-runner document.
     """
     resolved_config_path = config_path.expanduser().resolve()
-    forge = load_forge_config(resolved_config_path, secret_file=secret_file)
+    if secret_file is None:
+        forge = load_forge_config(resolved_config_path)
+    else:
+        forge = load_forge_config(resolved_config_path, secret_file=secret_file)
     from cmru.version import _project_scope_names
 
     known_project_names = frozenset(

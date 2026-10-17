@@ -333,6 +333,11 @@ def test_release_refuses_unsupported_git_before_creating_candidate_or_running_ch
     git_calls = []
 
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
@@ -2321,9 +2326,10 @@ def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_p
 
     transaction.push_backup_branch(workspace)
 
-    assert calls[0][0] == ["git", "push", "--force", "origin", "HEAD:refs/heads/cmru/release/x"]
-    assert calls[0][1]["cwd"] == workspace.path
-    assert calls[0][1]["check"] is True
+    push = next(call for call in calls if call[0][:2] == ["git", "push"])
+    assert push[0] == ["git", "push", "--force", "origin", "HEAD:refs/heads/cmru/release/x"]
+    assert push[1]["cwd"] == workspace.path
+    assert push[1]["check"] is True
     assert transaction.backup_was_pushed(tmp_path, workspace) is True
 
 

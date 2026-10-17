@@ -37,6 +37,7 @@ def test_cleanup_prefixed_project_with_no_deletions_skips_commit(monkeypatch, tm
 
 
 def test_sequential_no_tag_no_build_skips_build_and_checkpoints(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", git_tag=True)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: None)

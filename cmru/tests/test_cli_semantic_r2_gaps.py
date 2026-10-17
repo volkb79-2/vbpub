@@ -124,6 +124,7 @@ def test_publication_rejects_non_string_manifest_source_commit(tmp_path):
 
 
 def test_abandon_captures_remote_command_output_as_text(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     branch = "cmru-release-20260927_120000-alpha-ab12cd"
     ref = f"refs/heads/{branch}"
     calls = []

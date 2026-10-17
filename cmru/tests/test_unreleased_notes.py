@@ -17,6 +17,11 @@ PENDING = (
     "```sh\ntool migrate --yes\n```"
 )
 
+
+@pytest.fixture(autouse=True)
+def default_release_source_for_synthetic_transactions(monkeypatch):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+
 DOCUMENT = f"""\
 # Changelog
 

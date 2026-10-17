@@ -10,6 +10,7 @@ from cmru.credential_handoff import CredentialHandoff
 
 @pytest.fixture(autouse=True)
 def fake_git_family(monkeypatch):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     monkeypatch.setattr(
         cli.transaction,
         "project_git_family_groups",

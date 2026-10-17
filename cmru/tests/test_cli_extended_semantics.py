@@ -12,6 +12,13 @@ from cmru import changelog, cli, dependencies, getpy, handlers, runner
 from cmru import scaffold, standards, tester_gate, tool_deps, transaction
 
 
+@pytest.fixture(autouse=True)
+def _fake_default_release_source(monkeypatch):
+    # These tests exercise ordinary default-mode transactions with synthetic
+    # paths; feature-source provenance has its own real-Git acceptance tests.
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_: None)
+
+
 def _step(name: str = "build") -> runner.StepConfig:
     return runner.StepConfig(
         name=name,

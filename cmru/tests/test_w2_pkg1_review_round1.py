@@ -31,6 +31,7 @@ def _config(tmp_path, projects):
 
 
 def _common_patches(monkeypatch, tmp_path, projects):
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, projects))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
