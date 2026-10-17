@@ -300,6 +300,24 @@ grep -qE 'systemd-tmpfiles[[:space:]]+--create[[:space:]]+/etc/tmpfiles\.d/mdt-c
   || fail "install.sh never applies the cgprofile tmpfiles.d entry with 'systemd-tmpfiles --create' (D-30/M5)"
 pass "install.sh installs and applies the cgprofile tmpfiles.d entry"
 
+# The optional DAMON_STAT policy is applied only from the operator's explicit
+# config choice and uses the documented kernel module parameter.
+grep -q '^DAMON_STAT_DISABLE_DEFAULT="no"$' "$EXAMPLE" \
+  || fail "host-setup.env.example must keep DAMON_STAT unchanged outside the wizard"
+grep -qF 'install -m 0644 "$HERE/units/mdt-damon-stat.conf" "$DAMON_STAT_TMPFILES"' "$INSTALL_SH" \
+  || fail "install.sh does not install the DAMON_STAT tmpfiles policy"
+grep -qF 'systemd-tmpfiles --create "$DAMON_STAT_TMPFILES"' "$INSTALL_SH" \
+  || fail "install.sh does not apply the selected DAMON_STAT policy"
+grep -qF 'case "${DAMON_STAT_DISABLE_DEFAULT:-}" in' "$HERE/scripts/check.sh" \
+  || fail "check.sh invents a DAMON_STAT policy when the configured value is absent"
+grep -qF 'DAMON_STAT_DISABLE_DEFAULT must be yes or no' "$HERE/scripts/check.sh" \
+  || fail "check.sh accepts an unknown DAMON_STAT policy as the kernel default"
+grep -qF 'DAMON_STAT policy is missing from $CONF' "$HERE/scripts/check.sh" \
+  || fail "check.sh certifies an absent DAMON_STAT policy"
+grep -qFx 'w /sys/module/damon_stat/parameters/enabled - - - - N' "$HERE/units/mdt-damon-stat.conf" \
+  || fail "DAMON_STAT tmpfiles entry does not disable the kernel parameter"
+pass "DAMON_STAT is explicit and persistent, and health checks reject missing or unknown policy"
+
 # --- (8) the wizard's earmark-sum doctest actually runs (round-1 review S2) --
 # propose_memory_min_guaranteed_suggestion()'s own doctest demonstrates the
 # leftover/suggested-ceiling BEFORE vs AFTER dev-gates.slice's MemoryHigh

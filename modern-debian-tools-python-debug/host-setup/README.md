@@ -483,6 +483,19 @@ at install time. All four memory controls may be omitted. The manual path requir
 complete valid config; the wizard writes its candidate only after the prompts
 complete and the installer backs up any existing config only after validation.
 
+### Optional DAMON_STAT policy
+
+The wizard asks whether to disable the kernel-wide `DAMON_STAT` monitor so
+cgprofile can use generic DAMON sysfs sessions and collect per-session samples.
+It recommends `yes`; `no` preserves the kernel's current default. The shipped
+non-wizard `host-setup.env.example` uses `DAMON_STAT_DISABLE_DEFAULT="no"`, so
+an installation without the wizard never changes host policy. A `yes` choice
+installs `/etc/tmpfiles.d/mdt-damon-stat.conf` and applies it immediately when
+the running kernel exposes the parameter. systemd-tmpfiles applies it again at
+boot. Changing back to `no` removes MDT's boot override; the current kernel
+value remains unchanged until reboot. `mdt-host-check.sh` verifies the
+selected state.
+
 Host setup is host-only. Run `install.sh` and the wizard from a shell on the
 Docker host being configured, not from the MDT devcontainer. UID 0 in a
 devcontainer is container root, not host root, and cannot safely apply the
@@ -505,6 +518,7 @@ the test stacks.
 |---|---|---|
 | `units/dev.slice.in`, `units/dev-interactive.slice.in`, `units/dev-background.slice.in`, `units/dev-gates.slice.in`, `units/dev-memory_min_guaranteed.slice.in`, `units/dev-buildkitd.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
 | `units/mdt-buildkitd.service.in` | `/etc/systemd/system/mdt-buildkitd.service` (rendered, enabled) | host-managed rootless BuildKit worker — `docker run --cgroup-parent=dev-buildkitd.slice` as `ExecStart=`, see `plan-buildkitd-service.md` |
+| `units/mdt-damon-stat.conf` | `/etc/tmpfiles.d/mdt-damon-stat.conf` (only when selected) | optionally disable the kernel-global DAMON_STAT monitor now and at boot |
 | `buildkitd.toml.in` | `/etc/mdt/buildkitd.toml` | managed BuildKit daemon configuration, including `DEV_BUILDKITD_MAX_PARALLELISM` |
 | `units/mdt-buildkit-guard.service`, `scripts/mdt-buildkit-guard.py` | systemd (enabled) + `/usr/local/sbin/` | Docker-events guard for unapproved Buildx/BuildKit workers |
 | `scripts/mdt_buildkit_builder.py` | `/usr/local/sbin/mdt-buildkit-builder.py` | idempotent `mdt-managed` remote registration/verification; never creates a container-driver worker |

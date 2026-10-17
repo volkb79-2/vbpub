@@ -75,7 +75,9 @@ Agents in the connected devcontainer can use the MCP endpoint
 `http://pwmcp:8931/mcp`; Playwright clients use `ws://pwmcp:3000/`. The service
 uses PWMCP's existing internal policy: no authentication and no host-published
 ports. The generated installer and exact client wheels are verified and
-versioned with PWMCP. See [MDT's PWMCP consumer guide](docs/CONSUMERS.md#pwmcp-browser-service)
+versioned with PWMCP. The vendored devcontainer template exposes the CLI path
+and `PWMCP_MCP_URL`; consumers using another harness must register that HTTP
+MCP endpoint in their harness configuration. See [MDT's PWMCP consumer guide](docs/CONSUMERS.md#pwmcp-browser-service).
 and [PWMCP's install and design notes](../pwmcp/README.md#standalone-instance-for-mdt-and-other-devcontainers).
 
 ## Tags and variants
@@ -408,6 +410,11 @@ image, so it lives in two places that must agree:
   the installer, wizard, and baseline benchmark refuse a devcontainer because container
   root cannot modify the host's `/etc`, systemd, or cgroup tree.
 
+The host wizard also asks whether to disable the kernel-wide `DAMON_STAT`
+monitor. Its recommended answer is yes, which lets cgprofile use the generic
+DAMON interface to collect per-session samples; choosing no preserves the
+kernel default. See the [host policy guide](host-setup/README.md#optional-damon_stat-policy).
+
 ```bash
 sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — quiet window
 sudo mdt-host-check.sh
@@ -724,10 +731,12 @@ External references:
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
-The declared lanes run in `tester-unified`, not in the cockpit devcontainer:
+The smoke, release, and Assay lanes run in `tester-unified`, not in the cockpit
+devcontainer. The `vm-system` command lane runs its QEMU controller on the
+host, with product assertions inside the guest:
 
 - `./run-gate.py smoke` runs Python syntax checks, the host-setup renderer and
-  the complete `scripts/` pytest suite (73 tests at the current baseline).
+  the complete `scripts/` and `host-setup/tests/` pytest suites.
 - `./run-gate.py release` is the image-release gate for the Docker/OCI release
   flow tests; CMRU consumes this declaration instead of carrying a second
   `tester-gate` command.
@@ -740,7 +749,12 @@ The declared lanes run in `tester-unified`, not in the cockpit devcontainer:
   execute inside the guest and verify systemd PID 1, cgroup v2, Docker,
   rendered slice units, daemon configuration, and the installed host check.
 
-`assay.toml` is the judgment contract for the wizard and the VM receipt. The
+`vm-system` preflights the caller-provided `CGROUP_PARENT_DEV_GATES`,
+`CGROUP_PARENT_DEV_INTERACTIVE`, `BUILDX_BUILDER`, `BUILDX_CONFIG`, and
+`DOCKER_HOST` before the controller starts. The gate declaration is the single
+source for those command prerequisites. See the [test boundary design](docs/DESIGN-GUIDE.md#vm-system-prerequisites-live-in-run-gate).
+
+`assay.toml` is the judgment contract for the wizard. The
 shell installer and renderer remain command-tested because assay's Python
 adapter cannot judge shell behavior. The source checkout's `assay/` package is
 imported at lane runtime, as required for same-repository vbpub consumers; no

@@ -42,11 +42,12 @@ run_with_timeout 10m "$HARNESS" wait "$RUN"
 run_with_timeout 12m "$HARNESS" ssh "$RUN" -- \
     'sudo DEBIAN_FRONTEND=noninteractive apt-get update &&
      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-       docker.io docker-buildx-plugin python3 python3-pytest systemd systemd-sysv util-linux'
+       docker.io docker-cli docker-buildx python3 python3-pytest rsync systemd systemd-sysv util-linux'
 
-run_with_timeout 5m "$HARNESS" copy "$RUN" /source/modern-debian-tools-python-debug "$GUEST_ROOT"
+run_with_timeout 2m "$HARNESS" ssh "$RUN" -- "mkdir -p '$GUEST_ROOT'"
+run_with_timeout 5m "$HARNESS" copy "$RUN" /source/modern-debian-tools-python-debug/ "$GUEST_ROOT/"
 run_with_timeout 2m "$HARNESS" ssh "$RUN" -- "mkdir -p '$GUEST_SHARED_SCRIPTS'"
-run_with_timeout 5m "$HARNESS" copy "$RUN" /source/scripts/debian-install-v2 "$GUEST_SHARED_SCRIPTS"
+run_with_timeout 5m "$HARNESS" copy "$RUN" /source/scripts/debian-install-v2/ "$GUEST_SHARED_SCRIPTS/"
 
 run_with_timeout 25m "$HARNESS" ssh "$RUN" -- \
     "set -eu
@@ -66,6 +67,7 @@ src = Path('host-setup/host-setup.env.example')
 dst = Path('/tmp/mdt-host-setup.env')
 values = {
     'DEV_MEMORY_HIGH': '1.5G', 'DEV_MEMORY_MAX': '2G',
+    'DEV_INTERACTIVE_MEMORY_LOW': '256M',
     'DEV_INTERACTIVE_MEMORY_HIGH': '512M', 'DEV_INTERACTIVE_MEMORY_MAX': '1G',
     'DEV_BACKGROUND_MEMORY_HIGH': '512M', 'DEV_BACKGROUND_MEMORY_MAX': '1G',
     'DEV_GATES_MEMORY_HIGH': '256M', 'DEV_GATES_MEMORY_MAX': '512M',

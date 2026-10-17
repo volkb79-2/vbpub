@@ -24,14 +24,17 @@ interactive tier before starting, and builds through the declared
 mount table and refuses an unmapped or missing source. This prevents a
 container path from being passed to the daemon as if it were a host path.
 
-## Why Assay is not used to pretend the VM is a unit test
+## VM system prerequisites live in Run-Gate
 
-Assay judges the VM controller's R0 receipt. It does not move systemd or
-Docker assertions into the Python mutation snapshot, because that would test
-the controller's text and mocks while claiming to test the host boundary.
-The VM lane therefore remains R0: its value is the real guest acceptance
-receipt, while the Python lane supplies the deeper R1-R3 evidence for code
-whose behavior can be reproduced safely in `tester-unified`.
+The VM lane is a Run-Gate command lane. Its five host inputs are declared once
+in `run-gate.toml`, so Run-Gate can refuse before starting the controller when
+the environment is incomplete. The controller inherits the caller's selected
+Docker endpoint and Buildx configuration. Wrapping this R0 orchestration
+receipt in Assay would require a second environment allowlist to pass the same
+inputs to the shell command without adding judgment beyond Run-Gate's own
+record. Systemd, Docker, and cgroup assertions remain inside the QEMU guest;
+the Python wizard lane supplies the deeper R1-R3 evidence for behavior that
+can be reproduced safely in `tester-unified`.
 
 MDT has no owned HTTP/OpenAPI contract. Hypothesis is used for pure
 configuration invariants where generated values are meaningful; Schemathesis
@@ -55,6 +58,30 @@ keeps the unauthenticated internal-network policy identical to PWMCP's other
 internal deployments. No host port is published. The installed `pwmcp` CLI
 uses the version-matched client and Playwright wheel in the same private venv.
 See the [pasteable consumer steps](CONSUMERS.md#pwmcp-browser-service).
+
+The devcontainer template puts `/srv/pwmcp-instance/bin` on remote process
+`PATH` and exports `PWMCP_MCP_URL`. The CLI lives outside `/home/vscode`, so a
+persisted home mount cannot hide it. The endpoint variable makes the network
+resource explicit; each agent harness still owns its MCP registration format.
+
+## The estate venv is selected by PATH
+
+The MDT image puts `/home/vscode/.venv/bin` first in image and login-shell
+`PATH`. This selects the estate Python for all cockpit processes, including
+noninteractive agent commands and children started by release tools. It does
+not pretend that every process has activated a shell venv: `VIRTUAL_ENV` is
+reserved for actual activation, while the selected interpreter and its
+installed packages are determined by `PATH`.
+
+## DAMON_STAT is an explicit host choice
+
+`DAMON_STAT` and cgprofile's generic DAMON sysfs sessions are mutually
+exclusive kernel consumers. MDT asks the host operator whether to disable
+`DAMON_STAT`, recommends disabling it for the development host, and applies
+the choice through a boot-time tmpfiles rule. The non-wizard example keeps the
+kernel default. This keeps a host-wide monitoring policy out of cgprofile's
+runtime and gives the operator a clear way to preserve `DAMON_STAT` when it is
+needed for other workloads.
 
 ## Managed BuildKit socket access
 

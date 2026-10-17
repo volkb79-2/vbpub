@@ -741,7 +741,6 @@ RUN set -euo pipefail; \
             "${wheels_dir}"/*.whl; \
     fi
 
-ENV VIRTUAL_ENV="/home/vscode/.venv"
 ENV PATH="/home/vscode/.venv/bin:${PATH}"
 
 USER root
@@ -757,15 +756,6 @@ USER root
 ENV PATH="/srv/pwmcp-instance/bin:${PATH}"
 RUN rm -f /tmp/install_pwmcp_instance.py
 RUN rm -f /tmp/install_ai_cli_tools.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env
-RUN set -euo pipefail; \
-        cat > /etc/profile.d/dstdns-venv.sh << 'EOF'
-if [ -n "${BASH_VERSION:-}" ] && [[ $- == *i* ]] && [ -d /home/vscode/.venv ]; then
-    # shellcheck source=/dev/null
-    source /home/vscode/.venv/bin/activate
-fi
-EOF
-USER root
-
 # ── In-container devcontainer finalize (postCreateCommand) ──────────────────
 # Baked into the image so any mdt-based repo wires only:
 #   "postCreateCommand": "finalize_container_environment.py"

@@ -192,6 +192,13 @@
     "CODEX_SQLITE_HOME": "/home/vscode/.codex/sqlite-shared"
   },
 
+  // Expose tools installed outside the persistent home mount to remote agent,
+  // editor, and terminal processes. MCP registration remains harness-specific.
+  "remoteEnv": {
+    "PATH": "/home/vscode/.venv/bin:/srv/pwmcp-instance/bin:${containerEnv:PATH}",
+    "PWMCP_MCP_URL": "http://pwmcp:8931/mcp"
+  },
+
   // ─── 8. Docker runtime arguments ──────────────────────────────────────────────
   "runArgs": [
     "--hostname", "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",

@@ -36,11 +36,23 @@ host-setup should configure
 
 see `modern-debian-tools-python-debug/host-setup/etc/sysctl.d/99-inotify.conf`
 
-## MDT-004 - make `~` able to be persisted as mount
+## MDT-004 - move to a persisted `/home/vscode` in mdt-cockpit
 
-if `/home/vscode` gets entirely bind-mounted to a host folder to carryu over user state, `~` must not be used anymore
-for installed tools and so on.
+After the current MDT host and environment work is complete, fork this project
+to `vbpub/mdt-cockpit` and make all of `/home/vscode` a host-persisted mount.
+First inventory every shipped image path and every persistent home path, then
+decide which content belongs in the image, in user configuration, or in
+host-persisted runtime state. In particular, audit tools and runtimes installed
+under `~`, agent settings under `~/.config` and `~/.local`, and files that a
+home mount would hide from the image. The migration must preserve executable
+discovery, seed only intentional defaults, and explain how users move existing
+state without silently replacing it.
+
+Deliver a consumer guide with reusable rules for choosing image paths,
+configuration paths, caches, secrets, and persisted state. Its acceptance
+inventory must cover every current `/home/vscode` file and directory and name
+the owner and persistence policy for each one before the mount changes.
 
 ## MDT-005 - adopt `cli-extended` for grammer, wizard, sematic check, ... 
 
-vbpub has a library to prohibit handrolling solutions every CLI needs. adopt it. 
+vbpub has a library to prohibit handrolling solutions every CLI needs. adopt it.
