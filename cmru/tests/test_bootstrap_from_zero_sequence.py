@@ -344,7 +344,8 @@ def _run_step_three_identity_block(
     assert block.count(needle) == 2  # the pre-build check and the post-build re-check
     block = block.replace(needle, needle + " --pointer-file latest.json")
     # The digest is never typed: no placeholder is left for the operator to fill in.
-    assert "<" not in block and "CLI_EXTENDED_RELEASED_SHA256='" not in block
+    assert re.search(r"<[^>\n]+>", block) is None, block
+    assert "CLI_EXTENDED_RELEASED_SHA256='" not in block
     (root / "cmru.release.log").write_text(
         _release_log(released) if log_text is None else log_text, encoding="utf-8",
     )

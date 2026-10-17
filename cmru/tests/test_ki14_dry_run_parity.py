@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from cmru import cli, output, version
+from cmru import cli, output, transaction, version
 
 
 @pytest.fixture(autouse=True)
@@ -96,6 +96,16 @@ def _run(monkeypatch, repo_root: Path, extra_args: list[str]) -> str:
     monkeypatch.setattr(cli, "_resolve_config", lambda _: config_path)
     monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: type("Context", (), {"project_name": None, "scope": "estate"})())
     monkeypatch.setattr(cli, "load_config", lambda _: _config(repo_root))
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_args: False)
+    monkeypatch.setattr(
+        cli, "_transaction_workspace_from_env",
+        lambda root: transaction.ReleaseWorkspace(
+            root, root, "cmru-release-test", "a" * 40,
+        ),
+    )
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
     cli.main(
@@ -181,6 +191,13 @@ def test_detect_changed_projects_is_called_once_with_identical_strict_kwargs_on_
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
 
     monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "_transaction_workspace_from_env",
+        lambda root: transaction.ReleaseWorkspace(
+            root, root, "cmru-release-test", "a" * 40,
+        ),
+    )
     cli.main(["release", "--dry-run", "--config", str(config_path)])
     dry_calls = list(calls)
     calls.clear()

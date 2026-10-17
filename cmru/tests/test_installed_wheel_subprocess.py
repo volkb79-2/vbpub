@@ -247,11 +247,15 @@ def test_fresh_checkout_bootstrap_is_the_only_source_build_launcher():
     assert "python3 -m cmru.handlers" not in source
     assert "-m cmru.handlers wheel-build" in source
     # BG-10: -s and an epoch; cli_extended is the verified RELEASED wheel. Its checkout may
-    # be named ONLY inside the explicit zero-release source-mode branch, and only twice: the
-    # verification step and the one build subshell (no wheel exists to import yet there).
+    # be named ONLY inside the explicit zero-release source-mode branch: once in the source
+    # binding inventory, once for the pre-build import check, and once in the build subprocess.
     uses = library_source_uses(source)
-    assert len(uses) == 2, uses
+    assert len(uses) == 4, uses  # binding paths + binding roots + import check + build subprocess
     assert all(inside for _number, _line, inside in uses), uses
+    assert sum("source_binding_paths+=" in line for _number, line, _inside in uses) == 1
+    assert sum("source_binding_roots+=" in line for _number, line, _inside in uses) == 1
+    assert sum("verify_pythonpath=" in line for _number, line, _inside in uses) == 1
+    assert sum("export PYTHONPATH=" in line for _number, line, _inside in uses) == 1
     assert "libraries/worktree/src" in source
     assert '"${python_bin}" -s -m cmru.handlers' in source
     assert "CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256" in source and "fetch-cli-extended.py" in source
@@ -715,9 +719,17 @@ _PROBE_IMAGE = "debian@sha256:" + "d" * 64
 def _real_placement_tree(tmp_path: Path, loaded: list[str], gates: str = _GATES_SLICE) -> dict[str, object]:
     tree = _bootstrap_tree(tmp_path)
     root: Path = tree["repo_root"]  # type: ignore[assignment]
-    (root / "cmru" / "src").symlink_to(PROJECT_DIR / "src")
-    (root / "libraries" / "worktree").mkdir(parents=True)
-    (root / "libraries" / "worktree" / "src").symlink_to(REPO_ROOT / "libraries" / "worktree" / "src")
+    (root / "libraries").mkdir(parents=True, exist_ok=True)
+    shutil.copytree(
+        PROJECT_DIR / "src", root / "cmru" / "src",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    shutil.copytree(
+        REPO_ROOT / "libraries" / "worktree" / "src",
+        root / "libraries" / "worktree" / "src",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
+    _recommit_tree(tree)
     wheel, digest = _real_cli_extended_wheel(tmp_path / "release")
     tree["env"].update(  # type: ignore[attr-defined]
         CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest,

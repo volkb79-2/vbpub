@@ -338,6 +338,7 @@ def test_release_refuses_unsupported_git_before_creating_candidate_or_running_ch
         lambda root, projects: {root: list(projects)},
     )
     monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
+    monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
     monkeypatch.setattr(cli, "_uncommitted_release_paths", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(transaction, "release_lock", lambda _root: nullcontext())
@@ -428,6 +429,15 @@ cwd = "alpha"
     workspace_bases = []
 
     monkeypatch.setattr(cli, "load_config", lambda _path: loaded)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda root, projects: {root: list(projects)},
+    )
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
+    monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_args: False)
+    monkeypatch.setattr(transaction, "read_release_results", lambda *_args: {})
     monkeypatch.setenv(
         "CMRU_RELEASE_PREFLIGHT_SNAPSHOT", f"{tmp_path.resolve()}:{'c' * 40}",
     )
@@ -2308,6 +2318,7 @@ def test_resume_refuses_legacy_progress_outside_the_candidate_history():
 
 
 def test_push_backup_branch_force_pushes_under_its_own_name_and_records_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     """KI-15: a successful push MUST be recorded as this transaction's own
     state (mark_backup_pushed) -- that record is what later tells cleanup
     apart "nothing to delete" from "delete this"."""

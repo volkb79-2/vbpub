@@ -76,6 +76,16 @@ transient slice. Tester-gate deliberately runs the configured privileged probe
 image with `--pull=never`, so pull its exact digest before the first build:
 
 ```bash
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+: "${ESTATE_PYTHON:?set ESTATE_PYTHON to the Python that will own the release CLI}"
+: "${CGROUP_PARENT_DEV_BACKGROUND:?set the governed build parent slice}"
+: "${CGROUP_PARENT_DEV_GATES:?set the governed gate parent slice}"
+test -x "$ESTATE_PYTHON" || {
+  echo "ESTATE_PYTHON is not executable: $ESTATE_PYTHON" >&2
+  exit 2
+}
+export PATH="$(dirname "$ESTATE_PYTHON"):$PATH"
 docker pull debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 ```
 
@@ -97,7 +107,7 @@ supplies the whole-source line-and-branch qualification.
    printf '%s  %s\n' \
      "$BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256" "$BOOTSTRAP_CLI_EXTENDED_WHEEL" \
      "$BOOTSTRAP_CMRU_WHEEL_SHA256" "$BOOTSTRAP_CMRU_WHEEL" | sha256sum -c -
-   "${ESTATE_PYTHON:?set ESTATE_PYTHON to the Python that will own the cmru command}" \
+   "${ESTATE_PYTHON:?set ESTATE_PYTHON to the Python that will own the release CLI}" \
      -m pip install --no-index --no-deps --force-reinstall \
      "$BOOTSTRAP_CLI_EXTENDED_WHEEL" "$BOOTSTRAP_CMRU_WHEEL"
    export PATH="$(dirname "$ESTATE_PYTHON"):$PATH"
@@ -282,7 +292,15 @@ supplies the whole-source line-and-branch qualification.
    runtime wheel:
 
    ```bash
-   RUN_GATE_RELEASE_WHEEL='<exact wheel path from cmru.release.log>'
+   mapfile -t run_gate_wheels < <(
+     find run-gate-project/artifacts -type f \
+       -path '*/dist/run_gate-24.0.0-*.whl' -print
+   )
+   if [ "${#run_gate_wheels[@]}" -ne 1 ]; then
+     echo "Expected exactly one retained Run-Gate 24.0.0 wheel" >&2
+     exit 2
+   fi
+   RUN_GATE_RELEASE_WHEEL="${run_gate_wheels[0]}"
    "$ESTATE_PYTHON" -m pip install --force-reinstall --no-deps "$RUN_GATE_RELEASE_WHEEL"
    cx_resolve=(--cli-extended-resolve "${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}")
    if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then

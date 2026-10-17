@@ -82,6 +82,9 @@ def test_abandon_build_worktree_revalidates_the_previewed_worktree(monkeypatch, 
 
 
 def test_release_dry_run_reports_no_changed_projects_without_transaction_side_effect(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", github_token="token")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))

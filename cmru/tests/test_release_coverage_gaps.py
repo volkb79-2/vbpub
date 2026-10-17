@@ -22,6 +22,7 @@ from cmru.cli_support import select_target_names
 @pytest.fixture(autouse=True)
 def default_source_for_synthetic_release_workspaces(monkeypatch):
     monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _projects: root)
 
 
 def _loaded(projects, order=None):

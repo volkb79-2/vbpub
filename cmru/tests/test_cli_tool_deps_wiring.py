@@ -20,6 +20,17 @@ import pytest
 from cmru import cli, tool_deps, transaction, version
 
 
+@pytest.fixture(autouse=True)
+def fake_release_repository(monkeypatch):
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(
+        cli.transaction, "source_git_root_for_projects", lambda root, _projects: root,
+    )
+    monkeypatch.setattr(
+        cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None,
+    )
+
+
 def _tool_dep(project: str = "beta") -> SimpleNamespace:
     return SimpleNamespace(project=project, version="1.0.0", path="tools/x.pyz", sha256="a" * 64)
 
@@ -38,6 +49,8 @@ def _config(tmp_path, *, alpha_tool_deps=()):
 
 def _run_release(monkeypatch, tmp_path, extra_args, *, changed, alpha_tool_deps=()):
     monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     config_path = tmp_path / "cmru.orchestration.toml"
     monkeypatch.setattr(cli, "_resolve_config", lambda _: config_path)
     monkeypatch.setattr(cli, "resolve_invocation_context", lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"))
@@ -109,6 +122,10 @@ def test_a_blocking_tool_dependency_finding_refuses_the_release_cleanly(monkeypa
     monkeypatch.setattr(transaction, "mark_plan_refused", lambda *args: marks.append(args))
 
     monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
+    monkeypatch.setattr(
+        cli, "_transaction_workspace_from_env",
+        lambda root: transaction.ReleaseWorkspace(root, root, "cmru-release-child", "a" * 40),
+    )
     exc = cli.main(["release", "--config", str(config_path)])
 
     assert exc != 0

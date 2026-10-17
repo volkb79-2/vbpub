@@ -22,6 +22,9 @@ def test_cleanup_build_output_unknown_project_refuses_before_deletion(monkeypatc
 
 
 def test_release_child_dry_run_with_no_changes_is_a_noop(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", github_token="token")
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, project))

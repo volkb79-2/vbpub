@@ -560,6 +560,37 @@ def test_a_malformed_existing_release_record_refuses_before_any_mutation(
     assert f"refusing to publish GitHub Release {TAG}: {fragment}" in error
 
 
+def test_release_response_id_must_match_the_expected_id():
+    assert release.GitHubReleases._usable_response_id(
+        TAG, {"id": 7, "tag_name": TAG}, expected=8,
+    ) is None
+
+
+def test_readback_by_tag_refuses_a_malformed_release_id(monkeypatch, capsys):
+    client = release.GitHubReleases("o", "r", "t")
+    monkeypatch.setattr(client, "get_release_by_tag", lambda _tag: {
+        "id": True, "tag_name": TAG, "body": "notes", "target_commitish": "main",
+    })
+    monkeypatch.setattr(client, "get_tag_commit", lambda _tag: OTHER_COMMIT)
+
+    with pytest.raises(SystemExit):
+        client._confirm_write(
+            TAG, OTHER_COMMIT, "notes", release_id=None,
+            cause=None, attempts=1,
+        )
+
+    assert "release ID is malformed (True)" in capsys.readouterr().err
+
+
+def test_release_readback_pause_delegates_to_sleep(monkeypatch):
+    pauses = []
+    monkeypatch.setattr(release.time, "sleep", pauses.append)
+
+    release._pause(0.25)
+
+    assert pauses == [0.25]
+
+
 # --- a write that was SENT may have been applied: read back, never resend, never a clean refusal ---
 
 #: Answers a write can give that are NOT a usable success record. Each one, after the

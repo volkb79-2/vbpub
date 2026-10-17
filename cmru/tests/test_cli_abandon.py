@@ -142,6 +142,80 @@ def _invoke_abandon(candidate, *, branch=None, dry_run=True, yes=False, runtime=
     )
 
 
+def _install_feature_abandon_case(
+    monkeypatch, tmp_path, *, scope=None, results=None, candidate_present=True,
+    pushed=True, progress=None, main_ancestry=0, tag_ancestry=0,
+    latest_tag=True, attempted_oid=None, configs=None, fetched_candidate=None,
+    fetched_main=None,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
+    tip = "c" * 40
+    main = "e" * 40
+    tag = "alpha-v1.0.0"
+    tag_oid = "d" * 40
+    branch_ref = f"refs/heads/{candidate.branch}"
+    heads = {"refs/heads/main": main}
+    if candidate_present:
+        heads[branch_ref] = tip
+    remote_tags = {
+        f"refs/tags/{tag}": tag_oid,
+        f"refs/tags/{tag}^{{}}": tag_oid,
+    }
+    if latest_tag:
+        remote_tags.update({
+            f"refs/tags/{tag}-latest": tag_oid,
+            f"refs/tags/{tag}-latest^{{}}": tag_oid,
+        })
+    project_configs = configs or {
+        "alpha": SimpleNamespace(git_tag=True, prefix="alpha-v"),
+    }
+    result_map = results if results is not None else {"alpha": tag}
+    attempts = {
+        f"refs/tags/{tag}": attempted_oid or tag_oid,
+    }
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate,
+        scope=scope or ["alpha"], configs=project_configs,
+        snapshot={}, attempts=attempts, local_tags={}, remote_tags=remote_tags,
+        heads=heads, merge_codes={tip: 0, tag_oid: tag_ancestry},
+    )
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_: {
+        "source_ref": "refs/heads/feature/release",
+        "source_commit": "a" * 40,
+    })
+    monkeypatch.setattr(transaction, "read_release_results", lambda *_: result_map)
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_: progress or tip)
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: pushed)
+    monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: tip)
+    original_run_local_git = cli.run_local_git
+
+    def run_local_git(root, *args, **kwargs):
+        if (
+            args[:2] == ("merge-base", "--is-ancestor")
+            and args[2] == tip and args[3] == main
+        ):
+            return SimpleNamespace(returncode=main_ancestry, stdout="", stderr="")
+        if (
+            args[:2] == ("merge-base", "--is-ancestor")
+            and args[2] == tag_oid and args[3] == tip
+        ):
+            return SimpleNamespace(returncode=tag_ancestry, stdout="", stderr="")
+        return original_run_local_git(root, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "run_local_git", run_local_git)
+    monkeypatch.setattr(
+        transaction, "fetch_origin_branch",
+        lambda _root, branch, **_kwargs: (
+            (fetched_main if fetched_main is not None else main)
+            if branch == "main"
+            else fetched_candidate if fetched_candidate is not None
+            else tip if candidate_present else None
+        ),
+    )
+    return candidate, tag, tag_oid, tip, main
+
+
 def test_abandon_dry_run_is_read_only_and_selects_the_exact_branch(monkeypatch, tmp_path, capsys):
     chosen = _workspace(tmp_path, "cmru-release-20260924_120000-alpha-ab12cd")
     other = _workspace(tmp_path, "cmru-release-20260924_120001-beta-bc23de")
@@ -352,6 +426,166 @@ def test_abandon_refuses_any_candidate_with_published_result_evidence(monkeypatc
     output = capsys.readouterr().out
     assert "release result metadata records a published project" in output
     assert "published release alpha:alpha-v1.2.3" in output
+
+
+@pytest.mark.parametrize(
+    "main_ancestry,expected,needle",
+    [
+        (0, exit_codes.OK, "origin/refs/heads/cmru-release-20261017_120000-alpha-ab12cd"),
+        (1, exit_codes.REFUSED, "not yet an ancestor of origin/main"),
+    ],
+)
+def test_abandon_feature_release_requires_exact_published_candidate_in_main(
+    monkeypatch, tmp_path, capsys, main_ancestry, expected, needle,
+):
+    candidate = _workspace(tmp_path, "cmru-release-20261017_120000-alpha-ab12cd")
+    candidate_tip = "c" * 40
+    main_tip = "e" * 40
+    tag = "alpha-v1.0.0"
+    tag_oid = "d" * 40
+    remote_tags = {
+        f"refs/tags/{tag}": tag_oid,
+        f"refs/tags/{tag}^{{}}": tag_oid,
+        f"refs/tags/{tag}-latest": tag_oid,
+        f"refs/tags/{tag}-latest^{{}}": tag_oid,
+    }
+    _install_abandon_inspection(
+        monkeypatch, tmp_path, candidate, scope=["alpha"],
+        configs={"alpha": SimpleNamespace(git_tag=True, prefix="alpha-v")},
+        snapshot={}, attempts={f"refs/tags/{tag}": tag_oid},
+        remote_tags=remote_tags,
+        heads={
+            f"refs/heads/{candidate.branch}": candidate_tip,
+            "refs/heads/main": main_tip,
+        },
+        merge_codes={candidate_tip: 0, tag_oid: 0},
+    )
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_: {
+        "source_ref": "refs/heads/feature/release",
+        "source_commit": "a" * 40,
+    })
+    monkeypatch.setattr(transaction, "read_release_results", lambda *_: {"alpha": tag})
+    monkeypatch.setattr(transaction, "read_release_progress", lambda *_: candidate_tip)
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)
+    monkeypatch.setattr(transaction, "backup_was_removed", lambda *_: False)
+    monkeypatch.setattr(transaction, "fetch_origin_branch", lambda _root, branch, **_kw: {
+        "main": main_tip, candidate.branch: candidate_tip,
+    }[branch])
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: candidate_tip)
+    original_run_local_git = cli.run_local_git
+
+    def run_local_git(root, *args, **kwargs):
+        if (
+            args[:2] == ("merge-base", "--is-ancestor")
+            and args[2] == candidate_tip and args[3] == main_tip
+        ):
+            return SimpleNamespace(returncode=main_ancestry, stdout="", stderr="")
+        return original_run_local_git(root, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "run_local_git", run_local_git)
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == expected
+    assert needle in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "scope,results,configs,needle",
+    [
+        (["alpha", "beta"], {"alpha": "alpha-v1.0.0"}, {
+            "alpha": SimpleNamespace(git_tag=True, prefix="alpha-v"),
+            "beta": SimpleNamespace(git_tag=True, prefix="beta-v"),
+        }, "partial publication results"),
+        (["ghost"], {"ghost": "alpha-v1.0.0"}, {
+            "alpha": SimpleNamespace(git_tag=True, prefix="alpha-v"),
+        }, "unknown project"),
+    ],
+)
+def test_abandon_withholds_partial_or_unknown_feature_results(
+    monkeypatch, tmp_path, capsys, scope, results, configs, needle,
+):
+    candidate, _tag, _tag_oid, _tip, _main = _install_feature_abandon_case(
+        monkeypatch, tmp_path, scope=scope, results=results, configs=configs,
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert needle in capsys.readouterr().out
+
+
+def test_abandon_allows_missing_pr_branch_only_after_exact_candidate_was_merged(
+    monkeypatch, tmp_path, capsys,
+):
+    candidate, _tag, _tag_oid, _tip, _main = _install_feature_abandon_case(
+        monkeypatch, tmp_path, candidate_present=False,
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.OK
+    output = capsys.readouterr().out
+    assert "exact published candidate tip verified in origin/main" in output
+
+
+@pytest.mark.parametrize(
+    "kwargs,needle",
+    [
+        ({"candidate_present": False, "main_ancestry": 1}, "candidate branch is absent but its published commit is not in origin/main"),
+        ({"candidate_present": False, "pushed": False}, "no candidate-branch ownership record"),
+        ({"candidate_present": True, "fetched_main": "f" * 40}, "origin branch refs changed while checking PR retirement"),
+        ({"candidate_present": True, "main_ancestry": 2}, "could not verify the published candidate against origin/main"),
+        ({"progress": "f" * 40}, "published feature candidate and completed progress do not name the same final commit"),
+    ],
+)
+def test_abandon_withholds_feature_candidate_when_remote_ancestry_is_unproven(
+    monkeypatch, tmp_path, capsys, kwargs, needle,
+):
+    candidate, _tag, _tag_oid, _tip, _main = _install_feature_abandon_case(
+        monkeypatch, tmp_path, **kwargs,
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert needle in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "kwargs,needle",
+    [
+        ({"attempted_oid": "f" * 40}, "does not match CMRU's recorded origin push"),
+        ({"tag_ancestry": 1}, "is not an ancestor of the retained candidate"),
+    ],
+)
+def test_abandon_requires_the_published_tag_to_match_the_push_attempt_and_candidate(
+    monkeypatch, tmp_path, capsys, kwargs, needle,
+):
+    candidate, _tag, _tag_oid, _tip, _main = _install_feature_abandon_case(
+        monkeypatch, tmp_path, **kwargs,
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert needle in capsys.readouterr().out
+
+
+def test_abandon_feature_release_with_untagged_project_withholds_ambiguous_publication(
+    monkeypatch, tmp_path, capsys,
+):
+    configs = {
+        "alpha": SimpleNamespace(git_tag=True, prefix="alpha-v"),
+        "beta": SimpleNamespace(git_tag=False, prefix="beta-v"),
+    }
+    candidate, _tag, _tag_oid, _tip, _main = _install_feature_abandon_case(
+        monkeypatch, tmp_path, scope=["alpha", "beta"],
+        results={"alpha": "alpha-v1.0.0", "beta": "source-aaaaaaaaaaaa"},
+        configs=configs,
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.REFUSED
+    assert "can publish without a Git tag" in capsys.readouterr().out
+
+
+def test_abandon_feature_release_accepts_a_missing_latest_alias(tmp_path, monkeypatch, capsys):
+    candidate, _tag, _tag_oid, _tip, _main = _install_feature_abandon_case(
+        monkeypatch, tmp_path, latest_tag=False,
+    )
+
+    assert _invoke_abandon(candidate, branch=candidate.branch) == exit_codes.OK
+    assert "Candidate:" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

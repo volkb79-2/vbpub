@@ -110,13 +110,16 @@ def test_bootstrap_names_the_library_checkout_only_as_the_source_mode_build_inpu
     assert "cli_extended/src" not in code
     assert not re.search(r"""["']/?cli[-_]extended/?["']""", code)
     # The checkout's SOURCE tree is named only inside the explicit zero-release source-mode
-    # branch (no wheel exists to import there): once to verify the build slice, once for the
-    # build subshell below. Any use outside that branch would put it on a released-wheel path.
+    # branch (no wheel exists to import there): in its source-binding inventory, for the
+    # pre-build import check, and for the build subshell below. Any use outside that branch
+    # would put it on a released-wheel path.
     uses = library_source_uses(code)
-    assert len(uses) == 2 and all(inside for _number, _line, inside in uses), uses
-    # The checkout itself is named by exactly the assignment and that verification line.
+    assert len(uses) == 4 and all(inside for _number, _line, inside in uses), uses
+    assert sum("source_binding_paths+=" in line for _number, line, _inside in uses) == 1
+    assert sum("source_binding_roots+=" in line for _number, line, _inside in uses) == 1
+    # The checkout itself is named by its binding inventory, import check and assignment.
     lines = [line for line in code.splitlines() if CX_LIBRARY in line]
-    assert len(lines) == 2, lines
+    assert len(lines) == 4, lines
     assert sum(line.lstrip().startswith("cli_extended_library=") for line in lines) == 1, lines
     assert sum(line.lstrip().startswith("verify_pythonpath=") for line in lines) == 1, lines
     # Through the checkout variable it reaches PYTHONPATH exactly once: the explicit

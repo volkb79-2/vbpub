@@ -286,7 +286,7 @@ def test_a_second_failure_after_the_switch_is_refused_not_looped(installed_env):
     result = _run_gate_script(bindir, "--help", extra_env={REEXEC_ENV: "1"})
 
     assert result.returncode == 1
-    assert "still fails the declared CMRU dependency set" in result.stderr
+    assert "still fails the declared dependencies" in result.stderr
     assert not log.exists()  # no further switch was attempted
 
 

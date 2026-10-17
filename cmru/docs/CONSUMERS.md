@@ -1560,7 +1560,7 @@ A real rebase conflict is reported as a conflict, separately from a dirty-checko
 another clean-rebase failure is reported as undetermined rather than guessed to be a conflict.
 The same diagnostic is printed after a successful release, a plan refusal, or a child failure;
 the primary release result and retained-worktree behavior remain unchanged. See the normative
-[`S-CLI.5a`](SPEC.md#s-cli5a-default-originmain-projects-release-one-after-another-not-in-a-shared-batch) contract
+[`S-CLI.5a`](SPEC.md#s-cli5a--default-originmain-projects-release-one-after-another-not-in-a-shared-batch) contract
 and the [caller-main cleanup operations](RELEASE-TRANSACTIONS.md#caller-main-cleanup).
 
 ### Retaining gate evidence

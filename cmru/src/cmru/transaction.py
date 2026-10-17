@@ -2987,8 +2987,6 @@ def abandon_workspace(
             raise RuntimeError("local release tags changed after abandonment inspection; retained transaction was not removed")
     if pushed and not removed:
         if remote_candidate_oid is None:
-            if not allow_missing_remote_candidate:
-                raise RuntimeError("origin candidate object ID is unavailable; retained transaction was not removed")
             if not completed_feature_release:
                 raise RuntimeError(
                     "an absent origin candidate can be retired only for a completed feature release"
