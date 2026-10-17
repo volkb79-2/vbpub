@@ -268,8 +268,11 @@ def test_the_skill_is_packaged_data_and_valid_and_no_claude_skills_tree_remains(
     source = SRC / "pwmcp_client" / "skills"
     assert (source / "pwmcp-fetch" / "SKILL.md").is_file()
     skill_text = (source / "pwmcp-fetch" / "SKILL.md").read_text(encoding="utf-8")
-    assert "/srv/pwmcp-instance/bin/pwmcp" in skill_text
-    assert "Other installations may use a different root" in skill_text
+    assert "command -v pwmcp" in skill_text
+    assert "ask the environment owner to expose the installed" in skill_text
+    assert "PWMCP_MCP_URL" in skill_text
+    assert "/srv/" not in skill_text
+    assert "dstdns-" not in skill_text
     files = {
         str(path.relative_to(source / "pwmcp-fetch")): path.read_bytes()
         for path in (source / "pwmcp-fetch").rglob("*")

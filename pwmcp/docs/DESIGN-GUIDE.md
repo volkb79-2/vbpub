@@ -60,13 +60,13 @@ Playwright version recorded in `pwmcp.contract.json`; the image and CLI
 therefore share the contract's wire-protocol version. The installer launcher
 exposes `pwmcp` from the installed release.
 
-The MDT install keeps that entrypoint at `/srv/pwmcp-instance/bin/pwmcp`, a
-stable link to the current release's virtual environment. A
-`~/.local/bin/pwmcp` symlink exposes it through the devcontainer user's existing
-PATH, so the packaged skill's ordinary `pwmcp` commands work in agent shells;
-the skill also records the absolute path for shells that do not inherit PATH.
-This keeps command discovery separate from the MCP endpoint and Playwright
-service network.
+The MDT image keeps that entrypoint at `/srv/pwmcp-instance/bin/pwmcp`, a
+stable link to the current release's virtual environment, and its devcontainer
+configuration exposes that directory on the agent process's PATH. The packaged
+skill uses the `pwmcp` command without assuming where a consumer installed it;
+each environment owns CLI discovery and MCP endpoint configuration. This keeps
+the skill portable while keeping command discovery separate from the service
+network.
 
 MDT releases depend on PWMCP and embed a commit-pinned installer plus contract
 hash in the image build inputs. This supplies an immediately available

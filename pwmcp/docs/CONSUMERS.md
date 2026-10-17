@@ -72,6 +72,24 @@ cache when present and pulls that tag when it is absent. A locally built image
 with the configured tag can therefore be used before that tag is available from
 the registry.
 
+## Install and use the agent skill
+
+The client bundle includes the `pwmcp-fetch` skill. Install it for the supported
+harnesses with:
+
+```bash
+pwmcp skills install --harness all
+pwmcp skills check --harness all
+```
+
+The skill invokes `pwmcp` by command name. Each consumer environment must make
+the installed CLI discoverable on the agent process's `PATH`; installing the
+skill does not install the CLI or configure that path. An agent using MCP tools
+also needs a configured PWMCP MCP connection whose endpoint is reachable from
+the agent runtime. The default internal endpoint is `http://pwmcp:8931/mcp`
+when the agent shares the PWMCP network. A CLI install can inspect pages
+without configuring an MCP connection.
+
 ## Inspect a webpage
 
 Use the bundled CLI to read a rendered page through PWMCP's managed remote

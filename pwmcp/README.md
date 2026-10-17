@@ -102,6 +102,12 @@ For pages that render content after the initial navigation event, use
 selector. The selector may match several elements; the CLI waits for the first
 matching visible element before reading the page.
 
+The `pwmcp-fetch` agent skill is installed with `pwmcp skills install --harness
+all`. Consumer environments must make the `pwmcp` command available on the
+agent process's `PATH`; installing the skill does not install the CLI or set
+PATH. MCP consumers must also configure an endpoint reachable from the agent.
+See [skill and agent setup](docs/CONSUMERS.md#install-and-use-the-agent-skill).
+
 Use `--ignore-https-errors` only for a trusted target with a known invalid
 certificate. It applies to HTTPS requests in that one inspection context.
 See [CLI usage and output choices](docs/CONSUMERS.md#inspect-a-webpage) and the
