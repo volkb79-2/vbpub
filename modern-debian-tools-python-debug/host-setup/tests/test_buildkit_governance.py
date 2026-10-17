@@ -8,6 +8,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -16,6 +17,7 @@ from hypothesis import given, strategies as st
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = ROOT.parent
 # The assay baseline loads the wizard by absolute path from a Python process
 # whose sys.path starts at this tests directory.  Make the wizard's sibling
 # source directory explicit so its source-tree import of ``mdt_cli`` works in
@@ -48,6 +50,30 @@ FINALIZE = load_module(
 
 
 class BuildKitGovernanceTests(unittest.TestCase):
+    def test_vm_system_prerequisites_are_declared_once_at_run_gate_boundary(self) -> None:
+        run_gate = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text())
+        vm_lane = run_gate["lanes"]["vm-system"]
+
+        self.assertEqual(vm_lane["kind"], "command")
+        self.assertEqual(vm_lane["environment"], "bare-host")
+        self.assertEqual(
+            vm_lane["argv"],
+            ["bash", "host-setup/tests/run-vm-acceptance.sh"],
+        )
+        self.assertEqual(
+            set(vm_lane["required_env"]),
+            {
+                "CGROUP_PARENT_DEV_GATES",
+                "CGROUP_PARENT_DEV_INTERACTIVE",
+                "BUILDX_BUILDER",
+                "BUILDX_CONFIG",
+                "DOCKER_HOST",
+            },
+        )
+
+        assay = tomllib.loads((PROJECT_ROOT / "assay.toml").read_text())
+        self.assertNotIn("vm_system", assay["lanes"])
+
     def test_damon_policy_recommends_disable_and_preserves_existing_choice(self) -> None:
         with mock.patch.object(WIZARD, "ask_yn", return_value=True) as ask:
             selected = WIZARD.step_damon_stat_policy(

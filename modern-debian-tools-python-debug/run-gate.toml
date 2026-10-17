@@ -52,9 +52,9 @@ memory = "6g"
 memory_swap = "16g"
 
 [lanes.vm-system]
-kind = "assay"
-assay_lane = "vm_system"
+kind = "command"
 environment = "bare-host"
+argv = ["bash", "host-setup/tests/run-vm-acceptance.sh"]
 clean_tree = true
-required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER"]
+required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER", "BUILDX_CONFIG", "DOCKER_HOST"]
 budget = "45m"

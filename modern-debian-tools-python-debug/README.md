@@ -731,7 +731,9 @@ External references:
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
-The declared lanes run in `tester-unified`, not in the cockpit devcontainer:
+The smoke, release, and Assay lanes run in `tester-unified`, not in the cockpit
+devcontainer. The `vm-system` command lane runs its QEMU controller on the
+host, with product assertions inside the guest:
 
 - `./run-gate.py smoke` runs Python syntax checks, the host-setup renderer and
   the complete `scripts/` and `host-setup/tests/` pytest suites.
@@ -747,7 +749,12 @@ The declared lanes run in `tester-unified`, not in the cockpit devcontainer:
   execute inside the guest and verify systemd PID 1, cgroup v2, Docker,
   rendered slice units, daemon configuration, and the installed host check.
 
-`assay.toml` is the judgment contract for the wizard and the VM receipt. The
+`vm-system` preflights the caller-provided `CGROUP_PARENT_DEV_GATES`,
+`CGROUP_PARENT_DEV_INTERACTIVE`, `BUILDX_BUILDER`, `BUILDX_CONFIG`, and
+`DOCKER_HOST` before the controller starts. The gate declaration is the single
+source for those command prerequisites. See the [test boundary design](docs/DESIGN-GUIDE.md#vm-system-prerequisites-live-in-run-gate).
+
+`assay.toml` is the judgment contract for the wizard. The
 shell installer and renderer remain command-tested because assay's Python
 adapter cannot judge shell behavior. The source checkout's `assay/` package is
 imported at lane runtime, as required for same-repository vbpub consumers; no
