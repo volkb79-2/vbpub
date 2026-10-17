@@ -31,10 +31,14 @@ def test_release_child_dry_run_with_no_changes_is_a_noop(monkeypatch, tmp_path, 
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: release_calls.append(kwargs))
     monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
     cli.main(["release", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
-    assert release_calls == [{
+    (forwarded,) = release_calls
+    # The dry-run preview is told the full registry (scope names) as well.
+    assert set(forwarded.pop("known_projects")) == {"demo"}
+    assert forwarded.pop("known_project_names") is None
+    assert forwarded == {
         "minor": False, "major": False,
         "set_version": None, "dry_run": True,
-    }]
+    }
     output = capsys.readouterr().out
     assert "Release plan: no changed projects detected" in output
     assert "No tags pushed" in output

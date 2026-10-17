@@ -59,6 +59,10 @@ def test_host_git_hooks_disabled_pins_git_to_the_verified_worktree_and_restores(
     repo, *_rest = _fixture(tmp_path, monkeypatch)
     monkeypatch.setenv("GIT_DIR", "/preset")
     monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+    # The policy APPENDS to a caller's GIT_CONFIG_COUNT (the sibling test pins that), and
+    # the tester lane starts with one injected entry (`safe.directory`). Start empty so
+    # the expectation below is about this test's subject, not about where it runs.
+    monkeypatch.delenv("GIT_CONFIG_COUNT", raising=False)
     with gs.host_git_hooks_disabled(repo):
         assert os.environ["GIT_WORK_TREE"] == str(repo.resolve())
         assert "worktrees" in os.environ["GIT_DIR"]
@@ -463,7 +467,10 @@ def test_lane_output_validation_names_each_kind_of_unapproved_residue(tmp_path, 
         (root / "cmru" / "cmru.secret.toml").unlink()
 
         (root / "README.md").write_text("tampered\n", encoding="utf-8")
-        with pytest.raises(RuntimeError, match="changed tracked snapshot files or HEAD"):
+        # The byte-level comparison with the exact commit runs first and names the file.
+        with pytest.raises(
+            RuntimeError, match=r"tracked snapshot file differs from exact commit .*README\.md",
+        ):
             validate()
         _git(root, "checkout", "--quiet", "--", "README.md")
 
@@ -480,6 +487,31 @@ def test_lane_output_validation_names_each_kind_of_unapproved_residue(tmp_path, 
         _git(tmp_path / "primary", "worktree", "add", "--quiet", "-b", "plain", str(plain), "HEAD")
         with pytest.raises(RuntimeError, match="no CMRU workspace record"):
             gs.validate_lane_outputs(plain, snapshot.commit, protected_refs=())
+    finally:
+        gs.close_gate_snapshot(snapshot)
+
+
+def test_a_staged_change_hidden_by_restored_bytes_still_fails_the_lane(tmp_path, monkeypatch):
+    """The working-tree bytes can equal the judged commit while the INDEX no longer
+    does (a lane staged an edit, then wrote the original bytes back). The byte
+    proof passes, so only the status scan can refuse the snapshot."""
+    repo, *_rest = _fixture(tmp_path, monkeypatch)
+    snapshot = gs.open_gate_snapshot(repo)
+    root = snapshot.worktree_path
+    try:
+        original = (root / "README.md").read_bytes()
+        (root / "README.md").write_text("staged by a lane\n", encoding="utf-8")
+        _git(root, "add", "README.md")
+        (root / "README.md").write_bytes(original)
+        # The exact-tree proof alone is satisfied: every byte equals the commit.
+        gs._verify_tracked_files_match_commit(root, snapshot.commit)
+
+        with pytest.raises(
+            RuntimeError, match="a release gate lane changed tracked snapshot files or HEAD",
+        ):
+            gs.validate_lane_outputs(
+                root, snapshot.commit, protected_refs=snapshot.protected_refs,
+            )
     finally:
         gs.close_gate_snapshot(snapshot)
 

@@ -567,6 +567,9 @@ class GateSnapshot:
     lane_evidence_sha256: dict[str, dict[str, str]] = field(default_factory=dict)
     source_canary: Path | None = None
     source_canary_identity: tuple[int, int] | None = None
+    #: Lanes a finished gate deliberately did not run (a provisional gate).
+    #: Empty for a full gate and for every gate that did not finish.
+    deferred_lanes: list[dict[str, object]] = field(default_factory=list)
 
     @property
     def protected_refs(self) -> tuple[str, ...]:
@@ -1085,7 +1088,7 @@ def verify_ref_probe_detected(snapshot: GateSnapshot) -> None:
             anchor_refs=snapshot.anchor_refs,
         )
     except RuntimeError as exc:
-        if "changed protected Git refs" not in str(exc):
+        if "protected Git refs changed during release-gate execution" not in str(exc):
             raise
     else:
         raise RuntimeError(
@@ -1102,7 +1105,7 @@ def write_snapshot_manifest(snapshot: GateSnapshot, state: str) -> None:
     with contextlib.suppress(FileNotFoundError):
         _safe_regular_file(path)  # refuse to replace a non-regular or linked manifest
     record = {
-        "schema_version": 3,
+        "schema_version": 4,
         "refreshed_at_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source_commit": snapshot.commit,
         "snapshot_branch": snapshot.branch,
@@ -1119,6 +1122,7 @@ def write_snapshot_manifest(snapshot: GateSnapshot, state: str) -> None:
             str(snapshot.source_canary.relative_to(snapshot.source_root))
             if snapshot.source_canary is not None else None
         ),
+        "deferred_lanes": snapshot.deferred_lanes if state == "provisional" else [],
         "state": state,
     }
     payload = (json.dumps(record, sort_keys=True, indent=2) + "\n").encode("utf-8")

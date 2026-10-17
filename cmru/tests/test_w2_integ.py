@@ -359,7 +359,26 @@ def _shell_text(path: Path) -> str:
         line for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
         if not line.lstrip().startswith("#")
     ]
-    return re.sub(r"\\\n", " ", "\n".join(lines))
+    joined = re.sub(r"\\\n", " ", "\n".join(lines))
+    return _expand_static_bash_arrays(joined)
+
+
+def _expand_static_bash_arrays(text: str) -> str:
+    """Inline ``NAME=(...)`` / ``NAME+=(...)`` literals where ``"${NAME[@]}"`` is used.
+
+    A script that builds a command's options in an array (``build-image.sh``'s
+    ``tester_gate_args``) would otherwise hide them from the registry check. Every
+    assignment is included, so an optional ``+=`` item is validated too (a superset
+    of any single run's argv).
+    """
+    arrays: dict[str, list[str]] = {}
+    for match in re.finditer(r"(?m)^\s*(\w+)\+?=\(([^()]*)\)", text):
+        arrays.setdefault(match.group(1), []).append(match.group(2).strip())
+
+    def expand(match: re.Match) -> str:
+        return " ".join(arrays.get(match.group(1), [match.group(0)]))
+
+    return re.sub(r'"?\$\{(\w+)\[@\]\}"?', expand, text)
 
 
 def _registry_problem(argv: list[str], built) -> str | None:

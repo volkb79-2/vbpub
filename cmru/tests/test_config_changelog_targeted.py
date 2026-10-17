@@ -214,17 +214,17 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
 
 def test_changelog_plan_rejects_no_changes_and_empty_external_variable(monkeypatch, tmp_path):
     project = SimpleNamespace(name="demo", cwd="demo", prefix="demo-v", version=SimpleNamespace(strategy="external:"))
-    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a: [])
+    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a, **_k: [])
     with pytest.raises(RuntimeError, match="no changes"):
         changelog._project_release_plan(tmp_path, project)
-    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a: [("demo", project, "demo-v1.0.0", "patch")])
+    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a, **_k: [("demo", project, "demo-v1.0.0", "patch")])
     with pytest.raises(RuntimeError, match="no variable"):
         changelog._project_release_plan(tmp_path, project)
 
 
 def test_changelog_plan_selects_external_explicit_major_counter_and_initial_versions(monkeypatch, tmp_path):
     project = SimpleNamespace(name="demo", cwd="demo", prefix="demo-v", git_tag=True)
-    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a: [("demo", project, "demo-v1.2.3", "patch")])
+    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a, **_k: [("demo", project, "demo-v1.2.3", "patch")])
     monkeypatch.setattr(changelog, "_external_version", lambda *_: "4.5.6")
     project.version = SimpleNamespace(strategy="external:VERSION")
     assert changelog._project_release_plan(tmp_path, project) == ("4.5.6", "demo-v1.2.3")
@@ -235,7 +235,7 @@ def test_changelog_plan_selects_external_explicit_major_counter_and_initial_vers
     project.version = SimpleNamespace(strategy="counter", base_version="1.0.0")
     assert changelog._project_release_plan(tmp_path, project)[0] == "1.0.7"
     project.version = SimpleNamespace(strategy="scm")
-    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a: [("demo", project, None, "patch")])
+    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a, **_k: [("demo", project, None, "patch")])
     assert changelog._project_release_plan(tmp_path, project, minor=True)[0] == "0.1.0"
     assert changelog._project_release_plan(tmp_path, project)[0] == "0.1.0"
 

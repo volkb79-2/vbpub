@@ -51,23 +51,38 @@ def pytest_configure(config):
     )
 
 
+#: The release-controller identity unit tests see. The launcher records it and
+#: hands it to the transaction child through ``CMRU_RELEASE_CONTROLLER_*``.
+NEUTRAL_RELEASE_CONTROLLER_IDENTITY = {
+    "version": "6.2.0",
+    "wheel_sha256": "a" * 64,
+    "distribution_sha256": "b" * 64,
+    "module_path": "/site-packages/cmru/cli.py",
+}
+
+
 @pytest.fixture(autouse=True)
-def _neutral_release_controller_provenance(request, monkeypatch):
-    """Keep release-transaction unit tests independent of the test image's CMRU install."""
+def _neutral_release_controller_provenance(request):
+    """Keep release-transaction unit tests independent of the test image's CMRU install.
+
+    A plain attribute swap, not ``monkeypatch``: a ``monkeypatch`` requested by
+    an autouse fixture that runs before ``_restore_process_environment`` is torn
+    down AFTER that restore and re-introduces values the code under test wrote
+    (the leak the zz probe catches).
+    """
     if request.node.get_closest_marker("release_controller_provenance"):
         yield
         return
     from cmru import cli
 
-    monkeypatch.setattr(
-        cli, "_record_release_controller_identity",
-        lambda _phase: {
-            "version": "6.2.0",
-            "wheel_sha256": "a" * 64,
-            "distribution_sha256": "b" * 64,
-            "module_path": "/site-packages/cmru/cli.py",
-        },
+    saved = cli._record_release_controller_identity
+    cli._record_release_controller_identity = (
+        lambda _phase: dict(NEUTRAL_RELEASE_CONTROLLER_IDENTITY)
     )
+    try:
+        yield
+    finally:
+        cli._record_release_controller_identity = saved
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +124,7 @@ def _neutral_release_notes_preflight(request):
 
 
 @pytest.fixture(autouse=True)
-def _restore_process_environment():
+def _restore_process_environment(request):
     # Hermeticity: the real estate config DECLARES ``${CGROUP_PARENT_DEV_GATES}`` with no
     # default. The assay lane runs pytest with ``env_passthrough = ["PATH"]``, so the host's
     # variable is absent there and every test that loads ``cmru.orchestration.toml`` would
@@ -124,4 +139,19 @@ def _restore_process_environment():
         # source. Tests of unrelated publisher behaviour declare "none"; the
         # KI-75 tests set or remove it explicitly.
         os.environ["CMRU_RELEASE_NOTES_SOURCE"] = "none"
+        # A transaction child refuses to run without the launcher's controller
+        # identity (``CMRU_RELEASE_CONTROLLER_*``). Tests that stand in for a
+        # child see the neutral identity that ``_neutral_release_controller_
+        # provenance`` makes the launcher record; the provenance tests set or
+        # remove these themselves.
+        if not request.node.get_closest_marker("release_controller_provenance"):
+            os.environ["CMRU_RELEASE_CONTROLLER_VERSION"] = (
+                NEUTRAL_RELEASE_CONTROLLER_IDENTITY["version"]
+            )
+            os.environ["CMRU_RELEASE_CONTROLLER_WHEEL_SHA256"] = (
+                NEUTRAL_RELEASE_CONTROLLER_IDENTITY["wheel_sha256"]
+            )
+            os.environ["CMRU_RELEASE_CONTROLLER_FILES_SHA256"] = (
+                NEUTRAL_RELEASE_CONTROLLER_IDENTITY["distribution_sha256"]
+            )
         yield

@@ -123,7 +123,9 @@ def test_rollback_that_cannot_prove_absence_keeps_the_tag_and_prints_recovery(
 # --- _run_tagged_build_and_publish ---------------------------------------------------
 
 class _Steps:
-    def __init__(self, monkeypatch, *, fail_on=None, unchanged_fails=False):
+    def __init__(self, monkeypatch, *, fail_on=None, unchanged_fails=None):
+        # ``unchanged_fails`` names the one candidate-unchanged check ("phase")
+        # that fails; every other check passes.
         self.steps: list[list[str]] = []
         self.release_contexts: list[dict[str, str] | None] = []
         self.rolled_back: list[str] = []
@@ -135,8 +137,8 @@ class _Steps:
             if fail_on in steps:
                 raise RuntimeError(f"{fail_on} failed")
 
-        def unchanged(*_args):
-            if unchanged_fails:
+        def unchanged(*_args, **kwargs):
+            if unchanged_fails is not None and kwargs.get("phase") == unchanged_fails:
                 raise RuntimeError("candidate moved")
 
         monkeypatch.setattr(cli, "_run_project_steps", run)
@@ -183,7 +185,26 @@ def test_a_failed_build_rolls_the_tag_back_and_reraises(monkeypatch, tmp_path):
     assert steps.reported == []
 
 
-@pytest.mark.parametrize("kwargs", [{"fail_on": "push"}, {"unchanged_fails": True}])
+@pytest.mark.parametrize("phases", [["build"], []])
+def test_a_candidate_that_moves_before_publication_rolls_the_tag_back(
+    monkeypatch, tmp_path, phases,
+):
+    """The last check before the publisher runs: a moved candidate is still
+    unpublished, so the tag is rolled back, publication never starts, and nothing
+    is reported as published (with or without an artifact build phase)."""
+    steps = _Steps(monkeypatch, unchanged_fails="before publication")
+    with pytest.raises(RuntimeError, match="candidate moved"):
+        steps.run(tmp_path, phases)
+    assert steps.steps == ([["build"]] if phases else [])  # `push` never ran
+    assert steps.rolled_back == ["candidate moved"]
+    assert steps.reported == []
+
+
+# Publication has begun once `push` runs: a push failure, or a candidate that moved
+# during/after it ("after publication"), must keep the tag and report the start.
+@pytest.mark.parametrize(
+    "kwargs", [{"fail_on": "push"}, {"unchanged_fails": "after publication"}],
+)
 def test_a_failure_once_publishing_started_keeps_the_tag(monkeypatch, tmp_path, kwargs):
     steps = _Steps(monkeypatch, **kwargs)
     with pytest.raises(RuntimeError):
@@ -198,6 +219,7 @@ def _prepare(monkeypatch, tmp_path, planner):
     labels: list[str | None] = []
     project = SimpleNamespace(
         name="demo", steps={}, changelog="CHANGES.md", git_tag=True,
+        known_project_names=frozenset(),
     )
     monkeypatch.setattr(changelog, "generate_release_changelog", lambda *a, **k: False)
     monkeypatch.setattr(changelog, "pending_release_tag", planner)

@@ -58,7 +58,9 @@ def test_unreleased_and_version_headings_accept_markdown_whitespace(spacing):
     notes = release_notes.extract_release_section(document, "2.0.0", source="CHANGES.md")
     folded = changelog.fold_unreleased_notes(document, "2.0.0")
 
-    assert notes.text.startswith("## [2.0.0] - 2026-10-13")
+    # The heading is matched whitespace-tolerantly, but the section is published
+    # verbatim (README, DESIGN-GUIDE "Exact section, verbatim"), spacing included.
+    assert notes.text.startswith(f"##{spacing}[2.0.0] - 2026-10-13")
     assert folded is not None
     assert PENDING in release_notes.extract_release_section(
         folded, "2.0.0", source="CHANGES.md",
@@ -373,6 +375,8 @@ def test_duplicate_version_headings_in_a_generated_changelog_refuse(tmp_path):
 @pytest.mark.parametrize("argv, expected", [
     (["cmru", "handler", "wheel-publish"], True),
     (["cmru", "handler", "tarball-publish"], True),
+    (["cmru", "handler", "oci-image-release"], True),
+    (["cmru", "handler", "oci-image-push"], False),
     (["cmru", "handler", "unsupported"], False),
     (["python", "-m", "cmru.handlers", "wheel-publish"], False),
     (["cmru"], False),
@@ -406,6 +410,7 @@ def _project() -> SimpleNamespace:
             commands=[{"argv": ["cmru", "handler", "wheel-publish"]}],
         )},
         version=SimpleNamespace(strategy="scm", bump="conventional"),
+        known_project_names=frozenset(),
     )
 
 
@@ -469,7 +474,7 @@ def _sequence_project() -> SimpleNamespace:
         runner_steps={"push": SimpleNamespace(commands=[{"argv": ["cmru", "handler", "wheel-publish"]}])},
         steps={}, env={}, github_token="tok", prefix="demo-v", scm_dist=None, git_tag=True,
         build_step="build", version=SimpleNamespace(strategy="scm"),
-        changelog="CHANGES.md", commit_generated=(),
+        changelog="CHANGES.md", commit_generated=(), known_project_names=frozenset(),
     )
 
 
@@ -480,10 +485,11 @@ def _drive(monkeypatch, tmp_path, *, no_build=False, publish=None, calls=None):
     monkeypatch.setattr(cli.transaction, "write_release_result", lambda *a, **k: calls.append("result"))
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *a: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_run_release_gates", lambda *a: None)
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *a, **_kw: None)
     monkeypatch.setattr(cli.transaction, "promote_workspace", lambda *_, **__: calls.append("promote"))
     monkeypatch.setattr(cli.transaction, "push_backup_branch", lambda *_, **__: None)
     monkeypatch.setattr(cli, "_git", lambda *_a, **_k: "b" * 40)
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     monkeypatch.setattr(cli, "_tag_on_head", lambda *_, **__: "demo-v1.2.3")
     monkeypatch.setattr(cli, "_push_tags", lambda *_a, **_k: calls.append("tag"))
     monkeypatch.setattr("cmru.version.release_cmd", lambda *a, **k: None)
@@ -592,9 +598,10 @@ def test_a_failed_promotion_has_no_post_publish_changelog_commit(
     monkeypatch.setattr(cli.transaction, "write_release_result", lambda *a, **k: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *a: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *a, **k: None)
-    monkeypatch.setattr(cli, "_run_release_gates", lambda *a: None)
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *a, **_kw: None)
     monkeypatch.setattr(cli.transaction, "push_backup_branch", lambda *_, **__: None)
     monkeypatch.setattr(cli, "_git", lambda *_a, **_k: "b" * 40)
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     monkeypatch.setattr(cli, "_tag_on_head", lambda *_, **__: "demo-v1.2.3")
     monkeypatch.setattr(cli, "_push_tags", lambda *_a, **_k: None)
     monkeypatch.setattr("cmru.version.release_cmd", lambda *a, **k: None)

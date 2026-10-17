@@ -909,7 +909,7 @@ def _resolved_secret_token(raw: Mapping[str, object], where: str) -> str:
 
 
 def _load_repository_secrets(
-    config_root: Path, project_configs: Mapping[str, Path],
+    config_root: Path, project_configs: Mapping[str, Path], *, secret_file: Path | None = None,
 ) -> tuple[str, Mapping[str, str]]:
     """Deep-merge root secrets with an optional project-local override.
 
@@ -932,8 +932,15 @@ def _load_repository_secrets(
             name: handoff.projects.get(name, handoff.root) for name in project_configs
         }
     config_root = config_root.resolve()
-    root_raw = _read_secret_document(config_root / "cmru.secret.toml")
-    root_token = _resolved_secret_token(root_raw, str(config_root / "cmru.secret.toml"))
+    root_secret_path = (
+        secret_file.expanduser().resolve()
+        if secret_file is not None
+        else config_root / "cmru.secret.toml"
+    )
+    if secret_file is not None and not root_secret_path.is_file():
+        _error(f"{root_secret_path}: explicitly selected secret file is missing or not a regular file")
+    root_raw = _read_secret_document(root_secret_path)
+    root_token = _resolved_secret_token(root_raw, str(root_secret_path))
 
     environment_token = _environment_token()
     if environment_token:
@@ -1189,11 +1196,11 @@ def _parse_cleanup(raw: object) -> CleanupS2Config:
     )
 
 
-def _load_project_config(config_path: Path) -> ForgeConfig:
+def _load_project_config(config_path: Path, *, secret_file: Path | None = None) -> ForgeConfig:
     project, github, targets = _parse_project_document(config_path)
     assert github is not None and targets is not None
     root_token, project_tokens = _load_repository_secrets(
-        config_path.parent, {project.name: config_path},
+        config_path.parent, {project.name: config_path}, secret_file=secret_file,
     )
     github = GitHubS2Config(
         owner=github.owner, repo=github.repo, owner_type=github.owner_type,
@@ -1211,7 +1218,9 @@ def _load_project_config(config_path: Path) -> ForgeConfig:
     )
 
 
-def _load_orchestration_config(config_path: Path) -> ForgeConfig:
+def _load_orchestration_config(
+    config_path: Path, *, secret_file: Path | None = None,
+) -> ForgeConfig:
     raw = _read_toml(config_path, ORCHESTRATION_CONFIG_FILENAME)
     _reject_unknown(
         raw, {"schema_version", "github", "targets", "orchestration", "cleanup", "versions"},
@@ -1321,7 +1330,9 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
         for name, project in docs.items()
     }
     known = set(docs)
-    root_token, project_tokens = _load_repository_secrets(config_path.parent, paths)
+    root_token, project_tokens = _load_repository_secrets(
+        config_path.parent, paths, secret_file=secret_file,
+    )
     unknown = sorted(set(orch_raw["project_order"]) - known)
     if unknown:
         _error(f"orchestration.project_order names unknown project(s): {unknown}")
@@ -1365,13 +1376,16 @@ def _load_orchestration_config(config_path: Path) -> ForgeConfig:
     )
 
 
-def load_forge_config(config_path: Path, *, require_orchestration: bool = False) -> ForgeConfig:
+def load_forge_config(
+    config_path: Path, *, require_orchestration: bool = False,
+    secret_file: Path | None = None,
+) -> ForgeConfig:
     """Load exactly one of the two strict CMRU config documents."""
     config_path = config_path.expanduser().resolve()
     if config_path.name == PROJECT_CONFIG_FILENAME:
-        config = _load_project_config(config_path)
+        config = _load_project_config(config_path, secret_file=secret_file)
     elif config_path.name == ORCHESTRATION_CONFIG_FILENAME:
-        config = _load_orchestration_config(config_path)
+        config = _load_orchestration_config(config_path, secret_file=secret_file)
     else:
         _error("CMRU configuration must be named " + " or ".join(sorted(CONFIG_FILENAMES)))
     if require_orchestration and config_path.name != ORCHESTRATION_CONFIG_FILENAME:

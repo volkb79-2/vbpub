@@ -39,7 +39,8 @@ def test_every_documented_toml_example_is_current_toml_and_versioned(tmp_path):
     # The consumer document owns the only complete config pair. README and the
     # secret-file example; README and the design guide link to those rather than
     # publishing partial TOML fragments that cannot pass the installed reader.
-    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 3}
+    # Its fourth block is the `oci-image-release` push-step excerpt (KI-78).
+    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 4}
 
 
 def test_runtime_vocabulary_and_workspace_contract_are_documented():
@@ -97,7 +98,8 @@ def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_sou
 
 
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
-    lane = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["cmru"]
+    assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
+    lane = assay_config["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
     # BG-03: fail-fast stops pytest-cov writing coverage.json and hides the failure.
     assert not any(arg.startswith("--maxfail") for arg in lane["argv"])
@@ -110,6 +112,36 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert lane["env_passthrough"] == ["PATH"]
     assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
+
+    expected_whole_source = sorted(
+        path.relative_to(ROOT).as_posix()
+        for path in (ROOT / "src" / "cmru").rglob("*.py")
+        if path.is_file()
+    )
+    for name, rigor in (
+        ("cmru-first-release", ["R0", "R1", "R3"]),
+        ("cmru-first-release-r2", ["R0", "R1", "R2", "R3"]),
+    ):
+        first_lane = assay_config[name]
+        assert first_lane["rigor"] == rigor
+        assert first_lane["judge"]["mode"] == "whole_target"
+        assert "base" not in first_lane["judge"]
+        assert first_lane["judge"]["targets"] == expected_whole_source
+        assert first_lane["judge"]["coverage"]["artifact"] == "coverage.json"
+
+    first_r2_mutation = assay_config["cmru-first-release-r2"]["judge"]["mutation"]
+    assert first_r2_mutation == {
+        "jobs": 1,
+        "max_mutants": 10000,
+        "operators": [
+            "python:compare-swap",
+            "python:boolop-swap",
+            "python:bool-const-flip",
+            "python:falsy-swap",
+        ],
+        "budget_per_candidate": "auto",
+        "liveness": True,
+    }
 
     for document in (ROOT / "docs" / "SPEC.md", ROOT / "docs" / "DESIGN-GUIDE.md"):
         assert f'`{lane["judge"]["base"]}`' in document.read_text(encoding="utf-8")
@@ -132,7 +164,12 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         "coverage", "mutation", "canary",
     ):
         lane = gate["lanes"][name]
-        assert lane["resource_observer"] == "cgprofile"
+        # Only the R2 (mutation) lane is observed by cgprofile; the other lanes
+        # keep resource ceilings but mount no observer socket (08632f747).
+        if name == "mutation":
+            assert lane["resource_observer"] == "cgprofile"
+        else:
+            assert "resource_observer" not in lane
         assert lane["resources"]["pids"] == 8192
         assert lane["resources"]["memory"] == "2g"
     release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
@@ -148,6 +185,14 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "--require-live-snapshot" in " ".join(gate["lanes"]["installed-wheel-live"]["argv"])
     assert 'LIVE_WHEEL_LANE = "installed-wheel-live"' in release_gate
     assert 'REF_PROBE_LANE = "ref-probe"' in release_gate
+    assert 'FIRST_RELEASE_ASSAY_LANE = "assay-first-release"' in release_gate
+    assert 'FIRST_RELEASE_R2_FOLLOW_UP_LANE = "assay-first-release-r2"' in release_gate
+    assert "published_release_state" in release_gate
+    first_lane = gate["lanes"]["assay-first-release"]
+    assert first_lane["assay_lane"] == "cmru-first-release"
+    first_r2 = gate["lanes"]["assay-first-release-r2"]
+    assert first_r2["assay_lane"] == "cmru-first-release-r2"
+    assert first_r2["resource_observer"] == "cgprofile"
     mutation_command = " ".join(gate["lanes"]["mutation"]["argv"])
     assert "--cov" not in mutation_command
     assert "--cov-fail-under" not in mutation_command

@@ -42,13 +42,14 @@ def test_sequential_no_tag_no_build_skips_build_and_checkpoints(monkeypatch, tmp
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *args: None)
     monkeypatch.setattr(cli, "_prepare_release_projects", lambda *args, **kwargs: None)
-    monkeypatch.setattr(cli, "_run_release_gates", lambda *args: None)
+    monkeypatch.setattr(cli, "_run_release_gates", lambda *args, **_kw: None)
     monkeypatch.setattr(transaction, "promote_workspace", lambda *args, **kwargs: None)
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *args, **kwargs: None)
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_tag_on_head", lambda *args, **kwargs: None)
     monkeypatch.setattr(cli, "_run_project_steps", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("build")))
     monkeypatch.setattr(cli, "_git", lambda *args, **kwargs: "b" * 40)
+    monkeypatch.setattr(cli, "_assert_release_gate_source_matches_commit", lambda *_a, **_k: None)
     assert cli._release_projects_sequentially(tmp_path, {"demo": project}, workspace, ["demo"], github_config=cli.GitHubConfig("o", "r", "t", "user"), env_config=cli.ReleaseEnvConfig({}, None), no_build=True) == []
 
 
@@ -132,7 +133,11 @@ def test_release_dry_run_without_project_filters_detected_projects(monkeypatch, 
     monkeypatch.setattr(version, "release_cmd", lambda *args, **kwargs: calls.append(kwargs))
     monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root: True)
     cli.main(["release", "--dry-run", "--config", str(tmp_path / "cmru.toml")])
-    assert calls == [{"minor": False, "major": False, "set_version": None, "dry_run": True}]
+    (forwarded,) = calls
+    # The dry-run preview is told the full registry (scope names) as well.
+    assert set(forwarded.pop("known_projects")) == {"demo"}
+    assert forwarded.pop("known_project_names") is None
+    assert forwarded == {"minor": False, "major": False, "set_version": None, "dry_run": True}
 
 
 def test_release_dry_run_project_filter_applies_to_detected_projects(monkeypatch, tmp_path):

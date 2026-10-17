@@ -292,6 +292,12 @@ def publisher(monkeypatch, tmp_path):
     _git(tmp_path, "add", "demo/CHANGES.md")
     _git(tmp_path, "commit", "-q", "-m", "release candidate")
     _git(tmp_path, "tag", "demo-v2.0.0")
+    # The published tag lives on a real origin: direct publication proves the
+    # local tag is that object before it reads release prose from it.
+    origin = tmp_path.parent / f"{tmp_path.name}-origin.git"
+    _git(tmp_path.parent, "init", "-q", "--bare", str(origin))
+    _git(tmp_path, "remote", "add", "origin", str(origin))
+    _git(tmp_path, "push", "-q", "origin", "refs/tags/demo-v2.0.0")
     return project, gh
 
 
@@ -317,6 +323,7 @@ def test_a_missing_or_wrong_version_section_refuses_before_anything_is_published
     _git(project.parent, "add", "demo/CHANGES.md")
     _git(project.parent, "commit", "-q", "-m", "wrong notes")
     _git(project.parent, "tag", "-f", "demo-v2.0.0", "HEAD")
+    _git(project.parent, "push", "-q", "--force", "origin", "refs/tags/demo-v2.0.0")
     monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
     assert _wheel_publish(project) == exit_codes.REFUSED
     assert gh.bodies == []
@@ -364,6 +371,85 @@ def test_direct_publish_refuses_when_no_matching_tag_binds_the_notes(publisher, 
     assert _wheel_publish(project) == exit_codes.REFUSED
     assert gh.bodies == []
     assert "cannot bind release notes to demo-v2.0.0" in capsys.readouterr().err
+
+
+def test_direct_publish_accepts_an_annotated_tag_equal_to_the_published_one(publisher, monkeypatch):
+    project, gh = publisher
+    repo = project.parent
+    _git(repo, "tag", "-d", "demo-v2.0.0")
+    _git(repo, "tag", "-a", "demo-v2.0.0", "-m", "demo-v2.0.0")
+    _git(repo, "push", "-q", "--force", "origin", "refs/tags/demo-v2.0.0")
+    monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
+    assert _wheel_publish(project) == 0
+    assert "Repaired the ordering." in gh.bodies[0][1]
+
+
+def test_direct_publish_refuses_a_moved_local_tag_before_any_publish_call(
+    publisher, monkeypatch, capsys,
+):
+    project, gh = publisher
+    repo = project.parent
+    published = _git(repo, "rev-parse", "demo-v2.0.0^{commit}")
+    # Same name, different target: valid-looking notes on a commit nobody released.
+    (project / "CHANGES.md").write_text(CHANGES + "\n<!-- moved -->\n", encoding="utf-8")
+    _git(repo, "add", "demo/CHANGES.md")
+    _git(repo, "commit", "-q", "-m", "after the release")
+    moved = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "tag", "-f", "demo-v2.0.0", "HEAD")
+    monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
+
+    assert _wheel_publish(project) == exit_codes.REFUSED
+
+    assert gh.bodies == []  # nothing reached the publisher
+    error = capsys.readouterr().err
+    assert "disagrees with origin" in error and published in error and moved in error
+
+
+def test_direct_publish_refuses_a_tag_origin_does_not_have(publisher, monkeypatch, capsys):
+    project, gh = publisher
+    _git(project.parent, "push", "-q", "origin", ":refs/tags/demo-v2.0.0")
+    monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
+
+    assert _wheel_publish(project) == exit_codes.REFUSED
+
+    assert gh.bodies == []
+    assert "origin has no 'demo-v2.0.0' tag" in capsys.readouterr().err
+
+
+def test_direct_publish_treats_an_unreachable_origin_as_a_refusal_not_no_release(
+    publisher, monkeypatch, capsys,
+):
+    project, gh = publisher
+    _git(project.parent, "remote", "set-url", "origin", str(project.parent / "no-such-origin.git"))
+    monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
+
+    assert _wheel_publish(project) == exit_codes.REFUSED
+
+    assert gh.bodies == []
+    error = capsys.readouterr().err
+    assert "could not be verified as the published one" in error
+    assert "origin has no" not in error  # indeterminate is not "absent"
+
+
+def test_direct_publish_refuses_when_the_checkout_has_no_origin_at_all(publisher, monkeypatch, capsys):
+    project, gh = publisher
+    _git(project.parent, "remote", "remove", "origin")
+    monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
+
+    assert _wheel_publish(project) == exit_codes.REFUSED
+
+    assert gh.bodies == []
+    assert "could not be verified as the published one" in capsys.readouterr().err
+
+
+def test_a_declared_release_commit_is_not_subject_to_the_direct_tag_check(publisher, monkeypatch):
+    """The isolated release flow names its commit explicitly; it is unchanged."""
+    project, gh = publisher
+    commit = _git(project.parent, "rev-parse", "HEAD")
+    _git(project.parent, "remote", "remove", "origin")
+    monkeypatch.setenv("CMRU_RELEASE_NOTES_SOURCE", "changelog:CHANGES.md")
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", commit)
+    assert _wheel_publish(project) == 0
 
 
 def test_direct_publish_refuses_a_release_tag_that_does_not_match_the_version(
@@ -443,6 +529,7 @@ def _project() -> SimpleNamespace:
             "cmru", "handler", "wheel-publish",
         ]}])},
         version=SimpleNamespace(strategy="scm", bump="conventional"),
+        known_project_names=frozenset(),
     )
 
 

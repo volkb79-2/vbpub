@@ -12,7 +12,8 @@ from cmru import cli, transaction
 
 def _project(name="demo", token="tok"):
     return SimpleNamespace(name=name, cwd=name, project_root=Path(name), paths=[name], prefix=f"{name}-v",
-                           github_token=token, env={}, steps={}, runner_steps={}, changelog="CHANGES.md")
+                           github_token=token, env={}, steps={}, runner_steps={}, changelog="CHANGES.md",
+                           known_project_names=frozenset())
 
 
 def _loaded(tmp_path, project=None):

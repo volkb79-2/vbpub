@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -38,6 +39,9 @@ _RUN_GATE_MODULE_FILES = ("run_gate.py", "run_gate_admission.py")
 # inside this gate's fresh, snapshot-bound manifest. The plain `installed-wheel`
 # lane stays runnable directly (it bypasses the secret boundary, as documented).
 LIVE_WHEEL_LANE = "installed-wheel-live"
+FIRST_RELEASE_ASSAY_LANE = "assay-first-release"
+FIRST_RELEASE_R2_FOLLOW_UP_LANE = "assay-first-release-r2"
+FIRST_RELEASE_POSTPONEMENT_ID = "FIRST-RELEASE-R2"
 # Every directory the gate puts on ``sys.path`` (or whose scripts it runs), so a
 # stray top-level module such as ``cmru/src/json.py`` is as visible as a
 # package helper.
@@ -52,6 +56,13 @@ _GATE_CODE_ROOTS = (
 _CODE_SUFFIXES = {".py", ".pyc", ".pyo", ".so", ".pyd"}
 _HASH_CHUNK = 200
 _RUN_GATE_EXECUTABLE_ENV = "_CMRU_RUN_GATE_EXECUTABLE"
+# One-shot marker for the controller's interpreter switch (_ensure_gate_environment).
+_GATE_REEXEC_ENV = "_CMRU_RELEASE_GATE_REEXEC"
+# Protected values CMRU's release runtime gives a project step. This script cannot import
+# cmru before it has chosen its interpreter, so it spells the names; tests pin them to
+# transaction.INTERNAL_PYTHON_ENV and the CMRU_RELEASE_GATE_COMMIT that cli.py injects.
+_INTERNAL_PYTHON_ENV = "CMRU_INTERNAL_PYTHON"
+_GATE_COMMIT_ENV = "CMRU_RELEASE_GATE_COMMIT"
 
 
 class GateInterrupted(SystemExit):
@@ -96,34 +107,314 @@ def _load_components():
     return assay_git, prepare_assay_baseline
 
 
-def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
-    """Require and identify the stable Run-Gate judge used by this gate."""
-    executable = shutil.which("run-gate")
+def _installed_launcher(name: str) -> tuple[str, Path, list[str]]:
+    """Resolve an installed console script and the Python interpreter it runs under.
+
+    Returns ``(executable, resolved launcher path, interpreter argv)``. The
+    interpreter is read from the launcher's own shebang, so it is whatever
+    environment the wheel was actually installed into, never a path written
+    down in this repository. Every failure is a ``RuntimeError`` naming the
+    launcher; nothing is guessed.
+    """
+    executable = shutil.which(name)
     if executable is None:
-        raise RuntimeError("the registered CMRU gate requires the installed run-gate CLI")
+        raise RuntimeError(f"the registered CMRU gate requires the installed {name} CLI")
     command = Path(executable).resolve(strict=True)
     try:
         with command.open(encoding="utf-8") as stream:
             first_line = stream.readline().strip()
     except (OSError, UnicodeError) as exc:
-        raise RuntimeError(f"cannot read the installed run-gate launcher: {command}: {exc}") from exc
+        raise RuntimeError(f"cannot read the installed {name} launcher: {command}: {exc}") from exc
     if not first_line.startswith("#!"):
-        raise RuntimeError(f"installed run-gate launcher has no Python shebang: {command}")
+        raise RuntimeError(f"installed {name} launcher has no Python shebang: {command}")
     interpreter = shlex.split(first_line[2:])
     if not interpreter:
-        raise RuntimeError(f"installed run-gate launcher has an empty Python shebang: {command}")
+        raise RuntimeError(f"installed {name} launcher has an empty Python shebang: {command}")
     if interpreter[0] == "/usr/bin/env":
         if len(interpreter) < 2 or interpreter[1].startswith("-"):
-            raise RuntimeError(f"installed run-gate launcher has an unsupported env shebang: {command}")
+            raise RuntimeError(f"installed {name} launcher has an unsupported env shebang: {command}")
         resolved = shutil.which(interpreter[1])
         if resolved is None:
             raise RuntimeError(
-                f"cannot resolve the Python interpreter named by run-gate: {interpreter[1]}"
+                f"cannot resolve the Python interpreter named by {name}: {interpreter[1]}"
             )
         interpreter = [resolved, *interpreter[2:]]
     elif not Path(interpreter[0]).is_absolute():
-        raise RuntimeError(f"installed run-gate launcher has a non-absolute interpreter: {command}")
+        raise RuntimeError(f"installed {name} launcher has a non-absolute interpreter: {command}")
+    return executable, command, interpreter
 
+
+def _declared_dependencies() -> list[tuple[str, str]]:
+    """``(requirement, import name)`` for each dependency in CMRU's own ``pyproject.toml``.
+
+    The import name is the distribution name normalised the way the wheel's
+    top-level package is spelled (``-``/``.`` to ``_``), which is exact for every
+    dependency CMRU declares. Deriving the set from the declaration means a
+    dependency added later is covered without editing this script.
+    """
+    path = PROJECT_ROOT / "pyproject.toml"
+    try:
+        requirements = tomllib.loads(path.read_text(encoding="utf-8"))["project"]["dependencies"]
+        declared = []
+        for requirement in requirements:
+            name = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement.strip())
+            if name is None:
+                raise ValueError(f"unparseable requirement {requirement!r}")
+            declared.append((requirement, re.sub(r"[-.]+", "_", name.group(0)).lower()))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError(
+            f"cannot read CMRU's declared dependencies from {path}: {exc}"
+        ) from exc
+    return declared
+
+
+_VERSION_PATTERN = re.compile(
+    r"(?P<release>[0-9]+(?:\.[0-9]+)*)"
+    r"(?:(?P<pre>a|b|rc)(?P<pre_n>[0-9]+)|\.?(?P<dev>dev)(?P<dev_n>[0-9]+)|\.?(?P<post>post)(?P<post_n>[0-9]+))?"
+    r"(?:\+[A-Za-z0-9.]+)?\Z"
+)
+_SPECIFIER_PATTERN = re.compile(r"\s*(>=|<=|==|!=|>|<)\s*([0-9A-Za-z.+]+)\s*\Z")
+_PHASE_RANK = {"dev": 0, "a": 1, "b": 2, "rc": 3, None: 4, "post": 5}
+
+
+def _version_key(version: str) -> tuple[tuple[int, ...], int, int]:
+    """Order a PEP 440 release/pre/dev/post version without third-party code.
+
+    This controller starts under ``-I`` before anything from the worktree (or a
+    dependency such as ``packaging``) can be imported, so it carries the small
+    ordering it needs. A local segment (``+bootstrap.source``) never changes the
+    order. A version it cannot parse is an error, never "satisfied".
+    """
+    match = _VERSION_PATTERN.match(version.strip())
+    if match is None:
+        raise ValueError(f"unparseable version {version!r}")
+    release = [int(part) for part in match["release"].split(".")]
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+    if match["pre"]:
+        return tuple(release), _PHASE_RANK[match["pre"]], int(match["pre_n"])
+    if match["dev"]:
+        return tuple(release), _PHASE_RANK["dev"], int(match["dev_n"])
+    if match["post"]:
+        return tuple(release), _PHASE_RANK["post"], int(match["post_n"])
+    return tuple(release), _PHASE_RANK[None], 0
+
+
+def _requirement_distribution(requirement: str) -> tuple[str, list[tuple[str, str]]]:
+    """``(distribution name, [(operator, version), ...])`` of one declared requirement."""
+    match = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*(.*)\Z", requirement.strip())
+    if match is None:
+        raise RuntimeError(f"unparseable requirement {requirement!r}")
+    clauses = []
+    for clause in filter(None, (part.strip() for part in match.group(2).split(","))):
+        parsed = _SPECIFIER_PATTERN.match(clause)
+        if parsed is None:
+            raise RuntimeError(
+                f"requirement {requirement!r} uses a specifier this controller cannot "
+                f"evaluate ({clause!r}); it supports >=, >, <=, <, == and != on plain versions"
+            )
+        clauses.append((parsed.group(1), parsed.group(2)))
+    return match.group(1), clauses
+
+
+def _requirement_satisfied(requirement: str, installed: str) -> bool:
+    """Whether *installed* meets every clause of *requirement* (no clause: any version)."""
+    _name, clauses = _requirement_distribution(requirement)
+    try:
+        have = _version_key(installed)
+        wanted = [(operator, _version_key(bound)) for operator, bound in clauses]
+    except ValueError:
+        return False
+    checks = {
+        ">=": lambda a, b: a >= b, ">": lambda a, b: a > b,
+        "<=": lambda a, b: a <= b, "<": lambda a, b: a < b,
+        "==": lambda a, b: a == b, "!=": lambda a, b: a != b,
+    }
+    return all(checks[operator](have, bound) for operator, bound in wanted)
+
+
+def _installed_version(distribution: str) -> str | None:
+    """The installed distribution's metadata version, or None when it is not installed."""
+    import importlib.metadata
+
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _authoritative_interpreter() -> tuple[list[str], str]:
+    """The interpreter of the CMRU environment, and a phrase saying where it came from.
+
+    Inside the protected release workflow CMRU states the fact itself: it hands every
+    project step ``CMRU_INTERNAL_PYTHON``, the ``sys.executable`` of the running
+    ``cmru`` (``transaction.INTERNAL_PYTHON_ENV``; a test pins the spelling). During a
+    release the ``cmru`` first on PATH is CMRU's own bound launcher, a ``/bin/sh``
+    wrapper that execs that interpreter, so reading its shebang would name the shell,
+    not an environment. The value is honoured only together with the protected
+    ``CMRU_RELEASE_GATE_COMMIT`` (set by the same release workflow for the same step), so a
+    stale variable in an operator's shell cannot choose the interpreter of a manual run.
+    An unusable protected value is a refusal, never a reason to look elsewhere.
+
+    Anywhere else (a direct ``run-gate gate-provisional``) the installed ``cmru``
+    console script's shebang names the environment it was installed into; a launcher
+    that is not a Python console script is refused with that explanation.
+    """
+    runtime = os.environ.get(_INTERNAL_PYTHON_ENV, "").strip()
+    if runtime and os.environ.get(_GATE_COMMIT_ENV, "").strip():
+        if not os.path.isabs(runtime) or not os.path.isfile(runtime) or not os.access(runtime, os.X_OK):
+            raise RuntimeError(
+                f"{_INTERNAL_PYTHON_ENV}={runtime!r}, provided by the CMRU release runtime, "
+                "is not an absolute path to an executable file; the release runtime must "
+                "report its own interpreter"
+            )
+        return [runtime], f"provided by the CMRU release runtime ({_INTERNAL_PYTHON_ENV})"
+    _executable, launcher, interpreter = _installed_launcher("cmru")
+    if "python" not in Path(interpreter[0]).name.lower():
+        raise RuntimeError(
+            f"the cmru launcher {launcher} is not a Python console script (its shebang runs "
+            f"{interpreter[0]}), so it names no Python environment; inside `cmru release` "
+            f"CMRU supplies the interpreter itself ({_INTERNAL_PYTHON_ENV}), and for a manual "
+            "run the estate environment's own `cmru` must come first on PATH"
+        )
+    return interpreter, f"named by the installed cmru launcher {launcher}"
+
+
+def _ensure_gate_environment(argv: list[str]) -> None:
+    """Run this controller under the interpreter that holds CMRU's declared dependencies.
+
+    The registered ``gate`` lanes are ``bare-host`` and start ``python3 -I -B
+    run_release_gate.py``; ``python3`` there is whatever the host PATH names,
+    which need not be the environment the CMRU wheel and its declared
+    third-party dependencies (``cli-extended``) were installed into. The
+    controller imports CMRU from the exact worktree source and needs only those
+    *declared* wheels from the installed environment, so when this interpreter
+    cannot import them, or imports one whose INSTALLED distribution version does
+    not satisfy the declared requirement (a host with an older ``cli-extended``
+    0.2.0 against ``cli-extended>=0.3.0``), the controller is re-executed ONCE
+    under the CMRU
+    environment's interpreter (see :func:`_authoritative_interpreter`: the
+    interpreter CMRU's release runtime reports for itself, or, for a manual
+    run, the one named by the installed ``cmru`` console script): the
+    environment ``cmru release`` itself requires. Nothing is vendored, no path
+    is hardcoded, and the switch is announced on stderr.
+
+    This runs before anything from the worktree is imported (stdlib only; the
+    only worktree file read is ``pyproject.toml``, as data, to learn the
+    declared dependency names), so the ``-I -B`` ordering that keeps an
+    untracked module from running ahead of the source-integrity check is
+    preserved: the same script, with the same flags, simply starts again. A
+    missing launcher, an interpreter that still cannot import the
+    dependencies or still carries a below-floor version (the authoritative
+    interpreter is probed for the installed version before the switch), or a
+    second failure after the switch is a loud
+    ``RuntimeError`` with the remedy, never a degraded run.
+    """
+    already_switched = os.environ.pop(_GATE_REEXEC_ENV, None) is not None
+    declared = _declared_dependencies()
+    problems: list[str] = []
+    absent: list[tuple[str, str]] = []
+    for requirement, module in declared:
+        distribution, _clauses = _requirement_distribution(requirement)
+        try:
+            importable = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError):
+            importable = False
+        if not importable:
+            problems.append(f"cannot import {module}")
+            absent.append((requirement, module))
+            continue
+        # Importable is not the declared floor: the INSTALLED distribution's own
+        # metadata version must satisfy the whole declared requirement.
+        installed = _installed_version(distribution)
+        if installed is None:
+            problems.append(
+                f"imports {module} but has no installed {distribution} distribution metadata"
+            )
+            absent.append((requirement, module))
+        elif not _requirement_satisfied(requirement, installed):
+            problems.append(
+                f"has {distribution} {installed} installed, which does not satisfy {requirement}"
+            )
+            absent.append((requirement, module))
+    if not absent:
+        return
+    missing = ", ".join(module for _requirement, module in absent)
+    found = "; ".join(problems)
+    remedy = (
+        "Install the released cmru wheel together with its declared dependencies "
+        f"({', '.join(requirement for requirement, _module in absent)}) into the estate "
+        "Python environment (`pip install --no-index --find-links <wheelhouse> cmru`, see "
+        "the CMRU README 'Install') and put that environment's bin directory on PATH "
+        "before running `run-gate gate` or `run-gate gate-provisional`"
+    )
+    if already_switched:
+        raise RuntimeError(
+            f"the interpreter chosen as the CMRU environment's ({sys.executable}) "
+            f"still fails the declared dependencies: {found}. {remedy}"
+        )
+    try:
+        interpreter, origin = _authoritative_interpreter()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"this interpreter ({sys.executable}) {found}, and no authoritative CMRU "
+            f"environment could be determined: {exc}. {remedy}"
+        ) from exc
+    shown = " ".join(interpreter)
+    # The authoritative interpreter must meet the SAME declaration: it imports the
+    # dependency and reports the installed distribution version, which is checked here.
+    probe_code = "; ".join(
+        ["import importlib.metadata as _metadata"]
+        + [f"import {module}" for _requirement, module in absent]
+        + [
+            f"print({_requirement_distribution(requirement)[0]!r} + '=' + "
+            f"_metadata.version({_requirement_distribution(requirement)[0]!r}))"
+            for requirement, _module in absent
+        ]
+    )
+    try:
+        probe = subprocess.run(
+            [*interpreter, "-I", "-B", "-c", probe_code],
+            capture_output=True, text=True, check=False, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"cannot run the interpreter {shown} {origin}: {exc}. {remedy}"
+        ) from exc
+    if probe.returncode != 0:
+        detail = (probe.stderr.strip().splitlines() or ["no diagnostic output"])[-1]
+        raise RuntimeError(
+            f"the interpreter {shown} {origin} cannot import {missing} either "
+            f"({detail}). {remedy}"
+        )
+    reported = dict(
+        line.split("=", 1) for line in probe.stdout.splitlines() if "=" in line
+    )
+    for requirement, _module in absent:
+        distribution = _requirement_distribution(requirement)[0]
+        version = reported.get(distribution)
+        if version is None or not _requirement_satisfied(requirement, version):
+            raise RuntimeError(
+                f"the interpreter {shown} {origin} has {distribution} "
+                f"{version or '(no reported version)'} installed, which does not satisfy "
+                f"{requirement}. {remedy}"
+            )
+    print(
+        f"cmru-release-gate: {sys.executable} {found}; running the "
+        f"controller under the installed CMRU environment's interpreter "
+        f"{shown} ({origin})",
+        file=sys.stderr, flush=True,
+    )
+    os.environ[_GATE_REEXEC_ENV] = "1"
+    os.execv(
+        interpreter[0],
+        [*interpreter, "-I", "-B", str(Path(__file__).resolve()), *argv],
+    )
+
+
+def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
+    """Require and identify the stable Run-Gate judge used by this gate."""
+    executable, command, interpreter = _installed_launcher("run-gate")
     try:
         cli_version_result = subprocess.run(
             [executable, "--version"],
@@ -744,7 +1035,39 @@ POSTPONE_REASON = (
     "operator-approved provisional release of CMRU 6.2.0: the R2 mutation lane "
     "was skipped and must be run afterwards against the released tag"
 )
+FIRST_RELEASE_POSTPONE_REASON = (
+    "first CMRU release has no earlier published source baseline; whole-source R0/R1/R3 ran, "
+    "and whole-source R2 must be run afterwards with "
+    f"`run-gate {FIRST_RELEASE_R2_FOLLOW_UP_LANE}`"
+)
 POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": "6.2.0"}
+#: What a later whole-source/full mutation follow-up needs before it can run.
+#: The marker and the snapshot manifest carry these verbatim so a reader never
+#: has to infer them from prose. ``d4-capacity-evidence`` is named, not defined,
+#: here: its content is owned by the Run-Gate RG-55 resource-profiling program.
+FOLLOW_UP_PREREQUISITES = (
+    {
+        "id": "release-tag-branch",
+        "requirement": (
+            "a branch created at the published release tag, so the follow-up judges "
+            "the exact tagged source rather than a later main"
+        ),
+    },
+    {
+        "id": "cgprofile-observer",
+        "requirement": (
+            "the CGProfile host observer deployed and reachable "
+            "(the follow-up lane declares resource_observer = \"cgprofile\")"
+        ),
+    },
+    {
+        "id": "d4-capacity-evidence",
+        "requirement": (
+            "the D-4 capacity evidence the Run-Gate follow-up lane requires for a "
+            "multi-hour R2 run (RG-55 D-4; CMRU does not define or fabricate it)"
+        ),
+    },
+)
 
 
 def _tracking_id(value: str) -> str:
@@ -779,8 +1102,22 @@ def _prepared_release_version(project_root: Path) -> str | None:
     return None
 
 
-def _validate_postponement(project_root: Path, tracking_id: str) -> str:
-    """Allow the documented R2 deferral only for its one planned release."""
+def _validate_postponement(
+    project_root: Path, tracking_id: str, *, first_release: bool = False,
+) -> str:
+    """Allow a documented first-release or KI-79 R2 deferral."""
+    if first_release:
+        if tracking_id != FIRST_RELEASE_POSTPONEMENT_ID:
+            raise RuntimeError(
+                "a CMRU checkout with no published stable release must use the "
+                f"{FIRST_RELEASE_POSTPONEMENT_ID} whole-source R2 follow-up"
+            )
+        observed_version = _prepared_release_version(project_root)
+        if observed_version is None:
+            raise RuntimeError(
+                "first-release R2 deferral requires a dated, prepared CMRU release heading"
+            )
+        return observed_version
     expected_version = POSTPONEMENT_RELEASE_VERSIONS.get(tracking_id)
     if expected_version is None:
         raise RuntimeError(
@@ -796,33 +1133,61 @@ def _validate_postponement(project_root: Path, tracking_id: str) -> str:
     return observed_version
 
 
-def _record_postponement(project_root: Path, tracking_id: str) -> Path:
-    """Write the retained marker saying the mutation lane was skipped, and WARN.
+def _record_postponement(
+    project_root: Path, tracking_id: str, *, first_release: bool = False,
+) -> tuple[Path, dict[str, object]]:
+    """Write the retained marker saying the mutation lane was deferred, and WARN.
 
-    The marker lives under ``.assay`` so cmru's ``evidence_paths`` retain it
-    with the rest of the gate evidence; it is never written by a full gate.
+    Called only once EVERY required non-mutation lane and the final canary have
+    passed: the marker is a success-shaped record and must never exist for a
+    gate that did not finish. The marker lives under ``.assay`` so cmru's
+    ``evidence_paths`` retain it with the rest of the gate evidence; a full
+    gate removes it. Returns the marker path and the structured deferral that
+    the snapshot manifest also records.
     """
     marker = project_root / POSTPONED_MARKER
     marker.parent.mkdir(parents=True, exist_ok=True)
     candidate_commit = _git_output(project_root.parent, "rev-parse", "HEAD").decode("ascii").strip()
-    target_version = _validate_postponement(project_root, tracking_id)
+    target_version = _validate_postponement(
+        project_root, tracking_id, first_release=first_release,
+    )
+    # The standalone `mutation` lane refuses to run without the baseline facts
+    # only the aggregate gate prepares, so the documented follow-up is `gate`.
+    follow_up_lane = FIRST_RELEASE_R2_FOLLOW_UP_LANE if first_release else "gate"
+    reason = FIRST_RELEASE_POSTPONE_REASON if first_release else POSTPONE_REASON
+    deferral = {
+        "lane": "mutation",
+        "tracking_id": tracking_id,
+        "reason": reason,
+        "follow_up_lane": follow_up_lane,
+        "follow_up_prerequisites": [dict(item) for item in FOLLOW_UP_PREREQUISITES],
+    }
     record = {
-        "schema_version": 1,
+        "schema_version": 3,
+        "result": "provisional",
         "lane": "mutation",
         "status": "postponed",
         "tracking_id": tracking_id,
         "candidate_commit": candidate_commit,
         "target_version": target_version,
+        "baseline_state": "no-published-stable-release" if first_release else "prior-release-available",
+        "follow_up_lane": follow_up_lane,
+        "follow_up_prerequisites": deferral["follow_up_prerequisites"],
         "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "reason": POSTPONE_REASON,
+        "reason": reason,
     }
-    marker.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        marker.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except BaseException:
+        marker.unlink(missing_ok=True)  # never leave a half-written success-shaped record
+        raise
     print(
-        f"cmru-release-gate: WARN: mutation lane POSTPONED ({tracking_id}); "
-        f"this gate is PROVISIONAL; marker {marker}",
+        f"cmru-release-gate: WARN: PROVISIONAL PASS: every required non-mutation lane and the "
+        f"canary passed, but the mutation lane is DEFERRED ({tracking_id}); this is NOT "
+        f"an R2 pass. Follow-up lane: {follow_up_lane}. Marker: {marker}",
         file=sys.stderr,
     )
-    return marker
+    return marker, deferral
 
 
 def _invoke_lane(
@@ -946,8 +1311,6 @@ def _run_release_gate_with_private_cache(
         raise RuntimeError(
             f"release gate helper is not running from the selected worktree: {PROJECT_ROOT}"
         )
-    if postpone_mutation is not None:
-        _validate_postponement(project_root, postpone_mutation)
     _assert_no_untracked_gate_code(repo_root)
     _preflight_assay_source(repo_root)
     assay_git, baseline = _load_components()
@@ -961,8 +1324,13 @@ def _run_release_gate_with_private_cache(
         _assert_no_untracked_gate_code(repo_root)
         from cmru import gate_snapshot
 
+        # Every input check runs BEFORE the snapshot is opened or any evidence
+        # is touched: an invocation refused here leaves the previous run's
+        # commit-bound marker and manifest exactly as they were.
+        plan = _plan_gate(repo_root, project_root, baseline, postpone_mutation)
         snapshot = gate_snapshot.open_gate_snapshot(repo_root)
         state = "incomplete"
+        started = False
         try:
             if snapshot.run_gate_identity and snapshot.run_gate_identity != run_gate_identity:
                 raise RuntimeError(
@@ -970,6 +1338,11 @@ def _run_release_gate_with_private_cache(
                     "remove the finished snapshot and start a fresh gate"
                 )
             snapshot.run_gate_identity = run_gate_identity
+            # A valid new gate starts here. Whatever an earlier run left behind
+            # (success-shaped marker or manifest field) is stale from now on.
+            snapshot.deferred_lanes = []
+            (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
+            started = True
             gate_snapshot.plant_source_canary(snapshot)
             gate_snapshot.write_snapshot_manifest(snapshot, "running")
             try:
@@ -979,7 +1352,7 @@ def _run_release_gate_with_private_cache(
                     baseline,
                     assay_git,
                     snapshot,
-                    postpone_mutation,
+                    plan,
                 )
             except (GateInterrupted, KeyboardInterrupt):
                 state = "interrupted"
@@ -987,16 +1360,97 @@ def _run_release_gate_with_private_cache(
             except BaseException:
                 state = "failed"
                 raise
-            state = "passed" if result == 0 else "failed"
+            if result != 0:
+                state = "failed"
+            elif snapshot.deferred_lanes:
+                state = "provisional"  # exit 0, but a required lane was deferred
+            else:
+                state = "passed"
             return result
         finally:
-            try:
-                try:
-                    gate_snapshot.remove_source_canary(snapshot)
-                finally:
-                    gate_snapshot.write_snapshot_manifest(snapshot, state)
-            finally:
-                gate_snapshot.close_gate_snapshot(snapshot)
+            # Success is decided only after cleanup succeeded: `state` is a
+            # claim until _finish_gate_snapshot has run.
+            _finish_gate_snapshot(gate_snapshot, snapshot, project_root, state, started)
+
+
+def _finish_gate_snapshot(gate_snapshot, snapshot, project_root: Path, state: str, started: bool) -> None:
+    """Clean up the snapshot, then persist the final evidence.
+
+    Both cleanup steps always run. A cleanup failure after a claimed success
+    (``passed`` / ``provisional``) turns the run into ``failed``: the marker is
+    removed, ``deferred_lanes`` is cleared and the failure is re-raised so the
+    gate returns non-zero. No success-shaped record can survive it.
+    """
+    errors: list[BaseException] = []
+    steps = (
+        (gate_snapshot.remove_source_canary, gate_snapshot.close_gate_snapshot)
+        if started else (gate_snapshot.close_gate_snapshot,)
+    )
+    for step in steps:
+        try:
+            step(snapshot)
+        except BaseException as exc:  # noqa: BLE001 - every step must run, then we re-raise
+            errors.append(exc)
+    if started:
+        if errors and state in ("passed", "provisional"):
+            state = "failed"
+        marker = project_root / POSTPONED_MARKER
+        if state != "provisional":
+            marker.unlink(missing_ok=True)
+            snapshot.deferred_lanes = []
+        try:
+            gate_snapshot.write_snapshot_manifest(snapshot, state)
+        except BaseException as exc:  # noqa: BLE001
+            marker.unlink(missing_ok=True)  # no marker without its manifest
+            errors.append(exc)
+    if errors:
+        raise errors[0]
+
+
+def _plan_gate(repo_root: Path, project_root: Path, baseline, postpone_mutation: str | None) -> dict:
+    """Resolve and validate everything a new gate needs, touching no evidence."""
+    _assert_no_untracked_gate_code(repo_root)
+    auth = baseline._repository_git_auth(repo_root)
+    latest_stable_tag, remote_tags = baseline.published_release_state(
+        repo_root, git_auth=auth,
+    )
+    first_release = latest_stable_tag is None
+    if first_release:
+        if postpone_mutation is None:
+            raise RuntimeError(
+                "origin has no published stable CMRU release tag, so the changed-source "
+                "mutation baseline does not exist; release through `gate-provisional` to "
+                "run whole-source R0/R1/R3 and record the required whole-source R2 follow-up"
+            )
+        if postpone_mutation != "KI-79":
+            raise RuntimeError(
+                "origin has no published stable CMRU release tag; only the release workflow's "
+                "provisional R2 deferral can select the whole-source first-release gate"
+            )
+        expected_commit = _git_output(repo_root, "rev-parse", "HEAD").decode("ascii").strip()
+        protected_commit = os.environ.get("CMRU_RELEASE_GATE_COMMIT", "")
+        if protected_commit != expected_commit:
+            raise RuntimeError(
+                "whole-source first-release qualification is permitted only inside CMRU's "
+                "protected release transaction with CMRU_RELEASE_GATE_COMMIT equal to HEAD"
+            )
+        effective_postponement = FIRST_RELEASE_POSTPONEMENT_ID
+        _validate_postponement(
+            project_root, effective_postponement, first_release=True,
+        )
+        assay_lane = FIRST_RELEASE_ASSAY_LANE
+    else:
+        effective_postponement = postpone_mutation
+        assay_lane = "assay"
+        if postpone_mutation is not None:
+            _validate_postponement(project_root, postpone_mutation)
+    return {
+        "auth": auth,
+        "remote_tags": remote_tags,
+        "first_release": first_release,
+        "effective_postponement": effective_postponement,
+        "assay_lane": assay_lane,
+    }
 
 
 def _run_locked_gate(
@@ -1005,10 +1459,14 @@ def _run_locked_gate(
     baseline,
     assay_git,
     snapshot,
-    postpone_mutation: str | None = None,
+    plan: dict,
 ) -> int:
     _assert_no_untracked_gate_code(repo_root)
-    auth = baseline._repository_git_auth(repo_root)
+    auth = plan["auth"]
+    remote_tags = plan["remote_tags"]
+    first_release = plan["first_release"]
+    effective_postponement = plan["effective_postponement"]
+    assay_lane = plan["assay_lane"]
     lane_environment = _lane_environment()
     from cmru import gate_snapshot
 
@@ -1021,20 +1479,14 @@ def _run_locked_gate(
     )
     if result:
         return result
-    for lane in (LIVE_WHEEL_LANE, "assay", "coverage"):
+    for lane in (LIVE_WHEEL_LANE, assay_lane, "coverage"):
         result = _run_snapshot_lane(
             repo_root, lane, lane_environment, snapshot, gate_snapshot,
         )
         if result:
             return result
 
-    if postpone_mutation is not None:
-        # Provisional gate: ONLY the mutation lane (and its remote-facts
-        # preparation) is skipped; the postponement is recorded as evidence.
-        _record_postponement(project_root, postpone_mutation)
-    else:
-        # A full gate never leaves an earlier provisional marker behind.
-        (project_root / POSTPONED_MARKER).unlink(missing_ok=True)
+    if effective_postponement is None:
         _assert_no_untracked_gate_code(repo_root)
         gate_snapshot.assert_source_head(snapshot)
         with gate_snapshot.host_git_hooks_disabled(repo_root):
@@ -1043,6 +1495,7 @@ def _run_locked_gate(
                 project_root,
                 git_auth=auth,
                 assay_git=assay_git,
+                remote_tag_commits=remote_tags,
             )
         facts_json = json.dumps(facts, separators=(",", ":"), sort_keys=True)
         if auth.token and auth.token in facts_json:
@@ -1061,6 +1514,15 @@ def _run_locked_gate(
     if result:
         return result
     gate_snapshot.assert_source_head(snapshot)
+    if effective_postponement is not None:
+        # Provisional gate: ONLY the mutation lane (and its remote-facts
+        # preparation) was skipped. The deferral is persisted now, after every
+        # required lane and the canary succeeded, and it is the last thing that
+        # can fail before the zero exit.
+        _marker, deferral = _record_postponement(
+            project_root, effective_postponement, first_release=first_release,
+        )
+        snapshot.deferred_lanes = [deferral]
     return 0
 
 
@@ -1086,4 +1548,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    try:
+        _ensure_gate_environment(sys.argv[1:])
+    except RuntimeError as exc:
+        print(f"cmru-release-gate: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
     raise SystemExit(main())

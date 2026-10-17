@@ -4,6 +4,9 @@
 # Assay owns R0/R1/R3 in assay.toml [lanes.cmru]; the release-specific
 # mutation lane owns R2 using the highest-version published cmru-v* tag in
 # the candidate's full ancestry as its base.
+# If no stable CMRU tag exists, the protected provisional release gate instead
+# selects `assay-first-release` and records `assay-first-release-r2` as its
+# whole-source post-release follow-up; an unavailable origin query is an error.
 # The release-gate conjunction is lane
 # `gate`; cmru.toml [steps.run-tests] points at it and owns NO test logic itself.
 # The lanes use a 2g hard ceiling and ample swap for mutation campaigns. The
@@ -31,6 +34,39 @@ budget = "20m"
 pids = 8192
 memory = "2g"
 memory_swap = "16g"
+
+# Used only when the authenticated origin query succeeds and finds no stable
+# CMRU release tag. Assay's matching lane covers every tracked production
+# module under whole_target mode, so the first release does not invent a diff
+# base or borrow another project's tag.
+[lanes.assay-first-release]
+kind = "assay"
+assay_lane = "cmru-first-release"
+environment = "tester-unified"
+budget = "20m"
+
+[lanes.assay-first-release.resources]
+pids = 8192
+memory = "2g"
+memory_swap = "16g"
+
+# Explicit whole-source mutation follow-up for the first release. This does
+# not use the ordinary tag-based mutation lane, whose changed-source baseline
+# cannot exist until after the first release. Run asynchronously when its
+# duration exceeds the operator's interactive window.
+[lanes.assay-first-release-r2]
+kind = "assay"
+assay_lane = "cmru-first-release-r2"
+environment = "tester-unified"
+resource_observer = "cgprofile"
+clean_tree = true
+budget = "7h"
+
+[lanes.assay-first-release-r2.resources]
+memory = "2g"
+memory_swap = "16g"
+pids = 8192
+cpus = "3"
 
 # KI-26: an installed-wheel probe builds the actual distribution, installs it
 # into a fresh venv with no system packages, and runs its cmru console script
@@ -229,6 +265,10 @@ memory_swap = "16g"
 # carries `--worktree {worktree}` explicitly — an override given to `gate`
 # must reach every sub-lane (run-gate refuses container lanes whose argv
 # drops it; here we simply never drop it).
+# `python3` below is whatever the host PATH names, which need not hold CMRU's
+# declared dependencies (KI-81). The controller itself switches, once and
+# loudly, to the interpreter of the installed `cmru` launcher when its own
+# cannot import them, so no interpreter path is written here.
 [lanes.gate]
 kind = "command"
 environment = "bare-host"

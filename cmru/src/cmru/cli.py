@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import logging
 import os
 import re
 import shlex
@@ -30,6 +31,7 @@ from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.credential_handoff import CredentialHandoff
 from cmru.cli_support import (
+    CMRU_LOGGER,
     TargetSelectionError,
     select_target_names,
     write_config_diagnostic,
@@ -172,6 +174,16 @@ def log_info(message: str) -> None:
 
 def log_warn(message: str) -> None:
     print(f"[WARN] {message}", flush=True)
+
+
+def log_debug(message: str) -> None:
+    """Emit a diagnostic through the shared CMRU logger.
+
+    Unlike ``log_info``, this prints nothing unless the invocation's log level
+    asks for debug output (``--debug``/``--log-level debug`` configure the
+    logger in the cli-extended runtime), so routine releases stay quiet.
+    """
+    logging.getLogger(CMRU_LOGGER).debug(message)
 
 
 def log_error(message: str) -> None:
@@ -345,6 +357,11 @@ def run_project_step(
             launcher = _create_bound_cmru_launcher(launcher_dir)
             internal_env: dict[str, Optional[str]] = {
                 transaction.INTERNAL_BIN_ENV: str(launcher),
+                # KI-81: the launcher is a shell wrapper, so also name the interpreter it
+                # execs. Protected like every CMRU_INTERNAL_* name (refused in project
+                # [env]; applied after project/step env), derived from the running
+                # process, never configured.
+                transaction.INTERNAL_PYTHON_ENV: sys.executable,
                 "CMRU_RUNTIME_KIND": getattr(project, "runtime_kind", "none"),
                 **{
                     key: os.environ[key]
@@ -592,6 +609,7 @@ def load_config(
     config_path: Path,
     *,
     validate_dependencies: bool = True,
+    secret_file: Path | None = None,
 ) -> tuple[
     Path,
     dict[str, ProjectConfig],
@@ -612,7 +630,7 @@ def load_config(
     retired central ``[project.<name>]`` shape and no second build-runner document.
     """
     resolved_config_path = config_path.expanduser().resolve()
-    forge = load_forge_config(resolved_config_path)
+    forge = load_forge_config(resolved_config_path, secret_file=secret_file)
     from cmru.version import _project_scope_names
 
     known_project_names = frozenset(
@@ -860,6 +878,45 @@ def require_project_publish_credentials(
             "cmru.secret.toml, or an explicit project cmru.secret.toml override "
             "for project(s): " + ", ".join(missing)
         )
+
+
+def _main_tree_secret_advice(
+    config_path: Path, repo_root: Path, configs: Mapping[str, ProjectConfig],
+    project_names: Sequence[str],
+) -> str:
+    """Suggest an explicit main-worktree secret path without reading its contents."""
+    path_hint: str | None = None
+    try:
+        families = transaction.project_git_family_groups(
+            repo_root, [configs[name] for name in project_names],
+        )
+        if len(families) == 1:
+            source_root = next(iter(families))
+            worktrees = transaction._shared_worktree().list_git_worktrees(source_root)
+            main_worktrees = [
+                item.path for item in worktrees
+                if item.branch == "main" and not item.is_prunable and not item.is_bare
+            ]
+            if len(main_worktrees) == 1:
+                current_root = source_root.resolve()
+                config_root = config_path.expanduser().resolve().parent
+                relative = config_root.relative_to(current_root)
+                candidate = main_worktrees[0] / relative / "cmru.secret.toml"
+                if candidate.is_file():
+                    path_hint = str(candidate.resolve())
+    except (OSError, RuntimeError, ValueError, KeyError):
+        path_hint = None
+    if path_hint:
+        return (
+            "A root cmru.secret.toml may be in the main worktree. CMRU did not read it. "
+            f"If you intend to use that file, rerun the same command with "
+            f"`--secret-file {shlex.quote(path_hint)}`."
+        )
+    return (
+        "A main-worktree cmru.secret.toml is not selected or read automatically. "
+        "If you intend to use one, locate its path and rerun with `--secret-file PATH`; "
+        "or set GITHUB_PUSH_PAT/GITHUB_TOKEN for this invocation."
+    )
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -3045,6 +3102,22 @@ def _release_projects_sequentially(
     """
     from cmru.version import release_cmd
 
+    feature_source = transaction.read_release_source(repo_root, workspace) is not None
+
+    def finish_candidate(name: str, label: str, project: "ProjectConfig") -> None:
+        if feature_source:
+            log_info(
+                f"{name}: candidate retained on origin/{workspace.branch}; "
+                "main promotion is deferred until the PR is merged"
+            )
+            return
+        transaction.promote_workspace(
+            workspace, git_auth=git_auth,
+            project_paths=_project_release_paths(project, name),
+            release_label=label,
+        )
+        log_info(f"{name}: promoted release candidate to origin/main")
+
     # Seed the checkpoint at this run's own starting point. Without this, a
     # --resume reusing the same branch token would read a previous attempt's
     # stale checkpoint and misreport the last completed source candidate.
@@ -3064,7 +3137,9 @@ def _release_projects_sequentially(
         )
         # Keep the remote candidate branch current before the gate too. A gate
         # failure must leave the generated candidate available for inspection.
-        transaction.push_backup_branch(workspace, git_auth=git_auth)
+        transaction.push_backup_branch(
+            workspace, git_auth=git_auth, require_feature_source=feature_source,
+        )
         gated_sha = _run_release_gates_on_exact_head(
             repo_root, configs, [name]
         )
@@ -3090,12 +3165,7 @@ def _release_projects_sequentially(
                 )
             else:
                 log_info(f"{name}: --no-build — skipped build/push")
-            transaction.promote_workspace(
-                workspace, git_auth=git_auth,
-                project_paths=_project_release_paths(project, name),
-                release_label=name,
-            )
-            log_info(f"{name}: promoted release candidate to origin/main")
+            finish_candidate(name, name, project)
         else:
             release_cmd(
                 repo_root, {name: project}, minor=minor, major=major,
@@ -3104,7 +3174,9 @@ def _release_projects_sequentially(
             )
             # A file:-strategy tag commits a version bump here. Refresh the
             # durable candidate before tags or public publication are touched.
-            transaction.push_backup_branch(workspace, git_auth=git_auth)
+            transaction.push_backup_branch(
+                workspace, git_auth=git_auth, require_feature_source=feature_source,
+            )
             candidate_sha = _git(repo_root, "rev-parse", "HEAD")
             if candidate_sha != gated_sha:
                 # The file strategy adds a mechanical version commit after the
@@ -3151,12 +3223,7 @@ def _release_projects_sequentially(
                 else:
                     log_info(f"{name}: --no-build — tagged {tag}, skipped build/publish")
                     transaction.write_release_result(repo_root, workspace, name, tag)
-                transaction.promote_workspace(
-                    workspace, git_auth=git_auth,
-                    project_paths=_project_release_paths(project, name),
-                    release_label=tag,
-                )
-                log_info(f"{name}: promoted release candidate to origin/main")
+                finish_candidate(name, tag, project)
             elif not no_build:
                 raise RuntimeError(
                     f"{name}: gate passed and it was in this run's changed-project scope, "
@@ -3164,12 +3231,7 @@ def _release_projects_sequentially(
                     "build/publish) — this should not happen; investigate before retrying"
                 )
             else:
-                transaction.promote_workspace(
-                    workspace, git_auth=git_auth,
-                    project_paths=_project_release_paths(project, name),
-                    release_label=name,
-                )
-                log_info(f"{name}: promoted release candidate to origin/main")
+                finish_candidate(name, name, project)
 
         # This project's whole cycle succeeded — checkpoint it so a LATER
         # project's retained candidate can be compared with the last complete
@@ -3289,7 +3351,7 @@ def _child_release_args(
             result.append(value)
             continue
         flag, equals, remainder = value.partition("=")
-        if flag in ("--config", "--resume"):
+        if flag in ("--config", "--resume", "--secret-file"):
             drop_next = not equals
             continue
         if flag == "--ref" and verb == "release":
@@ -3856,8 +3918,9 @@ def _assert_resume_candidate_is_safe_to_replay(
     *,
     git_auth: GitHubGitAuth,
     release_policies: Mapping[str, tuple[str, bool]] | None = None,
+    feature_source: bool = False,
 ) -> None:
-    """Allow only pre-tag retries and results already promoted to origin/main."""
+    """Allow only safe pre-tag retries or results durable on the selected source."""
     scope = set(project_names)
     unknown_projects = sorted(scope - set(configs))
     if unknown_projects:
@@ -3904,7 +3967,29 @@ def _assert_resume_candidate_is_safe_to_replay(
         )
 
     if results:
-        origin_main = transaction.fetch_origin_main(repo_root, git_auth=git_auth)
+        if feature_source:
+            durable_tip = transaction.fetch_origin_branch(
+                repo_root, workspace.branch, git_auth=git_auth,
+            )
+            local_candidate = _git(workspace.path, "rev-parse", "HEAD")
+            candidate_is_durable = run_local_git(
+                workspace.path, "merge-base", "--is-ancestor", durable_tip,
+                local_candidate, capture_output=True, text=True, check=False,
+            )
+            if candidate_is_durable.returncode == 1:
+                raise UnsafeRecord(
+                    f"origin/{workspace.branch} is not an ancestor of the retained local "
+                    "candidate; inspect the candidate ref before resuming"
+                )
+            if candidate_is_durable.returncode != 0:
+                detail = (
+                    candidate_is_durable.stderr.strip()
+                    or candidate_is_durable.stdout.strip()
+                    or "unknown Git error"
+                )
+                raise RuntimeError(f"cannot verify retained candidate ancestry: {detail}")
+        else:
+            durable_tip = transaction.fetch_origin_main(repo_root, git_auth=git_auth)
         tag_records = _tag_records_by_name(origin_tags or {})
         attempts = transaction.read_release_tag_attempts(repo_root, workspace) or {}
         for name, result_id in results.items():
@@ -3956,13 +4041,14 @@ def _assert_resume_candidate_is_safe_to_replay(
                 result_commit = resolved.stdout.strip()
 
             promoted = run_local_git(
-                repo_root, "merge-base", "--is-ancestor", result_commit, origin_main,
+                repo_root, "merge-base", "--is-ancestor", result_commit, durable_tip,
                 capture_output=True, text=True, check=False,
             )
             if promoted.returncode == 1:
+                durable_name = f"origin/{workspace.branch}" if feature_source else "origin/main"
                 raise UnsafeRecord(
                     f"retained result for {name} is recorded, but its source commit "
-                    "is not in origin/main; publication or promotion is incomplete, "
+                    f"is not in {durable_name}; publication or candidate persistence is incomplete, "
                     "so the candidate was kept for inspection"
                 )
             if promoted.returncode != 0:
@@ -4257,7 +4343,7 @@ def _run_release_gates(
 ) -> None:
     """Run every selected project's declared release gate before source promotion."""
     log_dir = repo_root / "logs"
-    gate_commit = candidate_sha or _git(repo_root, "rev-parse", "HEAD")
+    gate_commit = candidate_sha
     for name in project_names:
         project = configs[name]
         if not project.steps.get("run-tests"):
@@ -4265,6 +4351,10 @@ def _run_release_gates(
                 f"{name}: no release gate is declared ([project.{name}.steps.run-tests]); "
                 "cmru refuses to tag or publish without a meaningful tester-unified gate"
             )
+        if gate_commit is None:
+            # Only a declared gate needs the commit identity; a missing gate is
+            # a typed refusal that must not depend on a Git checkout.
+            gate_commit = _git(repo_root, "rev-parse", "HEAD")
         log_info(f"{name}: running required release gate")
         run_project_step(
             project, "run-tests", repo_root, log_dir,
@@ -4402,18 +4492,208 @@ def _commit_prepared_generated(
     return True
 
 
-_RELEASE_BODY_HANDLERS = frozenset({"wheel-publish", "tarball-publish"})
+_RELEASE_BODY_HANDLERS = frozenset({"wheel-publish", "tarball-publish", "oci-image-release"})
+_OCI_RELEASE_HANDLER = "oci-image-release"
 
 
-def _has_cmru_github_release_body(project) -> bool:
-    """Whether the declared push step uses a CMRU handler that publishes notes."""
+def _release_body_handler_argv(project) -> tuple[str, ...] | None:
+    """The first CMRU release-body handler in the push step, as ``(handler, *options)``.
+
+    ``oci-image-release`` owns the whole GitHub Release body and replaces
+    whatever an earlier body handler wrote, so it cannot share a push step with
+    another body handler (nor repeat): that is refused before any side effect.
+    """
     step = (getattr(project, "runner_steps", None) or {}).get("push")
+    found: list[tuple[str, ...]] = []
     for command in getattr(step, "commands", ()):
         argv = command.get("argv", ()) if isinstance(command, dict) else ()
         if len(argv) >= 3 and [str(item) for item in argv[:2]] == ["cmru", "handler"]:
             if str(argv[2]) in _RELEASE_BODY_HANDLERS:
-                return True
-    return False
+                found.append(tuple(str(item) for item in argv[2:]))
+    if any(item[0] == _OCI_RELEASE_HANDLER for item in found) and len(found) > 1:
+        raise RefusedBeforeChange(
+            f"{getattr(project, 'name', 'project')}: `{_OCI_RELEASE_HANDLER}` writes the whole "
+            "GitHub Release body, so its push step cannot also run another CMRU "
+            "release-body handler (wheel-publish, tarball-publish or a second "
+            f"{_OCI_RELEASE_HANDLER}): the later one would overwrite the earlier body"
+        )
+    return found[0] if found else None
+
+
+def _has_cmru_github_release_body(project) -> bool:
+    """Whether the declared push step uses a CMRU handler that publishes notes."""
+    return _release_body_handler_argv(project) is not None
+
+
+_OCI_RELEASE_OPTIONS = ("--prefix", "--image", "--cwd")
+
+
+def _parse_oci_release_options(options: Sequence[str]) -> dict[str, str]:
+    """Strictly parse the three options of ``oci-image-release``; ``ValueError`` if malformed.
+
+    Exactly one each of ``--prefix``, ``--image`` and ``--cwd`` (``--flag V`` or
+    ``--flag=V``), non-empty, and nothing else: an unknown flag, a stray
+    positional, a duplicate, a missing value or a missing option is refused.
+    """
+    found: dict[str, str] = {}
+    index = 0
+    while index < len(options):
+        token = options[index]
+        flag, equals, inline = token.partition("=")
+        if flag not in _OCI_RELEASE_OPTIONS:
+            raise ValueError(
+                f"unexpected argument {token!r}; the only options are "
+                f"{', '.join(_OCI_RELEASE_OPTIONS)}"
+            )
+        if flag in found:
+            raise ValueError(f"{flag} is given more than once")
+        if equals:
+            value = inline
+            index += 1
+        else:
+            if index + 1 >= len(options):
+                raise ValueError(f"{flag} has no value")
+            value = options[index + 1]
+            index += 2
+        if not value:
+            raise ValueError(f"{flag} has an empty value")
+        if value.startswith("-"):
+            raise ValueError(f"{flag} value {value!r} looks like an option, not a value")
+        found[flag] = value
+    missing = [flag for flag in _OCI_RELEASE_OPTIONS if flag not in found]
+    if missing:
+        raise ValueError(f"missing required option(s): {', '.join(missing)}")
+    return found
+
+
+def _project_release_prefix(project) -> str:
+    """The project's release prefix without ``-v`` (``<prefix>-v<version>`` is its tag)."""
+    return (getattr(project, "prefix", None) or f"{project.name}-v").removesuffix("-v")
+
+
+def _validated_oci_release_image(project, repo_root: Path) -> str | None:
+    """Validate a configured ``oci-image-release`` command; return its ``--image``.
+
+    ``None`` when the project's push step has no such command. EVERY check is made
+    from CMRU's declared config and the candidate worktree, before any prepare
+    step, gate, tag, image push or other release side effect; ``cmru release
+    --dry-run`` calls this same function, so a preview refuses exactly what the
+    release would. A violation raises ``RefusedBeforeChange``:
+
+    * the body-handler conflict rule (one release-body handler per push step);
+    * the project is tagged (the protected release identity exists only then);
+    * exactly one well-formed ``--prefix``/``--image``/``--cwd`` and nothing else;
+    * ``--prefix`` is the project's release prefix without ``-v``;
+    * ``--image`` is a repository reference without a tag or digest;
+    * the step appends no runner arguments (``bake_set_*``/``no_cache_env`` add
+      tokens to every command's argv, which would corrupt this one's);
+    * the command is the LAST of the push step (it publishes externally visible
+      metadata, so it must follow the image push and nothing may follow it);
+    * ``--cwd`` (relative, resolved from the command's declared ``cwd`` within
+      the project root derived from the candidate) is the project root that holds
+      the declared changelog.
+    """
+    from cmru.changelog import _validate_changelog_path
+    from cmru.release import validate_oci_image_repository
+    from cmru.runner import resolve_path
+
+    argv = _release_body_handler_argv(project)
+    if argv is None or argv[0] != _OCI_RELEASE_HANDLER:
+        return None
+    name = getattr(project, "name", "project")
+
+    def refuse(detail: str) -> NoReturn:
+        raise RefusedBeforeChange(f"{name}: `{_OCI_RELEASE_HANDLER}`: {detail}")
+
+    if not getattr(project, "git_tag", True):
+        refuse(
+            "the project has no git tag (release.git_tag = false), so there is no "
+            "protected release tag or commit for it to publish against"
+        )
+    try:
+        options = _parse_oci_release_options(argv[1:])
+    except ValueError as exc:
+        refuse(str(exc))
+    expected_prefix = _project_release_prefix(project)
+    if options["--prefix"] != expected_prefix:
+        refuse(
+            f"--prefix {options['--prefix']!r} must be this project's release prefix "
+            f"without -v, {expected_prefix!r}"
+        )
+    try:
+        image = validate_oci_image_repository(options["--image"])
+    except ValueError as exc:
+        refuse(str(exc))
+
+    step = (getattr(project, "runner_steps", None) or {}).get("push")
+    if getattr(step, "no_cache_env", None) or (
+        getattr(step, "bake_set_prefix", None) and getattr(step, "bake_set_vars", None)
+    ):
+        refuse(
+            "the push step declares bake_set_prefix/bake_set_vars or no_cache_env, which "
+            "make the runner append arguments to every command in the step and would "
+            "corrupt this command's argv after the image was pushed"
+        )
+
+    commands = _push_commands(project)
+    position = next(
+        index for index, command in enumerate(commands)
+        if _command_handler(command) == _OCI_RELEASE_HANDLER
+    )
+    if position != len(commands) - 1:
+        following = commands[position + 1]
+        refuse(
+            "it publishes externally visible release metadata, so it must be the LAST "
+            f"command of the push step, after the image push; "
+            f"{len(commands) - 1 - position} command(s) follow it, starting with "
+            f"{following.get('label', 'an unlabelled command') if isinstance(following, dict) else following!r}"
+        )
+
+    command = commands[position]
+    raw_cwd = command.get("cwd") if isinstance(command, dict) else None
+    if not isinstance(raw_cwd, str) or not raw_cwd.strip():
+        refuse("the command declares no working directory (cwd)")
+    if Path(raw_cwd).is_absolute() or Path(options["--cwd"]).is_absolute():
+        refuse(
+            "the command's cwd and --cwd must be relative: an absolute path would bake a "
+            "candidate-specific location into the project configuration"
+        )
+    project_root = resolve_cwd(repo_root, _project_working_directory(project)).resolve()
+    target = (resolve_path(project_root, raw_cwd) / options["--cwd"]).resolve()
+    if target != project_root:
+        refuse(
+            f"--cwd {options['--cwd']!r}, resolved from the command's cwd {raw_cwd!r}, is "
+            f"not the project root {_project_working_directory(project)!r} that holds the "
+            "changelog; use --cwd . with cwd = \".\""
+        )
+    if getattr(project, "changelog", None):
+        # ``--cwd`` is the project root (checked above) and this refuses, with its own
+        # typed error, a changelog that escapes that root, so the declared changelog is
+        # inside ``--cwd`` by construction; a separate containment test could not fail.
+        _validate_changelog_path(project, repo_root)
+    return image
+
+
+def _validate_release_body_handlers(
+    repo_root: Path, configs: Mapping[str, "ProjectConfig"], names: Sequence[str],
+) -> None:
+    """Validate every named project's release-body handlers before ANY of them is released."""
+    for name in names:
+        _validated_oci_release_image(configs[name], repo_root)
+
+
+def _push_commands(project) -> list:
+    """The command tables of the project's declared ``push`` step (possibly empty)."""
+    step = (getattr(project, "runner_steps", None) or {}).get("push")
+    return list(getattr(step, "commands", ()))
+
+
+def _command_handler(command) -> str | None:
+    """The CMRU handler a ``cmru handler <name> ...`` command table runs, else ``None``."""
+    argv = command.get("argv", ()) if isinstance(command, dict) else ()
+    if len(argv) >= 3 and [str(item) for item in argv[:2]] == ["cmru", "handler"]:
+        return str(argv[2])
+    return None
 
 
 def _fold_pending_release_notes(repo_root: Path, project, version: str) -> bool:
@@ -4462,7 +4742,7 @@ def _preview_release_bodies(
     before a build; they appear as marked placeholders.
     """
     from cmru.changelog import _validate_changelog_path, generate_release_changelog
-    from cmru.release import build_release_body
+    from cmru.release import build_oci_image_release_body, build_release_body
     from cmru.release_notes import ARTIFACT_PLACEHOLDER, SHA256_PLACEHOLDER
 
     # The release plan knows every project in the Git family, including scopes
@@ -4476,9 +4756,14 @@ def _preview_release_bodies(
 
     for name in project_names:
         project = configs[name]
+        # The SAME validator the release preparation runs, before anything else
+        # (even for a project this preview would otherwise skip), so a dry run
+        # refuses exactly what the release would refuse, before any change.
+        oci_image = _validated_oci_release_image(project, repo_root)
         if not getattr(project, "changelog", None) or not getattr(project, "git_tag", True):
             continue
-        has_release_body = _has_cmru_github_release_body(project)
+        handler_argv = _release_body_handler_argv(project)
+        has_release_body = handler_argv is not None
         path = _validate_changelog_path(project, repo_root)
         original = path.read_bytes() if path.exists() else None
         try:
@@ -4491,7 +4776,7 @@ def _preview_release_bodies(
                 path.unlink(missing_ok=True)
             else:
                 path.write_bytes(original)
-        prefix = (getattr(project, "prefix", None) or f"{name}-v").removesuffix("-v")
+        prefix = _project_release_prefix(project)
         if no_build or not has_release_body:
             reason = (
                 "--no-build skips publication" if no_build else
@@ -4504,6 +4789,23 @@ def _preview_release_bodies(
             print("----- begin release notes section -----")
             print(notes.text)
             print("----- end release notes section -----")
+            continue
+        if oci_image is not None:
+            image = oci_image
+            try:
+                body = build_oci_image_release_body(image, notes.version, release_notes=notes)
+            except ValueError as exc:
+                raise RefusedBeforeChange(f"{name}: {_OCI_RELEASE_HANDLER}: {exc}") from exc
+            log_info(
+                f"[DRY RUN] {name}: GitHub Release body for {prefix}-v{notes.version} "
+                f"(image {image}:{notes.version}, published by `{_OCI_RELEASE_HANDLER}` after "
+                f"the image push; curated section from {project.changelog}; pending notes, when "
+                "present, are folded into this version section in the candidate before its gate "
+                "and tag):"
+            )
+            print("----- begin release body -----")
+            print(body)
+            print("----- end release body -----")
             continue
         body = build_release_body(
             prefix, notes.version, artifact_name=ARTIFACT_PLACEHOLDER,
@@ -4536,6 +4838,9 @@ def _prepare_release_projects(
     log_dir = repo_root / "logs"
     for name in project_names:
         project = configs[name]
+        # Refuse an invalid release-body handler (conflict, config, order, root)
+        # before the project's `prepare` step or any other side effect.
+        _validated_oci_release_image(project, repo_root)
         if "prepare" in project.steps:
             log_info(f"{name}: preparing release inputs")
             run_project_step(project, "prepare", repo_root, log_dir)
@@ -5273,7 +5578,14 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
         _resolve_ahead_check_ref(vargs)
     _apply_output_options(vargs)
     cfg_path = _resolve_config(vargs.config)
-    (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
+    selected_secret_file = (
+        Path(vargs.secret_file).expanduser()
+        if verb == "release" and getattr(vargs, "secret_file", None)
+        else None
+    )
+    (repo_root, configs, project_order, *_rest) = load_config(
+        cfg_path, secret_file=selected_secret_file,
+    )
     github_config, env_config = _rest[-2], _rest[-1]
     git_auth = _git_auth_for_repository(github_config)
     transaction_child = transaction.is_transaction_child(repo_root)
@@ -5324,7 +5636,13 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
 
     release_scope = selected_names
     if not vargs.dry_run:
-        require_project_publish_credentials(configs, release_scope)
+        try:
+            require_project_publish_credentials(configs, release_scope)
+        except CredentialMissing as exc:
+            advice = _main_tree_secret_advice(
+                cfg_path, repo_root, configs, release_scope,
+            )
+            raise CredentialMissing(f"{exc}\n{advice}") from exc
 
     preflight_snapshot_handoff = _ACTIVE_RELEASE_PREFLIGHT_SNAPSHOT
     if preflight_snapshot_handoff is not None:
@@ -5488,6 +5806,135 @@ def _release_child_controller_identity(
     return actual
 
 
+def _preflight_feature_worktree_source(
+    transaction_root: Path, repo_root: Path, *,
+    git_auth: GitHubGitAuth | None,
+) -> tuple[str, str]:
+    """Pin a clean named caller worktree to the exact matching origin branch."""
+    try:
+        caller_root, caller_common, branch, head = transaction._shared_worktree().discover_git_context(
+            Path.cwd(),
+        )
+    except _DOMAIN_ERRORS as exc:
+        raise RefusedBeforeChange(
+            f"--from-worktree requires the caller to be inside a registered Git worktree: {exc}"
+        ) from exc
+    if (
+        Path(caller_root).resolve() != transaction_root.resolve()
+        or Path(caller_common).resolve() != transaction._common_git_dir(transaction_root)
+    ):
+        raise RefusedBeforeChange(
+            "--from-worktree requires the selected projects and caller to belong to "
+            "the same Git worktree"
+        )
+    if not branch:
+        raise RefusedBeforeChange(
+            "--from-worktree requires a named local branch; detached HEAD cannot be paired "
+            "with origin/<branch>"
+        )
+    if branch == "main":
+        raise RefusedBeforeChange(
+            "--from-worktree requires a feature branch; use the default release mode for main"
+        )
+    if not transaction._valid_local_branch_name(branch, transaction_root):
+        raise RefusedBeforeChange(
+            f"the checked-out branch name {branch!r} is not a valid origin branch name"
+        )
+    status = run_local_git(
+        transaction_root, "status", "--porcelain=v1", "--untracked-files=all",
+        "--ignore-submodules=none",
+        capture_output=True, text=True, check=False,
+    )
+    if status.returncode != 0:
+        detail = status.stderr.strip() or status.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot inspect caller worktree status: {detail}")
+    if status.stdout.strip():
+        entries = [line[3:] if len(line) >= 3 else line for line in status.stdout.splitlines()]
+        preview = ", ".join(entries[:8])
+        if len(entries) > 8:
+            preview += ", ..."
+        raise RefusedBeforeChange(
+            "--from-worktree requires a clean caller worktree so the release source is "
+            f"exactly its commit; uncommitted paths: {preview}"
+        )
+    local_head = _git(transaction_root, "rev-parse", "HEAD")
+    if local_head != head:
+        raise RefusedBeforeChange(
+            "the caller's branch and HEAD changed during source preflight; rerun the release"
+        )
+    branch_head = _git(transaction_root, "rev-parse", f"refs/heads/{branch}")
+    if branch_head != local_head:
+        raise RefusedBeforeChange(
+            f"local branch {branch} points at {branch_head[:12]} but its worktree HEAD is "
+            f"{local_head[:12]}; check out or repair the intended branch before releasing"
+        )
+    remote_head = transaction.fetch_origin_branch(
+        transaction_root, branch, git_auth=git_auth,
+    )
+    if local_head != remote_head:
+        local_behind = run_local_git(
+            transaction_root, "merge-base", "--is-ancestor", local_head, remote_head,
+            capture_output=True, text=True, check=False,
+        )
+        remote_behind = run_local_git(
+            transaction_root, "merge-base", "--is-ancestor", remote_head, local_head,
+            capture_output=True, text=True, check=False,
+        )
+        if local_behind.returncode == 0:
+            remedy = (
+                f"fast-forward local {branch} to origin/{branch}, review it, and rerun"
+            )
+        elif remote_behind.returncode == 0:
+            remedy = (
+                f"push the intended commit with `git push origin HEAD:refs/heads/"
+                f"{branch}` and rerun"
+            )
+        elif local_behind.returncode == 1 and remote_behind.returncode == 1:
+            remedy = f"reconcile local {branch} with origin/{branch}, then rerun"
+        else:
+            remedy = "repair Git's ancestry data and rerun"
+        raise RefusedBeforeChange(
+            f"local {branch} is at {local_head[:12]} but fetched origin/{branch} is at "
+            f"{remote_head[:12]}; the release requires identical commits. {remedy}."
+        )
+    # Fetching can take long enough for an operator to switch branches, move the
+    # ref from another process, or edit the caller worktree. Recheck the exact
+    # selected source after the network operation before creating a candidate.
+    try:
+        current_root, current_common, current_branch, current_head = (
+            transaction._shared_worktree().discover_git_context(Path.cwd())
+        )
+    except _DOMAIN_ERRORS as exc:
+        raise RefusedBeforeChange(
+            f"the caller worktree changed during origin preflight: {exc}"
+        ) from exc
+    if (
+        Path(current_root).resolve() != Path(caller_root).resolve()
+        or Path(current_common).resolve() != Path(caller_common).resolve()
+        or current_branch != branch
+        or current_head != local_head
+        or _git(transaction_root, "rev-parse", f"refs/heads/{branch}") != local_head
+    ):
+        raise RefusedBeforeChange(
+            f"the caller's worktree or local branch {branch} changed during origin preflight; "
+            "rerun the release"
+        )
+    final_status = run_local_git(
+        transaction_root, "status", "--porcelain=v1", "--untracked-files=all",
+        "--ignore-submodules=none",
+        capture_output=True, text=True, check=False,
+    )
+    if final_status.returncode != 0:
+        detail = final_status.stderr.strip() or final_status.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot recheck caller worktree status: {detail}")
+    if final_status.stdout.strip():
+        raise RefusedBeforeChange(
+            "the caller worktree became dirty during origin preflight; restore or commit the "
+            "changed paths and rerun the release"
+        )
+    return branch, local_head
+
+
 def _release_launcher(
     rest: List[str], vargs, cfg_path: Path, repo_root: Path, configs, ordered,
     project_order, selected_names: List[str], resume_scope, git_auth,
@@ -5499,7 +5946,27 @@ def _release_launcher(
     """
     release_scope = selected_names
     origin_main_snapshots = None
-    if not vargs.dry_run and not vargs.resume:
+    feature_requested = bool(getattr(vargs, "from_worktree", False))
+    if feature_requested:
+        if vargs.allow_uncommitted:
+            raise UsageRefusal(
+                "--allow-uncommitted cannot be used with --from-worktree; "
+                "feature-source releases require a clean caller worktree"
+            )
+        if vargs.ahead_check_ref is not None:
+            raise UsageRefusal(
+                "--ahead-check-ref does not apply with --from-worktree; "
+                "this mode pins the checked-out branch to origin/<branch>"
+            )
+        groups = transaction.project_git_family_groups(
+            repo_root, [configs[name] for name in release_scope],
+        )
+        if len(groups) != 1:
+            raise UsageRefusal(
+                "--from-worktree currently supports one Git family per release; "
+                "select projects from one worktree"
+            )
+    elif not vargs.dry_run and not vargs.resume:
         try:
             origin_main_snapshots = _preflight_multi_family_release_tag_support(
                 repo_root, configs, release_scope,
@@ -5526,7 +5993,8 @@ def _release_launcher(
         sys.exit(dispatched)
 
     # The normal command is a launcher, never a publisher from the caller's
-    # checkout: origin/main is the only release source, built in an isolated
+    # checkout: origin/main is the default source; --from-worktree pins a
+    # clean named feature branch to its matching origin ref. Both run in an isolated
     # worktree. Local-only *commits* are a fail-closed condition (they are
     # likely intended release inputs — see assert_local_main_not_ahead below).
     # Uncommitted work is fail-closed too, but only when it touches a released
@@ -5545,6 +6013,13 @@ def _release_launcher(
         transaction_root = transaction.source_git_root_for_projects(
             repo_root, [configs[name] for name in release_scope]
         )
+        feature_source_branch = None
+        feature_source_commit = None
+        feature_source_expected = feature_requested
+        if feature_requested and preflight_snapshot_handoff is not None:
+            raise UsageRefusal(
+                "--from-worktree cannot use the internal origin/main preflight handoff"
+            )
         preflighted_base = _consume_release_snapshot_handoff(
             transaction_root, preflight_snapshot_handoff,
         )
@@ -5554,6 +6029,22 @@ def _release_launcher(
             forward_from=vargs,
         )
         with transaction.release_lock(transaction_root):
+            if feature_requested and not vargs.resume:
+                try:
+                    feature_source_branch, feature_source_commit = _preflight_feature_worktree_source(
+                        transaction_root, repo_root, git_auth=git_auth,
+                    )
+                except RuntimeError as exc:
+                    detail = str(exc)
+                    if (
+                        "cannot inspect origin branch refs/heads/" in detail
+                        or "could not fetch origin/" in detail
+                    ):
+                        advice = _main_tree_secret_advice(
+                            cfg_path, repo_root, configs, release_scope,
+                        )
+                        raise RuntimeError(f"{detail}\n{advice}") from exc
+                    raise
             if preflighted_base is not None:
                 verified_base = transaction.fetch_origin_main(
                     transaction_root, git_auth=git_auth,
@@ -5567,7 +6058,7 @@ def _release_launcher(
                     )
             # Not --dry-run: a preview has no publish step to protect, and "I have
             # local edits I haven't committed yet" is exactly when you'd run one.
-            if not vargs.dry_run and not vargs.allow_uncommitted:
+            if not vargs.resume and not vargs.dry_run and not vargs.allow_uncommitted:
                 # release actually iterates `ordered` (== project_order), which is
                 # independently configurable from the default target — check
                 # what will really run, not a possibly different default.
@@ -5579,9 +6070,15 @@ def _release_launcher(
 
                     raise CliFailure(
                         "Uncommitted local changes touch the project path(s) above. "
-                        "origin/main is the only release source, so this run would "
-                        "silently leave them out. Commit (and push) them first, or "
-                        "pass --allow-uncommitted to release without them.",
+                        + (
+                            "The checked-out feature commit is the release source, so these "
+                            "uncommitted paths cannot enter it. Restore them or commit and push "
+                            "the intended change, then rerun."
+                            if feature_requested else
+                            "origin/main is the only default release source, so this run would "
+                            "silently leave them out. Commit (and push) them first, or "
+                            "pass --allow-uncommitted to release without them."
+                        ),
                         exit_code=exit_codes.REFUSED,
                     )
 
@@ -5589,6 +6086,46 @@ def _release_launcher(
                 workspace = transaction.resume_workspace(
                     transaction_root, Path(vargs.resume), git_auth=git_auth,
                 )
+                source = transaction.read_release_source(transaction_root, workspace)
+                feature_source = source is not None
+                feature_source_expected = feature_source
+                if feature_source and vargs.allow_uncommitted:
+                    raise UsageRefusal(
+                        "--allow-uncommitted cannot be used with a feature-source resume; "
+                        "the retained candidate is already pinned to committed source"
+                    )
+                if feature_source and vargs.ahead_check_ref is not None:
+                    raise UsageRefusal(
+                        "--ahead-check-ref does not apply to a feature-source resume; "
+                        "the candidate is bound to its recorded source and origin branch"
+                    )
+                if feature_requested and not feature_source:
+                    raise UsageRefusal(
+                        "--from-worktree with --resume requires a retained feature-source transaction"
+                    )
+                dirty = {}
+                if not feature_source and not vargs.dry_run and not vargs.allow_uncommitted:
+                    dirty = _uncommitted_release_paths(
+                        transaction_root, ordered, release_scope,
+                    )
+                if dirty:
+                    for name, files in dirty.items():
+                        log_error(f"{name}: uncommitted changes — {', '.join(files)}")
+                    from cli_extended import CliFailure
+
+                    source_note = (
+                        "The checked-out feature commit is the release source, so uncommitted "
+                        "paths cannot enter it. Restore them and rerun."
+                        if feature_requested else
+                        "origin/main is the only default release source, so this run would "
+                        "silently leave them out. Commit (and push) them first, or pass "
+                        "--allow-uncommitted to release without them."
+                    )
+                    raise CliFailure(
+                        "Uncommitted local changes touch the project path(s) above. "
+                        + source_note,
+                        exit_code=exit_codes.REFUSED,
+                    )
                 current_scope = transaction.read_release_scope_for_path(workspace.path)
                 if current_scope != resume_scope:
                     raise RefusedBeforeChange(
@@ -5610,13 +6147,30 @@ def _release_launcher(
                     transaction_root, workspace, release_scope, configs,
                     git_auth=git_auth,
                     release_policies=candidate_release_policies,
+                    feature_source=feature_source,
                 )
+                if feature_source:
+                    if "--from-worktree" not in child_args:
+                        child_args.append("--from-worktree")
+                    recorded_results = transaction.read_release_results(
+                        transaction_root, workspace,
+                    )
+                    if recorded_results and set(recorded_results) == set(release_scope):
+                        raise UsageRefusal(
+                            "this feature-source candidate has already published every project; "
+                            f"its PR branch is retained at origin/{workspace.branch}. After a "
+                            "merge that preserves the tagged commits, use `cmru abandon` to retire it"
+                        )
                 if not vargs.dry_run:
                     if any(policy[1] for policy in candidate_release_policies.values()):
                         _require_local_tag_inspection_support(transaction_root)
             else:
-                base = preflighted_base or transaction.fetch_origin_main(
-                    transaction_root, git_auth=git_auth,
+                base = (
+                    feature_source_commit
+                    if feature_source_commit is not None
+                    else preflighted_base or transaction.fetch_origin_main(
+                        transaction_root, git_auth=git_auth,
+                    )
                 )
                 snapshot_config_paths = _project_config_paths_at_snapshot(
                     transaction_root, base, cfg_path, configs, release_scope,
@@ -5637,18 +6191,39 @@ def _release_launcher(
                         git_auth=git_auth,
                         context="capture origin release tags before the transaction",
                     )
-                behind = transaction.assert_local_main_not_ahead(
-                    transaction_root, ref=vargs.ahead_check_ref or "main",
-                )
-                if behind:
-                    log_warn(
-                        f"Local main is {behind} commit(s) behind origin/main; "
-                        f"release uses fetched origin/main {base[:12]}."
+                if feature_source_branch is None:
+                    behind = transaction.assert_local_main_not_ahead(
+                        transaction_root, ref=vargs.ahead_check_ref or "main",
                     )
+                    if behind:
+                        log_warn(
+                            f"Local main is {behind} commit(s) behind origin/main; "
+                            f"release uses fetched origin/main {base[:12]}."
+                        )
                 workspace = transaction.create_workspace(
                     repo_root, base=base, scope=','.join(release_scope),
                     source_git_root=transaction_root,
+                    git_auth=git_auth,
+                    require_remote_branch_absent=feature_source_branch is not None,
+                    feature_source=feature_source_branch is not None,
                 )
+                if feature_source_branch is not None:
+                    try:
+                        transaction.write_release_source(
+                            transaction_root, workspace, branch=feature_source_branch,
+                            commit=feature_source_commit,
+                        )
+                    except Exception:
+                        try:
+                            transaction.remove_workspace(workspace)
+                        except Exception as cleanup_exc:
+                            log_error(
+                                "feature-source identity could not be recorded and its new "
+                                f"worktree could not be removed ({cleanup_exc}); inspect "
+                                f"{workspace.path} before any release action"
+                            )
+                        raise
+                    feature_source_expected = True
                 if initial_tag_refs is not None:
                     transaction.write_release_tag_snapshot(
                         transaction_root, workspace, initial_tag_refs,
@@ -5673,8 +6248,8 @@ def _release_launcher(
                     bool(getattr(configs.get(name), "evidence_paths", ()) or ())
                     for name in configs
                 )
+                release_results = transaction.read_release_results(transaction_root, workspace)
                 if retain_logs or retain_artifacts or (retain_evidence and has_declared_evidence):
-                    release_results = transaction.read_release_results(transaction_root, workspace)
                     retained = transaction.retain_success_outputs(
                         repo_root,
                         workspace,
@@ -5686,12 +6261,84 @@ def _release_launcher(
                     )
                 for path in retained:
                     log_info(f"Retained release output: {path}")
-                transaction.remove_backup_branch(workspace, git_auth=git_auth)
-                transaction.remove_workspace(workspace)
-                transaction.forget_release_scope(transaction_root, workspace)
-                if _sync_local_main_and_report(transaction_root, git_auth=git_auth):
-                    log_info("Local main synced with origin/main.")
-                log_info("Release transaction complete; isolated worktree removed.")
+                source = transaction.read_release_source(transaction_root, workspace)
+                feature_source = source is not None
+                if feature_source_expected and not feature_source:
+                    raise UnsafeRecord(
+                        "the feature-source transaction lost its source identity record; "
+                        f"candidate {workspace.path} on branch {workspace.branch} was retained"
+                    )
+                candidate_pushed = transaction.backup_was_pushed(
+                    transaction_root, workspace,
+                )
+                if feature_source and not candidate_pushed:
+                    local_candidate_sha = _git(workspace.path, "rev-parse", "HEAD")
+                    existing_candidate_sha = transaction._origin_branch_oid(
+                        transaction_root, workspace.branch, git_auth=git_auth,
+                    )
+                    if existing_candidate_sha is not None:
+                        if vargs.dry_run or existing_candidate_sha != local_candidate_sha:
+                            raise UnsafeRecord(
+                                f"origin/{workspace.branch} exists at {existing_candidate_sha[:12]} "
+                                "without this transaction's ownership marker; candidate "
+                                f"{workspace.path} was retained for inspection"
+                            )
+                        # Recover the narrow crash window where the first candidate
+                        # push reached origin but the process stopped before writing
+                        # the local ownership marker. The ref already equals this
+                        # transaction's exact HEAD, so no overwrite occurs.
+                        transaction.mark_backup_pushed(transaction_root, workspace)
+                        candidate_pushed = True
+                if feature_source and release_results and not candidate_pushed:
+                    raise UnsafeRecord(
+                        "the feature-source transaction has published results but no durable "
+                        f"candidate-branch ownership record; candidate {workspace.path} was retained"
+                    )
+                if vargs.dry_run and vargs.resume:
+                    log_info(
+                        f"[DRY RUN] Existing release candidate {workspace.path} on branch "
+                        f"{workspace.branch} was retained unchanged."
+                    )
+                elif feature_source and candidate_pushed and not vargs.dry_run:
+                    candidate_sha = _git(workspace.path, "rev-parse", "HEAD")
+                    remote_candidate_sha = transaction.fetch_origin_branch(
+                        transaction_root, workspace.branch, git_auth=git_auth,
+                    )
+                    progress_sha = transaction.read_release_progress(
+                        transaction_root, workspace,
+                    )
+                    if remote_candidate_sha != candidate_sha or progress_sha != candidate_sha:
+                        raise UnsafeRecord(
+                            "the completed feature candidate, its progress record, and "
+                            "origin candidate branch do not name the same final commit; "
+                            f"candidate {workspace.path} on branch {workspace.branch} was retained"
+                        )
+                    if release_results:
+                        log_info(
+                            f"Release published from feature source {source['source_ref']} at "
+                            f"{source['source_commit'][:12]}; retained PR candidate "
+                            f"origin/{workspace.branch} at {candidate_sha[:12]}."
+                        )
+                        log_warn(
+                            "The release is public while its PR may still be open or blocked. "
+                            "Merge the PR without squash or rebase to preserve the tagged commit; "
+                            "CMRU did not update origin/main or local main."
+                        )
+                    else:
+                        log_info(
+                            "No public release result was recorded; retained candidate "
+                            f"origin/{workspace.branch} at {candidate_sha[:12]} for inspection. "
+                            "CMRU did not update origin/main or local main."
+                        )
+                else:
+                    transaction.remove_backup_branch(workspace, git_auth=git_auth)
+                    transaction.remove_workspace(workspace)
+                    transaction.forget_release_scope(transaction_root, workspace)
+                    if not feature_source and _sync_local_main_and_report(
+                        transaction_root, git_auth=git_auth,
+                    ):
+                        log_info("Local main synced with origin/main.")
+                    log_info("Release transaction complete; isolated worktree removed.")
             elif transaction.plan_was_refused(transaction_root, workspace):
                 if vargs.resume:
                     log_error(
@@ -5703,9 +6350,13 @@ def _release_launcher(
                 else:
                     # A new workspace has no prior work or remote backup to
                     # preserve when its first release-plan check refuses.
+                    feature_source = feature_source_expected or transaction.read_release_source(
+                        transaction_root, workspace,
+                    ) is not None
                     transaction.remove_workspace(workspace)
                     transaction.forget_release_scope(transaction_root, workspace)
-                    _sync_local_main_and_report(transaction_root, git_auth=git_auth)
+                    if not feature_source:
+                        _sync_local_main_and_report(transaction_root, git_auth=git_auth)
                     log_error(
                         "Release plan refused before any project started; no changes "
                         "were made (see the error above). Worktree discarded."
@@ -5717,11 +6368,21 @@ def _release_launcher(
                 # origin/main contains only earlier, fully completed
                 # projects. Never manufacture a revert commit for a
                 # candidate whose public artifact may already exist.
-                log_error(
-                    "Release candidate was not promoted; origin/main was left "
-                    "at the last fully completed project. The durable candidate "
-                    f"branch {workspace.branch} was retained for inspection."
-                )
+                feature_source = feature_source_expected or transaction.read_release_source(
+                    transaction_root, workspace,
+                ) is not None
+                if feature_source:
+                    log_error(
+                        "Feature-source release did not complete; origin/main and local main "
+                        f"were not updated. Candidate branch origin/{workspace.branch} was "
+                        "retained for inspection."
+                    )
+                else:
+                    log_error(
+                        "Release candidate was not promoted; origin/main was left "
+                        "at the last fully completed project. The durable candidate "
+                        f"branch {workspace.branch} was retained for inspection."
+                    )
                 # REL-06: say where the candidate is BEFORE the best-effort caller
                 # sync, so the path is never lost behind a sync problem.
                 log_error(
@@ -5732,7 +6393,8 @@ def _release_launcher(
                     "automatically); once publishing has started the tag is kept and "
                     "the candidate must be abandoned and re-released."
                 )
-                _sync_local_main_and_report(transaction_root, git_auth=git_auth)
+                if not feature_source:
+                    _sync_local_main_and_report(transaction_root, git_auth=git_auth)
             sys.exit(rc)
     except CmruError as exc:
         _exit_for_domain_error(exc)
@@ -5751,6 +6413,19 @@ def _release_child(
     """The in-worktree half of ``release``: detect, tag, push, build, publish."""
     from cmru.version import ReleasePlanRefused, release_cmd, detect_changed_projects
 
+    workspace = _transaction_workspace_from_env(repo_root)
+    source = (
+        transaction.read_release_source(repo_root, workspace)
+        if isinstance(workspace, transaction.ReleaseWorkspace) else None
+    )
+    feature_source = source is not None
+    if feature_source != bool(getattr(vargs, "from_worktree", False)):
+        candidate_path = getattr(workspace, "path", repo_root)
+        raise UnsafeRecord(
+            "release child source mode does not match its recorded transaction identity; "
+            f"candidate {candidate_path} was retained without release actions"
+        )
+
     if not vargs.dry_run:
         identity = _release_child_controller_identity(repo_root, selected_names)
         log_info(
@@ -5768,6 +6443,22 @@ def _release_child(
     # that never touches it.
     release_scope = selected_names
     scoped_for_plan = {name: ordered[name] for name in release_scope}
+    # A configured release-body handler (`oci-image-release`) is validated for
+    # EVERY selected project before anything else can happen: before a dry run's
+    # external-version `prepare` step below (which executes project code and may
+    # write files), before the plan, and so before any changelog write, gate, tag,
+    # push or publication of any project. It is pure configuration, so it needs
+    # neither the plan nor a changed-project list; an invalid handler in a project
+    # that turns out unchanged is still refused. Same typed refusal and the same
+    # validator as the dry-run preview and per-project preparation use.
+    try:
+        # ``ordered`` holds the very ProjectConfig objects ``configs`` does (it is
+        # ``_ordered_configs(configs, project_order)``) and is what the plan below reads.
+        _validate_release_body_handlers(repo_root, ordered, release_scope)
+    except RefusedBeforeChange as exc:
+        log_error(str(exc))
+        transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+        sys.exit(exit_codes.REFUSED)
     if vargs.dry_run:
         # External version strategies read a fact emitted by prepare. Run
         # only that declared input-discovery step in this disposable
@@ -5819,6 +6510,9 @@ def _release_child(
     # This also runs identically whether or not --dry-run is set (KI-14):
     # the plan above is computed once, before the dry-run/real branch below.
 
+    # (Release-body handlers were validated for every selected project at the
+    # very top of this function, before any prepare step could run.)
+
     # S15: declared tool dependencies for external/copy consumers
     # are verified here, alongside the tag-preflight above -- same phase (no
     # project's cycle has started), same network-touching plan-computation
@@ -5869,9 +6563,16 @@ def _release_child(
     # within this SAME `cmru release` run, instead of always trailing one run
     # behind. If project N fails, its exact candidate remains on the retained
     # transaction branch and already-published projects before it are left alone.
-    workspace = _transaction_workspace_from_env(repo_root)
+    source = transaction.read_release_source(repo_root, workspace)
+    if (source is not None) != feature_source:
+        raise UnsafeRecord(
+            "release child source mode does not match its recorded transaction identity; "
+            f"candidate {workspace.path} was retained without release actions"
+        )
     transaction.write_release_scope(repo_root, workspace, release_names)
-    transaction.push_backup_branch(workspace, git_auth=git_auth)
+    transaction.push_backup_branch(
+        workspace, git_auth=git_auth, require_feature_source=feature_source,
+    )
     log_info(f"Pushed release candidate {workspace.branch} to origin (durability).")
 
     released = _release_projects_sequentially(
@@ -6098,6 +6799,7 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
         tuple[str, ...],
         dict[str, str],
         dict[str, str],
+        bool,
     ]] = []
     for workspace in selected:
         scope: list[str] = []
@@ -6108,11 +6810,23 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
             scope = transaction.read_release_scope(repo_root, workspace)
             if not scope or any(not isinstance(name, str) or not name for name in scope) or len(scope) != len(set(scope)):
                 raise RuntimeError("release scope metadata is missing, malformed, or ambiguous")
+            source = transaction.read_release_source(repo_root, workspace)
+            feature_source = source is not None
             results = transaction.read_release_results(repo_root, workspace)
-            if results:
+            if results and not feature_source:
                 raise RuntimeError(
                     "release result metadata records a published project: "
                     + ", ".join(sorted(results))
+                )
+            if feature_source and results and set(results) != set(scope):
+                raise RuntimeError(
+                    "feature-source transaction has partial publication results; inspect the "
+                    "candidate and publication state before retiring it"
+                )
+            if feature_source and set(results) - set(scoped_configs):
+                raise RuntimeError(
+                    "feature-source release results name an unknown project: "
+                    + ", ".join(sorted(set(results) - set(scoped_configs)))
                 )
             progress = transaction.read_release_progress(repo_root, workspace)
             if progress is None:
@@ -6154,7 +6868,11 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
             removed = transaction.backup_was_removed(repo_root, workspace)
             expected_remote_candidate = pushed and not removed
             if expected_remote_candidate != (remote_candidate is not None):
-                raise RuntimeError("backup-branch marker and origin ref disagree")
+                if not (
+                    feature_source and results and pushed and not removed
+                    and remote_candidate is None
+                ):
+                    raise RuntimeError("backup-branch marker and origin ref disagree")
             if remote_candidate is not None:
                 candidate = run_local_git(
                     repo_root, "merge-base", "--is-ancestor", remote_candidate,
@@ -6163,15 +6881,64 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                 )
                 if candidate.returncode != 0:
                     raise RuntimeError("origin candidate ref is not a known ancestor of the retained worktree")
-            promoted = run_local_git(
-                repo_root, "merge-base", "--is-ancestor", progress, remote_main,
-                capture_output=True, text=True, check=False,
-            )
-            if progress != base_commit and promoted.returncode == 0:
-                remote_assets.append("origin/refs/heads/main")
-                raise RuntimeError("origin/main contains the recorded release progress; transaction was promoted")
-            if promoted.returncode not in (0, 1):
-                raise RuntimeError("could not determine whether release progress reached origin/main")
+            allow_missing_remote_candidate = False
+            if feature_source and results:
+                if not pushed:
+                    raise RuntimeError(
+                        "published feature transaction has no candidate-branch ownership "
+                        "record; inspect it before retiring"
+                    )
+                candidate_tip = _git(repo_root, "rev-parse", f"refs/heads/{workspace.branch}")
+                if (
+                    (remote_candidate is not None and remote_candidate != candidate_tip)
+                    or progress != candidate_tip
+                ):
+                    raise RuntimeError(
+                        "published feature candidate and completed progress do not name the "
+                        "same final commit"
+                    )
+                fetched_main = transaction.fetch_origin_branch(
+                    repo_root, "main", git_auth=git_auth,
+                )
+                if remote_candidate is not None:
+                    fetched_candidate = transaction.fetch_origin_branch(
+                        repo_root, workspace.branch, git_auth=git_auth,
+                    )
+                else:
+                    fetched_candidate = None
+                if (
+                    fetched_main != remote_main
+                    or fetched_candidate != remote_candidate
+                ):
+                    raise RuntimeError("origin branch refs changed while checking PR retirement")
+                merged = run_local_git(
+                    repo_root, "merge-base", "--is-ancestor", candidate_tip,
+                    remote_main, capture_output=True, text=True, check=False,
+                )
+                if merged.returncode == 1:
+                    if remote_candidate is None:
+                        raise RuntimeError(
+                            "the origin candidate branch is absent but its published commit is "
+                            "not in origin/main; keep the candidate worktree and recover the PR"
+                        )
+                    raise RuntimeError(
+                        "the published feature candidate is not yet an ancestor of origin/main; "
+                        "keep its PR branch until a merge or fast-forward preserves the exact "
+                        "tagged commits (squash and rebase do not qualify)"
+                    )
+                if merged.returncode != 0:
+                    raise RuntimeError("could not verify the published candidate against origin/main")
+                allow_missing_remote_candidate = remote_candidate is None
+            else:
+                promoted = run_local_git(
+                    repo_root, "merge-base", "--is-ancestor", progress, remote_main,
+                    capture_output=True, text=True, check=False,
+                )
+                if progress != base_commit and promoted.returncode == 0:
+                    remote_assets.append("origin/refs/heads/main")
+                    raise RuntimeError("origin/main contains the recorded release progress; transaction was promoted")
+                if promoted.returncode not in (0, 1):
+                    raise RuntimeError("could not determine whether release progress reached origin/main")
             # Only this transaction's projects can make a tag relevant to its
             # release or abandonment. A new tag in a different project's
             # namespace must not turn an ordinary retained candidate into a
@@ -6224,6 +6991,49 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
                     for tag_name in set(current_records) | set(initial_records)
                     if current_records.get(tag_name, {}) != initial_records.get(tag_name, {})
                 )
+            if feature_source and results:
+                attempts = transaction.read_release_tag_attempts(repo_root, workspace) or {}
+                current_by_name = _tag_records_by_name(scoped_remote_tags)
+                allowed_names: set[str] = set()
+                for name, result_id in results.items():
+                    if not scoped_configs[name].git_tag:
+                        continue
+                    tag_record = current_by_name.get(result_id, {})
+                    direct_ref = f"refs/tags/{result_id}"
+                    direct_oid = tag_record.get(direct_ref)
+                    tag_commit = (
+                        tag_record.get(direct_ref + "^{}") or direct_oid
+                    )
+                    attempted_oid = attempts.get(direct_ref)
+                    if (
+                        direct_oid is None
+                        or tag_commit is None
+                        or attempted_oid is None
+                        or direct_oid != attempted_oid
+                    ):
+                        raise RuntimeError(
+                            f"published result tag {result_id} does not match CMRU's "
+                            "recorded origin push"
+                        )
+                    tag_in_candidate = run_local_git(
+                        repo_root, "merge-base", "--is-ancestor", tag_commit,
+                        candidate_tip,
+                        capture_output=True, text=True, check=False,
+                    )
+                    if tag_in_candidate.returncode != 0:
+                        raise RuntimeError(
+                            f"published tag {result_id} is not an ancestor of the retained candidate"
+                        )
+                    allowed_names.add(result_id)
+                    latest_name = f"{result_id}-latest"
+                    latest_record = current_by_name.get(latest_name, {})
+                    latest_commit = (
+                        latest_record.get(f"refs/tags/{latest_name}^{{}}")
+                        or latest_record.get(f"refs/tags/{latest_name}")
+                    )
+                    if latest_commit == tag_commit:
+                        allowed_names.add(latest_name)
+                new_tags = [name for name in new_tags if name not in allowed_names]
             if new_tags:
                 remote_assets.extend(
                     "origin/refs/tags/" + tag
@@ -6298,6 +7108,7 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
             plans.append((
                 workspace, scope, remote_assets, remote_candidate, remote_refs,
                 scoped_remote_tags, tag_prefixes, scoped_local_tags, local_tags_to_remove,
+                allow_missing_remote_candidate,
             ))
         except _DOMAIN_ERRORS as exc:
             # Nothing has been mutated at this point, so a programming error
@@ -6329,17 +7140,38 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
 
     for (
         workspace, scope, assets, _candidate_oid, _branch_refs, _remote_tags,
-        _tag_prefixes, _local_tags, local_tags_to_remove,
+        _tag_prefixes, _local_tags, local_tags_to_remove, _allow_missing_candidate,
     ) in plans:
+        feature_published = (
+            transaction.read_release_source(repo_root, workspace) is not None
+            and bool(transaction.read_release_results(repo_root, workspace))
+        )
+        candidate_ref_effect = (
+            "already absent; exact published candidate tip verified in origin/main"
+            if _allow_missing_candidate
+            else "removed if present"
+        )
+        candidate_ref_line = (
+            f"  origin candidate ref: {candidate_ref_effect}\n"
+            if feature_published else ""
+        )
+        retirement_effect = (
+            "  after retirement: candidate worktree (including logs/artifacts), local branch, and transaction sidecars are "
+            f"removed; origin candidate ref {candidate_ref_effect}; published release tags and public assets are "
+            "preserved; origin/main is unchanged"
+            if feature_published
+            else "  after abandonment: candidate worktree (including its logs/artifacts), branch, "
+            "local attempt tags, and transaction sidecars are removed; origin/main is unchanged"
+        )
         print(
             f"Candidate: {workspace.branch}\n"
             f"  worktree: {workspace.path}\n"
             f"  transaction scope: {', '.join(scope)}\n"
             f"  remote refs/assets removed: {', '.join(assets) if assets else 'none'}\n"
+            f"{candidate_ref_line}"
             f"  local release tags removed: "
             f"{', '.join(ref.removeprefix('refs/tags/') for ref in sorted(local_tags_to_remove)) if local_tags_to_remove else 'none'}\n"
-            "  after abandonment: candidate worktree (including its logs/artifacts), branch, "
-            "local attempt tags, and transaction sidecars are removed; origin/main is unchanged"
+            f"{retirement_effect}"
         )
     for workspace, reason, scope, assets in blockers:
         print(
@@ -6359,8 +7191,11 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
             exit_code=exit_codes.REFUSED,
         )
     prompt = (
-        "Abandon exactly the listed retained release transaction(s), deleting their "
-        "CMRU backup refs, listed local release tags, worktrees, and local scope/progress sidecars?"
+        "Abandon exactly the listed retained release transaction(s), removing their CMRU candidate refs "
+        "where present, listed local attempt tags, worktrees, and local transaction sidecars? "
+        "For a completed feature release whose exact candidate tip is already in origin/main, "
+        "an absent origin candidate ref will be recorded as verified. Published release tags and "
+        "public assets are preserved."
     )
     if not getattr(args, "yes", False) and not runtime.confirm(prompt):
         return 0
@@ -6371,6 +7206,7 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
     for (
         workspace, _scope, _assets, _candidate_oid, expected_refs, expected_tags,
         tag_prefixes, expected_local_tags, _local_tags_to_remove,
+        _allow_missing_candidate,
     ) in plans:
         try:
             remote = run_remote_git(
@@ -6407,10 +7243,13 @@ def _abandon_locked(args, runtime, repo_root: Path) -> int:
     for (
         workspace, _scope, _assets, candidate_oid, branch_refs, tag_refs,
         tag_prefixes, local_tag_refs, local_tags_to_remove,
+        allow_missing_remote_candidate,
     ) in plans:
         transaction.abandon_workspace(
             repo_root, workspace, git_auth=git_auth,
             expected_remote_candidate_oid=candidate_oid,
+            expected_remote_main_oid=branch_refs.get("refs/heads/main"),
+            allow_missing_remote_candidate=allow_missing_remote_candidate,
             expected_remote_tag_refs=tag_refs,
             release_tag_prefixes=tag_prefixes,
             expected_local_tag_refs=local_tag_refs,
@@ -6512,14 +7351,16 @@ def _build_cli():
         OptionSpec(("--major",), "bump major versions", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="version-override"),
         OptionSpec(("--set-version",), "set an explicit version (exactly one project must be selected)", metavar="VER", parser_kwargs={"default": None}, mutually_exclusive_group="version-override"),
         OptionSpec(("--no-build",), "tag and push only; skip build and publish", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--from-worktree",), "release the clean checked-out feature branch when origin/<branch> has the exact same commit; retain the generated origin candidate branch for a PR", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--secret-file",), "explicit root cmru.secret.toml path for this release; another worktree's file is never read automatically", metavar="PATH", parser_kwargs={"default": None}),
         config_opt,
         OptionSpec(("--resume",), "resume a retained failed release worktree", metavar="WORKTREE", parser_kwargs={"default": None}),
-        OptionSpec(("--allow-uncommitted",), "allow local edits to be omitted from the origin/main snapshot", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--allow-uncommitted",), "allow default origin/main release to omit project edits (not valid for feature-source release or resume)", parser_kwargs={"action": "store_true", "default": False}),
         OptionSpec(("--allow-tag-ahead-of-head",), "allow a tag strictly ahead of the snapshot", parser_kwargs={"action": "store_true", "default": False}),
         OptionSpec(("--allow-stale-tool-deps",), "allow declared tool dependencies behind their latest release", parser_kwargs={"action": "store_true", "default": False}),
         *detail_opts,
         OptionSpec(("--discard",), "do not retain this kind of output after a successful release; repeat for several", metavar="{logs,artifacts,evidence}", parser_kwargs={"action": "append", "choices": ("logs", "artifacts", "evidence"), "default": None}),
-        OptionSpec(("--ahead-check-ref",), "git ref the local-ahead guard compares against (the snapshot is always origin/main)", metavar="REF", parser_kwargs={"default": None}),
+        OptionSpec(("--ahead-check-ref",), "git ref the default-mode local-ahead guard compares against (snapshot is origin/main)", metavar="REF", parser_kwargs={"default": None}),
         OptionSpec(("--ref",), "DEPRECATED alias of --ahead-check-ref; removed in the next release", metavar="REF", parser_kwargs={"default": None}),
     )
     status_options = (
@@ -6529,7 +7370,7 @@ def _build_cli():
         config_opt,
         OptionSpec(("--ref",), "git ref used for status comparison", metavar="REF", parser_kwargs={"default": None}),
     )
-    registry.register(VerbSpec("release", description="Release selected projects from an isolated origin/main snapshot.", group=VerbGroup.MIXED.value, arguments=common_target, options=release_options, mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
+    registry.register(VerbSpec("release", description="Release selected projects from an isolated origin/main snapshot, or with --from-worktree from a clean feature branch already pushed to its same-named origin branch.", group=VerbGroup.MIXED.value, arguments=common_target, options=release_options, mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     registry.register(VerbSpec("status", description="Preview changed projects and their next versions (read-only).", group=VerbGroup.EXPLORATION.value, arguments=common_target, options=status_options, include_json=True, include_progress=False, handler=direct()))
     cleanup_options = (
         OptionSpec(("--policy",), "apply the configured [cleanup] policy: delete Releases, tags and GHCR versions per project, run steps.clean, and commit", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="cleanup-mode", mutually_exclusive_required=True),
@@ -6541,7 +7382,7 @@ def _build_cli():
     registry.register(VerbSpec("cleanup", description="Remove remote release assets (--policy, --remove-assets, --delete-unmanaged-release-tag) or one retained local build record (--delete-build-output); one mode is required. It does not abandon release transactions.", group=VerbGroup.MAINTENANCE.value, arguments=common_target, options=cleanup_options, mutating=True, dry_run=True, include_confirmation=True, include_json=False, include_progress=False, handler=direct()))
     registry.register(VerbSpec(
         "abandon",
-        description=("Inspect and discard retained local release transactions (no argument) or one retained build or release worktree (BRANCH or PATH). Removes the exact CMRU backup branch, worktree, in-worktree logs/artifacts, and transaction sidecars; it refuses release transactions with publication or promotion evidence. A cmru-release-* BRANCH that exists only on origin (no local worktree) is retired only when every commit is already on origin/main; otherwise it is withheld (exit 4)."),
+        description=("Inspect and discard retained local release transactions (no argument) or one retained build or release worktree (BRANCH or PATH). Removes the exact CMRU candidate branch if present, worktree, in-worktree logs/artifacts, and transaction sidecars. Published candidates are withheld except a completed feature-source release whose exact final commit is already in origin/main; if its origin branch is absent, that exact ancestry must still be verified. Retirement preserves public tags and assets. A cmru-release-* BRANCH that exists only on origin is retired only when every commit is already on origin/main; otherwise it is withheld (exit 4)."),
         group=VerbGroup.MAINTENANCE.value,
         arguments=(ArgumentSpec("branch", "exact managed build or release branch, or the path of its worktree; omit to select all retained release transactions", metavar="BRANCH|PATH", parser_kwargs={"nargs": "?", "default": None}),),
         options=(config_opt,),

@@ -96,6 +96,7 @@ def _project(name: str, *, paths: list[str] | None = None, steps=None):
         steps=steps or {},
         project_root=Path(name),
         github_token="test-credential",
+        known_project_names=frozenset(),
     )
 
 
@@ -2050,6 +2051,44 @@ def test_run_child_passes_launcher_controller_identity_to_transaction(
     assert observed[transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV] == "c" * 64
 
 
+def _refused_identity_cases():
+    good = {"version": "6.2.0", "wheel_sha256": "a" * 64, "distribution_sha256": "c" * 64}
+    cases = [
+        ("incomplete", {key: value for key, value in good.items() if key != name})
+        for name in good
+    ]
+    cases += [
+        ("malformed", {**good, "version": ""}),
+        ("malformed", {**good, "version": 6}),
+        ("malformed", {**good, "wheel_sha256": "z" * 64}),
+        ("malformed", {**good, "wheel_sha256": 7}),
+        ("malformed", {**good, "distribution_sha256": "c" * 63}),
+        ("malformed", {**good, "distribution_sha256": None}),
+    ]
+    return cases
+
+
+@pytest.mark.parametrize(("problem", "identity"), _refused_identity_cases())
+def test_run_child_refuses_an_incomplete_or_malformed_controller_identity_before_launch(
+    tmp_path, monkeypatch, problem, identity,
+):
+    workspace = transaction.ReleaseWorkspace(
+        tmp_path, tmp_path / "release", "cmru-release-identity", "b" * 40,
+    )
+    launched = []
+    monkeypatch.setattr(
+        transaction.subprocess, "run", lambda *args, **kwargs: launched.append(args),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"release controller identity is {problem} before child launch",
+    ):
+        transaction.run_child(workspace, ["demo"], controller_identity=identity)
+
+    assert launched == []  # no child process ever ran under an unproven controller
+
+
 def test_resume_requires_operator_fixes_to_be_committed_on_retained_branch():
     with _OriginAndClone() as h:
         workspace = h.clone_workspace("cmru/release/resume")
@@ -3372,6 +3411,7 @@ def _seq_project(
         build_step=build_step,
         commit_generated=commit_generated,
         github_token="test-credential",
+        known_project_names=frozenset(),
     )
 
 
@@ -3431,7 +3471,7 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
     previous run's — because alpha's entire cycle (prepare/gate/promote/tag/
     build/publish) finishes before beta's cycle starts."""
     with _OriginAndClone() as h:
-        workspace_path = h.clone_workspace("cmru/release/seq")
+        workspace_path = h.add_worktree("cmru/release/seq")
         (workspace_path / "beta").mkdir()
         # release steps write their own step logs under repo_root/logs/ — ignore
         # it so that doesn't trip release_cmd's clean-working-tree guard.
@@ -3492,7 +3532,7 @@ def test_release_projects_sequentially_lets_a_later_project_see_an_earlier_ones_
 def test_release_stops_before_publisher_when_release_tag_push_fails(monkeypatch):
     with _OriginAndClone() as h:
         branch = "cmru/release/tag-push-failure"
-        workspace_path = h.clone_workspace(branch)
+        workspace_path = h.add_worktree(branch)
         (workspace_path / "alpha").mkdir()
         (workspace_path / "alpha" / "feature.txt").write_text("candidate\n")
         _git("add", "alpha/feature.txt", cwd=workspace_path)
@@ -3510,7 +3550,7 @@ def test_release_stops_before_publisher_when_release_tag_push_fails(monkeypatch)
         step_calls = []
         monkeypatch.setattr(
             cli, "run_project_step",
-            lambda project, step, _root, _logs: step_calls.append((project.name, step)),
+            lambda project, step, _root, _logs, **_kw: step_calls.append((project.name, step)),
         )
 
         real_remote_git = cli.run_remote_git
@@ -3548,7 +3588,7 @@ def test_release_projects_sequentially_checkpoints_only_up_to_the_last_success()
     the checkpoint deliberately excludes beta's unpromoted local commit rather
     than just tracking HEAD."""
     with _OriginAndClone() as h:
-        workspace_path = h.clone_workspace("cmru/release/partial")
+        workspace_path = h.add_worktree("cmru/release/partial")
         (workspace_path / "beta").mkdir()
         (workspace_path / ".gitignore").write_text("logs/\n")
         _git("add", ".gitignore", cwd=workspace_path)
@@ -3609,7 +3649,7 @@ def test_release_projects_sequentially_seeds_checkpoint_from_this_runs_base_not_
     could revert past a commit the operator made while fixing things up for the
     resume — see the review finding this test locks in."""
     with _OriginAndClone() as h:
-        workspace_path = h.clone_workspace("cmru/release/resume-token")
+        workspace_path = h.add_worktree("cmru/release/resume-token")
         (workspace_path / ".gitignore").write_text("logs/\n")
         _git("add", ".gitignore", cwd=workspace_path)
         _git("commit", "-q", "-m", "chore: ignore step logs", cwd=workspace_path)

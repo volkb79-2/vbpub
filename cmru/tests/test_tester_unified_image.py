@@ -38,6 +38,25 @@ CMRU_WHEEL_BUILD_BODY = (
     "/tmp/internal-build-venv/bin/pip wheel --no-index --no-deps "
     "--no-build-isolation -w /tmp/internal-wheels /src/cmru"
 )
+# Host-facing tools, installed by capability: Debian's docker client/compose
+# packages are added only when the base lacks them (the MDT base ships Docker's
+# own, which they would clash with). It runs before any wheel input is copied.
+TESTER_HOST_TOOLS_RUN = (
+    'set -eu && packages="ca-certificates curl git jq openssh-client util-linux" '
+    '&& if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi '
+    '&& if ! docker compose version >/dev/null 2>&1; then packages="$packages docker-compose"; fi '
+    "&& apt-get update && apt-get install -y --no-install-recommends $packages "
+    "&& rm -rf /var/lib/apt/lists/* && docker --version && docker compose version "
+    "&& git --version && nsenter --version"
+)
+# Records the exact Run-Gate wheel identity in the image (readable by the release
+# lane). It writes only /etc and runs before any CMRU wheel input is copied.
+RUN_GATE_IDENTITY_FILE_RUN = (
+    "printf '{\"version\":\"%s\",\"sha256\":\"%s\"}\\n' "
+    '"${RUN_GATE_TESTER_VERSION}" "${RUN_GATE_TESTER_WHEEL_SHA256}" '
+    "> /etc/tester-unified-run-gate-wheel.json "
+    "&& chmod 0444 /etc/tester-unified-run-gate-wheel.json"
+)
 TESTER_GIT_MAINTENANCE_RUN = (
     "git config --system maintenance.autoDetach false && git config --system gc.autoDetach false "
     '&& test "$(git config --system --get maintenance.autoDetach)" = false '
@@ -66,7 +85,8 @@ TESTER_REQUIREMENTS_GENERATION_RUN = (
     "> /tmp/internal-build-requirements.txt && "
     'case "${CLI_EXTENDED_RESOLVE}" in pinned) set -- --wheel-url '
     '"${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; '
-    'latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; local) set -- ;; '
+    'latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" '
+    '--expect-sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; local) set -- ;; '
     '*) echo "CLI_EXTENDED_RESOLVE must be pinned, latest or local" >&2; exit 1 ;; '
     'esac && if [ "${CLI_EXTENDED_RESOLVE}" = local ]; then '
     'set -- /tmp/cli-extended-local/cli_extended-*.whl; '
@@ -78,7 +98,9 @@ TESTER_REQUIREMENTS_GENERATION_RUN = (
     '>&2; exit 1; }; mkdir -p /tmp/cli-extended-release && cp "$1" '
     '/tmp/cli-extended-release/; else '
     '/usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py '
-    '--dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; fi'
+    '--dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; fi && '
+    'set -- /tmp/cli-extended-release/cli_extended-*.whl && [ "$#" -eq 1 ] && '
+    '[ -f "$1" ] && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -'
 )
 TESTER_DEPENDENCY_BOOTSTRAP_RUN = (
     "/usr/local/bin/python3.14 -m venv --copies /opt/tester-venv && "
@@ -147,15 +169,15 @@ assert reported == f"run-gate {run_gate_version}\n", reported
 released = metadata.version("cli-extended")
 if os.environ["CLI_EXTENDED_RESOLVE"] == "local":
     # Zero-release mode: the operator-built wheel (sha256-verified above) carries a
-    # +local version segment so it can never be mistaken for, or equal, a release.
-    assert "+" in released, f"cli-extended {released} has no +local segment: not a local build"
+    # PEP 440 local version segment so it cannot be mistaken for a stable release.
+    assert "+" in released, f"cli-extended {released} has no local version segment"
 else:
     assert "+" not in released, f"cli-extended {released} is a local build, not the release"
 assert any(r.startswith("cli-extended") for r in metadata.requires("cmru") or ()), (
     "cmru's wheel does not declare cli-extended as a dependency"
 )
 print("cmru local, Run-Gate installed:", run_gate_version,
-      "; cli-extended release:", released)
+      "; cli-extended identity:", released)
 PY'''
 # The run-uid identity block as the Dockerfile declares it (da06e52de gave the
 # uid its own group 1003 instead of squatting on the host's docker gid 994),
@@ -195,10 +217,12 @@ NYXLOOM_FINAL_WHEEL_INSTALL_RUN_BODY = (
     "'self-contained OK')\" && rm -rf /tmp/wheels"
 )
 CMRU_PRE_SENSITIVE_RUN_BODIES = (
+    TESTER_HOST_TOOLS_RUN,
     CMRU_SOURCE_TREE_CLEAN_RUN,
     CMRU_VENV_CLEAN_RUN,
     TESTER_GIT_MAINTENANCE_RUN,
     RUN_GATE_VERSION_REQUIREMENT_RUN,
+    RUN_GATE_IDENTITY_FILE_RUN,
     RUN_GATE_WHEEL_INSTALL_RUN,
     TESTER_REQUIREMENTS_GENERATION_RUN,
     TESTER_DEPENDENCY_BOOTSTRAP_RUN,
@@ -309,8 +333,9 @@ def test_generator_refuses_internal_names_in_extras_and_build_requires(tmp_path)
 ])
 def test_generator_skips_every_cli_extended_line_so_none_reaches_pip(tmp_path, line, capsys):
     """D8: cmru declares cli-extended as a real dependency. The line must be
-    SKIPPED (not refused, not printed): the image installs the released wheel
-    by sha256, and a PyPI-default pip is never asked for the name."""
+    SKIPPED (not refused, not printed): the image installs a verified release
+    wheel by default or an explicit local bootstrap wheel, and a PyPI-default
+    pip is never asked for the name."""
     _all_projects(
         tmp_path,
         cmru=(
@@ -586,6 +611,36 @@ def _dockerfile_from_base(instruction: str) -> str:
     return parts[base_index].lower()
 
 
+def _dockerfile_global_arg_defaults(text: str) -> dict[str, str]:
+    """Defaults of the ``ARG`` instructions declared before the first ``FROM``."""
+    defaults: dict[str, str] = {}
+    for instruction in _dockerfile_logical_instructions(text):
+        if re.match(r"(?i)^FROM(?:[ \t]|$)", instruction):
+            break
+        match = re.match(r"(?i)^ARG[ \t]+([A-Za-z_][A-Za-z0-9_]*)=(.*)$", instruction)
+        if match:
+            value = match.group(2).strip()
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+                value = value[1:-1]
+            defaults[match.group(1)] = value
+    return defaults
+
+
+def _expand_dockerfile_base(base: str, defaults: dict[str, str]) -> str:
+    """Expand ``$NAME``/``${NAME}`` in a FROM base from declared global ARG defaults.
+
+    A reference with no declared default stays unexpanded, so the caller still
+    refuses to certify an unresolved base.
+    """
+    lowered = {name.lower(): value.lower() for name, value in defaults.items()}
+
+    def replace(match: re.Match) -> str:
+        name = (match.group(1) or match.group(2)).lower()
+        return lowered.get(name, match.group(0))
+
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)", replace, base)
+
+
 def _assert_no_mutating_instructions_after_install(
     instructions: list[tuple[int, str, int, str]],
     *,
@@ -690,7 +745,10 @@ def _dockerfile_copy_specs_before_command(
     }
     if run_sensitive_sources and selected_stage_ordinal is not None:
         from_instruction = stage_from_instructions[selected_stage_ordinal]
-        base = _dockerfile_from_base(from_instruction)
+        base = _expand_dockerfile_base(
+            _dockerfile_from_base(from_instruction),
+            _dockerfile_global_arg_defaults(text),
+        )
         prior_stage_selectors = {
             selector.lower()
             for ordinal, selector, _index, _instruction in instructions
@@ -1422,7 +1480,19 @@ def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_
     # pinned branch passes the pin, latest branch passes only the pointer, anything else fails the build.
     assert re.search(r'pinned\) set -- --wheel-url "\$\{CLI_EXTENDED_WHEEL_URL\}" '
                      r'--sha256 "\$\{CLI_EXTENDED_WHEEL_SHA256\}" ;;', flat)
-    assert re.search(r'latest\) set -- --pointer-url "\$\{CLI_EXTENDED_POINTER_URL\}" ;;', flat)
+    # latest passes the pointer AND the digest the caller must name (never unverified bytes).
+    assert re.search(r'latest\) set -- --pointer-url "\$\{CLI_EXTENDED_POINTER_URL\}" '
+                     r'--expect-sha256 "\$\{CLI_EXTENDED_WHEEL_SHA256\}" ;;', flat)
+    # every mode verifies the wheel file actually installed against that digest
+    # `flat` has collapsed runs of spaces, so match the separator loosely here and pin the
+    # exact two-space `sha256sum -c` line format on the unflattened text just below.
+    assert re.search(r'fi && set -- /tmp/cli-extended-release/cli_extended-\*\.whl && \[ "\$#" -eq 1 \] '
+                     r'&& \[ -f "\$1" \] && echo "\$\{CLI_EXTENDED_WHEEL_SHA256\}\s+\$1" \| sha256sum -c -', flat)
+    assert 'echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -\n\n' in text, (
+        "sha256sum -c reads `<digest><two spaces><file>`"
+    )
+    assert re.search(r'^LABEL org\.vbpub\.cli-extended\.wheel-sha256="\$\{CLI_EXTENDED_WHEEL_SHA256\}"$',
+                     text, re.MULTILINE)
     assert re.search(r'\*\) echo "[^"]*" >&2; exit 1 ;;', flat)
     assert 'fetch-cli-extended.py --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"' in flat
 
@@ -1482,7 +1552,8 @@ def test_resolve_modes_are_pinned_default_latest_and_local_and_local_asserts_a_l
         assert re.search(rf"^#\s+{mode}\b", header, re.MULTILINE), mode
     assert "COPY tester-unified/local-wheel/ /tmp/cli-extended-local/" in text
     readme = (REPO_ROOT / "tester-unified" / "README.md").read_text("utf-8")
-    assert "CLI_EXTENDED_RESOLVE=local" in readme and "local-wheel" in readme
+    # The README documents the local mode through the supported builder's flag.
+    assert "--cli-extended-resolve local" in readme and "local-wheel" in readme
 
 
 def test_dockerignore_admits_the_local_wheel_input_and_gitignore_keeps_wheels_out():
@@ -1490,6 +1561,33 @@ def test_dockerignore_admits_the_local_wheel_input_and_gitignore_keeps_wheels_ou
     assert _dockerignore_included("tester-unified/local-wheel/.gitkeep")
     ignore = (REPO_ROOT / ".gitignore").read_text("utf-8").splitlines()
     assert "tester-unified/local-wheel/*.whl" in ignore
+
+
+@pytest.mark.parametrize(("trove", "wheel_inputs"), [
+    ("cmru/nyxloom-trove", ("cmru/pyproject.toml", "cmru/src/cmru/cli.py")),
+    (
+        "scripts/cgroup-profiler/nyxloom-trove",
+        ("scripts/cgroup-profiler/pyproject.toml", "scripts/cgroup-profiler/cgprofile.py"),
+    ),
+], ids=["cmru", "cgroup-profiler"])
+def test_dockerignore_keeps_repository_only_trove_reports_out_of_the_wheel_source_tree(
+    trove, wheel_inputs,
+):
+    """A review report is evidence, not a wheel input: it must never reach /src/<project>.
+
+    Without the rule every new report under the trove lands in the COPYed wheel tree, so
+    persisting a review would fail the COPY-input accounting test until it was committed.
+    The wheel's real inputs stay in the context.
+    """
+    rules = _dockerignore_rules()
+    # A report that does not exist yet is excluded too: the rule is the directory, not a list.
+    assert not _dockerignore_included(f"{trove}/reports/a-review-not-written-yet.md", rules)
+    assert not _dockerignore_included(f"{trove}/nyxloom.toml", rules)
+    committed = [path for path in _git_tree_context_paths() if path.as_posix().startswith(f"{trove}/")]
+    assert committed, f"{trove} has no committed files; the rule would guard nothing"
+    assert not [path for path in committed if _dockerignore_included(path.as_posix(), rules)]
+    for wheel_input in wheel_inputs:
+        assert _dockerignore_included(wheel_input, rules), wheel_input
 
 
 def test_dockerfile_fetch_floor_equals_cmru_declared_floor():
@@ -1544,6 +1642,50 @@ def test_fetcher_installs_nothing_unless_the_pointer_digest_matches(tmp_path):
     with pytest.raises(SystemExit, match="sha256 mismatch"):
         fetcher.fetch_wheel(fetcher.POINTER_URL, None, None, tmp_path / "bad", "0.2.0", tampered)
     assert not (tmp_path / "bad").exists()  # nothing written before the digest matched
+
+
+def test_fetcher_expected_digest_accepts_only_the_published_bytes(tmp_path):
+    """The caller's published digest binds `latest` to exact bytes: a pointer that
+    names other bytes is refused before any download, and a download that does not
+    hash to the expected digest is refused before any file exists."""
+    fetcher = _load_fetcher()
+    fetch, digest = _fake_release()
+    ok = fetcher.fetch_wheel(
+        fetcher.POINTER_URL, None, None, tmp_path / "ok", "0.2.0", fetch, expect_sha256=digest,
+    )
+    assert ok.read_bytes() == b"wheel-bytes"
+
+    # The newly released bytes differ from what the pointer (and the old pin) name.
+    stale = "e" * 64
+    with pytest.raises(SystemExit, match="names sha256 " + digest + ", not the expected " + stale):
+        fetcher.fetch_wheel(
+            fetcher.POINTER_URL, None, None, tmp_path / "stale", "0.2.0", fetch, expect_sha256=stale,
+        )
+    assert not (tmp_path / "stale").exists()
+
+    # A pointer that vouches for the expected digest but serves different bytes.
+    lying, _ = _fake_release(sha256=stale)
+    with pytest.raises(SystemExit, match="sha256 mismatch"):
+        fetcher.fetch_wheel(
+            fetcher.POINTER_URL, None, None, tmp_path / "lying", "0.2.0", lying, expect_sha256=stale,
+        )
+    assert not (tmp_path / "lying").exists()
+
+    # An invalid expectation is refused, not ignored.
+    with pytest.raises(SystemExit, match="--expect-sha256 has no valid sha256"):
+        fetcher.fetch_wheel(
+            fetcher.POINTER_URL, None, None, tmp_path / "bad", "0.2.0", fetch, expect_sha256="XYZ",
+        )
+
+
+def test_fetcher_expected_digest_also_binds_a_pinned_wheel_url(tmp_path):
+    fetcher = _load_fetcher()
+    fetch, digest = _fake_release()
+    with pytest.raises(SystemExit, match="not the expected"):
+        fetcher.fetch_wheel(
+            fetcher.POINTER_URL, _BASE + _WHEEL_NAME, digest, tmp_path / "x", "0.2.0", fetch,
+            expect_sha256="f" * 64,
+        )
 
 
 @pytest.mark.parametrize("digest", [None, "", "abc", "A" * 64, 7])
@@ -2583,8 +2725,8 @@ def test_dockerignore_admits_every_file_the_offline_build_needs(path):
 @pytest.mark.parametrize("path", _nyxloom_cli_extended_wheel_inputs())
 def test_dockerignore_admits_cli_extended_wheel_inputs_for_nyxloom(path):
     # The same repo-root context serves Nyxloom's source-built wheel. The
-    # tester-unified Dockerfile still uses only the released wheel and does
-    # not COPY these sources; see the Dockerfile-specific assertions above.
+    # tester-unified Dockerfile still installs a wheel input and does not COPY
+    # these sources; see the Dockerfile-specific assertions above.
     assert _dockerignore_included(path, _dockerignore_rules(NYXLOOM_DOCKERFILE)), path
 
 
@@ -3341,8 +3483,76 @@ def test_tester_unified_build_instructions_use_the_exact_wheel_builder():
     assert "tester-unified/build-image.sh" in profiler_gate
     assert '"$checkout/tester-unified/build-image.sh"' in audit_launcher
     assert 'cmru handler wheel-build --cwd "$checkout/run-gate-project"' in audit_launcher
-    assert "run-gate-wheel-version.py" in readme
+    # The README tells operators the builder checks the exact wheel's version and
+    # digest; the version helper itself is an implementation detail of the builder.
+    flat_readme = " ".join(readme.split())
+    assert "version and SHA-256 are checked during the build" in flat_readme
     assert "run-gate-wheel-version.py" in builder
+
+
+def test_zero_release_image_base_and_cli_extended_source_are_explicit():
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(
+        encoding="utf-8",
+    )
+    readme = (REPO_ROOT / "tester-unified" / "README.md").read_text("utf-8")
+    design = (REPO_ROOT / "tester-unified" / "docs" / "DESIGN-GUIDE.md").read_text("utf-8")
+    consumers = (REPO_ROOT / "tester-unified" / "docs" / "CONSUMERS.md").read_text("utf-8")
+    bootstrap = (REPO_ROOT / "docs" / "BOOTSTRAP-FROM-ZERO.md").read_text("utf-8")
+
+    assert re.search(
+        r"^ARG TESTER_UNIFIED_BASE_IMAGE=ghcr\.io/volkb79-2/modern-debian-tools-python-debug-"
+        r"vsc-devcontainer:trixie-py3\.14-php8\.5-latest$",
+        dockerfile,
+        re.MULTILINE,
+    )
+    assert "FROM ${TESTER_UNIFIED_BASE_IMAGE}" in dockerfile
+    assert "docker-compose" in dockerfile and "docker compose version" in dockerfile
+    assert "docker-cli docker-compose" in dockerfile
+    assert '--base-image) base_image=${2:?}; shift 2 ;;' in builder
+    assert 'build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE=$base_image")' in builder
+    assert 'tester_gate_args+=(--image "$base_image")' in builder
+    assert 'cmru tester-gate "${tester_gate_args[@]}" /bin/true' in builder
+    assert '--cli-extended-resolve) cli_extended_resolve=${2:?}; shift 2 ;;' in builder
+    assert 'build_args+=(--build-arg "CLI_EXTENDED_WHEEL_SHA256=$cli_extended_sha256")' in builder
+    assert '--no-cache) no_cache=1; shift ;;' in builder
+    assert "mcr.microsoft.com/devcontainers/python:3.14-trixie" in readme
+    assert "mcr.microsoft.com/devcontainers/python:3.14-trixie" in consumers
+    # Prose wraps differently over time; compare whitespace-normalized text.
+    flat_design = " ".join(design.split())
+    flat_readme = " ".join(readme.split())
+    flat_consumers = " ".join(consumers.split())
+    assert "first-release bootstrapping" in flat_design
+    assert "before `tester-unified:local` exists" in flat_readme
+    assert "does not depend on an existing `tester-unified:local` image" in flat_consumers
+    orchestration = tomllib.loads(
+        (REPO_ROOT / "cmru.orchestration.toml").read_text("utf-8"),
+    )
+    declared_env = orchestration["orchestration"]["defaults"]["env"]
+    for key in (
+        "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
+        "CMRU_TESTER_PIDS_LIMIT", "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+    ):
+        # The doc writes each declared value as a shell assignment; the value
+        # may be single-quoted (the digest-pinned probe image is).
+        value = declared_env[key]
+        assert f"{key}={value}" in bootstrap or f"{key}='{value}'" in bootstrap, key
+    assert f"docker pull {declared_env['CMRU_TESTER_CGROUP_PROBE_IMAGE']}" in bootstrap
+
+
+def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
+    dockerfile = (REPO_ROOT / "wheel-builder" / "Dockerfile").read_text("utf-8")
+    readme = (REPO_ROOT / "cmru" / "README.md").read_text("utf-8")
+    design = (REPO_ROOT / "cmru" / "docs" / "DESIGN-GUIDE.md").read_text("utf-8")
+    consumers = (REPO_ROOT / "cmru" / "docs" / "CONSUMERS.md").read_text("utf-8")
+
+    assert "ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie" in dockerfile
+    assert "FROM ${WHEEL_BUILDER_BASE_IMAGE}" in dockerfile
+    assert "apt-get install -y --no-install-recommends ca-certificates git passwd" in dockerfile
+    assert "ghcr.io/volkb79-2/modern-debian-tools-python-debug" not in dockerfile
+    for document in (readme, design, consumers):
+        assert "CMRU_BOOTSTRAP_CLI_EXTENDED=source" in document
+        assert "BOOTSTRAP-FROM-ZERO.md" in document
 
 def test_tester_unified_venvs_are_cleared_before_creation():
     instructions = _dockerfile_instructions_by_stage(
@@ -3789,6 +3999,10 @@ def test_tester_cmru_and_worktree_package_source_trees_are_nonempty():
         expected_workdir="/",
         run_sensitive_sources=("cmru", "libraries/worktree"),
         allowed_pre_sensitive_run_bodies=CMRU_PRE_SENSITIVE_RUN_BODIES,
+        # The Run-Gate wheel arrives through an external named BuildKit context
+        # (`COPY --from=run-gate-wheel`); it is not a CMRU input. Declared or
+        # intermediate stages are still refused.
+        allowed_external_contexts=("run-gate-wheel",),
         allowed_shell_prefix=(
             "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified",
         ),

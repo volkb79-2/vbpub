@@ -1182,6 +1182,97 @@ effects = ["Presentation only; refuses on the unset REGISTRY (exit 1)."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-push/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6eb6ae0febad975ab7ec783b4c69b9bd2b60c7badab5a812b1bfd89e5b0b34c1"
+rationale = "--prefix, --image and --cwd are required; the handler publishes only the GitHub Release body of an already-pushed image and runs only with the protected release identity that `cmru release` supplies."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent protected release identity before any GitHub request, git read or file access."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--cwd/--cwd"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f97818cdb3932586a994519f61bcf4fb986a305ed182ad934ec755f33905f1a6"
+rationale = "--cwd PATH is the project tree whose changelog the tagged section is read from."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent release identity; the directory is not read and nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--cwd/--cwd]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c4e95062f13c9b061721cef79f77864b137c3e4ba9c59eb80f6603868695efa7"
+rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir", "--debug-raw"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the warning, then refuses (exit 4) on the absent release identity; nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6413057a010a7a42ed3bf7b7ffbff6c7e1a4326b6d954e7323ac073de6b09af5"
+rationale = "--dry-run shows the accepted inputs without reading the release identity, the changelog or calling GitHub; `cmru release --dry-run` previews the complete body."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "[DRY RUN] Would run cmru handler oci-image-release"
+expected_stderr_contains = ""
+effects = ["Prints the inputs only; no GitHub request, no git or file read, nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--image/--image"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:41ed428c2a0b29f48ed872438b08560a00d47ea802bbd73d1aa6c4d8e22e92b7"
+rationale = "--image REPOSITORY is the registry repository with no tag and no digest; the image tag is derived from the protected release tag. Its shape is validated after the release identity, so a bad value is pinned by the handler's own tests."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent release identity; nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--image/--image]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:39f95273b7ee378691ce3c2c85311b55d9a1850bdbd81409939d4d6bde825ed7"
+rationale = "Consumer-global presentation option; output only."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir", "--log-prefix-time-short"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Presentation only; refuses (exit 4) on the absent release identity."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--prefix/--prefix"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7319803f511614ef428e515475f40ecc6030f9ce1378a589641ca897704e452b"
+rationale = "--prefix PREFIX is the release prefix without -v; the protected release tag must be <prefix>-v<version>. A mismatch is refused after the identity is present, so it is pinned by the handler's own tests."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent release identity; nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--prefix/--prefix]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/handler/tarball-publish/exclusive-conflict/version-source/option:route:entrypoint:cmru/handler/tarball-publish/--version-env/option:route:entrypoint:cmru/handler/tarball-publish/--version-file"
 state = "active"
 decision = "refuse"
