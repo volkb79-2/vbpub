@@ -106,6 +106,11 @@ Use `--ignore-https-errors` only for a trusted target with a known invalid
 certificate. It applies to HTTPS requests in that one inspection context.
 See [CLI usage and output choices](docs/CONSUMERS.md#inspect-a-webpage) and the
 [certificate-bypass design](docs/DESIGN-GUIDE.md#certificate-errors-during-inspection).
+In the MDT devcontainer install, the stable launcher is
+`/srv/pwmcp-instance/bin/pwmcp`; it follows updates through the `current`
+release link. A `~/.local/bin/pwmcp` symlink exposes it on the default user's
+existing PATH, and the absolute launcher path also works when an agent shell
+does not inherit PATH.
 
 ## Consumer Connection
 

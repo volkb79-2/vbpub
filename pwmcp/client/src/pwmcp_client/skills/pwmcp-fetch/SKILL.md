@@ -39,6 +39,23 @@ If it doesn't resolve in your environment, get the IP with `docker inspect
 DNS-rebinding protection and 403s any request whose Host header isn't on its
 `PWMCP_MCP_ALLOWED_HOSTS` allowlist.
 
+## Find the client CLI
+
+The CLI is installed with the client bundle. In the MDT devcontainer deployment,
+its stable launcher is `/srv/pwmcp-instance/bin/pwmcp`; it follows the active
+release under `/srv/pwmcp-instance/current`. Prefer `pwmcp` when `command -v
+pwmcp` finds it. If this agent shell does not inherit the devcontainer PATH,
+call the stable launcher directly, for example:
+
+```bash
+/srv/pwmcp-instance/bin/pwmcp inspect "$URL" --wait-until networkidle \
+  --wait-for 'CONTENT_SELECTOR' --timeout-ms 60000
+```
+
+Other installations may use a different root. In those environments, use the
+installed `pwmcp` command or the installation root's `bin/pwmcp`; do not
+activate or modify the managed PWMCP virtual environment.
+
 ## Preferred when the client CLI is installed
 
 Use the CLI's navigation and content waits for pages that hydrate after the
