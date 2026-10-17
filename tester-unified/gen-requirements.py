@@ -13,8 +13,9 @@ Docker socket (dependency confusion, BG-05).  So the generator REFUSES (exit 1)
 any requirement naming one; the Dockerfile installs those only from COPYed
 project sources with ``--no-index --no-deps``.  The one exception is
 ``cli-extended`` (D8): cmru declares it as a real dependency, so its line is
-SKIPPED (never printed, never refused) and the Dockerfile installs the RELEASED
-wheel by sha256 (``fetch-cli-extended.py``) before cmru.
+SKIPPED (never printed, never refused). The Dockerfile installs a
+sha256-verified published wheel by default; the explicit zero-release mode
+supplies a local source-built wheel through the same install boundary.
 """
 from __future__ import annotations
 
@@ -36,9 +37,9 @@ ESTATE_INTERNAL = frozenset({
 
 #: Estate-internal names that are SKIPPED rather than refused: since cmru
 #: declares ``cli-extended>=0.3.0`` (KI-51 / CX-D1) its requirement line reaches
-#: this generator, but the Dockerfile installs the RELEASED wheel itself, by
-#: sha256 (tester-unified/fetch-cli-extended.py), before cmru. No ``cli-extended``
-#: line may ever reach pip.
+#: this generator, but the Dockerfile installs a verified released wheel or
+#: explicit local bootstrap wheel before cmru. No ``cli-extended`` line may
+#: ever reach a PyPI-default pip.
 INSTALLED_BY_DOCKERFILE = frozenset({"cli-extended"})
 
 #: (pyproject path relative to --root, extras whose requirements the gate needs)
@@ -113,8 +114,9 @@ def admit(
     requirement: str, source: str, internal: frozenset[str] = ESTATE_INTERNAL,
 ) -> str | None:
     """The requirement to hand to pip, or ``None`` for a line the Dockerfile
-    installs itself (D8: ``cli-extended`` is a released wheel, sha256-pinned,
-    never an index query). Any other estate-internal name is still refused."""
+    installs itself (D8: ``cli-extended`` is supplied by the Dockerfile as a
+    sha256-verified release or explicit local bootstrap wheel, never an index
+    query). Any other estate-internal name is still refused."""
     if requirement_name(requirement) in INSTALLED_BY_DOCKERFILE:
         return None
     return refuse_internal(requirement, source, internal)

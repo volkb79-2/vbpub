@@ -16,11 +16,38 @@
 #
 # Build from the repo root using `tester-unified/build-image.sh`; it supplies
 # the exact Run-Gate wheel as a named build context and verifies its version
-# and digest during the image build.
+# and digest during the image build. The default base is the published MDT
+# cockpit image; a zero-release bootstrap may explicitly use the upstream
+# Python devcontainer base, which has no vbpub release dependency.
 # The repo-root .dockerignore whitelists the project sources in this context.
-FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+ARG TESTER_UNIFIED_BASE_IMAGE=ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+FROM ${TESTER_UNIFIED_BASE_IMAGE}
 
 USER root
+
+# Keep host-facing tools explicit so the zero-release build can use the
+# upstream Python base without inheriting a published vbpub image. Docker is a
+# client only; the launcher supplies the host socket when a lane needs it.
+#
+# Install only what the base lacks. The MDT base already ships Docker's own
+# `docker-ce-cli` and `docker-compose-plugin`; Debian's `docker-cli` and
+# `docker-compose` own the same files (/usr/bin/docker and the compose
+# plugin), so installing them over it makes dpkg refuse the overwrite or, if
+# apt resolves the clash, silently swaps the gate image's Docker client. On
+# the upstream Python base neither exists and `docker-cli docker-compose` are
+# installed from Debian. Each is decided by the capability it provides, not by
+# a package name: `docker` on PATH, and `docker compose version` answering.
+RUN set -eu \
+ && packages="ca-certificates curl git jq openssh-client util-linux" \
+ && if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi \
+ && if ! docker compose version >/dev/null 2>&1; then packages="$packages docker-compose"; fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends $packages \
+ && rm -rf /var/lib/apt/lists/* \
+ && docker --version \
+ && docker compose version \
+ && git --version \
+ && nsenter --version
 
 # git's detached auto-maintenance (`git gc --auto` / `git maintenance run
 # --auto` after a commit) forks a daemon that is orphaned to PID 1. A gate
@@ -82,7 +109,11 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 # --no-cache, the unchanged RUN text would otherwise reuse the cached wheel).
 # THREE MODES (CLI_EXTENDED_RESOLVE):
 #   pinned  (DEFAULT) the released asset named by the two pin args above.
-#   latest  the `cli-extended-latest/latest.json` pointer (opt-in).
+#   latest  the `cli-extended-latest/latest.json` pointer (opt-in). The caller must
+#           also pass the PUBLISHED digest as CLI_EXTENDED_WHEEL_SHA256 (build-image.sh
+#           requires --cli-extended-wheel-sha256): a pointer naming other bytes, or
+#           downloaded bytes that hash differently, fail the build, so no mode installs
+#           unverified bytes.
 #   local   ZERO-RELEASE path: no release exists to fetch, so install a LOCALLY BUILT
 #           wheel from the build context instead. Build it with cmru's own wheel
 #           builder (`CMRU_BOOTSTRAP_CLI_EXTENDED=source` in cmru/build-initial-
@@ -93,12 +124,17 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 #           --build-arg CLI_EXTENDED_WHEEL_SHA256=<its sha256>   (the existing arg).
 #           The digest is verified with sha256sum, the wheel goes in the same
 #           `--no-index --no-deps` way, and the post-install assertion requires a
-#           `+local` version (a release has none). Never a fallback: pinned stays
+#           PEP 440 local version (a stable release has none). Never a fallback: pinned stays
 #           the default and fails by itself when the pinned release is missing.
 ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
 ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.3.0/cli_extended-0.3.0-py3-none-any.whl
 ARG CLI_EXTENDED_WHEEL_SHA256=a0f80f1b614bcaf81fac235aa3a7f42f20eccac06f82311a6d8d5a725eea5f50
+# CLI_EXTENDED_WHEEL_SHA256 is, in EVERY mode, the digest the installed wheel must
+# have: the repository pin (pinned), the supplied digest (local) or the published
+# digest the caller names (latest, which refuses to resolve without it). The label
+# records it, and the install RUN below verifies the actual wheel file against it.
+LABEL org.vbpub.cli-extended.wheel-sha256="${CLI_EXTENDED_WHEEL_SHA256}"
 # Exact identity of the Run-Gate wheel supplied through the named build context.
 # The image installs those exact wheel bytes; the version and digest are
 # independently checked before installation and against installed metadata.
@@ -120,7 +156,7 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
       > /tmp/internal-build-requirements.txt \
  && case "${CLI_EXTENDED_RESOLVE}" in \
       pinned) set -- --wheel-url "${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; \
-      latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; \
+      latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" --expect-sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; \
       local) set -- ;; \
       *) echo "CLI_EXTENDED_RESOLVE must be pinned, latest or local" >&2; exit 1 ;; \
     esac \
@@ -133,7 +169,10 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
     else \
       /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
         --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; \
-    fi
+    fi \
+ && set -- /tmp/cli-extended-release/cli_extended-*.whl \
+ && [ "$#" -eq 1 ] && [ -f "$1" ] \
+ && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -
 
 # `venv` preserves existing contents. Start with empty environments so files
 # or `.pth` configuration inherited from a changed base image cannot affect
@@ -199,8 +238,9 @@ RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/in
 
 # Build-time assertion (BG-05): `worktree` and cmru resolve from THIS image's
 # locally built cmru wheel (a PyPI release can never carry the +tester.unified
-# local version segment), and cli_extended is the RELEASED wheel, not a local
-# build and not an index install; cmru's metadata must require it.
+# local version segment), and cli_extended matches the selected resolver mode:
+# a stable published wheel by default, or an explicitly supplied local wheel.
+# cmru's metadata must require cli-extended.
 RUN /opt/tester-venv/bin/python - <<'PY'
 import importlib.metadata as metadata
 import os
@@ -240,15 +280,15 @@ assert reported == f"run-gate {run_gate_version}\n", reported
 released = metadata.version("cli-extended")
 if os.environ["CLI_EXTENDED_RESOLVE"] == "local":
     # Zero-release mode: the operator-built wheel (sha256-verified above) carries a
-    # +local version segment so it can never be mistaken for, or equal, a release.
-    assert "+" in released, f"cli-extended {released} has no +local segment: not a local build"
+    # PEP 440 local version segment so it cannot be mistaken for a stable release.
+    assert "+" in released, f"cli-extended {released} has no local version segment"
 else:
     assert "+" not in released, f"cli-extended {released} is a local build, not the release"
 assert any(r.startswith("cli-extended") for r in metadata.requires("cmru") or ()), (
     "cmru's wheel does not declare cli-extended as a dependency"
 )
 print("cmru local, Run-Gate installed:", run_gate_version,
-      "; cli-extended release:", released)
+      "; cli-extended identity:", released)
 PY
 
 # The container runs as uid 1003 (to match the host-owned bind mounts), which

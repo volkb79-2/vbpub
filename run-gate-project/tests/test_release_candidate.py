@@ -5,10 +5,12 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import runpy
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from zipfile import ZipFile
 import pytest
 
 
@@ -37,6 +39,495 @@ def _receipt(**overrides):
 
 def _completed(stdout="", stderr="", returncode=0):
     return SimpleNamespace(stdout=stdout, stderr=stderr, returncode=returncode)
+
+
+def test_release_image_bootstrap_uses_only_explicit_overrides(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(
+        release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project",
+    )
+    monkeypatch.setenv(
+        "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE",
+        "mcr.microsoft.com/devcontainers/python:3.14-trixie",
+    )
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "source")
+    monkeypatch.setattr(
+        release_candidate, "_build_cli_extended_source_wheel",
+        lambda: (tmp_path / "cli-extended.whl", "a" * 64),
+    )
+
+    command = release_candidate._tester_image_build_command("tester-unified:first")
+
+    assert command == [
+        str(tmp_path / "tester-unified" / "build-image.sh"),
+        "--wheel-dir", str(tmp_path / "run-gate-project" / "dist"),
+        "--tag", "tester-unified:first",
+        "--base-image", "mcr.microsoft.com/devcontainers/python:3.14-trixie",
+        "--cli-extended-resolve", "local",
+        "--cli-extended-wheel-sha256", "a" * 64,
+    ]
+
+    monkeypatch.delenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE")
+    monkeypatch.delenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE")
+    command = release_candidate._tester_image_build_command("tester-unified:normal")
+    assert command == [
+        str(tmp_path / "tester-unified" / "build-image.sh"),
+        "--wheel-dir", str(tmp_path / "run-gate-project" / "dist"),
+        "--tag", "tester-unified:normal",
+    ]
+
+
+def test_release_image_bootstrap_rejects_an_unknown_cli_extended_mode(monkeypatch):
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "automatic")
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="must be source, pinned or latest",
+    ):
+        release_candidate._tester_image_build_command("tester-unified:bad")
+
+
+def test_source_bootstrap_builds_and_digest_checks_cli_extended_from_checkout(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(
+        release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project",
+    )
+    cmru_root = tmp_path / "cmru"
+    cmru_root.mkdir()
+    (cmru_root / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["cli-extended>=0.3.0"]\n',
+        encoding="utf-8",
+    )
+    source = tmp_path / "libraries" / "cli-extended"
+    dist = source / "dist"
+    local_wheels = tmp_path / "tester-unified" / "local-wheel"
+    expected_wheel = dist / "cli_extended-0.3.0+bootstrap.source-py3-none-any.whl"
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: "1760486400")
+
+    def fake_run(argv, *, cwd, env, check, capture_output, text):
+        assert argv == ["cmru", "handler", "wheel-build", "--cwd", str(source)]
+        assert cwd == tmp_path
+        assert env["SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED"] == "0.3.0+bootstrap.source"
+        assert env["SOURCE_DATE_EPOCH"] == "1760486400"
+        dist.mkdir(parents=True, exist_ok=True)
+        with ZipFile(expected_wheel, "w") as archive:
+            archive.writestr(
+                "cli_extended-0.3.0+bootstrap.source.dist-info/METADATA",
+                "Name: cli-extended\nVersion: 0.3.0+bootstrap.source\n",
+            )
+        return _completed()
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", fake_run)
+
+    wheel, digest = release_candidate._build_cli_extended_source_wheel()
+
+    assert wheel == local_wheels / expected_wheel.name
+    assert wheel.read_bytes() == expected_wheel.read_bytes()
+    assert digest == hashlib.sha256(expected_wheel.read_bytes()).hexdigest()
+
+
+_SOURCE_VERSION = "0.3.0+bootstrap.source"
+_SOURCE_WHEEL = f"cli_extended-{_SOURCE_VERSION}-py3-none-any.whl"
+_SOURCE_METADATA = f"cli_extended-{_SOURCE_VERSION}.dist-info/METADATA"
+_CMRU_DEPENDENCIES = '[project]\ndependencies = ["cli-extended>=0.3.0"]\n'
+
+
+def _source_bootstrap(monkeypatch, tmp_path, *, pyproject=_CMRU_DEPENDENCIES, build=None):
+    """A scratch checkout for `_build_cli_extended_source_wheel`.
+
+    `pyproject` is the CMRU pyproject text (None leaves the file absent);
+    `build(dist)` plays the `cmru handler wheel-build` child and returns its
+    completed result (default: success that writes nothing).
+    """
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project")
+    if pyproject is not None:
+        (tmp_path / "cmru").mkdir()
+        (tmp_path / "cmru" / "pyproject.toml").write_text(pyproject, encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: "1760486400")
+    dist = tmp_path / "libraries" / "cli-extended" / "dist"
+
+    def fake_run(_argv, **_kwargs):
+        dist.mkdir(parents=True, exist_ok=True)
+        return build(dist) if build is not None else _completed()
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", fake_run)
+    return dist
+
+
+def _write_source_wheel(dist, members, name=_SOURCE_WHEEL):
+    """Write a wheel whose archive holds exactly `members` (name -> text)."""
+    dist.mkdir(parents=True, exist_ok=True)
+    with ZipFile(dist / name, "w") as archive:
+        for member, text in members.items():
+            archive.writestr(member, text)
+    return dist / name
+
+
+def _good_metadata(**overrides):
+    fields = {"Name": "cli-extended", "Version": _SOURCE_VERSION}
+    fields.update(overrides)
+    return "".join(f"{key}: {value}\n" for key, value in fields.items() if value is not None)
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [None, "this is = [not toml"],
+    ids=["missing-file", "invalid-toml"],
+)
+def test_source_bootstrap_refuses_an_unreadable_cmru_pyproject(monkeypatch, tmp_path, pyproject):
+    _source_bootstrap(monkeypatch, tmp_path, pyproject=pyproject)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot read CMRU runtime requirements from .*pyproject.toml",
+    ):
+        release_candidate._build_cli_extended_source_wheel()
+
+
+@pytest.mark.parametrize(
+    "pyproject",
+    [
+        "[tool.other]\nx = 1\n",
+        "[project]\nname = 'cmru'\n",
+        '[project]\ndependencies = "cli-extended>=0.3.0"\n',
+    ],
+    ids=["no-project-table", "no-dependencies", "dependencies-not-a-list"],
+)
+def test_source_bootstrap_refuses_a_pyproject_without_a_dependency_list(
+    monkeypatch, tmp_path, pyproject,
+):
+    _source_bootstrap(monkeypatch, tmp_path, pyproject=pyproject)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError, match="has no project.dependencies list",
+    ):
+        release_candidate._build_cli_extended_source_wheel()
+
+
+def test_source_bootstrap_refuses_dependencies_without_a_cli_extended_floor(monkeypatch, tmp_path):
+    # Non-strings, other packages, a pin (==) and a pre-release floor are not
+    # a `cli-extended>=<release floor>` requirement.
+    _source_bootstrap(
+        monkeypatch, tmp_path,
+        pyproject=(
+            '[project]\ndependencies = ["pytest>=8", 7, "cli-extended==0.3.0", '
+            '"cli-extended>=0.3.0rc1"]\n'
+        ),
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=r"declares no cli-extended>=<floor> runtime dependency",
+    ):
+        release_candidate._build_cli_extended_source_wheel()
+
+
+def test_source_bootstrap_reports_a_failed_wheel_build_with_bounded_stderr(monkeypatch, tmp_path):
+    _source_bootstrap(
+        monkeypatch, tmp_path,
+        build=lambda _dist: _completed(stderr="  " + "e" * 600 + "  ", returncode=3),
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot build cli-extended from the selected checkout",
+    ) as error:
+        release_candidate._build_cli_extended_source_wheel()
+    message = str(error.value)
+    assert message.endswith(": " + "e" * 500)
+    assert "e" * 501 not in message
+
+
+@pytest.mark.parametrize(
+    ("extra_names", "found"),
+    [
+        ((), 0),
+        (
+            (f"cli_extended-{_SOURCE_VERSION}-py3-none-any.whl",
+             f"cli_extended-{_SOURCE_VERSION}-py3-none-linux_x86_64.whl"),
+            2,
+        ),
+    ],
+    ids=["none-built", "ambiguous"],
+)
+def test_source_bootstrap_requires_exactly_one_built_wheel(
+    monkeypatch, tmp_path, extra_names, found,
+):
+    def build(dist):
+        for name in extra_names:
+            _write_source_wheel(dist, {_SOURCE_METADATA: _good_metadata()}, name=name)
+        return _completed()
+
+    _source_bootstrap(monkeypatch, tmp_path, build=build)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=rf"expected one cli-extended {re.escape(_SOURCE_VERSION)} source wheel .*found {found}",
+    ):
+        release_candidate._build_cli_extended_source_wheel()
+
+
+@pytest.mark.parametrize(
+    ("members", "count"),
+    [
+        ({"cli_extended/__init__.py": ""}, 0),
+        (
+            {
+                _SOURCE_METADATA: _good_metadata(),
+                "cli_extended-other.dist-info/METADATA": _good_metadata(),
+            },
+            2,
+        ),
+    ],
+    ids=["no-metadata", "two-metadata"],
+)
+def test_source_bootstrap_requires_exactly_one_metadata_file(
+    monkeypatch, tmp_path, members, count,
+):
+    _source_bootstrap(
+        monkeypatch, tmp_path,
+        build=lambda dist: (_write_source_wheel(dist, members), _completed())[1],
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=rf"cli-extended source wheel {re.escape(_SOURCE_WHEEL)} has {count} METADATA files",
+    ):
+        release_candidate._build_cli_extended_source_wheel()
+
+
+def test_source_bootstrap_reports_a_wheel_that_is_not_a_zip_archive(monkeypatch, tmp_path):
+    def build(dist):
+        dist.mkdir(parents=True, exist_ok=True)
+        (dist / _SOURCE_WHEEL).write_bytes(b"this is not a zip archive")
+        return _completed()
+
+    _source_bootstrap(monkeypatch, tmp_path, build=build)
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="cannot verify cli-extended source wheel .*" + re.escape(_SOURCE_WHEEL),
+    ) as error:
+        release_candidate._build_cli_extended_source_wheel()
+    assert error.value.__cause__ is not None
+
+
+def test_source_bootstrap_refuses_a_wheel_for_a_different_distribution(monkeypatch, tmp_path):
+    _source_bootstrap(
+        monkeypatch, tmp_path,
+        build=lambda dist: (
+            _write_source_wheel(dist, {_SOURCE_METADATA: _good_metadata(Name="cli-extended-extras")}),
+            _completed(),
+        )[1],
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=rf"{re.escape(_SOURCE_WHEEL)} is not a cli-extended wheel",
+    ):
+        release_candidate._build_cli_extended_source_wheel()
+
+
+@pytest.mark.parametrize(
+    ("version", "reported"),
+    [("0.3.0", "'0.3.0'"), (None, r"'\(missing\)'")],
+    ids=["different-version", "no-version-field"],
+)
+def test_source_bootstrap_refuses_a_wheel_with_the_wrong_version(
+    monkeypatch, tmp_path, version, reported,
+):
+    _source_bootstrap(
+        monkeypatch, tmp_path,
+        build=lambda dist: (
+            _write_source_wheel(dist, {_SOURCE_METADATA: _good_metadata(Version=version)}),
+            _completed(),
+        )[1],
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=rf"cli-extended source wheel version is {reported}, expected '{re.escape(_SOURCE_VERSION)}'",
+    ):
+        release_candidate._build_cli_extended_source_wheel()
+
+
+def test_source_bootstrap_refuses_a_stale_unrelated_local_wheel(monkeypatch, tmp_path):
+    local_wheels = tmp_path / "tester-unified" / "local-wheel"
+    local_wheels.mkdir(parents=True)
+    stale = local_wheels / "cli_extended-0.2.0-py3-none-any.whl"
+    stale.write_bytes(b"stale bootstrap input")
+    _source_bootstrap(
+        monkeypatch, tmp_path,
+        build=lambda dist: (
+            _write_source_wheel(dist, {_SOURCE_METADATA: _good_metadata()}),
+            _completed(),
+        )[1],
+    )
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="contains another cli-extended wheel.*cli_extended-0.2.0-py3-none-any.whl",
+    ):
+        release_candidate._build_cli_extended_source_wheel()
+    assert stale.read_bytes() == b"stale bootstrap input"
+    assert not (local_wheels / _SOURCE_WHEEL).exists()
+
+
+def test_source_bootstrap_replaces_its_own_previous_local_wheel(monkeypatch, tmp_path):
+    """The same-named wheel from an earlier attempt is not 'unrelated'."""
+    local_wheels = tmp_path / "tester-unified" / "local-wheel"
+    local_wheels.mkdir(parents=True)
+    (local_wheels / _SOURCE_WHEEL).write_bytes(b"previous attempt")
+    built = {}
+
+    def build(dist):
+        built["path"] = _write_source_wheel(dist, {_SOURCE_METADATA: _good_metadata()})
+        return _completed()
+
+    _source_bootstrap(monkeypatch, tmp_path, build=build)
+    wheel, digest = release_candidate._build_cli_extended_source_wheel()
+    assert wheel == local_wheels / _SOURCE_WHEEL
+    assert wheel.read_bytes() == built["path"].read_bytes()
+    assert digest == hashlib.sha256(built["path"].read_bytes()).hexdigest()
+
+
+def test_release_image_bootstrap_passes_pinned_mode_through(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project")
+    monkeypatch.delenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", raising=False)
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", " pinned ")
+    mode = "pinned"
+    monkeypatch.setattr(
+        release_candidate, "_build_cli_extended_source_wheel",
+        lambda: pytest.fail("only source mode builds a wheel from the checkout"),
+    )
+
+    command = release_candidate._tester_image_build_command("tester-unified:mode")
+
+    assert command == [
+        str(tmp_path / "tester-unified" / "build-image.sh"),
+        "--wheel-dir", str(tmp_path / "run-gate-project" / "dist"),
+        "--tag", "tester-unified:mode",
+        "--cli-extended-resolve", mode,
+    ]
+
+
+PUBLISHED = "c" * 64
+OLD_PIN = "a" * 64
+
+
+def test_latest_mode_passes_the_published_digest_to_the_builder(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project")
+    monkeypatch.delenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", raising=False)
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", " latest ")
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", f" {PUBLISHED} ")
+
+    command = release_candidate._tester_image_build_command("tester-unified:mode")
+
+    assert command == [
+        str(tmp_path / "tester-unified" / "build-image.sh"),
+        "--wheel-dir", str(tmp_path / "run-gate-project" / "dist"),
+        "--tag", "tester-unified:mode",
+        "--cli-extended-resolve", "latest",
+        "--cli-extended-wheel-sha256", PUBLISHED,
+    ]
+    assert release_candidate._expected_cli_extended_sha256(command) == PUBLISHED
+
+
+@pytest.mark.parametrize("digest", [None, "", "abc", "C" * 64, "c" * 63])
+def test_latest_mode_refuses_to_build_without_a_valid_published_digest(monkeypatch, digest):
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "latest")
+    if digest is None:
+        monkeypatch.delenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", raising=False)
+    else:
+        monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", digest)
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError, match="requires RUN_GATE_TESTER_CLI_EXTENDED_SHA256",
+    ):
+        release_candidate._tester_image_build_command("tester-unified:bad")
+
+
+def test_expected_cli_extended_digest_follows_the_mode(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    dockerfile = tmp_path / "tester-unified" / "Dockerfile"
+    dockerfile.parent.mkdir()
+    dockerfile.write_text(
+        "ARG CLI_EXTENDED_RESOLVE=pinned\nARG CLI_EXTENDED_WHEEL_SHA256=" + OLD_PIN + "\n",
+        encoding="utf-8",
+    )
+    # pinned and the default install the Dockerfile's pinned wheel ...
+    assert release_candidate._expected_cli_extended_sha256(["b", "--tag", "t"]) == OLD_PIN
+    assert release_candidate._expected_cli_extended_sha256(
+        ["b", "--cli-extended-resolve", "pinned"],
+    ) == OLD_PIN
+    # ... source (local) and latest install exactly the digest they pass.
+    assert release_candidate._expected_cli_extended_sha256(
+        ["b", "--cli-extended-resolve", "local", "--cli-extended-wheel-sha256", PUBLISHED],
+    ) == PUBLISHED
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="no pinned cli-extended digest"):
+        release_candidate._expected_cli_extended_sha256(["b"])
+
+
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        ({}, "no valid org.vbpub.cli-extended.wheel-sha256 label"),
+        ({"org.vbpub.cli-extended.wheel-sha256": "nope"}, "no valid org.vbpub.cli-extended"),
+        ({"org.vbpub.cli-extended.wheel-sha256": PUBLISHED}, None),
+    ],
+)
+def test_image_cli_extended_label_must_be_a_digest(monkeypatch, labels, message):
+    monkeypatch.setattr(
+        release_candidate.subprocess, "run",
+        lambda *_args, **_kwargs: _completed(json.dumps(labels)),
+    )
+    if message is None:
+        assert release_candidate._image_cli_extended_sha256("tester-unified:x") == PUBLISHED
+        return
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+        release_candidate._image_cli_extended_sha256("tester-unified:x")
+
+
+def _prepare_with_label(monkeypatch, tmp_path, *, mode, label):
+    wheel = {"version": "24.0.0", "filename": "run_gate-24.0.0-py3-none-any.whl", "sha256": "a" * 64}
+    monkeypatch.setattr(
+        release_candidate, "prepared_release_version", lambda _path, **_kwargs: "24.0.0",
+    )
+    monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
+    monkeypatch.setattr(
+        release_candidate, "_git", lambda *args: "1700000000" if args[0] == "log" else "1" * 40,
+    )
+    monkeypatch.setattr(release_candidate, "_wheel_identity", lambda: wheel.copy())
+    monkeypatch.setattr(
+        release_candidate, "_image_identity",
+        lambda _tag: {"version": "24.0.0", "sha256": "a" * 64},
+    )
+    monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    monkeypatch.setattr(release_candidate, "_image_cli_extended_sha256", lambda _tag: label)
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", mode)
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", PUBLISHED)
+    results = iter((_completed(), _completed(), _completed("sha256:" + "b" * 64)))
+    monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
+    return release_candidate.prepare
+
+
+def test_prepare_accepts_a_latest_image_labelled_with_the_published_digest(monkeypatch, tmp_path):
+    prepare = _prepare_with_label(monkeypatch, tmp_path, mode="latest", label=PUBLISHED)
+
+    prepare()
+
+    assert (tmp_path / "receipt.json").is_file()
+
+
+def test_prepare_refuses_a_latest_image_that_kept_the_old_pinned_bytes(monkeypatch, tmp_path):
+    """The newly published wheel differs from the old pin: an image labelled with
+    the old digest must be refused before the gate may use it, and no receipt is
+    written."""
+    prepare = _prepare_with_label(monkeypatch, tmp_path, mode="latest", label=OLD_PIN)
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=f"installed cli-extended wheel sha256 {OLD_PIN}, expected {PUBLISHED}",
+    ):
+        prepare()
+
+    assert not (tmp_path / "receipt.json").exists()
 
 
 def test_prepared_release_version_uses_first_dated_stable_section(monkeypatch, tmp_path):
@@ -69,6 +560,19 @@ def test_prepared_release_version_refuses_a_heading_that_is_already_released(mon
     monkeypatch.setattr(release_candidate, "_git", lambda *args: "run-gate-v24.0.0" if args[0] == "tag" else "")
     with pytest.raises(release_candidate.ReleaseCandidateError, match="not newer than the latest release tag"):
         release_candidate.prepared_release_version(changes)
+
+
+def test_prepared_release_version_allows_an_explicit_first_release(monkeypatch, tmp_path):
+    changes = tmp_path / "CHANGES.md"
+    changes.write_text("## [24.0.0] - 2026-10-14\n\nFirst stable release.\n", encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "_git", lambda *args: "")
+
+    with pytest.raises(release_candidate.NoStableReleaseTag, match="no stable.*release tag"):
+        release_candidate.prepared_release_version(changes)
+
+    assert release_candidate.prepared_release_version(
+        changes, allow_first_release=True,
+    ) == "24.0.0"
 
 
 def test_prepared_release_version_refuses_unreleased_only_changelog(tmp_path):
@@ -512,7 +1016,10 @@ def test_prepare_records_the_exact_wheel_and_tester_image(monkeypatch, tmp_path,
         "sha256": "a" * 64,
     }
     image_id = "sha256:" + "b" * 64
-    monkeypatch.setattr(release_candidate, "prepared_release_version", lambda _path: "24.0.0")
+    monkeypatch.setattr(
+        release_candidate, "prepared_release_version",
+        lambda _path, **_kwargs: "24.0.0",
+    )
     monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
     monkeypatch.setattr(
         release_candidate,
@@ -526,6 +1033,10 @@ def test_prepare_records_the_exact_wheel_and_tester_image(monkeypatch, tmp_path,
         lambda _tag: {"version": "24.0.0", "sha256": "a" * 64},
     )
     monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    monkeypatch.setattr(
+        release_candidate, "_image_cli_extended_sha256",
+        lambda _tag: release_candidate._dockerfile_cli_extended_pin(),
+    )
     results = iter((_completed(), _completed(), _completed(image_id)))
     monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
 
@@ -577,7 +1088,10 @@ def test_prepare_refuses_mismatched_build_and_image(
         "filename": f"run_gate-{wheel_version}-py3-none-any.whl",
         "sha256": "a" * 64,
     }
-    monkeypatch.setattr(release_candidate, "prepared_release_version", lambda _path: "24.0.0")
+    monkeypatch.setattr(
+        release_candidate, "prepared_release_version",
+        lambda _path, **_kwargs: "24.0.0",
+    )
     monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
     monkeypatch.setattr(
         release_candidate,
@@ -587,6 +1101,10 @@ def test_prepare_refuses_mismatched_build_and_image(
     monkeypatch.setattr(release_candidate, "_wheel_identity", lambda: wheel)
     monkeypatch.setattr(release_candidate, "_image_identity", lambda _tag: image_identity)
     monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    monkeypatch.setattr(
+        release_candidate, "_image_cli_extended_sha256",
+        lambda _tag: release_candidate._dockerfile_cli_extended_pin(),
+    )
     results = iter((_completed(), _completed(), image_result))
     monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
 
@@ -867,6 +1385,42 @@ def test_run_selftest_reports_a_spawn_error(monkeypatch, tmp_path):
         release_candidate.run_selftest(receipt_path)
 
 
+@pytest.mark.parametrize("python_state", ["absent", "not-executable"])
+def test_run_selftest_refuses_a_candidate_environment_without_executable_python(
+    monkeypatch, tmp_path, python_state,
+):
+    project_root = tmp_path / "project"
+    receipt_path = project_root / ".assay" / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    wheel_path = project_root / "dist" / "run_gate-24.0.0-py3-none-any.whl"
+    wheel_path.parent.mkdir()
+    wheel_path.write_bytes(b"candidate wheel")
+    receipt = _receipt(sha256=hashlib.sha256(wheel_path.read_bytes()).hexdigest())
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(release_candidate, "PROJECT_ROOT", project_root)
+    monkeypatch.setattr(release_candidate, "_git", lambda *_args: receipt["candidate_commit"])
+    monkeypatch.setattr(release_candidate, "_verify_receipt_image", lambda _receipt: None)
+    candidate_bin = tmp_path / "candidate-venv" / "bin"
+    candidate_bin.mkdir(parents=True)
+    monkeypatch.setattr(
+        release_candidate, "_candidate_cli",
+        lambda _wheel, _temp_root: candidate_bin / "run-gate",
+    )
+    if python_state == "not-executable":
+        (candidate_bin / "python").write_text("not runnable", encoding="utf-8")
+        (candidate_bin / "python").chmod(0o644)
+    monkeypatch.setattr(
+        release_candidate.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("no selftest may start without Python"),
+    )
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=f"no executable Python at {re.escape(str(candidate_bin / 'python'))}",
+    ):
+        release_candidate.run_selftest(receipt_path)
+
+
 def test_candidate_wheel_path_is_bound_to_the_receipt(monkeypatch, tmp_path):
     project = tmp_path / "run-gate-project"
     wheel = project / "dist" / "run_gate-24.0.0-py3-none-any.whl"
@@ -1047,7 +1601,9 @@ def test_release_image_builder_checks_governed_parent_and_exact_labels(tmp_path)
     builder = (TOOLS.parents[1] / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
     dockerfile = (TOOLS.parents[1] / "tester-unified" / "Dockerfile").read_text(encoding="utf-8")
     assert 'CGROUP_PARENT_DEV_GATES or --cgroup-parent is required' in builder
-    assert 'cmru tester-gate --cwd run-gate-project --cgroup-parent "$cgroup_parent" /bin/true' in builder
+    assert 'tester_gate_args=(--cwd run-gate-project --cgroup-parent "$cgroup_parent")' in builder
+    assert 'tester_gate_args+=(--image "$base_image")' in builder
+    assert 'cmru tester-gate "${tester_gate_args[@]}" /bin/true' in builder
     assert 'docker buildx build --load --cgroup-parent "$cgroup_parent"' in builder
     assert 'org.vbpub.run-gate.wheel-sha256' in builder
     assert 'org.vbpub.run-gate.version' in dockerfile

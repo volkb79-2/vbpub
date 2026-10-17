@@ -352,8 +352,19 @@ def _git(repo: str, args: list[str]) -> str:
     return proc.stdout
 
 
-def _resolve_base(repo: str, base: str) -> str:
+_STABLE_RELEASE_TAG = re.compile(
+    r"run-gate-v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z"
+)
+
+
+def _resolve_base(
+    repo: str, base: str, *, allow_first_release: bool = False,
+) -> str | None:
     if base == "latest-release-tag":
+        all_tags = _git(
+            repo, ["tag", "--list", "run-gate-v*"],
+        ).splitlines()
+        stable_tags = [tag for tag in all_tags if _STABLE_RELEASE_TAG.fullmatch(tag)]
         tags = _git(
             repo,
             ["tag", "--merged", "HEAD", "--sort=-version:refname", "--list", "run-gate-v*"],
@@ -361,11 +372,18 @@ def _resolve_base(repo: str, base: str) -> str:
         tag = next(
             (
                 candidate for candidate in tags
-                if re.fullmatch(r"run-gate-v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", candidate)
+                if _STABLE_RELEASE_TAG.fullmatch(candidate)
             ),
             None,
         )
         if tag is None:
+            if not stable_tags and allow_first_release:
+                return None
+            if stable_tags:
+                raise CoverageGateError(
+                    "stable Run-Gate release tags exist but none are reachable from HEAD; "
+                    "cannot establish the release coverage baseline"
+                )
             raise CoverageGateError(
                 "no reachable stable run-gate-vX.Y.Z release tag; "
                 "cannot establish the release coverage baseline"
@@ -508,6 +526,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
                     help="path to `coverage json` output")
     p.add_argument("--base", default="main",
                     help="ref the change is measured against; use latest-release-tag to anchor a release gate to the newest reachable stable run-gate-vX.Y.Z tag (default: main)")
+    p.add_argument("--allow-first-release", action="store_true", default=False,
+                   help="when --base=latest-release-tag and no stable Run-Gate tag exists, report the diff check as SKIPPED (first release has no released source baseline)")
     p.add_argument("--source", default="run-gate-project/run_gate.py",
                    help="source path prefix (default: run-gate-project/run_gate.py)")
     p.add_argument("--fail-under", type=float, default=100.0,
@@ -523,9 +543,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_arg_parser().parse_args(argv)
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.allow_first_release and args.base != "latest-release-tag":
+        parser.error("--allow-first-release requires --base latest-release-tag")
     try:
-        base_rev = _resolve_base(args.repo, args.base)
+        base_rev = _resolve_base(
+            args.repo, args.base, allow_first_release=args.allow_first_release,
+        )
+        if base_rev is None:
+            print(
+                "diff-coverage SKIPPED: no stable Run-Gate release tag exists; "
+                "the first release has no released source baseline"
+            )
+            return 0
         head_rev = _git(args.repo, ["rev-parse", "HEAD"]).strip()
         added = _git_added_lines(args.repo, base_rev)
         coverage_files = _load_coverage(args.coverage_json)

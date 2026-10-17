@@ -9,6 +9,35 @@ version and SHA-256 are checked during the build, and CIU's source-match
 preflight verifies that the installed wheel modules match the selected
 checkout.
 
+The default base is the published MDT devcontainer image. When no vbpub image
+has been released yet, `--base-image` selects the upstream Python devcontainer
+so the gate image has no first-party image dependency:
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
+  CMRU_BOOTSTRAP_CLI_EXTENDED=source cmru/build-initial-standalone.sh
+cp libraries/cli-extended/dist/cli_extended-*.whl tester-unified/local-wheel/
+CLI_EXTENDED_SHA256='<source-wheel sha256 printed by the bootstrap command>'
+tester-unified/build-image.sh \
+  --base-image mcr.microsoft.com/devcontainers/python:3.14-trixie \
+  --cli-extended-resolve local \
+  --cli-extended-wheel-sha256 "$CLI_EXTENDED_SHA256" \
+  --wheel-dir run-gate-project/dist \
+  --tag tester-unified:bootstrap
+```
+
+The Dockerfile installs and checks its required host-facing tools on either
+base, installing only what the base lacks: the MDT base already carries Docker's
+`docker-ce-cli` and `docker-compose-plugin` and keeps them, while the upstream
+Python base gets Debian's `docker-cli` and `docker-compose`. CMRU, Assay, project sources, and the exact Run-Gate wheel still come
+from the selected vbpub checkout. Set the lane image to its immutable ID before
+running release gates:
+
+```bash
+RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:bootstrap)"
+export RUN_GATE_TESTER_UNIFIED_IMAGE
+```
+
 For a release candidate, set the exact planned SemVer before building the
 Run-Gate wheel. This 23.x-to-24.0.0 transition uses:
 
@@ -26,8 +55,17 @@ cmru handler wheel-build --cwd run-gate-project
 After either build, build and load the image from that exact wheel. The builder
 requires the configured `$CGROUP_PARENT_DEV_GATES` (or an explicit
 `--cgroup-parent`), checks the host slice through CMRU's `tester-gate` probe,
-and passes the same parent to Buildx. It verifies the loaded image labels still
-name the exact wheel version and SHA-256:
+and passes the same parent to Buildx. When `--base-image` is supplied, the
+unprivileged preflight container uses that image. This lets the first tester
+image be built before `tester-unified:local` exists. The separate host-systemd
+probe remains digest-pinned and pull-disabled. The builder verifies the loaded
+image labels still name the exact wheel version and SHA-256:
+
+When called inside a CMRU release step, CMRU injects the tester resource
+settings. For a direct shell invocation, export the required
+`CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`, `CMRU_TESTER_CPUS`,
+`CMRU_TESTER_PIDS_LIMIT`, and `CMRU_TESTER_CGROUP_PROBE_IMAGE` values from
+`cmru.orchestration.toml`; the probe image must already be present locally.
 
 ```bash
 tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local
@@ -64,23 +102,30 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   unclaimed or look-alike name would be installed into an image that is handed
   the host Docker socket. The one exception is `cli-extended` (cmru declares
   `cli-extended>=0.3.0`): the generator SKIPS that line, so no cli-extended
-  requirement ever reaches pip, and the image installs the RELEASED wheel
-  instead: `fetch-cli-extended.py` downloads the asset PINNED in the Dockerfile
+  requirement ever reaches pip, and the image installs the RELEASED wheel by
+  default: `fetch-cli-extended.py` downloads the asset PINNED in the Dockerfile
   (`CLI_EXTENDED_WHEEL_URL` + `CLI_EXTENDED_WHEEL_SHA256` defaults, currently the
   released 0.3.0 wheel; to bump, copy `url`/`sha256` from
   `cli-extended-latest/latest.json` into those defaults and rebuild).
-  `--build-arg CLI_EXTENDED_RESOLVE=latest` is the explicit opt-in that reads the
-  pointer instead (add `--no-cache`).
-  `--build-arg CLI_EXTENDED_RESOLVE=local` is the ZERO-RELEASE path (three modes
+  `--cli-extended-resolve latest` is the explicit opt-in that reads the
+  pointer instead (also pass `--no-cache`); it additionally REQUIRES
+  `--cli-extended-wheel-sha256 <the published wheel's digest>`, and the build refuses a
+  pointer or download that names any other bytes, so no mode installs unverified bytes.
+  Every image carries `org.vbpub.cli-extended.wheel-sha256`, the digest of the wheel it
+  installed (the Dockerfile pin, the `local` digest, or the `latest` digest), verified
+  against the installed file during the build and re-read by `build-image.sh` afterwards.
+  `--cli-extended-resolve local` on `build-image.sh` is the ZERO-RELEASE path (three modes
   in all: `pinned` default, `latest`, `local`; see `docs/BOOTSTRAP-FROM-ZERO.md`):
   with no release to fetch, build the wheel with cmru's own wheel builder
   (`CMRU_BOOTSTRAP_CLI_EXTENDED=source cmru/build-initial-standalone.sh` logs its
   sha256 and leaves it in `libraries/cli-extended/dist/`), copy exactly that one
   `cli_extended-*.whl` into `tester-unified/local-wheel/` (git-ignored) and pass
-  `--build-arg CLI_EXTENDED_WHEEL_SHA256=<that sha256>` (the existing arg). The
+  `--cli-extended-wheel-sha256 <that sha256>`. The supported builder forwards
+  the explicit mode and digest to BuildKit. The
   digest is checked with `sha256sum`, the wheel is installed `--no-index
-  --no-deps` before cmru, and the build asserts it carries a `+local` version
-  (pinned/latest assert the opposite). It is never a fallback: a missing release
+  --no-deps` before cmru, and the build asserts it carries a PEP 440 local
+  version segment such as `+bootstrap.source` (pinned/latest assert the opposite).
+  It is never a fallback: a missing release
   in `pinned` mode simply fails. Redirects must stay https on a GitHub
   host. Either way it requires and verifies the sha256, and the wheel is installed
   `--no-index --no-deps` BEFORE cmru. cmru is built offline from the COPYed
@@ -89,9 +134,10 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   `+tester.unified` local version. Run-Gate is separately installed from the
   exact wheel supplied by `build-image.sh`. The build asserts that
   `cli_extended` and `worktree` import from `/opt/tester-venv`, that cmru is the
-  local build and that cli-extended is the release. Gate lanes put only
+  local build and that cli-extended matches the selected resolve mode. Gate lanes put only
   `src:../libraries/worktree/src` on `PYTHONPATH`; cli_extended always comes from
-  the installed release. The repo-root `.dockerignore` whitelists exactly the
+  the installed, digest-verified wheel (released or explicit local bootstrap).
+  The repo-root `.dockerignore` whitelists exactly the
   inputs used by the image build. CMRU is built as an internal wheel from the
   copied repository source and installed into `/opt/tester-venv`. See the
   [design rationale](docs/DESIGN-GUIDE.md#the-installed-run-gate-cli) and

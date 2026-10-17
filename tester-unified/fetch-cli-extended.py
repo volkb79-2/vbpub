@@ -134,9 +134,19 @@ def resolve(
 def fetch_wheel(
     pointer_url: str, wheel_url: str | None, sha256: str | None, dest: Path,
     min_version: str, fetch: Callable[[str], bytes] | None = None,
+    expect_sha256: str | None = None,
 ) -> Path:
     fetch = fetch or _urlopen_bytes
     url, expected = resolve(pointer_url, wheel_url, sha256, fetch)
+    if expect_sha256 is not None:
+        # The caller already knows the published digest (the release identity
+        # check). A pointer or pin naming any other bytes is refused BEFORE the
+        # download, and the downloaded bytes must then hash to that digest.
+        wanted = _digest(expect_sha256, "--expect-sha256")
+        if expected != wanted:
+            raise FetchError(
+                f"the resolved wheel names sha256 {expected}, not the expected {wanted}"
+            )
     name = url.rsplit("/", 1)[-1]
     match = _WHEEL.fullmatch(name)
     if match is None:
@@ -164,10 +174,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pointer-url", default=POINTER_URL)
     parser.add_argument("--wheel-url", default=None)
     parser.add_argument("--sha256", default=None)
+    parser.add_argument("--expect-sha256", default=None,
+                        help="refuse unless the resolved wheel has exactly this digest")
     args = parser.parse_args(argv)
     wheel = fetch_wheel(
         args.pointer_url, args.wheel_url or None, args.sha256 or None,
-        args.dest, args.min_version,
+        args.dest, args.min_version, expect_sha256=args.expect_sha256 or None,
     )
     sys.stdout.write(f"{wheel}\n")
     return 0

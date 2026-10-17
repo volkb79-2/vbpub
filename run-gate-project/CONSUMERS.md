@@ -29,6 +29,13 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    `run-gate.root.toml` already defines them (see below). Central config
    lookup stops at the project's Git toplevel, so a nested standalone
    repository needs its own `run-gate.root.toml` to share environment facts.
+   `bare-host` and `host` are ordinary environment names that exist only when
+   declared; to preserve the old bare-host behavior, declare
+   `[environments.bare-host] mode = "host"` (and a container `host` as
+   `[environments.host]` with `mode = "ephemeral"` and an `image`). A lane
+   naming either undeclared is refused with exactly that declaration and the
+   `run-gate migrate-modes <file>` command that adds it; for a lane inherited
+   from `run-gate.root.toml` the refusal names the root file.
 3. **Point consumers at lanes** — e.g. nyxloom's `[gates.<name>]`:
    `argv = ["bash", "-c", "cd {worktree}/<proj> && run-gate --worktree {worktree} <lane>"]`.
    `{worktree}` is substituted textually into a shell string, so judged
@@ -306,15 +313,29 @@ that launches it. Such a wrapper must preserve the inherited
 does not grant placement or daemon-control authority.
 
 For a command-wrapped qualification such as Assay's B105 self-qualification,
-the declaration is:
+the declaration is complete as shown — the observer opt-in requires the
+ephemeral environment and both ceilings (`memory = "2g"` and `pids = 8192`, the
+caps B105's own container wrapper applies), and the config is refused at load
+without them:
 
+<!-- run-gate-config -->
 ```toml
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+
 [lanes.self-qualification]
 kind = "command"
 environment = "tester-unified"
 argv = ["bash", "{worktree}/assay/tools/self-qualification-gate.sh", "{worktree}", "self-qualification"]
 resource_observer = "cgprofile"
 clean_tree = true
+
+[lanes.self-qualification.resources]
+memory = "2g"
+pids = 8192
 ```
 
 Before starting the lane, Run-Gate queries cgprofile's control `version`
@@ -378,6 +399,24 @@ status, and must match the outcome's closed Assay code table. If the artifact
 is missing that field or either comparison disagrees, the gate returns
 infrastructure ERROR while retaining the runner's raw status and Assay
 outcome. This prevents a PASS artifact from overriding a failing process.
+
+### Exec mode Git safety
+
+For `mode = "exec"`, use the existing single-user test-runner declared by
+your project. Run-Gate injects `safe.directory=*` into each lane process
+through Git's `GIT_CONFIG_COUNT` environment variables, appended after any
+`GIT_CONFIG_*` entries your runner already sets (they keep working). No global
+Git config or lock file needs to be created, and no lane mutex is added.
+Concurrent lanes do not contend on Run-Gate's safe-directory setup. Keep one
+user per test container. The image needs **Git 2.38 or newer** — older Git
+ignores `safe.directory` from the environment; the lane then refuses at
+start-up with exit 2 and names the floor instead of dying later as "dubious
+ownership". A `GIT_CONFIG_COUNT` in the runner that is not a plain integer is
+refused the same way. Live concurrent exec-mode acceptance remains the last
+open RG-99 item. Do not add a `git config --global safe.directory` preamble to
+the lane command. This covers Run-Gate's own Git safety setting; a lane that
+intentionally changes global Git settings owns that behavior separately. See the
+[design rationale](docs/DESIGN-GUIDE.md#concurrent-exec-lanes-use-read-only-git-safety).
 
 ### Init reaping and resource events
 
@@ -696,8 +735,9 @@ durable mount is at another in-container path declares that exact path as
 `state_root` in its `[environments.<name>]` table. The runner owner must mount
 the corresponding durable host directory read-write before the gate runs;
 run-gate never creates a root-owned directory in an exec runner's disposable
-container layer. For example, if the runner mounts the checkout's `.run-gate`
-at `/workspace/project/.run-gate`, declare:
+container layer. For example, if the runner mounts a durable host directory
+at `/workspace/.run-gate` and the judged checkout at `/workspace/project`,
+declare:
 
 <!-- run-gate-config -->
 ```toml
@@ -707,7 +747,7 @@ schema_version = 1
 mode = "exec"
 image = "yourproj/test-runner:local"
 container_name = "yourproj-test-runner"
-state_root = "/workspace/project/.run-gate"
+state_root = "/workspace/.run-gate"
 ```
 
 For a host environment, run-gate uses the default checkout path directly;
@@ -728,16 +768,46 @@ command checks once per assay environment, and `--dry-run` prints the planned
 probe. For an ephemeral or bare-host lane, a fresh default root is reported
 as unverified by `doctor` until the live lane creates and probes it; an exec
 runner is probed directly. `--dry-run` shows the mount that the live
-lane will add without creating the directory. Run-Gate derives the Assay
-test command's `TMPDIR` and `GIT_CEILING_DIRECTORIES` from this selected
-state path. For the shipped R1 and R2 lane declarations, both names are
-explicitly passed through to pytest. `state_root` is a container path, so
+lane will add without creating the directory. Run-Gate derives
+`GIT_CEILING_DIRECTORIES` and a test-command temporary path from this
+selected state path (`RUN_GATE_TMPDIR`, and `TMPDIR` too when the root is
+outside the judged worktree; see the next paragraph). `state_root` is a container path, so
 run-gate does not stat it in the host namespace. Pin versions below **5.2.0**
 are refused before the lane starts because that is the first Assay release
 with `--state-dir` (the other two flags require only 2.4.1). The run header
 names the resolved state directory. See the
 [mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
 for why Run-Gate does not create a configured root inside an exec runner.
+
+**The default in-repo root works for snapshot-isolated lanes (RG-98).** Assay
+chooses its own snapshot scratch from `TMPDIR`, and that scratch must be outside
+the judged repository, so Run-Gate never exports an in-worktree state root as
+the judge's `TMPDIR`. Any R0–R3 lane therefore runs with the default
+`<checkout>/.run-gate`; no external `state_root` is required. What changes is
+how the test command learns the verified path:
+
+| state root | judge environment | test command gets `TMPDIR` via |
+|---|---|---|
+| outside the judged worktree (explicit `state_root`, or a linked worktree) | `TMPDIR`, `RUN_GATE_TMPDIR`, `GIT_CEILING_DIRECTORIES` | `env_passthrough = ["TMPDIR"]`, as before |
+| inside the judged worktree (default root, primary checkout) | `RUN_GATE_TMPDIR`, `GIT_CEILING_DIRECTORIES` — the operator's own `TMPDIR` is untouched | the mapping below |
+
+For the in-worktree case, map Run-Gate's path onto the test command's `TMPDIR`
+with an Assay infrastructure fact, in the consumer's `assay.toml` (drop `TMPDIR`
+from that lane's `env_passthrough`; Assay refuses a passthrough name that
+collides with an infrastructure fact):
+
+```toml
+# assay.toml — the lane's test command still sees TMPDIR inside the checkout
+[lanes.r1]
+env_passthrough = ["PATH", "GIT_CEILING_DIRECTORIES"]
+
+[lanes.r1.infrastructure]
+TMPDIR = "required-env:RUN_GATE_TMPDIR"
+```
+
+`required-env:` refuses when the variable is empty, so a lane written this way
+runs through `run-gate`, not a bare `assay run`. A lane that needs neither
+(pytest's own temp directory is fine) needs no change.
 
 The progress JSONL is append-only: Assay writes a `run` header for each
 invocation. Run-Gate attributes candidate status and silence only to records
@@ -768,7 +838,7 @@ schema_version = 1
 mode = "exec"
 image = "yourproj/test-runner:local"
 container_name = "yourproj-test-runner"
-state_root = "/workspace/project/.run-gate"
+state_root = "/workspace/.run-gate"
 
 [assay]
 command = ["/opt/tester-venv/bin/python", "tools/assay/assay-7.2.0.pyz"]
@@ -779,9 +849,25 @@ version = "7.2.0"
 sha256 = "tools/assay/assay-7.2.0.pyz.sha256"
 ```
 
-The verifier asks `assay lanes --json` inside `test-runner`, refuses a failed
-or malformed inventory, and verifies the same pin for every imported lane.
-Inspect the effective names with `run-gate --list`.
+The verifier asks `assay lanes --json` inside `test-runner` only when the
+answer needs it: an imported lane is selected, a local sequence uses one, or
+the verb reports on every lane. It refuses a failed or malformed inventory and
+verifies the same pin for every imported lane.
+
+| you run | asks the judge? | when the runner is stopped |
+|---|---|---|
+| `run-gate --list`, `--help`, `run-gate` (no lane) | never | works; the import is shown as *not queried* on stderr |
+| a local lane, `admission`, `status`, `validate-pointers` | never | works |
+| `run-gate history LANE` / `footprint LANE` for a lane declared in `run-gate.toml` | never | works |
+| `run-gate doctor`, `--check-env`, `history`, `footprint` (all lanes), `footprint --write` | yes | refused (exit 2) with the runner remedy: no clean report, no partial answer, no manifest written |
+| an imported lane, or a sequence that reaches one | yes | refused (exit 2) with the runner remedy |
+
+`run-gate --list` keeps its three-column output; it lists explicitly named
+imports as unresolved and does not invent names for `lanes = "all"`, so run
+`run-gate doctor` or `run-gate history --json` (with the judge up) to see the
+full lane set. This lets a host-only lane and project discovery work without
+starting a persistent judge, while no verb whose answer covers every lane can
+silently answer from the declared lanes alone.
 
 ### Selective lane requests
 
@@ -1214,6 +1300,21 @@ The consumer points to `run-gate release`. A direct invocation may pass
 `--base <commit>` when it has an explicit base. The sequence summary contains
 its ordered member results; `history release` and each member's history keep
 their own scope.
+
+A sequence has no `environment` of its own — it is forbidden on the sequence
+lane — so `run-gate doctor` reports each member instead, transitively through
+nested sequences:
+
+```console
+$ run-gate doctor
+run-gate: doctor: [OK] sequence 'release' member 'schema': environment 'host': mode host (declared [environments.host] in run-gate.toml)
+run-gate: doctor: [OK] sequence 'release' member 'unit': environment 'host': mode host (declared [environments.host] in run-gate.toml)
+```
+
+A member that is not a declared lane, a sequence cycle, an empty member list,
+a member without an environment, or a member whose environment cannot resolve
+is a named `[FAIL]` line, never a crash. `--check-env` likewise skips the
+sequence itself and covers its members as lanes.
 
 ### Legacy shell conjunctions
 
@@ -1884,12 +1985,21 @@ the merge-base collapse to the candidate itself and hide its source changes.
 The lane invokes its coverage helper this way:
 
 ```console
-python tools/coverage_gate.py --repo . --base latest-release-tag \\
-  --coverage-json coverage.json --source run_gate.py
+python tools/coverage_gate.py --repo . --base latest-release-tag \
+  --allow-first-release --coverage-json coverage.json --source run_gate.py
 ```
 
-The helper refuses if Git history has no reachable stable Run-Gate release
-tag, because it cannot derive a trustworthy release baseline in that state.
+On the first stable release, when no stable Run-Gate tag exists, the explicit
+`--allow-first-release` option reports this diff check as `SKIPPED`: there is
+no released source baseline to compare. The test suite still runs, and the
+separate `assay-r1` lane must supply whole-source line-and-branch
+qualification before merge. If stable tags exist but none are reachable from
+the candidate, the helper still errors rather than treating that as a first
+release. Later releases always compare against the newest reachable stable
+tag and enforce the same 100% changed-line floor.
+For the first stable release, run `run-gate assay-r1` from the project root
+against the reviewed source; this whole-source line-and-branch lane supplies
+the qualification that has no prior release diff baseline.
 See the [design rationale](docs/DESIGN-GUIDE.md#release-coverage-uses-a-fixed-tag-baseline-and-follows-content-across-renames)
 and [release-gate overview](README.md#version-probe).
 
@@ -1906,6 +2016,30 @@ receipt. Keep the package, wheel, and image steps inside this release workflow
 so the gate and published asset refer to the same candidate commit and bytes.
 See the [design rationale](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel)
 and [tester image build procedure](../tester-unified/README.md).
+
+For a first-party zero-release bootstrap, the release transaction can build
+its tester inputs from the selected repository source and an upstream Python
+base. Set both choices explicitly:
+
+```bash
+RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie \
+RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE=source \
+  cmru release run-gate-project --set-version 24.0.0
+```
+
+The source mode builds the CMRU runtime's `cli-extended` wheel from the same
+transaction checkout and verifies its digest before installing it in the
+tester image. With either variable unset, the normal configured base and
+dependency mode apply; a missing first-party artifact does not trigger a
+fallback.
+
+After `cli-extended` has been released, use `RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE=pinned`
+(the Dockerfile pin names the released asset) or `latest`. `latest` follows a mutable pointer, so
+it also requires `RUN_GATE_TESTER_CLI_EXTENDED_SHA256` to be the published wheel's SHA-256
+(for example `CLI_EXTENDED_RELEASED_SHA256` from CMRU's release-identity check); the tooling
+refuses to build without it, passes it to `tester-unified/build-image.sh`, and, before the gate
+may use the image, requires its `org.vbpub.cli-extended.wheel-sha256` label to equal the
+expected digest (the supplied digest for `source`/`latest`, the Dockerfile pin otherwise).
 
 
 ## Anti-goals (read before extending)
