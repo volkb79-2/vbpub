@@ -4,6 +4,36 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [1.64.0-r1] - 2026-10-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=0f9b1cc6a3fb7d74018d3f5f7cf8c5fddaf5c69d -->
+
+### Added
+- feat(pwmcp): add opt-in inspect TLS bypass (849129bfc)
+
+### Fixed
+- fix(pwmcp): use cached pinned images during deployment (df42e0602)
+- fix(pwmcp): preserve instance override across installer updates (29280b8a2)
+- fix(pwmcp): make standalone instance start with ciu up (9833e8386)
+- fix(pwmcp): include all offline installer wheels (504c0e7ef)
+
+### Changed
+- pwmcp: guide agents through late page hydration (6b5b57382)
+- pwmcp: update CLI review browser mock (20246a50c)
+- pwmcp: wait for repeated visible content selectors (0c879d420)
+- PWMCP select Playwright 1.64.0 with two-day age window (fb34492cc)
+- chore(pwmcp): select release version r4 (8e88d50bf)
+- pwmcp: clear idle timer during gateway shutdown (f335b26b1)
+- pwmcp: allow remote CLI through run-server gateway (94fbb9e13)
+
+### Documentation
+- docs(pwmcp): document MDT CLI launcher path (ceb57e542)
+- docs(pwmcp): record inspect TLS acceptance (81c5fcd36)
+- docs(pwmcp): record local inspection acceptance (b4610ee4e)
+
+### Testing
+- test(pwmcp): parse annotated wheel projection (93d3c016a)
+
 ## [1.63.0-r3] - 2026-10-16
 <!-- cmru: generated -->
 <!-- cmru: source-end=8d372647e02c88e0213c55daa191a7a9896e2f86 -->
