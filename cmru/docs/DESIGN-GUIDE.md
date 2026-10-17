@@ -432,6 +432,27 @@ when the tag is absent from origin, disagrees with it, or origin cannot be queri
 inaccessible origin is never read as "nothing released". The isolated `cmru release` flow
 names its commit explicitly and is unchanged.
 
+### Retrying a tagged OCI release body runs only the metadata handler
+
+An OCI release can push its image successfully and then fail while creating or updating the
+GitHub Release body. Replaying the full `push` step would rebuild and push the image again,
+which could replace the public version tag if its build inputs changed. `cmru publish
+--from-checkout --release-tag TAG` is the narrow retry: it requires one tagged project with a
+configured `oci-image-release` command, a clean checkout whose `HEAD` matches the explicit
+local tag, and—on a real run—the same peeled commit at origin. It passes that tag and commit
+as protected identity and executes only the validated final body handler, in the push step's
+declared environment (`env`, `env_command`, `required_env`) so it targets what the original
+release would have; the step's registry login and `clean_dirs` belong to the image push and are
+not repeated. An origin that cannot be reached or returns a malformed ref advertisement is a
+failure, never read as "tag absent". The handler again
+checks GitHub's tag and release target immediately before writing and reads the result back.
+`--dry-run` checks local identity and displays that single command without querying origin.
+
+The explicit tag prevents a fallback to whichever tag happens to be at `HEAD`; the clean
+checkout binds the configured command to the inspected source. The retry never builds or
+pushes an image, so it cannot silently replace the image whose version was already published.
+See the [pasteable consumer example](CONSUMERS.md#retry-a-tagged-oci-release-body).
+
 ## Git family is separate from CMRU root
 
 An orchestration root is policy scope, not a Git checkout. A registered project
@@ -1281,13 +1302,14 @@ refs and local transaction metadata while preserving the public release tags and
 hosting service has already deleted the PR head after merge, retirement can still remove the local
 transaction after CMRU proves the exact final candidate commit is in fetched `origin/main` and
 rechecks the release tags. An absent branch by itself is not proof of a merge. Because
-`--secret-file` is release-only, run retirement from a checkout with origin credentials, usually
-the main checkout.
+`abandon` has no `--secret-file` (only `release` and `publish` accept it), run retirement from a
+checkout with origin credentials, usually the main checkout.
 
 Credential lookup follows the same separation. A linked worktree may not contain the ignored
 root `cmru.secret.toml` stored in the main checkout. CMRU can report a safely inferred path and
 an explicit way to select it, but must not silently consume another checkout's secret. The
-release-only `--secret-file PATH` option authorizes the parent process to read that root secret;
+`--secret-file PATH` option of `release` (and of `publish`, for a tagged OCI release-body retry)
+authorizes the parent process to read that root secret;
 environment-token precedence and project secret overlays still apply. The existing private
 handoff keeps the resolved credential out of the isolated transaction worktree, child argv,
 environment, and logs. This behavior is implemented in the current candidate; stable

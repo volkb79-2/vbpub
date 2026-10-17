@@ -474,7 +474,10 @@ non-empty `FragmentPath`, probed on the Docker host through the same pinned prob
 `tester-gate`, placed in `CMRU_TESTER_CGROUP_PARENT`) before it starts any build container; a
 typo'd slice, an absent probe input, or an unavailable probe refuses with exit 3 and starts
 nothing. `publish --from-checkout` refuses a release-prose source unless the local
-`<prefix>-v<version>` tag points at the same commit as origin's tag of that name.
+`<prefix>-v<version>` tag points at the same commit as origin's tag of that name. To retry
+an OCI release body after the image is already published, pass `--release-tag TAG`; this
+runs only the configured metadata handler. See the [retry contract](docs/DESIGN-GUIDE.md#retrying-a-tagged-oci-release-body-runs-only-the-metadata-handler)
+and its [consumer example](docs/CONSUMERS.md#retry-a-tagged-oci-release-body).
 Before it probes the build slice, `wheel-build` verifies the probe's own placement
 (`CMRU_TESTER_CGROUP_PARENT`) with `tester-gate`'s self-check, so a typo'd gates tier is
 reported (naming that variable) rather than silently hosting every probe. These are release inputs, not CMRU defaults; pin immutable

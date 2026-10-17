@@ -2721,6 +2721,164 @@ def _release_tag_matches_origin(
     return remote_commit == local_commit
 
 
+def _prepare_oci_release_body_retry(
+    repo_root: Path,
+    project: "ProjectConfig",
+    tag: str,
+    *,
+    git_auth: GitHubGitAuth | None,
+    verify_origin: bool,
+) -> tuple["ProjectConfig", str, str, str]:
+    """Validate a post-tag OCI release-body retry and return its handler-only project.
+
+    The retry is deliberately narrower than replaying ``push``: it runs only the
+    configured final ``oci-image-release`` command, never an image build or push.
+    Its local source must be a clean checkout at the explicit tag's peeled commit;
+    a real run also requires origin's peeled tag to name that same commit.
+    """
+    from cmru.release import build_oci_image_release_body, is_release_version
+    from cmru.version import _parse_semver
+
+    prefix = _project_release_prefix(project)
+    marker = f"{prefix}-v"
+    version = tag[len(marker):] if tag.startswith(marker) else ""
+    if not version:
+        raise RefusedBeforeChange(
+            f"{project.name}: --release-tag {tag!r} must be a "
+            f"{marker}<version> tag for this project"
+        )
+    try:
+        _parse_semver(version)
+    except ValueError as exc:
+        raise RefusedBeforeChange(
+            f"{project.name}: --release-tag {tag!r} is not a valid CMRU version: {exc}"
+        ) from exc
+    if not is_release_version(version):
+        raise RefusedBeforeChange(
+            f"{project.name}: --release-tag {tag!r} is not a released version"
+        )
+    image = _validated_oci_release_image(project, repo_root)
+    if image is None:
+        raise RefusedBeforeChange(
+            f"{project.name}: --release-tag requires a configured "
+            "`oci-image-release` command as the final command of its push step"
+        )
+    try:
+        build_oci_image_release_body(image, version)
+    except ValueError as exc:
+        raise RefusedBeforeChange(
+            f"{project.name}: --release-tag {tag!r} is not a valid OCI release version: {exc}"
+        ) from exc
+
+    ref = f"refs/tags/{tag}"
+    check_ref = run_local_git(
+        repo_root, "check-ref-format", ref,
+        capture_output=True, text=True, check=False,
+    )
+    if check_ref.returncode != 0:
+        raise RefusedBeforeChange(f"{project.name}: --release-tag {tag!r} is not a valid Git tag")
+    status = run_local_git(
+        repo_root, "status", "--porcelain=v1", "--untracked-files=all",
+        "--ignore-submodules=none",
+        capture_output=True, text=True, check=False,
+    )
+    if status.returncode != 0:
+        detail = status.stderr.strip() or status.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(f"cannot inspect checkout for {project.name} release-body retry: {detail}")
+    if status.stdout.strip():
+        raise RefusedBeforeChange(
+            f"{project.name}: release-body retry requires a clean checkout; "
+            "commit or restore its tracked and untracked changes"
+        )
+
+    tag_commit_result = run_local_git(
+        repo_root, "rev-parse", "--verify", f"{ref}^{{commit}}",
+        capture_output=True, text=True, check=False,
+    )
+    if tag_commit_result.returncode != 0:
+        raise RefusedBeforeChange(
+            f"{project.name}: local release tag {tag!r} is absent or does not resolve to a commit"
+        )
+    tag_commit = tag_commit_result.stdout.strip()
+    if not transaction.COMMIT_ID_RE.fullmatch(tag_commit):
+        raise RuntimeError(f"Git returned an invalid commit id for release tag {tag!r}")
+    head = _git(repo_root, "rev-parse", "HEAD")
+    if head != tag_commit:
+        raise RefusedBeforeChange(
+            f"{project.name}: HEAD {head[:12]} does not match local tag {tag} "
+            f"at {tag_commit[:12]}"
+        )
+
+    if verify_origin:
+        remote_commit = _release_tag_origin_commit(repo_root, tag, git_auth=git_auth)
+        if remote_commit is None or remote_commit != tag_commit:
+            observed = "absent" if remote_commit is None else remote_commit[:12]
+            raise RefusedBeforeChange(
+                f"{project.name}: origin tag {tag!r} is {observed}; expected "
+                f"the local tagged commit {tag_commit[:12]}"
+            )
+        if _git(repo_root, "rev-parse", "HEAD") != head:
+            raise RefusedBeforeChange(
+                f"{project.name}: HEAD changed during origin tag verification; rerun the retry"
+            )
+        final_status = run_local_git(
+            repo_root, "status", "--porcelain=v1", "--untracked-files=all",
+            "--ignore-submodules=none",
+            capture_output=True, text=True, check=False,
+        )
+        if final_status.returncode != 0:
+            detail = final_status.stderr.strip() or final_status.stdout.strip() or "no diagnostic output"
+            raise RuntimeError(f"cannot recheck checkout for {project.name} release-body retry: {detail}")
+        if final_status.stdout.strip():
+            raise RefusedBeforeChange(
+                f"{project.name}: checkout became dirty during origin tag verification; rerun the retry"
+            )
+
+    # Run the exact command ``_validated_oci_release_image`` validated, in the
+    # push step's declared environment (step env, env_command, required_env), so
+    # the body targets what the original release would have. Registry login and
+    # clean_dirs belong to the image push and are not repeated.
+    declared_step = (getattr(project, "runner_steps", None) or {}).get("push")
+    declared_commands = list(getattr(declared_step, "commands", None) or ())
+    if not declared_commands:
+        raise StepUnavailable(f"{project.name}: declared push command is absent")
+    body_step = replace(
+        declared_step,
+        commands=[declared_commands[-1]],
+        bake_set_prefix=None, bake_set_vars=[], no_cache_env=None,
+        clean_dirs=[], login=None, registries=[],
+    )
+    retry_project = replace(
+        project,
+        runner_steps={**(project.runner_steps or {}), "push": body_step},
+    )
+    return retry_project, tag_commit, image, version
+
+
+def _run_oci_release_body_retry(
+    repo_root: Path,
+    project: "ProjectConfig",
+    tag: str,
+    *,
+    git_auth: GitHubGitAuth | None,
+    github_config: "GitHubConfig",
+    env_config: "ReleaseEnvConfig",
+) -> tuple[str, str]:
+    """Run the configured OCI release-body command with its protected tag identity."""
+    retry_project, tag_commit, image, version = _prepare_oci_release_body_retry(
+        repo_root, project, tag, git_auth=git_auth, verify_origin=True,
+    )
+    apply_project_release_env(github_config, env_config, retry_project)
+    run_project_step(
+        retry_project, "push", repo_root, repo_root / "logs",
+        protected_env={
+            "CMRU_RELEASE_TAG": tag,
+            "CMRU_RELEASE_COMMIT": tag_commit,
+        },
+    )
+    return image, version
+
+
 def _tag_on_head(repo_root: Path, prefix: str) -> Optional[str]:
     """Return the project's ``<prefix>*`` tag pointing at HEAD (highest semver), else None."""
     out = _git(repo_root, "tag", "--points-at", "HEAD", "--list", f"{prefix}*")
@@ -5154,13 +5312,24 @@ def _dispatch(args, runtime):
         vargs = args
         _apply_output_options(vargs)
         cfg_path = _resolve_config(vargs.config)
-        (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
+        selected_secret_file = (
+            Path(vargs.secret_file).expanduser()
+            if verb == "publish" and getattr(vargs, "secret_file", None)
+            else None
+        )
+        if selected_secret_file is None:
+            (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
+        else:
+            (repo_root, configs, project_order, *_rest) = load_config(
+                cfg_path, secret_file=selected_secret_file,
+            )
         github_config, env_config = _rest[-2], _rest[-1]
         git_auth = _git_auth_for_repository(github_config)
         apply_release_env(github_config, env_config)
         ordered = _ordered_configs(configs, project_order)
         names = _select_projects(cfg_path, vargs.target, configs, project_order)
         build_output_id = getattr(vargs, "build_output", None) if verb == "publish" else None
+        release_body_tag = getattr(vargs, "release_tag", None) if verb == "publish" else None
         if verb == "publish" and not getattr(vargs, "from_checkout", False) and build_output_id is None:
             _usage_error("publish needs a source: --build-output ID or --from-checkout")
         # ``is not None``: an empty ID must fail validation, never become an
@@ -5172,12 +5341,42 @@ def _dispatch(args, runtime):
             )
         if build_output_id is not None and len(names) != 1:
             _usage_error("publish --build-output requires exactly one selected project")
+        if release_body_tag is not None and len(names) != 1:
+            _usage_error("publish --release-tag requires exactly one selected project")
         if verb == "publish" and not vargs.dry_run and build_output_id is None:
             require_project_publish_credentials(configs, names)
         step = "build" if verb == "build" else "push"
         transaction_child = transaction.is_transaction_child(repo_root)
 
         if vargs.dry_run:
+            if release_body_tag is not None:
+                name = names[0]
+                groups = transaction.project_git_family_groups(repo_root, [configs[name]])
+                if len(groups) != 1:
+                    raise RuntimeError(
+                        f"{name}: could not determine exactly one Git family for --release-tag"
+                    )
+                family_root, members = next(iter(groups.items()))
+                family_configs = _configs_for_git_family(
+                    configs, [getattr(member, "name") for member in members], family_root,
+                )
+                retry_project, tag_commit, image, version = _prepare_oci_release_body_retry(
+                    family_root, family_configs[name], release_body_tag,
+                    git_auth=git_auth, verify_origin=False,
+                )
+                log_info(
+                    f"[DRY RUN] {name}: would publish only the configured OCI GitHub "
+                    f"Release body for {release_body_tag}; image {image}:{version} "
+                    f"is not rebuilt or pushed; local tag commit {tag_commit[:12]} is checked, "
+                    "origin is checked only during an actual run"
+                )
+                from cmru.runner import render_step_plan
+                project_root = resolve_cwd(
+                    family_root, _project_working_directory(retry_project),
+                )
+                for line in render_step_plan(retry_project.runner_steps["push"], project_root):
+                    log_info(f"[DRY RUN] {name}:push: {line}")
+                return
             log_info(f"[DRY RUN] Would run {step} for: {', '.join(names)}")
             build_records = {}
             if build_output_id:
@@ -5336,6 +5535,28 @@ def _dispatch(args, runtime):
                 # other type) keeps its traceback instead of becoming str(exc).
                 log_error(str(exc))
                 _sys.exit(1)
+        if release_body_tag is not None:
+            name = names[0]
+            groups = transaction.project_git_family_groups(repo_root, [configs[name]])
+            if len(groups) != 1:
+                raise RuntimeError(
+                    f"{name}: could not determine exactly one Git family for --release-tag"
+                )
+            family_root, members = next(iter(groups.items()))
+            family_configs = _configs_for_git_family(
+                configs, [getattr(member, "name") for member in members], family_root,
+            )
+            image, version = _run_oci_release_body_retry(
+                family_root, family_configs[name], release_body_tag,
+                git_auth=git_auth,
+                github_config=github_config,
+                env_config=env_config,
+            )
+            log_info(
+                f"cmru publish complete: updated GitHub Release metadata for "
+                f"{release_body_tag} (image {image}:{version})"
+            )
+            return
         if verb == "build":
             _run_isolated_build_projects(repo_root, configs, names)
         elif build_output_id:
@@ -7350,10 +7571,12 @@ def _build_cli():
     registry.register(VerbSpec("build", description="Run the isolated build step.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=build_options, mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     publish_options = (
         OptionSpec(("--build-output",), "publish the verified retained build ID printed by cmru build", metavar="ID", parser_kwargs={"default": None, "type": _non_empty}, mutually_exclusive_group="publish-source", mutually_exclusive_required=True),
-        OptionSpec(("--from-checkout",), "publish whatever the CALLER'S checkout currently holds (not isolated, not verified)", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="publish-source", mutually_exclusive_required=True),
+        OptionSpec(("--from-checkout",), "publish from the CALLER'S checkout (not isolated); --release-tag enables a tag-verified OCI release-body retry", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="publish-source", mutually_exclusive_required=True),
+        OptionSpec(("--release-tag",), "retry only the configured OCI GitHub Release body for this explicit tag; requires --from-checkout", metavar="TAG", parser_kwargs={"default": None, "type": _non_empty}),
+        OptionSpec(("--secret-file",), "explicit root cmru.secret.toml path for this publish; another worktree's file is never read automatically", metavar="PATH", parser_kwargs={"default": None}),
         *build_options,
     )
-    registry.register(VerbSpec("publish", description="Run the project publish step from a verified retained build (--build-output) or, explicitly, from the caller's checkout (--from-checkout).", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=publish_options, mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
+    registry.register(VerbSpec("publish", description="Run a project's publish step from a verified retained build (--build-output) or from the caller's checkout (--from-checkout); --release-tag retries only a configured OCI GitHub Release body.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=publish_options, mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct(), constraints=(Requires("--release-tag", ("--from-checkout",), "--release-tag needs --from-checkout"),)))
     registry.register(VerbSpec("changelog", description="Backfill history for an already-published tagged release.", group=VerbGroup.MODIFICATION.value, arguments=common_target, options=(OptionSpec(("--backfill-tag",), "tag to backfill; repeat once per selected project", metavar="TAG", parser_kwargs={"action": "append", "required": True}), config_opt), mutating=True, dry_run=True, include_confirmation=False, include_json=False, include_progress=False, handler=direct()))
     release_options = (
         OptionSpec(("--minor",), "bump minor versions", parser_kwargs={"action": "store_true", "default": False}, mutually_exclusive_group="version-override"),

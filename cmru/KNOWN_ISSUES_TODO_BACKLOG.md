@@ -2151,3 +2151,51 @@ nested-wheel dependencies must be declared manually.
 
 **Oracle:** a fixture with a nested `client/pyproject.toml` that requires a first-party wheel
 absent from `depends_on` fails preflight and names the consumer, provider, and nested file.
+
+### KI-84 — OCI release-body publication used an invalid GitHub tag lookup and had no safe retry
+
+**Status:** code and focused oracles added in this candidate; registered gates and independent
+review pending. Severity: major (a completed image push could leave a public tag and image with
+no GitHub Release body).
+
+**Observed:** `GitHubReleases.get_tag_commit` requested `/commits/tags/<tag>`, which GitHub's REST
+API rejects. The in-memory API fake modeled the same invalid route, so release-body tests passed
+without exercising the real route. A CMRU release could therefore pass its gates, push its tag
+and OCI image, then fail at the final metadata step. The durable `--resume` path correctly
+refused after publication began, but there was no supported metadata-only retry.
+
+**Chosen behavior:** resolve a tag with GitHub's `/commits/<url-encoded-ref>` endpoint. Add
+`cmru publish --from-checkout --release-tag TAG` for a post-tag OCI body retry. It requires one
+configured OCI-body project, a clean checkout whose `HEAD` is the explicit local tag, and the
+same peeled commit at origin. It supplies the protected tag and commit and executes only the
+validated final body handler; it never rebuilds or pushes the image. A dry run verifies local
+identity and displays that command, while a real run also checks origin before invoking it.
+
+**Oracles:** the handler fake accepts only `/commits/<tag>`; a real Git/bare-origin fixture proves
+the retry receives only the metadata command and protected identity; a moved origin tag refuses
+before the command runs. CLI review cases pin `--release-tag`, `--secret-file`, and the
+`--from-checkout` requirement. README, DESIGN-GUIDE, CONSUMERS, SPEC, and CHANGES describe the
+same behavior. Run the registered CMRU coverage gate and `gate-provisional` on the exact tip, then
+obtain an independent review before release.
+
+**Independent review (2026-10-17) — fixed in the candidate:**
+- The retry rebuilt its command from the parsed `steps` list through `_build_step_config`, not
+  from the validated `runner_steps` command, and so dropped the push step's declared `env`,
+  `env_command` and `required_env`: a step-level `GITHUB_REPO` (or proxy) override that the
+  original release applied to the body handler was silently absent on retry. The retry now
+  runs the exact validated final command in the declared step environment, removing only the
+  image-push registry login and `clean_dirs`.
+- `get_release_by_tag` sent the tag unencoded in `/releases/tags/<tag>` while `get_tag_commit`
+  encoded it; a prefix containing `#` or `%` addressed a different (or no) release. Both
+  routes now send the tag as one percent-encoded path segment, and the API fake decodes and
+  rejects any segment that is not fully encoded.
+- `tests/test_cli_build_output_semantics.py` still asserted the invalid `/commits/tags/` route.
+- The consumer example used a relative `--secret-file ./cmru.secret.toml`, which resolves from
+  the invoking directory and fails from a retained worktree; it now shows the main checkout's
+  absolute root-secret path. DESIGN-GUIDE/CONSUMERS no longer call `--secret-file` release-only.
+
+Added oracles: real local repository plus bare origin for an annotated tag with URL-reserved
+prefix characters, untracked files at the matching tag, `HEAD` ahead of the tag, an absent
+local tag, a moved or absent origin tag, an unreachable origin (failure, not absence),
+malformed origin advertisements, and a `--dry-run` with origin unreachable that makes no
+origin query and shows only the body command.

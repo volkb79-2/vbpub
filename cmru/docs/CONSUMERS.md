@@ -1148,6 +1148,39 @@ What it does and requires:
   section. A push step that only pushes the image keeps the notes in the tagged changelog and
   has no GitHub Release body.
 
+#### Retry a tagged OCI release body
+
+If an image push succeeded but the configured `oci-image-release` command failed, retry only
+the GitHub Release metadata from a clean checkout at the exact release tag:
+
+```sh
+cmru publish example-image --from-checkout \
+  --release-tag example-image-v1.4.0 \
+  --secret-file /absolute/path/to/main/cmru.secret.toml
+```
+
+`--secret-file` names the ignored root `cmru.secret.toml`, which normally lives only in the main
+checkout, not in a linked or retained worktree. A relative path is resolved from the directory you
+invoke `cmru` in, so `./cmru.secret.toml` from a retained worktree names a file that does not exist
+there and CMRU refuses it. Pass the main checkout's absolute path, or omit the option when
+`GITHUB_PUSH_PAT`/`GITHUB_TOKEN` is set for the invocation or the current checkout has its own root
+secret.
+
+CMRU verifies that the explicit local tag peels to `HEAD` and that origin has the same tag at
+the same commit, then runs only the project's validated final `oci-image-release` command.
+It does not rebuild or push the OCI image. Use this dry run to inspect the tagged handler
+command and local identity; it does not query origin:
+
+```sh
+cmru publish example-image --from-checkout \
+  --release-tag example-image-v1.4.0 \
+  --secret-file /absolute/path/to/main/cmru.secret.toml --dry-run
+```
+
+The retry reads
+the changelog from the tagged commit, so later working-tree text is not published. See the
+[design rationale](DESIGN-GUIDE.md#retrying-a-tagged-oci-release-body-runs-only-the-metadata-handler).
+
 Why it works this way: see the
 [design note](DESIGN-GUIDE.md#image-only-releases-get-a-body-through-oci-image-release-ki-78).
 
@@ -1314,7 +1347,8 @@ or merge commit so the tagged commit remains in `main`'s ancestry. The release m
 while that PR is open or blocked; squash and rebase do not preserve the released commit ID.
 After the merge, run `cmru abandon <candidate-branch> --dry-run` from a checkout with the
 credentials needed for origin access (normally the main checkout, where the root secret lives),
-then pass `--yes` to retire the local transaction and any remaining candidate ref. `--secret-file` is release-only;
+then pass `--yes` to retire the local transaction and any remaining candidate ref. `abandon` has no `--secret-file`
+(only `release` and `publish` accept it);
 for retirement from another worktree, use the main checkout or set the Git credential environment
 for that invocation. Retirement preserves release tags and public assets. If the host already
 deleted the PR head after merge, the same command can retire the local transaction: CMRU verifies

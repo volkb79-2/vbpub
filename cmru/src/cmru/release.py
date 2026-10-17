@@ -132,7 +132,9 @@ class GitHubReleases:
 
     # releases ------------------------------------------------------------------
     def get_release_by_tag(self, tag: str) -> Optional[Dict[str, Any]]:
-        status, body = self._request("GET", self._repo_url(f"/releases/tags/{tag}"))
+        status, body = self._request(
+            "GET", self._repo_url(f"/releases/tags/{quote(tag, safe='')}"),
+        )
         if status == 404:
             return None
         if status >= 400:
@@ -150,7 +152,7 @@ class GitHubReleases:
 
     def get_tag_commit(self, tag: str) -> Optional[str]:
         """Resolve an existing lightweight or annotated Git tag to its commit."""
-        commit_ref = quote(f"tags/{tag}", safe="/")
+        commit_ref = quote(tag, safe="")
         status, body = self._request("GET", self._repo_url(f"/commits/{commit_ref}"))
         if status == 404:
             return None

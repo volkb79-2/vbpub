@@ -7,7 +7,9 @@ prove what a refusal did NOT change and that a retry never touched an asset.
 from __future__ import annotations
 
 import json
+import subprocess
 from types import SimpleNamespace
+from urllib.parse import quote, unquote
 
 import pytest
 
@@ -76,15 +78,22 @@ class FakeGitHub:
         answer = self._serve(method, path, data)
         return self.respond_after.get((method, path, nth), answer)
 
+    @staticmethod
+    def _tag_segment(segment: str) -> str:
+        """Decode a tag path segment, requiring the one-segment encoding GitHub routes."""
+        tag = unquote(segment)
+        assert quote(tag, safe="") == segment, f"tag segment is not fully encoded: {segment!r}"
+        return tag
+
     def _serve(self, method: str, path: str, data: bytes | None) -> tuple[int, str]:
         payload = json.loads(data) if data else {}
-        if method == "GET" and path.startswith("/commits/tags/"):
-            tag = path.removeprefix("/commits/tags/")
+        if method == "GET" and path.startswith("/commits/"):
+            tag = self._tag_segment(path.removeprefix("/commits/"))
             if tag not in self.tags:
                 return 404, "{}"
             return 200, json.dumps({"sha": self.tags[tag]})
         if method == "GET" and path.startswith("/releases/tags/"):
-            record = self.releases.get(path.removeprefix("/releases/tags/"))
+            record = self.releases.get(self._tag_segment(path.removeprefix("/releases/tags/")))
             return (200, json.dumps(record)) if record else (404, "{}")
         if method == "GET" and path.removeprefix("/releases/").isdigit():
             wanted = int(path.removeprefix("/releases/"))
@@ -145,6 +154,356 @@ def _publish(project, *, image: str = IMAGE, prefix: str = "demo") -> int:
     ])
 
 
+def test_get_tag_commit_uses_the_github_commits_ref_route(image_release):
+    api = image_release.api
+    client = release.GitHubReleases("o", "r", "t")
+
+    assert client.get_tag_commit(TAG) == image_release.commit
+    assert api.calls == [("GET", f"/commits/{TAG}")]
+
+
+def test_tag_routes_encode_url_reserved_tag_characters_as_one_path_segment(image_release):
+    api = image_release.api
+    tag = "grp/de#m%o+x-v2.0.0"
+    api.tags[tag] = image_release.commit
+    api.seed_release(tag)
+    client = release.GitHubReleases("o", "r", "t")
+    segment = "grp%2Fde%23m%25o%2Bx-v2.0.0"
+
+    assert client.get_tag_commit(tag) == image_release.commit
+    assert client.get_release_by_tag(tag)["tag_name"] == tag
+    assert api.calls == [("GET", f"/commits/{segment}"), ("GET", f"/releases/tags/{segment}")]
+
+
+def test_get_tag_commit_keeps_non_404_errors_as_failures(image_release):
+    api = image_release.api
+    api.respond[("GET", f"/commits/{TAG}", 1)] = (500, "server error")
+    with pytest.raises(SystemExit):
+        release.GitHubReleases("o", "r", "t").get_tag_commit(TAG)
+
+
+# --- `cmru publish --from-checkout --release-tag`: the metadata-only retry -----------
+
+RETRY_TAG = "demo-v2.0.0"
+PUSH_IMAGE = {"label": "push image", "argv": ["python3", "build-push.py", "--push"], "cwd": "."}
+
+
+def _body_command(prefix: str) -> dict:
+    return {
+        "label": "release notes",
+        "argv": ["cmru", "handler", "oci-image-release", "--prefix", prefix,
+                 "--image", IMAGE, "--cwd", "."],
+        "cwd": ".",
+    }
+
+
+@pytest.fixture
+def retry_repo(tmp_path, monkeypatch):
+    """A real tagged checkout with a bare origin; records handler runs and origin queries."""
+
+    def build(*, prefix: str = "demo", annotated: bool = False, push_tag: bool = True,
+              step_env: dict | None = None, login: dict | None = None,
+              clean_dirs: tuple[str, ...] = ()):
+        from cmru.runner import StepConfig
+
+        root = tmp_path / "repo"
+        project_root = root / "demo"
+        project_root.mkdir(parents=True)
+        (project_root / "CHANGES.md").write_text(CHANGES, encoding="utf-8")
+        _git(root, "init", "-q", "-b", "main")
+        _git(root, "config", "user.email", "t@t.invalid")
+        _git(root, "config", "user.name", "t")
+        _git(root, "add", "demo")
+        _git(root, "commit", "-q", "-m", "release candidate")
+        tag = f"{prefix}-v2.0.0"
+        if annotated:
+            _git(root, "tag", "-a", tag, "-m", "annotated release")
+        else:
+            _git(root, "tag", tag)
+        origin = tmp_path / "origin.git"
+        _git(tmp_path, "init", "--bare", "-q", str(origin))
+        _git(root, "remote", "add", "origin", str(origin))
+        if push_tag:
+            _git(root, "push", "-q", "origin", f"refs/tags/{tag}")
+        body = _body_command(prefix)
+        project = cli.ProjectConfig(
+            name="demo", env={},
+            steps={"push": [
+                cli.Command(PUSH_IMAGE["label"], PUSH_IMAGE["argv"], project_root),
+                cli.Command(body["label"], body["argv"], project_root),
+            ]},
+            prefix=f"{prefix}-v", cwd="demo", git_tag=True, changelog="CHANGES.md",
+            project_root=project_root,
+            runner_steps={"push": StepConfig(
+                "push", [PUSH_IMAGE, body], None, [], None, list(clean_dirs), [], login,
+                dict(step_env or {}), None,
+            )},
+            github_token="test-token",
+        )
+        return SimpleNamespace(
+            root=root, project=project, tag=tag, body=body, origin=origin,
+            commit=_git(root, "rev-parse", "HEAD"),
+        )
+
+    handler_runs: list = []
+    origin_queries: list = []
+    real_remote_git = cli.run_remote_git
+
+    def remote_git(*args, **kwargs):
+        origin_queries.append(args[1:])
+        return real_remote_git(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "run_remote_git", remote_git)
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "run_project_step",
+        lambda candidate, step, repo, logs, **kwargs: handler_runs.append(
+            (candidate, step, repo, kwargs.get("protected_env"))
+        ),
+    )
+    return SimpleNamespace(build=build, handler_runs=handler_runs, origin_queries=origin_queries)
+
+
+def _retry(repo, tag=None):
+    return cli._run_oci_release_body_retry(
+        repo.root, repo.project, tag or repo.tag, git_auth=None,
+        github_config=cli.GitHubConfig("o", "r", "token", "user"),
+        env_config=cli.ReleaseEnvConfig({}, None),
+    )
+
+
+def test_release_body_retry_runs_only_the_declared_oci_handler_with_protected_identity(
+    retry_repo,
+):
+    repo = retry_repo.build(
+        step_env={"GITHUB_REPO": "declared-repo"},
+        login={"registry": "ghcr.io"}, clean_dirs=("dist",),
+    )
+
+    assert _retry(repo) == (IMAGE, "2.0.0")
+
+    assert len(retry_repo.handler_runs) == 1
+    retry_project, step, ran_in, protected = retry_repo.handler_runs[0]
+    assert step == "push" and ran_in == repo.root
+    body_step = retry_project.runner_steps["push"]
+    # Only the validated final command: the image push is never repeated.
+    assert body_step.commands == [repo.body]
+    # The push step's declared environment still applies to the body command, but the
+    # image-push side effects (registry login, clean_dirs) are not repeated.
+    assert body_step.step_env == {"GITHUB_REPO": "declared-repo"}
+    assert body_step.login is None and body_step.clean_dirs == []
+    assert protected == {"CMRU_RELEASE_TAG": repo.tag, "CMRU_RELEASE_COMMIT": repo.commit}
+    # The declared project itself is untouched for any later caller.
+    assert repo.project.runner_steps["push"].commands == [PUSH_IMAGE, repo.body]
+
+
+def test_release_body_retry_peels_an_annotated_tag_with_url_reserved_prefix_characters(
+    retry_repo,
+):
+    repo = retry_repo.build(prefix="grp/de#m%o", annotated=True)
+    tag_object = _git(repo.root, "rev-parse", f"refs/tags/{repo.tag}")
+    assert tag_object != repo.commit
+
+    assert _retry(repo) == (IMAGE, "2.0.0")
+
+    (_project, _step, _root, protected), = retry_repo.handler_runs
+    assert protected == {"CMRU_RELEASE_TAG": repo.tag, "CMRU_RELEASE_COMMIT": repo.commit}
+    assert len(retry_repo.origin_queries) == 1
+
+
+@pytest.mark.parametrize("tag", [
+    "other-v2.0.0", "demo-v2.0", "demo-v2.0.0+build", "demo-v2.0.0.dev1", "demo-v",
+])
+def test_release_body_retry_refuses_a_tag_that_is_not_this_projects_release(retry_repo, tag):
+    repo = retry_repo.build()
+    with pytest.raises(RefusedBeforeChange, match="--release-tag"):
+        _retry(repo, tag)
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
+
+
+def test_release_body_retry_refuses_untracked_files_even_at_the_matching_tag(retry_repo):
+    repo = retry_repo.build()
+    (repo.root / "demo" / "stray.txt").write_text("not released\n", encoding="utf-8")
+
+    with pytest.raises(RefusedBeforeChange, match="clean checkout"):
+        _retry(repo)
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
+
+
+def test_release_body_retry_refuses_a_head_that_is_not_the_local_tag(retry_repo):
+    repo = retry_repo.build()
+    (repo.root / "demo" / "later.txt").write_text("after the release\n", encoding="utf-8")
+    _git(repo.root, "add", "demo/later.txt")
+    _git(repo.root, "commit", "-q", "-m", "after the release")
+
+    with pytest.raises(RefusedBeforeChange, match="does not match local tag"):
+        _retry(repo)
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
+
+
+def test_release_body_retry_refuses_an_absent_local_tag(retry_repo):
+    repo = retry_repo.build()
+    _git(repo.root, "tag", "-d", repo.tag)
+
+    with pytest.raises(RefusedBeforeChange, match="local release tag .* is absent"):
+        _retry(repo)
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
+
+
+def test_release_body_retry_refuses_a_moved_origin_tag_at_a_clean_head_before_running(
+    retry_repo,
+):
+    repo = retry_repo.build(annotated=True)
+    other = _git(repo.root, "commit-tree", "HEAD^{tree}", "-m", "other tag target")
+    _git(repo.root, "push", "-q", "--force", "origin", f"{other}:refs/tags/{repo.tag}")
+
+    with pytest.raises(RefusedBeforeChange, match=f"origin tag .* is {other[:12]}; expected"):
+        _retry(repo)
+    assert retry_repo.handler_runs == []
+    assert _git(repo.root, "rev-parse", f"{repo.tag}^{{commit}}") == repo.commit
+
+
+def test_release_body_retry_refuses_an_origin_without_the_tag_as_absent(retry_repo):
+    repo = retry_repo.build(push_tag=False)
+
+    with pytest.raises(RefusedBeforeChange, match="origin tag .* is absent"):
+        _retry(repo)
+    assert retry_repo.handler_runs == []
+    assert len(retry_repo.origin_queries) == 1
+
+
+def test_release_body_retry_never_reads_an_inaccessible_origin_as_absent(retry_repo):
+    repo = retry_repo.build()
+    _git(repo.root, "remote", "set-url", "origin", str(repo.origin.parent / "missing.git"))
+
+    with pytest.raises(RuntimeError, match="could not verify") as caught:
+        _retry(repo)
+    assert not isinstance(caught.value, RefusedBeforeChange)
+    assert retry_repo.handler_runs == []
+
+
+@pytest.mark.parametrize("advertised", [
+    "not-a-ref-record\n",
+    f"{'a' * 40}\trefs/tags/{RETRY_TAG}^{{}}\n",  # a peeled ref without its direct ref
+    f"{'a' * 39}\trefs/tags/{RETRY_TAG}\n",
+])
+def test_release_body_retry_refuses_a_malformed_origin_advertisement(
+    retry_repo, monkeypatch, advertised,
+):
+    repo = retry_repo.build()
+    monkeypatch.setattr(
+        cli, "run_remote_git",
+        lambda *args, **_kwargs: subprocess.CompletedProcess(args, 0, advertised, ""),
+    )
+    with pytest.raises(RuntimeError, match="malformed|without its direct ref"):
+        _retry(repo)
+    assert retry_repo.handler_runs == []
+
+
+def _dispatch_retry(monkeypatch, repo, *extra: str) -> int:
+    loaded = (
+        repo.root, {"demo": repo.project}, ["demo"], ["demo"], [], "project-first", {},
+        cli.CleanupConfig([], [], [], []),
+        cli.GitHubConfig("o", "r", "token", "user"),
+        cli.ReleaseEnvConfig({}, None),
+    )
+    config_path = repo.root / "cmru.orchestration.toml"
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: config_path)
+    monkeypatch.setattr(cli, "load_config", lambda _path, **_kwargs: loaded)
+    monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["demo"])
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    return cli.main([
+        "publish", "demo", "--from-checkout", "--release-tag", repo.tag,
+        "--config", str(config_path), *extra,
+    ])
+
+
+def test_release_body_dry_run_with_origin_unavailable_shows_only_the_handler(
+    retry_repo, monkeypatch, capsys,
+):
+    repo = retry_repo.build()
+    _git(repo.root, "remote", "set-url", "origin", str(repo.origin.parent / "missing.git"))
+
+    assert _dispatch_retry(monkeypatch, repo, "--dry-run") == 0
+
+    out = capsys.readouterr().out
+    assert retry_repo.origin_queries == [] and retry_repo.handler_runs == []
+    assert "oci-image-release" in out and "build-push.py" not in out
+    assert f"local tag commit {repo.commit[:12]}" in out
+
+
+def test_release_body_dry_run_still_refuses_an_untracked_file(retry_repo, monkeypatch):
+    repo = retry_repo.build()
+    (repo.root / "demo" / "stray.txt").write_text("not released\n", encoding="utf-8")
+
+    assert _dispatch_retry(monkeypatch, repo, "--dry-run") == exit_codes.REFUSED
+    assert retry_repo.origin_queries == [] and retry_repo.handler_runs == []
+
+
+def test_release_body_retry_through_publish_refuses_a_moved_origin_tag(retry_repo, monkeypatch):
+    repo = retry_repo.build()
+    other = _git(repo.root, "commit-tree", "HEAD^{tree}", "-m", "other tag target")
+    _git(repo.root, "push", "-q", "--force", "origin", f"{other}:refs/tags/{repo.tag}")
+
+    assert _dispatch_retry(monkeypatch, repo) == exit_codes.REFUSED
+    assert retry_repo.handler_runs == [] and len(retry_repo.origin_queries) == 1
+
+
+def test_publish_release_tag_uses_the_explicit_secret_file_and_retry_workflow(
+    monkeypatch, tmp_path,
+):
+    project_root = tmp_path / "demo"
+    project_root.mkdir()
+    project = cli.ProjectConfig(
+        name="demo", env={}, steps={}, prefix="demo-v", cwd="demo",
+        project_root=project_root, runner_steps={}, github_token="token",
+    )
+    config_path = tmp_path / "cmru.orchestration.toml"
+    secret_file = tmp_path / "selected.secret.toml"
+    loaded = (
+        tmp_path, {"demo": project}, ["demo"], ["demo"], [], "project-first", {},
+        cli.CleanupConfig([], [], [], []),
+        cli.GitHubConfig("o", "r", "token", "user"),
+        cli.ReleaseEnvConfig({}, None),
+    )
+    load_calls = []
+    retry_calls = []
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: config_path)
+    monkeypatch.setattr(
+        cli, "load_config",
+        lambda path, **kwargs: load_calls.append((path, kwargs)) or loaded,
+    )
+    monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["demo"])
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+    monkeypatch.setattr(cli, "require_project_publish_credentials", lambda *_args: None)
+    monkeypatch.setattr(
+        cli.transaction,
+        "project_git_family_groups",
+        lambda *_args: {tmp_path: [project]},
+    )
+    monkeypatch.setattr(cli, "_configs_for_git_family", lambda *_args: {"demo": project})
+    monkeypatch.setattr(
+        cli, "_run_oci_release_body_retry",
+        lambda root, selected, tag, **kwargs: retry_calls.append(
+            (root, selected.name, tag, kwargs)
+        ) or (IMAGE, "2.0.0"),
+    )
+
+    assert cli.main([
+        "publish", "demo", "--from-checkout", "--release-tag", TAG,
+        "--secret-file", str(secret_file), "--config", str(config_path),
+    ]) == 0
+
+    assert load_calls == [(config_path, {"secret_file": secret_file})]
+    assert retry_calls == [(
+        tmp_path, "demo", TAG, {
+            "git_auth": cli.GitHubGitAuth("o", "r", "token"),
+            "github_config": loaded[-2],
+            "env_config": loaded[-1],
+        },
+    )]
+
+
 # --- oracle 1, 5: the exact body, created under the protected tag and commit ------
 
 
@@ -178,11 +537,11 @@ def test_a_valid_image_release_publishes_the_pull_coordinate_then_the_tagged_sec
         "tag_name": TAG, "name": TAG, "body": EXPECTED_BODY, "target_commitish": fixture.commit,
     }]
     assert api.calls == [
-        ("GET", f"/commits/tags/{TAG}"),
+        ("GET", f"/commits/{TAG}"),
         ("GET", f"/releases/tags/{TAG}"),
         ("POST", "/releases"),
         ("GET", "/releases/100"),  # the read-back is by the ID the create returned
-        ("GET", f"/commits/tags/{TAG}"),
+        ("GET", f"/commits/{TAG}"),
     ]
     assert api.tags[TAG] == fixture.commit
     assert fixture.pauses == []  # visible at once: nothing waited
@@ -327,8 +686,8 @@ def test_a_release_id_change_before_the_patch_sends_no_mutation(image_release, c
 def test_a_tag_target_change_before_the_patch_sends_no_mutation(image_release, capsys):
     api = image_release.api
     api.seed_release(TAG)
-    # Calls 1 and 2 of GET /commits/tags are the initial check and the pre-PATCH re-check.
-    api.before[("GET", f"/commits/tags/{TAG}", 2)] = (
+    # Calls 1 and 2 of GET /commits/<tag> are the initial check and the pre-PATCH re-check.
+    api.before[("GET", f"/commits/{TAG}", 2)] = (
         lambda: api.tags.__setitem__(TAG, OTHER_COMMIT)
     )
     assert _publish(image_release.project) == exit_codes.FAILURE
@@ -351,7 +710,7 @@ def test_a_release_id_change_after_the_patch_is_reported_as_written(image_releas
 def test_a_tag_move_after_the_patch_is_reported_as_written(image_release, capsys):
     api = image_release.api
     api.seed_release(TAG)
-    api.before[("GET", f"/commits/tags/{TAG}", 3)] = (
+    api.before[("GET", f"/commits/{TAG}", 3)] = (
         lambda: api.tags.__setitem__(TAG, OTHER_COMMIT)
     )
     assert _publish(image_release.project) == exit_codes.FAILURE
