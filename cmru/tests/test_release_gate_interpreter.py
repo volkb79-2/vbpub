@@ -286,7 +286,7 @@ def test_a_second_failure_after_the_switch_is_refused_not_looped(installed_env):
     result = _run_gate_script(bindir, "--help", extra_env={REEXEC_ENV: "1"})
 
     assert result.returncode == 1
-    assert "still cannot import cli_extended" in result.stderr
+    assert "still fails the declared CMRU dependency set" in result.stderr
     assert not log.exists()  # no further switch was attempted
 
 
@@ -427,7 +427,9 @@ def test_the_switch_execs_the_same_script_with_isolation_flags_and_a_one_shot_ma
 
     def fake_run(argv, **_kwargs):
         probes.append(argv)
-        return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        return subprocess.CompletedProcess(
+            argv, 0, stdout="cli-extended=0.3.0\n", stderr="",
+        )
 
     monkeypatch.setattr(run_release_gate.subprocess, "run", fake_run)
     monkeypatch.setattr(run_release_gate.os, "execv", lambda path, argv: execs.append((path, argv)))
@@ -459,7 +461,9 @@ def test_the_runtime_reported_interpreter_is_exec_ed_verbatim_and_beats_the_path
     probes, execs = [], []
     monkeypatch.setattr(
         run_release_gate.subprocess, "run",
-        lambda argv, **_kw: probes.append(argv) or subprocess.CompletedProcess(argv, 0, "", ""),
+        lambda argv, **_kw: probes.append(argv) or subprocess.CompletedProcess(
+            argv, 0, "cli-extended=0.3.0\n", "",
+        ),
     )
     monkeypatch.setattr(run_release_gate.os, "execv", lambda path, argv: execs.append((path, argv)))
     monkeypatch.delenv(REEXEC_ENV, raising=False)

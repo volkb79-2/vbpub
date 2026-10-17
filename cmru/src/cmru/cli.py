@@ -5583,9 +5583,12 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
         if verb == "release" and getattr(vargs, "secret_file", None)
         else None
     )
-    (repo_root, configs, project_order, *_rest) = load_config(
-        cfg_path, secret_file=selected_secret_file,
-    )
+    if selected_secret_file is None:
+        (repo_root, configs, project_order, *_rest) = load_config(cfg_path)
+    else:
+        (repo_root, configs, project_order, *_rest) = load_config(
+            cfg_path, secret_file=selected_secret_file,
+        )
     github_config, env_config = _rest[-2], _rest[-1]
     git_auth = _git_auth_for_repository(github_config)
     transaction_child = transaction.is_transaction_child(repo_root)
