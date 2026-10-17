@@ -21,6 +21,8 @@ def _install_cli_browser(
         "connect": [],
         "goto": [],
         "locators": [],
+        "visible_filters": [],
+        "first_matches": [],
         "wait_for": [],
         "screenshots": [],
         "context_options": [],
@@ -32,6 +34,18 @@ def _install_cli_browser(
         pass
 
     class FakeLocator:
+        def __init__(self, selector: str) -> None:
+            self.selector = selector
+
+        def filter(self, *, visible: bool) -> "FakeLocator":
+            calls["visible_filters"].append({"selector": self.selector, "visible": visible})
+            return self
+
+        @property
+        def first(self) -> "FakeLocator":
+            calls["first_matches"].append(self.selector)
+            return self
+
         def inner_text(self, *, timeout: int) -> str:
             calls["inner_text_timeout"] = timeout
             return "rendered page text"
@@ -51,7 +65,7 @@ def _install_cli_browser(
 
         def locator(self, selector: str) -> FakeLocator:
             calls["locators"].append(selector)
-            return FakeLocator()
+            return FakeLocator(selector)
 
         def screenshot(self, **kwargs: object) -> bytes:
             calls["screenshots"].append(kwargs)
@@ -127,6 +141,8 @@ def test_inspect_text_navigates_remotely_waits_and_closes_lease(
         "timeout": 4000,
     }]
     assert calls["locators"] == ["#content", "body"]
+    assert calls["visible_filters"] == [{"selector": "#content", "visible": True}]
+    assert calls["first_matches"] == ["#content"]
     assert calls["wait_for"] == [{"state": "visible", "timeout": 4000}]
     assert calls["context_options"] == [{"ignore_https_errors": False}]
     assert calls["context_closed"] == [True]

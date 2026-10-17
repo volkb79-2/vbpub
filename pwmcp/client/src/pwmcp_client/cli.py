@@ -101,7 +101,7 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
                 page = context.new_page()
                 page.goto(args.url, wait_until=args.wait_until, timeout=args.timeout_ms)
                 if args.wait_for:
-                    page.locator(args.wait_for).wait_for(
+                    page.locator(args.wait_for).filter(visible=True).first.wait_for(
                         state="visible", timeout=args.timeout_ms
                     )
 

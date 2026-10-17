@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-10-16 (PWMCP-03 certificate-bypass CLI addition and live acceptance).
+Last updated: 2026-10-17 (PWMCP-04 delayed page hydration and multi-match selector wait).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -90,3 +90,23 @@ Original plan (filed 2026-10-05 by the cli-extended unified-adoption program, W1
 **Fix.** Add `pwmcp inspect URL --ignore-https-errors`. It creates a temporary Playwright context with certificate errors ignored only for that invocation, then closes the context and the managed browser lease. This setting is context-wide: redirects and HTTPS resources loaded from other hosts in the page are included. Certificate verification remains on by default, and PWMCP's shared service policy is unchanged.
 
 **Oracle.** Unit coverage proves the default passes `ignore_https_errors=False`, the option passes `True`, and the context closes on success and navigation failure. On 2026-10-16, the CLI reproduced the certificate failure without the flag, then returned the live sign-in form snapshot with the flag and a visible username-field wait. The initial root URL redirects to `/ui/signin`; waiting for `input[autocomplete="username"]` allows the JavaScript UI to hydrate before inspection. `cli-extended audit` passed 15/15 checks, `surface check` passed, and `./run-gate.py r1` passed on implementation commit `849129bfc8df05c35d31fad0a99349bbea51a49a`.
+
+## PWMCP-04 — Inspect pages that hydrate after navigation
+
+**Status: IMPLEMENTED 2026-10-17; live shared-page reproduction confirmed.**
+
+**Observed.** The default `load` navigation wait returned ChatGPT's initial
+shell before its shared conversation was rendered. `networkidle` returned the
+later page text. A visible selector for message roles matched several message
+elements, but `Locator.wait_for()` raised Playwright's strict-mode error.
+
+**Fix.** Keep the efficient `load` default for ordinary pages. For delayed
+single-page applications, document `--wait-until networkidle` together with a
+page-specific `--wait-for` selector. Filter to visible matches and wait for the
+first, so repeated selectors work without a fixed delay on all inspections.
+
+**Oracle.** Unit coverage asserts multi-match selectors use the visible first
+match. On the supplied shared page, the default inspection returned 993
+characters, while `networkidle` returned about 11 KB. The message-role selector
+resolved four elements and exposed the strict-mode defect. The registered R1
+gate validates the implementation and documentation change.

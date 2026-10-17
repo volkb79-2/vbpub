@@ -72,6 +72,8 @@ pwmcp inspect https://example.com
 pwmcp inspect https://example.com --format snapshot --output page.yml
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
+pwmcp inspect https://example.com/app \
+  --wait-until networkidle --wait-for '#content'
 pwmcp inspect https://nas.example --ignore-https-errors
 ```
 
@@ -80,6 +82,9 @@ pwmcp inspect https://nas.example --ignore-https-errors
 rendered body text. `snapshot` writes an ARIA snapshot; `screenshot` requires
 `--output PATH` ending in `.png`, `.jpg`, or `.jpeg`. `--wait-for SELECTOR`
 waits for a visible CSS selector; `--timeout-ms` sets the wait timeout.
+For pages that hydrate after the initial navigation event, combine
+`--wait-until networkidle` with a visible, page-specific selector. A selector
+can match multiple elements; PWMCP waits for the first matching visible element.
 For a trusted device with a known self-signed or otherwise invalid certificate,
 `--ignore-https-errors` opts into certificate bypass for HTTPS requests in this
 inspection's temporary browser context. This includes redirects and page
