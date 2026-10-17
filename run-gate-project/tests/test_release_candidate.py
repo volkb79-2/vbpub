@@ -1047,7 +1047,9 @@ def test_release_image_builder_checks_governed_parent_and_exact_labels(tmp_path)
     builder = (TOOLS.parents[1] / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
     dockerfile = (TOOLS.parents[1] / "tester-unified" / "Dockerfile").read_text(encoding="utf-8")
     assert 'CGROUP_PARENT_DEV_GATES or --cgroup-parent is required' in builder
-    assert 'cmru tester-gate --cwd run-gate-project --cgroup-parent "$cgroup_parent" /bin/true' in builder
+    assert 'tester_gate_args=(--cwd run-gate-project --cgroup-parent "$cgroup_parent")' in builder
+    assert 'tester_gate_args+=(--image "$base_image")' in builder
+    assert 'cmru tester-gate "${tester_gate_args[@]}" /bin/true' in builder
     assert 'docker buildx build --load --cgroup-parent "$cgroup_parent"' in builder
     assert 'org.vbpub.run-gate.wheel-sha256' in builder
     assert 'org.vbpub.run-gate.version' in dockerfile

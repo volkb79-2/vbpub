@@ -46,9 +46,34 @@ cannot traverse.
 
 The image build is a host workload too. `build-image.sh` requires the declared
 gates slice (or an explicit override), verifies that slice through CMRU's
-host-systemd probe, and passes it to Buildx. The loaded image carries the exact
-Run-Gate wheel version and digest as labels; the builder checks those labels
-before reporting success.
+host-systemd probe, and passes it to Buildx. When an explicit `--base-image` is
+selected, CMRU's unprivileged preflight runs from that same base. This breaks
+the first-image bootstrap loop without weakening the separate digest-pinned,
+pull-disabled host-systemd probe. The loaded image carries the exact Run-Gate
+wheel version and digest as labels; the builder checks those labels before
+reporting success. The release controller injects tester resource settings
+from the estate configuration. Direct shell builds must provide those same
+declared settings explicitly, and the pinned host probe must already be
+present locally.
+
+The default base is MDT's published devcontainer image for parity with the
+cockpit. The explicit `--base-image` override supports first-release
+bootstrapping: it lets the tester image start from the upstream Python
+devcontainer while vbpub has no released images. The Dockerfile installs its
+small host-tool set itself. A missing MDT release never triggers an implicit
+fallback; the base choice is visible in the build command.
+
+The Docker client is installed by capability, not unconditionally. Debian's
+`docker-cli` / `docker-compose` own the same files as Docker's `docker-ce-cli` /
+`docker-compose-plugin` that the MDT base ships, so installing them over the
+MDT base makes dpkg refuse the overwrite or, if apt resolved the clash, quietly
+swaps the gate's Docker client. The step therefore installs `docker-cli` only
+when `docker` is absent from PATH and `docker-compose` only when
+`docker compose version` does not answer, then verifies both. Both base
+variants are covered by an executable oracle
+(`run-gate-project/tests/test_tester_unified_base_variants.py`) that runs the
+Dockerfile's real RUN step against a dpkg-style ownership clash; building an
+image on each base remains a release-lane activity.
 
 The wheel supplies the command entrypoint; the bind-mounted checkout supplies
 lane configuration and judged project files. CIU's release gate also compares

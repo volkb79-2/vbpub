@@ -11,7 +11,47 @@ passes the exact wheel bytes through a named BuildKit context, checks its
 version and digest, and installs that wheel into the image. It requires
 `$CGROUP_PARENT_DEV_GATES` or `--cgroup-parent`, verifies the host slice through
 CMRU's `tester-gate` probe, passes the same parent to Buildx, and checks the
-loaded image labels against the wheel's version and SHA-256.
+loaded image labels against the wheel's version and SHA-256. With an explicit
+`--base-image`, the unprivileged preflight uses that image, so the first tester
+image does not depend on an existing `tester-unified:local` image. The
+privileged host-systemd probe remains digest-pinned and pull-disabled.
+CMRU release steps inject the required tester settings; a direct shell build
+must export `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`,
+`CMRU_TESTER_CPUS`, `CMRU_TESTER_PIDS_LIMIT`, and
+`CMRU_TESTER_CGROUP_PROBE_IMAGE` from `cmru.orchestration.toml`. The probe
+image must already be available locally.
+
+For a zero-release bootstrap, choose the upstream Python base explicitly so
+building the gate image does not require MDT's published image. Bootstrap CMRU
+and cli-extended from this checkout first, then pass the digest that command
+prints for its source-built cli-extended wheel:
+
+```bash
+SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
+  CMRU_BOOTSTRAP_CLI_EXTENDED=source cmru/build-initial-standalone.sh
+cp libraries/cli-extended/dist/cli_extended-*.whl tester-unified/local-wheel/
+CLI_EXTENDED_SHA256='<source-wheel sha256 printed by the bootstrap command>'
+tester-unified/build-image.sh \
+  --base-image mcr.microsoft.com/devcontainers/python:3.14-trixie \
+  --cli-extended-resolve local \
+  --cli-extended-wheel-sha256 "$CLI_EXTENDED_SHA256" \
+  --wheel-dir run-gate-project/dist \
+  --tag tester-unified:bootstrap
+```
+
+Every image carries an `org.vbpub.cli-extended.wheel-sha256` label naming the exact
+`cli-extended` wheel it installed, and `build-image.sh` fails if that label differs from the
+expected digest. After a real `cli-extended` release, rebuild with
+`--cli-extended-resolve latest --cli-extended-wheel-sha256 "$PUBLISHED_SHA256" --no-cache`
+(`latest` is refused without the published digest) or with `pinned` once the Dockerfile's
+pinned defaults name the released asset.
+
+Before running a release gate, point Run-Gate at the immutable image ID:
+
+```bash
+RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:bootstrap)"
+export RUN_GATE_TESTER_UNIFIED_IMAGE
+```
 
 ```bash
 tester-unified/run --workdir run-gate-project -- run-gate selftest

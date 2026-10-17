@@ -400,6 +400,140 @@ def test_release_body_retry_refuses_a_malformed_origin_advertisement(
     assert retry_repo.handler_runs == []
 
 
+@pytest.mark.parametrize("tag, fragment", [
+    # A SemVer pre-release can still carry a local or dev segment: not a release.
+    ("demo-v2.0.0-rc+build", "is not a released version"),
+    ("demo-v2.0.0-rc.dev1", "is not a released version"),
+    # A valid CMRU version that no OCI tag can carry.
+    ("demo-v2.0.0-rc/1", "is not a valid OCI release version"),
+    # A valid image tag that Git cannot store as a tag ref.
+    ("demo-v2.0.0-rc..1", "is not a valid Git tag"),
+])
+def test_release_body_retry_refuses_a_version_no_release_tag_can_carry(retry_repo, tag, fragment):
+    repo = retry_repo.build()
+    with pytest.raises(RefusedBeforeChange, match=fragment):
+        _retry(repo, tag)
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
+
+
+def test_release_body_retry_refuses_a_project_without_an_oci_release_command(retry_repo):
+    from dataclasses import replace
+
+    repo = retry_repo.build()
+    push = repo.project.runner_steps["push"]
+    repo.project.runner_steps["push"] = replace(push, commands=[PUSH_IMAGE])
+
+    with pytest.raises(RefusedBeforeChange, match="requires a configured `oci-image-release`"):
+        _retry(repo)
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
+
+
+def _failing_local_git(monkeypatch, *, fails):
+    """Fail the selected local Git calls; every other call runs for real."""
+    real = cli.run_local_git
+
+    def run(repo_root, *args, **kwargs):
+        answer = fails(args)
+        if answer is not None:
+            return subprocess.CompletedProcess(("git", *args), *answer)
+        return real(repo_root, *args, **kwargs)
+
+    monkeypatch.setattr(cli, "run_local_git", run)
+
+
+def test_release_body_retry_never_reads_an_uninspectable_checkout_as_clean(retry_repo, monkeypatch):
+    repo = retry_repo.build()
+    _failing_local_git(
+        monkeypatch, fails=lambda args: (128, "", "index locked") if args[0] == "status" else None,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot inspect checkout .*: index locked") as caught:
+        _retry(repo)
+    assert not isinstance(caught.value, RefusedBeforeChange)
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
+
+
+def test_release_body_retry_refuses_a_malformed_local_tag_commit(retry_repo, monkeypatch):
+    repo = retry_repo.build()
+    _failing_local_git(
+        monkeypatch,
+        fails=lambda args: (0, "not-a-commit\n", "") if args[:2] == ("rev-parse", "--verify") else None,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid commit id for release tag"):
+        _retry(repo)
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
+
+
+def _origin_check_that(monkeypatch, repo, effect):
+    """Answer origin's tag commit truthfully after applying ``effect`` to the checkout."""
+
+    def origin_commit(repo_root, tag, *, git_auth):
+        effect(repo_root)
+        return repo.commit
+
+    monkeypatch.setattr(cli, "_release_tag_origin_commit", origin_commit)
+
+
+def test_release_body_retry_refuses_a_head_that_moves_during_origin_verification(
+    retry_repo, monkeypatch,
+):
+    repo = retry_repo.build()
+    _origin_check_that(
+        monkeypatch, repo,
+        lambda root: _git(root, "commit", "-q", "--allow-empty", "-m", "concurrent commit"),
+    )
+
+    with pytest.raises(RefusedBeforeChange, match="HEAD changed during origin tag verification"):
+        _retry(repo)
+    assert retry_repo.handler_runs == []
+
+
+def test_release_body_retry_refuses_a_checkout_dirtied_during_origin_verification(
+    retry_repo, monkeypatch,
+):
+    repo = retry_repo.build()
+    _origin_check_that(
+        monkeypatch, repo,
+        lambda root: (root / "demo" / "late.txt").write_text("concurrent edit\n", encoding="utf-8"),
+    )
+
+    with pytest.raises(RefusedBeforeChange, match="became dirty during origin tag verification"):
+        _retry(repo)
+    assert retry_repo.handler_runs == []
+
+
+def test_release_body_retry_never_reads_an_unrecheckable_checkout_as_clean(retry_repo, monkeypatch):
+    repo = retry_repo.build()
+    origin_checked = []
+    _origin_check_that(monkeypatch, repo, lambda _root: origin_checked.append(True))
+    _failing_local_git(
+        monkeypatch,
+        fails=lambda args: (128, "", "") if args[0] == "status" and origin_checked else None,
+    )
+
+    with pytest.raises(RuntimeError, match="cannot recheck checkout .*: no diagnostic output") as caught:
+        _retry(repo)
+    assert not isinstance(caught.value, RefusedBeforeChange)
+    assert origin_checked == [True] and retry_repo.handler_runs == []
+
+
+def test_release_body_retry_never_runs_an_absent_declared_push_command(retry_repo, monkeypatch):
+    """Fail closed if the validated image and the declared step ever disagree."""
+    from dataclasses import replace
+
+    from cmru.errors import StepUnavailable
+
+    repo = retry_repo.build()
+    push = repo.project.runner_steps["push"]
+    repo.project.runner_steps["push"] = replace(push, commands=[])
+    monkeypatch.setattr(cli, "_validated_oci_release_image", lambda *_args: IMAGE)
+
+    with pytest.raises(StepUnavailable, match="declared push command is absent"):
+        _retry(repo)
+    assert retry_repo.handler_runs == []
+
+
 def _dispatch_retry(monkeypatch, repo, *extra: str) -> int:
     loaded = (
         repo.root, {"demo": repo.project}, ["demo"], ["demo"], [], "project-first", {},
@@ -447,6 +581,47 @@ def test_release_body_retry_through_publish_refuses_a_moved_origin_tag(retry_rep
 
     assert _dispatch_retry(monkeypatch, repo) == exit_codes.REFUSED
     assert retry_repo.handler_runs == [] and len(retry_repo.origin_queries) == 1
+
+
+def test_publish_release_tag_refuses_more_than_one_selected_project(retry_repo, monkeypatch, capsys):
+    repo = retry_repo.build()
+    monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["demo", "other"])
+    loaded = (
+        repo.root, {"demo": repo.project}, ["demo"], ["demo"], [], "project-first", {},
+        cli.CleanupConfig([], [], [], []),
+        cli.GitHubConfig("o", "r", "token", "user"),
+        cli.ReleaseEnvConfig({}, None),
+    )
+    config_path = repo.root / "cmru.orchestration.toml"
+    monkeypatch.setattr(cli, "_resolve_config", lambda _path: config_path)
+    monkeypatch.setattr(cli, "load_config", lambda _path, **_kwargs: loaded)
+    monkeypatch.setattr(cli, "apply_release_env", lambda *_args: None)
+
+    assert cli.main([
+        "publish", "demo", "--from-checkout", "--release-tag", repo.tag,
+        "--config", str(config_path),
+    ]) == 2
+
+    captured = capsys.readouterr()
+    assert "--release-tag requires exactly one selected project" in captured.out + captured.err
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
+
+
+@pytest.mark.parametrize("extra", [(), ("--dry-run",)], ids=["run", "dry-run"])
+def test_publish_release_tag_refuses_a_project_spanning_more_than_one_git_family(
+    retry_repo, monkeypatch, capsys, extra,
+):
+    repo = retry_repo.build()
+    monkeypatch.setattr(
+        cli.transaction, "project_git_family_groups",
+        lambda *_args: {repo.root: [repo.project], repo.origin: [repo.project]},
+    )
+
+    assert _dispatch_retry(monkeypatch, repo, *extra) == 1
+
+    captured = capsys.readouterr()
+    assert "could not determine exactly one Git family for --release-tag" in captured.out + captured.err
+    assert retry_repo.handler_runs == [] and retry_repo.origin_queries == []
 
 
 def test_publish_release_tag_uses_the_explicit_secret_file_and_retry_workflow(
