@@ -53,6 +53,16 @@ can use the MCP endpoint at the same time through its MCP client configuration
 below. The internal service remains unauthenticated for any process on the
 shared CIU network, matching PWMCP's existing internal policy.
 
+The stable CLI launcher for this install is
+`/srv/pwmcp-instance/bin/pwmcp`; it follows the active release and does not
+require activating the release virtual environment. The devcontainer exposes
+it through a `~/.local/bin/pwmcp` symlink on the default user's existing PATH.
+Check with `command -v pwmcp`; if a tool shell does not inherit that PATH, call
+`/srv/pwmcp-instance/bin/pwmcp` directly. When including PWMCP in another MDT
+devcontainer image, create the same symlink after installing the bundle. On a
+separate `get.py` install, add that install root's `bin` directory to PATH or
+use its `bin/pwmcp` launcher.
+
 The internal deployment intentionally has no authentication or host-published
 ports, matching PWMCP's existing internal-network policy. Keep consumers on
 the CIU network created for this instance.
