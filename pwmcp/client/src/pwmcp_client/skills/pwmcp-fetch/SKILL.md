@@ -3,13 +3,13 @@ name: pwmcp-fetch
 description: Read JavaScript-rendered pages when raw fetch returns empty, skeletal, or truncated content, using PWMCP's managed browser through its client CLI or MCP endpoint.
 ---
 
-> **Tool versions as of last verified update (2026-09-09):** pwmcp bundles
+> **Tool versions last checked (2026-09-09):** pwmcp bundles
 > `@playwright/mcp` behind an MCP HTTP/SSE server (port 8931); the recipe
 > below is pinned to `mcp` SDK `2.2.0`'s API shape (`streamable_http_client`
 > yielding a 2-tuple). Re-verify against the installed `mcp` package version
-> and `pwmcp/README.md` if a call signature below errors.
+> and PWMCP documentation if a call signature below errors.
 
-# Reading JS-rendered pages via pwmcp
+# Reading JavaScript-rendered pages with PWMCP
 
 ## When to reach for this
 
@@ -20,41 +20,27 @@ retry. If the user supplied a URL but the raw fetch has no useful body, use
 PWMCP's managed browser rather than treating that first response as proof the
 page has no content.
 
-## What pwmcp is
+PWMCP provides a managed remote browser and client tools for reading rendered
+pages. The service location, network, and MCP endpoint are set by the
+consuming environment. See the PWMCP consumer guide for deployment-specific
+setup.
 
-A Playwright-as-a-service container (`ghcr.io/volkb79-2/pwmcp`) bundling a
-real headless Chromium behind an MCP HTTP/SSE server (`@playwright/mcp`,
-port 8931). Full docs: `pwmcp/README.md` in this repo. In a consuming
-project it is almost certainly already running as `<project>-<env>-pwmcp`
-(dstdns example: `dstdns-98535c-pwmcp`) — check `docker ps --filter
-name=pwmcp` before starting a new one.
+## Check the environment
 
-**Connectivity**: the container joins a project docker network (dstdns
-example: `dstdns-98535c-network`) under the hostname `pwmcp`. From a devcontainer's
-own shell on that network, that hostname resolves directly —
-`getent hosts pwmcp` returns a real IP with no extra network wiring needed.
-If it doesn't resolve in your environment, get the IP with `docker inspect
-<pwmcp-container> --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}
-{{end}}'` and pass `Host: pwmcp:8931` explicitly — `@playwright/mcp` has
-DNS-rebinding protection and 403s any request whose Host header isn't on its
-`PWMCP_MCP_ALLOWED_HOSTS` allowlist.
-
-## Find the client CLI
-
-The CLI is installed with the client bundle. In the MDT devcontainer deployment,
-its stable launcher is `/srv/pwmcp-instance/bin/pwmcp`; it follows the active
-release under `/srv/pwmcp-instance/current`. Prefer `pwmcp` when `command -v
-pwmcp` finds it. If this agent shell does not inherit the devcontainer PATH,
-call the stable launcher directly, for example:
+This skill assumes the consuming environment has installed PWMCP and made its
+CLI available to the agent process. It does not install PWMCP, set PATH, start
+the service, or configure an MCP connection. Check discovery with:
 
 ```bash
-/srv/pwmcp-instance/bin/pwmcp inspect "$URL" --wait-until networkidle \
-  --wait-for 'CONTENT_SELECTOR' --timeout-ms 60000
+command -v pwmcp
+pwmcp --version
 ```
 
-Other installations may use a different root. In those environments, use the
-installed `pwmcp` command or the installation root's `bin/pwmcp`; do not
-activate or modify the managed PWMCP virtual environment.
+If the command is missing, ask the environment owner to expose the installed
+CLI on the agent's PATH. Do not guess or hard-code an installation path. The
+service must also be running and reachable from this environment. For MCP,
+use the endpoint configured for the agent; the default internal-network URL is
+`http://pwmcp:8931/mcp` only when that hostname is reachable from this agent.
 
 ## Preferred when the client CLI is installed
 
@@ -79,7 +65,7 @@ pip install --quiet mcp   # if not already present; SDK version used below: 2.2.
 ```
 
 ```python
-import asyncio, json, sys
+import asyncio, json, os, sys
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 # ^ note the exact name: streamable_http_client (lowercase, underscored) —
@@ -87,7 +73,10 @@ from mcp.client.streamable_http import streamable_http_client
 #   2.2.0, not 3 — don't unpack a third value.
 
 async def fetch(url: str) -> str:
-    async with streamable_http_client("http://pwmcp:8931/mcp") as (read, write):
+    endpoint = os.environ.get("PWMCP_MCP_URL")
+    if not endpoint:
+        raise RuntimeError("Set PWMCP_MCP_URL to the endpoint reachable from this agent")
+    async with streamable_http_client(endpoint) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             # navigate needs a generous timeout — heavy SPAs are slow,
@@ -120,7 +109,7 @@ appear. Bound retries and report the observed state if it remains a shell.
 When no expected text is known, the CLI's visible content selector is a better
 readiness check than a fixed delay.
 
-Useful other tools on the same session if `innerText` isn't enough:
+Useful other MCP tools on the same configured server if `innerText` isn't enough:
 `browser_snapshot` (accessibility-tree YAML — better for finding specific
 interactive elements), `browser_console_messages` (JS console errors —
 useful when a page is failing to render something), `browser_take_screenshot`,
@@ -159,7 +148,6 @@ useful when a page is failing to render something), `browser_take_screenshot`,
 ## Never do instead
 
 Never install Chromium/Playwright directly into a devcontainer or cockpit
-shell to work around a WebFetch gap — that duplicates a maintained service
-with an unmanaged one. pwmcp is the one browser-rendering surface for every
-consuming project; bring it up via that project's own `ciu up` invocation
-(dstdns: `ciu up --dir infra/pwmcp -y`), never a bespoke container.
+shell to work around a WebFetch gap. Ask the environment owner to start the
+configured PWMCP service through its deployment workflow; do not create a
+second unmanaged browser service.
