@@ -124,11 +124,8 @@ false pass. The code now writes the hashed `payload` bytes.
   `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`.
 
 ## Residual risks
-- `prepare(allow_first_release=True)` treats a checkout with no visible
-  `run-gate-v*` tags as a first release. That conflates "could not see tags"
-  with "no tags exist". This only matters if a transaction checkout lacks tags;
-  CMRU's own version planning would be equally blind there. Narrowing it is a
-  product decision (D-), so I left it unchanged.
+- ~~`prepare(allow_first_release=True)` treats a checkout with no visible
+  `run-gate-v*` tags as a first release.~~ **Fixed in the follow-up below (F8).**
 - Source mode relies on `cmru handler wheel-build` deleting `dist/*.whl` first.
   It does today (`handlers.py` `cmd_wheel_build`). The version string
   `<floor>+bootstrap.source` is identical across commits, so if that cleanup were
@@ -137,3 +134,125 @@ false pass. The code now writes the hashed `payload` bytes.
   resolves at build time; the receipt's image ID is the immutable identity.
 - None of the new tests, nor the edited ones, have been executed. The controller's
   registered `selftest` release gate is the first run.
+
+## Follow-up (same day): F8 — first-release tag ambiguity (24.0.0 review L1)
+
+- Reviewed revision: `5d5800bce067e56ab9b89f0c3f63aebc693cfbc7` (clean, CIU
+  `ready`).
+- Decision: **fixed, fail-closed, in Run-Gate scope.** CMRU does not prove the
+  scoped origin inventory to `prepare`, and it passes `prepare` no tag fact.
+  `prepare` now reads the authority itself. That is a READ from origin, not a
+  local fallback and not a new fact across the CMRU boundary, so this is not
+  BLOCKED.
+
+### Producer-to-consumer path (traced in the installed CMRU that runs the release)
+The release runs the installed `cmru 6.1.1.dev434+ga1ad46444`
+(`/home/vscode/.venv/.../cmru`), not this checkout's `cmru/` source.
+
+1. `cli.py:6712-6714` calls
+   `detect_changed_projects(..., require_pushed_baseline=True)` in the
+   transaction checkout, which in turn calls `version.py:216`
+   `_latest_tag_for_prefix(prefix="run-gate-v")`
+   (`run-gate-project/cmru.toml:40`). That function:
+   - lists local tags at `version.py:241-244`, ignoring the return code;
+   - takes the highest origin tag from `_highest_remote_tag_for_prefix`
+     (`version.py:178-213`), and refuses if it is higher than the local
+     candidate (`version.py:256-264`);
+   - requires the local candidate to be pushed at the same commit
+     (`_tag_pushed_to_origin`, `version.py:114`).
+2. Both comparisons use CMRU's `_semver_key` (`release.py:66`), which sorts
+   suffixed tags *above* the stable release (`24.0.0-r2 > 24.0.0`). The check
+   is "local maximum ≥ origin maximum under CMRU ordering". It does not show
+   that this checkout holds origin's stable `run-gate-vX.Y.Z` set. Example: a
+   pushed `run-gate-v25.0.0-rc1` held locally, with stable `run-gate-v24.0.0`
+   missing locally, passes CMRU's check. Run-Gate would then see no stable tag.
+3. The result goes nowhere. `_run_release_gates` (`cli.py:4498-4522`, called via
+   `_run_release_gates_on_exact_head`, `cli.py:3114`) passes the step only
+   `protected_env={"CMRU_RELEASE_GATE_COMMIT": gate_commit}`.
+   `run-gate-project/cmru.toml:86` runs `python tools/release_candidate.py
+   prepare` on the host. `prepare` (`release_candidate.py:706`) re-reads tags
+   later, and nothing ties that read to CMRU's earlier one. Also,
+   `CMRU_RELEASE_GATE_COMMIT` is only an environment variable: anyone can set it
+   to `HEAD` by hand.
+4. So the inventory CMRU verified does **not** reach `prepare`. Neither its
+   exact Run-Gate namespace nor any binding to this candidate is guaranteed.
+
+Side observation, CMRU's own code (I did not edit it; for the controller to file
+in CMRU's backlog after checking `cmru/CHANGES.md`): `version.py:241-245`
+ignores a failed `git tag --list`. A local failure then looks like "no local
+tags": absence read as emptiness. The origin comparison usually turns that into
+a refusal, but with a misleading "fetch tags" remedy.
+
+### The four states, and what `prepare` now does
+`_release_baseline()` (`release_candidate.py:216`) is used only when
+`prepared_release_version(allow_first_release=True)` is called, that is, from
+`prepare`. It uses `_origin_release_tags()` (`release_candidate.py:171`), which
+runs `git ls-remote --exit-code --tags origin 'refs/tags/run-gate-v*'` with
+`GIT_TERMINAL_PROMPT=0` and a 120 s timeout, and parses the output strictly.
+
+| State | Before | Now |
+|---|---|---|
+| Origin truly has no stable tag | first release | first release, only on exit 2 with empty output, or a fully parsed listing with no stable tag (prereleases do not count) |
+| Local `git tag --list` fails | refusal (`_git` raises) | unchanged refusal, before origin is consulted; tested explicitly |
+| Local listing succeeds but tags are missing or older than origin's | **first release / stale baseline (false pass)** | refused: `origin has stable release tag <tag> but this checkout's newest is <tag\|none>; fetch the release tags` |
+| Origin unreadable, malformed, or out of namespace | n/a (origin never read) | refused as indeterminate. Covers exit ≠ 0/2, exit 2 with refs, exit 0 with no refs, a bad line or object ID, a foreign ref, a timeout, and a missing `git` |
+
+The version-newer refusal is unchanged: the prepared version must be greater
+than the newest local stable tag (tested at 24.0.0 → refused, 24.0.1 →
+accepted). A local-only tag above origin's only makes that check stricter. The
+ordinary `prepared_release_version()` and `_latest_release_tag()` still read
+local tags only. The gate container's selftest calls them (`7a9717e9d`'s
+test), and a test asserts that this path never queries origin.
+
+**Legitimate first release, constructed:** the real-Git test creates a bare
+`origin` with no tags. A clone of it reaches `_release_baseline() is None` and
+is accepted. The same construction with `run-gate-v23.10.0`/`v24.0.0` on origin
+and a `--no-tags` clone is refused until `git fetch --tags origin`. After that
+it returns `("run-gate-v24.0.0", "24.0.0")`. This test exercises the real
+`git ls-remote` input contract, not a fake.
+
+**Producer probe (read-only, 2026-10-17):** in this checkout,
+`git ls-remote --exit-code --tags origin 'refs/tags/run-gate-v*'` exited 0 and
+listed 18 tags, each with its `^{}` line (`run-gate-v24.0.0` → peeled
+`d3e7d1101…`). The local listing also holds 18 tags. A non-matching pattern
+exited 2. The 24.0.1 release should therefore find a non-stale baseline. It now
+adds one origin read to `prepare`, the same remote CMRU queries moments earlier.
+
+### Coverage gate (`coverage_gate.py:361-385`), not changed
+The coverage gate runs inside the selftest container and still reads local tags
+only. Inside the release transaction, its first-release `SKIPPED` path is now
+reachable only after `prepare` showed that origin has no stable tag (or after a
+tag was deleted locally between the two steps). The container mounts the same
+repository refs, and `selftest` runs only after `prepare` and `verify-running`
+(`run-gate.toml:57`). A tagless clone running `run-gate selftest` *outside* a
+release still reports `diff-coverage SKIPPED` with exit 0. That is labelled as a
+skip, not a release certification. Binding it to a receipt-recorded "origin
+shows no stable tag" fact would need a receipt-schema change; I left it as a
+residual.
+
+### F8 changed files
+- `run-gate-project/tools/release_candidate.py`: added `_stable_release_tags`,
+  `_origin_release_tags`, `_release_baseline`; `prepared_release_version`
+  uses them when `allow_first_release` is set; docstring updated.
+- `run-gate-project/tests/test_release_candidate.py`: replaced the old
+  "empty local means first release" test with:
+  - first release accepted only when origin shows no stable tag (2 cases);
+  - the ordinary path never queries origin;
+  - indeterminate origin refused (8 cases);
+  - stale or missing local tags refused (3 cases);
+  - version-newer refusal preserved;
+  - a failing local tag listing refused;
+  - the real-Git test of a tagless clone against a real origin.
+- `run-gate-project/docs/DESIGN-GUIDE.md`, `CONSUMERS.md`, `README.md`,
+  `CHANGES.md`.
+
+### F8 residual risks
+- The release now needs origin to be readable from `prepare` on the host. A
+  network or authentication failure refuses the release rather than skipping
+  the check, which is intended. `origin` is the same remote CMRU's plan step
+  reads.
+- The origin read and the local read are two moments; a concurrent tag push or
+  delete between them is not serialized. CMRU creates the new tag only after
+  the gate.
+- Static checks only (`py_compile`, ruff `F`: only the two pre-existing
+  findings). Nothing was executed.

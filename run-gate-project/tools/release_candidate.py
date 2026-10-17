@@ -78,10 +78,12 @@ def prepared_release_version(
 ) -> str:
     """Read the dated version CMRU prepared for this candidate.
 
-    A first stable release has no previous tag to compare against. That case is
-    accepted only by the protected CMRU release transaction, after
-    :func:`prepare` has bound its gate commit to this checkout. Ordinary local
-    calls still require a stable baseline.
+    A first stable release has no previous tag to compare against. Only
+    :func:`prepare`, after binding CMRU's gate commit to this checkout, passes
+    ``allow_first_release``. It then reads origin's ``run-gate-v*`` tags too:
+    the first-release path needs origin to show no stable tag, and a checkout
+    whose local tags are missing or older than origin's is refused. Ordinary
+    calls read only local tags and still require a stable baseline.
     """
     source = REPOSITORY_ROOT / "cmru" / "src"
     source_entry = str(source)
@@ -118,12 +120,12 @@ def prepared_release_version(
         raise ReleaseCandidateError(
             f"{changes_path} has no dated stable release section prepared by CMRU"
         )
-    try:
+    if allow_first_release:
+        latest = _release_baseline()
+        if latest is None:
+            return prepared_version
+    else:
         latest = _latest_release_tag()
-    except NoStableReleaseTag:
-        if not allow_first_release:
-            raise
-        return prepared_version
     if _semver_key(prepared_version) <= _semver_key(latest[1]):
         raise ReleaseCandidateError(
             f"prepared Run-Gate version {prepared_version} is not newer than "
@@ -139,20 +141,98 @@ def _semver_key(version: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in version.split("."))
 
 
-def _latest_release_tag() -> tuple[str, str]:
-    tags = _git("tag", "--list", "run-gate-v*").splitlines()
+def _stable_release_tags(tags: list[str]) -> list[tuple[tuple[int, int, int], str, str]]:
     stable: list[tuple[tuple[int, int, int], str, str]] = []
     for tag in tags:
         match = re.fullmatch(r"run-gate-v([0-9]+\.[0-9]+\.[0-9]+)", tag)
         if match and STABLE_SEMVER.fullmatch(match.group(1)):
             version = match.group(1)
             stable.append((_semver_key(version), tag, version))
+    return stable
+
+
+def _latest_release_tag() -> tuple[str, str]:
+    """The newest stable release tag in this checkout (local refs only)."""
+    stable = _stable_release_tags(_git("tag", "--list", "run-gate-v*").splitlines())
     if not stable:
         raise NoStableReleaseTag(
             "cannot prove the prepared Run-Gate version is new: no stable "
             "run-gate-vX.Y.Z release tag is available in this checkout"
         )
     _key, tag, version = max(stable)
+    return tag, version
+
+
+_LS_REMOTE_TAG_LINE = re.compile(
+    r"([0-9a-f]{40}|[0-9a-f]{64})\trefs/tags/(run-gate-v[^\s^]+)(\^\{\})?"
+)
+
+
+def _origin_release_tags() -> list[str]:
+    """Every ``run-gate-v*`` tag name origin advertises; ``[]`` only when proven.
+
+    ``git ls-remote --exit-code`` exits 2 only when origin answered and holds no
+    matching ref, which is the one proof that no release exists. Any other
+    failure, or output this parser cannot account for, means the inventory
+    could not be determined, and that is a refusal, never an empty list.
+    """
+    argv = [
+        "git", "-C", str(REPOSITORY_ROOT), "ls-remote", "--exit-code", "--tags",
+        "origin", "refs/tags/run-gate-v*",
+    ]
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        result = subprocess.run(
+            argv, check=False, capture_output=True, text=True, env=env, timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReleaseCandidateError(
+            f"cannot read origin's run-gate-v* release tags: {exc}"
+        ) from exc
+    if result.returncode == 2 and not result.stdout.strip():
+        return []
+    if result.returncode:
+        raise ReleaseCandidateError(
+            "cannot read origin's run-gate-v* release tags (git ls-remote exited "
+            f"{result.returncode}): {result.stderr.strip()[:300]}; a checkout without "
+            "local release tags cannot be told apart from a first release"
+        )
+    names: set[str] = set()
+    for line_number, line in enumerate(result.stdout.splitlines(), start=1):
+        match = _LS_REMOTE_TAG_LINE.fullmatch(line)
+        if match is None:
+            raise ReleaseCandidateError(
+                f"origin's run-gate-v* tag listing is malformed at line {line_number}: {line[:200]!r}"
+            )
+        names.add(match.group(2))
+    if not names:
+        raise ReleaseCandidateError(
+            "git ls-remote reported run-gate-v* tags on origin but listed none"
+        )
+    return sorted(names)
+
+
+def _release_baseline() -> tuple[str, str] | None:
+    """The newest stable release, checked against origin; ``None`` = first release.
+
+    ``None`` is returned only when origin has been read and advertises no stable
+    ``run-gate-vX.Y.Z`` tag. A local listing that is empty or older than origin's
+    is a stale checkout, not a first release, and is refused.
+    """
+    local = _stable_release_tags(_git("tag", "--list", "run-gate-v*").splitlines())
+    origin = _stable_release_tags(_origin_release_tags())
+    if origin:
+        _key, origin_tag, _version = max(origin)
+        if not local or max(origin)[0] > max(local)[0]:
+            newest_local = max(local)[1] if local else "none"
+            raise ReleaseCandidateError(
+                f"origin has stable release tag {origin_tag} but this checkout's newest is "
+                f"{newest_local}; fetch the release tags (git fetch --tags origin) and retry"
+            )
+    if not local:
+        return None
+    _key, tag, version = max(local)
     return tag, version
 
 

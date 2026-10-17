@@ -18,6 +18,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   overrides refuse before any wheel or image build. The built image must label
   the expected cli-extended digest and the requested base
   (`org.vbpub.tester-unified.base-image`, new) before the gate may use it.
+- Fix: release preparation no longer treats an empty local tag listing as a
+  first release. It reads origin's `run-gate-v*` tags and accepts a first
+  release only when origin shows no stable tag. It refuses when origin cannot
+  be read, when its listing is malformed, or when origin has a newer stable
+  release than the checkout. The version-newer refusal is unchanged.
 - Fix (behavior change): the Assay judge no longer inherits the state-root
   path as `TMPDIR` when that root is inside the judged worktree, so the default
   in-repo `.run-gate` root works for snapshot-isolated R1-R3 lanes instead of

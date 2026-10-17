@@ -324,7 +324,10 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    alone — a diff-coverage floor at 100% on every executable line changed
    since the newest reachable stable `run-gate-vX.Y.Z` release tag. On the
    first stable release, when no stable Run-Gate tag exists, it reports the
-   diff check as `SKIPPED` because there is no released source baseline; the
+   diff check as `SKIPPED` because there is no released source baseline. The
+   release transaction's preparation accepts a first release only when origin
+   shows no stable tag, and refuses a checkout missing origin's release tags
+   ([why](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel)); the
    separately run `assay-r1` campaign remains the whole-source line-and-branch
    qualification before merge. A stable tag that exists but is unreachable is
    still an error. This immutable baseline stays meaningful after merge; using `main` there would

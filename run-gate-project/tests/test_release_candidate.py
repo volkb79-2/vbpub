@@ -748,17 +748,218 @@ def test_prepared_release_version_refuses_a_heading_that_is_already_released(mon
         release_candidate.prepared_release_version(changes)
 
 
-def test_prepared_release_version_allows_an_explicit_first_release(monkeypatch, tmp_path):
-    changes = tmp_path / "CHANGES.md"
-    changes.write_text("## [24.0.0] - 2026-10-14\n\nFirst stable release.\n", encoding="utf-8")
-    monkeypatch.setattr(release_candidate, "_git", lambda *args: "")
+_TAG_OID = "e" * 40
+_COMMIT_OID = "d" * 40
+_LS_REMOTE_ARGV_TAIL = [
+    "ls-remote", "--exit-code", "--tags", "origin", "refs/tags/run-gate-v*",
+]
 
-    with pytest.raises(release_candidate.NoStableReleaseTag, match="no stable.*release tag"):
-        release_candidate.prepared_release_version(changes)
+
+def _ls_remote_lines(*tags):
+    """`git ls-remote --tags` output for annotated tags (tag object + peeled commit)."""
+    return "".join(
+        f"{_TAG_OID}\trefs/tags/{tag}\n{_COMMIT_OID}\trefs/tags/{tag}^{{}}\n" for tag in tags
+    )
+
+
+def _fake_origin(monkeypatch, *, local, returncode=0, stdout="", stderr="", raises=None):
+    """Local tags come from `_git`; origin's listing from the faked ls-remote.
+
+    Returns the list of ls-remote calls as ``(argv, env)`` pairs.
+    """
+    monkeypatch.setattr(
+        release_candidate, "_git", lambda *args: local if args[:2] == ("tag", "--list") else "",
+    )
+    calls = []
+
+    def run(argv, **kwargs):
+        assert argv[3:] == _LS_REMOTE_ARGV_TAIL, argv
+        calls.append((argv, kwargs.get("env")))
+        if raises is not None:
+            raise raises
+        return _completed(stdout=stdout, stderr=stderr, returncode=returncode)
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", run)
+    return calls
+
+
+def _changes(tmp_path, version="24.0.0"):
+    changes = tmp_path / "CHANGES.md"
+    changes.write_text(f"## [{version}] - 2026-10-14\n\nCandidate.\n", encoding="utf-8")
+    return changes
+
+
+@pytest.mark.parametrize(
+    "origin_stdout", ["", _ls_remote_lines("run-gate-v24.0.0-rc1")],
+    ids=["origin-has-no-run-gate-tag", "origin-has-only-a-prerelease"],
+)
+def test_first_release_is_accepted_only_when_origin_shows_no_stable_tag(
+    monkeypatch, tmp_path, origin_stdout,
+):
+    """The legitimate first release: local and origin both lack a stable tag,
+    and origin's answer is a complete listing (exit 2 = no matching ref)."""
+    changes = _changes(tmp_path)
+    calls = _fake_origin(
+        monkeypatch, local="", returncode=0 if origin_stdout else 2, stdout=origin_stdout,
+    )
 
     assert release_candidate.prepared_release_version(
         changes, allow_first_release=True,
     ) == "24.0.0"
+    assert len(calls) == 1
+    argv, env = calls[0]
+    assert argv[:3] == ["git", "-C", str(release_candidate.REPOSITORY_ROOT)]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_ordinary_version_check_reads_only_local_tags(monkeypatch, tmp_path):
+    """Without the release-transaction flag nothing queries origin (the gate
+    container's selftest calls this), and an empty local listing still refuses."""
+    changes = _changes(tmp_path)
+    monkeypatch.setattr(release_candidate, "_git", lambda *args: "")
+    monkeypatch.setattr(
+        release_candidate.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("the ordinary check must not query origin"),
+    )
+
+    with pytest.raises(release_candidate.NoStableReleaseTag, match="no stable.*release tag"):
+        release_candidate.prepared_release_version(changes)
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "raises", "message"),
+    [
+        (128, "", None, r"cannot read origin's run-gate-v\* release tags \(git ls-remote exited 128\)"),
+        (2, _ls_remote_lines("run-gate-v24.0.0"), None, r"git ls-remote exited 2"),
+        (0, "", None, "listed none"),
+        (0, "not a ref line\n", None, "listing is malformed at line 1"),
+        (0, f"{_COMMIT_OID}\trefs/tags/other-v1.0.0\n", None, "listing is malformed at line 1"),
+        (0, f"{_COMMIT_OID[:39]}\trefs/tags/run-gate-v24.0.0\n", None, "malformed at line 1"),
+        (None, "", release_candidate.subprocess.TimeoutExpired(["git"], 120),
+         "cannot read origin's run-gate-v"),
+        (None, "", FileNotFoundError("git"), "cannot read origin's run-gate-v"),
+    ],
+    ids=[
+        "origin-unreachable", "exit-2-with-refs", "success-without-refs", "garbage-line",
+        "foreign-namespace", "short-object-id", "timeout", "git-missing",
+    ],
+)
+def test_first_release_refuses_an_indeterminate_origin_inventory(
+    monkeypatch, tmp_path, returncode, stdout, raises, message,
+):
+    """No local stable tag plus an origin listing that could not be fully read
+    is not a first release; it is refused, never treated as empty."""
+    changes = _changes(tmp_path)
+    _fake_origin(
+        monkeypatch, local="", returncode=returncode, stdout=stdout,
+        stderr="fatal: unable to access origin", raises=raises,
+    )
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message) as error:
+        release_candidate.prepared_release_version(changes, allow_first_release=True)
+    assert not isinstance(error.value, release_candidate.NoStableReleaseTag)
+
+
+@pytest.mark.parametrize(
+    ("local", "origin", "newest_local"),
+    [
+        ("", ("run-gate-v23.10.0", "run-gate-v24.0.0"), "none"),
+        ("run-gate-v24.0.0-rc1", ("run-gate-v24.0.0",), "none"),
+        ("run-gate-v23.10.0", ("run-gate-v23.10.0", "run-gate-v24.0.0"), "run-gate-v23.10.0"),
+    ],
+    ids=["clone-without-tags", "only-a-local-prerelease", "stale-older-tags"],
+)
+def test_release_transaction_refuses_a_checkout_missing_origin_release_tags(
+    monkeypatch, tmp_path, local, origin, newest_local,
+):
+    """Local enumeration succeeded, but origin has a newer stable release: the
+    checkout is stale. Neither a first release nor a version check against the
+    older local tag may pass."""
+    changes = _changes(tmp_path, "24.0.1")
+    _fake_origin(monkeypatch, local=local, stdout=_ls_remote_lines(*origin))
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=(
+            rf"origin has stable release tag run-gate-v24\.0\.0 but this checkout's newest "
+            rf"is {re.escape(newest_local)}; fetch the release tags"
+        ),
+    ):
+        release_candidate.prepared_release_version(changes, allow_first_release=True)
+
+
+def test_release_transaction_keeps_the_version_newer_refusal(monkeypatch, tmp_path):
+    origin = _ls_remote_lines("run-gate-v23.10.0", "run-gate-v24.0.0")
+    _fake_origin(monkeypatch, local="run-gate-v23.10.0\nrun-gate-v24.0.0", stdout=origin)
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="not newer than"):
+        release_candidate.prepared_release_version(
+            _changes(tmp_path, "24.0.0"), allow_first_release=True,
+        )
+    assert release_candidate.prepared_release_version(
+        _changes(tmp_path, "24.0.1"), allow_first_release=True,
+    ) == "24.0.1"
+
+
+def test_release_transaction_refuses_a_failed_local_tag_listing(monkeypatch, tmp_path):
+    """A failing `git tag --list` is a refusal, not an empty local inventory."""
+    changes = _changes(tmp_path)
+
+    def run(argv, **_kwargs):
+        assert "ls-remote" not in argv, "origin must not be consulted after a local failure"
+        return _completed(stderr="fatal: not a git repository", returncode=128)
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", run)
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError, match=r"git tag --list run-gate-v\* failed \(128\)",
+    ) as error:
+        release_candidate.prepared_release_version(changes, allow_first_release=True)
+    assert not isinstance(error.value, release_candidate.NoStableReleaseTag)
+
+
+def test_release_baseline_reads_the_real_origin_of_a_tagless_clone(monkeypatch, tmp_path):
+    """Real Git, real ls-remote: a clone made with --no-tags lists no local tag
+    successfully, while its origin carries a release. That is refused until
+    the tags are fetched; a genuinely untagged origin is a first release."""
+    import subprocess
+
+    def git(*args, cwd=tmp_path):
+        return subprocess.run(
+            ["git", "-c", "user.email=test@example.invalid", "-c", "user.name=test",
+             "-c", "init.defaultBranch=main", "-C", str(cwd), *args],
+            check=True, capture_output=True, text=True,
+        ).stdout
+
+    def published(name, *tags):
+        work = tmp_path / f"{name}-work"
+        work.mkdir()
+        git("init", "-q", cwd=work)
+        (work / "run_gate.py").write_text("released = True\n", encoding="utf-8")
+        git("add", "run_gate.py", cwd=work)
+        git("commit", "-q", "-m", "release", cwd=work)
+        for tag in tags:
+            git("tag", "-a", tag, "-m", tag, cwd=work)
+        origin = tmp_path / f"{name}.git"
+        git("clone", "-q", "--bare", str(work), str(origin))
+        clone = tmp_path / f"{name}-clone"
+        git("clone", "-q", "--no-tags", str(origin), str(clone))
+        return clone
+
+    released = published("released", "run-gate-v23.10.0", "run-gate-v24.0.0")
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", released)
+    assert git("tag", "--list", cwd=released) == ""
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="origin has stable release tag run-gate-v24.0.0 but this checkout's newest is none",
+    ):
+        release_candidate._release_baseline()
+    git("fetch", "-q", "--tags", "origin", cwd=released)
+    assert release_candidate._release_baseline() == ("run-gate-v24.0.0", "24.0.0")
+
+    first = published("first")
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", first)
+    assert release_candidate._release_baseline() is None
 
 
 def test_prepared_release_version_refuses_unreleased_only_changelog(tmp_path):

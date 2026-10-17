@@ -48,7 +48,19 @@ requires CMRU's protected `CMRU_RELEASE_GATE_COMMIT` and verifies that it
 matches the selected checkout, so a dated heading alone cannot stamp a stable
 version onto an unrelated or manually prepared tree. For a first release, no
 prior stable tag exists; the protected CMRU transaction may use its prepared
-version as the initial stable identity. It then
+version as the initial stable identity. An empty local `git tag` listing is not
+evidence of that: a clone made without tags lists nothing successfully. Inside
+the transaction, preparation also reads origin with
+`git ls-remote --exit-code --tags origin 'refs/tags/run-gate-v*'`. Only exit 2,
+where origin answered with no matching ref, or a fully parsed listing with no
+stable tag proves a first release. Preparation refuses three states:
+- origin cannot be read, or its listing is malformed;
+- origin has a stable tag this checkout lacks;
+- the checkout's newest local tag is older than origin's.
+
+CMRU's own release-plan check compares tags under its own suffix-tolerant
+ordering and passes the gate only its commit, so Run-Gate reads origin itself
+rather than relying on that. Preparation then
 builds that wheel through CMRU's wheel builder and builds a uniquely tagged
 `tester-unified` image from those exact wheel bytes. The selftest selects that
 tag through `image_env`, leaving the shared `:local` tag alone. Before pytest,
