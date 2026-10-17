@@ -36,12 +36,14 @@ class _Docker:
     def __init__(
         self, systemctl_stdout: str = "", *, probe_error: Exception | None = None,
         parent_stdout: str = LOADED, parent_error: Exception | None = None,
+        rm_returncode: int = 0,
     ):
         self.calls: list[list[str]] = []
         self.systemctl_stdout = systemctl_stdout
         self.probe_error = probe_error
         self.parent_stdout = parent_stdout
         self.parent_error = parent_error
+        self.rm_returncode = rm_returncode
 
     def __call__(self, argv, **_kwargs):
         argv = list(argv)
@@ -55,6 +57,8 @@ class _Docker:
             if self.probe_error is not None:
                 raise self.probe_error
             return SimpleNamespace(returncode=0, stdout=self.systemctl_stdout, stderr="")
+        if argv[:3] == ["docker", "rm", "-f"]:
+            return SimpleNamespace(returncode=self.rm_returncode, stdout="", stderr="busy")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     @property
@@ -208,6 +212,31 @@ def test_an_unverified_probe_parent_refuses_naming_the_gates_input_and_starts_no
     assert (project / "dist" / "stale-1.0.0-py3-none-any.whl").exists()  # output preserved
     message = capsys.readouterr().err
     assert "CMRU_TESTER_CGROUP_PARENT" in message and PROBE_PARENT in message and named in message
+
+
+def test_a_hung_gates_probe_refuses_and_names_the_container_it_left(
+    project, monkeypatch, capsys,
+):
+    """The 2026-10-17 run-gate release shape: the gates-tier self-check probe
+    timed out daemon-side and its container could not be removed. The build
+    is refused (indeterminate is never certified), nothing is built or
+    deleted, and the refusal names the residual probe container."""
+    docker = _Docker(
+        LOADED, parent_error=subprocess.TimeoutExpired("docker", 30), rm_returncode=1,
+    )
+    monkeypatch.setattr(subprocess, "run", docker)
+
+    with pytest.raises(SystemExit) as refused:
+        _run(project)
+
+    assert refused.value.code == exit_codes.PREREQ_MISSING
+    assert docker.builder_runs == [] and len(docker.probes) == 1
+    assert (project / "dist" / "stale-1.0.0-py3-none-any.whl").exists()
+    probe_name = docker.probes[0][docker.probes[0].index("--name") + 1]
+    assert ["docker", "rm", "-f", probe_name] in docker.calls
+    message = capsys.readouterr().err
+    assert "could not probe" in message and "timed out" in message
+    assert f"probe container {probe_name} could not be removed" in message
 
 
 def test_probe_inputs_declared_only_in_the_enclosing_config_are_found_and_used(
