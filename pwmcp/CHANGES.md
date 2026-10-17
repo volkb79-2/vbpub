@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [1.64.0-r2] - 2026-10-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=0859edf9b96489ef032f6f6b4d9cb1cd1147246f -->
+
+### Fixed
+- fix(pwmcp): keep fetch skill install agnostic (948080489)
+
 ## [1.64.0-r1] - 2026-10-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=0f9b1cc6a3fb7d74018d3f5f7cf8c5fddaf5c69d -->
