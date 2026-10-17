@@ -76,6 +76,13 @@ on exit. This keeps browser binaries and browser process cleanup in PWMCP while
 giving an operator text, accessibility snapshot, or screenshot output from one
 command. `--wait-until` follows Playwright's navigation states, and
 `--wait-for` waits for a visible selector before reading the rendered page.
+Some single-page applications render useful content after the navigation event,
+so consumers can select `networkidle` and wait for a page-specific content
+selector. A selector can match repeated elements, as conversation message
+selectors do; PWMCP waits for the first visible match instead of treating
+multiple matches as an error. This keeps the wait tied to rendered content
+without adding a fixed delay to every inspection. See the
+[dynamic page example](CONSUMERS.md#inspect-a-webpage).
 
 ### Certificate errors during inspection
 
