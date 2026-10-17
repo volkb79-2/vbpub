@@ -419,6 +419,8 @@ def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
         cli_version_result = subprocess.run(
             [executable, "--version"],
             cwd=repo_root / "cmru",
+            # The launcher is not verified yet: never hand it publisher tokens.
+            env=_lane_environment(),
             capture_output=True,
             text=True,
             check=False,
@@ -835,7 +837,9 @@ def _preflight_assay_source(repo_root: Path) -> None:
         raise RuntimeError(f"Assay source preflight is missing or unsafe: {script}")
     try:
         result = subprocess.run(
-            [sys.executable, str(script), "--assay-source", str(assay_source)],
+            # Isolated like the controller itself (-I -B): PYTHONPATH or a
+            # user-site module must not shadow anything the check imports.
+            [sys.executable, "-I", "-B", str(script), "--assay-source", str(assay_source)],
             cwd=repo_root,
             check=False,
             capture_output=True,
@@ -1244,9 +1248,10 @@ def _run_snapshot_lane(
             lane_environment[_RUN_GATE_EXECUTABLE_ENV] = executable_path
         image_id = expected_identity.get("tester_image_id")
         if isinstance(image_id, str):
-            # Run-Gate accepts the configured image through this explicit
-            # override. Pin to the inspected image ID so a mutable tag cannot
-            # change which judge image a later lane starts.
+            # Run-Gate reads this override only for an environment that declares
+            # `image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"` (here: cmru-mutation;
+            # the root tester-unified declaration lands with the Run-Gate wave).
+            # Elsewhere the image-ID recheck around each lane detects a retag.
             lane_environment["RUN_GATE_TESTER_UNIFIED_IMAGE"] = image_id
     # Refresh the host manifest FIRST: prepare_lane seeds the lane's copy from
     # it, and the live-snapshot check accepts only a manifest this recent.

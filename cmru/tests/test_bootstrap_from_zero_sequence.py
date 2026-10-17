@@ -279,6 +279,61 @@ def test_an_unreadable_or_malformed_pointer_is_a_refusal_not_no_release(tmp_path
     assert result.stderr.startswith("cli-extended-release-identity:")
 
 
+@pytest.mark.parametrize(("version", "url"), [
+    ("1; touch PWNED", OLD_URL),
+    ("0.3.0", OLD_URL.replace("cli_extended-0.3.0", "cli_extended-0.3.0$(touch PWNED)")),
+    ("0.3.0", OLD_URL.replace("cli-extended-v0.3.0/", "cli-extended-v0.3.0/../../x/")),
+    ("0.3.0", OLD_URL.replace("cli-extended-v0.3.0", "cli-extended-v0.4.0")),
+    ("0.4.0", OLD_URL),
+    (None, OLD_URL),
+], ids=["version-command", "url-command", "url-traversal", "tag-mismatch", "version-mismatch", "no-version"])
+def test_a_hostile_or_inconsistent_pointer_is_refused_before_anything_reaches_eval(
+    tmp_path, version, url,
+):
+    """The guide `eval`s this output, so a replaced pointer must never inject shell."""
+    _dockerfile(tmp_path / "Dockerfile", OLD_URL, OLD_PIN_SHA)
+    document = {"asset": "x.whl", "sha256": NEW_SHA, "url": url}
+    if version is not None:
+        document["version"] = version
+    (tmp_path / "latest.json").write_text(json.dumps(document), encoding="utf-8")
+
+    result = _identity(
+        "--released-sha256", NEW_SHA, "--dockerfile", str(tmp_path / "Dockerfile"),
+        "--pointer-file", str(tmp_path / "latest.json"),
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert result.stdout == ""
+    assert "cli-extended-release-identity:" in result.stderr
+
+
+def test_the_identity_output_is_safe_to_eval(tmp_path):
+    _dockerfile(tmp_path / "Dockerfile", OLD_URL, OLD_PIN_SHA)
+    _pointer(tmp_path / "latest.json", NEW_SHA, OLD_URL)
+    result = _identity(
+        "--released-sha256", NEW_SHA, "--dockerfile", str(tmp_path / "Dockerfile"),
+        "--pointer-file", str(tmp_path / "latest.json"),
+    )
+    assert result.returncode == 0, result.stderr
+
+    evaluated = subprocess.run(
+        ["bash", "-c", 'eval "$1"; printf "%s\\n" "$CLI_EXTENDED_RELEASED_URL" "$CLI_EXTENDED_RESOLVE"', "_", result.stdout],
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert evaluated == [OLD_URL, "latest"]
+
+
+def test_a_malformed_dockerfile_pin_is_refused(tmp_path):
+    _dockerfile(tmp_path / "Dockerfile", OLD_URL, "a$(id)b")
+    _pointer(tmp_path / "latest.json", NEW_SHA, OLD_URL)
+    result = _identity(
+        "--released-sha256", NEW_SHA, "--dockerfile", str(tmp_path / "Dockerfile"),
+        "--pointer-file", str(tmp_path / "latest.json"),
+    )
+    assert result.returncode == 2
+    assert "pinned CLI_EXTENDED_WHEEL_SHA256" in result.stderr
+
+
 @pytest.mark.skipif(not DOCKERFILE.is_file(), reason="tester-unified absent (isolated canary tree)")
 def test_the_real_dockerfile_pin_is_readable_by_the_check(tmp_path):
     text = DOCKERFILE.read_text(encoding="utf-8")
@@ -402,6 +457,39 @@ def test_step_three_pinned_mode_passes_no_digest_flag_when_the_pin_is_current(tm
     (command,) = log.read_text(encoding="utf-8").splitlines()
     assert "--cli-extended-resolve pinned" in command
     assert "--cli-extended-wheel-sha256" not in command
+
+
+@_needs_repo
+def test_every_run_gate_tester_input_the_guide_passes_is_read_by_run_gate_source():
+    """A `RUN_GATE_TESTER_*` value the guide exports must reach real Run-Gate code.
+
+    Run-Gate ignores an unknown environment variable, so a guide that names an
+    input no Run-Gate source reads is a pasteable step that cannot fail. The
+    consumer lives in Run-Gate's own tree; until that tree is integrated here,
+    this check is red on purpose.
+    """
+    text = GUIDE.read_text(encoding="utf-8")
+    named = set(re.findall(r"\b(RUN_GATE_TESTER_[A-Z0-9_]+)=", text))
+    assert named, "the guide passes no RUN_GATE_TESTER_* input; update this oracle"
+    sources = [
+        path for path in (REPO_ROOT / "run-gate-project").rglob("*.py")
+        if "tests" not in path.relative_to(REPO_ROOT / "run-gate-project").parts
+    ]
+    read = {
+        name for name in named
+        if any(name in path.read_text(encoding="utf-8", errors="replace") for path in sources)
+    }
+    # The guide pins each release's image through the environment the root
+    # `tester-unified` declares as `image_env`; the CGProfile and Run-Gate gate
+    # lanes run there, so a CMRU-only `cmru-mutation` declaration does not count.
+    root = tomllib.loads((REPO_ROOT / "run-gate.root.toml").read_text(encoding="utf-8"))
+    image_env = root.get("environments", {}).get("tester-unified", {}).get("image_env")
+    if isinstance(image_env, str):
+        read.add(image_env)
+    assert named <= read, (
+        "the from-zero guide passes Run-Gate inputs that no Run-Gate source reads: "
+        + ", ".join(sorted(named - read))
+    )
 
 
 @_needs_repo

@@ -839,7 +839,7 @@ def write_release_source(
     repo_root: Path, workspace: ReleaseWorkspace, *, branch: str, commit: str,
 ) -> None:
     """Bind a feature-source transaction to the exact caller branch and commit."""
-    if not _valid_local_branch_name(branch, repo_root) or branch == "main":
+    if not _valid_local_branch_name(branch, repo_root) or branch in ("main", "HEAD"):
         raise RuntimeError("feature-source release metadata has an invalid source branch")
     if not COMMIT_ID_RE.fullmatch(commit) or commit != workspace.base:
         raise RuntimeError("feature-source release metadata does not match the transaction base")

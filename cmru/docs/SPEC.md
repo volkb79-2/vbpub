@@ -1747,6 +1747,11 @@ verify its checkout and tag against both values before producing the artifact.
 CMRU MUST clear ambient values for these names from all other project steps.
 The pair is source-consistency metadata, not an authentication token or proof
 of CMRU provenance; publication MUST use the supported `cmru release` workflow.
+Every project step also receives the protected `CMRU_RELEASE_NOTES_SOURCE`
+(KI-75): `changelog:<project-relative path>` naming the project's declared
+changelog, or `none` when the project declares none. It is reserved like the
+pair above, and a release-body handler reads the version's section only from
+the release commit through it, never from the working tree.
 `tester-gate` likewise has no built-in inputs: it requires `--image`
 or `CMRU_TESTER_UNIFIED_IMAGE`, plus explicit memory, combined memory/swap, CPU, pids-limit, and
 host-systemd probe-image values (CLI options or the effective `[env]`). `--enable-docker` additionally
@@ -1784,6 +1789,10 @@ otherwise unchanged.
 
 A gate that deliberately defers the mutation lane (`--postpone-mutation`, `gate-provisional`)
 exits 0 after every required non-mutation lane and the final canary pass, and records:
+(A tracking id is bound to one release version: `KI-79` authorizes only CMRU `6.2.0`, read
+from the prepared changelog, and `FIRST-RELEASE-R2` only a first release with no published
+stable tag. Any other id or prepared version refuses before a lane runs.)
+
 
 - `cmru/.assay/release-gate-snapshot.json` (`schema_version` 4): `state` is `"provisional"`
   (a full gate records `"passed"`; any other outcome `"failed"`, `"interrupted"` or
@@ -1796,6 +1805,11 @@ exits 0 after every required non-mutation lane and the final canary pass, and re
 - `cmru/.assay/mutation-postponed-cmru.json` (`schema_version` 3): the earlier fields plus
   `result: "provisional"` and `follow_up_prerequisites`. It is deleted when a valid new gate
   starts and written only after the canary succeeds, so a failed gate leaves none.
+
+The manifest `state` is the authoritative result; the marker is supporting evidence. A gate
+in progress records `"running"`. A gate killed outright (SIGKILL, OOM) during final cleanup
+can leave the marker beside a `"running"` manifest; `running` is never a pass, so readers MUST
+check the manifest state rather than the marker alone.
 
 Success is decided only after cleanup succeeds. Snapshot finalization (planted-canary removal
 and lease release) runs after the lanes; if either fails after a claimed `passed` or
@@ -2136,6 +2150,20 @@ consumer-verifiable evidence in their own step and documentation.
 
 **S4.5** Dev builds (untagged commits, version contains `.dev`) MUST NOT mint a `<prefix>-v`
 release. They MAY publish to a project-owned development channel.
+
+**S4.6a — Pending notes are tagged, never appended after publication (KI-78).** A non-empty
+plain `## [Unreleased]` body MUST be folded, inside CMRU's marked pending-notes block, into the
+generated dated section of every tagged release candidate before that candidate's gate and tag;
+`--dry-run` stages the same section and MUST restore the source bytes. CMRU MUST NOT commit to
+the changelog after publication. A CMRU release-body handler (`wheel-publish`,
+`tarball-publish`, `oci-image-release`) publishes that exact tagged section; `--no-build` and
+other publishers keep it only in the tagged changelog. H2 parsing MUST ignore HTML comments
+and fenced code, and duplicate or misspelled `[Unreleased]` headings MUST refuse.
+
+**S4.6b — Wheel-bound release controller.** A real `cmru release` MUST run from an intact,
+non-editable installed CMRU wheel with a recorded SHA-256, record that wheel's version and
+wheel/installed-file digests in the release log, and refuse in the transaction child when they
+differ from the launcher's. `--dry-run` is exempt and MAY run from a source checkout.
 
 **S4.7 — Image-only release body (KI-78).** `cmru handler oci-image-release --prefix PREFIX
 --image REPOSITORY --cwd DIR` publishes the GitHub Release body for a project whose artifact is
@@ -3199,34 +3227,35 @@ and cause-sensitive canary checks as one release contract.
 `$CGROUP_PARENT_DEV_GATES` slice and fails closed when it is absent or not a
 loaded unit. A local devcontainer pytest result is not gate evidence.
 
-**S16.4 — Publisher credential boundary.** Before starting any tester-unified
-lane, the registered host `gate` lane MUST resolve the selected CMRU Git auth,
-save all visible root/project `cmru.secret.toml` overlays in a private
-temporary directory outside the repository mount, and replace their worktree
-paths with symlinks to those host-only backups. Every nested `run-gate` CLI
-process MUST have
-`GITHUB_PUSH_PAT`, `GITHUB_TOKEN`, `CMRU_GIT_AUTH_TOKEN`, and
-`RUN_GATE_EXTRA_MOUNTS` removed. The host MAY use its in-memory auth object for
-scoped origin queries; only token-free tag and commit facts may be forwarded
-to `cmru-mutation`. The host MUST restore the original overlay bytes, owner,
-group, mode, and timestamps after success or failure. A restore failure MUST
-fail the gate and MUST retain the private backup directory, reporting its path,
-until restoration succeeds. Copying an overlay into a retained worktree MUST open the source
-without following symlinks, reject symlink and nonregular destination paths, and install the
-mode-0600 copy atomically from a sibling temporary file.
-Direct tester component lanes do not apply this host wrapper and MUST only run
-when the mounted checkout contains no publisher secret overlays.
+**S16.4 — Publisher credential boundary (exact-HEAD snapshot, KI-74).** The registered
+host `gate` and `gate-provisional` lanes MUST run from a linked Git worktree with no tracked
+changes and MUST refuse a main checkout before launching any lane. Before allocation they MUST
+refuse a tracked `cmru.secret.toml`, a configured Git filter that could execute during checkout,
+and tracked files at the paths reserved for gate evidence. Every tester lane then runs from an
+attached sidecar worktree created at that exact commit through the shared worktree lifecycle;
+the caller's mutable checkout MUST NOT be mounted into tester-unified, so no secret overlay is
+copied, masked or restored. A random host-only canary MUST be planted in the caller and the
+`installed-wheel-live` lane MUST prove from inside the real tester container that it is absent,
+bound to this gate's own snapshot manifest (state `running`, refreshed within 30 minutes).
 
-The registered CMRU release gate MUST run from a linked Git worktree. It MUST
-refuse a main checkout before masking secrets or launching a lane because the
-whole mounted main path can include publisher secrets from sibling checkouts
-under `.worktrees/`. A linked worktree's inventory covers secret files inside
-every tester-visible working-tree directory, including ignored virtual
-environments, dependency directories, generated caches, and nested
-`.worktrees/`; it does not traverse the shared Git directory or external
-sibling worktrees. An incomplete restore after a parent disappears or changes
-MUST fail the gate while retaining the private backup and MUST NOT write the
-old secret into a replacement directory.
+Every nested `run-gate` CLI process MUST have `GITHUB_PUSH_PAT`, `GITHUB_TOKEN`,
+`CMRU_GIT_AUTH_TOKEN`, and `RUN_GATE_EXTRA_MOUNTS` removed. The host MAY use its in-memory
+auth object (resolved through the private credential handoff) for scoped origin queries; only
+token-free tag and commit facts may be forwarded to `cmru-mutation`.
+
+Before anything imports or runs, and again before every lane, the gate MUST compare every
+directory it puts on `sys.path` against `git ls-tree HEAD` by blob hash and refuse an
+untracked or ignored executable module, any symlink, and any changed or deleted tracked file.
+The `ref-probe` lane MUST prove the protected-ref detector from inside the tester container;
+a lane that moves the snapshot branch, the judged source branch, the `refs/cmru-gate/<id>/`
+namespace or an existing release tag, or moves `refs/heads/main` other than by fast-forward,
+fails the gate. Between lanes the sidecar is restored to the exact commit and only the named
+evidence files are copied to the caller. The installed Run-Gate MUST be a stable,
+non-editable wheel at SemVer `24.0.0` or later whose bytes, executable modules and
+tester-image labels match the published release (KI-77 records what is detection rather than
+mount-level prevention). Direct tester component lanes bypass this wrapper and MUST only run
+from a checkout that contains no publisher secret. The KI-63/64/65/73 inventory-and-restore
+requirements are superseded; their incidents remain in the backlog as history.
 
 **S16.5 — Real enrollment (moved to ciu).** cmru no longer ships host enrollment:
 `get.py enroll` is ciu-owned code inlined through the installer `extensions`

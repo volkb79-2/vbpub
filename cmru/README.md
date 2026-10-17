@@ -24,9 +24,12 @@ python3 -m pip install --no-index --find-links ./wheelhouse ./cmru-<version>-py3
 ```
 
 The guided `cmru init` wizard asks its questions with the optional `questionary` prompt
-driver, which is the `interactive` extra: install the wheelhouse with `cmru[interactive]`
-(`python3 -m pip install --no-index --find-links ./wheelhouse 'cmru[interactive]'`; the
-wheelhouse must then also hold `questionary` and its dependencies). Neither cmru nor
+driver, which is the `interactive` extra: install the wheel file with the extra
+(`python3 -m pip install --no-index --find-links ./wheelhouse './cmru-<version>-py3-none-any.whl[interactive]'`;
+the wheelhouse must then also hold `questionary` and its dependencies). Name the wheel
+file rather than `cmru[interactive]`: pip records the wheel's provenance
+(`direct_url.json`) only for a direct requirement, and a real `cmru release` refuses a
+controller installed without it. Neither cmru nor
 cli-extended is on a package index, so `cmru[interactive]` always needs `--find-links`
 pointing at the release assets (or the GitHub release URL) that carry both wheels. A run whose options
 already carry every fact needs no terminal and no extra.
@@ -901,7 +904,10 @@ collect event evidence; [KI-77](KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-
 tracks that gap. The current 6.2.0 release candidate selects
 `gate-provisional`: it runs the ref, installed-wheel, Assay R0/R1/R3, coverage,
 and canary checks, then records the operator-approved R2 deferral under KI-79.
-It therefore records no mutation event evidence. The full `gate` lane remains
+That deferral is bound to version 6.2.0, so run the release as
+`cmru release cmru --minor` (or `--set-version 6.2.0`): the candidate's commit
+subjects alone compute a patch bump, which the gate refuses after the candidate
+is prepared. It therefore records no mutation event evidence. The full `gate` lane remains
 available for the post-release mutation campaign.
 Both are `bare-host` lanes (the controller starts lane containers itself), so they need
 the estate Python environment that holds the installed `cmru` wheel and its declared

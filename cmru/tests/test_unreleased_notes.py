@@ -189,6 +189,39 @@ def test_folding_moves_notes_into_the_candidate_version_and_clears_unreleased():
     assert changelog.fold_unreleased_notes(updated, "2.0.0") is None
 
 
+_INLINE_CODE_DOCUMENT = (
+    "# Changelog\n\n## [Unreleased]\n\n{notes}\n\n<!-- cmru: release history -->\n\n"
+    "## [2.0.0] - 2026-10-17\n<!-- cmru: generated -->\n- feat: x\n"
+)
+
+
+@pytest.mark.parametrize("notes", [
+    "- The marker `<!-- cmru: generated -->` is now documented.\n- second entry",
+    "- An unclosed opener such as `<!--` is literal text here.\n- second entry",
+    "- Quote ``<!-- a ` b -->`` with a double-backtick span.\n- second entry",
+    "- The history marker `<!-- cmru: release history -->` stays text.\n- second entry",
+], ids=["closed-comment", "unclosed-opener", "double-backtick", "history-marker"])
+def test_a_comment_quoted_in_inline_code_is_folded_verbatim_and_never_hoisted(notes):
+    """Inline code is text: a quoted comment marker must not blank or swallow notes."""
+    document = _INLINE_CODE_DOCUMENT.format(notes=notes)
+    assert release_notes.unreleased_body(document) == notes
+
+    updated = changelog.fold_unreleased_notes(document, "2.0.0")
+
+    assert updated is not None
+    assert release_notes.unreleased_body(updated) == ""
+    assert "## [Unreleased]\n\n<!-- cmru: release history -->" in updated
+    section = release_notes.extract_release_section(updated, "2.0.0", source="x").text
+    assert section.endswith(f"{PENDING_NOTES_BEGIN}\n{notes}\n{PENDING_NOTES_END}")
+
+
+def test_an_unmatched_backtick_leaves_a_following_comment_a_real_comment():
+    document = _INLINE_CODE_DOCUMENT.format(notes="- a lone ` backtick <!-- hidden --> stays\n- second")
+    assert release_notes.html_comments_outside_fenced_code(document) == (
+        "<!-- hidden -->", "<!-- cmru: release history -->", "<!-- cmru: generated -->",
+    )
+
+
 def test_a_second_release_can_fold_notes_when_the_prior_version_has_fold_markers():
     first_release = changelog.fold_unreleased_notes(DOCUMENT, "2.0.0")
     assert first_release is not None

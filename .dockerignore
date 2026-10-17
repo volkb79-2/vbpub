@@ -83,7 +83,19 @@ libraries/worktree/tests
 **/.mypy_cache
 **/node_modules
 **/.worktrees
-**/nyxloom-trove/reports/**
+# Coverage artifacts are gate output, never wheel source inputs.
+**/.coverage*
+**/coverage.json
+**/coverage.xml
+**/junit-*.xml
+# Trove specs, handoffs, and review reports are repository records, not wheel inputs.
+**/nyxloom-trove/**
+# Local setuptools/pip output (build/lib, dist wheels, egg-info). An in-tree
+# `pip wheel` reuses build/lib, so a module deleted from source could re-enter
+# the image's wheel from a stale copy. No committed context path uses these names.
+**/build
+**/dist
+**/*.egg-info
 # cgroup-profiler ships a built venv and captured runs; neither belongs in a
 # build context (the venv alone is 500 MB).
 scripts/cgroup-profiler/venv

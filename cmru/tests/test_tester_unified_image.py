@@ -1590,6 +1590,45 @@ def test_dockerignore_keeps_repository_only_trove_reports_out_of_the_wheel_sourc
         assert _dockerignore_included(wheel_input, rules), wheel_input
 
 
+_GENERATED_BUILD_OUTPUT_RULES = ("**/build", "**/dist", "**/*.egg-info")
+
+
+@pytest.mark.parametrize("generated", [
+    "cmru/build/lib/cmru/a_module_deleted_from_source.py",
+    "cmru/dist/cmru-0.0.0-py3-none-any.whl",
+    "cmru/cmru.egg-info/PKG-INFO",
+    "cmru/src/cmru.egg-info/SOURCES.txt",
+    "ciu/build/lib/ciu/stale.py",
+    "assay/dist/assay-0.0.0-py3-none-any.whl",
+    "scripts/cgroup-profiler/build/lib/cgprofile.py",
+])
+def test_dockerignore_keeps_local_build_output_out_of_the_wheel_source_trees(generated):
+    """Local wheel-build output must never reach a COPYed /src/<project> tree.
+
+    `pip wheel /src/<project>` builds in place, and setuptools reuses an existing
+    build/lib, so a stale module from a developer's earlier local build could be
+    packaged into the image's wheel even after it was deleted from source.
+    """
+    rules = _dockerignore_rules()
+    for rule in _GENERATED_BUILD_OUTPUT_RULES:
+        assert rule in [line.strip() for line in rules], rule
+    assert not _dockerignore_included(generated, rules)
+
+
+def test_dockerignore_build_output_rules_hide_no_committed_context_path():
+    """The generated-output rules exclude only generated output, never a tracked input."""
+    rules = _dockerignore_rules()
+    without = [line for line in rules if line.strip() not in _GENERATED_BUILD_OUTPUT_RULES]
+    assert len(without) == len(rules) - len(_GENERATED_BUILD_OUTPUT_RULES)
+    hidden = sorted(
+        path.as_posix() for path in _git_tree_context_paths()
+        if any(part in {"build", "dist"} or part.endswith(".egg-info") for part in path.parts)
+        and _dockerignore_included(path.as_posix(), without)
+        and not _dockerignore_included(path.as_posix(), rules)
+    )
+    assert not hidden, hidden
+
+
 def test_dockerfile_fetch_floor_equals_cmru_declared_floor():
     code = re.sub(r"\\\n\s*", " ", _dockerfile_run_lines())
     floor = re.search(r"fetch-cli-extended\.py .*?--min-version (\S+)", code).group(1)

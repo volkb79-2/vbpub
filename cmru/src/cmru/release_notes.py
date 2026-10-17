@@ -74,8 +74,22 @@ class MarkdownHeading:
     end: int
 
 
+def _code_span_end(line: str, start: int, width: int) -> int | None:
+    """End offset of the inline code span whose opening backtick run ends at *start*.
+
+    CommonMark closes a code span with the next backtick run of exactly the
+    opening run's width; without one, the opening backticks are literal text.
+    """
+    closing = re.compile(rf"(?<!`)`{{{width}}}(?!`)").search(line, start)
+    return closing.end() if closing is not None else None
+
+
 def _mask_html_comments(markdown: str) -> str:
-    """Mask HTML comments outside fenced code while preserving offsets/newlines."""
+    """Mask HTML comments outside code while preserving offsets/newlines.
+
+    Fenced code blocks and single-line inline code spans are opaque: a quoted
+    ``<!-- ... -->`` in a note is text, never a comment to hoist or blank.
+    """
     output: list[str] = []
     fence_char: str | None = None
     fence_length = 0
@@ -101,6 +115,13 @@ def _mask_html_comments(markdown: str) -> str:
                 if line[index] not in "\r\n":
                     chars[index] = " "
                 index += 1
+                continue
+            if line[index] == "`":
+                run_end = index
+                while run_end < len(line) and line[run_end] == "`":
+                    run_end += 1
+                span_end = _code_span_end(line, run_end, run_end - index)
+                index = span_end if span_end is not None else run_end
                 continue
             if line.startswith("<!--", index):
                 chars[index:index + 4] = "    "

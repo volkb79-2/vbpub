@@ -380,6 +380,7 @@ def test_release_source_record_round_trips_exact_branch_and_commit(tmp_path, mon
     "branch,commit,needle",
     [
         ("main", "a" * 40, "invalid source branch"),
+        ("HEAD", "a" * 40, "invalid source branch"),
         ("feature/release", "bad", "does not match the transaction base"),
         ("feature/release", "b" * 40, "does not match the transaction base"),
     ],
@@ -1526,3 +1527,65 @@ def test_abandon_absent_candidate_ref_requires_a_completed_merged_feature_releas
             allow_missing_remote_candidate=allow_missing,
         )
     assert removed == []
+
+
+def _real_git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args], check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
+def _real_repo_with_linked_worktree(tmp_path: Path) -> tuple[Path, Path]:
+    main = tmp_path / "main checkout"
+    main.mkdir()
+    _real_git(main, "init", "-q", "-b", "main")
+    _real_git(main, "config", "user.email", "test@example.invalid")
+    _real_git(main, "config", "user.name", "Test")
+    (main / "README").write_text("x\n", encoding="utf-8")
+    _real_git(main, "add", "README")
+    _real_git(main, "commit", "-q", "-m", "init")
+    linked = tmp_path / "linked"
+    _real_git(main, "worktree", "add", "-q", "-b", "feature/x", str(linked))
+    return main, linked
+
+
+def test_feature_preflight_refuses_a_real_detached_head_as_detached(tmp_path, monkeypatch):
+    # The shared library reports a real detached checkout as branch "HEAD",
+    # which `git check-ref-format refs/heads/HEAD` accepts; the refusal must
+    # still name the detached condition before any origin lookup.
+    _main, linked = _real_repo_with_linked_worktree(tmp_path)
+    _real_git(linked, "checkout", "-q", "--detach")
+    monkeypatch.chdir(linked)
+    monkeypatch.setattr(
+        transaction, "fetch_origin_branch",
+        lambda *_a, **_k: pytest.fail("detached HEAD must refuse before any origin lookup"),
+    )
+
+    with pytest.raises(cli.RefusedBeforeChange, match="detached HEAD"):
+        cli._preflight_feature_worktree_source(linked.resolve(), linked, git_auth=None)
+
+
+def test_main_tree_secret_advice_finds_the_real_main_checkout_without_reading_it(
+    tmp_path, monkeypatch,
+):
+    main, linked = _real_repo_with_linked_worktree(tmp_path)
+    secret = main / "cmru.secret.toml"
+    secret.write_text("[github]\ntoken = 'never-read'\n", encoding="utf-8")
+    secret.chmod(0)
+    monkeypatch.setattr(
+        transaction, "project_git_family_groups",
+        lambda *_: {linked.resolve(): [object()]},
+    )
+    try:
+        if os.geteuid() != 0:
+            with pytest.raises(PermissionError):
+                secret.read_text(encoding="utf-8")
+        advice = cli._main_tree_secret_advice(
+            linked / "cmru.toml", linked, {"demo": object()}, ["demo"],
+        )
+    finally:
+        secret.chmod(0o600)
+
+    assert "CMRU did not read it" in advice
+    assert f"--secret-file '{secret.resolve()}'" in advice
+    assert "never-read" not in advice

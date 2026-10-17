@@ -7,8 +7,9 @@
 # If no stable CMRU tag exists, the protected provisional release gate instead
 # selects `assay-first-release` and records `assay-first-release-r2` as its
 # whole-source post-release follow-up; an unavailable origin query is an error.
-# The release-gate conjunction is lane
-# `gate`; cmru.toml [steps.run-tests] points at it and owns NO test logic itself.
+# The release-gate conjunction is lane `gate`; cmru.toml [steps.run-tests]
+# currently points at `gate-provisional` (KI-79: the same conjunction minus the
+# deferred R2 lane) and owns NO test logic itself.
 # The lanes use a 2g hard ceiling and ample swap for mutation campaigns. The
 # current run-gate revision has no cgroup-v2 memory.high placement actuator;
 # this file therefore records only limits it can actually pass and verify.

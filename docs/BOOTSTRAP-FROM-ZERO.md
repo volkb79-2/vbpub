@@ -269,7 +269,10 @@ supplies the whole-source line-and-branch qualification.
    published digest (`RUN_GATE_TESTER_CLI_EXTENDED_SHA256`), refuses to build
    without it, and inspects the built image's
    `org.vbpub.cli-extended.wheel-sha256` label before the gate may use the
-   image. Do not switch back to the source bootstrap wheel. Each command pins
+   image. Those three `RUN_GATE_TESTER_*` inputs are read by Run-Gate's
+   `run-gate-project/tools/release_candidate.py`. Release Run-Gate from a
+   source tree that contains that file: an older Run-Gate source ignores them
+   without an error. Do not switch back to the source bootstrap wheel. Each command pins
    its own image, so it is correct to run them from different shells:
 
    ```bash

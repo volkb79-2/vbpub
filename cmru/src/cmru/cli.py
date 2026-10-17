@@ -4047,8 +4047,8 @@ def _assert_resume_candidate_is_safe_to_replay(
                 repo_root, "merge-base", "--is-ancestor", result_commit, durable_tip,
                 capture_output=True, text=True, check=False,
             )
+            durable_name = f"origin/{workspace.branch}" if feature_source else "origin/main"
             if promoted.returncode == 1:
-                durable_name = f"origin/{workspace.branch}" if feature_source else "origin/main"
                 raise UnsafeRecord(
                     f"retained result for {name} is recorded, but its source commit "
                     f"is not in {durable_name}; publication or candidate persistence is incomplete, "
@@ -4056,7 +4056,7 @@ def _assert_resume_candidate_is_safe_to_replay(
                 )
             if promoted.returncode != 0:
                 raise RuntimeError(
-                    f"cannot verify retained result for {name} against origin/main: "
+                    f"cannot verify retained result for {name} against {durable_name}: "
                     f"{promoted.stderr.strip() or promoted.stdout.strip() or 'unknown Git error'}"
                 )
 
@@ -5833,10 +5833,13 @@ def _preflight_feature_worktree_source(
             "--from-worktree requires the selected projects and caller to belong to "
             "the same Git worktree"
         )
-    if not branch:
+    # The shared worktree library reports a detached checkout as the literal
+    # branch "HEAD" (and ``refs/heads/HEAD`` passes check-ref-format), so an
+    # empty-name test alone would let detached HEAD through to a raw Git error.
+    if not branch or branch == "HEAD":
         raise RefusedBeforeChange(
             "--from-worktree requires a named local branch; detached HEAD cannot be paired "
-            "with origin/<branch>"
+            "with origin/<branch>. Check out the pushed feature branch and rerun"
         )
     if branch == "main":
         raise RefusedBeforeChange(

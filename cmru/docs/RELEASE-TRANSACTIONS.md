@@ -69,14 +69,20 @@ releasing CMRU itself. This keeps the dependency order usable while ensuring
 the CMRU release is judged with the public Run-Gate artifact. The gate hashes
 the published wheel bytes, checks the installed wheel's recorded source digest,
 and verifies the selected image's version and wheel-digest labels before each
-lane. It pins the lane to the inspected image ID so a mutable tag cannot select
-a different image. Never run the
+lane, and re-inspects the image ID around every lane. It also exports the
+inspected image ID as `RUN_GATE_TESTER_UNIFIED_IMAGE`; that pins a lane only
+where its environment declares `image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"`.
+At this candidate only CMRU's `cmru-mutation` environment does; the root
+`tester-unified` declaration arrives with the Run-Gate wave (`cd673fecd`), and
+until then the other lanes resolve the configured tag and a retag is detected
+by the image-ID recheck rather than prevented. Never run the
 bootstrap through an editable checkout: uncommitted files and whichever source
 tree happens to be mounted are not release evidence.
 
 ### Run-Gate compatibility bootstrap before CGProfile
 
-The current root `run-gate.root.toml` declares `image_env`, which is supported
+The Run-Gate wave's root `run-gate.root.toml` declares `image_env` on
+`tester-unified` (`cd673fecd`; not yet in this CMRU candidate), which is supported
 by the Run-Gate source in this wave but is rejected by the previously published
 Run-Gate wheel. A CGProfile-first release therefore needs a temporary local
 Run-Gate bootstrap after the reviewed source commit has reached
@@ -342,11 +348,11 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
   post-publish changelog commit is needed. The project's configured
   changelog path remains excluded from change detection. This replaces the KI-30 refusal;
   a comment-only body is still just an empty section.
-- **Regenerating a stale generated section overwrites hand edits inside it.** When project
-  commits landed after a generated section's `source-end` cursor (for example on `--resume`
-  of a candidate that was prepared earlier), the section is rebuilt in place from the project
-  commit range. Anything edited by hand inside that section is lost; keep hand-written prose
-  outside `<!-- cmru: generated -->` sections. A current section stays byte-identical. cmru's
+- **Regenerating a stale generated section refuses over hand edits inside it (KI-68).** When
+  project commits landed after a generated section's `source-end` cursor (for example on
+  `--resume` of a candidate that was prepared earlier), the section is rebuilt in place from
+  the project commit range, and a hand edit inside it makes that rebuild refuse (below); keep
+  hand-written prose outside `<!-- cmru: generated -->` sections. A current section stays byte-identical. cmru's
   own `file:` version-bump commit (`chore: bump <prefix> to <version>`) is not project work
   and never makes a section stale, so a resumed `file:` release re-tags the same commit.
   **Hand-curating a pending generated section** (text inside it, such as a summary block or a
@@ -644,7 +650,7 @@ The following release gates are now declared through `cmru tester-gate`:
 | Project | Current state | Required follow-up |
 |---|---|---|
 | ciu | Full pytest coverage floor | `run-ciu-tests.py` |
-| cmru | Contract-2 resource observation on every ephemeral gate lane; current 6.2.0 candidate uses the KI-79 provisional R2 deferral | `run-gate gate` for full R2; `run-gate gate-provisional` records an approved deferral only |
+| cmru | Contract-2 resource observation on the native-R2 `mutation` and `assay-first-release-r2` lanes only (other lanes declare memory/PID limits without event evidence, KI-77); current 6.2.0 candidate uses the KI-79 provisional R2 deferral (`cmru release cmru --minor`) | `run-gate gate` for full R2; `run-gate gate-provisional` records an approved deferral only |
 | nyxloom | Full unit/contract suite | `pytest tests -q` |
 | MDT | Source-first release-flow and OCI-staging contracts | focused `unittest` modules |
 | pwmcp | Resolver and builder contracts | `pytest tests -q` |

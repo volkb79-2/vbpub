@@ -1091,6 +1091,30 @@ def test_isolated_component_loader_imports_real_gate_helpers_from_tools():
     assert "CMRU_ISOLATED_COMPONENTS=loaded" in result.stdout
 
 
+def test_the_unverified_run_gate_launcher_never_receives_publisher_tokens(tmp_path, monkeypatch):
+    launcher = tmp_path / "run-gate"
+    launcher.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    for key in (*run_release_gate.SECRET_ENV_KEYS, run_release_gate.EXTRA_MOUNTS_ENV_KEY):
+        monkeypatch.setenv(key, "must-not-leak")
+    seen: list[dict[str, str] | None] = []
+
+    def fake_run(argv, **kwargs):
+        if argv[0] == str(launcher):
+            seen.append(kwargs.get("env"))
+            return subprocess.CompletedProcess(argv, 0, stdout="run-gate 24.0.0\n", stderr="")
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr="stop after --version")
+
+    monkeypatch.setattr(run_release_gate.shutil, "which", lambda name: str(launcher))
+    monkeypatch.setattr(run_release_gate.subprocess, "run", fake_run)
+
+    with pytest.raises(RuntimeError):
+        run_release_gate._check_run_gate_identity(tmp_path)
+
+    assert len(seen) == 1 and seen[0] is not None
+    assert not {*run_release_gate.SECRET_ENV_KEYS, run_release_gate.EXTRA_MOUNTS_ENV_KEY} & set(seen[0])
+
+
 @pytest.mark.parametrize("cli_version, version, wheel_sha256, payload_sha256, expected", [
     ("run-gate 24.0.0", "24.0.0", _sample_wheel_sha256(), _sample_payload_sha256(), None),
     ("run-gate 23.11.9", "23.11.9", "c" * 64, _sample_payload_sha256(), "requires Run-Gate 24.0.0 or later"),
