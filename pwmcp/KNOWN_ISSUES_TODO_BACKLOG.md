@@ -104,6 +104,8 @@ elements, but `Locator.wait_for()` raised Playwright's strict-mode error.
 single-page applications, document `--wait-until networkidle` together with a
 page-specific `--wait-for` selector. Filter to visible matches and wait for the
 first, so repeated selectors work without a fixed delay on all inspections.
+Update the bundled `pwmcp-fetch` skill to prefer this readiness check and treat
+its MCP fixed wait as an initial poll only.
 
 **Oracle.** Unit coverage asserts multi-match selectors use the visible first
 match. On the supplied shared page, the default inspection returned 993

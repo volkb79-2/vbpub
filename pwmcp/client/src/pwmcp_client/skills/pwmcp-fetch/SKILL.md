@@ -1,6 +1,6 @@
 ---
 name: pwmcp-fetch
-description: Read a JS-rendered page (chatgpt.com share links, SPAs, anything WebFetch returns empty/truncated for) using the pwmcp Playwright-as-a-service container. Use when WebFetch fails or returns only a title/skeleton for a page you know has real content, or when the user points you at pwmcp for exactly this.
+description: Read JavaScript-rendered pages when raw fetch returns empty, skeletal, or truncated content, using PWMCP's managed browser through its client CLI or MCP endpoint.
 ---
 
 > **Tool versions as of last verified update (2026-09-09):** pwmcp bundles
@@ -14,12 +14,11 @@ description: Read a JS-rendered page (chatgpt.com share links, SPAs, anything We
 ## When to reach for this
 
 WebFetch fetches raw HTML and converts it to markdown — it never runs
-JavaScript. Client-rendered SPAs (chatgpt.com share links, many modern web
-apps) come back as an empty shell or "[Content truncated due to length]"
-with no real content, even on retry. If you've confirmed the URL is real
-(the user gave it to you, or you can see a page title) but WebFetch won't
-give you the body, use pwmcp instead of giving up or asking the user to
-paste it manually.
+JavaScript. Client-rendered SPAs and shared pages can come back as an empty
+shell or "[Content truncated due to length]" with no real content, even on
+retry. If the user supplied a URL but the raw fetch has no useful body, use
+PWMCP's managed browser rather than treating that first response as proof the
+page has no content.
 
 ## What pwmcp is
 
@@ -39,6 +38,22 @@ If it doesn't resolve in your environment, get the IP with `docker inspect
 {{end}}'` and pass `Host: pwmcp:8931` explicitly — `@playwright/mcp` has
 DNS-rebinding protection and 403s any request whose Host header isn't on its
 `PWMCP_MCP_ALLOWED_HOSTS` allowlist.
+
+## Preferred when the client CLI is installed
+
+Use the CLI's navigation and content waits for pages that hydrate after the
+initial load event:
+
+```bash
+pwmcp inspect "$URL" --wait-until networkidle \
+  --wait-for 'CONTENT_SELECTOR' --timeout-ms 60000
+```
+
+Choose a visible CSS selector for the content the user asked you to read. A
+selector may match multiple elements; PWMCP waits for its first visible match.
+Avoid using a generic page shell as the selector. If the wait times out, inspect
+the page snapshot and determine whether the site is still loading, requires
+authentication, or is showing an error before reporting that content is absent.
 
 ## Recipe (Python, `mcp` SDK)
 
@@ -61,9 +76,9 @@ async def fetch(url: str) -> str:
             # navigate needs a generous timeout — heavy SPAs are slow,
             # and the default read_timeout_seconds is too short
             await session.call_tool("browser_navigate", {"url": url}, read_timeout_seconds=60)
-            # a snapshot/evaluate taken IMMEDIATELY after navigate often
-            # only sees the app's loading skeleton — wait a few seconds
-            # for client-side rendering before extracting content
+            # This initial delay is not proof that rendering is complete. If
+            # the result is still a shell, wait again and re-read it; when you
+            # know expected text, use browser_wait_for's text argument instead.
             await session.call_tool("browser_wait_for", {"time": 6}, read_timeout_seconds=30)
             result = await session.call_tool(
                 "browser_evaluate",
@@ -80,6 +95,13 @@ async def fetch(url: str) -> str:
 
 print(asyncio.run(fetch(sys.argv[1])))
 ```
+
+If the extracted text is still a loading shell, do not conclude that the page
+has no content. With MCP, wait again and re-read, or use
+`browser_wait_for` with its `text` argument when you know what text should
+appear. Bound retries and report the observed state if it remains a shell.
+When no expected text is known, the CLI's visible content selector is a better
+readiness check than a fixed delay.
 
 Useful other tools on the same session if `innerText` isn't enough:
 `browser_snapshot` (accessibility-tree YAML — better for finding specific
