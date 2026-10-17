@@ -4,6 +4,73 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [1.63.0-r3] - 2026-10-16
+<!-- cmru: generated -->
+<!-- cmru: source-end=8d372647e02c88e0213c55daa191a7a9896e2f86 -->
+
+### Added
+- feat(pwmcp): reviewed CLI surface, pytest plugin, docs and orchestration edge (PWMCP-02) (7609d7078)
+- feat(pwmcp): release-step scripts on the installed cli-extended and cmru (PWMCP-02) (d51d44482)
+- feat(pwmcp): pwmcp client CLI on cli-extended (PWMCP-02) (eb2505586)
+- feat(pwmcp): modernize pinned MCP stack and projection checks (553f00d8a)
+- feat: add estate cli version compatibility (05f373a40)
+
+### Fixed
+- fix(cmru): W2-INTEG review round 1 (C1-C7, run_step removal) (508bc83d6)
+- fix(pwmcp): enforce stream-only MCP gateway (c488571a8)
+- fix(pwmcp): use managed remote BuildKit service (0d2fb1326)
+- fix(pwmcp): enforce Playwright base image digest pin (0198a5237)
+- fix(pwmcp): make prepared vars loader report missing files (adff180b0)
+- fix(pwmcp): fail closed on resolver template drift (f020f8040)
+- fix(gates): correct release and VM lane contexts (a4bba60db)
+
+### Changed
+- pwmcp: record R1 gate evidence (bc33901ba)
+- pwmcp: cover missing Dockerfile version arg (d7caee83c)
+- pwmcp: provide archive test temp path (4c284a9d9)
+- pwmcp: isolate bundle archive test (75191985b)
+- pwmcp: verify page inspection and version projections (cd0e34041)
+- Add standalone PWMCP instance and inspect CLI (dc4072cf2)
+- chore(pwmcp): clear smoke script lint warning (6cb99c810)
+- cli: universalize vbpub parser diagnostics (aa0e69fad)
+- chore: land run-gate root and dev-gates migration (41c1cafb3)
+
+### Documentation
+- docs(pwmcp): record second r1 gate run at the report tip (e76070db3)
+- docs(pwmcp): PWMCP-02 report, backlog FIXED, program row 5; file cmru KI-70 and CLI-EXT-32 (194f01e1d)
+- docs(cli-extended): file planned adoptions in each tool's backlog (W10) (c8a56ad8f)
+- docs(pwmcp): add PWMCP-01 (665246456)
+- docs(pwmcp): record final external gate evidence (79e2efd7e)
+- docs(pwmcp): document stream-only MCP gateway (12334e05d)
+- docs(pwmcp): record managed builder review (9915628bb)
+- docs(pwmcp): align release commands with cmru (de6fbddef)
+- docs(pwmcp): update modernization completion criteria (159074769)
+- docs(pwmcp): record digest and external gate status (b45992a5f)
+- docs(pwmcp): adopt project-scoped version targets (9bd64ff0a)
+- docs: formalize version target schema and backlog name (99d460ec1)
+- docs(pwmcp): centralize modernization and disable legacy SSE (afe9f7a9b)
+- docs(pwmcp): record devtools MCP security changes (ffb41179d)
+- docs(pwmcp): note npm dependency reproducibility gap (2d9283b03)
+- docs(pwmcp): record resolver hardening findings (204803505)
+- docs(pwmcp): review coverage and upstream compatibility (10e08b8c8)
+
+### Testing
+- test(pwmcp): assert builder diagnostics under mutation (d770556cc)
+- test(pwmcp): cover ignored builder inspection lines (8131dbabd)
+- test(pwmcp): match managed builder endpoint in entrypoint fixture (aefa29917)
+- test(pwmcp): close remaining mutation gaps (0f3f04067)
+- test(pwmcp): correct external mutation oracles (784457397)
+- test(pwmcp): harden mutation oracles (87c79ea90)
+- test(pwmcp): restore projection after refusal probe (7baef4502)
+- test(pwmcp): cover digest projection safeguards (fd5ff337b)
+- test(pwmcp): close resolver defensive branch (da7b517f9)
+- test(pwmcp): cover resolver age and projection refusals (f68061e45)
+- test(pwmcp): cover script entrypoint and refusal paths (43a45714b)
+- test(pwmcp): repair resolver refusal fixtures (a6480ccf1)
+- test(pwmcp): cover remaining release branches (b5f4472fb)
+- test(pwmcp): cover release and client branches (c257109ce)
+- test(pwmcp): adopt assay R1 and R2 gates (f23a42237)
+
 ## [1.62.0-r4] - 2026-09-21
 <!-- cmru: generated -->
 
