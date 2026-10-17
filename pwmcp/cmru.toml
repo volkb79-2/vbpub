@@ -23,7 +23,10 @@ git_tag = true
 build_step = "build"
 commit_generated = ["ciu.defaults.toml.j2", "ciu.toml.j2", "docker-bake.hcl", "containers/pwmcp/Dockerfile", "pwmcp.contract.json", "client/requirements-runtime.txt", "client/pyproject.toml", "get.py"]
 artifact_dirs = ["dist"]
-evidence_paths = ["coverage.json", ".assay"]
+# Assay judges coverage inside its isolated lane snapshot and leaves the
+# resumable verdict/progress evidence in .assay; it does not retain the
+# temporary coverage.json in the caller's project tree.
+evidence_paths = [".assay"]
 
 [project.installer]
 install_dir_system = "/srv/pwmcp-instance"
