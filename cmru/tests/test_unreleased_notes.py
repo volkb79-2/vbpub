@@ -215,6 +215,47 @@ def test_a_comment_quoted_in_inline_code_is_folded_verbatim_and_never_hoisted(no
     assert section.endswith(f"{PENDING_NOTES_BEGIN}\n{notes}\n{PENDING_NOTES_END}")
 
 
+@pytest.mark.parametrize(("notes", "comments", "body"), [
+    (
+        "- `<!--` real <!-- c --> tail",
+        ("<!-- c -->",), "- `<!--` real            tail",
+    ),
+    (
+        "- use `foo\nbar` <!-- keep me --> `baz`",
+        ("<!-- keep me -->",), "- use `foo\nbar`                  `baz`",
+    ),
+    (
+        "- literal \\` tick <!-- c --> and `x`",
+        ("<!-- c -->",), "- literal \\` tick            and `x`",
+    ),
+    (
+        "- a `span that\ncontinues <!-- quoted --> here` then",
+        (), "- a `span that\ncontinues <!-- quoted --> here` then",
+    ),
+    (
+        "- a `open\n\n<!-- real -->\n- b`",
+        ("<!-- real -->",), "- a `open\n\n             \n- b`",
+    ),
+    (
+        "```python\ns = '```x'\n<!-- fenced -->\n```\n- after",
+        (), "```python\ns = '```x'\n<!-- fenced -->\n```\n- after",
+    ),
+], ids=["quoted-opener-then-real", "two-line-span-then-real", "escaped-backtick",
+        "comment-inside-two-line-span", "blank-line-ends-span", "fence-opener-backticks"])
+def test_inline_code_follows_commonmark_spans_and_comments_are_exact(notes, comments, body):
+    """Comments are reported verbatim and only outside code; spans may continue
+    within their paragraph; an escaped backtick never opens a span."""
+    document = _INLINE_CODE_DOCUMENT.format(notes=notes)
+    unreleased = document[:document.index("<!-- cmru: release history -->")]
+    assert release_notes.html_comments_outside_fenced_code(unreleased) == comments
+    assert release_notes.unreleased_body(document) == body
+
+
+def test_an_unclosed_comment_is_masked_to_the_end_but_never_reported_as_a_comment():
+    assert release_notes.html_comments_outside_fenced_code("a <!-- never closed\nb") == ()
+    assert release_notes._mask_html_comments("a <!-- x\nb") == "a       \n "
+
+
 def test_an_unmatched_backtick_leaves_a_following_comment_a_real_comment():
     document = _INLINE_CODE_DOCUMENT.format(notes="- a lone ` backtick <!-- hidden --> stays\n- second")
     assert release_notes.html_comments_outside_fenced_code(document) == (

@@ -904,7 +904,7 @@ def read_release_source(
         or not _valid_local_branch_name(
             raw["source_ref"].removeprefix("refs/heads/"), workspace.repo_root,
         )
-        or raw["source_ref"] == "refs/heads/main"
+        or raw["source_ref"] in ("refs/heads/main", "refs/heads/HEAD")
         or not isinstance(raw.get("source_commit"), str)
         or not COMMIT_ID_RE.fullmatch(raw["source_commit"])
         or raw["source_commit"] != workspace.base

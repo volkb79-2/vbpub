@@ -1006,7 +1006,9 @@ The choices, and what was rejected:
   to its generated body, so the tag and body share one immutable notes source. A
   `--no-build` release, or an image push without `oci-image-release`, still carries the
   notes in the tagged changelog but has no GitHub Release body. There is no post-publish changelog commit that can fail
-  after a release is already public.
+  after a release is already public. Comment detection follows CommonMark code spans as well
+  as fences: a changelog that documents CMRU's own `<!-- cmru: ... -->` markers quotes them,
+  and blanking or hoisting a quoted marker would silently rewrite immutable notes.
   A failed gate or build leaves the candidate's staged section on its retained branch;
   the source branch remains unchanged. A failed publish also leaves source `[Unreleased]`
   unchanged, while the tagged candidate retains the exact notes sent to the publisher.

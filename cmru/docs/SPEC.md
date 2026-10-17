@@ -1787,12 +1787,12 @@ otherwise unchanged.
 
 #### Release-gate provisional evidence
 
+A deferral tracking id is bound to one release version: `KI-79` authorizes only CMRU `6.2.0`,
+read from the prepared changelog, and `FIRST-RELEASE-R2` only a first release with no published
+stable tag. Any other id or prepared version refuses before a lane runs.
+
 A gate that deliberately defers the mutation lane (`--postpone-mutation`, `gate-provisional`)
 exits 0 after every required non-mutation lane and the final canary pass, and records:
-(A tracking id is bound to one release version: `KI-79` authorizes only CMRU `6.2.0`, read
-from the prepared changelog, and `FIRST-RELEASE-R2` only a first release with no published
-stable tag. Any other id or prepared version refuses before a lane runs.)
-
 
 - `cmru/.assay/release-gate-snapshot.json` (`schema_version` 4): `state` is `"provisional"`
   (a full gate records `"passed"`; any other outcome `"failed"`, `"interrupted"` or
@@ -2151,20 +2151,6 @@ consumer-verifiable evidence in their own step and documentation.
 **S4.5** Dev builds (untagged commits, version contains `.dev`) MUST NOT mint a `<prefix>-v`
 release. They MAY publish to a project-owned development channel.
 
-**S4.6a — Pending notes are tagged, never appended after publication (KI-78).** A non-empty
-plain `## [Unreleased]` body MUST be folded, inside CMRU's marked pending-notes block, into the
-generated dated section of every tagged release candidate before that candidate's gate and tag;
-`--dry-run` stages the same section and MUST restore the source bytes. CMRU MUST NOT commit to
-the changelog after publication. A CMRU release-body handler (`wheel-publish`,
-`tarball-publish`, `oci-image-release`) publishes that exact tagged section; `--no-build` and
-other publishers keep it only in the tagged changelog. H2 parsing MUST ignore HTML comments
-and fenced code, and duplicate or misspelled `[Unreleased]` headings MUST refuse.
-
-**S4.6b — Wheel-bound release controller.** A real `cmru release` MUST run from an intact,
-non-editable installed CMRU wheel with a recorded SHA-256, record that wheel's version and
-wheel/installed-file digests in the release log, and refuse in the transaction child when they
-differ from the launcher's. `--dry-run` is exempt and MAY run from a source checkout.
-
 **S4.7 — Image-only release body (KI-78).** `cmru handler oci-image-release --prefix PREFIX
 --image REPOSITORY --cwd DIR` publishes the GitHub Release body for a project whose artifact is
 an OCI image pushed by the project's own earlier `push` command. It is release metadata only:
@@ -2213,6 +2199,21 @@ holds a CMRU release-body handler; `--no-build` publishes no body.
 **S4.6** A project that publishes OCI to GHCR SHOULD document the one-time package-visibility
 operation. GitHub currently offers no usable API for changing container-package visibility;
 CMRU must not report a visibility change as an enforced release guarantee.
+
+**S4.8 — Pending notes are tagged, never appended after publication (KI-78).** A non-empty
+plain `## [Unreleased]` body MUST be folded, inside CMRU's marked pending-notes block, into the
+generated dated section of every tagged release candidate before that candidate's gate and tag;
+`--dry-run` stages the same section and MUST restore the source bytes. CMRU MUST NOT commit to
+the changelog after publication. A CMRU release-body handler (`wheel-publish`,
+`tarball-publish`, `oci-image-release`) publishes that exact tagged section; `--no-build` and
+other publishers keep it only in the tagged changelog. H2 and comment parsing MUST treat fenced code
+and inline code spans (CommonMark: a span may continue within its paragraph; an escaped
+backtick opens none) as text, never as headings or comments, and duplicate or misspelled `[Unreleased]` headings MUST refuse.
+
+**S4.9 — Wheel-bound release controller.** A real `cmru release` MUST run from an intact,
+non-editable installed CMRU wheel with a recorded SHA-256, record that wheel's version and
+wheel/installed-file digests in the release log, and refuse in the transaction child when they
+differ from the launcher's. `--dry-run` is exempt and MAY run from a source checkout.
 
 ---
 

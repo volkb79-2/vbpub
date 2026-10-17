@@ -475,14 +475,20 @@ def test_every_run_gate_tester_input_the_guide_passes_is_read_by_run_gate_source
         path for path in (REPO_ROOT / "run-gate-project").rglob("*.py")
         if "tests" not in path.relative_to(REPO_ROOT / "run-gate-project").parts
     ]
+    # Count a name only where code can read it: a quoted string literal, not a comment.
     read = {
         name for name in named
-        if any(name in path.read_text(encoding="utf-8", errors="replace") for path in sources)
+        if any(
+            re.search(rf"""(["']){name}\1""", path.read_text(encoding="utf-8", errors="replace"))
+            for path in sources
+        )
     }
     # The guide pins each release's image through the environment the root
     # `tester-unified` declares as `image_env`; the CGProfile and Run-Gate gate
     # lanes run there, so a CMRU-only `cmru-mutation` declaration does not count.
-    root = tomllib.loads((REPO_ROOT / "run-gate.root.toml").read_text(encoding="utf-8"))
+    root_config = REPO_ROOT / "run-gate.root.toml"
+    assert root_config.is_file(), "the estate root Run-Gate config is missing"
+    root = tomllib.loads(root_config.read_text(encoding="utf-8"))
     image_env = root.get("environments", {}).get("tester-unified", {}).get("image_env")
     if isinstance(image_env, str):
         read.add(image_env)

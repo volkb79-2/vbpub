@@ -539,7 +539,8 @@ generated install/artifact block (artifact name, SHA256, verification and
 resolve-latest instructions; for an image, its pull coordinate instead) followed by the **exact `## [X.Y.Z] - YYYY-MM-DD`
 section of the project's changelog for the version being released**, verbatim. Pending
 `## [Unreleased]` entries, including migration notes, are folded into that dated section
-in the disposable release candidate before its gate and tag. The publisher reads the
+in the disposable release candidate before its gate and tag (HTML comments there stay in
+`[Unreleased]`; a comment quoted in inline or fenced code is note text and moves with it). The publisher reads the
 section from the exact tagged commit, so the tag and release body carry the same notes.
 Every tagged release carries the notes in its changelog; `--no-build` never creates a
 GitHub Release body. An **image-only release** (the project's own step pushes an OCI

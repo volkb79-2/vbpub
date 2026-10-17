@@ -1038,7 +1038,9 @@ GitHub Release body is published. In every case the release candidate commits th
 and its tag carries those notes. The candidate reaches `main` only after a successful publish
 and promotion. A failed gate, build, publish or promotion leaves the source branch's
 notes under `[Unreleased]`. This removes the need to park notes outside the changelog
-(KI-58). CMRU also reads direct `cmru publish --from-checkout` release notes from the
+(KI-58). HTML comments under `[Unreleased]` stay there and are not published; to show a
+marker such as `<!-- cmru: generated -->` in a note, quote it in backticks or a code fence,
+and it moves with the note verbatim. CMRU also reads direct `cmru publish --from-checkout` release notes from the
 matching local release tag, never from later mutable changelog edits.
 
 **Carrying forward notes that were parked outside a changelog (KI-58).** Notes that were
