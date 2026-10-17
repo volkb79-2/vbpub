@@ -251,6 +251,13 @@ def test_inline_code_follows_commonmark_spans_and_comments_are_exact(notes, comm
     assert release_notes.unreleased_body(document) == body
 
 
+def test_a_span_across_three_lines_is_opaque_and_an_unclosed_final_backtick_is_literal():
+    three = "- a `span\nover three\nlines <!-- quoted --> x` <!-- real --> end"
+    assert release_notes.html_comments_outside_fenced_code(three) == ("<!-- real -->",)
+    # No closing run before the end of input: the backtick is literal text.
+    assert release_notes.html_comments_outside_fenced_code("x `open <!-- c -->") == ("<!-- c -->",)
+
+
 def test_an_unclosed_comment_is_masked_to_the_end_but_never_reported_as_a_comment():
     assert release_notes.html_comments_outside_fenced_code("a <!-- never closed\nb") == ()
     assert release_notes._mask_html_comments("a <!-- x\nb") == "a       \n "
