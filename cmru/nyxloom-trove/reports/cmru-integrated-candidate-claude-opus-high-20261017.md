@@ -38,7 +38,7 @@ contain.
 |---|---|---|---|---|
 | F1 | `test_tester_image_cli_extended_identity.py` (9) | `tester-unified/build-image.sh`: no `--base-image`, `--cli-extended-resolve`, `--cli-extended-wheel-sha256` or `--no-cache`, and no post-build `org.vbpub.cli-extended.wheel-sha256` check, so a stale or unlabelled image was accepted (`test_the_default_pinned_image_must_be_labelled…` built `stale` with exit 0) | the builder contract in `tester-unified/README.md` and `docs/BOOTSTRAP-FROM-ZERO.md` steps 2–4 | **Fixed** |
 | F2 | `test_tester_unified_image.py` (7 of 8): pin/latest digest binding, resolve modes and README, `fetch_wheel(expect_sha256=…)` ×2, explicit zero-release base, wheel-input COPY/RUN certification ×2 | `tester-unified/Dockerfile` (no `ARG TESTER_UNIFIED_BASE_IMAGE`, no capability-based host-tool RUN, no cli-extended label, `latest` installed pointer bytes without a caller digest, no post-fetch `sha256sum -c`); `fetch-cli-extended.py` (no `--expect-sha256`); README, CONSUMERS and DESIGN-GUIDE | the CMRU image oracles; the guide's pasteable build commands | **Fixed** |
-| F3 | `test_tester_unified_image.py::test_wheel_builder_does_not_depend_on_a_published_vbpub_image`; `test_installed_wheel_subprocess.py::test_fresh_checkout_bootstrap_is_the_only_source_build_launcher` | `wheel-builder/Dockerfile` still uses `FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug…` and lacks `ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie` and `LABEL org.vbpub.wheel-builder.kind="python-wheel-builder"`. `cmru/build-initial-standalone.sh` (the bootstrap) already requires that label | the bootstrap source-build path and the zero-release guide | **BLOCKED**: path outside scope |
+| F3 | `test_tester_unified_image.py::test_wheel_builder_does_not_depend_on_a_published_vbpub_image`; `test_installed_wheel_subprocess.py::test_fresh_checkout_bootstrap_is_the_only_source_build_launcher` | `wheel-builder/Dockerfile` still uses `FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug…` and lacks `ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie` and `LABEL org.vbpub.wheel-builder.kind="python-wheel-builder"`. `cmru/build-initial-standalone.sh` (the bootstrap) already requires that label | the bootstrap source-build path and the zero-release guide | **Fixed** in the follow-up, after the scope amendment (see "F3 follow-up") |
 | F4 | `test_bootstrap_from_zero_sequence.py::test_every_run_gate_tester_input_the_guide_passes_is_read_by_run_gate_source` | Run-Gate 24.0.0 `run-gate-project/tools/release_candidate.py` `prepare()` calls `build-image.sh` with only `--wheel-dir` and `--tag`, and reads none of `RUN_GATE_TESTER_UNIFIED_BASE_IMAGE`, `RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE` or `RUN_GATE_TESTER_CLI_EXTENDED_SHA256` | `docs/BOOTSTRAP-FROM-ZERO.md` step 4 (`cmru release cgroup-profiler/run-gate-project`) | **BLOCKED**: needs a new Run-Gate release |
 | F5 | coverage 99.87 % < 100 % (not one of the 19) | `cmru/src/cmru/cli.py` from `a87489743 fix(cmru): add safe OCI release body retry`, which exists only on this branch: 16 lines and 12 branches of refusal paths in `_prepare_oci_release_body_retry` and the `publish --release-tag` dispatch had no oracle | the coverage lane's `fail-under=100` | **Fixed** (tests only) |
 
@@ -91,19 +91,77 @@ that neither the handler nor (where relevant) the origin query ran:
 
 No product code changed.
 
+## F3 follow-up (scope amended to `wheel-builder/**`)
+
+The first pass recorded F3 as BLOCKED because `wheel-builder/` was outside the
+allowed paths. The controller then added `wheel-builder/**` to the scope. The
+follow-up started at `54a9934d91ac98b98c7cb7e8ff41351e1d946377` (clean).
+
+**Contracts.**
+
+- The bootstrap (`cmru/build-initial-standalone.sh` lines 259–282) accepts a
+  configured builder tag only when the tag carries
+  `org.vbpub.wheel-builder.kind=python-wheel-builder`. Otherwise it rebuilds
+  the tag with
+  `docker buildx build --load --pull -f wheel-builder/Dockerfile` and no
+  `--build-arg`, then refuses if the label is still wrong.
+- The wheel-build contract (`cmd_wheel_build` in `cmru/src/cmru/handlers.py`)
+  runs the image as its own `USER 1003`, with `HOME=/home/builder`. It invokes
+  `/opt/wheel-builder-venv/bin/python -m build` against the bind-mounted
+  project, and setuptools-scm runs `git` inside the container.
+
+**The two variants.** Both carry the ARG, `FROM ${WHEEL_BUILDER_BASE_IMAGE}`,
+the label, and the `ca-certificates git passwd` apt step, so both satisfy
+every literal the two oracles assert.
+
+- The 9-line reference variant (`a1ad46444`) keeps the old
+  `echo … >> /etc/passwd` / `>> /etc/group` lines.
+- The 18-line variant (`e2f1563e2`; introduced by `4ce6e3907` and `c3d82cb01`
+  on 2026-10-15) creates the gate identity only when it is missing:
+  `getent group 994 || groupadd --gid 994 docker` and
+  `getent passwd 1003 || useradd --uid 1003 --gid 994 --create-home …`.
+
+**Choice: the 18-line `e2f1563e2` variant, taken verbatim.**
+
+- It is the complete original change. The reference variant is a partial
+  carry: it installs `passwd`, whose only purpose is to provide
+  `groupadd`/`useradd`, yet it dropped the hunk that uses them.
+- On the new upstream base (not the MDT image the appends were written for),
+  blind appends silently add a second entry when gid 994 or uid 1003 already
+  exists. The conditional form never duplicates an id. A conflicting existing
+  `docker` group name makes `groupadd` fail the build loudly, instead of
+  producing an ambiguous identity.
+- Both variants give the same runtime identity to `cmd_wheel_build` (uid 1003,
+  gid 994, writable `/home/builder`).
+- The file now matches `e2f1563e2` byte for byte, so the two integration lines
+  converge. The validation-context worktree was read only through git objects;
+  its checkout and dirty state were not touched.
+
+**Docs.** No docs changed:
+
+- `WHEEL_BUILDER_BASE_IMAGE` is internal. No caller passes it (the bootstrap
+  and `cmd_wheel_build` use the default), and no README, CONSUMERS or guide
+  presents it as a setting.
+- The public facts are already documented and match the change:
+  - the builder uses Microsoft's upstream Python base and needs no released
+    vbpub image;
+  - the bootstrap checks the `org.vbpub.wheel-builder.kind` label and
+    rebuilds a missing or mismatched tag.
+
+  They appear in `cmru/README.md` (lines 79–81 and 115–119),
+  `cmru/docs/CONSUMERS.md` (60–61), `cmru/docs/DESIGN-GUIDE.md` (262–266) and
+  `docs/BOOTSTRAP-FROM-ZERO.md` (93, 128–129).
+- `wheel-builder/` has no README of its own.
+
+**Static check only.** By reading the file (not by running anything), the new
+Dockerfile contains the four literals the oracles require: the ARG, the
+`FROM ${…}`, the apt line, and the `LABEL`. It no longer contains
+`ghcr.io/volkb79-2/modern-debian-tools-python-debug`. Both oracles are
+unchanged.
+
 ## BLOCKED
 
-BLOCKED: `wheel-builder/Dockerfile` is outside this task's allowed paths. F3's
-two oracles (bootstrap source-build path and zero-release wheel builder)
-require its reviewed CMRU-candidate change:
-`ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie`,
-`FROM ${WHEEL_BUILDER_BASE_IMAGE}`,
-`LABEL org.vbpub.wheel-builder.kind="python-wheel-builder"`, and the explicit
-`ca-certificates git passwd` apt step (`git diff HEAD a1ad46444 --
-wheel-builder/Dockerfile`, 9 lines). Note that `e2f1563e2` carries a different
-18-line variant, so the controller must choose which one to take.
-
-BLOCKED: the from-zero guide's three `RUN_GATE_TESTER_*` inputs are ignored by
+BLOCKED (retained; deliberately outside the follow-up's scope): the from-zero guide's three `RUN_GATE_TESTER_*` inputs are ignored by
 every released Run-Gate source. Run-Gate 24.0.0's `tools/release_candidate.py`
 has no consumer for them, so the documented step-4 behavior is unavailable:
 
@@ -121,6 +179,8 @@ taken here.
 
 ## Files changed
 
+First pass (commit `54a9934d91ac98b98c7cb7e8ff41351e1d946377`):
+
 - `tester-unified/{Dockerfile,README.md,build-image.sh,fetch-cli-extended.py,gen-requirements.py}`
 - `tester-unified/docs/{CONSUMERS.md,DESIGN-GUIDE.md}`
 - `run-gate-project/tests/test_release_candidate.py` (one oracle line → three)
@@ -128,16 +188,24 @@ taken here.
 - `cmru/tests/test_oci_image_release.py` (new tests)
 - this report
 
+F3 follow-up (the commit after `54a9934d9`, hash given in the controller
+hand-back):
+
+- `wheel-builder/Dockerfile` (+15/−3; byte-identical to `e2f1563e2`)
+- this report (F3 marked fixed; F4 still BLOCKED)
+
 ## Expected gate state (not a claim of success)
 
-No tests or gates were run; the controller runs the registered lanes. After
-this commit, the 16 F1/F2 oracles and the F5 coverage lines should turn green.
-The coverage lane should still fail on the three F3/F4 oracles until both
-BLOCKED items are resolved. Run-Gate's own lanes include the updated builder
-oracle and the new base-variant oracle. The CMRU 6.2.0 release transaction
-must not start until CMRU's `coverage` and `gate-provisional` lanes pass.
+No tests or gates were run, in either pass; the controller runs the registered
+lanes. Nothing here claims that any test or gate passed.
 
-## Commit
+- The 16 F1/F2 oracles, the 2 F3 oracles and the F5 coverage lines are
+  expected to turn green.
+- The coverage lane is expected to stay red on the single F4 oracle,
+  `test_every_run_gate_tester_input_the_guide_passes_is_read_by_run_gate_source`,
+  until the Run-Gate prerequisite is resolved.
+- Run-Gate's own lanes include the updated builder oracle and the new
+  base-variant oracle.
 
-The commit hash is reported in the controller hand-back; this file is part of
-that commit.
+The CMRU 6.2.0 release transaction must not start until CMRU's `coverage` and
+`gate-provisional` lanes pass.
