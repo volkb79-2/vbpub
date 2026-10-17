@@ -13,7 +13,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [24.0.0] - 2026-10-17
 <!-- cmru: generated -->
-<!-- cmru: source-end=24e9d87d6bd51bb515ec65250ac26ba0b38c9668 -->
+<!-- cmru: source-end=7a9717e9d04bb50ab5159081abf1dd1c1305c7dc -->
 
 ### Added
 - feat(assay,ciu,cmru,cgroup-profiler,nyxloom,run-gate): complete integrated release wave (1fa737782)
@@ -165,6 +165,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - docs(rg55): make Sol route evidence caller-owned (356089e77)
 
 ### Testing
+- test(run-gate): check the release note in the section CMRU publishes (7a9717e9d)
 - test(run-gate): cover image selection evidence branches (84ed88565)
 - test(run-gate): capture isolated subprocess output (861bf6784)
 - test(run-gate): fix selftest follow-up failures (2d299fdfb)
@@ -241,7 +242,6 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - Fix: give the R1 and R3 tester containers explicit memory and swap ceilings,
   so gate admission accounts for their use and Docker applies per-container bounds.
 <!-- cmru: pending release notes end -->
-
 ## [23.10.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=433393cb88fed967e716fc8fb05556162b786a99 -->
