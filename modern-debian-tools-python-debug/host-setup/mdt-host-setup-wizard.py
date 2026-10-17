@@ -762,6 +762,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_SWAP_MAX": validate_size_or_auto,
         "DEV_SUBSLICE_IOPS_PCT": validate_pct_1_100,
         "DEV_ZSWAP_WRITEBACK": validate_yes_no,
+        "DAMON_STAT_DISABLE_DEFAULT": validate_yes_no,
         "DEV_BUILDKITD_IMAGE": validate_buildkit_image,
         "DEV_BUILDKITD_MAX_PARALLELISM": validate_positive_int,
         "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
@@ -2631,7 +2632,7 @@ def step_devcontainer_bootstrap(
     cfg_current: dict[str, str], example_defaults: dict[str, str]
 ) -> dict[str, str]:
     """Choose how the host bootstrap prepares missing devcontainer sources."""
-    out("\n-- h. devcontainer bind-source preparation --")
+    out("\n-- i. devcontainer bind-source preparation --")
     out("The initializeCommand runs on the host before Docker starts the container.")
     for bullet in (
         "Existing sources are classified from the host filesystem, independent of their names or suffixes.",
@@ -2647,6 +2648,32 @@ def step_devcontainer_bootstrap(
         validate=validate_missing_bind_source_policy,
     )
     return {"DEVCONTAINER_MISSING_BIND_SOURCE_POLICY": policy}
+
+
+def step_damon_stat_policy(
+    cfg_current: dict[str, str], example_defaults: dict[str, str]
+) -> dict[str, str]:
+    """Ask whether MDT should disable the host-global DAMON_STAT monitor."""
+    key = "DAMON_STAT_DISABLE_DEFAULT"
+    out("\n-- h. host DAMON policy --")
+    out(
+        "DAMON_STAT monitors system-wide memory and is exclusive with the generic "
+        "DAMON sysfs interface used by cgprofile. Disabling it lets cgprofile "
+        "collect per-session DAMON samples."
+    )
+    default = resolve_default(key, cfg_current, example_defaults, "yes")
+    source = "existing" if key in cfg_current else "recommended"
+    if validate_yes_no(default):
+        out(
+            f"WARN: {key} has invalid existing value {default!r}; "
+            "using the recommended answer as the starting point. Choose yes or no explicitly."
+        )
+        default = "yes"
+        source = "recommended (existing value invalid)"
+    answer = "yes" if ask_yn(
+        "Disable DAMON_STAT at install and boot?", default == "yes", default_source=source
+    ) else "no"
+    return {key: answer}
 
 
 # ─── orchestration ─────────────────────────────────────────────────────────
@@ -2681,6 +2708,7 @@ def explain_install_map() -> None:
         "`mdt-buildkit-guard.service` — enforce accidental Buildx terminate/report-only policy.",
         "`initialize_container_environment.py` — prepare host bind sources before Docker starts a devcontainer.",
         "Docker `cgroup-parent` merge + `docker-.scope` backstop — placement and a transient-scope floor.",
+        "DAMON_STAT tmpfiles policy — optionally make the generic DAMON interface available to cgprofile.",
         "Installed scripts + `mdt-host-check.sh` — baseline, runtime control, guard, and health evidence.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -2692,6 +2720,7 @@ def explain_install_map() -> None:
         "BuildKit image/parallelism/policy -> BuildKit + guard.",
         "`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` -> devcontainer host bootstrap.",
         "Docker parent/backstop -> daemon.json + scope drop-in.",
+        "`DAMON_STAT_DISABLE_DEFAULT` -> current kernel parameter + boot-time tmpfiles rule.",
         "Watcher memory keys -> memory watcher.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -2988,6 +3017,7 @@ def main(argv: list[str] | None = None) -> int:
         walked["DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX"] = backstop_swap
 
         walked.update(step_watcher(cfg_current, example_defaults))
+        walked.update(step_damon_stat_policy(cfg_current, example_defaults))
         walked.update(step_devcontainer_bootstrap(cfg_current, example_defaults))
         _reprompt_memory_constraints(meminfo.get("MemAvailable", 0), walked)
         baseline_results = finish_io_baseline(baseline_job)

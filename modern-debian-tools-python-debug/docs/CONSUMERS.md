@@ -38,6 +38,13 @@ pwmcp inspect https://example.com --format snapshot --output page.yml
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 ```
 
+The MDT devcontainer template exposes `/srv/pwmcp-instance/bin` on remote
+process `PATH` and sets `PWMCP_MCP_URL=http://pwmcp:8931/mcp`. Agent harnesses
+still need an HTTP MCP server entry pointing at that URL; installing the
+packaged PWMCP skill does not change a harness's MCP configuration. A consumer
+using another devcontainer must expose its installed CLI on `PATH` and ensure
+the agent can resolve and reach the MCP endpoint on its internal network.
+
 For the devcontainer that is already running while its image cannot be
 rebuilt, install the current release into `/srv` and start it manually:
 
@@ -64,6 +71,13 @@ On the Docker host, review and apply the shipped host configuration:
 sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
+
+The wizard asks for `DAMON_STAT_DISABLE_DEFAULT=yes|no`. Enter accepts the
+recommended `yes`: MDT writes `N` to the kernel's
+`/sys/module/damon_stat/parameters/enabled` parameter now and on each boot,
+letting cgprofile collect DAMON samples. Choose `no` to keep the kernel's
+configured default. Removing a previous MDT override leaves the live parameter
+unchanged until reboot. `mdt-host-check.sh` reports a stale or unapplied choice.
 To identify the MDT build before choosing an operation, run:
 
     ./build-push.py --version

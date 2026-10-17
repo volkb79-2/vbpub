@@ -75,7 +75,9 @@ Agents in the connected devcontainer can use the MCP endpoint
 `http://pwmcp:8931/mcp`; Playwright clients use `ws://pwmcp:3000/`. The service
 uses PWMCP's existing internal policy: no authentication and no host-published
 ports. The generated installer and exact client wheels are verified and
-versioned with PWMCP. See [MDT's PWMCP consumer guide](docs/CONSUMERS.md#pwmcp-browser-service)
+versioned with PWMCP. The vendored devcontainer template exposes the CLI path
+and `PWMCP_MCP_URL`; consumers using another harness must register that HTTP
+MCP endpoint in their harness configuration. See [MDT's PWMCP consumer guide](docs/CONSUMERS.md#pwmcp-browser-service).
 and [PWMCP's install and design notes](../pwmcp/README.md#standalone-instance-for-mdt-and-other-devcontainers).
 
 ## Tags and variants
@@ -408,6 +410,11 @@ image, so it lives in two places that must agree:
   the installer, wizard, and baseline benchmark refuse a devcontainer because container
   root cannot modify the host's `/etc`, systemd, or cgroup tree.
 
+The host wizard also asks whether to disable the kernel-wide `DAMON_STAT`
+monitor. Its recommended answer is yes, which lets cgprofile use the generic
+DAMON interface to collect per-session samples; choosing no preserves the
+kernel default. See the [host policy guide](host-setup/README.md#optional-damon_stat-policy).
+
 ```bash
 sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — quiet window
 sudo mdt-host-check.sh
@@ -727,7 +734,7 @@ See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 The declared lanes run in `tester-unified`, not in the cockpit devcontainer:
 
 - `./run-gate.py smoke` runs Python syntax checks, the host-setup renderer and
-  the complete `scripts/` pytest suite (73 tests at the current baseline).
+  the complete `scripts/` and `host-setup/tests/` pytest suites.
 - `./run-gate.py release` is the image-release gate for the Docker/OCI release
   flow tests; CMRU consumes this declaration instead of carrying a second
   `tester-gate` command.

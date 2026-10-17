@@ -378,6 +378,34 @@ else
   fail "$CGPROFILE_DIR does not exist -- /etc/tmpfiles.d/mdt-cgprofile.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' directly)"
 fi
 
+echo "== optional DAMON_STAT host policy =="
+case "${DAMON_STAT_DISABLE_DEFAULT:-}" in
+  yes)
+    if [ ! -f /etc/tmpfiles.d/mdt-damon-stat.conf ] \
+      || ! grep -Fxq 'w /sys/module/damon_stat/parameters/enabled - - - - N' /etc/tmpfiles.d/mdt-damon-stat.conf; then
+      fail "DAMON_STAT disable policy is selected but /etc/tmpfiles.d/mdt-damon-stat.conf is missing or stale; re-run install.sh"
+    fi
+    if [ -e /sys/module/damon_stat/parameters/enabled ] \
+      && [ "$(cat /sys/module/damon_stat/parameters/enabled 2>/dev/null)" != N ]; then
+      fail "DAMON_STAT disable policy is selected but the live kernel parameter is not N; re-run install.sh"
+    fi
+    ok "DAMON_STAT is disabled by MDT policy when the kernel exposes the parameter"
+    ;;
+  no)
+    if [ -e /etc/tmpfiles.d/mdt-damon-stat.conf ]; then
+      fail "DAMON_STAT policy is set to keep the kernel default but MDT's disable override remains; re-run install.sh"
+    else
+      ok "DAMON_STAT remains at the kernel's configured default"
+    fi
+    ;;
+  "")
+    fail "DAMON_STAT policy is missing from $CONF; re-run install.sh --wizard or add DAMON_STAT_DISABLE_DEFAULT from host-setup.env.example"
+    ;;
+  *)
+    fail "DAMON_STAT_DISABLE_DEFAULT must be yes or no (got '$DAMON_STAT_DISABLE_DEFAULT')"
+    ;;
+esac
+
 echo "== docker-.scope.d default-limits backstop (D-G8) =="
 if [ -f /etc/systemd/system/docker-.scope.d/50-default-limits.conf ]; then
   ok "backstop drop-in installed"

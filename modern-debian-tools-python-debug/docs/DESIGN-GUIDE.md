@@ -56,6 +56,30 @@ internal deployments. No host port is published. The installed `pwmcp` CLI
 uses the version-matched client and Playwright wheel in the same private venv.
 See the [pasteable consumer steps](CONSUMERS.md#pwmcp-browser-service).
 
+The devcontainer template puts `/srv/pwmcp-instance/bin` on remote process
+`PATH` and exports `PWMCP_MCP_URL`. The CLI lives outside `/home/vscode`, so a
+persisted home mount cannot hide it. The endpoint variable makes the network
+resource explicit; each agent harness still owns its MCP registration format.
+
+## The estate venv is selected by PATH
+
+The MDT image puts `/home/vscode/.venv/bin` first in image and login-shell
+`PATH`. This selects the estate Python for all cockpit processes, including
+noninteractive agent commands and children started by release tools. It does
+not pretend that every process has activated a shell venv: `VIRTUAL_ENV` is
+reserved for actual activation, while the selected interpreter and its
+installed packages are determined by `PATH`.
+
+## DAMON_STAT is an explicit host choice
+
+`DAMON_STAT` and cgprofile's generic DAMON sysfs sessions are mutually
+exclusive kernel consumers. MDT asks the host operator whether to disable
+`DAMON_STAT`, recommends disabling it for the development host, and applies
+the choice through a boot-time tmpfiles rule. The non-wizard example keeps the
+kernel default. This keeps a host-wide monitoring policy out of cgprofile's
+runtime and gives the operator a clear way to preserve `DAMON_STAT` when it is
+needed for other workloads.
+
 ## Managed BuildKit socket access
 
 The rootless BuildKit process creates its Unix socket with its container

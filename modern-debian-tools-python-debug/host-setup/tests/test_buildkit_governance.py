@@ -48,6 +48,37 @@ FINALIZE = load_module(
 
 
 class BuildKitGovernanceTests(unittest.TestCase):
+    def test_damon_policy_recommends_disable_and_preserves_existing_choice(self) -> None:
+        with mock.patch.object(WIZARD, "ask_yn", return_value=True) as ask:
+            selected = WIZARD.step_damon_stat_policy(
+                {}, {"DAMON_STAT_DISABLE_DEFAULT": "no"}
+            )
+        self.assertEqual(selected, {"DAMON_STAT_DISABLE_DEFAULT": "yes"})
+        self.assertTrue(ask.call_args.args[1])
+        self.assertEqual(ask.call_args.kwargs["default_source"], "recommended")
+
+        with mock.patch.object(WIZARD, "ask_yn", return_value=False) as ask:
+            selected = WIZARD.step_damon_stat_policy(
+                {"DAMON_STAT_DISABLE_DEFAULT": "no"},
+                {"DAMON_STAT_DISABLE_DEFAULT": "yes"},
+            )
+        self.assertEqual(selected, {"DAMON_STAT_DISABLE_DEFAULT": "no"})
+        self.assertEqual(ask.call_args.kwargs["default_source"], "existing")
+
+        with mock.patch.object(WIZARD, "ask_yn", return_value=True) as ask:
+            with mock.patch.object(WIZARD, "out") as warning:
+                selected = WIZARD.step_damon_stat_policy(
+                    {"DAMON_STAT_DISABLE_DEFAULT": "maybe"},
+                    {"DAMON_STAT_DISABLE_DEFAULT": "no"},
+                )
+        self.assertEqual(selected, {"DAMON_STAT_DISABLE_DEFAULT": "yes"})
+        self.assertTrue(ask.call_args.args[1])
+        self.assertIn("invalid existing value", warning.call_args.args[0])
+        self.assertEqual(
+            ask.call_args.kwargs["default_source"],
+            "recommended (existing value invalid)",
+        )
+
     @given(st.integers(min_value=1, max_value=1024 * 1024 * 1024))
     def test_size_formatter_never_loses_a_positive_quantity(self, kib: int) -> None:
         """A displayed cgroup size must remain a positive systemd value.

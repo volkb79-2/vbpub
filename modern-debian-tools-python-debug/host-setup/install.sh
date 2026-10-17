@@ -625,6 +625,25 @@ install -m 0644 "$HERE/units/mdt-cgprofile.conf" /etc/tmpfiles.d/mdt-cgprofile.c
 systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
   || echo "WARN: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf — /run/cgprofile may not exist yet (retries at next boot's systemd-tmpfiles-setup.service)"
 
+# DAMON_STAT is a host-wide consumer that excludes cgprofile's generic DAMON
+# sysfs sessions. This override exists only after an explicit wizard choice.
+DAMON_STAT_TMPFILES=/etc/tmpfiles.d/mdt-damon-stat.conf
+if [ "$DAMON_STAT_DISABLE_DEFAULT" = yes ]; then
+  install -m 0644 "$HERE/units/mdt-damon-stat.conf" "$DAMON_STAT_TMPFILES"
+  if [ -e /sys/module/damon_stat/parameters/enabled ]; then
+    systemd-tmpfiles --create "$DAMON_STAT_TMPFILES" \
+      || { echo "ERROR: selected DAMON_STAT disable policy could not be applied" >&2; exit 2; }
+    echo "DAMON_STAT disabled for this boot and by the boot-time tmpfiles policy"
+  else
+    echo "DAMON_STAT parameter is not exposed by this kernel; the persistent rule remains installed"
+  fi
+else
+  if [ -f "$DAMON_STAT_TMPFILES" ]; then
+    rm -f -- "$DAMON_STAT_TMPFILES"
+    echo "Removed MDT's DAMON_STAT boot override; the current kernel value is unchanged until reboot"
+  fi
+fi
+
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.
 #   (dev.slice now carries the one IO ceiling for both tiers — see units/dev.slice.in)

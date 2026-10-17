@@ -147,6 +147,15 @@ When installing a locally built wheel for inspection or a bounded local test,
 use the estate venv: `/home/vscode/.venv/bin/python -m pip install ...`.
 `/home/vscode/.local` is not the wheel installation environment.
 
+## Host-side Python environment
+
+MDT puts `/home/vscode/.venv/bin` ahead of system Python on the cockpit
+`PATH`, so bare `python3` and `pip` use the estate venv for host-side commands
+and `bare-host` controllers. `VIRTUAL_ENV` only indicates shell activation;
+check the selected interpreter with `command -v python3` when it matters. Gates
+still use their declared environment; `tester-unified` uses
+`/opt/tester-venv/bin/python`.
+
 ## Host cgroup placement for spawned containers
 This host runs real production workloads (game servers, edge/site infra)
 alongside dev/test/build work, so any container you or a tool starts must be

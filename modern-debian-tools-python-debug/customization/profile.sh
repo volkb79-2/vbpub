@@ -1,7 +1,7 @@
 #!/bin/sh
 MDT_CUSTOMIZATION_ROOT=/usr/local/share/modern-debian-tools-python-debug
 export MDT_CUSTOMIZATION_ROOT
-export PATH="$HOME/.local/bin:$PATH"
+export PATH="$HOME/.venv/bin:$HOME/.local/bin:/srv/pwmcp-instance/bin:$PATH"
 
 for bootstrap_file in \
     "$HOME/.config/modern-debian-tools-python-debug/shell.env" \
