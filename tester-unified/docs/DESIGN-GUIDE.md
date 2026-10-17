@@ -61,7 +61,13 @@ cockpit. The explicit `--base-image` override supports first-release
 bootstrapping: it lets the tester image start from the upstream Python
 devcontainer while vbpub has no released images. The Dockerfile installs its
 small host-tool set itself. A missing MDT release never triggers an implicit
-fallback; the base choice is visible in the build command.
+fallback; the base choice is visible in the build command. The image also
+records that choice as the `org.vbpub.tester-unified.base-image` label, and the
+builder and Run-Gate's release preparation compare it with the requested base.
+Buildx only warns about a build argument that no stage consumes, so a renamed
+`ARG` would otherwise build the default base while the command named another.
+The label records the reference, not a digest: a mutable tag still resolves at
+build time.
 
 The Docker client is installed by capability, not unconditionally. Debian's
 `docker-cli` / `docker-compose` own the same files as Docker's `docker-ce-cli` /

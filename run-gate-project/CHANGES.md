@@ -9,44 +9,15 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
-### Breaking Changes
-- **24.0.0:** consumer scripts and symlinks are retired. Install the `run-gate`
-  wheel and invoke its console command from the project directory containing
-  `run-gate.toml`; `run-gate --version` is the public compatibility identity.
-  Integer revisions and persisted revision fields remain only as provenance.
-
 ### Changed
-- Documentation: state that the installed SemVer wheel is the only supported
-  Run-Gate consumer; copied `run-gate.py` scripts are retired.
-- Fix: require Assay's verdict exit code to be a non-boolean integer matching
-  both the runner status and the closed outcome table, preventing a stale or
-  inconsistent PASS artifact from certifying a failed process (RG-95).
-- Fix: detect source renames before filtering the selftest diff-coverage scope,
-  so replacing the retired compatibility symlink measures changed content
-  instead of treating the whole wheel module as new (RG-96).
-- Fix: name unreadable or undecodable Python files in `--check-env` and mark
-  the scan `INCOMPLETE`, so skipped source cannot appear as a clean sweep
-  (RG-97).
-- Fix: include unreadable source directories and environment-resolution
-  failures in the incomplete scan result, rather than silently reporting a
-  clean environment check.
-- Fix: recognize retired `run-gate.py` invocations when they use relative,
-  worktree-prefixed, or absolute paths, so pointer validation cannot certify a
-  call to a removed script.
-- Fix: anchor the release coverage floor to the newest reachable stable
-  Run-Gate release tag, so merging a candidate to `main` cannot collapse the
-  judged source diff to zero.
-- Fix: build and receipt the exact candidate wheel before the release gate,
-  verify the running tester image contains those bytes, and refuse publication
-  if CMRU's post-tag wheel build differs.
-- Fix: refuse a release gate when its dated changelog version is not newer than
-  the latest Run-Gate release tag, so a prior release cannot be rebuilt under
-  its old version outside the release transaction.
-- Add: allow container environments to select a per-invocation image through
-  `image_env`; the Run-Gate release test uses a candidate-specific image tag
-  and checks that the installed wheel modules and CLI match the candidate.
-- Fix: give the R1 and R3 tester containers explicit memory and swap ceilings,
-  so gate admission accounts for their use and Docker applies per-container bounds.
+- Fix: the release preparation now consumes the documented tester-image
+  overrides. `RUN_GATE_TESTER_UNIFIED_BASE_IMAGE` selects the base,
+  `RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE` accepts only `source`, `pinned` or
+  `latest`, and `latest` requires `RUN_GATE_TESTER_CLI_EXTENDED_SHA256`, the
+  published wheel's digest; that digest is refused with any other mode. Invalid
+  overrides refuse before any wheel or image build. The built image must label
+  the expected cli-extended digest and the requested base
+  (`org.vbpub.tester-unified.base-image`, new) before the gate may use it.
 - Fix (behavior change): the Assay judge no longer inherits the state-root
   path as `TMPDIR` when that root is inside the judged worktree, so the default
   in-repo `.run-gate` root works for snapshot-isolated R1-R3 lanes instead of
@@ -87,6 +58,237 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [24.0.0] - 2026-10-17
+<!-- cmru: generated -->
+<!-- cmru: source-end=7a9717e9d04bb50ab5159081abf1dd1c1305c7dc -->
+
+### Added
+- feat(assay,ciu,cmru,cgroup-profiler,nyxloom,run-gate): complete integrated release wave (1fa737782)
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+- feat(run-gate-project): map contract-2 observation outcomes (5c90457f7)
+- feat: add contract-2 resource event attribution (90dc9078d)
+- feat(rg55): adopt observer contract 2 and local events (2b1bd7f39)
+- feat(cgprofile): expose local and hierarchical event evidence (135bcb4da)
+- feat(rg-89): observe native mutation resource limits (219997c93)
+
+### Fixed
+- fix: close remaining release wave review findings (edac3e69c)
+- fix: bind release gates to exact tool candidates (cd673fecd)
+- fix: bound memory for ephemeral gate lanes (731be2b4e)
+- fix: close release-wave followup findings (08632f747)
+- fix: close release-wave review findings (49e4be092)
+- fix(run-gate): report incomplete env scans and close R1 coverage (a0dbfca41)
+- fix(run-gate): make diff coverage rename aware (e87bb48d0)
+- fix(run-gate): verify assay runner verdict agreement (e37da4267)
+- fix: bound Assay refusals and harden observer setup (ad173675f)
+- fix(run-gate): match assay runner and verdict exit codes (f79055e21)
+- fix(run-gate): bind placement readback to lane token leaf (3b6a4ab41)
+- fix(run-gate): reject failed profiler responses and foreign watch verdicts (8e6af75f9)
+- fix(run-gate): block lane body until requested placement is verified (aee194b7e)
+- fix(run-gate): reconcile daemon watch verdict authority (34497084a)
+- fix(cgprofile): refuse placement that empties origin scope (465f67d06)
+- fix(run-gate): default tester gates to three CPUs (3ccb75280)
+- fix(run-gate): keep socket fixtures short and isolate host daemon (0cef72e26)
+- fix(run-gate): repair P5 dry-run and selftest preflights (96239fe64)
+- fix(run-gate): make restored P5 selftests portable (3cc1ef2de)
+- fix(run-gate): use resolved slice variables in lane banner (baee9f92e)
+- fix(rg89): align leaf-counter oracle and close RG-45 index (7f2340729)
+- fix(rg89): serialize shared-leaf R2 and verify peer capability state (cb155eab1)
+- fix(run-gate): require current-run remainder for ETA (6d7e3ef15)
+- fix(run-gate): scope progress and ETA to active Assay run\n\nFence append-only progress at each Assay run header. Calculate resumed\ncampaign rates from run-local candidate events and use pending_total for\nremaining-work estimates.\n\nRecord RG-90 and the progress-stream contract, rationale, consumer guidance,\nand regression oracles.\n\nCo-Authored-By: Codex <noreply@openai.com> (bfa975adc)
+- fix(cgprofile): retry transient peer snapshot ESRCH (ace790e94)
+- fix(cgprofile): consolidate DAMON guidance and harden NSpid guard (aa5edcde6)
+- fix(cgprofile): align observer oracle and DAMON guidance (178552d0b)
+- fix(cgprofile): close resource-observer mutation gaps (75d286dab)
+- fix(assay): keep nested gate namespaces private (80254340b)
+- fix(rg89): qualify nested R2 observer and bound JSON parsing (b7a32f149)
+- fix(run-gate): support observer-backed command lanes (c9d488fc1)
+- fix(cgprofile): wire observer into native R2 lane (cd0e947e5)
+- fix(run-gate): derive assay temp paths from state mount (9fa81a04c)
+- fix(run-gate): set tester lanes project cwd explicitly (763d3e69b)
+- fix(run-gate): let registered lanes own tester isolation (6ea236d89)
+- fix(rg55): align daemon PID mode and preserve profile summaries (3c77a9314)
+- fix(cgprofile): use host PID namespace for the daemon (50372b71f)
+- fix(run-gate): handle ended bare-host profiler watches (8dcb30106)
+- fix(run-gate): retry ended exec profiler watches The exec-carrier watch must be reattached when its reader thread ends, not only when it goes idle. Add regression coverage for ended, retry, fallback, final drain, and verdict paths. (26e6f3440)
+
+### Changed
+- merge Assay analysis pilot and Run-Gate verdict fix (4d2495194)
+- wip: checkpoint integrated release candidate (91a4ab26a)
+- chore: integrate contract-2 release wave (336336d81)
+- review(run-gate): reject P5 placement launch ordering (e771985e0)
+- merge: restore RG-55 P5 profiler transport and watch (ae0ff0979)
+- Record final short-gate receipts before R2 (e04a58837)
+- Record integrated R0-R1 and R3 results (9787211a9)
+- Record registered R0-R1 result (76b200dfd)
+- Add oracles for RG-89 input-boundary survivors (42a76af89)
+- Record failed R2 and procfs race repair (8cad0e3ad)
+- Remove dead resource observer test fixture assignment (60303e0db)
+- Record RG-89 survivor-oracle progress (eb2434860)
+- Forward resource observer into Assay analysis lane (5c43550b1)
+- Preserve specific cgroup slice refusal diagnostics (dc1ffcd59)
+- Avoid cgroup probe ID fixture variable collision (456540b53)
+- Report bounded diagnostics for malformed cgroup probe IDs (fe3ab85d9)
+- Assay: accept observer in qualified lane policy (1266057b3)
+- Assay: repair observer qualification fixtures (9a89b5685)
+- assay: keep probe diagnostic off slice output (c94388ab2)
+- assay: query host slice over unprivileged system bus (8655daf71)
+- Merge main into rg89-resource-observer (3cd1b1444)
+- run-gate: cover state-root refusal branches (614534480)
+- run-gate: normalize docs contract oracle (37bcfe3d6)
+- run-gate: align state-root probe oracle and docs (ac737e21a)
+- rg55: record Sol round-8 disposition (819cbda18)
+- run-gate: align Assay state preflight and adoption docs (10d57876f)
+- controller(rg55): record r3 and baseline DAMON status (2ecb3b9a2)
+- controller(rg55): record CIU singleton deployment refusal (ddfd693a9)
+- merge mainline into RG-55 P5 candidate (bb7e21b73)
+- Merge Assay 6.3.0 release into P5 run-gate candidate (8a879c52c)
+- chore(run-gate): remove obsolete vendored assay artifact (37fe63aa9)
+- refactor(run-gate): stage source-backed assay integration (f80608b92)
+- controller(rg55): disclose the assay 6.3 sequencing dependency (883cdc0be)
+- run-gate(P5): make ended-watch oracle deterministic (f4e30481b)
+- controller(rg55): clarify P5 review tree identity (99534cbf3)
+- controller(rg55): make the Sol packet target P5 revision 43 (05f9e8428)
+- run-gate(P5): close v1.1 transport watch and admission seams (4d12c430b)
+- run-gate(P5): make fallback liveness cadence-aware (043f3cadd)
+- run-gate(P5): place ephemeral lanes in the gates slice (ad85e0e68)
+- run-gate(P5): add v1.1 profiler transport seam (5d7dd852f)
+- run-gate(P5): file RG-63 admission and transport backlog row (82fab5658)
+
+### Documentation
+- docs(run-gate-project)!: document 24.0.0 wheel migration (f6b23dcdc)
+- docs(rg55): align consumer identity with Run-Gate SemVer (39754e0b0)
+- docs: track release notes and adoption blockers (3af2bc238)
+- docs(run-gate): explain resource observer capacity (1ad026d58)
+- docs(rg55): correct mutation progress accounting (d8f8dae31)
+- docs(rg55): record repeated shared-ancestor R2 error (230991364)
+- docs(rg55): refresh interim wave status (e15c49c26)
+- docs(rg55): record serialized cgprofile mutation resume (1ad041976)
+- docs(rg55): record shared-ancestor mutation failures (80893a71b)
+- docs(rg55): record resumed campaign and release authority (3d8b662ca)
+- docs(rg55): correct recorded main-ahead snapshot (36c9b404e)
+- docs(rg55): record interim live acceptance report (3105a6f36)
+- docs(controller): record provisional cap merge and R2 status (79f436f48)
+- docs(rg55): record provisional P5 integration (05e7b6cd5)
+- docs(controller): record P5 review acceptance (257d9cc23)
+- docs(run-gate): record P5 final review acceptance (f05464eb9)
+- docs(run-gate): record green P5 selftest and refresh review packet (4bb006a9f)
+- docs(run-gate): refresh P5 packet for deterministic coverage retry (4ba9bd80a)
+- docs(run-gate): freeze P5 review packet after coverage repair (0ca078342)
+- docs(review): freeze P5 packet at stdlib oracle repair (992cce229)
+- docs(review): freeze P5 Sol packet at B3 repair (adcfc4958)
+- docs(review): clarify scoped Nyxloom lint (27b51ad42)
+- docs(rg55): scope Nyxloom lint evidence (43168068a)
+- docs(review): point Sol packet at RW-553 evidence (febd9a6ee)
+- docs(rg55): record resumed P5 gate checkpoint (e26bfb469)
+- docs(review): refresh RG-55 P5 Sol packet (db6d5b736)
+- docs(rg55): record candidate acceptance and DAMON evidence (e72dd6f09)
+- docs(run-gate): clarify R-45 lane scope (df380f235)
+- docs(run-gate): settle footprint baseline against latest history (b82bd8da3)
+- docs(run-gate): align footprint with current gate history (5b2d169ca)
+- docs(run-gate): refresh measured lane footprint baseline (8b8d1480f)
+- docs(rg55): record current-main reconciliation and gate state (c4f0f8375)
+- docs(rg55): record corrected coverage and DAMON live evidence (94a6618ea)
+- docs(cgprofile): explain DAMON exclusivity and test EOF edge (b5804ee6d)
+- docs(cgprofile): fix DAMON_STAT troubleshooting anchors (868ff7c64)
+- docs(cgprofile): document DAMON_STAT availability boundary (a56fe0c3a)
+- docs(rg55): record bind and observer trust boundaries (ae11d4240)
+- docs(rg55): reconcile preserved mutation evidence (8c379fbff)
+- docs(rg55): record reconciled RG-89 candidate (2d2daf98f)
+- docs(rg55): record current-main RG-89 reconciliation (130c8d6e5)
+- docs(rg55): clarify D-15 and D-25 history (d12208dbb)
+- docs(rg55): record RW-467 design reconciliation (4cd036725)
+- docs(rg55): clarify daemon host-pid exception (58ded2674)
+- docs(rg55): record first-parent coverage ruling (47e064fc0)
+- docs(rg55): record exact-tree selftest result (ac8bac78e)
+- docs(rg55): record current release versions (ce0693915)
+- docs(run-gate): keep RG-88 status current (18081594f)
+- docs(run-gate): track Assay R2 ancestor visibility gap (b49055886)
+- docs(cgprofile): correct host PID namespace claims (e89aeff89)
+- docs(run-gate): disambiguate P5 backlog identifier (bffa9747d)
+- docs(rg55): align P5 gate commands with provisional workflow (067fe35b7)
+- docs(rg55): reconcile P5 with current gate placement contract (a79924ce9)
+- docs(rg55): remove reviewer route self-check (2fb26838f)
+- docs(rg55): make Sol route evidence caller-owned (356089e77)
+
+### Testing
+- test(run-gate): check the release note in the section CMRU publishes (7a9717e9d)
+- test(run-gate): cover image selection evidence branches (84ed88565)
+- test(run-gate): capture isolated subprocess output (861bf6784)
+- test(run-gate): fix selftest follow-up failures (2d299fdfb)
+- test: cover candidate release failure paths (b74548a1b)
+- test: align candidate gate assertions (8055b98bf)
+- test(run-gate): match digest error message (af537c9ac)
+- test(run-gate): cover release handshake helper (149af9005)
+- test(run-gate): pin R3 memory budget (05affd931)
+- test(run-gate): isolate orphan config fixture (ea5e88e9e)
+- test(run-gate): assert wheel digest mismatch precisely (671a852ff)
+- test(run-gate): align release gate contracts (4c2661009)
+- test(run-gate): fix R1 coverage edge fixtures (135ecacf0)
+- test(run-gate): cover ignored file read race and migration branches (a34e8c597)
+- test(run-gate): cover final selftest branches (2617d5a24)
+- test(run-gate): assert normalized systemd slice path (36d178af8)
+- test(run-gate): align coverage assertions with diagnostics (dda20076b)
+- test(run-gate): close release coverage gaps (16b992b81)
+- test(run-gate): model assay verdict exit codes (9626c1e58)
+- test(run-gate): align release selftest with wheel SemVer (9832bfa92)
+- test(run-gate): synchronize forwarder shutdown oracle (b1293e902)
+- test(run-gate): cover placement barrier failure paths (f1beb8e2a)
+- test(run-gate): allow the placement barrier selector import (80a8cf90d)
+- test(run-gate): cover profiler watch kill and budget paths (e11ef15de)
+- test(cgprofile): cover unterminated observer overflow (cedfc4598)
+- test(run-gate): align active changelog revision oracle (3a9553f64)
+- test(run-gate): cover explicit assay state root (4eb4d4c78)
+- test(run-gate): create valid state probe fixtures (812a588f9)
+- test(run-gate): align release lane cwd assertions (3dad73928)
+- test(cgprofile): match the documented helper cgroup wording (25deff6ce)
+- test(run-gate): cover exhausted profiler fallback (8823dca82)
+- test(run-gate): cover live profiler watch branches (984985aec)
+- test(run-gate): cover profiler reader shutdown branches (c3dba5313)
+- test(run-gate): keep defensive branch class boundaries intact (92cc80136)
+- test(run-gate): cover daemon watch state transitions (aa9d4a205)
+- test(run-gate): cover P5 defensive profiling branches (0f40eca78)
+
+<!-- cmru: pending release notes begin -->
+### Breaking Changes
+- **24.0.0:** consumer scripts and symlinks are retired. Install the `run-gate`
+  wheel and invoke its console command from the project directory containing
+  `run-gate.toml`; `run-gate --version` is the public compatibility identity.
+  Integer revisions and persisted revision fields remain only as provenance.
+
+### Changed
+- Documentation: state that the installed SemVer wheel is the only supported
+  Run-Gate consumer; copied `run-gate.py` scripts are retired.
+- Fix: require Assay's verdict exit code to be a non-boolean integer matching
+  both the runner status and the closed outcome table, preventing a stale or
+  inconsistent PASS artifact from certifying a failed process (RG-95).
+- Fix: detect source renames before filtering the selftest diff-coverage scope,
+  so replacing the retired compatibility symlink measures changed content
+  instead of treating the whole wheel module as new (RG-96).
+- Fix: name unreadable or undecodable Python files in `--check-env` and mark
+  the scan `INCOMPLETE`, so skipped source cannot appear as a clean sweep
+  (RG-97).
+- Fix: include unreadable source directories and environment-resolution
+  failures in the incomplete scan result, rather than silently reporting a
+  clean environment check.
+- Fix: recognize retired `run-gate.py` invocations when they use relative,
+  worktree-prefixed, or absolute paths, so pointer validation cannot certify a
+  call to a removed script.
+- Fix: anchor the release coverage floor to the newest reachable stable
+  Run-Gate release tag, so merging a candidate to `main` cannot collapse the
+  judged source diff to zero.
+- Fix: build and receipt the exact candidate wheel before the release gate,
+  verify the running tester image contains those bytes, and refuse publication
+  if CMRU's post-tag wheel build differs.
+- Fix: refuse a release gate when its dated changelog version is not newer than
+  the latest Run-Gate release tag, so a prior release cannot be rebuilt under
+  its old version outside the release transaction.
+- Add: allow container environments to select a per-invocation image through
+  `image_env`; the Run-Gate release test uses a candidate-specific image tag
+  and checks that the installed wheel modules and CLI match the candidate.
+- Fix: give the R1 and R3 tester containers explicit memory and swap ceilings,
+  so gate admission accounts for their use and Docker applies per-container bounds.
+<!-- cmru: pending release notes end -->
 ## [23.10.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=433393cb88fed967e716fc8fb05556162b786a99 -->

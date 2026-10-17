@@ -114,6 +114,9 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   Every image carries `org.vbpub.cli-extended.wheel-sha256`, the digest of the wheel it
   installed (the Dockerfile pin, the `local` digest, or the `latest` digest), verified
   against the installed file during the build and re-read by `build-image.sh` afterwards.
+  It also carries `org.vbpub.tester-unified.base-image`, the base reference its stage was
+  built FROM (`--base-image`, or the Dockerfile default); `build-image.sh` fails if that
+  differs from the requested base.
   `--cli-extended-resolve local` on `build-image.sh` is the ZERO-RELEASE path (three modes
   in all: `pinned` default, `latest`, `local`; see `docs/BOOTSTRAP-FROM-ZERO.md`):
   with no release to fetch, build the wheel with cmru's own wheel builder

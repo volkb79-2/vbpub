@@ -42,6 +42,7 @@ def _completed(stdout="", stderr="", returncode=0):
 
 
 def test_release_image_bootstrap_uses_only_explicit_overrides(monkeypatch, tmp_path):
+    _clear_image_overrides(monkeypatch)
     monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
     monkeypatch.setattr(
         release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project",
@@ -385,6 +386,7 @@ def test_source_bootstrap_replaces_its_own_previous_local_wheel(monkeypatch, tmp
 
 
 def test_release_image_bootstrap_passes_pinned_mode_through(monkeypatch, tmp_path):
+    _clear_image_overrides(monkeypatch)
     monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
     monkeypatch.setattr(release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project")
     monkeypatch.delenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", raising=False)
@@ -484,7 +486,28 @@ def test_image_cli_extended_label_must_be_a_digest(monkeypatch, labels, message)
         release_candidate._image_cli_extended_sha256("tester-unified:x")
 
 
-def _prepare_with_label(monkeypatch, tmp_path, *, mode, label):
+_IMAGE_OVERRIDE_ENV = (
+    "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE",
+    "RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE",
+    "RUN_GATE_TESTER_CLI_EXTENDED_SHA256",
+)
+UPSTREAM_BASE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
+
+
+def _clear_image_overrides(monkeypatch):
+    for name in _IMAGE_OVERRIDE_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _prepare_with_label(
+    monkeypatch, tmp_path, *, mode, label, base=None, base_label=None, calls=None,
+):
+    """`prepare` against fakes; the image reports `label` and `base_label`.
+
+    `base_label=None` reports the Dockerfile's default base. `calls`, when a
+    list, receives every subprocess argv in order.
+    """
+    _clear_image_overrides(monkeypatch)
     wheel = {"version": "24.0.0", "filename": "run_gate-24.0.0-py3-none-any.whl", "sha256": "a" * 64}
     monkeypatch.setattr(
         release_candidate, "prepared_release_version", lambda _path, **_kwargs: "24.0.0",
@@ -500,10 +523,23 @@ def _prepare_with_label(monkeypatch, tmp_path, *, mode, label):
     )
     monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
     monkeypatch.setattr(release_candidate, "_image_cli_extended_sha256", lambda _tag: label)
+    monkeypatch.setattr(
+        release_candidate, "_image_base_image",
+        lambda _tag: base_label or release_candidate._dockerfile_default_base_image(),
+    )
     monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", mode)
-    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", PUBLISHED)
+    if mode == "latest":
+        monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", PUBLISHED)
+    if base is not None:
+        monkeypatch.setenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", base)
     results = iter((_completed(), _completed(), _completed("sha256:" + "b" * 64)))
-    monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    def run(argv, *_args, **_kwargs):
+        if calls is not None:
+            calls.append(argv)
+        return next(results)
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", run)
     return release_candidate.prepare
 
 
@@ -528,6 +564,156 @@ def test_prepare_refuses_a_latest_image_that_kept_the_old_pinned_bytes(monkeypat
         prepare()
 
     assert not (tmp_path / "receipt.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "automatic"}, "must be source, pinned or latest"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "latest"},
+         "latest requires RUN_GATE_TESTER_CLI_EXTENDED_SHA256"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "latest",
+          "RUN_GATE_TESTER_CLI_EXTENDED_SHA256": "C" * 64},
+         "latest requires RUN_GATE_TESTER_CLI_EXTENDED_SHA256"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_SHA256": PUBLISHED}, "valid only with"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "pinned",
+          "RUN_GATE_TESTER_CLI_EXTENDED_SHA256": PUBLISHED}, "valid only with"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "source",
+          "RUN_GATE_TESTER_CLI_EXTENDED_SHA256": PUBLISHED}, "valid only with"),
+        ({"RUN_GATE_TESTER_UNIFIED_BASE_IMAGE": "--privileged"}, "must be one image reference"),
+        ({"RUN_GATE_TESTER_UNIFIED_BASE_IMAGE": "python:3.14 --pull"},
+         "must be one image reference"),
+    ],
+    ids=[
+        "unknown-mode", "latest-without-digest", "latest-uppercase-digest",
+        "digest-with-default-mode", "digest-with-pinned", "digest-with-source",
+        "option-as-base", "two-words-as-base",
+    ],
+)
+def test_prepare_refuses_bad_image_overrides_before_any_build(monkeypatch, tmp_path, env, message):
+    """A refused override stops `prepare` before the Run-Gate wheel build, the
+    cli-extended source build, or the image build starts; no receipt exists.
+    A digest outside `latest` would be silently unused, so it is refused too."""
+    _clear_image_overrides(monkeypatch)
+    monkeypatch.setattr(
+        release_candidate, "prepared_release_version", lambda _path, **_kwargs: "24.0.0",
+    )
+    monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
+    monkeypatch.setattr(
+        release_candidate, "_git", lambda *args: "1700000000" if args[0] == "log" else "1" * 40,
+    )
+    monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    monkeypatch.setattr(
+        release_candidate.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("no build may start after a refused override"),
+    )
+    monkeypatch.setattr(
+        release_candidate, "_build_cli_extended_source_wheel",
+        lambda: pytest.fail("no source wheel may be built after a refused override"),
+    )
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+        release_candidate.prepare()
+
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_prepare_passes_and_checks_a_requested_base_image(monkeypatch, tmp_path):
+    calls = []
+    prepare = _prepare_with_label(
+        monkeypatch, tmp_path, mode="pinned",
+        label=release_candidate._dockerfile_cli_extended_pin(),
+        base=UPSTREAM_BASE, base_label=UPSTREAM_BASE, calls=calls,
+    )
+
+    prepare()
+
+    build = calls[1]
+    assert build[0].endswith("tester-unified/build-image.sh")
+    assert build[build.index("--base-image") + 1] == UPSTREAM_BASE
+    assert (tmp_path / "receipt.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("base", "base_label"),
+    [(UPSTREAM_BASE, None), (None, UPSTREAM_BASE)],
+    ids=["requested-base-not-used", "default-base-not-used"],
+)
+def test_prepare_refuses_an_image_built_from_another_base(monkeypatch, tmp_path, base, base_label):
+    """The requested (or default) base must be the one the image records; an
+    unconsumed or renamed build argument would otherwise build another base."""
+    prepare = _prepare_with_label(
+        monkeypatch, tmp_path, mode="pinned",
+        label=release_candidate._dockerfile_cli_extended_pin(),
+        base=base, base_label=base_label,
+    )
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="was built from base"):
+        prepare()
+
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_expected_base_image_follows_the_builder_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    dockerfile = tmp_path / "tester-unified" / "Dockerfile"
+    dockerfile.parent.mkdir()
+    dockerfile.write_text(
+        "ARG TESTER_UNIFIED_BASE_IMAGE=registry.example/base:1\n"
+        "FROM ${TESTER_UNIFIED_BASE_IMAGE}\n",
+        encoding="utf-8",
+    )
+    assert release_candidate._expected_base_image(["b", "--tag", "t"]) == "registry.example/base:1"
+    assert release_candidate._expected_base_image(
+        ["b", "--base-image", UPSTREAM_BASE],
+    ) == UPSTREAM_BASE
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError, match="no default tester-unified base image",
+    ):
+        release_candidate._expected_base_image(["b"])
+
+
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        ({}, "no valid org.vbpub.tester-unified.base-image label"),
+        ({"org.vbpub.tester-unified.base-image": ""}, "no valid org.vbpub.tester-unified"),
+        ({"org.vbpub.tester-unified.base-image": UPSTREAM_BASE}, None),
+    ],
+    ids=["unlabelled", "empty-label", "labelled"],
+)
+def test_image_base_label_must_be_an_image_reference(monkeypatch, labels, message):
+    monkeypatch.setattr(
+        release_candidate.subprocess, "run",
+        lambda *_args, **_kwargs: _completed(json.dumps(labels)),
+    )
+    if message is None:
+        assert release_candidate._image_base_image("tester-unified:x") == UPSTREAM_BASE
+        return
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+        release_candidate._image_base_image("tester-unified:x")
+
+
+def test_real_dockerfile_and_builder_record_and_check_the_base_image():
+    """The shipped Dockerfile labels the base its stage was built FROM, and the
+    builder compares that label; the default the consumer expects is the
+    Dockerfile's own ARG default."""
+    root = TOOLS.parents[1]
+    lines = (root / "tester-unified" / "Dockerfile").read_text(encoding="utf-8").splitlines()
+    stage = lines[lines.index("FROM ${TESTER_UNIFIED_BASE_IMAGE}") + 1:]
+    label = 'LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"'
+    assert "ARG TESTER_UNIFIED_BASE_IMAGE" in stage[:stage.index(label)]
+    default = next(
+        line.split("=", 1)[1] for line in lines
+        if line.startswith("ARG TESTER_UNIFIED_BASE_IMAGE=")
+    )
+    assert release_candidate._dockerfile_default_base_image() == default
+    builder = (root / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
+    assert '"org.vbpub.tester-unified.base-image"' in builder
+    assert 'if [[ "$actual_base_image" != "$expected_base_image" ]]; then' in builder
 
 
 def test_prepared_release_version_uses_first_dated_stable_section(monkeypatch, tmp_path):
@@ -1037,6 +1223,11 @@ def test_prepare_records_the_exact_wheel_and_tester_image(monkeypatch, tmp_path,
         release_candidate, "_image_cli_extended_sha256",
         lambda _tag: release_candidate._dockerfile_cli_extended_pin(),
     )
+    monkeypatch.setattr(
+        release_candidate, "_image_base_image",
+        lambda _tag: release_candidate._dockerfile_default_base_image(),
+    )
+    _clear_image_overrides(monkeypatch)
     results = iter((_completed(), _completed(), _completed(image_id)))
     monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
 
@@ -1105,6 +1296,11 @@ def test_prepare_refuses_mismatched_build_and_image(
         release_candidate, "_image_cli_extended_sha256",
         lambda _tag: release_candidate._dockerfile_cli_extended_pin(),
     )
+    monkeypatch.setattr(
+        release_candidate, "_image_base_image",
+        lambda _tag: release_candidate._dockerfile_default_base_image(),
+    )
+    _clear_image_overrides(monkeypatch)
     results = iter((_completed(), _completed(), image_result))
     monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
 

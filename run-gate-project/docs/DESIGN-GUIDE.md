@@ -60,6 +60,15 @@ digest, or tester image identity differs. This connects the bytes that ran in
 the gate to the bytes attached to the release rather than treating matching
 version strings as artifact identity.
 
+The same rule covers the tester image's other inputs. Preparation validates the
+base and `cli-extended` overrides before it builds anything. After the build, it
+compares the image's base and `cli-extended` digest labels with the values the
+builder was asked to use. `latest` follows a mutable pointer, so it is accepted
+only with the published digest. A digest supplied for any other mode is refused
+rather than ignored: an unused fact that looks like a pin is a silent wrong
+answer. A label check, not the build command alone, is the evidence, because
+Buildx only warns about an unconsumed build argument.
+
 The receipt is stored under the candidate's ignored `.assay/` directory and
 names the exact commit, wheel, and image. A normal local `run-gate selftest`
 does not require a release receipt; CMRU sets the receipt variable only for its

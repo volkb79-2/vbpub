@@ -5641,17 +5641,68 @@ class TestPointerLinkageEstate:
                         "cmru.orchestration.toml at all"
         assert cmru_doc["project"]["id"] in matches
 
-    def test_cmru_release_body_uses_the_versioned_changelog(self):
+    def test_cmru_release_body_uses_the_versioned_changelog(self, monkeypatch):
+        """The 24.0.0 migration note reaches the body CMRU publishes.
+
+        CMRU's wheel-publish handler sends the exact dated `## [X.Y.Z] - date`
+        section of the tagged CHANGES.md. Release preparation first folds
+        [Unreleased] into the section it prepares, so the note belongs in
+        [Unreleased] until a dated 24.0.0 section exists, and in that section
+        afterwards. While 24.0.0 is not yet tagged, it must also be the version
+        the release candidate actually prepared. Parsing uses this checkout's
+        CMRU release-note module, so the selection matches the publisher's.
+        """
         cmru_doc = tomllib.loads((RUN_GATE_DIR / "cmru.toml").read_text())
         push_commands = cmru_doc["steps"]["push"]["commands"]
         assert len(push_commands) == 1
         assert "--notes-env" not in push_commands[0]["argv"]
         assert cmru_doc["project"]["release"].get("changelog", "CHANGES.md") == "CHANGES.md"
-        changes = (RUN_GATE_DIR / "CHANGES.md").read_text(encoding="utf-8")
-        unreleased = changes.split("## [Unreleased]", 1)[1].split(
-            "<!-- cmru: release history -->", 1,
-        )[0]
-        assert "consumer scripts and symlinks are retired" in unreleased
+
+        def load(name, path):
+            spec = importlib.util.spec_from_file_location(name, path)
+            assert spec is not None and spec.loader is not None, path
+            module = importlib.util.module_from_spec(spec)
+            # Dataclasses resolve postponed annotations through
+            # sys.modules[cls.__module__], so register before executing.
+            # monkeypatch removes the entry at teardown, including when
+            # execution raises.
+            monkeypatch.setitem(sys.modules, name, module)
+            spec.loader.exec_module(module)
+            return module
+
+        notes = load("cmru_release_notes_under_test",
+                     RUN_GATE_DIR.parent / "cmru" / "src" / "cmru" / "release_notes.py")
+        candidate = load("release_candidate_under_test",
+                         RUN_GATE_DIR / "tools" / "release_candidate.py")
+        changes_path = RUN_GATE_DIR / "CHANGES.md"
+        changes = changes_path.read_text(encoding="utf-8")
+
+        def visible(markdown):
+            for comment in notes.html_comments_outside_fenced_code(markdown):
+                markdown = markdown.replace(comment, "")
+            return " ".join(markdown.split())
+
+        version = "24.0.0"
+        note = (
+            f"**{version}:** consumer scripts and symlinks are retired. Install "
+            "the `run-gate` wheel and invoke its console command from the "
+            "project directory containing `run-gate.toml`; `run-gate --version` "
+            "is the public compatibility identity."
+        )
+        assert visible(changes).count(note) == 1
+        dated = [
+            heading for heading in notes.markdown_h2_headings(changes)
+            if re.fullmatch(rf"## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}",
+                            heading.text)
+        ]
+        if not dated:
+            assert note in " ".join(notes.unreleased_body(changes).split())
+            return
+        _tag, latest = candidate._latest_release_tag()
+        if candidate._semver_key(version) > candidate._semver_key(latest):
+            assert candidate.prepared_release_version(changes_path) == version
+        section = notes.extract_release_section(changes, version, source=str(changes_path))
+        assert note in visible(section.text)
 
 
 # ---------------------------------------------------------------------------
