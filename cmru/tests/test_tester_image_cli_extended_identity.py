@@ -28,6 +28,12 @@ PIN = re.search(r"^ARG CLI_EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$", DOCKERFILE.re
 PINNED_DIGEST = PIN.group(1) if PIN else ""
 PUBLISHED = "c" * 64  # newly released bytes: deliberately NOT the pinned digest
 assert PUBLISHED != PINNED_DIGEST
+# The base the Dockerfile builds FROM when no --base-image is given, and the
+# zero-release upstream base the bootstrap guide selects explicitly.
+BASE = re.search(r"^ARG TESTER_UNIFIED_BASE_IMAGE=(\S+)$", DOCKERFILE.read_text("utf-8"), re.MULTILINE)
+DEFAULT_BASE = BASE.group(1) if BASE else ""
+UPSTREAM_BASE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
+assert UPSTREAM_BASE != DEFAULT_BASE
 
 
 def _tree(tmp_path: Path):
@@ -57,6 +63,7 @@ def _tree(tmp_path: Path):
         '    *org.vbpub.run-gate.version*) echo 24.0.0;;\n'
         f'    *org.vbpub.run-gate.wheel-sha256*) echo {digest};;\n'
         '    *org.vbpub.cli-extended.wheel-sha256*) echo "$FAKE_CLI_EXTENDED_LABEL";;\n'
+        '    *org.vbpub.tester-unified.base-image*) echo "$FAKE_BASE_IMAGE_LABEL";;\n'
         '  esac\n'
         'fi\n'
         'exit 0\n',
@@ -69,14 +76,19 @@ def _tree(tmp_path: Path):
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
         "TMPDIR": str(tmp_path),
+        # What the (fake) built image says it was built FROM: by default the
+        # Dockerfile's own default base, as a real default build records.
+        "FAKE_BASE_IMAGE_LABEL": DEFAULT_BASE,
     }
     return root, env, log
 
 
-def _build(tmp_path, *args, label=None):
+def _build(tmp_path, *args, label=None, base_label=None):
     root, env, log = _tree(tmp_path)
     if label is not None:
         env["FAKE_CLI_EXTENDED_LABEL"] = label
+    if base_label is not None:
+        env["FAKE_BASE_IMAGE_LABEL"] = base_label
     result = subprocess.run(
         ["bash", str(root / "tester-unified" / "build-image.sh"), *args],
         env=env, capture_output=True, text=True, check=False, cwd=root,
@@ -147,6 +159,7 @@ def test_an_unlabelled_image_is_refused(tmp_path):
     )
 
     assert result.returncode == 2 and "<no label>" in result.stderr
+    assert "does not carry the expected cli-extended wheel" in result.stderr
 
 
 def test_the_default_pinned_image_must_be_labelled_with_the_pinned_digest(tmp_path):
@@ -167,3 +180,50 @@ def test_local_mode_labels_the_supplied_digest(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert f"CLI_EXTENDED_WHEEL_SHA256={PUBLISHED}" in _buildx(log)
+
+
+# --- org.vbpub.tester-unified.base-image: the base the image was built FROM ---------
+
+
+def test_a_default_build_must_record_the_dockerfiles_default_base(tmp_path):
+    ok, log = _build(tmp_path / "ok", label=PINNED_DIGEST, base_label=DEFAULT_BASE)
+    assert ok.returncode == 0, ok.stderr
+    assert "TESTER_UNIFIED_BASE_IMAGE" not in _buildx(log)  # the Dockerfile default applies
+
+    other, _ = _build(tmp_path / "other", label=PINNED_DIGEST, base_label=UPSTREAM_BASE)
+    assert other.returncode == 2
+    assert "not built from the requested base" in other.stderr
+    assert f"expected: {DEFAULT_BASE}" in other.stderr
+    assert f"observed: {UPSTREAM_BASE}" in other.stderr
+
+
+def test_an_explicit_base_is_passed_to_buildx_and_accepted_when_recorded(tmp_path):
+    result, log = _build(
+        tmp_path, "--base-image", UPSTREAM_BASE, label=PINNED_DIGEST, base_label=UPSTREAM_BASE,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"--build-arg TESTER_UNIFIED_BASE_IMAGE={UPSTREAM_BASE}" in _buildx(log)
+
+
+def test_an_explicit_base_the_build_did_not_consume_is_refused(tmp_path):
+    """A requested base the Dockerfile ignored (a renamed or unconsumed ARG builds the
+    default base) must fail the build step even though the wheel labels are correct."""
+    result, _log = _build(
+        tmp_path, "--base-image", UPSTREAM_BASE,
+        "--cli-extended-resolve", "local", "--cli-extended-wheel-sha256", PUBLISHED,
+        label=PUBLISHED, base_label=DEFAULT_BASE,
+    )
+
+    assert result.returncode == 2
+    assert "not built from the requested base" in result.stderr
+    assert f"expected: {UPSTREAM_BASE}" in result.stderr
+    assert f"observed: {DEFAULT_BASE}" in result.stderr
+
+
+def test_an_image_without_a_base_label_is_refused(tmp_path):
+    for index, base in enumerate(([], ["--base-image", UPSTREAM_BASE])):
+        result, _log = _build(tmp_path / str(index), *base, label=PINNED_DIGEST, base_label="")
+        assert result.returncode == 2
+        assert "not built from the requested base" in result.stderr
+        assert "observed: <no label>" in result.stderr

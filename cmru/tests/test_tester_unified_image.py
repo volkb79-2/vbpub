@@ -3579,6 +3579,32 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
     assert f"docker pull {declared_env['CMRU_TESTER_CGROUP_PROBE_IMAGE']}" in bootstrap
 
 
+def test_the_final_stage_labels_the_base_it_was_built_from():
+    """``org.vbpub.tester-unified.base-image`` must carry the build-time base value.
+
+    A pre-FROM ``ARG`` is not visible inside the stage unless redeclared, so the
+    label must follow an in-stage ``ARG TESTER_UNIFIED_BASE_IMAGE`` with no
+    default of its own; otherwise it would record an empty or fixed value, and
+    ``build-image.sh`` / Run-Gate's release preparation would compare against it.
+    """
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    # build-image.sh and Run-Gate both read the single default with one pattern.
+    defaults = re.findall(r"^ARG TESTER_UNIFIED_BASE_IMAGE=(.*)$", text, re.MULTILINE)
+    assert len(defaults) == 1 and defaults[0].strip(), defaults
+    instructions = _dockerfile_instructions_by_stage(text)
+    final = max(ordinal for ordinal, _selector, _index, _instruction in instructions)
+    stage = [instruction for ordinal, _s, _i, instruction in instructions if ordinal == final]
+    assert stage[0] == "FROM ${TESTER_UNIFIED_BASE_IMAGE}"
+    label = 'LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"'
+    assert stage.count(label) == 1
+    redeclared = [index for index, instruction in enumerate(stage) if instruction == "ARG TESTER_UNIFIED_BASE_IMAGE"]
+    assert redeclared and redeclared[0] < stage.index(label)
+    # Nothing in the stage rebinds the value the label records.
+    assert not any(instruction.startswith("ARG TESTER_UNIFIED_BASE_IMAGE=") for instruction in stage)
+    builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
+    assert '{{index .Config.Labels "org.vbpub.tester-unified.base-image"}}' in builder
+
+
 def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
     dockerfile = (REPO_ROOT / "wheel-builder" / "Dockerfile").read_text("utf-8")
     readme = (REPO_ROOT / "cmru" / "README.md").read_text("utf-8")

@@ -9,6 +9,7 @@ stale tester-image pin cannot silently keep the old cli-extended bytes.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -465,8 +466,8 @@ def test_every_run_gate_tester_input_the_guide_passes_is_read_by_run_gate_source
 
     Run-Gate ignores an unknown environment variable, so a guide that names an
     input no Run-Gate source reads is a pasteable step that cannot fail. The
-    consumer lives in Run-Gate's own tree; until that tree is integrated here,
-    this check is red on purpose.
+    consumer is Run-Gate 24.0.1's ``tools/release_candidate.py``; the step-4
+    tests below also prove each value is one that consumer accepts.
     """
     text = GUIDE.read_text(encoding="utf-8")
     named = set(re.findall(r"\b(RUN_GATE_TESTER_[A-Z0-9_]+)=", text))
@@ -514,6 +515,152 @@ def test_the_guide_names_the_log_interface_and_the_exact_cgroup_inputs():
     )
     assert "RUN_GATE_TESTER_UNIFIED_IMAGE=" in cgprofile.split("cmru release cgroup-profiler")[0]
     assert "RUN_GATE_TESTER_CLI_EXTENDED_SHA256=" in cgprofile
+
+
+# --- step 4: the guide's tester inputs are exactly what Run-Gate's release tooling accepts ---
+
+UPSTREAM_BASE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
+RELEASE_CANDIDATE = REPO_ROOT / "run-gate-project" / "tools" / "release_candidate.py"
+STEP_FOUR_IMAGE = "sha256:" + "e" * 64
+TESTER_INPUTS = (
+    "RUN_GATE_TESTER_UNIFIED_IMAGE", "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE",
+    "RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "RUN_GATE_TESTER_CLI_EXTENDED_SHA256",
+)
+
+_needs_run_gate_tools = pytest.mark.skipif(
+    not (GUIDE.is_file() and RELEASE_CANDIDATE.is_file()),
+    reason="repository-root guide or Run-Gate release tooling absent (isolated canary tree)",
+)
+
+
+def _run_gate_release_candidate():
+    """Run-Gate's own release tooling from this checkout: the real consumer."""
+    spec = importlib.util.spec_from_file_location(
+        "_run_gate_release_candidate_for_cmru_guide", RELEASE_CANDIDATE,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_step_four(tmp_path: Path, **variables: str) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
+    """Run step 4's release block with a recording ``cmru`` and a fixed image ID."""
+    (block,) = [item for item in _step_blocks(4) if "cmru release run-gate-project" in item]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "cmru.calls"
+    (fake_bin / "cmru").write_text(
+        "#!/bin/sh\n"
+        'printf "CALL %s\\n" "$*" >> "$CMRU_CALLS"\n'
+        'env | grep "^RUN_GATE_TESTER_" | sort >> "$CMRU_CALLS"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "docker").write_text(f'#!/bin/sh\necho "{STEP_FOUR_IMAGE}"\n', encoding="utf-8")
+    for name in ("cmru", "docker"):
+        (fake_bin / name).chmod(0o755)
+    # A clean environment: no ambient RUN_GATE_TESTER_* value can reach a release.
+    env = {"PATH": f"{fake_bin}:/usr/bin:/bin", "HOME": str(tmp_path), "CMRU_CALLS": str(calls), **variables}
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + block], cwd=tmp_path, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    records: list[dict] = []
+    for line in calls.read_text(encoding="utf-8").splitlines() if calls.exists() else ():
+        if line.startswith("CALL "):
+            records.append({"argv": line[len("CALL "):], "env": {}})
+        else:
+            name, _, value = line.partition("=")
+            records[-1]["env"][name] = value
+    return result, records
+
+
+@_needs_run_gate_tools
+@pytest.mark.parametrize("resolve", ["pinned", "latest"])
+def test_step_four_gives_run_gate_exactly_the_tester_inputs_its_release_tooling_accepts(
+    tmp_path, monkeypatch, resolve,
+):
+    result, calls = _run_step_four(
+        tmp_path, CLI_EXTENDED_RESOLVE=resolve, CLI_EXTENDED_RELEASED_SHA256=NEW_SHA,
+    )
+
+    assert result.returncode == 0, result.stderr
+    cgprofile, run_gate = calls
+    # CGProfile's release builds no tester image: it gets the image and nothing that
+    # would be silently ignored.
+    assert cgprofile["argv"] == "release cgroup-profiler --set-version 1.0.0"
+    assert cgprofile["env"] == {"RUN_GATE_TESTER_UNIFIED_IMAGE": STEP_FOUR_IMAGE}
+    assert run_gate["argv"].startswith("release run-gate-project --set-version ")
+    expected = {
+        "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE": UPSTREAM_BASE,
+        "RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": resolve,
+    }
+    if resolve == "latest":
+        expected["RUN_GATE_TESTER_CLI_EXTENDED_SHA256"] = NEW_SHA
+    assert run_gate["env"] == expected
+
+    # The real Run-Gate consumer accepts exactly these values and builds from them.
+    release_candidate = _run_gate_release_candidate()
+    for name in TESTER_INPUTS:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in run_gate["env"].items():
+        monkeypatch.setenv(name, value)
+    options = release_candidate._tester_image_options()
+    assert options == (UPSTREAM_BASE, resolve, NEW_SHA if resolve == "latest" else "")
+    command = release_candidate._tester_image_build_command("tester-unified:guide", options)
+    assert command[command.index("--base-image") + 1] == UPSTREAM_BASE
+    assert command[command.index("--cli-extended-resolve") + 1] == resolve
+    assert release_candidate._expected_base_image(command) == UPSTREAM_BASE
+    if resolve == "latest":
+        assert command[command.index("--cli-extended-wheel-sha256") + 1] == NEW_SHA
+        assert release_candidate._expected_cli_extended_sha256(command) == NEW_SHA
+    else:
+        assert "--cli-extended-wheel-sha256" not in command
+        # pinned: the image must carry the Dockerfile's own pinned wheel digest
+        pin = re.search(r"^ARG CLI_EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$", DOCKERFILE.read_text("utf-8"), re.MULTILINE)
+        assert release_candidate._expected_cli_extended_sha256(command) == pin.group(1)
+
+
+@_needs_run_gate_tools
+def test_run_gate_refuses_a_digest_outside_latest_so_the_guide_must_not_pass_one(monkeypatch):
+    """Control: the oracle above can go red. Run-Gate refuses the published digest with
+    `pinned`, which the identity check reports once the Dockerfile pin is current."""
+    release_candidate = _run_gate_release_candidate()
+    for name in TESTER_INPUTS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", UPSTREAM_BASE)
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "pinned")
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", NEW_SHA)
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="valid only with"):
+        release_candidate._tester_image_options()
+
+
+@_needs_run_gate_tools
+@pytest.mark.parametrize("variables", [
+    {},
+    {"CLI_EXTENDED_RESOLVE": "latest"},
+], ids=["no-step-three-mode", "latest-without-the-published-digest"])
+def test_step_four_never_starts_the_run_gate_release_without_its_step_three_inputs(tmp_path, variables):
+    result, calls = _run_step_four(tmp_path, **variables)
+
+    assert result.returncode != 0
+    assert not any(call["argv"].startswith("release run-gate-project") for call in calls)
+
+
+@_needs_repo
+def test_one_upstream_base_is_named_for_every_zero_release_tester_image():
+    commands = "\n".join(_bash_blocks())
+    named = re.findall(r"--base-image (\S+)", commands)
+    named += re.findall(r"RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=(\S+)", commands)
+    # step 2's bootstrap image, step 3's and step 4's rebuilds, and Run-Gate's own rebuild
+    assert len(named) >= 4 and set(named) == {UPSTREAM_BASE}, named
+    # ... and it is not the Dockerfile's default, so the base label tells them apart.
+    if DOCKERFILE.is_file():
+        default = re.search(
+            r"^ARG TESTER_UNIFIED_BASE_IMAGE=(\S+)$", DOCKERFILE.read_text("utf-8"), re.MULTILINE,
+        ).group(1)
+        assert default != UPSTREAM_BASE
 
 
 @_needs_repo

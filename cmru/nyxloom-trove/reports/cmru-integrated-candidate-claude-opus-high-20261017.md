@@ -161,6 +161,9 @@ unchanged.
 
 ## BLOCKED
 
+*Resolved 2026-10-18: Run-Gate 24.0.1 is public and carries the consumer.
+See "Follow-up 2026-10-18" below. The original record is kept as written.*
+
 BLOCKED (retained; deliberately outside the follow-up's scope): the from-zero guide's three `RUN_GATE_TESTER_*` inputs are ignored by
 every released Run-Gate source. Run-Gate 24.0.0's `tools/release_candidate.py`
 has no consumer for them, so the documented step-4 behavior is unavailable:
@@ -209,3 +212,45 @@ lanes. Nothing here claims that any test or gate passed.
 
 The CMRU 6.2.0 release transaction must not start until CMRU's `coverage` and
 `gate-provisional` lanes pass.
+
+## Follow-up 2026-10-18: review against published Run-Gate 24.0.1
+
+- Base: `b97143b7f54b92e7dae9675f37a427e81f1d5379` (merge of tag
+  `run-gate-v24.0.1`, peeled `f793a3b8a316e8dd36d1d5b91bcc7f76d1b7d6cc`),
+  clean. `run-gate-project/` and `tester-unified/` match the tag byte for
+  byte (`git diff run-gate-v24.0.1 HEAD -- run-gate-project tester-unified`
+  is empty) and stay unchanged.
+- **F4 is resolved by the release.** Run-Gate 24.0.1's
+  `tools/release_candidate.py` reads all three `RUN_GATE_TESTER_*` inputs. It
+  also requires the image's `org.vbpub.tester-unified.base-image` label to
+  equal the requested base.
+
+Findings in CMRU scope, all fixed here:
+
+| # | Severity | Behavior |
+|---|---|---|
+| G1 | High (false refusal) | Guide step 4 always exported `RUN_GATE_TESTER_CLI_EXTENDED_SHA256`. Run-Gate 24.0.1 refuses that digest unless the mode is `latest`, so a release in `pinned` mode (what the identity check reports once the Dockerfile pin is current) was refused. The digest is now passed only with `latest`. |
+| G2 | Medium (silently ignored input) | The CGProfile release also received `RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE`/`_SHA256`, but nothing in that release reads them. It now receives only `RUN_GATE_TESTER_UNIFIED_IMAGE`. |
+| G3 | High (red oracle) | The guide named Run-Gate 24.0.0. `test_the_release_commands_follow_the_declared_graph_and_one_set_of_versions` requires the version to be at least the newest `run-gate-project/CHANGES.md` release (24.0.1). The wheel build, the wheel globs and `--set-version` now all say 24.0.1. CMRU's own gate floor (`RUN_GATE_MIN_VERSION = "24.0.0"`) stays as it is. |
+| G4 | High (false refusal of valid builds in tests) | 24.0.1's `build-image.sh` re-reads `org.vbpub.tester-unified.base-image`. The fake `docker` in `test_tester_image_cli_extended_identity.py` did not answer that label, so every expected-success build exited 2. The fake now answers it (by default with the Dockerfile's default base, as a real default build records). |
+| G5 | Medium (missing oracle) | Nothing in CMRU's tests covered the base label. New tests in both directions: a default build with another base label, an explicit base the build did not consume, and an unlabelled image are each refused; a correctly labelled explicit base is accepted and passed to Buildx. A Dockerfile oracle requires the label to follow an in-stage `ARG TESTER_UNIFIED_BASE_IMAGE` with no default of its own, with exactly one global default. |
+
+**Step-4 oracle.** The new tests run the guide's real step-4 block with a
+recording `cmru`, for `pinned` and for `latest`. They check the exact
+per-command environment, then pass the Run-Gate command's environment to
+Run-Gate 24.0.1's own `_tester_image_options()` and
+`_tester_image_build_command()`. That checks the guide's output against the
+real consumer, not a copy of it. One control test shows Run-Gate refuses the
+old unconditional digest. Another shows the Run-Gate release never starts
+without its step-3 inputs.
+
+**Docs.** `docs/BOOTSTRAP-FROM-ZERO.md` was updated: step 2 now covers the
+base label, and step 4 gives the per-mode inputs and names 24.0.1 as their
+consumer. `cmru/CHANGES.md`'s stale note ("consumer outside this change set")
+was replaced. The CMRU README, CONSUMERS and DESIGN-GUIDE do not describe
+tester-image labels (`tester-unified/docs` does, at the tag), so they are
+unchanged.
+
+**Gate state.** No tests or gates were run. Only static checks were made
+(Python AST parse of the edited tests, `bash -n` of the guide's shell
+blocks). Nothing here claims that a test or gate passed.
