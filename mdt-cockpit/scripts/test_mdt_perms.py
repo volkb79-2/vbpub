@@ -88,16 +88,28 @@ def test_symlinks_are_excluded_from_every_predicate(tmp_path: Path) -> None:
     assert _run("check", root).returncode == 0
 
 
-def test_a_wrong_group_is_a_violation_and_fix_assigns_the_group(tmp_path: Path) -> None:
+def test_a_wrong_group_is_a_violation(tmp_path: Path) -> None:
+    """Needs no second group membership: the tree is owned by the caller's group and the
+    contract is checked against a DIFFERENT group name (`root` exists everywhere)."""
+    root = tmp_path / "mdt"
+    _compliant_tree(root)
+    assert _run("check", root).returncode == 0, "control: the same tree passes for its own group"
+
+    check = _run("check", root, group="root")
+
+    assert check.returncode == 1
+    assert "group" in check.stderr and "tool" in check.stderr
+
+
+def test_fix_assigns_the_group_to_an_offender(tmp_path: Path) -> None:
     other = _other_group()
     if other is None:
-        pytest.skip("needs a second group the user belongs to")
+        pytest.skip("chgrp to a second group needs the user to belong to one (the image build runs as root)")
     root = tmp_path / "mdt"
     _compliant_tree(root)
     os.chown(root / "bin" / "tool", -1, grp.getgrnam(other).gr_gid)
 
-    check = _run("check", root)
-    assert check.returncode == 1 and "group" in check.stderr and "tool" in check.stderr
+    assert _run("check", root).returncode == 1
 
     assert _run("fix", root).returncode == 0
     assert (root / "bin" / "tool").stat().st_gid == os.getgid()
