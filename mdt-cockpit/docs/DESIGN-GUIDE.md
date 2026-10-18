@@ -187,7 +187,10 @@ Login shells need two things, both done at build time:
    changed base or an already patched file is never patched blindly. The Microsoft
    `00-restore-env.sh` (VS Code family) prepends its own fixed list to `$PATH` after `/etc/profile`
    and is unaffected, but with an inherited `PATH` it now prepends on *every* login shell, so a
-   login shell started inside another one carries those entries again (measured in the lane).
+   login shell started inside another one carries those entries again (measured on the VS Code
+   image: 16 entries in the image `PATH`, 21 in a login shell, 26 in a login shell inside it, 31 in a third -
+   five more per nesting level; harmless duplicates the hook deliberately does not deduplicate, because it
+   keeps every non-managed entry as it found it).
 2. **The hook merges.** The build writes the managed prefix and suffix (not a whole `PATH`) to
    `/usr/local/share/mdt-cockpit/path-entries`. `path-hook.sh` removes those entries wherever they
    occur in the current `PATH`, prepends the prefix in the order above, appends the suffix, and keeps
