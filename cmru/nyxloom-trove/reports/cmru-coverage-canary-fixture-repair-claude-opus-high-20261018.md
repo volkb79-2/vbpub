@@ -1,13 +1,13 @@
 # CMRU coverage-canary fixture repair (Claude Opus, high) — 2026-10-18
 
-BLOCKED: `tests/test_builtin_handlers.py::test_wheel_build_resolves_registered_builder_image_from_cmr_config`
-reads the complete registered estate. Every project config in root
-`cmru.orchestration.toml` would have to be in the fixture, including
-`libraries/cli-extended/cmru.toml`. That directory is forbidden by the fixture
-contract (CX-D1: vendored cli-extended stays absent). Its presence would also
-switch other modules out of their isolated-tree skip and into modes that copy
-cli-extended **source**. The test is outside this task's edit scope, and it has
-no isolated-tree guard. Every other observed control failure is repaired here.
+Resolved (previously BLOCKED; the operator approved resolution A).
+`tests/test_builtin_handlers.py::test_wheel_build_resolves_registered_builder_image_from_cmr_config`
+reads the complete registered estate. The fixture cannot carry that, because
+it would include `libraries/cli-extended/cmru.toml` (CX-D1). The test now has
+the same complete-estate skip as its estate-reading siblings. It skips in the
+disposable fixture and runs its unchanged real-estate assertion wherever all
+registered configs are present. Every other observed control failure is
+repaired by fixture inputs.
 
 ## Bindings
 
@@ -23,7 +23,8 @@ no isolated-tree guard. Every other observed control failure is repaired here.
 |---|---|---|
 | release `gate-provisional` canary (`/tmp/run-gate/run-gate-vbpub-canary-1601649-1792290420.log`) | `3266b10fa` | control exit 2: collection errors, `tester-unified/Dockerfile` and `nyxloom/pyproject.toml` missing |
 | operator-run `canary` (`/tmp/run-gate/run-gate-vbpub-canary-1629392-1792292196.log`, 280.10 s) | `34cae01ca` | control exit 1: 4,906 passed, 435 skipped, 7 failed; transformed run never reached |
-| this commit | see below | recorded in "Gate result" |
+| fixture inputs + BLOCKED report | `81d3a0f1e` | not run by this agent (harness approval unavailable) |
+| resolution A follow-up | see "Gate result" | not run by this agent; the controller runs it |
 
 ## Root cause
 
@@ -48,7 +49,7 @@ refusal.
 | `run-gate-project/cmru.toml` | `test_release_gate.py:1395` provider prefix | copied (this commit) |
 | `assay/src` | `test_release_gate.py:1067`: `run_release_gate._load_components()` must import from `REPOSITORY_ROOT/assay/src` | copied (this commit) |
 | `docs/BOOTSTRAP-FROM-ZERO.md` | `test_docs_config_examples.py:321`: linked from CMRU README, DESIGN-GUIDE and CONSUMERS (the only outward link target the fixture lacked) | copied (this commit) |
-| all 11 project configs of `cmru.orchestration.toml` | `test_builtin_handlers.py:112` → `handlers._configured_env_value` → `load_forge_config` parses every registered `cmru.toml` (`config.py:1283-1303`) | **BLOCKED** (see below) |
+| all 11 project configs of `cmru.orchestration.toml` | `test_builtin_handlers.py:112` → `handlers._configured_env_value` → `load_forge_config` parses every registered `cmru.toml` (`config.py:1283-1303`) | not copied; the test gets the complete-estate skip (resolution A, below) |
 
 These skip keys must stay absent, because their presence starts full modes the
 fixture cannot satisfy: `tester-unified/gen-requirements.py` (needs `git ls-tree
@@ -60,7 +61,7 @@ HEAD` and `libraries/cli-extended/src`), `tester-unified/build-image.sh`,
 (`test_dependency_levels_pyproject.py` `_estate_complete`). I checked that none
 of the copied inputs is itself a skip key.
 
-## BLOCKED detail and evidence needed to resolve it
+## Former BLOCKED finding and its resolution
 
 The wheel-builder test calls `_configured_wheel_builder_image(repo_root /
 "run-gate-project")`. That loads root `cmru.orchestration.toml`, which parses
@@ -81,18 +82,35 @@ The wheel-builder test calls `_configured_wheel_builder_image(repo_root /
    the estate and tls-edge suites, which need further trees.
 
 The test arrived in `1fa737782` (2026-10-14), without the isolated-tree guard
-that its estate-reading siblings carry. Possible resolutions; each is an
-operator decision outside this scope:
+that its estate-reading siblings carry. Two resolutions were offered:
 
 - **A (recommended):** guard that one test exactly as its siblings are guarded,
   i.e. skip unless the registered estate is complete (the
-  `test_dependency_levels_pyproject._estate_complete` predicate). The adjacent
-  `test_wheel_builder_image_from_config_follows_the_registered_project_containing_cwd`
-  already proves the resolver against a synthetic estate. The real-estate
-  assertion would still run in the `coverage` lane.
+  `test_dependency_levels_pyproject._estate_complete` predicate).
 - **B:** change CX-D1 so the fixture may carry `libraries/cli-extended/cmru.toml`,
   and re-key `_needs_build_tools` / `_needs_repo` on `libraries/cli-extended/src`.
   This changes a published fixture contract.
+
+**The operator approved A, and it is implemented as follows.** The test
+imports `_estate_complete` from `tests.test_dependency_levels_pyproject`, so
+the predicate is the same function, not a copy. It now carries
+`@pytest.mark.skipif(not _estate_complete(), reason="estate projects absent
+(isolated canary tree)")`. The predicate is true only when root
+`cmru.orchestration.toml` exists, registers at least one project, and every
+registered `config` path is a file.
+
+- **Full estate:** all 11 registered configs are tracked, so a full-checkout
+  gate snapshot satisfies the predicate. The `coverage` lane (`pytest tests` in
+  `{worktree}/cmru`) therefore executes the unchanged assertion: the configured
+  `CMRU_WHEEL_BUILDER_IMAGE` equals the value declared in
+  `cmru.orchestration.toml`.
+- **Disposable fixture:** only `cmru/cmru.toml`, `topos/cmru.toml`,
+  `nyxloom/cmru.toml` and `run-gate-project/cmru.toml` are present, so only
+  this test is skipped, with that reason.
+- **Unchanged:** the test body and the adjacent synthetic resolver test
+  (`test_wheel_builder_image_from_config_follows_the_registered_project_containing_cwd`).
+  The synthetic test stays unconditional, so the resolver is still exercised in
+  the fixture. No product code and no fixture contents changed.
 
 ## Changes
 
@@ -121,15 +139,20 @@ operator decision outside this scope:
     writes no evidence;
   - a candidate that fails for another reason is refused, and its evidence
     says so.
+- `cmru/tests/test_builtin_handlers.py` (resolution A follow-up): adds the
+  complete-estate skip to the real-estate wheel-builder test only, as described
+  above.
 - `coverage_canary.py` and `tools/test_mutation_campaign.py`: unchanged (the
   latter monkeypatches `EXTERNAL_DOC_ARTIFACTS` to `()`).
 
 ## Gate result
 
-No cockpit tests were run. The registered `canary` lane result for this commit
-is recorded in the controller hand-back. The expected residual is exactly the
-one BLOCKED test, so the control should still exit non-zero until resolution
-A or B lands.
+No cockpit tests or gates were run by this agent, for `81d3a0f1e` or for the
+resolution A follow-up. The registered `canary` lane on the follow-up commit is
+the controller's to run, and its result is not claimed here. The oracle it must
+show is unchanged: the known-good control exits 0; the appended uncovered line
+exits 1 with `Required test coverage of 100% not reached`; the evidence file
+records both.
 
 ## Remaining limits
 
