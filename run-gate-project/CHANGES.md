@@ -9,6 +9,18 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [24.0.1] - 2026-10-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=cc20c5be371fd1271be8acce1ec22d4c9b78f9df -->
+
+### Fixed
+- fix(run-gate): prove a first release against origin's tags (cc20c5be3)
+- fix(run-gate): restore 24.0.0 history and bind tester base before build (5d5800bce)
+- fix(run-gate): bind bootstrap image inputs to verified wheel bytes (eeb4e461b)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - Fix: the release preparation now consumes the documented tester-image
   overrides. `RUN_GATE_TESTER_UNIFIED_BASE_IMAGE` selects the base,
@@ -60,8 +72,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   rejected by dpkg; both bases are covered by an executable oracle.
 - Docs: fix the doubled backslash in the CONSUMERS zero-release bootstrap
   example.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [24.0.0] - 2026-10-17
 <!-- cmru: generated -->
