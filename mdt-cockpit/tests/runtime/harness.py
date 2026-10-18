@@ -10,7 +10,10 @@ only place that talks to Docker:
 * volumes and throw-away images are created under the same unique-name scheme and
   removed by exact name; nothing is ever removed by filter or ancestor;
 * nothing here sleeps or polls: every wait is a synchronous `docker run` that returns
-  when its process exits (`timeout=` is a generous failsafe, never a verdict).
+  when its process exits, or - for an interactive program - a read on its terminal that
+  returns when the program shows the next thing the test waits for (`timeout=` and the
+  drive() failsafe are generous limits that turn a stuck session into an error, never a
+  verdict).
 
 There are no defaults for the images: an unset variable is a configuration error.
 """
@@ -18,12 +21,19 @@ from __future__ import annotations
 
 import atexit
 import contextlib
+import fcntl
 import functools
 import itertools
 import json
 import os
+import pty
+import re
+import select
+import struct
 import subprocess
 import sys
+import termios
+import time
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +54,7 @@ LOCAL_ARTIFACTS_LABEL = "net.volkb79.mdt.local-artifacts"
 PATH_PREFIX = ("/opt/mdt/bin", "/opt/mdt/venv/bin", "/opt/mdt/npm/bin", "/srv/pwmcp-instance/bin")
 PATH_SUFFIX = ("/home/vscode/.local/bin",)
 
+DOCKER = "docker"
 GENEROUS_TIMEOUT = 600  # seconds; a failsafe against a hung container, never a verdict
 _PID = os.getpid()
 _COUNTER = itertools.count(1)
@@ -149,6 +160,43 @@ def _remove_container(name: str) -> None:
     _LIVE_CONTAINERS.discard(name)
 
 
+def _container_command(
+    name: str,
+    image: str,
+    argv: Sequence[str],
+    *,
+    user: str | None,
+    env: Mapping[str, str] | None,
+    tmpfs: Sequence[str],
+    volumes: Sequence[str],
+    workdir: str | None,
+    tty: bool,
+    interactive: bool,
+    memory: str,
+) -> list[str]:
+    """The one place a lane container's `docker run` argv is built."""
+    gates = require_environment()[ENV_GATES]
+    command = [
+        "run", "--name", name, "--init", "--cgroup-parent", gates, "--network", "none",
+        "--memory", memory, "--label", "mdt-cockpit-rt=1", "--entrypoint", argv[0],
+    ]
+    if user is not None:
+        command += ["--user", user]
+    if tty:
+        command.append("-t")
+    if interactive:
+        command.append("-i")
+    if workdir is not None:
+        command += ["-w", workdir]
+    for key, value in (env or {}).items():
+        command += ["-e", f"{key}={value}"]
+    for spec in tmpfs:
+        command += ["--tmpfs", spec]
+    for spec in volumes:
+        command += ["-v", spec]
+    return command + [image, *argv[1:]]
+
+
 def run(
     image: str,
     argv: Sequence[str],
@@ -169,27 +217,11 @@ def run(
     ENTRYPOINT. With `tty=True` the container has a pseudo-terminal and stdout/stderr
     arrive merged (as on a real terminal).
     """
-    gates = require_environment()[ENV_GATES]
     name = _unique("")
-    command = [
-        "run", "--name", name, "--init", "--cgroup-parent", gates, "--network", "none",
-        "--memory", memory, "--label", "mdt-cockpit-rt=1", "--entrypoint", argv[0],
-    ]
-    if user is not None:
-        command += ["--user", user]
-    if tty:
-        command.append("-t")
-    if stdin is not None:
-        command.append("-i")
-    if workdir is not None:
-        command += ["-w", workdir]
-    for key, value in (env or {}).items():
-        command += ["-e", f"{key}={value}"]
-    for spec in tmpfs:
-        command += ["--tmpfs", spec]
-    for spec in volumes:
-        command += ["-v", spec]
-    command += [image, *argv[1:]]
+    command = _container_command(
+        name, image, argv, user=user, env=env, tmpfs=tmpfs, volumes=volumes, workdir=workdir,
+        tty=tty, interactive=stdin is not None, memory=memory,
+    )
     _LIVE_CONTAINERS.add(name)
     try:
         result = _docker(command, input_bytes=stdin, timeout=timeout)
@@ -198,6 +230,88 @@ def run(
     finally:
         _remove_container(name)
     return Completed(result.returncode, _decode(result.stdout), _decode(result.stderr))
+
+
+_ANSI = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[()][A-Za-z0-9]|\x1b[=>78]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
+DRIVE_FAILSAFE = 180  # seconds; ends a stuck session with an ERROR, never decides a verdict
+
+
+@dataclass(frozen=True)
+class Session:
+    returncode: int
+    screen: str  # everything the terminal showed, escape sequences removed
+    completed_steps: int
+
+
+def drive(
+    image: str,
+    argv: Sequence[str],
+    steps: Sequence[tuple[str, bytes]],
+    *,
+    user: str | None = None,
+    env: Mapping[str, str] | None = None,
+    tmpfs: Sequence[str] = (),
+    volumes: Sequence[str] = (),
+    workdir: str | None = None,
+    failsafe: int = DRIVE_FAILSAFE,
+    memory: str = "2g",
+) -> Session:
+    """Run an interactive program on a real pseudo-terminal and drive it by what it SHOWS.
+
+    `steps` is a list of `(regex, keys)`: when the terminal output (escape sequences removed)
+    next matches `regex`, `keys` are sent. There is no sleep and no deadline-as-verdict: the
+    session ends when the program exits, and `failsafe` only turns a stuck session into an
+    error. Steps that never match because the program already exited are simply not
+    completed (`completed_steps` says how many were) - a dialog that may not appear is
+    therefore expressed as a trailing optional step.
+    """
+    name = _unique("")
+    command = [DOCKER] + _container_command(
+        name, image, argv, user=user, env=env, tmpfs=tmpfs, volumes=volumes, workdir=workdir,
+        tty=True, interactive=True, memory=memory,
+    )
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
+    _LIVE_CONTAINERS.add(name)
+    process = subprocess.Popen(command, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+    os.close(slave)
+    raw = b""
+    consumed = 0  # clean-text offset already used by earlier steps
+    done = 0
+    deadline = time.monotonic() + failsafe
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError(f"interactive session exceeded the {failsafe}s failsafe; screen so far:\n"
+                                   + _ANSI.sub(b"", raw).decode("utf-8", "replace")[-2000:])
+            ready, _, _ = select.select([master], [], [], remaining)
+            if not ready:
+                continue
+            try:
+                chunk = os.read(master, 65536)
+            except OSError:  # EIO: the child side closed
+                break
+            if not chunk:
+                break
+            raw += chunk
+            clean = _ANSI.sub(b"", raw).decode("utf-8", "replace")
+            while done < len(steps):
+                pattern, keys = steps[done]
+                match = re.compile(pattern).search(clean, consumed)
+                if not match:
+                    break
+                os.write(master, keys)
+                consumed = match.end()
+                done += 1
+        returncode = process.wait()
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        _remove_container(name)
+    return Session(returncode, _ANSI.sub(b"", raw).decode("utf-8", "replace").replace("\r", ""), done)
 
 
 def sh(image: str, script: str, **kwargs) -> Completed:
@@ -220,12 +334,14 @@ def volume() -> Iterator[str]:
         _LIVE_VOLUMES.discard(name)
 
 
-def own_volume(image: str, volume_name: str, uid_gid: str = "1000:1000") -> None:
-    """Root pre-step: hand an empty volume to the run uid, mode 0700 like the host source."""
+def own_volume(
+    image: str, volume_name: str, uid_gid: str = "1000:1000", *, path: str = "/home/vscode", mode: str = "0700"
+) -> None:
+    """Root pre-step: hand an empty volume to the run uid (mode 0700 for a home, like the host source)."""
     result = run(
         image,
-        ["bash", "-c", f"chown {uid_gid} /home/vscode && chmod 0700 /home/vscode"],
-        user="0", volumes=[f"{volume_name}:/home/vscode"],
+        ["bash", "-c", f"chown {uid_gid} {path} && chmod {mode} {path}"],
+        user="0", volumes=[f"{volume_name}:{path}"],
     )
     if result.returncode != 0:
         raise RuntimeError(f"cannot prepare volume {volume_name}: {result.output}")
@@ -291,6 +407,18 @@ def template_post_create_command() -> str:
     if not isinstance(command, str) or not command.strip():
         raise ConfigurationError("templates/devcontainer.json has no string postCreateCommand")
     return command
+
+
+def template_container_env() -> dict[str, str]:
+    """The `containerEnv` of the shipped devcontainer template, parsed, not retyped."""
+    sys.path.insert(0, str(ROOT / "templates"))
+    import initialize_container_environment as bootstrap
+
+    document = bootstrap._parse_jsonc_object((ROOT / "templates" / "devcontainer.json").read_text(encoding="utf-8"))
+    env = document["containerEnv"]
+    if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
+        raise ConfigurationError("templates/devcontainer.json has no string-valued containerEnv")
+    return dict(env)
 
 
 class ImageCase(unittest.TestCase):

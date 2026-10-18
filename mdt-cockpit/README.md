@@ -269,7 +269,7 @@ Container and system inspection, in-image:
 | `lnav` | ncurses log/JSONL viewer with SQL queries over parsed fields — see below |
 
 Neovim ships as `nvim` with the NvChad tree in `/etc/xdg/nvim` (system-wide, started by
-`/etc/xdg/nvim/sysinit.vim` only while you have no `~/.config/nvim/init.lua` or `init.vim`);
+Neovim's own `$XDG_CONFIG_DIRS` fallback, only while you have no `~/.config/nvim/init.lua` or `init.vim`; `sysinit.vim` redirects the lazy lockfile into your state directory);
 the shell defaults prefer `nvim` as `$EDITOR` when present. Every default is wired where its
 tool reads system-wide configuration — see [System-wide defaults](docs/DESIGN-GUIDE.md#system-wide-defaults).
 GitHub-release tools keep their manpages and completions where upstream ships them; `fd` is

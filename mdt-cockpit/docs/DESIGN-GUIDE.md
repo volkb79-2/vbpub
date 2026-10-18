@@ -238,17 +238,23 @@ with an empty home.
 | nano | `include` appended to `/etc/nanorc` | none | `/etc/nanorc`, then `~/.nanorc`/`~/.config/nano/nanorc` (per-setting override) |
 | htop | `/etc/htoprc` | none (htop writes its own file when you save settings) | `~/.config/htop/htoprc`, `~/.htoprc`, then `/etc/htoprc` |
 | mc | `/etc/mc/mc.ini` | none | `~/.config/mc/ini`, then `/etc/mc/mc.ini`, then `/usr/share/mc/mc.ini` |
-| Neovim / NvChad | `/etc/xdg/nvim/` (tree + `sysinit.vim`) | none (plugins in `~/.local/share/nvim`, lazy lockfile redirected to `~/.local/state/nvim`) | `sysinit.vim` starts the tree only while the user has no `init.lua`/`init.vim`, so creating one replaces the default entirely |
+| Neovim / NvChad | `/etc/xdg/nvim/` (tree + `sysinit.vim`) | none (a starter-style tree would keep its plugins in `~/.local/share/nvim`) | Neovim itself starts `$XDG_CONFIG_DIRS/nvim/init.lua` while the user has no `init.lua`/`init.vim`, so creating one replaces the default; `sysinit.vim` only redirects a `configs.lazy` lockfile into `~/.local/state/nvim` (proven with a fixture tree, not with the shipped one - MDT-007) |
 | less | `LESSOPEN` in `shell.env` | none | environment variable |
 | MDT shell files | `/usr/local/share/mdt-cockpit/{shell.env,aliases.sh}` | none | the user's `~/.config/mdt-cockpit/` files are sourced *after* and may override; `ai.env` has no image default |
 | lnav formats | `/etc/lnav/formats/` | none | already system-wide |
 | image manifest | `/usr/local/share/mdt-cockpit/manifest.md` | none (no `~/mdt-manifest.md`) | `IMAGE_MANIFEST` in `/etc/os-release` |
 
 Neovim note: the shipped `NVCHAD_VER` archive is the `NvChad/NvChad` core
-repository, whose `init.lua` is a placeholder that prints a hint, not a
-ready-to-run starter configuration. The move keeps that behaviour as it was
-(tracked as MDT-007); the lockfile redirection in `sysinit.vim` takes effect as
-soon as a starter-style `configs/lazy` module is present.
+repository, whose `init.lua` is a placeholder that prints one hint line
+(`use this along starter!!!`) on every start, not a ready-to-run starter
+configuration. The move keeps that behaviour as it was (tracked as MDT-007; the
+lane pins "exit 0, exactly that one stderr line, tree run once" so the day it is
+fixed the test must be tightened). What the lane proves for Neovim is therefore
+the wiring - the tree is started exactly once, a user `init.lua` replaces it, and
+a fixture tree with a `configs/lazy` module gets its lockfile redirected - not a
+working NvChad. Neovim's own fallback to `$XDG_CONFIG_DIRS/nvim/init.lua` starts the
+tree; an earlier `sysinit.vim` also `dofile`d it and so ran it twice per start, which
+the fixture's run counter now catches.
 
 ## OCI names keep runtime paths stable
 

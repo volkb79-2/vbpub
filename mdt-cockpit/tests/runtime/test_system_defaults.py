@@ -6,10 +6,12 @@ and a file the user creates in the home overrides it. Each test names its observ
 
 The tools that need a terminal (nano, htop, mc) cannot report a setting
 non-interactively, so the observable is the set of files the real tool opens, captured
-with `strace` while it runs under `script` (a pseudo-terminal) for a few seconds: the
-system file is opened successfully, and when the user's own file exists the lookup
-order changes accordingly (htop and mc stop at the user's file; nano reads the user's
-file after the system one so it can override per setting).
+with `strace` while the tool runs on a real pseudo-terminal that the test DRIVES: it waits
+until the terminal shows the tool's interface (so the configuration has certainly been
+read) and only then sends the quit key. No timer ends a tool and no timer decides a
+verdict. The system file is opened successfully, and when the user's own file exists the
+lookup order changes accordingly (htop and mc stop at the user's file; nano reads the
+user's file after the system one so it can override per setting).
 """
 from __future__ import annotations
 
@@ -38,14 +40,21 @@ class Contract:
         kwargs.setdefault("env", {"TERM": "xterm"})
         return harness.sh(self.image.ref, script, tmpfs=[HOME_TMPFS], workdir="/tmp", **kwargs)
 
-    def trace(self, command: str, *, seconds: int = 4) -> list[str]:
-        """Files `command` opens, run on a pty for a few seconds (failsafe, not a verdict)."""
-        result = self.box(
-            f"strace -f -e trace=openat -o /tmp/trace.out timeout {seconds} script -qec '{command}' /dev/null "
-            ">/dev/null 2>&1 </dev/null; cat /tmp/trace.out"
+    def trace(self, command: str, steps: list[tuple[str, bytes]], *, prepare: str = "") -> list[str]:
+        """Files `command` opens while it runs on a driven pty (see the module docstring)."""
+        script = (
+            f"{prepare}strace -f -e trace=openat -o /tmp/trace.out {command}; "
+            "echo MDT-TRACE-BEGIN; cat /tmp/trace.out; echo MDT-TRACE-END"
         )
-        self.assertOk(result, f"strace of {command}")
-        return _opened(result.stdout)
+        session = harness.drive(
+            self.image.ref, ["bash", "-c", script], steps,
+            tmpfs=[HOME_TMPFS], workdir="/tmp",
+            env={"TERM": "xterm-256color"},  # mc.ini selects a 256-colour skin
+        )
+        self.assertGreaterEqual(session.completed_steps, 1, f"{command} never showed its interface:\n{session.screen[-1500:]}")
+        self.assertIn("MDT-TRACE-END", session.screen, f"{command} did not exit after the quit key:\n{session.screen[-800:]}")
+        trace = session.screen.split("MDT-TRACE-BEGIN", 1)[1].split("MDT-TRACE-END", 1)[0]
+        return _opened(trace)
 
     # bash -------------------------------------------------------------------------
     def test_bash_loads_the_system_default_and_the_users_bashrc_overrides_it(self) -> None:
@@ -103,40 +112,31 @@ class Contract:
             self.assertIn("T=unset Z=unset C=unset", result.stdout)
 
     # nano / htop / mc: files the real tool opens -----------------------------------
+    NANO = [("GNU nano", b"\x18")]            # header drawn -> Ctrl-X
+    HTOP = [("F10", b"q")]                      # function-key bar drawn -> q
+    MC = [("10Quit|Quit", b"\x1b[21~"), (r"(?i)really want|\[\s*Yes", b"\r")]  # F10, then confirm if asked
+
     def test_nano_reads_the_system_nanorc_that_includes_the_image_defaults(self) -> None:
-        opened = self.trace("nano /tmp/probe.txt")
+        opened = self.trace("nano /tmp/probe.txt", self.NANO)
         system = opened.index("/etc/nanorc")
         self.assertIn("/usr/local/share/mdt-cockpit/nanorc", opened[system:], "the include must be processed")
 
     def test_a_user_nanorc_is_read_after_the_system_one_so_it_can_override(self) -> None:
-        result = self.box(
-            "printf 'set nolinenumbers\\n' > ~/.nanorc; "
-            "strace -f -e trace=openat -o /tmp/trace.out timeout 4 script -qec 'nano /tmp/probe.txt' /dev/null "
-            ">/dev/null 2>&1 </dev/null; cat /tmp/trace.out"
-        )
-        opened = _opened(result.stdout)
+        opened = self.trace("nano /tmp/probe.txt", self.NANO, prepare="printf 'set nolinenumbers\\n' > ~/.nanorc; ")
         self.assertIn("/home/vscode/.nanorc", opened)
         self.assertLess(opened.index("/etc/nanorc"), opened.index("/home/vscode/.nanorc"))
 
     def test_htop_falls_back_to_the_system_htoprc_and_a_user_file_replaces_it(self) -> None:
-        self.assertIn("/etc/htoprc", self.trace("htop -d 5"))
-        result = self.box(
-            "mkdir -p ~/.config/htop; cp /etc/htoprc ~/.config/htop/htoprc; "
-            "strace -f -e trace=openat -o /tmp/trace.out timeout 4 script -qec 'htop -d 5' /dev/null "
-            ">/dev/null 2>&1 </dev/null; cat /tmp/trace.out"
+        self.assertIn("/etc/htoprc", self.trace("htop -d 5", self.HTOP))
+        opened = self.trace(
+            "htop -d 5", self.HTOP, prepare="mkdir -p ~/.config/htop; cp /etc/htoprc ~/.config/htop/htoprc; "
         )
-        opened = _opened(result.stdout)
         self.assertIn("/home/vscode/.config/htop/htoprc", opened)
         self.assertNotIn("/etc/htoprc", opened, "htop stops at the user's file")
 
     def test_mc_reads_the_system_ini_and_a_user_ini_replaces_it(self) -> None:
-        self.assertIn("/etc/mc/mc.ini", self.trace("mc"))
-        result = self.box(
-            "mkdir -p ~/.config/mc; cp /etc/mc/mc.ini ~/.config/mc/ini; "
-            "strace -f -e trace=openat -o /tmp/trace.out timeout 4 script -qec 'mc' /dev/null "
-            ">/dev/null 2>&1 </dev/null; cat /tmp/trace.out"
-        )
-        opened = _opened(result.stdout)
+        self.assertIn("/etc/mc/mc.ini", self.trace("mc", self.MC))
+        opened = self.trace("mc", self.MC, prepare="mkdir -p ~/.config/mc; cp /etc/mc/mc.ini ~/.config/mc/ini; ")
         self.assertIn("/home/vscode/.config/mc/ini", opened)
         self.assertNotIn("/etc/mc/mc.ini", opened, "mc stops at the user's file")
 
@@ -169,24 +169,53 @@ class Contract:
         self.assertEqual(hooks.stdout.split(), ["nano-includes", "bash-hook", "zsh-hook"], hooks.output)
 
     # nvim --------------------------------------------------------------------------
-    def test_neovim_starts_the_system_tree_until_the_user_has_a_config(self) -> None:
-        """Observable: `vim.g.mdt_system_config`, set by sysinit.vim immediately before it runs
-        /etc/xdg/nvim/init.lua; it is unset once the user has an init.lua of their own.
+    # The shipped "NvChad" tree is the NvChad CORE repository, whose init.lua is a placeholder that
+    # prints this on every start (backlog MDT-007). It is the only stderr a start may produce.
+    MDT_007_PLACEHOLDER = "use this along starter!!!"
 
-        This proves the system tree is WIRED. Whether the tree is a working NvChad setup is
-        a separate, open question (MDT-007: the pinned archive is the NvChad core repository,
-        whose init.lua is a placeholder), so it is deliberately not asserted here.
-        """
-        probe = "nvim --headless -c \"lua io.write(tostring(vim.g.mdt_system_config))\" -c q 2>/dev/null"
-        default = self.box(probe)
-        self.assertOk(default)
-        self.assertTrue(default.stdout.strip().splitlines()[-1].endswith("/etc/xdg/nvim"), default.output)
-        override = self.box(
-            "mkdir -p ~/.config/nvim && printf 'vim.g.user_config = 1\\n' > ~/.config/nvim/init.lua; "
-            "nvim --headless -c \"lua io.write(tostring(vim.g.mdt_system_config)..'|'..tostring(vim.g.user_config))\" "
-            "-c q 2>/dev/null"
+    def test_neovim_starts_cleanly_with_the_system_tree_and_only_the_known_placeholder_message(self) -> None:
+        """nvim headless exits 0 and its stderr holds nothing but the MDT-007 placeholder: a Lua
+        error in /etc/xdg/nvim (or in sysinit.vim) would show up here, which the previous probe of
+        `vim.g.mdt_system_config` (set by sysinit.vim itself) could not see. When MDT-007 is fixed
+        this test must start asserting an EMPTY stderr."""
+        result = self.box("nvim --headless -c 'lua io.write(tostring(vim.g.mdt_system_config))' -c q")
+        self.assertEqual(result.returncode, 0, result.output)
+        self.assertTrue(result.stdout.strip().endswith("/etc/xdg/nvim"), "the system tree must be the one started")
+        messages = [line.strip() for line in result.stderr.splitlines() if line.strip()]
+        self.assertEqual(
+            messages, [self.MDT_007_PLACEHOLDER],
+            f"exactly one placeholder message per start (two would mean the tree ran twice); stderr:\n{result.stderr}",
         )
-        self.assertEqual(override.stdout.strip().splitlines()[-1], "nil|1")
+
+    def test_a_user_init_lua_replaces_the_system_tree(self) -> None:
+        result = self.box(
+            "mkdir -p ~/.config/nvim && printf 'vim.g.user_config = 1\\n' > ~/.config/nvim/init.lua; "
+            "nvim --headless -c \"lua io.write(tostring(vim.g.mdt_system_config)..'|'..tostring(vim.g.user_config))\" -c q"
+        )
+        self.assertEqual(result.returncode, 0, result.output)
+        self.assertEqual(result.stdout.strip().splitlines()[-1], "nil|1")
+        self.assertEqual(result.stderr.strip(), "", "the placeholder belongs to the system tree, not to a user config")
+
+    def test_a_starter_style_tree_gets_its_lazy_lockfile_redirected_into_the_state_directory(self) -> None:
+        """sysinit.vim redirects lazy.nvim's lockfile (which defaults to the config directory, here
+        the read-only /etc/xdg/nvim) into ~/.local/state/nvim when the tree has a configs.lazy
+        module. The shipped tree has none (MDT-007), so this runs against a fixture tree written
+        into the throw-away container's /etc/xdg/nvim. The fixture's init.lua also appends to a
+        file each time it runs: the tree must run exactly ONCE per start (sysinit.vim used to
+        `dofile` it on top of Neovim's own fallback to $XDG_CONFIG_DIRS, running it twice)."""
+        fixture = (
+            "mkdir -p /etc/xdg/nvim/lua/configs && "
+            "printf 'return { lockfile = \"/etc/xdg/nvim/lazy-lock.json\" }\\n' > /etc/xdg/nvim/lua/configs/lazy.lua && "
+            "printf 'io.write(require(\"configs.lazy\").lockfile)\\nlocal f = io.open(\"/tmp/runs\", \"a\"); f:write(\"run\\\\n\"); f:close()\\n' "
+            "> /etc/xdg/nvim/init.lua && "
+            "runuser -u vscode -- env HOME=/home/vscode nvim --headless -c q; echo; echo \"RUNS=$(wc -l < /tmp/runs)\""
+        )
+        result = harness.sh(self.image.ref, fixture, user="0", tmpfs=[HOME_TMPFS], workdir="/tmp")
+        self.assertEqual(result.returncode, 0, result.output)
+        self.assertIn("/home/vscode/.local/state/nvim/lazy-lock.json", result.stdout)
+        self.assertNotIn("/etc/xdg/nvim/lazy-lock.json", result.stdout)
+        self.assertIn("RUNS=1", result.stdout, "the system init.lua must run exactly once per start")
+        self.assertEqual(result.stderr.strip(), "")
 
     # less --------------------------------------------------------------------------
     def test_less_pipes_files_through_the_image_lesspipe_and_the_override_works(self) -> None:

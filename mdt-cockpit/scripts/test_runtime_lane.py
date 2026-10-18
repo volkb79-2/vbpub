@@ -177,3 +177,85 @@ def test_a_large_permission_only_layer_is_detected(created_by: str) -> None:
 )
 def test_content_layers_small_layers_and_unrelated_layers_are_not_flagged(line: str) -> None:
     assert test_image_contract.permission_only_layers([line]) == []
+
+
+# ── the pty driver: waits for what the program SHOWS, never for a duration ─────
+
+
+@pytest.fixture()
+def fake_container(monkeypatch: pytest.MonkeyPatch):
+    """Run `bash -c <script>` instead of `docker run ...`, still on a real pseudo-terminal."""
+    removed: list[str] = []
+    monkeypatch.setattr(harness, "DOCKER", "bash")
+    monkeypatch.setattr(harness, "_docker", lambda args, **kw: removed.append(args[-1]) or subprocess.CompletedProcess(args, 0, b"", b""))
+
+    def use(script: str) -> None:
+        monkeypatch.setattr(harness, "_container_command", lambda name, image, argv, **kw: ["-c", script])
+
+    use.removed = removed  # type: ignore[attr-defined]
+    return use
+
+
+def test_drive_sends_keys_when_the_screen_shows_the_expected_text(fake_container) -> None:
+    fake_container("printf '\\033[1mREADY\\033[0m\\n'; read line; echo \"GOT:$line\"")
+
+    session = harness.drive("img", ["x"], [("READY", b"hello\n")])
+
+    assert session.returncode == 0 and session.completed_steps == 1
+    assert "GOT:hello" in session.screen
+    assert "\x1b" not in session.screen, "escape sequences are removed from the screen text"
+
+
+def test_drive_answers_steps_in_order_and_each_only_after_the_previous_one(fake_container) -> None:
+    fake_container("echo FIRST; read a; echo \"A:$a\"; echo SECOND; read b; echo \"B:$b\"")
+
+    session = harness.drive("img", ["x"], [("FIRST", b"1\n"), ("SECOND", b"2\n")])
+
+    assert session.completed_steps == 2
+    assert session.screen.index("A:1") < session.screen.index("SECOND") < session.screen.index("B:2")
+
+
+def test_drive_tolerates_a_dialog_that_never_appears(fake_container) -> None:
+    fake_container("echo MAIN; read a; echo done")
+
+    session = harness.drive("img", ["x"], [("MAIN", b"go\n"), ("Really quit", b"\r")])
+
+    assert session.returncode == 0 and session.completed_steps == 1, "the optional trailing step is simply not completed"
+
+
+def test_drive_reports_a_program_that_exits_without_showing_the_text(fake_container) -> None:
+    fake_container("echo something else; exit 3")
+
+    session = harness.drive("img", ["x"], [("READY", b"x")])
+
+    assert session.returncode == 3 and session.completed_steps == 0
+
+
+def test_drive_removes_its_container_by_exact_name(fake_container, lane_env) -> None:
+    fake_container("true")
+
+    harness.drive("img", ["x"], [])
+
+    assert len(fake_container.removed) == 1 and re.fullmatch(r"mdt-cockpit-rt-\d+-\d+", fake_container.removed[0])
+
+
+def test_no_scenario_lets_a_short_in_container_timeout_end_a_tool_or_decide_a_verdict() -> None:
+    """Under host contention a tool that has not drawn its first screen after 4 s must not turn
+    the lane red: every `timeout N` a scenario still uses is a failsafe of at least 120 s."""
+    offenders = []
+    for path in sorted(RUNTIME.glob("test_*.py")):
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            for match in re.finditer(r"\btimeout\s+(?:-s\s+\w+\s+)?\"?(\d+)\b", line):
+                if int(match.group(1)) < 120:
+                    offenders.append(f"{path.name}:{number}: {line.strip()}")
+    assert offenders == []
+    assert harness.DRIVE_FAILSAFE >= 120 and harness.GENEROUS_TIMEOUT >= 120
+
+
+def test_drive_matches_text_that_the_program_interleaves_with_escape_sequences(fake_container) -> None:
+    """htop and mc paint their key bar cell by cell: 'F10' and 'Quit' are separated by colours."""
+    fake_container("printf 'F10\\033[30;46mQuit\\033[0m\\n'; read k; echo \"KEY:$k\"")
+
+    session = harness.drive("img", ["x"], [(r"F10Quit", b"q\n")])
+
+    assert session.completed_steps == 1 and "KEY:q" in session.screen
