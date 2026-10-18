@@ -122,16 +122,27 @@ def _read_pointer_file(path: Path, *, label: str) -> str:
             os.close(descriptor)
 
 
-def _process_start_ticks(pid: int) -> str | None:
-    """Read Linux process start time so a recycled PID is not treated as live."""
+def _process_stat_fields(pid: int) -> list[str] | None:
+    """Fields 3.. of ``/proc/<pid>/stat`` (state first), or None when unreadable."""
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
     except OSError:
         return None
     # The command name (field 2) may contain spaces and parentheses; the last ")"
     # ends it, and field 3 (state) is then index zero.
-    fields = raw[raw.rfind(")") + 2:].split()
-    return fields[19] if len(fields) > 19 else None
+    return raw[raw.rfind(")") + 2:].split()
+
+
+def _process_start_ticks(pid: int) -> str | None:
+    """Read Linux process start time so a recycled PID is not treated as live."""
+    fields = _process_stat_fields(pid)
+    return fields[19] if fields is not None and len(fields) > 19 else None
+
+
+def _process_state(pid: int) -> str | None:
+    """The one-letter Linux process state (``Z`` = exited, not yet reaped)."""
+    fields = _process_stat_fields(pid)
+    return fields[0] if fields else None
 
 
 def _local_namespace_identity() -> str | None:
@@ -200,7 +211,11 @@ def gate_lease_state(lease, *, now: datetime | None = None) -> str:
     pid = int(fields[1])
     start_ticks = _process_start_ticks(pid)
     if start_ticks is not None:
-        return LEASE_LIVE if start_ticks == fields[2] else LEASE_DEAD
+        if start_ticks != fields[2]:
+            return LEASE_DEAD
+        # A zombie has exited and holds nothing; only its unreaped /proc entry
+        # remains (a container without an init can leave many behind).
+        return LEASE_DEAD if _process_state(pid) == "Z" else LEASE_LIVE
     if Path(f"/proc/{pid}").exists():
         return LEASE_INDETERMINATE  # present but unreadable: cannot judge
     return LEASE_DEAD
@@ -605,6 +620,10 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
     branch = f"cmru-gate-{identity}"
     manifest_anchors = None
     manifest_judge: dict[str, object] = {}
+    # Raised only once a retained snapshot is known to exist: a manifest left
+    # behind by a removed snapshot describes no checkout and must not refuse
+    # (or bind) the fresh gate that replaces it.
+    manifest_problem: str | None = None
     if (
         prior_manifest
         and prior_manifest.get("source_commit") == head
@@ -621,7 +640,7 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         ) and "refs/heads/main" in candidate:
             manifest_anchors = dict(sorted(candidate.items()))
         elif "anchor_refs" in prior_manifest:
-            raise RuntimeError("CMRU gate snapshot has invalid main/tag ref anchors")
+            manifest_problem = "CMRU gate snapshot has invalid main/tag ref anchors"
         candidate_judge = prior_manifest.get("run_gate_identity")
         candidate_keys = set(candidate_judge) if isinstance(candidate_judge, dict) else set()
         version = candidate_judge.get("version") if isinstance(candidate_judge, dict) else None
@@ -666,7 +685,7 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         if stable_version and complete_identity:
             manifest_judge = dict(candidate_judge)
         else:
-            raise RuntimeError(
+            manifest_problem = manifest_problem or (
                 "existing CMRU gate snapshot has no trusted Run-Gate identity; "
                 "remove the retained snapshot with `cmru gate-snapshots --remove "
                 "--include-current` and start a fresh gate"
@@ -676,6 +695,11 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
     records = api.list_workspaces(common)
     record = next((item for item in records if item.worktree_path == target), None)
     created = record is None
+    if created:
+        manifest_anchors = None
+        manifest_judge = {}
+    elif manifest_problem is not None:
+        raise RuntimeError(manifest_problem)
     if created or not prior_manifest or prior_manifest.get("snapshot_branch") != branch:
         manifest_refs = None
     if record is None:

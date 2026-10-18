@@ -1040,7 +1040,9 @@ and promotion. A failed gate, build, publish or promotion leaves the source bran
 notes under `[Unreleased]`. This removes the need to park notes outside the changelog
 (KI-58). HTML comments under `[Unreleased]` stay there and are not published; to show a
 marker such as `<!-- cmru: generated -->` in a note, quote it in backticks or a code fence,
-and it moves with the note verbatim. CMRU also reads direct `cmru publish --from-checkout` release notes from the
+and it moves with the note verbatim. An unclosed `<!--` inside `[Unreleased]` refuses the release
+before any change, because the text after it would otherwise vanish from both the changelog and
+the release body. CMRU also reads direct `cmru publish --from-checkout` release notes from the
 matching local release tag, never from later mutable changelog edits.
 
 **Carrying forward notes that were parked outside a changelog (KI-58).** Notes that were
@@ -1341,6 +1343,19 @@ durable candidate. CMRU creates that branch only when the origin name is unused.
 if the candidate ref has moved or is no longer an ancestor of the local candidate, CMRU refuses
 the update and retains the transaction; inspect and reconcile the branch without a force push.
 
+To retry a retained pre-tag feature-source candidate, run the `resume:` command CMRU printed,
+from the same Git family:
+
+```sh
+cmru release --resume /path/to/repo/.worktrees/<candidate-worktree>
+```
+
+CMRU reads the feature-source identity recorded with the candidate and re-applies
+`--from-worktree` itself, so a resumed candidate is never promoted to `main`. A feature-source
+resume refuses `--allow-uncommitted` and `--ahead-check-ref`; `--from-worktree --resume` naming a
+default `origin/main` candidate is refused; and a candidate that has already published every
+selected project is refused, because the next step is merging its PR and running `cmru abandon`.
+
 After successful publication, CMRU retains the local candidate worktree and both candidate
 refs. Open a PR from the generated candidate branch to `main`, then merge it with a fast-forward
 or merge commit so the tagged commit remains in `main`'s ancestry. The release may be public
@@ -1359,7 +1374,9 @@ See the [design rationale](DESIGN-GUIDE.md#release-from-an-origin-backed-feature
 for why publication before PR merge is accepted and why squash/rebase integration is unsupported.
 
 For a tagged project, the exact release tag must be on origin before CMRU invokes its build or
-publisher. A failed push makes CMRU recheck origin. If origin contains the exact candidate tag, CMRU continues;
+publisher. If a step fails after CMRU creates the local tag but before it pushes it (the candidate
+backup push, the re-gate of a `file:` version commit, or a candidate check), CMRU deletes that
+never-pushed local tag at its exact object, so the printed `resume:` command can retry. A failed push makes CMRU recheck origin. If origin contains the exact candidate tag, CMRU continues;
 if origin confirms the tag is absent, CMRU removes that exact local tag, stops before build or
 publish, and retains a pre-tag candidate that can be resumed with its printed `resume:` command.
 If origin cannot be checked, CMRU retains the tag and candidate for inspection. If origin has
@@ -1405,7 +1422,7 @@ test "$tag_commit" = "$CMRU_RELEASE_COMMIT"
 
 On resume, CMRU checks tag-push attempts and recorded release results against origin. A tag that
 may have been pushed without a completed result, or a recorded result whose source commit is not
-in `origin/main`, causes a refusal and keeps the candidate for inspection. A release-plan refusal
+in `origin/main` (for a feature-source candidate: not in its origin candidate branch), causes a refusal and keeps the candidate for inspection. A release-plan refusal
 during resume also keeps the existing worktree and origin backup branch.
 
 For a script, use `cmru worktrees --json`. `prunable: true` reports Git's

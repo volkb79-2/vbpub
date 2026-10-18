@@ -187,6 +187,21 @@ def test_transaction_scope_and_results_are_durable_and_sorted(tmp_path, monkeypa
     assert transaction.read_release_results(tmp_path, workspace) == {}
 
 
+def test_resumed_scope_keeps_projects_whose_results_are_already_recorded(tmp_path, monkeypatch):
+    # Attempt 1 targets alpha and beta; alpha completes and beta fails. The
+    # resume plans only beta, but alpha's recorded result must stay in scope,
+    # or the next resume refuses it as foreign and abandon reads a complete
+    # feature publication as partial.
+    monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path)
+    workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "workspace", "cmru/release/id", "a" * 40)
+    transaction.write_release_scope(tmp_path, workspace, ["alpha", "beta"])
+    transaction.write_release_result(tmp_path, workspace, "alpha", "alpha-v1.0.0")
+
+    transaction.write_release_scope(tmp_path, workspace, ["beta"])
+
+    assert transaction.read_release_scope(tmp_path, workspace) == ["alpha", "beta"]
+
+
 def test_transaction_rejects_corrupt_durable_result_record(tmp_path, monkeypatch):
     monkeypatch.setattr(transaction, "_common_git_dir", lambda _root: tmp_path)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "workspace", "cmru/release/id", "a" * 40)

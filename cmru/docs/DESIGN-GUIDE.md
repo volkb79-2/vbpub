@@ -1291,7 +1291,12 @@ updates. If the candidate no longer fast-forwards, CMRU stops and retains it for
 does not rebase or force-update the branch. The shared workspace record marks feature-source mode
 as well as the source identity sidecar. The child checks both at startup and before candidate
 pushes, so a missing sidecar cannot fall back to default main promotion. It never pushes the
-caller's feature branch. After publication, it retains the
+caller's feature branch. Resume takes the source mode from the transaction record, not from the
+caller's flags: a resumed feature candidate re-applies `--from-worktree` automatically, so it can
+never be replayed as a default main promotion, and `--from-worktree --resume` naming a default
+candidate is refused for the same reason. A candidate that already published every selected
+project is refused on resume because no safe side effect remains to replay; its next step is the
+PR merge and `cmru abandon`. After publication, it retains the
 local candidate worktree and both candidate refs. A PR may be open or blocked while the release is
 already public; this is accepted because the artifact and tag bind to the gated candidate commit
 and do not wait for `main` integration. Keep that candidate and its evidence until integration is

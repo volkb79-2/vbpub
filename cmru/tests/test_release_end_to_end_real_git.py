@@ -320,7 +320,15 @@ def test_feature_worktree_release_keeps_both_main_tips_unchanged_and_retains_a_p
         cwd=e2e.root,
     )
     assert candidate_tip == tagged_commit == e2e.published_commit.read_text().strip()
-    assert f"refs/heads/{candidate}" in e2e.origin_heads()
+    # The tag descends from the exact reviewed source commit, and the generated
+    # candidate is the only ref CMRU added to origin.
+    assert e2e.git(
+        "--git-dir", str(e2e.origin), "merge-base", "--is-ancestor",
+        source_commit, tagged_commit, cwd=e2e.root, check=False,
+    ).returncode == 0
+    assert sorted(e2e.origin_heads()) == sorted([
+        "refs/heads/main", "refs/heads/feature/cmru-release", f"refs/heads/{candidate}",
+    ])
     assert len(e2e.worktrees()) == 3  # main, caller feature, and retained CMRU PR candidate
 
 
@@ -491,6 +499,34 @@ def test_rel05_file_strategy_resume_retags_the_same_commit_without_a_self_entry(
     history = e2e.out("show", f"{_TAG}:demo/CHANGES.md")
     assert "chore: bump" not in history
     assert history.count("## [0.1.0]") == 1
+
+
+@pytest.mark.parametrize("e2e", ["file:VERSION"], indirect=True)
+def test_a_failure_between_local_tagging_and_tag_push_leaves_no_tag_and_resumes(e2e):
+    # The file strategy commits demo/VERSION and tags it locally, then re-gates
+    # that bump commit before any tag push. Fail exactly that re-gate.
+    fail_regate = e2e.root / "fail-regate"
+    fail_regate.write_text("")
+    e2e.hook("regate", f'[ ! -e "{fail_regate}" ] || [ ! -e VERSION ] || exit 1\n')
+
+    failed = e2e.release()
+
+    assert failed.returncode != 0, failed.log
+    assert "removed the never-pushed local release tag" in failed.log
+    assert e2e.local_tags() == []
+    assert e2e.origin_tags() == {}
+    assert e2e.published() == []
+    workspace = e2e.retained_workspace()
+    candidate = e2e.out("rev-parse", "HEAD", cwd=workspace)
+
+    fail_regate.unlink()
+    resumed = e2e.release("--resume", str(workspace))
+
+    assert resumed.returncode == 0, resumed.log
+    assert f"refs/tags/{_TAG}" in e2e.origin_tags()
+    assert e2e.published() == ["pub"]
+    e2e.git("fetch", "-q", "origin", "--tags")
+    assert e2e.out("rev-list", "-n1", _TAG) == candidate
 
 
 def test_m16_a_non_race_push_failure_fails_at_once_without_merging(e2e, monkeypatch):

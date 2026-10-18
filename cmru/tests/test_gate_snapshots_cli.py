@@ -80,6 +80,25 @@ def test_remove_is_repeatable(repository, capsys):
     assert "No retained CMRU gate snapshots." in capsys.readouterr().out
 
 
+def test_a_fresh_gate_after_removal_is_not_bound_by_the_removed_snapshots_manifest(
+    repository, capsys,
+):
+    # The fixture's manifest records an incomplete Run-Gate identity, which
+    # rightly refuses a resume. Once the operator follows that refusal's own
+    # remedy and removes the snapshot, the leftover manifest describes no
+    # checkout: the next gate at the same commit must start fresh.
+    source, snapshot = repository
+    assert cli.main(["gate-snapshots", "--remove", "--include-current"]) == 0
+    capsys.readouterr()
+
+    reopened = gate_snapshot.open_gate_snapshot(source)
+    try:
+        assert reopened.worktree_path == snapshot.worktree_path
+        assert reopened.run_gate_identity == {}
+    finally:
+        gate_snapshot.close_gate_snapshot(reopened)
+
+
 def test_a_snapshot_that_cannot_be_removed_fails_the_verb_and_names_why(
     repository, monkeypatch, capsys,
 ):

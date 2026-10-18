@@ -215,6 +215,11 @@ def html_comments_outside_fenced_code(markdown: str) -> tuple[str, ...]:
     )
 
 
+def has_unclosed_html_comment_outside_code(markdown: str) -> bool:
+    """True when an HTML comment outside code does not close within ``markdown``."""
+    return any(not closed for _start, _end, closed in _scan_html_comments(markdown)[1])
+
+
 def html_comment_positions_outside_fenced_code(markdown: str, comment: str) -> tuple[int, ...]:
     """Source offsets of a literal control comment outside fenced code."""
     masked = _mask_html_comments(markdown)

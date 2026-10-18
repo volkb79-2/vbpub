@@ -437,7 +437,7 @@ during retirement. An origin-only candidate remains subject to the same exact an
 
 For credentials, feature-source mode MUST continue resolving the publisher secret in the host
 launcher and handing only the resolved value to the child through the private credential pipe.
-The release-only `--secret-file PATH` option explicitly selects the root secret document; it
+The `--secret-file PATH` option (accepted by `release` and `publish`, not `abandon`) explicitly selects the root secret document; it
 does not alter environment-token precedence or selected-project secret overlays. If the current
 config root lacks its secret and Git's worktree inventory identifies one unambiguous `main`
 worktree with a corresponding root secret file, CMRU MAY report its canonical path and a rerun

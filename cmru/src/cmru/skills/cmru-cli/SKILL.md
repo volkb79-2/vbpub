@@ -71,7 +71,8 @@ release may be public before the PR merges; use a fast-forward or merge commit
 to preserve the tagged SHA. `--secret-file PATH` explicitly selects the root
 credential document; an inferred path in another worktree is advice only.
 After the PR merge, run `cmru abandon <candidate> --dry-run` from a checkout
-with origin credentials, usually the main checkout; `--secret-file` is release-only.
+with origin credentials, usually the main checkout; `abandon` has no `--secret-file` (only
+`release` and `publish` accept it).
 If hosting already deleted the PR head after merge, CMRU can retire the local transaction only
 after proving the exact candidate tip is in `origin/main`; an absent ref alone is not enough.
 Use this KI-82 candidate flow only when the installed `cmru release --help`

@@ -828,10 +828,17 @@ def _ensure_scope_dir(repo_root: Path) -> Path:
 def write_release_scope(repo_root: Path, workspace: ReleaseWorkspace, project_names: Sequence[str]) -> None:
     """Record which projects a release attempt targets, in the shared common git
     dir (never inside the worktree — S-REL.4a's undeclared-write guard must never
-    see it). The first-class ``cmru abandon`` command reports this exact scope."""
+    see it). The first-class ``cmru abandon`` command reports this exact scope.
+
+    A resumed attempt plans only the projects still changed, so an earlier
+    project that already completed is absent from ``project_names``. Its
+    recorded result must stay inside the scope: dropping it would make the next
+    resume refuse the result as foreign and make ``abandon`` read a complete
+    feature publication as a partial one."""
     scope_dir = _ensure_scope_dir(repo_root)
+    completed = read_release_results(repo_root, workspace)
     (scope_dir / f"{_release_token(workspace)}.json").write_text(
-        json.dumps(sorted(project_names)), encoding="utf-8",
+        json.dumps(sorted(set(project_names) | set(completed))), encoding="utf-8",
     )
 
 

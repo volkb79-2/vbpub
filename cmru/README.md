@@ -189,6 +189,7 @@ cmru worktrees                    # list retained failed build/release worktrees
 cmru gate-snapshots               # list retained release-gate snapshots (read-only)
 cmru gate-snapshots --remove --dry-run  # preview removing the ones proven unneeded
 cmru gate-snapshots --remove      # remove them; a live or unprovable gate is never touched
+cmru gate-snapshots --remove --include-current  # also the resumable one at its source commit
 cmru abandon --dry-run            # inspect exact retained release candidates, no writes
 cmru abandon <branch> --yes       # abandon exactly the named verified candidate
 cmru abandon <branch> --config /path/to/cmru.orchestration.toml
@@ -663,7 +664,9 @@ as the PR branch. A release may be public while its PR is open or blocked. Merge
 the candidate so the tagged commit remains in `main`'s ancestry; squash and rebase change the
 released commit identity. After that merge, run `cmru abandon <candidate> --dry-run` from a
 checkout with release credentials (normally the main checkout) to preview safe retirement while
-preserving public tags and assets. See the [feature-worktree
+preserving public tags and assets. A failed pre-tag feature-source attempt retries with its
+printed `cmru release --resume <candidate>` command; CMRU re-applies the recorded source mode
+itself and refuses a candidate that has already published every project. See the [feature-worktree
 design](docs/DESIGN-GUIDE.md#release-from-an-origin-backed-feature-worktree-ki-82) and
 [consumer example](docs/CONSUMERS.md#release-from-a-pushed-feature-worktree).
 

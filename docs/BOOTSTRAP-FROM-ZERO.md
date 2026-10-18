@@ -86,6 +86,12 @@ test -x "$ESTATE_PYTHON" || {
   exit 2
 }
 export PATH="$(dirname "$ESTATE_PYTHON"):$PATH"
+# Every tester-unified/build-image.sh run (steps 2-4) starts with the tester-gate
+# host-slice preflight, which reads these from the environment, not from
+# cmru.orchestration.toml; the values are that file's declared tester defaults.
+export CMRU_TESTER_MEMORY=1g CMRU_TESTER_MEMORY_SWAP=16g CMRU_TESTER_CPUS=2.5
+export CMRU_TESTER_PIDS_LIMIT=4096
+export CMRU_TESTER_CGROUP_PROBE_IMAGE='debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132'
 docker pull debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 ```
 

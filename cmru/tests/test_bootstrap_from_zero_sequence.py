@@ -725,6 +725,22 @@ def test_no_shell_block_has_a_doubled_dangling_or_placeholder_line():
 
 
 @_needs_repo
+def test_the_tester_resource_inputs_reach_every_tester_image_build():
+    """build-image.sh starts with the tester-gate host-slice preflight, which reads these
+    values only from the environment. An inline prefix on one build leaves every later
+    build (steps 3 and 4) refusing for missing configuration, so they must be exported
+    before the first block that builds an image."""
+    blocks = _bash_blocks()
+    first_build = next(i for i, block in enumerate(blocks) if "tester-unified/build-image.sh" in block)
+    earlier = "\n".join(blocks[:first_build])
+    for key in (
+        "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
+        "CMRU_TESTER_PIDS_LIMIT", "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+    ):
+        assert re.search(rf"^export (?:\S+ )*{key}=", earlier, re.MULTILINE), key
+
+
+@_needs_repo
 def test_the_controller_is_installed_and_on_path_before_the_first_cmru_command():
     commands: list[str] = []
     for block in _bash_blocks():

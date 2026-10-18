@@ -2037,6 +2037,19 @@ def test_lease_state_needs_positive_evidence_before_calling_a_holder_dead(monkey
     gone = f"cmru-gate:{child.pid}:1:abc:{identity}"
     assert gs.gate_lease_state(_lease(gone, future)) == gs.LEASE_DEAD
 
+    # An exited but unreaped holder (a zombie) still has its /proc start time,
+    # yet it holds nothing: its lease is dead, not live.
+    zombie = subprocess.Popen([sys.executable, "-c", "pass"])
+    try:
+        os.waitid(os.P_PID, zombie.pid, os.WEXITED | os.WNOWAIT)
+        zombie_ticks = gs._process_start_ticks(zombie.pid)
+        assert gs._process_state(zombie.pid) == "Z"
+        exited = f"cmru-gate:{zombie.pid}:{zombie_ticks}:abc:{identity}"
+        assert gs.gate_lease_state(_lease(exited, future)) == gs.LEASE_DEAD
+    finally:
+        zombie.wait()
+    assert gs._process_state(os.getpid()) not in (None, "Z")
+
     monkeypatch.setattr(gs, "_process_start_ticks", lambda _pid: None)
     unreadable = f"cmru-gate:{os.getpid()}:1:abc:{identity}"
     assert gs.gate_lease_state(_lease(unreadable, future)) == gs.LEASE_INDETERMINATE

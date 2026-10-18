@@ -3038,6 +3038,51 @@ def _release_tag_recovery_commands(tag: str, oid: str | None, branch: str) -> st
     )
 
 
+def _discard_unpushed_release_tags(
+    repo_root: Path,
+    workspace: transaction.ReleaseWorkspace,
+    prefix: str,
+    tagged_commit: str,
+    *,
+    cause: BaseException,
+) -> None:
+    """Remove the local release tag this attempt created before any push.
+
+    Only a ``<prefix>*`` tag on the exact tagged commit is considered, and never
+    one that origin already had when the transaction started or that CMRU has
+    a recorded push attempt for: those belong to the post-push recovery path.
+    Each deletion is pinned to the object observed here. A cleanup failure is
+    reported with the manual command and never replaces the original error.
+    """
+    try:
+        protected = set(transaction.read_release_tag_snapshot(repo_root, workspace) or {})
+        protected |= set(transaction.read_release_tag_attempts(repo_root, workspace) or {})
+        listed = _git(repo_root, "tag", "--points-at", tagged_commit, "--list", f"{prefix}*")
+        for tag in listed.splitlines():
+            tag = tag.strip()
+            if not tag.startswith(prefix) or tag.endswith("-latest"):
+                continue
+            if f"refs/tags/{tag}" in protected:
+                continue
+            oid = local_git_tag_oid(repo_root, tag)
+            if oid is None:
+                continue
+            delete_git_tag_local(
+                repo_root, tag, False, expected_present=True, expected_oid=oid,
+            )
+            log_error(
+                f"{tag}: removed the never-pushed local release tag after a failure "
+                f"before tag publication ({cause}); the candidate stays resumable"
+            )
+    except Exception as cleanup_exc:
+        log_error(
+            f"could not remove a never-pushed local {prefix}* release tag after a failure "
+            f"before tag publication ({cleanup_exc}). Inspect `git tag --points-at "
+            f"{tagged_commit[:12]} --list '{prefix}*'` and delete a tag that origin does "
+            "not have with `git tag -d <tag>` before resuming"
+        )
+
+
 def _rollback_unpublished_release_tag(
     repo_root: Path,
     workspace: transaction.ReleaseWorkspace,
@@ -3333,33 +3378,46 @@ def _release_projects_sequentially(
                 set_version=set_version, known_projects=configs,
                 known_project_names=_known_project_scope_names(configs),
             )
-            # A file:-strategy tag commits a version bump here. Refresh the
-            # durable candidate before tags or public publication are touched.
-            transaction.push_backup_branch(
-                workspace, git_auth=git_auth, require_feature_source=feature_source,
-            )
-            candidate_sha = _git(repo_root, "rev-parse", "HEAD")
-            if candidate_sha != gated_sha:
-                # The file strategy adds a mechanical version commit after the
-                # initial pre-tag gate. Re-run the real gate on that exact
-                # candidate so the commit that produces the artifact has passed
-                # the same acceptance contract before publication begins.
-                log_info(f"{name}: versioning changed the candidate; re-running release gate")
-                gated_sha = _run_release_gates_on_exact_head(
-                    repo_root, configs, [name]
+            # release_cmd created the release tag locally. Until _push_tags runs
+            # it exists nowhere else, so any failure in this window must remove
+            # it: a stranded local-only tag makes every later plan (resume, a
+            # fresh release, abandon) refuse on "local tag not present on origin".
+            tagged_commit = _git(repo_root, "rev-parse", "HEAD")
+            prefix = project.prefix or f"{name}-v"
+            try:
+                # A file:-strategy tag commits a version bump here. Refresh the
+                # durable candidate before tags or public publication are touched.
+                transaction.push_backup_branch(
+                    workspace, git_auth=git_auth, require_feature_source=feature_source,
                 )
                 candidate_sha = _git(repo_root, "rev-parse", "HEAD")
-            if candidate_sha != gated_sha:
-                raise RuntimeError(
-                    f"{name}: refusing to tag candidate {candidate_sha[:12]} "
-                    f"because its gate receipt is for {gated_sha[:12]}"
+                if candidate_sha != gated_sha:
+                    # The file strategy adds a mechanical version commit after the
+                    # initial pre-tag gate. Re-run the real gate on that exact
+                    # candidate so the commit that produces the artifact has passed
+                    # the same acceptance contract before publication begins.
+                    log_info(f"{name}: versioning changed the candidate; re-running release gate")
+                    gated_sha = _run_release_gates_on_exact_head(
+                        repo_root, configs, [name]
+                    )
+                    candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+                if candidate_sha != gated_sha:
+                    raise RuntimeError(
+                        f"{name}: refusing to tag candidate {candidate_sha[:12]} "
+                        f"because its gate receipt is for {gated_sha[:12]}"
+                    )
+                tag = _tag_on_head(repo_root, prefix)
+                if tag:
+                    candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+                    _assert_release_candidate_unchanged(
+                        repo_root, name, candidate_sha, phase="before tag publication",
+                    )
+            except BaseException as exc:
+                _discard_unpushed_release_tags(
+                    repo_root, workspace, prefix, tagged_commit, cause=exc,
                 )
-            tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
+                raise
             if tag:
-                candidate_sha = _git(repo_root, "rev-parse", "HEAD")
-                _assert_release_candidate_unchanged(
-                    repo_root, name, candidate_sha, phase="before tag publication",
-                )
                 _push_tags(repo_root, [tag], git_auth=git_auth, workspace=workspace)
                 try:
                     _assert_release_candidate_unchanged(

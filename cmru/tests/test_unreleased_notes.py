@@ -263,6 +263,15 @@ def test_an_unclosed_comment_is_masked_to_the_end_but_never_reported_as_a_commen
     assert release_notes._mask_html_comments("a <!-- x\nb") == "a       \n "
 
 
+def test_an_unclosed_comment_in_pending_notes_refuses_the_fold_instead_of_dropping_notes():
+    document = DOCUMENT.replace(PENDING, "- kept note\n<!-- TODO\n- note after the opener")
+
+    with pytest.raises(ReleaseNotesError, match="not closed before the section ends"):
+        changelog.fold_unreleased_notes(document, "2.0.0")
+    assert release_notes.has_unclosed_html_comment_outside_code("a <!-- open\nb")
+    assert not release_notes.has_unclosed_html_comment_outside_code("a <!-- shut --> b")
+
+
 def test_an_unmatched_backtick_leaves_a_following_comment_a_real_comment():
     document = _INLINE_CODE_DOCUMENT.format(notes="- a lone ` backtick <!-- hidden --> stays\n- second")
     assert release_notes.html_comments_outside_fenced_code(document) == (
