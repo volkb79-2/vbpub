@@ -184,3 +184,54 @@ def test_the_dockerfile_patches_etc_profile_with_this_script_and_writes_the_entr
     assert '"${MDT_PATH_PREFIX}" "${MDT_PATH_SUFFIX}" > "${share_dir}/path-entries"' in dockerfile
     assert "!scripts/patch_etc_profile.py" in (ROOT / ".dockerignore").read_text(encoding="utf-8")
     assert "${share_dir}/path\"" not in dockerfile, "the full-PATH snapshot file is gone"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_repeated_entries_keep_only_their_first_occurrence(shell: str, hook: Path) -> None:
+    (merged,), _ = _run(shell, hook, "/a:/b:/a:/c")
+
+    assert merged == f"{PREFIX}:/a:/b:/c:{SUFFIX}"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_duplicates_of_managed_entries_and_of_spaced_entries_collapse_too(shell: str, hook: Path) -> None:
+    messy = f"/opt/my tools/bin:/opt/mdt/bin:/usr/bin:/opt/my tools/bin:/opt/mdt/bin:/usr/bin:{SUFFIX}:{SUFFIX}"
+
+    (merged,), _ = _run(shell, hook, messy)
+
+    assert merged == f"{PREFIX}:/opt/my tools/bin:/usr/bin:{SUFFIX}"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_deduplication_leaves_command_resolution_unchanged(shell: str, hook: Path, tmp_path: Path) -> None:
+    """A later duplicate can never win a lookup, so dropping it must not change what resolves."""
+    first, second = tmp_path / "one", tmp_path / "two"
+    for directory, content in ((first, "one"), (second, "two")):
+        directory.mkdir()
+        (directory / "probe-tool").write_text(f"#!/bin/sh\necho {content}\n")
+        (directory / "probe-tool").chmod(0o755)
+    path = f"{second}:{first}:{second}:/usr/bin:{first}:/bin"
+    script = lambda source: (  # noqa: E731
+        f'{source}command -v probe-tool; probe-tool; echo "PATH=$PATH"'
+    )
+    plain = subprocess.run([SHELL_PATH[shell], "-c", script("")], env={"PATH": path, "HOME": "/x"}, capture_output=True, text=True, check=True)
+    merged = subprocess.run([SHELL_PATH[shell], "-c", script(f'. "{hook}"; ')], env={"PATH": path, "HOME": "/x"}, capture_output=True, text=True, check=True)
+
+    assert plain.stdout.splitlines()[:2] == merged.stdout.splitlines()[:2] == [str(second / "probe-tool"), "two"]
+    managed = set(PREFIX.split(":")) | {SUFFIX}
+    kept = [entry for entry in merged.stdout.splitlines()[2].removeprefix("PATH=").split(":") if entry not in managed]
+    assert kept == [str(second), str(first), "/usr/bin", "/bin"], "repeats dropped, first occurrences in order"
+
+
+@pytest.mark.parametrize("shell", SHELLS)
+def test_a_path_that_grows_by_the_same_prepended_list_each_time_stays_fixed(shell: str, hook: Path) -> None:
+    """What 00-restore-env.sh does in every nested login shell: prepend a fixed list, then the hook runs."""
+    script = (
+        'for level in 1 2 3; do '
+        'PATH="/usr/local/python/current/bin:/usr/local/py-utils/bin:$PATH"; '
+        f'. "{hook}"; echo "PATH=$PATH"; done'
+    )
+    result = subprocess.run([SHELL_PATH[shell], "-c", script], env={"PATH": "/usr/bin:/bin", "HOME": "/x"}, capture_output=True, text=True, check=True)
+    levels = [line.removeprefix("PATH=") for line in result.stdout.splitlines()]
+
+    assert len(levels) == 3 and levels[0] == levels[1] == levels[2]

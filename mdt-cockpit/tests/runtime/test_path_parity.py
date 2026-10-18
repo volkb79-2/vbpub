@@ -14,6 +14,7 @@ PATH and its hook only MERGES the managed entries into place.
 """
 from __future__ import annotations
 
+import shlex
 import unittest
 
 import harness
@@ -66,7 +67,9 @@ class Contract:
         self.assertNotIn("MDT_IMAGE_PATH", self.image.env, "an env snapshot cannot survive a cleared environment")
 
     def test_every_shell_shows_the_same_managed_shape_and_keeps_every_inherited_entry(self) -> None:
-        inherited = [entry for entry in self._image_path() if entry not in harness.PATH_PREFIX + harness.PATH_SUFFIX]
+        inherited = list(dict.fromkeys(  # first occurrences: a login shell drops repeats
+            entry for entry in self._image_path() if entry not in harness.PATH_PREFIX + harness.PATH_SUFFIX
+        ))
         for label, argv in SHELLS:
             with self.subTest(shell=label):
                 entries = self._path_of(argv, user="vscode")
@@ -132,6 +135,26 @@ class Contract:
             with self.subTest(shell=shell):
                 result = harness.run(self.image.ref, [shell, "-lc", script], user="vscode")
                 self.assertEqual(result.stdout.strip().splitlines()[-1], "SAME", result.output)
+
+    def test_nested_login_shells_give_an_identical_path(self) -> None:
+        """The VS Code family's 00-restore-env.sh prepends a fixed list to PATH in every login shell;
+        with an inherited PATH (the /etc/profile patch) that used to grow it by five entries per
+        nested login shell (16, 21, 26, 31). The hook de-duplicates, so levels 1-3 are identical."""
+        for shell in ("bash", "zsh"):
+            with self.subTest(shell=shell):
+                outputs = []
+                for depth in (1, 2, 3):
+                    inner = 'echo "PATH-IS:$PATH"'
+                    for _ in range(depth - 1):
+                        inner = f"{shell} -lc {shlex.quote(inner)}"
+                    result = harness.run(self.image.ref, [shell, "-lc", inner], user="vscode")
+                    self.assertEqual(result.returncode, 0, result.output)
+                    outputs.append([x for x in result.stdout.splitlines() if x.startswith("PATH-IS:")][-1])
+                self.assertEqual(outputs[0], outputs[1], f"{shell}: level 2 differs from level 1")
+                self.assertEqual(outputs[1], outputs[2], f"{shell}: level 3 differs from level 2")
+                entries = outputs[0].removeprefix("PATH-IS:").split(":")
+                self.assertManagedShape(entries, shell)
+                self.assertEqual(len(entries), len(set(entries)), f"{shell}: the login PATH still has repeats\n{entries}")
 
     def test_etc_profile_keeps_an_inherited_path_and_nothing_else_changed(self) -> None:
         result = harness.sh(self.image.ref, "grep -c 'PATH=\"${PATH:-' /etc/profile; grep -c '^export PATH$' /etc/profile")

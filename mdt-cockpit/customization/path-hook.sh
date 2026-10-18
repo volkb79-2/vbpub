@@ -6,7 +6,11 @@
 # `${PATH:-default}`), so entries added at runtime - a consumer containerEnv.PATH, Dev Containers
 # features, the userEnvProbe login shell - are still there. This hook MERGES: it removes the
 # managed entries wherever they occur, prepends the managed prefix (D5 order), appends the managed
-# suffix, and keeps every other entry in its relative order. Sourcing it twice changes nothing.
+# suffix, and keeps every other entry in its relative order, DROPPING repeats of an entry (the
+# first occurrence stays): a later duplicate can never win a command lookup, so resolution is
+# unchanged, and without this the VS Code family's 00-restore-env.sh (which prepends a fixed list
+# to $PATH in every login shell) would grow PATH by five entries per nested login shell.
+# Sourcing the hook twice changes nothing.
 #
 # The managed entries are written at build time (line 1: prefix, line 2: suffix) because a login
 # shell that starts with a CLEARED environment (su -, sudo -i, ssh, cron, env -i) has no image ENV.
@@ -25,7 +29,11 @@ if [ -r "$_mdt_entries" ]; then
         [ -n "$_mdt_dir" ] || continue
         case $_mdt_managed in
             *":${_mdt_dir}:"*) ;;
-            *) _mdt_kept=${_mdt_kept:+${_mdt_kept}:}${_mdt_dir} ;;
+            *)
+                case ":${_mdt_kept}:" in
+                    *":${_mdt_dir}:"*) ;;   # already kept earlier: first occurrence wins
+                    *) _mdt_kept=${_mdt_kept:+${_mdt_kept}:}${_mdt_dir} ;;
+                esac ;;
         esac
     done
     PATH=${_mdt_prefix}${_mdt_kept:+:${_mdt_kept}}${_mdt_suffix:+:${_mdt_suffix}}

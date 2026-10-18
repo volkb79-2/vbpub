@@ -186,15 +186,15 @@ Login shells need two things, both done at build time:
    **fails** unless `/etc/profile` contains the stock block exactly once - another distribution, a
    changed base or an already patched file is never patched blindly. The Microsoft
    `00-restore-env.sh` (VS Code family) prepends its own fixed list to `$PATH` after `/etc/profile`
-   and is unaffected, but with an inherited `PATH` it now prepends on *every* login shell, so a
-   login shell started inside another one carries those entries again (measured on the VS Code
-   image: 16 entries in the image `PATH`, 21 in a login shell, 26 in a login shell inside it, 31 in a third -
-   five more per nesting level; harmless duplicates the hook deliberately does not deduplicate, because it
-   keeps every non-managed entry as it found it).
+   and is unaffected, but with an inherited `PATH` it prepends on *every* login shell. Measured on the VS Code
+   image before the hook de-duplicated: 16 entries in the image `PATH`, 21 in a login shell, 26 in a login shell
+   inside it, 31 in a third (VS Code terminals are a login shell inside the `userEnvProbe` login environment, so
+   users would see this). The hook's first-occurrence de-duplication makes every nesting level identical.
 2. **The hook merges.** The build writes the managed prefix and suffix (not a whole `PATH`) to
    `/usr/local/share/mdt-cockpit/path-entries`. `path-hook.sh` removes those entries wherever they
    occur in the current `PATH`, prepends the prefix in the order above, appends the suffix, and keeps
-   every other entry in its relative order; sourcing it twice changes nothing. A cleared environment
+   every other entry in its relative order **and drops repeats, keeping the first occurrence of each** (a
+   later duplicate can never win a command lookup, so resolution is unchanged); sourcing it twice changes nothing. A cleared environment
    yields prefix + the default + suffix: `su -l`, `sudo -i`, ssh and cron get a `PATH` from the login
    machinery (`ENV_PATH`), and a bare `env -i bash -l` gets *bash's own* compiled-in default
    (`/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:.`, trailing `.` included) because
@@ -207,8 +207,8 @@ Login shells need two things, both done at build time:
 `profile.sh`, which interactive shells also source, never touches `PATH` (rewriting it would undo an
 activated venv). The devcontainer template sets neither `PATH` nor `NPM_CONFIG_PREFIX`; a consumer
 adds an entry with `containerEnv.PATH` (see CONSUMERS.md) and it survives login shells. The base
-image's own PATH contains `/usr/local/bin` twice; it is carried over verbatim, and the managed
-entries each appear once. The lane asserts the same *managed shape* in every shell and the identical
+image's own PATH contains `/usr/local/bin` twice; non-login shells carry it over verbatim, login shells
+show it once (repeats are dropped), and the managed entries each appear once. The lane asserts the same *managed shape* in every shell and the identical
 full `PATH` among shells that inherit the same environment.
 
 ## Environment variables
