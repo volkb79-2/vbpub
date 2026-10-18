@@ -213,6 +213,13 @@ RUN printf '%s\n' '#!/bin/sh' \
       > /usr/local/bin/systemctl \
  && chmod 0755 /usr/local/bin/systemctl
 ENV PYTHONPYCACHEPREFIX=
+#  * `zsh` (D-003): mdt-cockpit/scripts/test_path_hook.py parametrises its login-hook tests over
+#    the shells it can find; without zsh its zsh cases are not skipped but silently NOT COLLECTED
+#    (10 tests fewer in the T8 skip-diff: 42 -> 32). zsh is a userland package this image's suites
+#    need, so it lives here rather than in the minimal tester-base (T2).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends zsh \
+ && rm -rf /var/lib/apt/lists/*
 
 USER 1003
 ENV HOME=/home/tester \
