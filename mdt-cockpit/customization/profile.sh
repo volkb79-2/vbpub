@@ -1,6 +1,6 @@
 #!/bin/sh
 # mdt-cockpit shell environment. SOURCED (never executed) by every shell family:
-#   login shells        /etc/profile.d/50-mdt-cockpit.sh  (restores PATH first)
+#   login shells        /etc/profile.d/50-mdt-cockpit.sh  (merges the managed PATH entries first)
 #   interactive bash    /etc/bash.bashrc  -> bashrc
 #   interactive zsh     /etc/zsh/zshrc    -> zshrc
 # It never edits PATH: the one definition lives in the Dockerfile (ENV PATH) and

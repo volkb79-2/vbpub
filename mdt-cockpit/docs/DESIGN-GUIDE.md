@@ -175,30 +175,35 @@ did.) The base image's own entries (nvm, pipx, `/usr/local/bin`, ...) stay in th
 middle, unchanged; the Microsoft base already appends `~/.local/bin` last for
 interactive shells, which this order simply makes true for every shell.
 
-Debian's `/etc/profile` *replaces* `PATH` in every login shell, including a login
-shell started with a **cleared environment** (`su -`, `sudo -i`, `ssh`, cron,
-`env -i bash -l`), where an environment variable would not exist. So the build
-writes the finished value to `/usr/local/share/mdt-cockpit/path`, and
-the hook `path-hook.sh` reads that file and puts exactly it back - the list is
-never spelled a second time. bash and sh reach it through
-`/etc/profile.d/50-mdt-cockpit.sh`; **zsh does not read `/etc/profile` on Debian**
-(`/etc/zsh/zprofile` is only comments), so the same hook is also sourced from
-`/etc/zsh/zprofile` - without that, `env -i zsh -l` kept zsh's compiled-in
-`/bin:/usr/bin:/usr/ucb:/usr/local/bin` (found by the lane). If the file is missing
-the hook prints one line to stderr and leaves `PATH` as the login shell set it; it
-never skips silently. `profile.sh`, which interactive shells also source, never
-touches `PATH` (rewriting it would undo an activated venv). The devcontainer
-template sets neither `PATH` nor `NPM_CONFIG_PREFIX`. The base image's own PATH
-contains `/usr/local/bin` twice; it is carried over verbatim so every shell sees
-the identical string, and the managed entries each appear once.
+Login shells need two things, both done at build time:
 
-**Known limit (measured, not fixed).** A login shell does not keep an entry added to the
-*inherited* `PATH` at runtime (a consumer `containerEnv.PATH`, a Dev Containers feature, the Dev
-Containers `userEnvProbe` login shell): stock Debian `/etc/profile` assigns `PATH` unconditionally
-before any `/etc/profile.d` script runs, so the entry is already gone when the hook starts and a hook
-that merged instead of restoring could not recover it. Non-login shells (`bash -ic`) keep it. The
-image does not patch `/etc/profile`; zsh login shells, which do not read it, are restored by the same
-hook. The template sets no `PATH` for this reason.
+1. **`/etc/profile` keeps an inherited `PATH`.** Stock Debian `/etc/profile` assigns `PATH`
+   unconditionally (root and non-root branch), which throws away every runtime addition - a
+   consumer `containerEnv.PATH`, a Dev Containers feature, the `userEnvProbe` login shell that feeds
+   VS Code - before any `/etc/profile.d` script runs. `scripts/patch_etc_profile.py` turns exactly
+   those two assignments into `PATH="${PATH:-<the same Debian default>}"` (the approach of the Dev
+   Containers common-utils feature); a cleared environment still gets the Debian default. The build
+   **fails** unless `/etc/profile` contains the stock block exactly once - another distribution, a
+   changed base or an already patched file is never patched blindly. The Microsoft
+   `00-restore-env.sh` (VS Code family) prepends its own fixed list to `$PATH` after `/etc/profile`
+   and is unaffected, but with an inherited `PATH` it now prepends on *every* login shell, so a
+   login shell started inside another one carries those entries again (measured in the lane).
+2. **The hook merges.** The build writes the managed prefix and suffix (not a whole `PATH`) to
+   `/usr/local/share/mdt-cockpit/path-entries`. `path-hook.sh` removes those entries wherever they
+   occur in the current `PATH`, prepends the prefix in the order above, appends the suffix, and keeps
+   every other entry in its relative order; sourcing it twice changes nothing, and a cleared
+   environment yields prefix + Debian default + suffix. bash and sh reach it through
+   `/etc/profile.d/50-mdt-cockpit.sh`; **zsh does not read `/etc/profile` on Debian**
+   (`/etc/zsh/zprofile` is only comments), so the hook is also sourced from `/etc/zsh/zprofile`.
+   If the entries file is missing the hook prints one line to stderr and leaves `PATH` as the login
+   shell set it; it never skips silently.
+
+`profile.sh`, which interactive shells also source, never touches `PATH` (rewriting it would undo an
+activated venv). The devcontainer template sets neither `PATH` nor `NPM_CONFIG_PREFIX`; a consumer
+adds an entry with `containerEnv.PATH` (see CONSUMERS.md) and it survives login shells. The base
+image's own PATH contains `/usr/local/bin` twice; it is carried over verbatim, and the managed
+entries each appear once. The lane asserts the same *managed shape* in every shell and the identical
+full `PATH` among shells that inherit the same environment.
 
 ## Environment variables
 
@@ -210,7 +215,7 @@ caches and config directories.
 |---|---|---|---|
 | `PATH` | the order above | image tools win, `~/.local/bin` last | Dockerfile `ENV` |
 | `MDT_PATH_PREFIX`, `MDT_PATH_SUFFIX` | the two ends of `PATH` | the one spelling of the list | Dockerfile `ENV` |
-| (file) `/usr/local/share/mdt-cockpit/path` | the final `PATH`, written at build time | login shells - even with a cleared environment - restore it after `/etc/profile` | Dockerfile `RUN` |
+| (file) `/usr/local/share/mdt-cockpit/path-entries` | the managed `PATH` prefix and suffix, written at build time | the login-shell hook merges them into whatever `PATH` the shell has - also a cleared one | Dockerfile `RUN` |
 | `NPM_CONFIG_PREFIX` | `/opt/mdt/npm` | global npm installs/updates land in the group tree, not `~/.local` | Dockerfile `ENV` |
 | `UV_PYTHON_INSTALL_DIR` | `/opt/mdt/python` | uv-managed interpreters are image-owned | Dockerfile `ENV` |
 | `VIRTUAL_ENV` | **unset** | the primary venv is first on `PATH`; nothing claims shell activation | - |
@@ -244,7 +249,7 @@ with an empty home.
 | Tool | System location | Home write? | Why / lookup order |
 |---|---|---|---|
 | bash (interactive) | hook appended to `/etc/bash.bashrc` -> `/usr/local/share/mdt-cockpit/bashrc` | none | `~/.bashrc` runs *after* it and wins |
-| bash (login) | `/etc/profile.d/50-mdt-cockpit.sh` | none | restores `PATH`, then `profile.sh` |
+| bash (login) | `/etc/profile.d/50-mdt-cockpit.sh` | none | merges the managed `PATH` entries, then `profile.sh` |
 | zsh | hook appended to `/etc/zsh/zshrc` -> `.../zshrc` | **stub**: comment-only `~/.zshrc` | zsh runs `zsh-newuser-install` on a terminal when none of `.zshenv/.zprofile/.zshrc/.zlogin` exists, and there is no system-wide switch; the stub is a no-op because the defaults arrive via `/etc/zsh/zshrc` (so image updates still reach the user) |
 | Oh My Zsh | `/opt/mdt/oh-my-zsh`, loaded by the zsh hook | none (cache in `~/.cache/oh-my-zsh`) | skipped when the user's own `~/.zshrc` already loads it |
 | nano | `include` appended to `/etc/nanorc` | none | `/etc/nanorc`, then `~/.nanorc`/`~/.config/nano/nanorc` (per-setting override) |

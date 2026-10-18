@@ -150,6 +150,7 @@ COPY --chmod=0755 scripts/mdt-perms /usr/local/bin/mdt-perms
 COPY ai-cli-tools.list /tmp/ai-cli-tools.list
 COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py
 COPY scripts/check_wheel_set.py /tmp/check_wheel_set.py
+COPY scripts/patch_etc_profile.py /tmp/patch_etc_profile.py
 
 # Ensure vscode user exists (non-devcontainers bases)
 RUN set -euo pipefail; \
@@ -252,11 +253,10 @@ ENV UV_PYTHON_INSTALL_DIR="/opt/mdt/python"
 
 # The ONE definition of the command search path (D5). Image tools win over
 # anything else; ~/.local/bin is last, for the user's own additions only. The
-# base image's own PATH sits in the middle, unchanged. The finished value is also
-# written to /usr/local/share/mdt-cockpit/path (see the profile.d hook below):
-# Debian's /etc/profile replaces PATH in every login shell, including those that
-# start with a CLEARED environment (su -, sudo -i, ssh, cron), where an ENV
-# variable would not exist - a file does.
+# base image's own PATH sits in the middle, unchanged. The managed prefix and suffix
+# are also written to /usr/local/share/mdt-cockpit/path-entries (see the login-shell hook
+# below): a login shell that starts with a CLEARED environment (su -, sudo -i, ssh, cron)
+# has no ENV to read them from - a file does.
 ENV MDT_PATH_PREFIX="/opt/mdt/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin"
 ENV MDT_PATH_SUFFIX="/home/vscode/.local/bin"
 ENV PATH="${MDT_PATH_PREFIX}:${PATH}:${MDT_PATH_SUFFIX}"
@@ -371,8 +371,9 @@ RUN set -euo pipefail; \
     printf '\n# mdt-cockpit defaults (nano reads ~/.nanorc afterwards, so a user setting wins).\ninclude "%s/nanorc"\n' "${share_dir}" >> /etc/nanorc; \
     printf '\n# mdt-cockpit interactive defaults (your ~/.bashrc runs afterwards).\n[ -r %s/bashrc ] && . %s/bashrc\n' "${share_dir}" "${share_dir}" >> /etc/bash.bashrc; \
     printf '\n# mdt-cockpit interactive defaults (your ~/.zshrc runs afterwards).\n[[ -r %s/zshrc ]] && source %s/zshrc\n' "${share_dir}" "${share_dir}" >> /etc/zsh/zshrc; \
-    printf '%s\n' "${PATH}" > "${share_dir}/path"; \
-    chmod 0644 "${share_dir}/path"; \
+    printf '%s\n%s\n' "${MDT_PATH_PREFIX}" "${MDT_PATH_SUFFIX}" > "${share_dir}/path-entries"; \
+    chmod 0644 "${share_dir}/path-entries"; \
+    python3 /tmp/patch_etc_profile.py /etc/profile; \
     install -m 0644 /tmp/customization/path-hook.sh "${share_dir}/path-hook.sh"; \
     printf '\n# mdt-cockpit: put the image PATH back in login shells (zsh does not read /etc/profile).\n. %s/path-hook.sh\n' "${share_dir}" >> /etc/zsh/zprofile; \
     install -d -m 0755 /etc/profile.d; \
@@ -866,7 +867,7 @@ RUN --mount=type=bind,from=mdt-local-dev,source=/,target=/tmp/mdt-local-dev \
     mdt-perms fix /srv
 USER root
 RUN rm -f /tmp/install_pwmcp_instance.py
-RUN rm -f /tmp/install_ai_cli_tools.py /tmp/check_wheel_set.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env
+RUN rm -f /tmp/install_ai_cli_tools.py /tmp/check_wheel_set.py /tmp/patch_etc_profile.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env
 # ── In-container devcontainer finalize (postCreateCommand) ──────────────────
 # Baked into the image so any mdt-based repo wires only:
 #   "postCreateCommand": "finalize_container_environment.py"

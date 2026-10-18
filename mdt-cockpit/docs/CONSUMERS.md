@@ -354,6 +354,26 @@ docker buildx inspect mdt-managed
 Do not rely on a user's Buildx “current builder” state. The environment is the
 consumer contract and is re-applied by the template/finalizer.
 
+### Adding a `PATH` entry
+
+Set it in the consumer's `devcontainer.json`; the MDT template itself sets no `PATH`. Reference the
+container's own value so the image's entries are kept:
+
+```jsonc
+{
+  "containerEnv": {
+    "PATH": "/workspaces/tools/bin:${containerEnv:PATH}"
+  }
+}
+```
+
+The entry survives **login** shells too (`bash -l`, `zsh -l`, the Dev Containers `userEnvProbe`
+login shell that feeds VS Code): the image patches Debian's `/etc/profile` to keep an inherited
+`PATH`, and its login hook only moves the image's own entries (`/opt/mdt/bin`, the venv, the npm
+prefix, PWMCP first, `~/.local/bin` last) into place. Your entry keeps its position among the
+others. Only a shell started with a *cleared* environment (`env -i`, `su -`) gets just the image
+entries plus the Debian default. See [One PATH order](DESIGN-GUIDE.md#one-path-order).
+
 ## VM-backed test runners
 
 The MDT cockpit has headless x86 QEMU, `qemu-img`, OVMF firmware, and
