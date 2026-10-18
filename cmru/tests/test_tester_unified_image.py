@@ -716,6 +716,12 @@ def test_every_dockerfile_copy_source_is_admitted_by_the_dockerignore():
 # --- MDTC-02: the image is built FROM tester-base, not the MDT cockpit image ------------------
 
 WHEEL_BUILDER = REPO_ROOT / "wheel-builder" / "Dockerfile"
+# Anything that names the MDT cockpit image family or its filesystem layout, outside comments (R7).
+MDT_MARKERS = ("modern-debian-tools", "/opt/mdt", "mdt-cockpit", "/home/vscode")
+
+
+def _code_lines(dockerfile):
+    return [line for line in dockerfile.read_text("utf-8").splitlines() if not line.lstrip().startswith("#")]
 
 
 @pytest.mark.parametrize("dockerfile", [DOCKERFILE, WHEEL_BUILDER])
@@ -723,10 +729,22 @@ def test_gate_images_are_built_from_tester_base_with_no_other_fallback(dockerfil
     text = dockerfile.read_text("utf-8")
     assert re.search(r"^ARG TESTER_BASE=tester-base:local$", text, re.MULTILINE)
     froms = re.findall(r"^FROM (\S+)", text, re.MULTILINE)
-    assert froms == ["${TESTER_BASE}"], froms
-    assert "modern-debian-tools" not in "\n".join(
-        line for line in text.splitlines() if not line.lstrip().startswith("#")
-    )
+    # the only other FROM allowed is tester-unified's digest-pinned node stage (D-004)
+    assert [f for f in froms if not f.startswith("docker.io/library/node:")] == ["${TESTER_BASE}"], froms
+
+
+@pytest.mark.parametrize("dockerfile", [DOCKERFILE, WHEEL_BUILDER])
+@pytest.mark.parametrize("marker", MDT_MARKERS)
+def test_no_gate_image_instruction_names_the_mdt_cockpit_image_or_layout(dockerfile, marker):
+    offenders = [line for line in _code_lines(dockerfile) if marker in line]
+    assert offenders == [], offenders
+
+
+def test_the_no_mdt_check_can_fail():
+    """The check above is only worth something if its scan sees a violation."""
+    sample = "FROM x\n# /home/vscode is fine in a comment\nRUN ls /home/vscode\n"
+    lines = [line for line in sample.splitlines() if not line.lstrip().startswith("#")]
+    assert [line for line in lines if "/home/vscode" in line] == ["RUN ls /home/vscode"]
 
 
 def test_tester_unified_path_is_its_own_venv_then_the_base_path():
@@ -734,17 +752,29 @@ def test_tester_unified_path_is_its_own_venv_then_the_base_path():
     assert re.search(r"^ENV PATH=/opt/tester-venv/bin:\$\{PATH\}$", text, re.MULTILINE)
 
 
-def test_tester_unified_makes_the_inherited_cockpit_behaviour_explicit():
-    """D-001: topos shells out to `systemctl` unguarded; the cockpit image used to supply the
-    command. D-002: tester-base redirects bytecode (it runs as root); this image runs as a user."""
-    text = DOCKERFILE.read_text("utf-8")
-    assert "/usr/local/bin/systemctl" in text and "chmod 0755 /usr/local/bin/systemctl" in text
-    assert "apt-get install -y --no-install-recommends zsh nodejs" in text  # D-003/D-004: path-hook zsh cases, pwmcp gateway
-    assert re.search(r"^ENV PYTHONPYCACHEPREFIX=$", text, re.MULTILINE)
-    base = (REPO_ROOT / "tester-base" / "Dockerfile").read_text("utf-8")
-    assert re.search(r"^ENV PYTHONPYCACHEPREFIX=/tmp/pycache$", base, re.MULTILINE)
+def test_tester_unified_has_no_systemctl_stub_and_installs_what_its_suites_run():
+    """D-001: no fake systemd (topos handles a missing systemctl itself). D-003: zsh. D-004: node,
+    npm, npx and corepack copied from the digest-pinned official node image."""
+    code = "\n".join(_code_lines(DOCKERFILE))
+    assert "systemctl" not in code
+    assert "apt-get install -y --no-install-recommends zsh" in code
+    assert "nodejs" not in code, "Debian's nodejs is too old; node comes from the official image"
+    for source in ("/usr/local/bin/node", "/usr/local/lib/node_modules"):
+        assert f"COPY --from=node-source {source} {source}" in code
+    for tool in ("npm", "npx", "corepack"):
+        assert f"/usr/local/bin/{tool}" in code
+    assert re.search(r"^FROM docker\.io/library/node:26\.\d+\.\d+-trixie@sha256:[0-9a-f]{64} AS node-source$", code, re.MULTILINE)
 
 
-def test_run_gate_host_environment_names_tester_base():
+def test_run_gate_host_environment_names_tester_base_and_no_lane_runs_there():
+    """D-002: tester-base runs as root with no identity, so no gate lane may use `host`."""
     declared = tomllib.loads((REPO_ROOT / "run-gate.root.toml").read_text("utf-8"))
     assert declared["environments"]["host"]["image"] == "tester-base:local"
+    users = []
+    for config in REPO_ROOT.glob("**/run-gate.toml"):
+        if ".worktrees" in config.parts or "node_modules" in config.parts:
+            continue
+        for line in config.read_text("utf-8").splitlines():
+            if re.match(r'^\s*environment\s*=\s*"host"\s*(#.*)?$', line):
+                users.append(str(config.relative_to(REPO_ROOT)))
+    assert users == [], users

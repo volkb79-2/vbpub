@@ -11,11 +11,12 @@ change the gate environment and none of the cockpit's baked release CLIs sit on 
 image adds the `/opt/tester-venv` closure, the uid-1003 identity and the git foreground
 maintenance config; its `PATH` is `/opt/tester-venv/bin:` followed by the base's own.
 
-Two things the old cockpit base supplied implicitly are now explicit in this image (see
-`tester-base/docs/DESIGN-GUIDE.md`, "What the skip-diff found"): a harmless `systemctl` stub
-(topos shells out to it unguarded; removed once topos guards the missing binary) and `zsh`
-(the mdt-cockpit login-hook tests exercise it). It also resets `PYTHONPYCACHEPREFIX`, which the root-run
-base sets, so lanes keep the historical in-tree `__pycache__`.
+Three things the old cockpit base supplied implicitly are now explicit in this image (the
+[skip-diff section of the tester-base design guide](../tester-base/docs/DESIGN-GUIDE.md#what-the-skip-diff-found-mdtc-02-t8-and-where-each-answer-lives)
+has the evidence): `zsh` (the mdt-cockpit login-hook tests exercise it and FAIL, rather than lose their
+zsh cases, when `MDT_REQUIRE_SHELLS=1` and it is absent), Node.js with npm, npx and corepack (copied
+from the digest-pinned official `node:26.x-trixie` image; pwmcp's runtime-gateway tests run `node`), and
+the uid-1003 identity. There is deliberately no fake `systemctl`: topos now handles a missing one itself.
 
 Build the base, then the image, from the repository root:
 

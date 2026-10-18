@@ -26,6 +26,13 @@
 # other fallback: a missing base is a build failure. The image's PATH is its own venv
 # first, then the base's PATH - nothing of the MDT cockpit PATH is relied on.
 ARG TESTER_BASE=tester-base:local
+
+# Node.js for the suites that execute it (pwmcp's runtime gateway). The official node image,
+# major 26 (the cockpit's NODE_MAJOR; the major is the deliberate manual pin), pinned by digest.
+# The digest is the one `cmru versions resolve tester-base` records for target `oci.node.26.trixie`
+# under the 14-day age window (tester-base/versions/oci-images.json); a test asserts they are equal.
+FROM docker.io/library/node:26.9.0-trixie@sha256:fa271c47a5d81dc321f4a45be01362f5b3de7559edc7e76b8c4089be1e50d866 AS node-source
+
 FROM ${TESTER_BASE}
 
 USER root
@@ -190,39 +197,31 @@ PY
 # the base image has no /etc/passwd entry for and no writable HOME. Provide
 # BOTH: a passwd entry (pwd.getpwuid(1003) — topos daemon-status calls it) AND a
 # writable HOME with XDG dirs, so suites that read/write $HOME/.config or
-# $HOME/.cache (e.g. topos config/record) don't hit PermissionError on the
-# image's root-owned /home/vscode. A gate must give the run-uid a real HOME.
+# $HOME/.cache (e.g. topos config/record) don't hit PermissionError on a
+# root-owned or absent home. A gate must give the run-uid a real HOME.
 RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd \
  && echo "docker:x:994:tester" >> /etc/group \
  && mkdir -p /home/tester/.config /home/tester/.cache /home/tester/.local/state \
  && chown -R 1003:994 /home/tester \
  && chown -R 1003:994 /opt/tester-venv
 
-# Behaviour inherited from the MDT cockpit image that the suites depend on, now explicit
-# (MDTC-02 T8 skip-diff, decision D-001):
-#  * `systemctl` must EXIST and answer harmlessly: topos' collector runs `systemctl show` through
-#    subprocess without a missing-binary guard, so a gate container without the command fails 49
-#    topos tests with FileNotFoundError. The MDT image shipped the devcontainers "systemd is not
-#    running in this container" shim; this is the same contract (message on stdout, exit 0, no
-#    unit properties), NOT a systemd. The product fix (guard FileNotFoundError in topos
-#    drift/origin.py) is filed in topos' backlog; this stub goes away with it.
-#  * tester-base redirects bytecode to /tmp/pycache because it runs as root; this image runs as a
-#    real user on bind-mounted worktrees and keeps the historical in-tree __pycache__.
-RUN printf '%s\n' '#!/bin/sh' \
-      "echo '\"systemd\" is not running in this container (tester-unified provides this stub for suites that only need the command to exist)'" \
-      > /usr/local/bin/systemctl \
- && chmod 0755 /usr/local/bin/systemctl
-ENV PYTHONPYCACHEPREFIX=
-#  * `zsh` (D-003): mdt-cockpit/scripts/test_path_hook.py parametrises its login-hook tests over
-#    the shells it can find; without zsh its zsh cases are not skipped but silently NOT COLLECTED
-#    (10 tests fewer in the T8 skip-diff: 42 -> 32). zsh is a userland package this image's suites
-#    need, so it lives here rather than in the minimal tester-base (T2).
-#  * `nodejs` (D-004): pwmcp/tests/test_run_server_gateway.py runs the runtime gateway (a Node.js
-#    script) in two tests that skip when `node` is absent (pwmcp r1: 258 passed -> 256 + 2 skipped
-#    in the T8 skip-diff). Debian's nodejs only, no npm.
+# Behaviour the old MDT cockpit base supplied implicitly, now explicit (MDTC-02 T8 skip-diff):
+#  * `zsh` (D-003): mdt-cockpit/scripts/test_path_hook.py tests the login hook under zsh. The test
+#    FAILS (MDT_REQUIRE_SHELLS=1 in the smoke lane) when zsh is absent instead of silently not
+#    collecting its cases. It is a userland package this image's suites need, so it lives here and
+#    not in the minimal tester-base (T2).
 RUN apt-get update \
- && apt-get install -y --no-install-recommends zsh nodejs \
+ && apt-get install -y --no-install-recommends zsh \
  && rm -rf /var/lib/apt/lists/*
+#  * Node.js + npm + npx + corepack (D-004) from the official node image (stage `node-source` above,
+#    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
+#    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.
+COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
+ && node --version && npm --version && npx --version && corepack --version
 
 USER 1003
 ENV HOME=/home/tester \
