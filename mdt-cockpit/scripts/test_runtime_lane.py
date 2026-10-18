@@ -149,3 +149,31 @@ def test_layer_sizes_parse_in_docker_units() -> None:
     assert test_image_contract._size_bytes("1.1GB") == pytest.approx(1.1e9)
     with pytest.raises(AssertionError):
         test_image_contract._size_bytes("lots")
+
+
+@pytest.mark.parametrize(
+    "created_by",
+    [
+        "RUN /bin/sh -c chmod -R g+rwX /opt/mdt/npm # buildkit",
+        "RUN /bin/sh -c chgrp -R mdt /srv # buildkit",
+        "RUN /bin/sh -c find /opt/mdt/npm -exec chgrp mdt {} + # buildkit",
+        "RUN /bin/sh -c find /opt/mdt -type f -execdir chmod g+w {} + # buildkit",
+        "RUN /bin/sh -c python3 -c \"import os; [os.chmod(p, 0o664) for p in os.listdir('/opt/mdt/npm')]\" # buildkit",
+    ],
+)
+def test_a_large_permission_only_layer_is_detected(created_by: str) -> None:
+    assert test_image_contract.permission_only_layers([f"657MB\t{created_by}"]) != []
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "657MB\tRUN /bin/sh -c umask 0002; npm install -g codex; mdt-perms fix /opt/mdt/npm # buildkit",
+        "216MB\tRUN /bin/sh -c cp -a /tmp/omz /opt/mdt/oh-my-zsh && chown -R root:mdt /opt/mdt/oh-my-zsh # buildkit",
+        "11.5MB\tRUN /bin/sh -c chmod -R g+rwX /opt/mdt/npm # buildkit",
+        "211MB\tRUN /bin/sh -c cp -ar /tmp/features && chmod -R 0755 /tmp/dev-container-features # buildkit",
+        "0B\tRUN /bin/sh -c echo hi # buildkit",
+    ],
+)
+def test_content_layers_small_layers_and_unrelated_layers_are_not_flagged(line: str) -> None:
+    assert test_image_contract.permission_only_layers([line]) == []

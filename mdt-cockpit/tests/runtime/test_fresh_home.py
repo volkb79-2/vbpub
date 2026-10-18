@@ -27,7 +27,8 @@ TOOL_CREATED_NATIVE = {
 }
 TOOL_CREATED_VSC = {
     **TOOL_CREATED_NATIVE,
-    ".zcompdump": "zsh's completion dump, written by compinit when Oh My Zsh is not the one loading it",
+    ".zcompdump": "the base image's /etc/zsh/zshrc sources nvm's bash_completion, whose bare `compinit` "
+                  "writes ~/.zcompdump (ZSH_COMPDUMP only moves Oh My Zsh's own dump)",
     ".cache": "root of Oh My Zsh's cache directory (ZSH_CACHE_DIR=~/.cache/oh-my-zsh: completion dump, "
               "alias probes), created because the Oh My Zsh distribution itself is read-only image content",
 }

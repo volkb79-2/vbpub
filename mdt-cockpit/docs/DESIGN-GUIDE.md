@@ -205,7 +205,7 @@ caches and config directories.
 | `ZSH` | `/opt/mdt/oh-my-zsh` | Oh My Zsh (VS Code family) is image-owned | `profile.sh`, when the directory exists |
 | `ZSH_CUSTOM` | unset (OMZ default `$ZSH/custom`) | custom themes ship there; the tree is group-writable | - |
 | `ZSH_CACHE_DIR` | `~/.cache/oh-my-zsh` | OMZ's cache is state, so it goes to the home | `zshrc` |
-| `ZSH_COMPDUMP` | `$ZSH_CACHE_DIR/.zcompdump-...` | keeps the home root free of a stray dump file | `zshrc` |
+| `ZSH_COMPDUMP` | `$ZSH_CACHE_DIR/.zcompdump-...` | moves *Oh My Zsh's* completion dump out of the home root. It does not keep the root free: the Microsoft base image's `/etc/zsh/zshrc` sources nvm's `bash_completion`, whose bare `compinit` writes `~/.zcompdump` (measured; zsh offers no variable for that path other than relocating `ZDOTDIR`, which would move every zsh dotfile) | `zshrc` |
 | `ZSH_DISABLE_COMPFIX` | `true` | the group-writable tree would make `compaudit` ask about "insecure directories" on every start | `zshrc` |
 | OMZ auto-update | disabled (`zstyle ':omz:update' mode disabled`) | the image owns the framework version | `zshrc` |
 | `LESSOPEN` | `|/usr/local/share/mdt-cockpit/lesspipe.sh %s` | system-wide syntax-highlighting preprocessor | `shell.env` |

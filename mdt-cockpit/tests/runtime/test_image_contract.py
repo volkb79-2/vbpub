@@ -54,6 +54,34 @@ def _size_bytes(text: str) -> float:
     return float(match.group(1)) * scale
 
 
+MDT_TREES = r"(?:/opt/mdt|/srv)"
+TOUCHES_MDT_TREE = re.compile(MDT_TREES)
+# Verbs that put CONTENT into a layer. A big layer that touches /opt/mdt or /srv and has
+# none of them is a metadata-only rewrite (a copy-up), whatever tool it used.
+INSTALL_VERB = re.compile(
+    r"\b(?:npm (?:install|i|ci)|pip3? install|uv (?:pip|python) install|apt(?:-get)? install|dpkg -i"
+    r"|curl|wget|tar|unzip|git clone|cp|mv|install|rsync|COPY|ADD|venv)\b|install_\w+\.py|get\.py"
+)
+LARGE_LAYER_BYTES = 50e6
+
+
+def permission_only_layers(history_lines: list[str]) -> list[tuple[str, str]]:
+    """Layers of ``docker history --format '{{.Size}}\\t{{.CreatedBy}}'`` that only rewrite
+    permissions of the mdt trees: large (>= 50 MB), naming /opt/mdt or /srv, no install verb."""
+    offenders = []
+    for line in history_lines:
+        size, _, created_by = line.partition("\t")
+        if _size_bytes(size) < LARGE_LAYER_BYTES:
+            continue
+        # Any command touching the mdt trees in a large layer WITHOUT an install verb is a
+        # metadata-only rewrite (chgrp/chmod/chown -R, find -exec, a script...). A recursive
+        # pass in the SAME RUN that installed the content is the allowed construction
+        # fix-up (mdt-perms fix), so an install verb exempts the layer.
+        if TOUCHES_MDT_TREE.search(created_by) and not INSTALL_VERB.search(created_by):
+            offenders.append((size, created_by[:160]))
+    return offenders
+
+
 class Contract:
     def test_the_build_mode_label_is_present_and_agrees_with_the_image_tag(self) -> None:
         """An absent label must never read as "release": the provenance tests skip release
@@ -195,14 +223,7 @@ class Contract:
             ["history", "--no-trunc", "--format", "{{.Size}}\t{{.CreatedBy}}", self.image.ref]
         )
         self.assertEqual(history.returncode, 0, history.stderr)
-        offenders = []
-        for line in history.stdout.decode("utf-8", "replace").splitlines():
-            size, _, created_by = line.partition("\t")
-            if (
-                re.search(r"\b(chgrp|chmod|chown)\s+(?:-\w+\s+)*-[A-Za-z]*R[^;&|\n]*?(?:/opt/mdt|/srv)", created_by)
-                and _size_bytes(size) >= 50e6
-            ):
-                offenders.append((size, created_by[:160]))
+        offenders = permission_only_layers(history.stdout.decode("utf-8", "replace").splitlines())
         self.assertEqual(offenders, [], "permission-only layer(s) of /opt/mdt size")
 
 
