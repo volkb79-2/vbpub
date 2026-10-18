@@ -262,12 +262,30 @@ def test_claude_latest_resolves_through_the_registry_with_the_freshness_rule(mon
     assert urls == ["https://registry.npmjs.org/@anthropic-ai/claude-code"] * 2
 
 
-def test_an_explicit_claude_version_is_honoured_without_a_network_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(staging, "_fetch_json", lambda *a, **k: pytest.fail("no lookup for a pinned version"))
+def test_an_explicit_claude_pin_at_least_fourteen_days_old_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(staging, "_fetch_json", lambda *a, **k: {"time": _TIMES})
 
-    assert staging._resolve_claude_code_version("2.1.289") == "2.1.289"
+    assert staging._resolve_claude_code_version("2.1.289", now=_NOW) == "2.1.289"
     with pytest.raises(staging.StageError, match="Unsupported"):
-        staging._resolve_claude_code_version("two")
+        staging._resolve_claude_code_version("two", now=_NOW)
+
+
+def test_an_explicit_claude_pin_younger_than_fourteen_days_is_refused_naming_its_release_date(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(staging, "_fetch_json", lambda *a, **k: {"time": _TIMES})
+
+    with pytest.raises(staging.StageError, match=r"2\.1\.302 was released on 2026-10-16.*at least 14 days"):
+        staging._resolve_claude_code_version("2.1.302", now=_NOW)
+    with pytest.raises(staging.StageError, match="2026-10-04"):
+        staging._resolve_claude_code_version("2.1.296", now=_NOW)  # one second short
+
+
+def test_an_explicit_claude_pin_that_was_never_published_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(staging, "_fetch_json", lambda *a, **k: {"time": _TIMES})
+
+    with pytest.raises(staging.StageError, match="not a published"):
+        staging._resolve_claude_code_version("9.9.9", now=_NOW)
 
 
 def test_claude_is_no_longer_staged_as_a_native_binary() -> None:

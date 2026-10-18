@@ -157,7 +157,14 @@ def install_claude(ctx: InstallerContext) -> None:
     # updater then run `npm install -g` into that group-writable prefix; the native
     # installer writes ~/.local/share/claude and ~/.local/bin/claude instead, which the
     # image copy used to shadow, so updates silently never took effect.
-    version = env_value("CLAUDE_CODE_VER", "CLAUDE_CODE_VERSION", default="latest")
+    # REQUIRED and only from the staged value: staging resolved it under the 14-day freshness
+    # rule, and an absent value must not let npm install `@latest` behind that rule's back.
+    version = env_value("CLAUDE_CODE_VER")
+    if not version or version == "latest":
+        raise InstallerError(
+            "CLAUDE_CODE_VER is not set to a concrete version (the staged, freshness-checked "
+            "value from tool-versions.env); refusing to install Claude Code @latest"
+        )
     require_command("npm", "npm is required to install Claude Code")
     run_command(["npm", "install", "-g", f"@anthropic-ai/claude-code@{version}"])
 

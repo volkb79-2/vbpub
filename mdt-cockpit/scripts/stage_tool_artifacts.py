@@ -406,18 +406,36 @@ def _newest_aged_stable_version(
     return best[1]
 
 
-def _resolve_claude_code_version(requested: str | None, *, now: datetime | None = None) -> str:
-    value = (requested or "").strip()
-    if value and value != "latest":
-        if not CLAUDE_VERSION_RE.fullmatch(value):
-            raise StageError(f"Unsupported CLAUDE_CODE_VERSION value: {value!r}")
-        return value
-
+def _claude_publish_times() -> dict:
     document = _fetch_json(f"https://registry.npmjs.org/{CLAUDE_CODE_NPM_PACKAGE}")
     times = document.get("time")
     if not isinstance(times, dict):
         raise StageError(f"npm registry returned no publish times for {CLAUDE_CODE_NPM_PACKAGE}")
-    return _newest_aged_stable_version(times, now=now or datetime.now(timezone.utc))
+    return times
+
+
+def _resolve_claude_code_version(requested: str | None, *, now: datetime | None = None) -> str:
+    """The Claude Code version to install: the newest release at least 14 days old, or an
+    explicit pin that is itself at least 14 days old. No override: a pin younger than the
+    freshness buffer is refused, naming its release date."""
+    now = now or datetime.now(timezone.utc)
+    value = (requested or "").strip()
+    times = _claude_publish_times()
+    if not value or value == "latest":
+        return _newest_aged_stable_version(times, now=now)
+    if not CLAUDE_VERSION_RE.fullmatch(value):
+        raise StageError(f"Unsupported CLAUDE_CODE_VERSION value: {value!r}")
+    stamp = times.get(value)
+    if not stamp:
+        raise StageError(f"CLAUDE_CODE_VERSION {value} is not a published {CLAUDE_CODE_NPM_PACKAGE} release")
+    published = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+    age_days = (now - published).total_seconds() / 86400
+    if age_days < MIN_RELEASE_AGE_DAYS:
+        raise StageError(
+            f"CLAUDE_CODE_VERSION {value} was released on {published.date().isoformat()} "
+            f"({age_days:.1f} days ago); the freshness rule requires at least {MIN_RELEASE_AGE_DAYS} days"
+        )
+    return value
 
 
 def _tar_contains_binary(archive: Path, binary_name: str) -> bool:

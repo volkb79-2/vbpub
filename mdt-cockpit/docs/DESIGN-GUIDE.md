@@ -328,7 +328,8 @@ the image's tools in place without `sudo`. Those updates live in the **container
 layer**: they last for the life of the container, a recreate restores the image's version, and
 **rebuilding the image is the durable way to change a version.** The image pins each tool;
 Claude Code is pinned to the newest release that is at least 14 days old (the estate freshness
-rule, resolved at staging time from the npm registry).
+rule, resolved at staging time from the npm registry); an explicit `CLAUDE_CODE_VERSION` pin must be
+at least that old too (no override), and the installer accepts only the staged, concrete version.
 
 **Claude Code is an npm-global install.** The image installs the official
 `@anthropic-ai/claude-code` package into `/opt/mdt/npm`. For such an install `claude update`

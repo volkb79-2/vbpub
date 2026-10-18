@@ -63,6 +63,13 @@ INSTALL_VERB = re.compile(
     r"|curl|wget|tar|unzip|git clone|cp|mv|install|rsync|COPY|ADD|venv)\b|install_\w+\.py|get\.py"
 )
 LARGE_LAYER_BYTES = 50e6
+# `docker history` prints a RUN as "|N ARG=value ... /bin/sh -c <command> # buildkit" (or
+# "/bin/sh -c #(nop) <instruction>"): the ARG blob is build metadata, not the command.
+SHELL_PREFIX = re.compile(r"^.*?/bin/sh -c (?:#\(nop\)\s*)?", re.DOTALL)
+
+
+def command_text(created_by: str) -> str:
+    return SHELL_PREFIX.sub("", created_by, count=1)
 
 
 def permission_only_layers(history_lines: list[str]) -> list[tuple[str, str]]:
@@ -77,7 +84,8 @@ def permission_only_layers(history_lines: list[str]) -> list[tuple[str, str]]:
         # metadata-only rewrite (chgrp/chmod/chown -R, find -exec, a script...). A recursive
         # pass in the SAME RUN that installed the content is the allowed construction
         # fix-up (mdt-perms fix), so an install verb exempts the layer.
-        if TOUCHES_MDT_TREE.search(created_by) and not INSTALL_VERB.search(created_by):
+        command = command_text(created_by)
+        if TOUCHES_MDT_TREE.search(command) and not INSTALL_VERB.search(command):
             offenders.append((size, created_by[:160]))
     return offenders
 

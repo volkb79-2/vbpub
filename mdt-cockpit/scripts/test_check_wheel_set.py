@@ -296,3 +296,25 @@ def test_the_resolver_report_lists_release_wheels_only(tmp_path: Path, monkeypat
 def test_the_resolver_writes_the_report_after_every_resolution() -> None:
     source = (ROOT / "scripts" / "resolve-devcontainers-release.py").read_text(encoding="utf-8")
     assert "first_party_wheels = resolve_first_party_wheels(github_owner, github_repo)\n    write_wheels_report(first_party_wheels)" in source
+
+
+def test_a_local_dev_build_purges_a_release_wheel_of_the_same_distribution_left_by_an_earlier_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N2: the local-dev branch used to `continue` before the same-distribution purge, so a
+    release-run wheel in pip/wheels/ made the next local-dev build fail 'unreported'."""
+    resolver = _resolver()
+    monkeypatch.setattr(resolver, "WHEELS_CONTEXT_DIR", tmp_path)
+    (tmp_path / "nyxloom-0.9.0-py3-none-any.whl").write_bytes(b"release")
+    (tmp_path / "cli_extended-0.3.0-py3-none-any.whl").write_bytes(b"release")
+    (tmp_path / "ciu-7.0.0-py3-none-any.whl").write_bytes(b"other distribution, not local")
+    source = (ROOT / "scripts" / "resolve-devcontainers-release.py").read_text(encoding="utf-8")
+    branch = source[source.index("if name in local_wheels:"):source.index('print(f"[INFO] Resolving first-party wheel: {name}"')]
+    assert "purge_stale_wheels(WHEELS_CONTEXT_DIR, name" in branch, "the local-dev branch must purge too"
+
+    class Artifact:
+        path = Path("/x/nyxloom-0.10.1-py3-none-any.whl")
+
+    resolver.purge_stale_wheels(tmp_path, "nyxloom", keep=tmp_path / Artifact.path.name)
+
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["ciu-7.0.0-py3-none-any.whl", "cli_extended-0.3.0-py3-none-any.whl"]

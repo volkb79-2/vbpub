@@ -937,6 +937,9 @@ def resolve_first_party_wheels(
                 "whl_filename": artifact.path.name,
                 "source": "local-dev",
             })
+            # A release wheel of the same distribution left by an earlier run would be
+            # reported by nobody for this build and fail the wheel check.
+            purge_stale_wheels(WHEELS_CONTEXT_DIR, name, keep=WHEELS_CONTEXT_DIR / artifact.path.name)
             continue
         print(f"[INFO] Resolving first-party wheel: {name}", file=sys.stderr)
         try:

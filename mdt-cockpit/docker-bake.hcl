@@ -291,9 +291,11 @@ variable "CODEX_VERSION" {
   default = "latest"
 }
 
-// Version pin for Claude Code; "latest" resolves at staging time for reproducibility control.
+// Explicit pin for Claude Code (checked against the 14-day freshness rule at staging time).
+// Empty = resolve the newest release that is at least 14 days old. There is deliberately no
+// "latest" default: the installer requires the staged, concrete version.
 variable "CLAUDE_CODE_VERSION" {
-  default = "latest"
+  default = ""
 }
 
 // Version pin for Antigravity; "latest" resolves at staging time for reproducibility control.

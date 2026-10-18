@@ -259,3 +259,28 @@ def test_drive_matches_text_that_the_program_interleaves_with_escape_sequences(f
     session = harness.drive("img", ["x"], [(r"F10Quit", b"q\n")])
 
     assert session.completed_steps == 1 and "KEY:q" in session.screen
+
+
+def test_install_verbs_in_the_arg_blob_do_not_exempt_a_permission_only_layer() -> None:
+    """N4: `|82 OCI_DESCRIPTION=... install ... /bin/sh -c chmod -R ...` - the verb match must be
+    on the command, not on the leading build-arg metadata."""
+    line = (
+        "657MB\t|82 OCI_DESCRIPTION=curated install of tar and cp tools PYTHON_VERSION=3.14 "
+        "/bin/sh -c chmod -R g+rwX /opt/mdt/npm # buildkit"
+    )
+    assert test_image_contract.permission_only_layers([line]) != []
+    # and a real content layer with the same ARG blob stays exempt
+    content = line.replace("chmod -R g+rwX /opt/mdt/npm", "npm install -g codex; mdt-perms fix /opt/mdt/npm")
+    assert test_image_contract.permission_only_layers([content]) == []
+
+
+@pytest.mark.parametrize(
+    ("created_by", "command"),
+    [
+        ("|2 A=install B=cp /bin/sh -c chmod -R g+w /srv # buildkit", "chmod -R g+w /srv # buildkit"),
+        ("/bin/sh -c #(nop)  COPY file:abc in /opt/mdt/x ", "COPY file:abc in /opt/mdt/x "),
+        ("COPY --chmod=0755 scripts/mdt-perms /usr/local/bin/mdt-perms # buildkit", "COPY --chmod=0755 scripts/mdt-perms /usr/local/bin/mdt-perms # buildkit"),
+    ],
+)
+def test_command_text_drops_the_arg_blob_and_the_shell_prefix(created_by: str, command: str) -> None:
+    assert test_image_contract.command_text(created_by) == command

@@ -274,6 +274,38 @@ def test_claude_is_installed_through_npm_into_the_mdt_prefix_not_as_a_copied_bin
     assert listed["claude"] == "npm-image", "claude must be installed in the npm-image step, not copied by the root step"
 
 
+@pytest.mark.parametrize("value", [None, "", "  ", "latest"])
+def test_claude_requires_the_staged_concrete_version_and_never_installs_latest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    """Without CLAUDE_CODE_VER the Dockerfile ARG used to supply "latest", so npm installed
+    @latest and the 14-day freshness rule was bypassed."""
+    import install_ai_cli_tools as mod
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mod, "run_command", lambda command, *a, **k: calls.append(list(command)))
+    monkeypatch.setattr(mod, "require_command", lambda *a, **k: None)
+    monkeypatch.delenv("INSTALL_CLAUDE_CODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_VERSION", raising=False)  # the build ARG must not stand in for it
+    if value is None:
+        monkeypatch.delenv("CLAUDE_CODE_VER", raising=False)
+    else:
+        monkeypatch.setenv("CLAUDE_CODE_VER", value)
+
+    with pytest.raises(mod.InstallerError, match="CLAUDE_CODE_VER"):
+        mod.install_claude(_fake_ctx(tmp_path))
+
+    assert calls == []
+
+
+def test_the_build_has_no_latest_default_for_claude() -> None:
+    root = Path(__file__).resolve().parents[1]
+    bake = (root / "docker-bake.hcl").read_text(encoding="utf-8")
+    block = bake[bake.index('variable "CLAUDE_CODE_VERSION"'):]
+    assert 'default = ""' in block.split("}", 1)[0]
+    assert re.search(r'^ARG CLAUDE_CODE_VERSION\s*$', (root / "Dockerfile").read_text(encoding="utf-8"), re.MULTILINE)
+
+
 def test_dockerfile_constructs_the_mdt_tree_before_any_content() -> None:
     """The group contract is a construction rule: roots first, umask on every writer."""
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
@@ -377,3 +409,19 @@ def test_stage_resolves_opencode_from_npm_package(monkeypatch: pytest.MonkeyPatc
 
     assert ("latest", "opencode-ai") in npm_calls
     assert resolved["OPENCODE_VER"] == "resolved-opencode-ai"
+
+
+def test_a_build_arg_pin_cannot_stand_in_for_the_staged_claude_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only tool-versions.env (written by staging after the age check) may supply the version."""
+    import install_ai_cli_tools as mod
+
+    monkeypatch.setattr(mod, "run_command", lambda *a, **k: pytest.fail("must not install"))
+    monkeypatch.setattr(mod, "require_command", lambda *a, **k: None)
+    monkeypatch.delenv("INSTALL_CLAUDE_CODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_VER", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_VERSION", "2.1.302")
+
+    with pytest.raises(mod.InstallerError, match="CLAUDE_CODE_VER"):
+        mod.install_claude(_fake_ctx(tmp_path))
