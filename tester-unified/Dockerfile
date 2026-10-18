@@ -22,6 +22,11 @@
 # The repo-root .dockerignore whitelists the project sources in this context.
 ARG TESTER_UNIFIED_BASE_IMAGE=ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
 FROM ${TESTER_UNIFIED_BASE_IMAGE}
+# Record the base reference this stage was built FROM. build-image.sh and the
+# Run-Gate release preparation compare it with the requested base, so a
+# renamed or unconsumed build argument cannot silently build the default base.
+ARG TESTER_UNIFIED_BASE_IMAGE
+LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"
 
 USER root
 

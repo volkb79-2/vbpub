@@ -11,6 +11,69 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 <!-- cmru: release history -->
 
+## [24.0.1] - 2026-10-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=cc20c5be371fd1271be8acce1ec22d4c9b78f9df -->
+
+### Fixed
+- fix(run-gate): prove a first release against origin's tags (cc20c5be3)
+- fix(run-gate): restore 24.0.0 history and bind tester base before build (5d5800bce)
+- fix(run-gate): bind bootstrap image inputs to verified wheel bytes (eeb4e461b)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- Fix: the release preparation now consumes the documented tester-image
+  overrides. `RUN_GATE_TESTER_UNIFIED_BASE_IMAGE` selects the base,
+  `RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE` accepts only `source`, `pinned` or
+  `latest`, and `latest` requires `RUN_GATE_TESTER_CLI_EXTENDED_SHA256`, the
+  published wheel's digest; that digest is refused with any other mode. Invalid
+  overrides refuse before any wheel or image build. The built image must label
+  the expected cli-extended digest and the requested base
+  (`org.vbpub.tester-unified.base-image`, new) before the gate may use it.
+- Fix: release preparation no longer treats an empty local tag listing as a
+  first release. It reads origin's `run-gate-v*` tags and accepts a first
+  release only when origin shows no stable tag. It refuses when origin cannot
+  be read, when its listing is malformed, or when origin has a newer stable
+  release than the checkout. The version-newer refusal is unchanged.
+- Fix (behavior change): the Assay judge no longer inherits the state-root
+  path as `TMPDIR` when that root is inside the judged worktree, so the default
+  in-repo `.run-gate` root works for snapshot-isolated R1-R3 lanes instead of
+  ERRORing before R0 on Assay's scratch rule (RG-98). The path is exported as
+  `RUN_GATE_TMPDIR` (always) and as `TMPDIR` only for a root outside the judged
+  worktree. A lane whose test command relied on `TMPDIR` from `env_passthrough`
+  with an in-worktree root now maps `RUN_GATE_TMPDIR` in `assay.toml`
+  (`TMPDIR = "required-env:RUN_GATE_TMPDIR"` under `[lanes.<n>.infrastructure]`;
+  CONSUMERS). The interim preflight refusal and its judge-inventory probe are
+  removed.
+- Fix: inject Git `safe.directory` only through `GIT_CONFIG_COUNT`, appended at
+  the count the lane's environment already carries instead of overwriting index
+  0, with no global config file, lock file, or mutual-exclusion mechanism
+  (RG-99). Supported Git floor 2.38: an older `git` is refused at lane start-up
+  with exit 2 naming the floor, and a non-integer `GIT_CONFIG_COUNT` is
+  refused rather than clobbered. Lanes no longer pin `GIT_CONFIG_GLOBAL`. Live
+  concurrent exec-mode acceptance remains open.
+- Fix: help, `--list` and an omitted lane never resolve imported Assay
+  inventory; `doctor`, `--check-env`, and `history` / `footprint` over every
+  lane (including `footprint --write`) do, and refuse with the runner remedy
+  when the judge is unavailable instead of reporting a clean result or writing
+  a manifest without the imported lanes (RG-100).
+- Docs/fix: correct the `bare-host` mode contract; the undefined-environment
+  refusal now names the exact declaration for `bare-host` and for `host`, and a
+  `migrate-modes` command that the loader accepts (the central config for an
+  inherited lane); `migrate-modes` also materializes names referenced only by
+  `[assay]` / `[assay.import]` (RG-101).
+- Fix: `doctor` no longer crashes with `KeyError: 'environment'` on a
+  `kind = "sequence"` lane; it reports each member with its environment facts
+  and names malformed members, and `--check-env` skips the sequence itself
+  (RG-103).
+- Fix: the tester image installs Debian `docker-cli` / `docker-compose` only
+  when the base lacks a Docker client or compose plugin, so the MDT base's
+  `docker-ce-cli` / `docker-compose-plugin` are no longer overwritten or
+  rejected by dpkg; both bases are covered by an executable oracle.
+- Docs: fix the doubled backslash in the CONSUMERS zero-release bootstrap
+  example.
+<!-- cmru: pending release notes end -->
+
 ## [24.0.0] - 2026-10-17
 <!-- cmru: generated -->
 <!-- cmru: source-end=7a9717e9d04bb50ab5159081abf1dd1c1305c7dc -->

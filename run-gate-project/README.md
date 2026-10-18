@@ -120,10 +120,24 @@ environment-down, environment-mismatch, env-missing, external-missing,
 external-down, dirty-tree, no-headroom, lock-busy, no-base, judge-floor,
 judge-digest, provenance-mismatch, and state-mount.
 
+Container lanes receive Git's `safe.directory=*` through per-process
+`GIT_CONFIG_COUNT` variables, appended after any entries the runner already
+set. Run-Gate writes no global config or lock file, so its setup does not
+contend on a shared config lock. This needs **Git 2.38 or newer** in the lane
+image: older Git ignores the entry, and the lane refuses up front with exit 2
+naming the floor instead of failing later as "dubious ownership". Live
+concurrent exec-mode acceptance is the one remaining RG-99 item. Use one user
+per test container. See the
+[design rationale](docs/DESIGN-GUIDE.md#concurrent-exec-lanes-use-read-only-git-safety)
+and [consumer guidance](CONSUMERS.md#exec-mode-git-safety).
+
 Every `[environments.<name>]` declares `mode = "ephemeral"`, `"exec"`, or
-`"host"`. Names carry no behavior: `host` is an ordinary name and is a
-container only when its declaration says `mode = "ephemeral"`; `mode = "host"`
-runs on the invoking host. Existing configs can be migrated one at a
+`"host"`. Names carry no behavior: `host` and `bare-host` are ordinary names
+that exist only when declared — `host` is a container only when its
+declaration says `mode = "ephemeral"`, and a "no container" environment is
+`[environments.bare-host]` with `mode = "host"`, which runs on the invoking
+host. A lane naming either one undeclared is refused with that declaration
+and the migration command below. Existing configs can be migrated one at a
 time without losing comments:
 
 ```console
@@ -189,6 +203,13 @@ from `assay lanes --json` with
 lanes inherit the shared command and pin; a project lane with the same name
 overrides it. This is the v7 shape chosen to carry directly into CIU v8's
 `[testing.judge] import` contract. See the [consumer example](CONSUMERS.md#shared-assay-lane-imports).
+Run-Gate asks for inventory only when the answer needs it. Help, `--list`,
+an omitted lane and unrelated local lanes never probe, so they stay usable
+while a persistent judge is stopped; `--list` says on stderr that the import
+was not queried and keeps its three-column machine-readable output. `doctor`,
+`--check-env`, and `history` / `footprint` over every lane do resolve it, and
+refuse with a remedy if the judge is unavailable rather than report a clean
+result or write a manifest that omits imported lanes.
 
 An assay lane can pass `--reuse-from PATH`, repeatable `--rejudge ID`, and
 `--rejudge-outcome BUCKET` to one selected Assay run. A command lane accepts
@@ -206,8 +227,9 @@ place, then checks that root and the deepest existing directory on the keyed
 state path as the lane user. An explicitly configured `state_root` must
 already be mounted and writable. For an ephemeral or bare-host lane, `doctor`
 reports an uncreated default root as unverified until the lane creates and
-probes it; an exec runner is probed directly. Run-Gate also derives the
-Assay test command's `TMPDIR` and `GIT_CEILING_DIRECTORIES` from the verified
+probes it; an exec runner is probed directly. Run-Gate also derives
+`GIT_CEILING_DIRECTORIES` and the test command's temporary path
+(`RUN_GATE_TMPDIR`, and `TMPDIR` when safe — see below) from the verified
 state path, so a guessed container path cannot move tests into an unmapped private
 `/tmp`. An unavailable or unwritable state area is
 NOT_RUN/`state-mount`, not a test failure. The durable-state option requires
@@ -215,6 +237,19 @@ Assay 5.2.0. Read the
 [state contract](CONSUMERS.md#resume-progress-and-durable-assay-state) and
 [mount rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount)
 before removing an ephemeral worktree.
+
+Assay allocates its own snapshot scratch under `TMPDIR`, and that scratch must
+be outside the judged repository. Run-Gate therefore never makes the default
+in-repo `<checkout>/.run-gate` the Assay judge's `TMPDIR`: a state root inside
+the judged worktree is exported only as `RUN_GATE_TMPDIR`, which Assay ignores,
+so snapshot-isolated R1–R3 lanes run with the default root and every lane
+keeps the same state layout. A root outside the judged worktree (an explicit
+`state_root`, or the main checkout's root seen from a linked worktree) is also
+exported as `TMPDIR`, so a lane that forwards `TMPDIR` by `env_passthrough`
+is unchanged. To hand the verified path to the test command in the in-repo
+case, map it in `assay.toml`; see the
+[consumer recipe](CONSUMERS.md#resume-progress-and-durable-assay-state) and the
+[scratch rationale](docs/DESIGN-GUIDE.md#assay-resume-state-needs-an-environment-owned-mount).
 
 Projects inside the checkout keep their relative path key. A project outside
 the checkout uses a separate `assay-state-external/<sha256>` path based on its
@@ -287,8 +322,15 @@ This project's own `run-gate.toml` declares five lanes (dogfooding — see
    `/opt/tester-venv/bin/python -m pytest tests -q --cov=. --cov-branch`, followed by
    the vendored `tools/coverage_gate.py`, scoped to `--source run_gate.py`
    alone — a diff-coverage floor at 100% on every executable line changed
-   since the newest reachable stable `run-gate-vX.Y.Z` release tag. This
-   immutable baseline stays meaningful after merge; using `main` there would
+   since the newest reachable stable `run-gate-vX.Y.Z` release tag. On the
+   first stable release, when no stable Run-Gate tag exists, it reports the
+   diff check as `SKIPPED` because there is no released source baseline. The
+   release transaction's preparation accepts a first release only when origin
+   shows no stable tag, and refuses a checkout missing origin's release tags
+   ([why](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel)); the
+   separately run `assay-r1` campaign remains the whole-source line-and-branch
+   qualification before merge. A stable tag that exists but is unreachable is
+   still an error. This immutable baseline stays meaningful after merge; using `main` there would
    resolve the merge base to the candidate itself and hide the release's
    source changes. The comparison detects renames before filtering to
    `run_gate.py`, so replacing the retired compatibility symlink does not
@@ -376,7 +418,7 @@ directory:
 ```
 run-gate <lane>          # run one gate lane
 run-gate <lane> --base REF   # comparison base for a lane that delegates it
-run-gate doctor          # preflight: docker, slices, git, images, assay toolchains
+run-gate doctor          # preflight: docker, slices, git, images, assay toolchains (sequence lanes: each member's environment)
 run-gate doctor --worktree B   # … for tree B's state, not this checkout's
 run-gate --check-env --worktree B   # … same redirect for the drift/toolchain report
 run-gate history [LANE]  # what each lane last did + what it typically costs
@@ -483,9 +525,9 @@ the tool's reason to exist and MUST be implemented + tested:
   paths so worktree gitfiles resolve — when no alias is derivable (bare
   host, `phys == repo`) the lane refuses instead of silently collapsing to
   one mount; declare the second view via
-  `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`;
-  `git config --global safe.directory '*'`
-  inside the gate container.
+  `$RUN_GATE_MOUNT_ALIAS='<host>=<namespace>'`. Run-Gate supplies
+  `safe.directory=*` through per-process Git environment variables; no global
+  config write is needed.
 - **Mounts (RG-86):** an ephemeral container sees ONLY the judged worktree
   (all its own files, git-ignored ones included) plus the git common dir
   (read-write, ciu v8 SPEC S16.4.9), `<repo>/.run-gate` for assay state, and

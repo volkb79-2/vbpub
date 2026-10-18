@@ -35,7 +35,15 @@ done
 build_args=()
 if [[ -n "$base_image" ]]; then
   build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE=$base_image")
+  expected_base_image="$base_image"
+else
+  expected_base_image="$(sed -n 's/^ARG TESTER_UNIFIED_BASE_IMAGE=\(.*\)$/\1/p' \
+    "$repo_root/tester-unified/Dockerfile")"
 fi
+[[ -n "$expected_base_image" ]] || {
+  echo "could not determine the expected tester-unified base image" >&2
+  exit 2
+}
 if (( no_cache )); then
   build_args+=(--no-cache)
 fi
@@ -138,5 +146,13 @@ if [[ "$actual_cli_extended_sha256" != "$expected_cli_extended_sha256" ]]; then
   echo "loaded tester image does not carry the expected cli-extended wheel" >&2
   echo "expected: sha256=$expected_cli_extended_sha256" >&2
   echo "observed: sha256=${actual_cli_extended_sha256:-<no label>}" >&2
+  exit 2
+fi
+
+actual_base_image="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified.base-image"}}' "$image_tag")"
+if [[ "$actual_base_image" != "$expected_base_image" ]]; then
+  echo "loaded tester image was not built from the requested base" >&2
+  echo "expected: $expected_base_image" >&2
+  echo "observed: ${actual_base_image:-<no label>}" >&2
   exit 2
 fi
