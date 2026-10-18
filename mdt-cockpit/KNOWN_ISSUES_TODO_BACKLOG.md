@@ -73,20 +73,23 @@ vbpub has a library to prohibit handrolling solutions every CLI needs. adopt it.
 
 ## MDT-006 - run acceptance probes against the built image artifacts
 
-The current `smoke` and `release` lanes run project tests in `tester-unified`;
-they do not launch the native or devcontainer image produced by the build.
-Dockerfile build steps run version commands for a subset of installed tools and
-write those results into the image manifest, but several optional probes are
-allowed to fail and this does not verify the final container's user, process
-environment, or mounted-home behavior.
+**CLOSED 2026-10-18 (MDTC-01, Phase 2).** The `image-runtime` lane (`./run-gate.py image-runtime`,
+driver `tests/runtime/`, design in `docs/DESIGN-GUIDE.md` "Built-image acceptance is a separate test
+boundary") starts real containers from the exact native and VS Code image refs and checks the final
+container's user, process environment and mounted-home behaviour: the image contract, one `PATH`
+in six shells, group-`mdt` writes under a re-numbered uid (with a negative control), the finalizer
+on a fresh home, silent interactive shells, every system-wide default with an empty home, and
+local-dev provenance. Its first real run found two defects the unit tests could not (`/srv`
+re-moded by Debian's base-files postinst; the finalizer calling `os.getlogin()` without a tty).
 
-Add an image-runtime acceptance stage that consumes the exact candidate image
-artifacts built by CMRU. It should verify both image families and each distinct
-flavor, including the final `vscode` user, executable discovery, Python
-interpreter selection, key CLI startup/version probes, PWMCP client presence,
-empty-home invariant, and finalizer behavior with a mounted writable home.
-Define the probe inventory alongside the installation declarations where
-possible, with an explicit safe probe for each executable rather than trying to
-run interactive tools blindly. Place test containers in the declared gate
-cgroup and preserve build artifact identity so acceptance covers what would be
-published without rebuilding a different image.
+Not covered, deliberately: the Dockerfile's install-time version probes for the apt-installed tools
+(still best-effort, recorded in the manifest), anything needing the network (updates, first-run
+plugin bootstraps), and GUI/IDE behaviour. Filed as MDT-008: the lane is not yet part of the
+release flow, so `cmru release` does not run it against the images it publishes.
+
+## MDT-008 - run `image-runtime` as part of the release flow
+
+`image-runtime` needs the exact image refs (`MDT_RUNTIME_IMAGE_NATIVE`, `MDT_RUNTIME_IMAGE_VSC`).
+A release builds and pushes images but never runs the lane against them, so a published image can
+still skip the runtime contract. Decide where the refs come from (the build's saved state) and wire
+the lane between build and push; until then it is run by hand against a local-dev or release build.

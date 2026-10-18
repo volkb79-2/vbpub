@@ -135,6 +135,16 @@ primary gid but leaves membership of a separately numbered group alone.
   is forbidden: on overlayfs even a no-op metadata change copies the file up into
   a new layer, doubling the image (a test pins that no such command appears in
   the Dockerfile).
+- **`/srv` is claimed late.** Debian's `base-files` postinst runs `install_directory srv 755 root`
+  whenever apt (re)configures it, which silently re-modes `/srv` to `755` (the first real build
+  hit this: the unprivileged PWMCP install was refused). `/srv` is therefore set to `root:mdt
+  2775` after the last apt step, immediately before the PWMCP install, and the assertion below
+  proves it survived. The same postinst re-modes it again if a root user upgrades `base-files`
+  inside a running container; `mdt-perms fix /srv` repairs that.
+- **`get.py` creates its instance directories `0755`.** The PWMCP installer's `_mkdir_secure`
+  makes the instance root, `releases/`, `shared/` and `bin/` mode `0755`, so the build ends that
+  RUN with `mdt-perms fix /srv`, which turns them into group-writable `mdt` directories. A
+  `pwmcp update` run later at runtime has not been exercised by the lane.
 - **Assertion.** The last build step is `mdt-perms check /opt/mdt /srv`: no entry
   (symlinks excluded) outside group `mdt`, no directory lacking setgid and group
   rwx, no regular file lacking group write. The image-runtime lane re-checks the
@@ -285,6 +295,34 @@ hazard), so local-dev is a **separate, explicit mode**:
   path refuses any layout whose build-mode label is not `release` (fail-closed:
   unreadable labels refuse too). The mode keeps its own state file so a local-dev
   build can neither clobber nor be mistaken for the saved release state.
+
+## How the AI CLIs update themselves (measured, not designed)
+
+Measured 2026-10-18 on the VS Code image with network, as a re-numbered uid (4242, member of
+`mdt`) and an empty home volume; each tool's own update command was run once, then the same volume
+was mounted in a second container. Every tool was already at its latest release, so a *download*
+was never observed - only what each command writes and where it points. The design did not change
+because of this table.
+
+| tool | installed at | update command | what it wrote | works as `vscode` via `mdt` | `command -v` after |
+|---|---|---|---|---|---|
+| claude | `/opt/mdt/bin/claude` (copy) | `claude update` | `~/.local/share/claude`, `~/.local/bin/claude` (symlink), `~/.claude.json`, `~/.claude/backups/` | nothing to download; it records a *native* install in the home, so a real update would land in `~/.local/share/claude` | `/opt/mdt/bin/claude` (image copy shadows the home one: `~/.local/bin` is last) |
+| codex | `/opt/mdt/npm` | `codex update` (runs `npm install -g @openai/codex`) | `/opt/mdt/npm/lib` (48 files), `/opt/mdt/npm/bin`, `~/.npm` cache | yes | `/opt/mdt/npm/bin/codex` |
+| copilot | `/opt/mdt/npm` | `copilot update` | `~/.cache/copilot/pkg`, `~/.local/state/gh`, `~/.copilot/logs` | self-update downloads into the home cache, not `/opt/mdt` | `/opt/mdt/npm/bin/copilot` |
+| opencode | `/opt/mdt/npm` | `opencode upgrade` | `~/.local/share/opencode` | prompts "installed ... may be managed by a package manager - Install anyways?" and waits (blocks a non-tty run); `-m npm` skips the prompt and would use `npm -g` | `/opt/mdt/npm/bin/opencode` |
+| pi | `/opt/mdt/npm` | `pi update self` | with `--force`: `/opt/mdt/npm/lib` (15033 files, `npm --prefix /opt/mdt/npm install -g`), `~/.npm` | yes (forced reinstall, 36 s) | `/opt/mdt/npm/bin/pi` |
+| reasonix | `/opt/mdt/npm` | `reasonix upgrade` | `~/.reasonix/locks/` only | `--force` refuses: "installed through a package manager ... npm install -g reasonix@latest" | `/opt/mdt/npm/bin/reasonix` |
+| openclaw | `/opt/mdt/npm` | `openclaw update --yes --no-restart` | `~/.openclaw/update-reports/`, `~/.openclaw/state/openclaw.sqlite`, `~/.openclaw.update-captures/`, `~/.npm` | update mode `npm` (global prefix `/opt/mdt/npm`); already current | `/opt/mdt/npm/bin/openclaw` |
+| claudelink | `/opt/mdt/npm` | none (no update subcommand, no `--version`); `npm install -g claudelink@latest` | `/opt/mdt/npm/lib` (3854 files, 131 packages), `~/.npm` | yes | `/opt/mdt/npm/bin/claudelink` |
+| antigravity / agy | `/opt/mdt/bin` (two copies) | `antigravity update` / `agy update` | `~/.gemini/antigravity-cli/updater` (2 files) | "already on the latest version"; the target of a real update is unmeasured | `/opt/mdt/bin/antigravity`, `/opt/mdt/bin/agy` |
+| aider | `/opt/mdt/venv` | `aider --upgrade` (runs `pip install --upgrade aider-chat`) | `/opt/mdt/venv/lib` (1426 files), `~/.cache/pip`, `~/.aider/analytics.json` | yes; the version stayed `0.86.3.dev53+g5dc9490bb` | `/opt/mdt/venv/bin/aider` |
+
+Survival across a container recreate follows from where the write landed: everything under `/opt/mdt`
+and `/srv` is the container's writable layer, so a recreate restores the image's version of that tool;
+everything under the home is in the named volume and persists (the second container saw the same
+`command -v` and versions). Two consequences worth knowing: a tool that records a *home* install
+(claude, copilot) is shadowed by the image copy on `PATH` until the image is rebuilt, and the
+npm-based tools update in place for the life of the container only.
 
 ## Built-image acceptance is a separate test boundary
 
