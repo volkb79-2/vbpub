@@ -117,10 +117,14 @@ class Contract:
                 entries = line.removeprefix("PATH-IS:").split(":")
                 self.assertManagedShape(entries, label)
                 middle = ":".join(entries[len(harness.PATH_PREFIX): -len(harness.PATH_SUFFIX)])
-                if "zsh" in label:  # zsh substitutes its own default for an empty PATH
-                    self.assertIn("/usr/bin", middle, label)
-                else:
+                if label.startswith("su "):  # PAM/login.defs ENV_PATH is the Debian default
                     self.assertTrue(any(default in middle for default in DEBIAN_DEFAULTS), f"{label}: no Debian default in {middle}")
+                else:
+                    # `env -i`: the shell supplies its OWN compiled-in default when PATH is unset (bash:
+                    # /usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:., zsh: /bin:/usr/bin:...),
+                    # so /etc/profile's ${PATH:-...} never sees an empty value
+                    self.assertIn("/usr/bin", middle.split(":"), label)
+                    self.assertIn("/bin", middle.split(":"), label)
 
     def test_sourcing_the_hook_again_changes_nothing(self) -> None:
         script = 'before="$PATH"; . /usr/local/share/mdt-cockpit/path-hook.sh; test "$before" = "$PATH" && echo SAME || echo "CHANGED:$PATH"'

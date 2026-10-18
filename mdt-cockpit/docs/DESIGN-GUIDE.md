@@ -191,8 +191,11 @@ Login shells need two things, both done at build time:
 2. **The hook merges.** The build writes the managed prefix and suffix (not a whole `PATH`) to
    `/usr/local/share/mdt-cockpit/path-entries`. `path-hook.sh` removes those entries wherever they
    occur in the current `PATH`, prepends the prefix in the order above, appends the suffix, and keeps
-   every other entry in its relative order; sourcing it twice changes nothing, and a cleared
-   environment yields prefix + Debian default + suffix. bash and sh reach it through
+   every other entry in its relative order; sourcing it twice changes nothing. A cleared environment
+   yields prefix + the default + suffix: `su -l`, `sudo -i`, ssh and cron get a `PATH` from the login
+   machinery (`ENV_PATH`), and a bare `env -i bash -l` gets *bash's own* compiled-in default
+   (`/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin:.`, trailing `.` included) because
+   bash defines `PATH` before `/etc/profile` runs, so `${PATH:-...}` never sees an empty value. bash and sh reach it through
    `/etc/profile.d/50-mdt-cockpit.sh`; **zsh does not read `/etc/profile` on Debian**
    (`/etc/zsh/zprofile` is only comments), so the hook is also sourced from `/etc/zsh/zprofile`.
    If the entries file is missing the hook prints one line to stderr and leaves `PATH` as the login
