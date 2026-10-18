@@ -513,7 +513,11 @@ def test_the_build_mode_is_in_the_environment_before_the_tag_plan_is_computed(
     """The bake file emits dev-only tags only in local-dev mode, so the plan must be
     computed with the mode already set (the first real run caught this order bug)."""
     seen: dict[str, str | None] = {}
-    monkeypatch.delenv("MDT_BUILD_MODE", raising=False)
+    # do_local_dev_build exports several variables with plain os.environ[...] writes; work
+    # on a private copy so none of them can leak into another test (the gate caught one
+    # leaking MDT_BUILD_MODE=local-dev into the release-flow tests).
+    private_environ = {key: value for key, value in os.environ.items() if key != "MDT_BUILD_MODE"}
+    monkeypatch.setattr(os, "environ", private_environ)
     monkeypatch.setenv("BUILD_DATE", "dev-20261018")
     monkeypatch.setattr(build_push, "_prepare_local_dev", lambda _m: ([], {"PWMCP_VERSION": PWMCP_VERSION}))
     monkeypatch.setattr(build_push, "ensure_devcontainers_base_from_bake_defaults", lambda: None)
