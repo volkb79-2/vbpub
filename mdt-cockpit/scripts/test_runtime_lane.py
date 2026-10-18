@@ -329,3 +329,6 @@ def test_an_unrecognised_run_form_fails_instead_of_passing_through() -> None:
     with pytest.raises(ValueError, match="unrecognised"):
         test_image_contract.permission_only_layers(["657MB\tRUN |3 A=install /usr/bin/zsh -c chmod -R g+w /srv"])
     assert test_image_contract.command_text("ENV PATH=/opt/mdt/bin:/usr/bin") == "ENV PATH=/opt/mdt/bin:/usr/bin"
+    # a base-image layer that is not a RUN of ours (measured on the real image) passes through
+    debian = "# debian.sh --arch 'amd64' out/ 'trixie' '@1791158400'"
+    assert test_image_contract.command_text(debian) == debian

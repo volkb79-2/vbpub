@@ -81,9 +81,11 @@ def command_text(created_by: str) -> str:
     if NON_SHELL_INSTRUCTION.match(created_by):
         return created_by
     stripped, count = SHELL_PREFIX.subn("", created_by, count=1)
-    if not count:
+    if count:
+        return stripped
+    if created_by.startswith(("RUN ", "|")):
         raise ValueError(f"unrecognised docker history layer form: {created_by[:160]!r}")
-    return stripped
+    return created_by  # base-image layers such as "# debian.sh --arch ..." run no shell command of ours
 
 
 def permission_only_layers(history_lines: list[str]) -> list[tuple[str, str]]:
