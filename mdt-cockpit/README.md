@@ -794,7 +794,8 @@ host, with product assertions inside the guest:
   its location, one `PATH` in six shell forms, writes through the group under a
   re-numbered uid (and `EACCES` without it), the finalizer on a fresh home, silent
   interactive shells, every system-wide default with an empty home, and the provenance
-  of a local-dev image. Its driver is stdlib `unittest` in `tests/runtime/`; every
+  of a local-dev image (for which `MDT_RUNTIME_LOCAL_DEV_MANIFEST=<the manifest it was built
+  from>` is required; release images do not need it). Its driver is stdlib `unittest` in `tests/runtime/`; every
   container is offline, in the gate tier, and removed by exact name.
 - `./run-gate.py vm-system` runs the MDT host setup acceptance in the shared
   QEMU/TCG harness. The bare-host lane only drives the runner; its assertions

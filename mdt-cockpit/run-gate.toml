@@ -65,8 +65,11 @@ budget = "45m"
 # `--init`, uniquely named and removed by exact name. There is no default image: the
 # lane refuses when either ref is unset and never falls back to a :latest tag.
 #   MDT_RUNTIME_IMAGE_NATIVE=<ref> MDT_RUNTIME_IMAGE_VSC=<ref> ./run-gate.py image-runtime
-# MDT_RUNTIME_LOCAL_DEV_MANIFEST (optional) names the local-dev manifest the images were
-# built from, so the provenance tests can compare the labels against it entry for entry.
+# MDT_RUNTIME_LOCAL_DEV_MANIFEST names the local-dev manifest the images were built from.
+# It is REQUIRED when an image's build-mode label is local-dev (its labels are checked
+# against that manifest entry for entry, and the lane FAILS without it) and unused for
+# release images, which carry no local artifacts. It is deliberately not in required_env,
+# because a release run does not need it.
 [lanes.image-runtime]
 kind = "command"
 environment = "bare-host"

@@ -55,6 +55,23 @@ def _size_bytes(text: str) -> float:
 
 
 class Contract:
+    def test_the_build_mode_label_is_present_and_agrees_with_the_image_tag(self) -> None:
+        """An absent label must never read as "release": the provenance tests skip release
+        images, so a missing label would silently switch them all off."""
+        self.assertIn(
+            harness.BUILD_MODE_LABEL, self.image.labels,
+            f"{self.image.ref} has no {harness.BUILD_MODE_LABEL} label",
+        )
+        mode = self.image.labels[harness.BUILD_MODE_LABEL]
+        self.assertIn(mode, ("release", "local-dev"), f"unknown build mode {mode!r}")
+        tag = self.image.ref.rsplit("/", 1)[-1].partition("@")[0]
+        self.assertIn(":", tag, f"{self.image.ref} has no tag to compare with the build mode; pass the tag")
+        has_dev_segment = re.search(r"-dev(-|$)", tag.split(":", 1)[1]) is not None
+        if mode == "local-dev":
+            self.assertTrue(has_dev_segment, f"a local-dev image's tag must contain '-dev': {self.image.ref}")
+        else:
+            self.assertFalse(has_dev_segment, f"a release image's tag must not contain '-dev': {self.image.ref}")
+
     def test_home_is_empty_and_owned_by_vscode(self) -> None:
         result = self.sh("ls -A /home/vscode | wc -l; stat -c '%U:%G' /home/vscode; id -un")
         self.assertOk(result)

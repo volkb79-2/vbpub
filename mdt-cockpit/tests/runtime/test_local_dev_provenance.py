@@ -6,8 +6,11 @@ tests are skipped for it with that reason - never silently passed.
 
 For a local-dev image: the labels list the local artifacts, the image manifest repeats
 them, the wheel versions and the PWMCP release actually installed equal the recorded
-versions, and - when `MDT_RUNTIME_LOCAL_DEV_MANIFEST` names the manifest the image was
-built from - the labels equal that manifest entry for entry.
+versions, and the labels equal - entry for entry - the manifest named by
+`MDT_RUNTIME_LOCAL_DEV_MANIFEST`. That variable is REQUIRED for a local-dev image (its
+absence fails the lane) and unused for a release image. That an image is a release image is
+itself asserted (a present, valid label) by test_image_contract, so a missing label can
+never turn these tests off.
 """
 from __future__ import annotations
 
@@ -44,10 +47,17 @@ class Contract:
             self.assertRegex(entry["sha256"], r"^[0-9a-f]{64}$")
             self.assertTrue(os.path.isabs(entry["path"]))
 
-    def test_labels_equal_the_manifest_the_image_was_built_from_when_it_is_given(self) -> None:
+    def test_labels_equal_the_manifest_the_image_was_built_from(self) -> None:
         manifest = os.environ.get(harness.ENV_LOCAL_MANIFEST, "").strip()
         if not manifest:
-            self.skipTest(f"{harness.ENV_LOCAL_MANIFEST} is not set; the label-versus-installed checks still apply")
+            # A local-dev image's labels are only evidence against an independent record, so
+            # without the manifest this check cannot pass - and must not be skipped.
+            self.fail(
+                f"{harness.ENV_LOCAL_MANIFEST} is not set. A local-dev image is only verified "
+                "against the manifest it was built from: run the lane with "
+                f"{harness.ENV_LOCAL_MANIFEST}=$PWD/local-dev-artifacts.toml (the gitignored file "
+                "passed to `build-push.py --build --local-dev`)."
+            )
         document = tomllib.loads(Path(manifest).read_text(encoding="utf-8"))
         expected = {item["name"]: item for item in document["artifact"]}
         recorded = {item["name"]: item for item in self.artifacts}

@@ -567,8 +567,9 @@ docker image inspect <printed -dev- tag> \
     --format '{{index .Config.Labels "net.volkb79.mdt.build-mode"}}'   # -> local-dev
 ```
 
-Test the result with the runtime lane (`MDT_RUNTIME_LOCAL_DEV_MANIFEST` is optional and lets the
-provenance tests compare the image labels with your manifest entry for entry):
+Test the result with the runtime lane. `MDT_RUNTIME_LOCAL_DEV_MANIFEST` is **required** for a
+local-dev image (the provenance tests compare its labels with your manifest entry for entry, and the
+lane fails without it) and unused for a release image:
 
 ```bash
 MDT_RUNTIME_IMAGE_NATIVE=<native -dev- tag> MDT_RUNTIME_IMAGE_VSC=<vsc -dev- tag> \
