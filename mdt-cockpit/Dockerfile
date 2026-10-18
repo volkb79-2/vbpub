@@ -181,9 +181,14 @@ RUN set -euo pipefail; \
     fi; \
     groupadd -g "${MDT_GID}" mdt; \
     usermod -aG mdt vscode; \
-    install -d -m 0775 -o root -g mdt /opt/mdt /opt/mdt/bin /opt/mdt/npm /opt/mdt/venv /opt/mdt/venvs /opt/mdt/python /srv; \
-    chmod g+s /opt/mdt /opt/mdt/bin /opt/mdt/npm /opt/mdt/venv /opt/mdt/venvs /opt/mdt/python /srv; \
-    chgrp mdt /srv
+    roots="/opt/mdt /opt/mdt/bin /opt/mdt/npm /opt/mdt/venv /opt/mdt/venvs /opt/mdt/python"; \
+    install -d -o root -g mdt ${roots}; \
+    chgrp mdt ${roots}; \
+    chmod 2775 ${roots}; \
+    for d in ${roots}; do \
+        test "$(stat -c '%a %U:%G' "$d")" = "2775 root:mdt" \
+            || { echo "ERROR: $d is $(stat -c '%a %U:%G' "$d"), expected 2775 root:mdt" >&2; exit 1; }; \
+    done
 
 # Release worktrees may be checked out under umask 077. These copied build
 # inputs contain public package metadata and must remain readable in the
@@ -238,7 +243,7 @@ RUN set -euo pipefail; \
     rm -rf /var/lib/apt/lists/*
 
 # Image-managed tools live outside the mounted home, in the `mdt` group tree
-# /opt/mdt (docs/DESIGN-GUIDE.md "Where each tool lives"). Global npm installs
+# /opt/mdt (docs/DESIGN-GUIDE.md "Environment variables"). Global npm installs
 # and uv-managed interpreters therefore default to those trees, which the
 # runtime user can write through the `mdt` group.
 ENV NPM_CONFIG_PREFIX="/opt/mdt/npm"
@@ -817,6 +822,17 @@ RUN set -euo pipefail; \
 # owned by `vscode`. A release build fetches the commit-pinned installer and
 # bundle; an explicit local-dev build supplies the verified local ones through
 # the `mdt-local-dev` named context (bind-mounted, never copied into a layer).
+# /srv is claimed HERE, after the last apt step, and not with the other roots:
+# Debian's base-files postinst runs `install_directory srv 755 root` whenever apt
+# (re)configures base-files, which silently re-modes /srv to 755 (observed in the
+# first real build: the unprivileged PWMCP install below was refused). The final
+# `mdt-perms check` proves the mode survived to the end of the build.
+RUN set -euo pipefail; \
+    install -d -o root -g mdt /srv; \
+    chgrp mdt /srv; \
+    chmod 2775 /srv; \
+    test "$(stat -c '%a %U:%G' /srv)" = "2775 root:mdt"
+
 USER vscode
 RUN --mount=type=bind,from=mdt-local-dev,source=/,target=/tmp/mdt-local-dev \
     set -euo pipefail; \

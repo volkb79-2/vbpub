@@ -58,6 +58,7 @@ import argparse
 from mdt_cli import MdtArgumentParser
 import json
 import os
+import pwd
 import shutil
 import stat
 import subprocess
@@ -115,6 +116,19 @@ def err(m: str) -> None:
 
 
 # ── environment detection (generic) ─────────────────────────────────────────
+def _current_user_name() -> str:
+    """The running user's name, derived from the uid (the passwd database).
+
+    `os.getlogin()` needs a controlling terminal and `$USER` is not always set (a
+    container started without a tty or `-e USER`), so neither is a source of truth; the
+    uid is. A uid with no passwd entry is reported by number, never guessed.
+    """
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return f"uid-{os.getuid()}"
+
+
 def detect_environment() -> dict:
     if os.environ.get("GITHUB_ACTIONS"):
         env_type = "github_actions"
@@ -133,7 +147,7 @@ def detect_environment() -> dict:
 
     return {
         "env_type": env_type,
-        "user": os.environ.get("USER") or (os.getlogin() if hasattr(os, "getlogin") else "unknown"),
+        "user": _current_user_name(),
         "uid": str(os.getuid()),
         "gid": str(os.getgid()),
         "docker_gid": docker_gid,

@@ -388,7 +388,7 @@ Sections, and why one component can appear in two of them without duplication:
 | Section | View |
 |---|---|
 | `Base` | Debian + Python version, `OCI_VERSION`, computed tag pattern, devcontainers release (`v0.4.x`) and image version (`3.0.x`) |
-| `First-Party Wheels` | image-owned releases: `ciu`, `cmru` |
+| `First-Party Wheels` | image-owned releases: `cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom` |
 | `AI CLI Tools` | agent CLI inventory: `aider`, `reasonix`, `openclaw`, `opencode`, `copilot`, `codex`, `claude`, `antigravity`, `claudelink`, `pi` |
 | `Custom Tooling` | operational view — release-managed executables and their runtime `--version` output |
 | `Python packages` | venv inventory |
@@ -787,6 +787,15 @@ host, with product assertions inside the guest:
   R2 generates and runs the full native mutation campaign for the current
   source, and resumes from the git-ignored `.assay/` progress stream after an
   interrupted session.
+- `./run-gate.py image-runtime` is the **runtime acceptance of the built images**:
+  it starts real containers from the exact native and VS Code image refs it is given
+  (`MDT_RUNTIME_IMAGE_NATIVE=<ref> MDT_RUNTIME_IMAGE_VSC=<ref>`; no default, never a
+  `:latest` fallback) and checks the empty home, the `mdt` group contract, every CLI at
+  its location, one `PATH` in six shell forms, writes through the group under a
+  re-numbered uid (and `EACCES` without it), the finalizer on a fresh home, silent
+  interactive shells, every system-wide default with an empty home, and the provenance
+  of a local-dev image. Its driver is stdlib `unittest` in `tests/runtime/`; every
+  container is offline, in the gate tier, and removed by exact name.
 - `./run-gate.py vm-system` runs the MDT host setup acceptance in the shared
   QEMU/TCG harness. The bare-host lane only drives the runner; its assertions
   execute inside the guest and verify systemd PID 1, cgroup v2, Docker,
@@ -798,9 +807,10 @@ host, with product assertions inside the guest:
 source for those command prerequisites. See the [test boundary design](docs/DESIGN-GUIDE.md#vm-system-prerequisites-live-in-run-gate).
 
 The Dockerfile runs install-time checks and records version output for a subset
-of tools. The current gates do not start the final OCI image artifacts; that
-runtime acceptance gap, including checking the configured user and process
-environment, is tracked in [MDT-006](KNOWN_ISSUES_TODO_BACKLOG.md).
+of tools; `smoke` and `release` do not start the final OCI image artifacts. That
+boundary is covered by the `image-runtime` lane above (see
+[MDT-006](KNOWN_ISSUES_TODO_BACKLOG.md) for what it does and does not cover and
+[the design note](docs/DESIGN-GUIDE.md#built-image-acceptance-is-a-separate-test-boundary)).
 
 `assay.toml` is the judgment contract for the wizard. The
 shell installer and renderer remain command-tested because assay's Python

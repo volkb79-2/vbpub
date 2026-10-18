@@ -58,3 +58,19 @@ argv = ["bash", "host-setup/tests/run-vm-acceptance.sh"]
 clean_tree = true
 required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER", "BUILDX_CONFIG", "DOCKER_HOST"]
 budget = "45m"
+
+# Runtime acceptance of the BUILT images (MDT-006, MDTC-01 D10). The driver only
+# orchestrates (the vm-system precedent): the subject runs in its own containers
+# started from the exact image refs below, each placed in the gate tier, offline,
+# `--init`, uniquely named and removed by exact name. There is no default image: the
+# lane refuses when either ref is unset and never falls back to a :latest tag.
+#   MDT_RUNTIME_IMAGE_NATIVE=<ref> MDT_RUNTIME_IMAGE_VSC=<ref> ./run-gate.py image-runtime
+# MDT_RUNTIME_LOCAL_DEV_MANIFEST (optional) names the local-dev manifest the images were
+# built from, so the provenance tests can compare the labels against it entry for entry.
+[lanes.image-runtime]
+kind = "command"
+environment = "bare-host"
+argv = ["python3", "-m", "unittest", "discover", "-s", "tests/runtime", "-p", "test_*.py", "-v"]
+clean_tree = true
+required_env = ["CGROUP_PARENT_DEV_GATES", "MDT_RUNTIME_IMAGE_NATIVE", "MDT_RUNTIME_IMAGE_VSC"]
+budget = "60m"

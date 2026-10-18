@@ -289,11 +289,38 @@ hazard), so local-dev is a **separate, explicit mode**:
 ## Built-image acceptance is a separate test boundary
 
 Source tests in `tester-unified` cannot certify the image filesystem or its
-runtime environment. Dockerfile install steps currently run version probes for
-some tools, and image manifest generation records selected versions. The
-current release build does not execute the final OCI artifacts. MDT-006 tracks
-an acceptance stage that runs the exact CMRU-built artifacts and verifies the
-declared runtime contract.
+runtime environment, and the Dockerfile's own install-time probes only run
+version commands for some tools. The **`image-runtime`** lane (`run-gate.toml`,
+driver `tests/runtime/`, MDT-006) is the acceptance stage that runs the exact
+built artifacts.
+
+- **`bare-host`, like `vm-system`.** The driver only orchestrates; the subject runs
+  in its own containers, so the tests do not depend on what the tester image
+  happens to contain. Every container is started with `--cgroup-parent
+  "$CGROUP_PARENT_DEV_GATES"`, `--init`, `--network none` (the lane is offline) and
+  a unique name `mdt-cockpit-rt-<pid>-<n>`, and removed **by exact name** in a
+  `finally` (never by filter or ancestor: lane and gate containers share images).
+- **No default image.** `MDT_RUNTIME_IMAGE_NATIVE` and `MDT_RUNTIME_IMAGE_VSC` are
+  `required_env`; an unset variable is a refusal, never a `:latest` tag. The lane
+  prints each image's ID and `build-mode` label at start so a run is bound to the
+  artifact it tested.
+- **Oracles are behavioural.** Expected CLI locations are derived from
+  `ai-cli-tools.list` and `pip/wheels.list`, the `PATH` is compared across six
+  shell forms, the group contract is re-implemented independently of
+  `mdt-perms`, and the remapped-uid scenario derives a throw-away image with the
+  same step the Dev Containers CLI applies (`tests/runtime/updateUID.Dockerfile`,
+  mirrored from devcontainers/cli v0.89.0) and installs a locally packed npm
+  tarball and a locally built wheel, with a negative control for a uid outside
+  `mdt`. Waits are synchronous (`docker run` returns when its process exits); the
+  only timeouts are generous failsafes, never a verdict.
+- **Each scenario has been seen RED** against a deliberately broken image (a file
+  left in the home, a reordered `PATH`, a file lacking group-write, a user outside
+  the group, a world-writable shortcut, a missing system default, a finalizer that
+  adds/clobbers/is not idempotent, a wrong provenance label, a recursive-chmod
+  layer); the controlled breaks are recorded with the change that introduced the lane.
+
+What it does **not** cover: anything needing the network (updates, first-run plugin
+bootstraps), GUI/IDE behaviour, and the host-side bootstrap (unit-tested separately).
 
 ## The estate venv is selected by PATH
 

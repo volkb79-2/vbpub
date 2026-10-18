@@ -283,6 +283,26 @@ def test_dockerfile_constructs_the_mdt_tree_before_any_content() -> None:
     assert recursive == ["chown -R root:mdt /opt/mdt/oh-my-zsh"]
 
 
+def test_dockerfile_sets_the_final_mode_of_every_root_after_assigning_the_group() -> None:
+    """First real build: install -d does not re-mode an existing directory and chgrp can
+    drop setgid, so each RUN must end with an explicit chmod 2775 and verify every root."""
+    dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    start = dockerfile.index('groupadd -g "${MDT_GID}" mdt')
+    group_run = dockerfile[start: dockerfile.index("\n\n", start)]
+    assert group_run.index("chgrp mdt ${roots}") < group_run.index("chmod 2775 ${roots}")
+    assert "2775 root:mdt" in group_run.split("chmod 2775 ${roots}", 1)[1], "roots must be verified after the chmod"
+
+
+def test_dockerfile_claims_srv_after_the_last_apt_step() -> None:
+    """Second real-build finding: base-files' postinst re-modes /srv to 755 whenever apt
+    reconfigures it, so /srv must be claimed after every apt step, before the PWMCP install."""
+    dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    claim = dockerfile.index("chmod 2775 /srv")
+    assert claim > dockerfile.rindex("apt-get install"), "an apt step after the claim can undo it"
+    assert claim < dockerfile.index("/tmp/install_pwmcp_instance.py \\")
+    assert 'roots="' in dockerfile and "/srv" not in dockerfile.split('roots="', 1)[1].split('"', 1)[0]
+
+
 # parse_tool_entries
 
 

@@ -109,3 +109,38 @@ def test_generic_steps_no_longer_seed_copy_or_link_anything_else_into_the_home(
         "setup_editor_links",
     ):
         assert not hasattr(finalize, retired), retired
+
+
+def test_the_user_name_comes_from_the_uid_not_from_a_terminal_or_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first runtime run died in os.getlogin() (no controlling terminal, USER unset)."""
+    import pwd
+
+    monkeypatch.delenv("USER", raising=False)
+    monkeypatch.delenv("LOGNAME", raising=False)
+
+    def no_terminal() -> str:
+        raise OSError(-25, "Inappropriate ioctl for device")
+
+    monkeypatch.setattr(finalize.os, "getlogin", no_terminal)
+    monkeypatch.setattr(finalize.os, "getuid", lambda: 4242)
+    monkeypatch.setattr(
+        finalize.pwd, "getpwuid", lambda uid: pwd.struct_passwd(("vscode", "x", uid, 4242, "", "/h", "/bin/sh"))
+    )
+
+    assert finalize._current_user_name() == "vscode"
+    assert finalize.detect_environment()["user"] == "vscode"
+
+
+def test_a_uid_without_a_passwd_entry_is_reported_by_number_not_guessed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(finalize.os, "getuid", lambda: 4343)
+
+    def missing(_uid: int):
+        raise KeyError("getpwuid(): uid not found")
+
+    monkeypatch.setattr(finalize.pwd, "getpwuid", missing)
+
+    assert finalize._current_user_name() == "uid-4343"

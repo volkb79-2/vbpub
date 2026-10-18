@@ -290,6 +290,8 @@ current MDT template. Keep the host-side `initializeCommand` and interactive
 }
 ```
 
+### Host cgroup preflight
+
 The initializer runs on the Docker host before container creation. It refuses
 startup unless `dev-interactive.slice`, `dev-background.slice`, and
 `dev-gates.slice` are loaded from installed unit files. Install the host policy
@@ -565,7 +567,16 @@ docker image inspect <printed -dev- tag> \
     --format '{{index .Config.Labels "net.volkb79.mdt.build-mode"}}'   # -> local-dev
 ```
 
-Allowed names are the packages in `pip/wheels.list` plus `pwmcp-installer` and `pwmcp-bundle`.
+Test the result with the runtime lane (`MDT_RUNTIME_LOCAL_DEV_MANIFEST` is optional and lets the
+provenance tests compare the image labels with your manifest entry for entry):
+
+```bash
+MDT_RUNTIME_IMAGE_NATIVE=<native -dev- tag> MDT_RUNTIME_IMAGE_VSC=<vsc -dev- tag> \
+MDT_RUNTIME_LOCAL_DEV_MANIFEST=$PWD/local-dev-artifacts.toml ./run-gate.py image-runtime
+```
+
+Allowed names are the packages in `pip/wheels.list` (`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`) plus
+`pwmcp-installer` and `pwmcp-bundle`.
 An unknown, missing, unreadable or hash-mismatched entry refuses the build and names it; names you
 do not list still come from their releases. The images are loaded into your local Docker daemon as
 `...-dev-<YYYYMMDD>[-<n>]` and `...-dev-latest`, labelled `local-dev`, and cannot be pushed - the
