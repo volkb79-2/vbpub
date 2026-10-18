@@ -126,7 +126,7 @@ primary gid but leaves membership of a separately numbered group alone.
   stable across rebuilds and unlikely to collide with a base image. The build
   **fails** if the base already uses that GID or the name. `vscode` is a member.
 - `/opt/mdt` and `/srv` and everything beneath them: group `mdt`, directories
-  `2775` (setgid, so new entries inherit the group), regular files group-writable.
+  `2775` (setgid, so new entries inherit the group), regular files group-readable and group-writable (`g+rw`: a `0600` file would otherwise become `0620`, unreadable to a remapped uid that is not its owner).
 - **Construction rule.** The roots are created `root:mdt 2775` *before* any
   content, and every RUN that writes beneath them runs with `umask 0002`, so new
   entries come out right the first time. A fix-up is allowed only on content
@@ -147,7 +147,7 @@ primary gid but leaves membership of a separately numbered group alone.
   `pwmcp update` run later at runtime has not been exercised by the lane.
 - **Assertion.** The last build step is `mdt-perms check /opt/mdt /srv`: no entry
   (symlinks excluded) outside group `mdt`, no directory lacking setgid and group
-  rwx, no regular file lacking group write. The image-runtime lane re-checks the
+  rwx, no regular file lacking group read or write. The shipped script pins the group `mdt` (no environment override) and refuses to run where that group does not exist - `find -group nosuch` fails, which used to read as "no violations". The image-runtime lane re-checks the
   same contract in a running container, so the build step and the shipped image
   cannot disagree.
 - Not world-writable: the lane's negative control shows that a uid *outside*

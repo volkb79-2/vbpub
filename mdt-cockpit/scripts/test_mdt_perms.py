@@ -1,7 +1,8 @@
 """Tests for scripts/mdt-perms - the `mdt` group contract checker/fixer.
 
-The group name is injectable (MDT_PERMS_GROUP), so the contract is exercised with
-the caller's own primary group instead of requiring a real `mdt` group.
+The shipped script pins the group `mdt`; the tests run a COPY with that one line
+substituted, so the contract is exercised with the caller's own primary group
+instead of requiring a real `mdt` group.
 """
 from __future__ import annotations
 
@@ -18,10 +19,27 @@ SCRIPT = Path(__file__).resolve().parent / "mdt-perms"
 GROUP = grp.getgrgid(os.getgid()).gr_name
 
 
+_COPIES: dict[tuple[str, str], Path] = {}
+
+
+def _script_for(group: str, directory: Path) -> Path:
+    """A COPY of the shipped script whose fixed `GROUP="mdt"` line names `group`.
+
+    The shipped binary honours no environment override (an ambient variable must not
+    change which group it enforces), so the tests substitute the line in a copy.
+    """
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert text.count('\nGROUP="mdt"\n') == 1, "the shipped script must pin GROUP=\"mdt\" exactly once"
+    copy = directory / f"mdt-perms-{group}"
+    copy.write_text(text.replace('\nGROUP="mdt"\n', f'\nGROUP="{group}"\n'), encoding="utf-8")
+    copy.chmod(0o755)
+    return copy
+
+
 def _run(action: str, *paths: Path, group: str = GROUP) -> subprocess.CompletedProcess:
+    script = _script_for(group, paths[0].parent)
     return subprocess.run(
-        [str(SCRIPT), action, *map(str, paths)],
-        env={**os.environ, "MDT_PERMS_GROUP": group},
+        [str(script), action, *map(str, paths)],
         capture_output=True, text=True, check=False,
     )
 
@@ -123,3 +141,46 @@ def test_a_missing_path_is_an_error_not_a_pass(tmp_path: Path) -> None:
 
 def test_an_unknown_action_is_a_usage_error(tmp_path: Path) -> None:
     assert _run("chown", tmp_path).returncode == 2
+
+
+def test_a_group_readable_requirement_a_0600_file_is_a_violation_and_fix_makes_it_rw(tmp_path: Path) -> None:
+    """PWMCP's get.py creates its lock 0600: owner-only is unreadable to a remapped uid."""
+    root = tmp_path / "mdt"
+    _compliant_tree(root)
+    lock = root / "bin" / ".lock"
+    lock.write_text("", encoding="utf-8")
+    lock.chmod(0o620)  # what a g+w-only fix turns a 0600 file into: writable, still unreadable to the group
+
+    check = _run("check", root)
+    assert check.returncode == 1 and "file-mode" in check.stderr and ".lock" in check.stderr
+
+    assert _run("fix", root).returncode == 0
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o660
+
+    lock.chmod(0o600)
+    assert _run("fix", root).returncode == 0
+    assert stat.S_IMODE(lock.stat().st_mode) == 0o660
+
+
+def test_the_shipped_script_ignores_the_environment_group_override(tmp_path: Path) -> None:
+    root = tmp_path / "mdt"
+    _compliant_tree(root)
+    result = subprocess.run(
+        [str(SCRIPT), "check", str(root)],
+        env={**os.environ, "MDT_PERMS_GROUP": GROUP},
+        capture_output=True, text=True, check=False,
+    )
+    # the tree is group GROUP; the shipped script enforces `mdt` whatever the variable says
+    assert result.returncode != 0
+
+
+def test_a_group_that_does_not_exist_is_an_error_not_a_pass(tmp_path: Path) -> None:
+    """`find -group nosuch` fails; swallowed inside a command substitution that read as
+    'no violations' (the shipped script, run where no `mdt` group exists, passed)."""
+    root = tmp_path / "mdt"
+    _compliant_tree(root)
+
+    result = subprocess.run([str(SCRIPT), "check", str(root)], capture_output=True, text=True, check=False)
+
+    assert result.returncode == 2
+    assert "does not exist" in result.stderr
