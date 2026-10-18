@@ -19,19 +19,30 @@ ROOT_CMRU_ARTIFACTS = (
 SHARED_LIBRARIES = (
     Path("libraries/worktree"),
 )
-# Tracked inputs the full suite reads while COLLECTING in this fixture. The tests
-# that judge tester-unified and nyxloom skip here ("isolated canary tree"): their
-# full mode needs a Git checkout and cli-extended source, which a fixture never
-# carries. Their skip keys are tester-unified/gen-requirements.py and
-# build-image.sh, so those two must stay absent. Collection still reads:
+# Tracked repository-root inputs the full suite reads in this fixture. The tests
+# that judge tester-unified, nyxloom and the whole estate skip here ("isolated
+# canary tree"): their full mode needs a Git checkout, cli-extended source or
+# every project. Their skip keys must therefore stay absent:
+# tester-unified/gen-requirements.py, tester-unified/build-image.sh,
+# libraries/cli-extended, run-gate-project/tools/release_candidate.py, and the
+# full set of registered project configs. The suite still reads:
 # - tester-unified/Dockerfile: test_tester_image_cli_extended_identity module
 #   constants, and test_bootstrap_from_zero_sequence's real-pin check;
 # - nyxloom/pyproject.toml plus its setuptools search root nyxloom/src:
-#   test_tester_unified_image's _nyxloom_wheel_inputs() parametrize list.
+#   test_tester_unified_image's _nyxloom_wheel_inputs() parametrize list;
+# - .gitignore: test_release_gate's clean-source check uses the estate rules;
+# - run-gate-project/cmru.toml: test_release_gate's provider-prefix check;
+# - assay/src: run_release_gate's isolated component loader imports Assay there;
+# - docs/BOOTSTRAP-FROM-ZERO.md: linked from CMRU's README, DESIGN-GUIDE and
+#   CONSUMERS (test_docs_config_examples' cross-document link oracle).
 SUITE_COLLECTION_INPUTS = (
     Path("tester-unified/Dockerfile"),
     Path("nyxloom/pyproject.toml"),
     Path("nyxloom/src"),
+    Path(".gitignore"),
+    Path("run-gate-project/cmru.toml"),
+    Path("assay/src"),
+    Path("docs/BOOTSTRAP-FROM-ZERO.md"),
 )
 # mutation_campaign fingerprints and dirty-checks exactly the pathspecs of the
 # four fixture constants, so the collection inputs join this one rather than
@@ -115,7 +126,7 @@ def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path
 
     The project tests exercise source-checkout imports for CMRU's shared
     libraries. Estate configs are also read by adoption contract tests, and
-    SUITE_COLLECTION_INPUTS by test collection, so all of them must be present
+    SUITE_COLLECTION_INPUTS by the tests named beside it, so all must be present
     in the known-good control and every mutated candidate.
     """
     repo_root = repo_root.resolve(strict=True)

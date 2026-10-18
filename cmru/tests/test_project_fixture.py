@@ -37,6 +37,20 @@ FAKE_COVERAGE_COMMAND = textwrap.dedent('''\
 ''')
 
 
+#: Tracked files of each SUITE_COLLECTION_INPUTS pathspec in the estate below.
+SUPPORT_FILES = (
+    "tester-unified/Dockerfile",
+    "nyxloom/pyproject.toml",
+    "nyxloom/src/nyxloom/__init__.py",
+    "nyxloom/src/nyxloom/templates/handoff.md",
+    ".gitignore",
+    "run-gate-project/cmru.toml",
+    "assay/src/assay/__init__.py",
+    "assay/src/assay/git.py",
+    "docs/BOOTSTRAP-FROM-ZERO.md",
+)
+
+
 def _write(path: Path, text: str = "fixture\n") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
@@ -63,8 +77,20 @@ def _estate(repo_root: Path) -> Path:
         "nyxloom/src/nyxloom/__init__.py",
         "nyxloom/src/nyxloom/templates/handoff.md",
         "nyxloom/tests/test_nyxloom.py",
+        "run-gate-project/cmru.toml",
+        "run-gate-project/tools/release_candidate.py",
+        "assay/src/assay/__init__.py",
+        "assay/src/assay/git.py",
+        "assay/tests/test_assay.py",
+        "docs/BOOTSTRAP-FROM-ZERO.md",
+        # Registered estate configs beyond the declared two stay out: the full set
+        # (incl. cli-extended's and tls-edge's) switches estate tests out of their skip.
+        "libraries/cli-extended/cmru.toml",
+        "tls-edge/cmru.toml",
+        "ciu/cmru.toml",
     ):
         _write(repo_root / filename)
+    _write(project_root / "pyproject.toml", "[tool.pytest.ini_options]\n")
     _write(project_root / "src/cmru/__init__.py", "")
     _write(project_root / "src/cmru/config.py", "VALUE = 1\n")
     _write(project_root / "check_coverage.py", FAKE_COVERAGE_COMMAND)
@@ -113,18 +139,17 @@ def test_fixture_carries_the_suite_collection_inputs_and_keeps_skip_keys_and_unt
         repo_root=repo_root, project_root=project_root, workspace=workspace,
     )
 
-    # Read while collecting the full suite (tester-image constants, nyxloom wheel inputs).
-    for relative in (
-        "tester-unified/Dockerfile",
-        "nyxloom/pyproject.toml",
-        "nyxloom/src/nyxloom/__init__.py",
-        "nyxloom/src/nyxloom/templates/handoff.md",
-    ):
+    # Read by the full suite in the fixture (see SUITE_COLLECTION_INPUTS).
+    for relative in SUPPORT_FILES:
         assert (workspace / relative).read_bytes() == (repo_root / relative).read_bytes(), relative
-    # Their presence would switch the tester modules out of their isolated-tree skip.
+    # Their presence would switch suite modules out of their isolated-tree skip.
     assert not (workspace / "tester-unified/gen-requirements.py").exists()
     assert not (workspace / "tester-unified/build-image.sh").exists()
+    assert not (workspace / "run-gate-project/tools").exists()
+    assert not (workspace / "tls-edge").exists()
+    assert not (workspace / "ciu").exists()
     # Nothing beyond the declared pathspecs, nothing untracked or ignored.
+    assert not (workspace / "assay/tests").exists()
     assert not (workspace / "nyxloom/tests").exists()
     assert not (workspace / "nyxloom/src/nyxloom/scratch.py").exists()
     assert not (workspace / "nyxloom/src/nyxloom.egg-info").exists()
@@ -153,12 +178,7 @@ def test_mutation_manifest_pins_the_suite_collection_inputs_it_copies(tmp_path):
 
     manifest = mutation_campaign._test_manifest(repo_root, Path("cmru"))
 
-    assert {
-        "tester-unified/Dockerfile",
-        "nyxloom/pyproject.toml",
-        "nyxloom/src/nyxloom/__init__.py",
-        "nyxloom/src/nyxloom/templates/handoff.md",
-    } <= set(manifest["fixture_files"])
+    assert set(SUPPORT_FILES) <= set(manifest["fixture_files"])
     assert mutation_campaign._fixture_matches_manifest(
         template_root=workspace, project_prefix=Path("cmru"), manifest=manifest,
     )
