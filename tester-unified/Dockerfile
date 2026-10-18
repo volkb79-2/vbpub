@@ -198,6 +198,22 @@ RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd \
  && chown -R 1003:994 /home/tester \
  && chown -R 1003:994 /opt/tester-venv
 
+# Behaviour inherited from the MDT cockpit image that the suites depend on, now explicit
+# (MDTC-02 T8 skip-diff, decision D-001):
+#  * `systemctl` must EXIST and answer harmlessly: topos' collector runs `systemctl show` through
+#    subprocess without a missing-binary guard, so a gate container without the command fails 49
+#    topos tests with FileNotFoundError. The MDT image shipped the devcontainers "systemd is not
+#    running in this container" shim; this is the same contract (message on stdout, exit 0, no
+#    unit properties), NOT a systemd. The product fix (guard FileNotFoundError in topos
+#    drift/origin.py) is filed in topos' backlog; this stub goes away with it.
+#  * tester-base redirects bytecode to /tmp/pycache because it runs as root; this image runs as a
+#    real user on bind-mounted worktrees and keeps the historical in-tree __pycache__.
+RUN printf '%s\n' '#!/bin/sh' \
+      "echo '\"systemd\" is not running in this container (tester-unified provides this stub for suites that only need the command to exist)'" \
+      > /usr/local/bin/systemctl \
+ && chmod 0755 /usr/local/bin/systemctl
+ENV PYTHONPYCACHEPREFIX=
+
 USER 1003
 ENV HOME=/home/tester \
     XDG_CONFIG_HOME=/home/tester/.config \

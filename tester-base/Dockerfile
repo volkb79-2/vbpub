@@ -72,6 +72,12 @@ SHELL ["/bin/sh", "-c"]
 
 # python:3.14-trixie already sets LANG=C.UTF-8; no en_US locale (T2).
 ENV LANG=C.UTF-8
+# This base runs as ROOT (it creates no user, T2) and run-gate's `host` environment bind-mounts the
+# judged worktree into it: any `python -m py_compile` there would leave root-owned __pycache__
+# directories in the worktree that the uid-1003 gate lanes cannot then write (measured in the
+# MDTC-02 T8 run: compileall PermissionError in the next lane). Redirect bytecode out of the
+# worktree. Consumers that run as a real user (tester-unified) reset this to empty = unset.
+ENV PYTHONPYCACHEPREFIX=/tmp/pycache
 
 LABEL org.opencontainers.image.title="tester-base" \
       org.opencontainers.image.description="Minimal gate base: python 3.14 + docker client + minisign + shellcheck" \

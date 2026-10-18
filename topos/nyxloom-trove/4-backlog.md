@@ -339,3 +339,20 @@ CGroup /:
 
 - add `https://github.com/facebookincubator/below` as hard competitor. solves several of our use cases, e.g. diffrent views as tabs, drilldown/collapse on tree
 - system thrashing/stalling analysis page (e.g. processes with D state, major page faults, PSI), allow to freeze
+
+## TP-SYSTEMCTL — `default_systemctl_show_runner` crashes when `systemctl` is not installed
+
+Filed by mdt-cockpit MDTC-02 (tester-base T8 skip-diff), 2026-10-18.
+
+`src/topos/drift/origin.py:default_systemctl_show_runner` runs `subprocess.run(["systemctl", "show", ...],
+check=False)` with no guard for a missing binary, so on any host or container without systemd
+(`systemctl` absent) `topos` collection raises `FileNotFoundError` — measured: 49 topos-suite tests fail
+(`collect_once` / `--record` / smoke / steady paths) in a container without `systemctl`. The gate image
+only passed because the MDT cockpit image happened to ship the devcontainers "systemd is not running"
+shim; tester-unified now carries an explicit stub for exactly this reason
+(`tester-unified/Dockerfile`, decision D-001).
+
+Fix direction: catch `FileNotFoundError` (and `PermissionError`) in the runner and return a
+`ShowResult(stdout="", stderr=<reason>, returncode=127)` so the unit views degrade to "no governed
+properties" exactly as for a failing `systemctl show`; add a test that runs the collector with
+`systemctl` absent from PATH. Then delete the tester-unified stub.

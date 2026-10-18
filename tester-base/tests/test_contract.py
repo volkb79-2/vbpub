@@ -81,6 +81,16 @@ class PositiveContract(unittest.TestCase):
     def test_locale_is_c_utf8(self) -> None:
         self.assertEqual(self.check('printf %s "$LANG"'), "C.UTF-8")
 
+    def test_bytecode_never_lands_in_a_bind_mounted_worktree(self) -> None:
+        """The base runs as root and run-gate's `host` environment bind-mounts the worktree: a
+        py_compile there must not leave root-owned __pycache__ that uid-1003 lanes cannot write."""
+        script = (
+            "d=$(mktemp -d) && printf 'x = 1\\n' > \"$d/m.py\" && python3 -m py_compile \"$d/m.py\" && "
+            "test ! -e \"$d/__pycache__\" && test -n \"$(find /tmp/pycache -name 'm.*.pyc' | head -1)\""
+        )
+        self.check(script)
+        self.assertEqual(self.check('printf %s "$PYTHONPYCACHEPREFIX"'), "/tmp/pycache")
+
 
 class NegativeContract(unittest.TestCase):
     """T2: what the base must NOT contain."""

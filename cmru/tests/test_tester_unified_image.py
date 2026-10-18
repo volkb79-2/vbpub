@@ -711,3 +711,39 @@ def test_every_dockerfile_copy_source_is_admitted_by_the_dockerignore():
     for source in sources:
         assert _dockerignore_included(source), source
         assert "cli-extended" not in source.replace("fetch-cli-extended.py", "")
+
+
+# --- MDTC-02: the image is built FROM tester-base, not the MDT cockpit image ------------------
+
+WHEEL_BUILDER = REPO_ROOT / "wheel-builder" / "Dockerfile"
+
+
+@pytest.mark.parametrize("dockerfile", [DOCKERFILE, WHEEL_BUILDER])
+def test_gate_images_are_built_from_tester_base_with_no_other_fallback(dockerfile):
+    text = dockerfile.read_text("utf-8")
+    assert re.search(r"^ARG TESTER_BASE=tester-base:local$", text, re.MULTILINE)
+    froms = re.findall(r"^FROM (\S+)", text, re.MULTILINE)
+    assert froms == ["${TESTER_BASE}"], froms
+    assert "modern-debian-tools" not in "\n".join(
+        line for line in text.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+def test_tester_unified_path_is_its_own_venv_then_the_base_path():
+    text = DOCKERFILE.read_text("utf-8")
+    assert re.search(r"^ENV PATH=/opt/tester-venv/bin:\$\{PATH\}$", text, re.MULTILINE)
+
+
+def test_tester_unified_makes_the_inherited_cockpit_behaviour_explicit():
+    """D-001: topos shells out to `systemctl` unguarded; the cockpit image used to supply the
+    command. D-002: tester-base redirects bytecode (it runs as root); this image runs as a user."""
+    text = DOCKERFILE.read_text("utf-8")
+    assert "/usr/local/bin/systemctl" in text and "chmod 0755 /usr/local/bin/systemctl" in text
+    assert re.search(r"^ENV PYTHONPYCACHEPREFIX=$", text, re.MULTILINE)
+    base = (REPO_ROOT / "tester-base" / "Dockerfile").read_text("utf-8")
+    assert re.search(r"^ENV PYTHONPYCACHEPREFIX=/tmp/pycache$", base, re.MULTILINE)
+
+
+def test_run_gate_host_environment_names_tester_base():
+    declared = tomllib.loads((REPO_ROOT / "run-gate.root.toml").read_text("utf-8"))
+    assert declared["environments"]["host"]["image"] == "tester-base:local"
