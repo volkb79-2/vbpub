@@ -56,6 +56,16 @@ class Driver(unittest.TestCase):
 
     def test_the_inner_command_runs_the_push_test_module(self) -> None:
         self.assertIn("unittest -v scripts.test_oci_layout_push", lane.INNER)
+        # the buildx-dependent bake-file test moved here from tester-unified (T8 skip-diff)
+        self.assertIn("scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags", lane.INNER)
+        self.assertIn("&&", lane.INNER, "both stages must succeed")
+
+    def test_the_bake_test_fails_instead_of_skipping_when_required(self) -> None:
+        import test_local_dev as local_dev_tests
+
+        source = Path(local_dev_tests.__file__).read_text(encoding="utf-8")
+        self.assertIn("not _buildx_available() and not _buildx_required()", source)
+        self.assertIn("MDT_OCI_PUSH_REQUIRED=1 but docker buildx is not available", source)
 
 
 if __name__ == "__main__":

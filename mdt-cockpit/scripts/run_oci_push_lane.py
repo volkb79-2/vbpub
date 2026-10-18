@@ -28,7 +28,9 @@ ENV_GATES = "CGROUP_PARENT_DEV_GATES"
 SOCKET = "/var/run/docker.sock"
 INNER = (
     "set -euo pipefail; mkdir -p /work && cd /work && tar -x && cd mdt-cockpit && "
-    "exec python3 -m unittest -v scripts.test_oci_layout_push"
+    "python3 -m unittest -v scripts.test_oci_layout_push && "
+    "exec python3 -m pytest -q -rs -p no:cacheprovider "
+    "scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone"
 )
 
 

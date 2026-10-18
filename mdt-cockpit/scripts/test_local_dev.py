@@ -375,8 +375,19 @@ def _buildx_available() -> bool:
     return subprocess.run(["docker", "buildx", "version"], capture_output=True, check=False).returncode == 0
 
 
-@pytest.mark.skipif(not _buildx_available(), reason="docker buildx is needed to evaluate the bake file")
+def _buildx_required() -> bool:
+    """The oci-push lane (mdt-cockpit image, which ships buildx) sets this: a missing buildx there
+    is a FAILURE. tester-unified has no buildx (tester-base T2), so elsewhere the test skips."""
+    return os.environ.get("MDT_OCI_PUSH_REQUIRED") == "1"
+
+
+@pytest.mark.skipif(
+    not _buildx_available() and not _buildx_required(),
+    reason="docker buildx is needed to evaluate the bake file",
+)
 def test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone() -> None:
+    if _buildx_required():
+        assert _buildx_available(), "MDT_OCI_PUSH_REQUIRED=1 but docker buildx is not available"
     local = _bake_tags("local-dev", "dev-20261018")
     assert local, "no targets evaluated"
     for target, tags in local.items():

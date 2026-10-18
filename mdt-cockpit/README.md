@@ -800,7 +800,7 @@ host, with product assertions inside the guest:
   of a local-dev image (for which `MDT_RUNTIME_LOCAL_DEV_MANIFEST=<the manifest it was built
   from>` is required; release images do not need it). Its driver is stdlib `unittest` in `tests/runtime/`; every
   container is offline, in the gate tier, and removed by exact name.
-- `./run-gate.py oci-push` runs the OCI-layout build-once-and-push test (a real `registry:2`,
+- `./run-gate.py oci-push` runs the OCI-layout build-once-and-push test and the bake-file evaluation test (a real `registry:2`,
   buildx export, `crane`/`regctl` digest verification) **inside the mdt-cockpit image**, which
   ships those tools and tester-unified does not: `MDT_OCI_PUSH_IMAGE=<ref>` (no default). In that
   lane a missing tool or unreachable registry is a failure, not a skip. `cmru release` runs it
