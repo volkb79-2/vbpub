@@ -404,10 +404,11 @@ def test_a_local_dev_label_is_unpublishable_and_unknown_modes_are_too() -> None:
         local_dev.refuse_unpublishable({local_dev.BUILD_MODE_LABEL: "surprise"}, "img")
 
 
-def test_release_and_pre_label_images_remain_publishable() -> None:
+def test_only_an_image_labelled_release_is_publishable() -> None:
     local_dev.refuse_unpublishable({local_dev.BUILD_MODE_LABEL: "release"}, "img")
-    local_dev.refuse_unpublishable({}, "img")
-    local_dev.refuse_unpublishable(None, "img")
+    for labels in ({}, None, {"other": "x"}):
+        with pytest.raises(local_dev.LocalDevError, match="label is absent"):
+            local_dev.refuse_unpublishable(labels, "img")
 
 
 class _FakeRegistryTools:

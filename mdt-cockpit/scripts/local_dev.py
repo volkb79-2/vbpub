@@ -295,13 +295,15 @@ def check_local_dev_tags(tags: Sequence[str], build_date: str) -> list[str]:
 def refuse_unpublishable(labels: Mapping[str, str] | None, subject: str) -> None:
     """Raise if an image's labels say it must not be published.
 
-    A missing label is a release image built before the label existed; any value
-    other than ``release`` is refused (an unknown mode is not a release).
+    Only the exact value ``release`` is publishable. Every build sets the label, so an
+    absent one (or an unreadable label set) is not evidence of a release image: it is
+    refused like any unknown mode.
     """
     mode = (labels or {}).get(BUILD_MODE_LABEL)
-    if mode is None or mode == MODE_RELEASE:
+    if mode == MODE_RELEASE:
         return
+    shown = "absent" if mode is None else repr(mode)
     raise LocalDevError(
-        f"refusing to publish {subject}: its {BUILD_MODE_LABEL} label is {mode!r}; "
-        "a local-dev image is for local testing only"
+        f"refusing to publish {subject}: its {BUILD_MODE_LABEL} label is {shown}; "
+        "only an image labelled 'release' may be published (a local-dev image is for local testing only)"
     )

@@ -96,6 +96,7 @@ class OciLayoutPushTests(unittest.TestCase):
         src.mkdir()
         (src / "Dockerfile").write_text(
             f"FROM alpine:3.20\n"
+            f"LABEL net.volkb79.mdt.build-mode=release\n"
             f"RUN mkdir -p $(dirname {marker_path}) && echo '{marker_content}' > {marker_path}\n"
         )
         tar_path = self.work / f"{name}.tar"
@@ -121,7 +122,9 @@ class OciLayoutPushTests(unittest.TestCase):
         actually produces."""
         src = self.work / f"{name}-src"
         src.mkdir()
-        (src / "Dockerfile").write_text("FROM alpine:3.20\nRUN echo hi > /marker.txt\n")
+        (src / "Dockerfile").write_text(
+            "FROM alpine:3.20\nLABEL net.volkb79.mdt.build-mode=release\nRUN echo hi > /marker.txt\n"
+        )
         tar_path = self.work / f"{name}.tar"
         tag_args = []
         for tag in tags:
