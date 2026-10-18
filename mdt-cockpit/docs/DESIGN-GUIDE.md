@@ -175,10 +175,14 @@ did.) The base image's own entries (nvm, pipx, `/usr/local/bin`, ...) stay in th
 middle, unchanged; the Microsoft base already appends `~/.local/bin` last for
 interactive shells, which this order simply makes true for every shell.
 
-Debian's `/etc/profile` *replaces* `PATH` in every login shell, so the Dockerfile
-also records the finished value in `MDT_IMAGE_PATH`, and
-`/etc/profile.d/50-mdt-cockpit.sh` puts exactly that back - the list is never
-spelled a second time. `profile.sh`, which interactive shells also source, never
+Debian's `/etc/profile` *replaces* `PATH` in every login shell, including a login
+shell started with a **cleared environment** (`su -`, `sudo -i`, `ssh`, cron,
+`env -i bash -l`), where an environment variable would not exist. So the build
+writes the finished value to `/usr/local/share/mdt-cockpit/path`, and
+`/etc/profile.d/50-mdt-cockpit.sh` reads that file and puts exactly it back - the
+list is never spelled a second time. If the file is missing the hook prints one
+line to stderr and leaves `PATH` as `/etc/profile` set it; it never skips
+silently. `profile.sh`, which interactive shells also source, never
 touches `PATH` (rewriting it would undo an activated venv). The devcontainer
 template sets neither `PATH` nor `NPM_CONFIG_PREFIX`. The base image's own PATH
 contains `/usr/local/bin` twice; it is carried over verbatim so every shell sees
@@ -194,7 +198,7 @@ caches and config directories.
 |---|---|---|---|
 | `PATH` | the order above | image tools win, `~/.local/bin` last | Dockerfile `ENV` |
 | `MDT_PATH_PREFIX`, `MDT_PATH_SUFFIX` | the two ends of `PATH` | the one spelling of the list | Dockerfile `ENV` |
-| `MDT_IMAGE_PATH` | snapshot of the final `PATH` | login shells restore it after `/etc/profile` | Dockerfile `ENV` |
+| (file) `/usr/local/share/mdt-cockpit/path` | the final `PATH`, written at build time | login shells - even with a cleared environment - restore it after `/etc/profile` | Dockerfile `RUN` |
 | `NPM_CONFIG_PREFIX` | `/opt/mdt/npm` | global npm installs/updates land in the group tree, not `~/.local` | Dockerfile `ENV` |
 | `UV_PYTHON_INSTALL_DIR` | `/opt/mdt/python` | uv-managed interpreters are image-owned | Dockerfile `ENV` |
 | `VIRTUAL_ENV` | **unset** | the primary venv is first on `PATH`; nothing claims shell activation | - |

@@ -252,14 +252,14 @@ ENV UV_PYTHON_INSTALL_DIR="/opt/mdt/python"
 
 # The ONE definition of the command search path (D5). Image tools win over
 # anything else; ~/.local/bin is last, for the user's own additions only. The
-# base image's own PATH sits in the middle, unchanged. MDT_IMAGE_PATH is a
-# snapshot of the result for /etc/profile.d/50-mdt-cockpit.sh: Debian's
-# /etc/profile replaces PATH in every login shell, and the snapshot is how that
-# one file puts back exactly this value instead of re-spelling the list.
+# base image's own PATH sits in the middle, unchanged. The finished value is also
+# written to /usr/local/share/mdt-cockpit/path (see the profile.d hook below):
+# Debian's /etc/profile replaces PATH in every login shell, including those that
+# start with a CLEARED environment (su -, sudo -i, ssh, cron), where an ENV
+# variable would not exist - a file does.
 ENV MDT_PATH_PREFIX="/opt/mdt/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin"
 ENV MDT_PATH_SUFFIX="/home/vscode/.local/bin"
 ENV PATH="${MDT_PATH_PREFIX}:${PATH}:${MDT_PATH_SUFFIX}"
-ENV MDT_IMAGE_PATH="${PATH}"
 
 # metadata.json is timestamped and only used by manifest generation later in
 # this Dockerfile. Keep it out of the tool-install cache boundary.
@@ -371,12 +371,19 @@ RUN set -euo pipefail; \
     printf '\n# mdt-cockpit defaults (nano reads ~/.nanorc afterwards, so a user setting wins).\ninclude "%s/nanorc"\n' "${share_dir}" >> /etc/nanorc; \
     printf '\n# mdt-cockpit interactive defaults (your ~/.bashrc runs afterwards).\n[ -r %s/bashrc ] && . %s/bashrc\n' "${share_dir}" "${share_dir}" >> /etc/bash.bashrc; \
     printf '\n# mdt-cockpit interactive defaults (your ~/.zshrc runs afterwards).\n[[ -r %s/zshrc ]] && source %s/zshrc\n' "${share_dir}" "${share_dir}" >> /etc/zsh/zshrc; \
+    printf '%s\n' "${PATH}" > "${share_dir}/path"; \
+    chmod 0644 "${share_dir}/path"; \
     install -d -m 0755 /etc/profile.d; \
     printf '%s\n' \
         '#!/bin/sh' \
         '# mdt-cockpit login-shell hook. Debian'"'"'s /etc/profile replaces PATH in every login' \
-        '# shell; put back the value the image was built with (Dockerfile ENV PATH).' \
-        'if [ -n "${MDT_IMAGE_PATH:-}" ]; then PATH="$MDT_IMAGE_PATH"; export PATH; fi' \
+        '# shell, also one that starts with a cleared environment: put back the value the' \
+        '# image was built with, read from the file the build wrote (Dockerfile ENV PATH).' \
+        'if [ -r /usr/local/share/mdt-cockpit/path ]; then' \
+        '    PATH="$(cat /usr/local/share/mdt-cockpit/path)"; export PATH' \
+        'else' \
+        '    echo "mdt-cockpit: /usr/local/share/mdt-cockpit/path is missing; PATH left as /etc/profile set it" >&2' \
+        'fi' \
         '# shellcheck source=/dev/null' \
         '. /usr/local/share/mdt-cockpit/profile.sh' > /etc/profile.d/50-mdt-cockpit.sh; \
     chmod 0644 /etc/profile.d/50-mdt-cockpit.sh

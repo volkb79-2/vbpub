@@ -34,7 +34,7 @@ class Contract:
         self.assertEqual(entries[-len(suffix):], suffix, "~/.local/bin last")
         for managed in prefix + suffix:
             self.assertEqual(entries.count(managed), 1, f"{managed} must appear exactly once")
-        self.assertEqual(self.image.env["MDT_IMAGE_PATH"], self.image.env["PATH"])
+        self.assertNotIn("MDT_IMAGE_PATH", self.image.env, "an env snapshot cannot survive a cleared environment")
 
     def test_every_shell_sees_the_identical_path(self) -> None:
         expected = self.image.env["PATH"]
@@ -45,6 +45,41 @@ class Contract:
                 lines = [line for line in result.stdout.splitlines() if line.startswith("PATH-IS:")]
                 self.assertEqual(len(lines), 1, f"{label}: expected one PATH line\n{result.output}")
                 self.assertEqual(lines[0], "PATH-IS:" + expected, label)
+
+    def _path_line(self, argv: list[str], **kwargs) -> tuple[str, harness.Completed]:
+        result = harness.run(self.image.ref, argv, **kwargs)
+        lines = [line for line in result.stdout.splitlines() if line.startswith("PATH-IS:")]
+        return (lines[-1] if lines else ""), result
+
+    def test_login_shells_with_a_cleared_environment_get_the_same_path(self) -> None:
+        """su -, sudo -i, ssh and cron start login shells WITHOUT the image's ENV; the PATH
+        must come from a file the build wrote, not from an environment variable."""
+        expected = "PATH-IS:" + self.image.env["PATH"]
+        script = 'echo "PATH-IS:$PATH"'
+        cases = {
+            "env -i bash -lc": (["env", "-i", "bash", "-lc", script], {"user": "vscode"}),
+            "env -i zsh -lc": (["env", "-i", "zsh", "-lc", script], {"user": "vscode"}),
+            "su -l vscode -c (as root)": (["su", "-l", "vscode", "-c", script], {"user": "0"}),
+        }
+        for label, (argv, kwargs) in cases.items():
+            with self.subTest(shell=label):
+                line, result = self._path_line(argv, **kwargs)
+                self.assertEqual(line, expected, f"{label}\n{result.output}")
+
+    def test_a_missing_path_file_is_reported_not_skipped(self) -> None:
+        """The hook must not silently do nothing: one line on stderr, PATH left alone."""
+        result = harness.run(
+            self.image.ref,
+            ["bash", "-c",
+             "mv /usr/local/share/mdt-cockpit/path /tmp/path.gone && "
+             "env -i /bin/bash -lc 'echo \"PATH-IS:$PATH\"'"],
+            user="0",
+        )
+        self.assertEqual(result.returncode, 0, result.output)
+        self.assertIn("mdt-cockpit: /usr/local/share/mdt-cockpit/path is missing", result.stderr)
+        path_lines = [line for line in result.stdout.splitlines() if line.startswith("PATH-IS:")]
+        self.assertEqual(len(path_lines), 1)
+        self.assertNotIn("/opt/mdt", path_lines[0], "the managed entries must not appear from nowhere")
 
     def test_a_command_resolves_the_same_in_every_shell(self) -> None:
         """The order has an observable consequence: `python` is the venv's everywhere."""

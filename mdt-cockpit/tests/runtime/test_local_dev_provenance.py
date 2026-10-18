@@ -85,6 +85,42 @@ class Contract:
             with self.subTest(wheel=item["name"]):
                 self.assertEqual(installed.get(item["name"]), item["version"])
 
+    def test_the_installed_wheel_files_are_the_recorded_content_not_just_the_recorded_version(self) -> None:
+        """A stale wheel of the SAME version passes a version comparison. Compare content:
+        the sha256 of each wheel file the build installed (first-party-wheels.json, written
+        by the build from the very files pip received) must equal the sha256 the label
+        records, and the files pip unpacked must still match the wheel's own RECORD."""
+        wheels = [item for item in self.artifacts if item["name"] not in PWMCP_NAMES]
+        if not wheels:
+            self.skipTest("no local wheel recorded")
+        result = self.sh("cat /usr/local/share/mdt-cockpit/first-party-wheels.json")
+        self.assertOk(result)
+        installed = json.loads(result.stdout)
+        self.assertEqual(installed["build_mode"], "local-dev")
+        by_name = {item["name"]: item for item in installed["wheels"]}
+        for item in wheels:
+            with self.subTest(wheel=item["name"]):
+                entry = by_name.get(item["name"].replace("_", "-"))
+                self.assertIsNotNone(entry, f"{item['name']} missing from first-party-wheels.json")
+                self.assertEqual(entry["source"], "local-dev")
+                self.assertEqual(entry["sha256"], item["sha256"], "installed wheel content differs from the label")
+        verify = (
+            "import hashlib, base64, importlib.metadata as m, sys\n"
+            "bad = []\n"
+            "for name in sys.argv[1:]:\n"
+            "    dist = m.distribution(name)\n"
+            "    for f in dist.files or []:\n"
+            "        if f.hash is None: continue\n"
+            "        data = f.locate().read_bytes()\n"
+            "        digest = base64.urlsafe_b64encode(hashlib.new(f.hash.mode, data).digest()).rstrip(b'=').decode()\n"
+            "        if digest != f.hash.value: bad.append(f'{name}:{f}')\n"
+            "print('RECORD-MISMATCH' if bad else 'RECORD-OK', *bad)\n"
+        )
+        names = " ".join(f"'{item['name']}'" for item in wheels)
+        check = self.sh(f"/opt/mdt/venv/bin/python -c \"$VERIFY\" {names}", env={"VERIFY": verify})
+        self.assertOk(check)
+        self.assertEqual(check.stdout.strip(), "RECORD-OK", check.output)
+
     def test_installed_pwmcp_release_equals_the_recorded_version(self) -> None:
         pwmcp = {item["name"]: item for item in self.artifacts if item["name"] in PWMCP_NAMES}
         if "pwmcp-bundle" not in pwmcp:

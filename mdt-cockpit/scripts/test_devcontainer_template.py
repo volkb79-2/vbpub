@@ -120,14 +120,16 @@ def test_image_defines_the_command_path_once_and_the_login_hook_only_restores_it
     assert f'ENV MDT_PATH_PREFIX="{prefix}"' in dockerfile
     assert 'ENV MDT_PATH_SUFFIX="/home/vscode/.local/bin"' in dockerfile
     assert 'ENV PATH="${MDT_PATH_PREFIX}:${PATH}:${MDT_PATH_SUFFIX}"' in dockerfile
-    assert 'ENV MDT_IMAGE_PATH="${PATH}"' in dockerfile
+    assert "MDT_IMAGE_PATH" not in dockerfile, "an env snapshot does not exist in a cleared-environment login shell"
     assert dockerfile.count("ENV PATH=") == 1
     assert 'ENV VIRTUAL_ENV=' not in dockerfile
     assert "dstdns-venv.sh" not in dockerfile
     # profile.sh is sourced by interactive shells too, where rewriting PATH would
     # undo a user's activated venv: it must never touch PATH itself.
     assert not re.search(r"^\s*(export\s+)?PATH=", profile, re.MULTILINE)
-    assert 'PATH="$MDT_IMAGE_PATH"' in dockerfile
+    assert "printf '%s\\n' \"${PATH}\" > \"${share_dir}/path\"" in dockerfile
+    assert 'PATH="$(cat /usr/local/share/mdt-cockpit/path)"' in dockerfile
+    assert "path is missing; PATH left as /etc/profile set it" in dockerfile
     assert "/opt/mdt/venv/bin:/opt/mdt/npm/bin" not in profile
 
 

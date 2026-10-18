@@ -94,7 +94,7 @@ def test_every_closed_vocabulary_value_a_consumer_types_is_documented() -> None:
         "mdt-cockpit-home", "mdt-cockpit-tmp", "mdt-cockpit-<purpose>",
         "~/.config/mdt-cockpit", "/usr/local/share/mdt-cockpit",
         "/opt/mdt/bin", "/opt/mdt/npm", "/opt/mdt/venv", "/srv/pwmcp-instance",
-        "NPM_CONFIG_PREFIX", "UV_PYTHON_INSTALL_DIR", "MDT_IMAGE_PATH",
+        "NPM_CONFIG_PREFIX", "UV_PYTHON_INSTALL_DIR", "/usr/local/share/mdt-cockpit/path",
         "ZSH_DISABLE_COMPFIX", "ZSH_CACHE_DIR",
         "/etc/xdg/nvim", "/etc/htoprc", "/etc/mc/mc.ini", "/etc/nanorc", "/etc/zsh/zshrc", "/etc/bash.bashrc",
     ]
