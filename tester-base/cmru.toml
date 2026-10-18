@@ -25,12 +25,16 @@ git_tag = true
 build_step = "build"
 artifact_dirs = []
 
-# The release image is built from the SAME Dockerfile the candidate was tested from; the
-# registry digest CMRU reports is what consumers pin (`ghcr.io/volkb79-2/tester-base@sha256:...`).
+# ONE build (R1): `prepare` builds the release target - tagged tester-base:local AND the registry
+# names - and records its image id; the contract lane tests that image; `build` re-verifies that every
+# release tag still is the tested id; `push` is `docker push` of those same tags (never a rebuild) and
+# asserts the registry serves the pushed digest. The `oci-image-*` handlers are not used: they log in
+# to the registry even for a local build and bake-push rebuilds.
 [steps.prepare]
 quiet = true
 commands = [
-  { label = "tester-base: build the candidate image (tester-base:local)", argv = ["cmru", "handler", "oci-image-build", "--cwd", ".", "--bake-file", "docker-bake.hcl", "--bake-target", "tester-base-local"], cwd = "." },
+  { label = "tester-base: build the release image once", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "tester-base-release", "--load"], cwd = "." },
+  { label = "tester-base: record the tested image id", argv = ["python3", "scripts/release_image.py", "record"], cwd = "." },
 ]
 
 [steps.run-tests]
@@ -42,12 +46,38 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "tester-base: build release image", argv = ["cmru", "handler", "oci-image-build", "--cwd", ".", "--bake-file", "docker-bake.hcl", "--bake-target", "tester-base-release"], cwd = "." },
+  { label = "tester-base: verify the release tags are the tested image", argv = ["python3", "scripts/release_image.py", "verify"], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
 commands = [
-  { label = "tester-base: push release image", argv = ["cmru", "handler", "oci-image-push", "--cwd", ".", "--bake-file", "docker-bake.hcl", "--bake-target", "tester-base-release"], cwd = "." },
+  { label = "tester-base: push the tested image and verify the served digest", argv = ["python3", "scripts/release_image.py", "push"], cwd = "." },
 ]
+
+[versions]
+
+# The FROM digest of the Dockerfile is the digest cmru resolves here, under the 14-day age window
+# (cmru.orchestration.toml `age_window_days`). A *rolling* tag cannot express "the newest digest of
+# python:3.14-trixie that is already 14 days old" (it refuses while the CURRENT digest is younger),
+# so the target follows the immutable patch tags: the newest `3.14.N-trixie` that is old enough. The
+# floor (3.14.7) is the digest in use; it also bounds how many manifests cmru must fetch (Docker Hub
+# allows only 100 anonymous manifest pulls per hour per IP).
+[versions.targets."oci.python.314.trixie"]
+mode = "single"
+constraint = ">=3.14.7,<3.15"
+
+[versions.targets."oci.python.314.trixie".oci]
+image = "docker.io/library/python"
+tag = "{version}-trixie"
+
+# The node stage of tester-unified/Dockerfile (D-004): the official image, major 26 (the cockpit's
+# NODE_MAJOR; the major is the deliberate manual pin), newest patch release that is old enough.
+[versions.targets."oci.node.26.trixie"]
+mode = "single"
+constraint = ">=26.9.0,<27"
+
+[versions.targets."oci.node.26.trixie".oci]
+image = "docker.io/library/node"
+tag = "{version}-trixie"

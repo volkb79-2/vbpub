@@ -39,6 +39,22 @@ TESTER_BASE_IMAGE=<ref> CGROUP_PARENT_DEV_GATES=$CGROUP_PARENT_DEV_GATES ./run-g
 There is no default image; an unset `TESTER_BASE_IMAGE` is a configuration error. Every container
 is placed in the gate tier, offline, `--init`, uniquely named and removed by exact name.
 
+## Build arguments (the pins, and how they change)
+Every pin is a reviewed edit of the Dockerfile, never a build-time surprise:
+
+| Build arg | Pins | Bump by |
+|---|---|---|
+| `DOCKER_APT_PRIMARY_FPR` | the only primary key the Docker apt key file may hold (the SET of primary fingerprints must equal exactly this) | a deliberate key rotation |
+| `DOCKER_CE_CLI_VERSION` | the exact `docker-ce-cli` package version (the contract lane asserts the installed version equals it) | editing the line to a newer version Docker's repository serves |
+| `SHELLCHECK_VERSION`, `SHELLCHECK_SHA256_X86_64`, `SHELLCHECK_SHA256_AARCH64` | the shellcheck release and the sha256 of each architecture's upstream asset | the three together |
+
+The `FROM` digest is the one `cmru versions resolve tester-base` records under the 14-day age
+window (see the DESIGN-GUIDE "Version pins").
+
+## Releasing
+`cmru release` builds the image ONCE, tests that image, and pushes it: see the DESIGN-GUIDE "One build,
+one image". Nobody types a ref or a digest.
+
 ## When a gate needs another tool
 First ask which side owns it. A real low-level OS binary: mark the test `os_integration` and run
 it in the VM lane. A userland package a registered gate lane executes: add it to the Dockerfile

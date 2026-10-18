@@ -1,7 +1,8 @@
 // tester-base - the minimal gate base image. Two targets, one Dockerfile:
-//   tester-base-local    the candidate every consumer and the `contract` lane build/test FIRST
-//                        (loaded as tester-base:local; never pushed)
-//   tester-base-release  what CMRU builds and pushes: ghcr.io/volkb79-2/tester-base:<VERSION>
+//   tester-base-local    the developer build (loaded as tester-base:local)
+//   tester-base-release  the ONE release build: loaded under tester-base:local AND the registry
+//                        names, so the contract lane tests the very image that scripts/release_image.py
+//                        later pushes (docker push never rebuilds). Nothing pushes from bake.
 variable "REGISTRY" {
   default = "ghcr.io"
 }
@@ -24,6 +25,7 @@ target "tester-base-local" {
 target "tester-base-release" {
   inherits = ["tester-base-local"]
   tags = [
+    "tester-base:local",
     "${REGISTRY}/${NAMESPACE}/tester-base:${TESTER_BASE_VERSION}",
     "${REGISTRY}/${NAMESPACE}/tester-base:latest",
   ]

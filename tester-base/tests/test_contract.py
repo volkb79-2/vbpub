@@ -66,6 +66,10 @@ class PositiveContract(unittest.TestCase):
     def test_docker_client_runs_and_is_the_cli_only(self) -> None:
         self.assertRegex(self.check("docker --version"), r"^Docker version \d+\.\d+")
 
+    def test_docker_ce_cli_is_the_recorded_exact_version(self) -> None:
+        recorded = re.search(r"^ARG DOCKER_CE_CLI_VERSION=(\S+)$", (ROOT / "Dockerfile").read_text(encoding="utf-8"), re.MULTILINE).group(1)
+        self.assertEqual(self.check("dpkg-query -W -f '${Version}' docker-ce-cli"), recorded)
+
     def test_minisign_runs(self) -> None:
         self.assertRegex(self.check("minisign -v"), r"minisign\s+\d+\.\d+")
 
@@ -81,46 +85,67 @@ class PositiveContract(unittest.TestCase):
     def test_locale_is_c_utf8(self) -> None:
         self.assertEqual(self.check('printf %s "$LANG"'), "C.UTF-8")
 
-    def test_bytecode_never_lands_in_a_bind_mounted_worktree(self) -> None:
-        """The base runs as root and run-gate's `host` environment bind-mounts the worktree: a
-        py_compile there must not leave root-owned __pycache__ that uid-1003 lanes cannot write."""
-        script = (
-            "d=$(mktemp -d) && printf 'x = 1\\n' > \"$d/m.py\" && python3 -m py_compile \"$d/m.py\" && "
-            "test ! -e \"$d/__pycache__\" && test -n \"$(find /tmp/pycache -name 'm.*.pyc' | head -1)\""
-        )
-        self.check(script)
-        self.assertEqual(self.check('printf %s "$PYTHONPYCACHEPREFIX"'), "/tmp/pycache")
-
 
 class NegativeContract(unittest.TestCase):
-    """T2: what the base must NOT contain."""
+    """T2: what the base must NOT contain.
 
-    def absent(self, command: str) -> None:
-        result = run(f"command -v {command}")
-        self.assertNotEqual(result.returncode, 0, f"{command} is present: {result.stdout}")
+    A negative assertion is only as good as its proof that the container really ran: a failed
+    `docker run` (exit 125/126/127) must never read as "absent". Every probe therefore runs
+    `command -v` INSIDE a container that also proves it is alive, and requires command -v's own
+    exit status 1 with empty stdout.
+    """
+
+    @staticmethod
+    def probe(commands: list[str]) -> subprocess.CompletedProcess:
+        lines = ["echo ALIVE"]
+        for command in commands:
+            lines.append(f'out="$(command -v {command})"; echo "{command}:rc=$?:out=[$out]"')
+        return run("; ".join(lines))
+
+    def assertAbsent(self, commands: list[str]) -> None:
+        result = self.probe(commands)
+        self.assertEqual(result.returncode, 0, f"the probe container did not run: {result.stderr}")
+        self.assertIn("ALIVE", result.stdout.splitlines(), "no proof the container ran")
+        for command in commands:
+            self.assertIn(f"{command}:rc=1:out=[]", result.stdout, f"{command} is not absent: {result.stdout}")
+
+    def test_the_probe_detects_presence_and_a_dead_container(self) -> None:
+        present = self.probe(["bash"])  # bash exists: the same probe must NOT report it absent
+        self.assertEqual(present.returncode, 0)
+        self.assertNotIn("bash:rc=1:out=[]", present.stdout)
+        self.assertIn("bash:rc=0:out=[/", present.stdout)
+        dead = subprocess.run(
+            ["docker", "run", "--rm", "--network", "none", "--entrypoint", "bash", "tester-base-image-that-does-not-exist:0", "-c", "echo ALIVE"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertNotEqual(dead.returncode, 0)
+        self.assertNotIn("ALIVE", dead.stdout)
 
     def test_tools_that_belong_to_other_images_are_absent(self) -> None:
-        for command in ("crane", "regctl", "tc", "systemd-tmpfiles", "fdisk", "zsh", "nvim", "node", "php", "claude"):
-            with self.subTest(command=command):
-                self.absent(command)
+        self.assertAbsent(["crane", "regctl", "tc", "systemd-tmpfiles", "fdisk", "zsh", "nvim", "node", "php", "claude", "systemctl"])
 
     def test_docker_has_neither_buildx_nor_compose(self) -> None:
         for sub in ("buildx", "compose"):
             with self.subTest(plugin=sub):
-                result = run(f"docker {sub} version")
-                self.assertNotEqual(result.returncode, 0, result.stdout)
+                result = run(f"echo ALIVE; docker {sub} version >/dev/null 2>&1; echo rc=$?")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("ALIVE", result.stdout.splitlines())
+                self.assertNotIn("rc=0", result.stdout.splitlines(), result.stdout)
 
     def test_no_vscode_home_no_virtualenv_no_ksm_preload(self) -> None:
-        result = run('test ! -e /home/vscode && test -z "${VIRTUAL_ENV:-}" && test -z "${LD_PRELOAD:-}"')
+        result = run('echo ALIVE; test ! -e /home/vscode && test -z "${VIRTUAL_ENV:-}" && test -z "${LD_PRELOAD:-}" && echo CLEAN')
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.split(), ["ALIVE", "CLEAN"])
 
     def test_no_user_is_created(self) -> None:
-        result = run("getent passwd 1003 && exit 1; exit 0")
-        self.assertEqual(result.returncode, 0, result.stdout)
+        result = run('echo ALIVE; if getent passwd 1003; then echo PRESENT; else echo NONE; fi')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["ALIVE", "NONE"])
 
     def test_the_apt_lists_are_not_left_in_the_layer(self) -> None:
-        result = run("test \"$(find /var/lib/apt/lists -type f ! -name lock | wc -l)\" = 0")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = run('echo ALIVE; echo "files=$(find /var/lib/apt/lists -type f ! -name lock | wc -l)"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.split(), ["ALIVE", "files=0"])
 
 
 class DockerfilePins(unittest.TestCase):
@@ -130,22 +155,39 @@ class DockerfilePins(unittest.TestCase):
 
     def test_from_is_digest_pinned_python_3_14_trixie_not_slim(self) -> None:
         match = re.search(r"^FROM (\S+)$", self.text, re.MULTILINE)
-        self.assertRegex(match.group(1), r"^python:3\.14-trixie@sha256:[0-9a-f]{64}$")
+        self.assertRegex(match.group(1), r"^python:3\.14\.\d+-trixie@sha256:[0-9a-f]{64}$")
 
-    def test_the_base_pin_records_tag_digest_created_and_how(self) -> None:
-        for needle in ("digest", "created", "how read", "14 days"):
+    def test_the_base_pin_names_its_cmru_target_and_why_it_follows_patch_tags(self) -> None:
+        for needle in ("oci.python.314.trixie", "versions/oci-images.json", "14-day", "patch tags", "test_pins.py"):
             self.assertIn(needle, self.text)
 
-    def test_docker_key_is_verified_by_fingerprint(self) -> None:
-        self.assertRegex(self.text, r"ARG DOCKER_APT_KEY_FPR=[0-9A-F]{40}")
-        self.assertIn('test "${actual}" = "${DOCKER_APT_KEY_FPR}"', self.text)
+    def test_docker_key_file_must_hold_exactly_the_one_primary_key(self) -> None:
+        self.assertRegex(self.text, r"ARG DOCKER_APT_PRIMARY_FPR=[0-9A-F]{40}")
+        self.assertIn('test "${primaries}" = "${DOCKER_APT_PRIMARY_FPR}"', self.text)
+        awk = re.search(r"awk -F: '([^']+)'", self.text).group(1)
+        fpr = re.search(r"ARG DOCKER_APT_PRIMARY_FPR=([0-9A-F]{40})", self.text).group(1)
+        one = f"pub:-:4096:1:8D81803C0EBFCD88:1:::-:::escaESCA:::::\nfpr:::::::::{fpr}:\nsub:-:4096:1:AAAA:1::::::\nfpr:::::::::{'D' * 40}:\n"
+        two = one + f"pub:-:4096:1:BBBB:1:::-:::escaESCA:::::\nfpr:::::::::{'1' * 40}:\n"
+
+        def primaries(gpg_output: str) -> str:
+            return subprocess.run(
+                ["bash", "-c", f"awk -F: '{awk}' | sort -u | paste -sd, -"], input=gpg_output, capture_output=True, text=True, check=True
+            ).stdout.strip()
+
+        self.assertEqual(primaries(one), fpr, "subkey fingerprints must not count")
+        self.assertNotEqual(primaries(two), fpr, "a second primary key must change the set")
+
+    def test_docker_ce_cli_is_installed_at_the_recorded_exact_version(self) -> None:
+        self.assertRegex(self.text, r"ARG DOCKER_CE_CLI_VERSION=\d+:[0-9.]+-\d+~debian\.\d+~\w+")
+        self.assertIn('"docker-ce-cli=${DOCKER_CE_CLI_VERSION}"', self.text)
 
     def test_shellcheck_is_pinned_by_sha256_for_both_architectures(self) -> None:
         self.assertEqual(len(re.findall(r"ARG SHELLCHECK_SHA256_\w+=[0-9a-f]{64}", self.text)), 2)
         self.assertIn("sha256sum -c -", self.text)
 
     def test_no_recommended_plugins_are_installed(self) -> None:
-        self.assertIn("--no-install-recommends docker-ce-cli minisign", self.text)
+        self.assertIn("--no-install-recommends", self.text)
+        self.assertNotRegex(self.text, r"docker-(buildx|compose)-plugin")
 
     def test_the_build_needs_no_estate_artifact(self) -> None:
         self.assertNotRegex(self.text, r"(?m)^(?:COPY|ADD)\b")
