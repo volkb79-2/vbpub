@@ -216,6 +216,15 @@ the Git fetch resolves, installer code and released profiles are taken from
 that one checkout. The release channel is intentionally moving, and this
 small bootstrap handoff race is documented rather than pinning old ISOs.
 
+## Real OS binaries are tested in the VM, not in the gate container
+
+A test that executes a real low-level binary (systemd-tmpfiles, sfdisk, losetup, sysctl) is marked
+`os_integration`. The gate containers are built on `tester-base`, which deliberately carries none of
+those tools (its DESIGN-GUIDE has the placement rule), so they deselect the marker explicitly instead
+of letting the tests skip quietly; the QEMU VM lane `r1-vm-real-commit` is where the binaries exist
+and runs the marked tests with `VBPUB_REQUIRE_OS_INTEGRATION=1`, so a skip there fails. Docker-driving
+tests are not marked: the TCG VM cannot carry CPU-heavy work.
+
 ## Prompt library boundary
 
 The prompt package is an optional dependency and is imported only by the

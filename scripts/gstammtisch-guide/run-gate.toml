@@ -32,7 +32,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/gstammtisch-guide && python3 -m compileall -q files/usr/local/sbin && $TESTER_VENV/bin/python3 -m pytest tests -q --cov=files/usr/local/sbin --cov-branch --cov-report=term-missing",
+    "cd {worktree}/scripts/gstammtisch-guide && python3 -m compileall -q files/usr/local/sbin && $TESTER_VENV/bin/python3 -m pytest tests -m 'not os_integration' -q --cov=files/usr/local/sbin --cov-branch --cov-report=term-missing",
 ]
 clean_tree = false
 budget = "5m"

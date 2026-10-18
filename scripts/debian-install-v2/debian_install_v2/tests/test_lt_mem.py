@@ -200,6 +200,7 @@ def test_tmpfiles_allowlist_permits_create_and_boot():
     HostActions(dry_run=True).run(["/usr/bin/systemd-tmpfiles", "--create", "--boot", "/etc/tmpfiles.d/x.conf"])
 
 
+@pytest.mark.os_integration
 @pytest.mark.skipif(not Path("/usr/bin/systemd-tmpfiles").exists(), reason="no systemd-tmpfiles on this host")
 def test_real_systemd_tmpfiles_applies_w_bang_only_with_boot(tmp_path):
     """The real binary: `w!` lines are skipped by --create alone and applied by --create --boot."""

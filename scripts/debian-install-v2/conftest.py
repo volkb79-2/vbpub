@@ -1,4 +1,4 @@
-pytest_plugins = ["cli_extended.pytest_plugin"]
+pytest_plugins = ["cli_extended.pytest_plugin", "debian_install_v2.tests.os_integration_plugin"]
 
 
 import pytest

@@ -806,6 +806,7 @@ def _alive(pid: int) -> bool:
     return True
 
 
+@pytest.mark.os_integration
 def test_bounded_run_returns_output_and_exit_status():
     import shutil
     sysctl = shutil.which("sysctl")
