@@ -82,7 +82,13 @@ def default_systemctl_show_runner(unit: str, properties: tuple[str, ...]) -> Sho
     argv = ["systemctl", "show", unit]
     for prop in properties:
         argv.extend(("-p", prop))
-    proc = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        proc = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except (FileNotFoundError, PermissionError) as exc:
+        # No usable systemctl (a container, WSL, Alpine, a minimal CI image): the unit properties are
+        # unavailable, exactly as for a failing `systemctl show`. 127 is the shell's "command not found"
+        # status; the collector degrades to "no governed properties" instead of crashing.
+        return ShowResult(stdout="", stderr=f"systemctl is not available: {exc}", returncode=127)
     return ShowResult(stdout=proc.stdout, stderr=proc.stderr, returncode=proc.returncode)
 
 

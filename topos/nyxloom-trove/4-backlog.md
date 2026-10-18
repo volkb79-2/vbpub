@@ -340,19 +340,40 @@ CGroup /:
 - add `https://github.com/facebookincubator/below` as hard competitor. solves several of our use cases, e.g. diffrent views as tabs, drilldown/collapse on tree
 - system thrashing/stalling analysis page (e.g. processes with D state, major page faults, PSI), allow to freeze
 
-## TP-SYSTEMCTL — `default_systemctl_show_runner` crashes when `systemctl` is not installed
+## TP-SYSTEMCTL - `default_systemctl_show_runner` crashed when `systemctl` is not installed (FIXED 2026-10-18)
 
-Filed by mdt-cockpit MDTC-02 (tester-base T8 skip-diff), 2026-10-18.
+Filed and fixed by mdt-cockpit MDTC-02 (tester-base T8 skip-diff / fix round 1, operator decision D-001).
 
-`src/topos/drift/origin.py:default_systemctl_show_runner` runs `subprocess.run(["systemctl", "show", ...],
-check=False)` with no guard for a missing binary, so on any host or container without systemd
-(`systemctl` absent) `topos` collection raises `FileNotFoundError` — measured: 49 topos-suite tests fail
-(`collect_once` / `--record` / smoke / steady paths) in a container without `systemctl`. The gate image
-only passed because the MDT cockpit image happened to ship the devcontainers "systemd is not running"
-shim; tester-unified now carries an explicit stub for exactly this reason
-(`tester-unified/Dockerfile`, decision D-001).
+`src/topos/drift/origin.py:default_systemctl_show_runner` ran `subprocess.run(["systemctl", "show", ...])`
+unguarded, so any host or container without systemd raised `FileNotFoundError` out of the collector.
+Measured on an image without `systemctl`: **49 of 3033 tests failed**, all with the same root cause
+(`collect_once` -> `annotate_frame_governance` -> `default_systemctl_show_runner`):
+`test_acceptance.py` (smoke/steady runs, `--json`), `test_damon_passive.py` (every `collect_once` case),
+`test_headless_record.py` and `test_record.py` (`--once`/`--record`/`--headless`), `test_diag.py`,
+`test_network_providers.py`, `test_p23_zram_drilldown.py`, `test_p55_filtering.py`, `test_procs_cli.py`.
 
-Fix direction: catch `FileNotFoundError` (and `PermissionError`) in the runner and return a
-`ShowResult(stdout="", stderr=<reason>, returncode=127)` so the unit views degrade to "no governed
-properties" exactly as for a failing `systemctl show`; add a test that runs the collector with
-`systemctl` absent from PATH. Then delete the tester-unified stub.
+**Classification.**
+- (a) the code must handle a missing `systemctl` explicitly: **all 49**. None of them tests systemd:
+  they exercise the collector, the CLI or a renderer on fixture roots and only reached `systemctl`
+  because the collector always annotates governance.
+- (b) tests that genuinely need real systemd or real cgroup manipulation: **none**. After the fix the
+  whole suite (3038 tests, 0 skips) passes in a container with no `systemctl` at all; the daemon- and
+  cgroup-facing tests run against fake sysfs/proc trees by design.
+
+**Fix.** The runner returns `ShowResult("", "systemctl is not available: ...", 127)` for
+`FileNotFoundError`/`PermissionError`; the unit view is then "not found, no governed properties", the
+same degradation as a failing `systemctl show`. `tests/test_systemctl_missing.py` pins it at the unit and
+real-subprocess level (RED with the guard removed). The tester-unified `systemctl` stub is deleted.
+
+## TP-VMLANE - proposal (not built): what a topos VM lane would add
+
+The suite above proves topos' logic on fixtures. What only a real kernel/systemd can prove, and no
+container test does today: (1) `default_systemctl_show_runner` against the real `systemctl show` output
+format and real drop-ins (parsing of `[not set]`, `infinity`, `DropInPaths`), (2) the effective
+`memory.min`/`memory.low` ancestor-chain behaviour on a real cgroup v2 hierarchy, (3) `journalctl`
+readers on a real journal, (4) the DAMON sysfs interface and the profiler daemon's placement work.
+Sketch: a `topos-vm-real` lane on the shared `scripts/debian-install-v2/testing/vm` harness (TCG is
+enough: these are tiny reads and writes, not CPU-heavy), tests marked `os_integration` and run with
+`VBPUB_REQUIRE_OS_INTEGRATION=1` so a skip is a failure, deselected in the tester-unified lanes. The
+operator's hypothesis (daemon work belongs in a VM, TUI in the container) holds for (2)-(4); the TUI and
+collector logic stay in containers.
