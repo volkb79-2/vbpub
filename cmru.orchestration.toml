@@ -28,13 +28,14 @@ registry = ["ghcr.io"]
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
 #   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
+#   tester-base <- cmru  (declared release order)
 #   tls-edge <- cmru  (declared release order)
 #   cgroup-profiler <- cmru  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
 #   L0: cli-extended
 #   L1: cmru
-#   L2: ciu, run-gate-project, assay, topos, nyxloom, pwmcp, tls-edge, cgroup-profiler
+#   L2: ciu, run-gate-project, assay, topos, nyxloom, pwmcp, tester-base, tls-edge, cgroup-profiler
 #   L3: modern-debian-tools-python-debug, mdt-cockpit
 #
 # PREFLIGHT: PASS
@@ -45,7 +46,7 @@ registry = ["ghcr.io"]
 #   (ciu, run-gate-project, assay, topos, nyxloom, pwmcp, tls-edge, cgroup-profiler)
 #   | L3 modern-debian-tools-python-debug, mdt-cockpit (stage the wheels of L0-L2).
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "pwmcp", "modern-debian-tools-python-debug", "mdt-cockpit", "tls-edge", "cgroup-profiler"]
+project_order = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "pwmcp", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base", "tls-edge", "cgroup-profiler"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -183,6 +184,12 @@ depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
 config = "mdt-cockpit/cmru.toml"
 # The fork uses the same first-party CIU and CLI tooling in its image.
 depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
+
+# Leaf image project (python:3.14-trixie digest + docker client + minisign + shellcheck): no
+# first-party dependency; cmru is only its release tooling.
+[orchestration.project.tester-base]
+config = "tester-base/cmru.toml"
+depends_on = ["cmru"]
 
 [orchestration.project.pwmcp]
 config = "pwmcp/cmru.toml"

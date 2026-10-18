@@ -1,0 +1,53 @@
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+# The candidate the `contract` lane tests: built by the `prepare` step below.
+TESTER_BASE_IMAGE = "tester-base:local"
+BUILDX_BUILDER = "mdt-managed"
+BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
+
+[project]
+id = "tester-base"
+description = "Minimal gate base image: python 3.14 + docker client + minisign + shellcheck."
+template_revision = 5
+prefix = "tester-base-v"
+artifacts = ["oci-image"]
+
+[project.version]
+strategy = "file:VERSION"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = []
+
+# The release image is built from the SAME Dockerfile the candidate was tested from; the
+# registry digest CMRU reports is what consumers pin (`ghcr.io/volkb79-2/tester-base@sha256:...`).
+[steps.prepare]
+quiet = true
+commands = [
+  { label = "tester-base: build the candidate image (tester-base:local)", argv = ["cmru", "handler", "oci-image-build", "--cwd", ".", "--bake-file", "docker-bake.hcl", "--bake-target", "tester-base-local"], cwd = "." },
+]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "tester-base: run-gate contract lane", argv = ["./run-gate.py", "contract"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "tester-base: build release image", argv = ["cmru", "handler", "oci-image-build", "--cwd", ".", "--bake-file", "docker-bake.hcl", "--bake-target", "tester-base-release"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
+commands = [
+  { label = "tester-base: push release image", argv = ["cmru", "handler", "oci-image-push", "--cwd", ".", "--bake-file", "docker-bake.hcl", "--bake-target", "tester-base-release"], cwd = "." },
+]

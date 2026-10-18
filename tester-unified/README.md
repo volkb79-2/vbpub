@@ -3,10 +3,19 @@
 `tester-unified` is the vbpub gate environment. The devcontainer is only the
 cockpit used to launch it; pytest and the actual gate command run in the image.
 
-Build the image from the repository root:
+The image is built FROM `tester-base` (the minimal gate base: `python:3.14-trixie` +
+docker client + minisign + shellcheck; see `tester-base/README.md`), through
+`ARG TESTER_BASE` (default `tester-base:local` until tester-base has a CMRU release; no
+other fallback). It no longer derives from the MDT cockpit image, so a cockpit release cannot
+change the gate environment and none of the cockpit's baked release CLIs sit on PATH. This
+image adds the `/opt/tester-venv` closure, the uid-1003 identity and the git foreground
+maintenance config; its `PATH` is `/opt/tester-venv/bin:` followed by the base's own.
+
+Build the base, then the image, from the repository root:
 
 ```bash
-docker build -f tester-unified/Dockerfile -t tester-unified:local .
+docker build -t tester-base:local tester-base/
+docker build -f tester-unified/Dockerfile --build-arg TESTER_BASE=tester-base:local -t tester-unified:local .
 ```
 
 Image contents worth knowing (KI-52 / BG-05, 2026-10):

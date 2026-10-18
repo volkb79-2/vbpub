@@ -17,7 +17,16 @@
 # Build from the REPO ROOT so the project sources are in context:
 #   docker build -f tester-unified/Dockerfile -t tester-unified:local /workspaces/vbpub
 # (see the repo-root .dockerignore, which whitelists only these projects.)
-FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+#
+# BASE (MDTC-02, T3/T5): tester-base, the minimal gate base (python:3.14-trixie +
+# docker client + minisign + shellcheck), NOT the 8 GB MDT cockpit image. Until the first
+# CMRU release of tester-base exists the default is the locally built `tester-base:local`
+# (`docker build -t tester-base:local tester-base/`); the controller switches the default
+# to the published `ghcr.io/volkb79-2/tester-base@sha256:...` after release. There is no
+# other fallback: a missing base is a build failure. The image's PATH is its own venv
+# first, then the base's PATH - nothing of the MDT cockpit PATH is relied on.
+ARG TESTER_BASE=tester-base:local
+FROM ${TESTER_BASE}
 
 USER root
 
@@ -195,3 +204,4 @@ ENV HOME=/home/tester \
     XDG_CACHE_HOME=/home/tester/.cache \
     XDG_STATE_HOME=/home/tester/.local/state \
     TESTER_VENV=/opt/tester-venv
+ENV PATH=/opt/tester-venv/bin:${PATH}

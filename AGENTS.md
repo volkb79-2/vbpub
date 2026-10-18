@@ -142,6 +142,8 @@ dedicated container, never here. For the vbpub family that is
 **`tester-unified`** (see `tester-unified/`); it must give the run-uid a full
 identity (passwd+group+HOME+XDG). "Green in the devcontainer venv" is not a ship
 signal.
+`tester-unified` builds FROM `tester-base` (`tester-base/`: python:3.14-trixie
+plus docker client, minisign and shellcheck), not from the MDT cockpit image.
 
 When installing a locally built wheel for inspection or a bounded local test,
 use the estate venv: `/home/vscode/.venv/bin/python -m pip install ...`.

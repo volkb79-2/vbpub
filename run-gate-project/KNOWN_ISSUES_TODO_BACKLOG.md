@@ -5985,3 +5985,27 @@ low run-relative elapsed time reports rate and ETA from current-run candidate
 events and pending work. Same-run movement, re-attach silence, torn-line
 handling, malformed/missing current-run `pending_total`, and legacy streams
 without headers continue to pass.
+
+## RG-105 — `DEFAULT_HOST_IMAGE` still names the 8 GB MDT cockpit image; move it onto `tester-base`
+
+**Status:** OPEN (filed by mdt-cockpit MDTC-02 / tester-base, 2026-10-18; CHANGES.md checked: no
+earlier entry, SPEC.md:130 documents the current default).
+
+**Observed.** `run-gate.py:384` (`DEFAULT_HOST_IMAGE`) is the floating
+`modern-debian-tools-python-debug-vsc-devcontainer:...-latest` tag, used by the `host` environment
+whenever neither a declared `[environments.host].image` nor `$RUN_GATE_HOST_IMAGE` applies. That
+image is the developer cockpit: 8 GB, floating, with baked release CLIs on PATH. MDTC-02 introduced
+`tester-base/` (python:3.14-trixie digest-pinned + docker client + minisign + shellcheck) and moved
+the estate's declared `[environments.host].image` in `run-gate.root.toml` onto `tester-base:local`,
+but the code default is a separate fact that package was forbidden to touch
+(`run-gate-project/run-gate.py`).
+
+**Fix direction.** Change `DEFAULT_HOST_IMAGE` (and SPEC.md:130, README/CONSUMERS mentions) to the
+published `ghcr.io/volkb79-2/tester-base@sha256:<digest>` once tester-base has its first CMRU release.
+Derive the value from one place (the declared environment) rather than a second literal; if no
+declared host image exists, refuse instead of falling back (estate "defaults are hazards" rule).
+Bump `__revision__`, update the consumer transcript.
+
+**Oracles.** A project with no `[environments.host].image` and no `$RUN_GATE_HOST_IMAGE` either
+refuses with a message naming both knobs, or resolves to the single declared tester-base digest; a
+grep over the tree finds no remaining MDT-cockpit image reference in run-gate code or SPEC.

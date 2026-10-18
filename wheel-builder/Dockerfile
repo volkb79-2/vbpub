@@ -22,7 +22,13 @@
 # Build from the REPO ROOT so the (bind-mounted-at-runtime) project sources would be
 # in context if ever needed — today nothing is COPY'd from it, so the build is fast:
 #   docker build -f wheel-builder/Dockerfile -t wheel-builder:local /workspaces/vbpub
-FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+#
+# BASE (MDTC-02, T3/T5): tester-base, the minimal gate base (python:3.14-trixie + docker
+# client + minisign + shellcheck), not the 8 GB MDT cockpit image. Until the first CMRU
+# release of tester-base exists the default is the locally built `tester-base:local`; the
+# controller switches it to the published digest after release. No other fallback.
+ARG TESTER_BASE=tester-base:local
+FROM ${TESTER_BASE}
 
 USER root
 
