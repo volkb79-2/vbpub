@@ -68,7 +68,7 @@ was checked only with `ast.parse`.
   (`gate_snapshot.py` `_verify_tracked_files_match_commit`). A consumer whose repo has
   `.gitattributes` EOL conversion, or `fileMode=false`, gets a false "tracked snapshot file
   differs" refusal. vbpub is unaffected.
-- **Minor: `gate_snapshot._git` scrubs only `GIT_DIR` and `GIT_WORK_TREE`.** An ambient
+- **FIXED in continuation 2 (below): `gate_snapshot._git` scrubs only `GIT_DIR` and `GIT_WORK_TREE`.** An ambient
   `GIT_COMMON_DIR`, `GIT_INDEX_FILE` or `GIT_OBJECT_DIRECTORY` could redirect the ref digest and
   status checks. `run_release_gate._hardened_git_environment` already scrubs them.
 - **Minor: snapshot removal deletes Assay resume state before `remove_workspace` can refuse**
@@ -173,3 +173,55 @@ multi-project run keeps its planned version even if an earlier project's promoti
 controller must run the registered gates on the final commit through `cmru release`. That
 includes 100% branch coverage over the new code, and the new end-to-end tests, which were
 written without execution.
+
+## Continuation 2 — snapshot Git environment (same session)
+
+- Starting HEAD: `a45337a509cc03275226080cae4a15f778b1da05`. Final commit: the commit that
+  adds this section.
+- **Disposition: FIXED.** The BLOCKED rule did not trigger. `_linked_git_context` derives the
+  intended Git directory purely from the worktree's pointer files, without running Git, so the
+  pinned paths cannot themselves be redirected.
+
+**What changed** (in `src/cmru/gate_snapshot.py`):
+
+- **Snapshot checks** (`_git`, `_git_is_ancestor`) run with an environment built from scratch:
+  - `_snapshot_git_environment(root)` is `_hardened_snapshot_environment()` plus `GIT_DIR` and
+    `GIT_WORK_TREE` for the verified linked worktree.
+  - `_AMBIENT_REPOSITORY_ENV` is removed: the release gate's `_hardened_git_environment` set,
+    plus `GIT_NAMESPACE`. `GIT_CONFIG_PARAMETERS` is removed too.
+  - Environment-injected config is dropped except ambient `safe.directory` entries, which carry
+    Run-Gate's RG-99 ownership policy (global config is disabled here).
+  - The host hook/fsmonitor/system/global policy is applied.
+  - Transport and credential variables are kept.
+- **Pre-existing defect also fixed:** `_git_is_ancestor` copied the environment before entering
+  `_host_git_policy`, so the main-ancestry probe ran with ambient hooks and config.
+- **Submodule check:** it inherited the ambient environment; it now uses the unpinned hardened
+  environment.
+- **Lifecycle policy** (`_host_git_policy` and `host_git_hooks_disabled`): ambient
+  repository-location variables are removed from the process environment for the duration and
+  restored afterwards. Ambient config entries (safe.directory, a transport proxy) are still kept,
+  because lifecycle and baseline-fact Git may need them.
+
+**Oracles (`tests/test_gate_snapshot_internals.py`, never executed here):**
+
+- `test_snapshot_git_reads_the_pinned_checkout_under_hostile_ambient_git` uses two real
+  repositories. All of these point at the decoy: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`,
+  `GIT_INDEX_FILE`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES` and
+  `GIT_NAMESPACE`, an injected `status.showUntrackedFiles=no`, and a `GIT_CONFIG_PARAMETERS`
+  excludes-everything file. The snapshot helper must then return the intended checkout's:
+  - exact HEAD commit and tree;
+  - exact `ls-files` index list;
+  - exact porcelain status (`?? untracked-note.txt`);
+  - exact ref list;
+  - a true main-ancestry answer.
+  It must also find the decoy commit unreachable, keep `safe.directory` at `*`, have no
+  injected status config, and keep `GIT_ASKPASS`/`GIT_SSH_COMMAND`. The old code reads the
+  decoy's refs, index and status here, so this test goes red against it.
+- `test_lifecycle_git_policy_clears_repository_redirection_and_restores_it`: plain inherited
+  Git inside `host_git_hooks_disabled` reads the intended HEAD, index and `safe.directory`, and
+  the hostile values are restored afterwards.
+- `test_snapshot_policy_clears_every_repository_variable_the_release_gate_clears`: a drift guard
+  requiring the snapshot set to stay a superset of `_hardened_git_environment`'s cleared set.
+
+**Gate evidence: none.** No tests and no gates were run in this continuation. The controller
+runs the registered CMRU release gates after this commit.

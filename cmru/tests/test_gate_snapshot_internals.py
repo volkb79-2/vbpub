@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
@@ -69,6 +70,128 @@ def test_host_git_hooks_disabled_pins_git_to_the_verified_worktree_and_restores(
         assert os.environ["GIT_CONFIG_KEY_0"] == "core.hooksPath"
     assert os.environ["GIT_DIR"] == "/preset"
     assert "GIT_WORK_TREE" not in os.environ
+
+
+def _intended_and_decoy(tmp_path: Path):
+    """An intended linked worktree and a decoy repository with distinct HEAD/index/objects/refs."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "--quiet", "--initial-branch=main")
+    _git(primary, "config", "user.name", "CMRU Gate Test")
+    _git(primary, "config", "user.email", "cmru-gate@example.invalid")
+    (primary / "tracked.txt").write_text("intended\n", encoding="utf-8")
+    _git(primary, "add", "tracked.txt")
+    _git(primary, "commit", "--quiet", "-m", "intended base")
+    base = _git(primary, "rev-parse", "HEAD")
+    (primary / "second.txt").write_text("intended second\n", encoding="utf-8")
+    _git(primary, "add", "second.txt")
+    _git(primary, "commit", "--quiet", "-m", "intended head")
+    _git(primary, "tag", "intended-v1")
+    intended = tmp_path / "intended"
+    _git(primary, "worktree", "add", "--quiet", "-b", "gate-source", str(intended), "HEAD")
+    (intended / "untracked-note.txt").write_text("not yet committed\n", encoding="utf-8")
+
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    _git(decoy, "init", "--quiet", "--initial-branch=main")
+    _git(decoy, "config", "user.name", "Decoy")
+    _git(decoy, "config", "user.email", "decoy@example.invalid")
+    (decoy / "decoy-only.txt").write_text("decoy\n", encoding="utf-8")
+    _git(decoy, "add", "decoy-only.txt")
+    _git(decoy, "commit", "--quiet", "-m", "decoy")
+    decoy_head = _git(decoy, "rev-parse", "HEAD")
+    _git(decoy, "tag", "decoy-v9")
+    _git(decoy, "update-ref", "refs/namespaces/decoyns/refs/heads/gate-source", decoy_head)
+    (decoy / "decoy-staged.txt").write_text("staged in the decoy index\n", encoding="utf-8")
+    _git(decoy, "add", "decoy-staged.txt")
+    (decoy / "ignore-everything").write_text("*\n", encoding="utf-8")
+    return SimpleNamespace(
+        intended=intended, base=base, head=_git(intended, "rev-parse", "HEAD"),
+        tree=_git(intended, "rev-parse", "HEAD^{tree}"), decoy=decoy, decoy_head=decoy_head,
+    )
+
+
+def _point_ambient_git_at(monkeypatch, decoy: Path) -> None:
+    """Every repository-location, ref-namespace and config-injection channel aims at the decoy."""
+    admin = decoy / ".git"
+    for key, value in {
+        "GIT_DIR": admin, "GIT_WORK_TREE": decoy, "GIT_COMMON_DIR": admin,
+        "GIT_INDEX_FILE": admin / "index", "GIT_OBJECT_DIRECTORY": admin / "objects",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": admin / "objects", "GIT_NAMESPACE": "decoyns",
+        # Run-Gate's ownership policy (kept) and an injected status override (dropped).
+        "GIT_CONFIG_COUNT": 2,
+        "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": "*",
+        "GIT_CONFIG_KEY_1": "status.showUntrackedFiles", "GIT_CONFIG_VALUE_1": "no",
+        "GIT_CONFIG_PARAMETERS": f"'core.excludesfile'='{decoy / 'ignore-everything'}'",
+    }.items():
+        monkeypatch.setenv(key, str(value))
+
+
+def test_snapshot_git_reads_the_pinned_checkout_under_hostile_ambient_git(tmp_path, monkeypatch):
+    repos = _intended_and_decoy(tmp_path)
+    _point_ambient_git_at(monkeypatch, repos.decoy)
+
+    def read(*args: str) -> bytes:
+        return gs._git(repos.intended, *args).stdout
+
+    # The intended checkout's own commit, tree, index, worktree status and refs.
+    assert read("rev-parse", "HEAD").decode().strip() == repos.head
+    assert read("rev-parse", "HEAD^{tree}").decode().strip() == repos.tree
+    assert read("ls-files") == b"second.txt\ntracked.txt\n"
+    assert read("status", "--porcelain=v1") == b"?? untracked-note.txt\n"
+    assert read("for-each-ref", "--format=%(refname)").decode().split() == [
+        "refs/heads/gate-source", "refs/heads/main", "refs/tags/intended-v1",
+    ]
+    assert gs._git_is_ancestor(repos.intended, repos.base, repos.head) is True
+    # The decoy's object store is not reachable, even through alternates.
+    with pytest.raises(RuntimeError, match="git cat-file -e"):
+        gs._git(repos.intended, "cat-file", "-e", repos.decoy_head)
+    # The ownership policy survives; the injected config does not.
+    assert read("config", "--get-all", "safe.directory") == b"*\n"
+    with pytest.raises(RuntimeError, match="git config --get status.showUntrackedFiles"):
+        gs._git(repos.intended, "config", "--get", "status.showUntrackedFiles")
+    # Transport and credential variables are not this policy's business.
+    monkeypatch.setenv("GIT_ASKPASS", "/usr/local/bin/askpass")
+    monkeypatch.setenv("GIT_SSH_COMMAND", "ssh -o BatchMode=yes")
+    environment = gs._snapshot_git_environment(repos.intended)
+    assert environment["GIT_ASKPASS"] == "/usr/local/bin/askpass"
+    assert environment["GIT_SSH_COMMAND"] == "ssh -o BatchMode=yes"
+
+
+def test_lifecycle_git_policy_clears_repository_redirection_and_restores_it(tmp_path, monkeypatch):
+    repos = _intended_and_decoy(tmp_path)
+    _point_ambient_git_at(monkeypatch, repos.decoy)
+
+    def plain_git(*args: str) -> str:
+        # Inherits os.environ, as the worktree lifecycle library's Git calls do.
+        return subprocess.run(
+            ["git", *args], cwd=repos.intended, capture_output=True, text=True, check=True,
+        ).stdout
+
+    with gs.host_git_hooks_disabled(repos.intended):
+        assert plain_git("rev-parse", "HEAD").strip() == repos.head
+        assert plain_git("ls-files") == "second.txt\ntracked.txt\n"
+        assert plain_git("config", "--get-all", "safe.directory") == "*\n"
+        assert "GIT_NAMESPACE" not in os.environ
+    assert os.environ["GIT_INDEX_FILE"] == str(repos.decoy / ".git" / "index")
+    assert os.environ["GIT_NAMESPACE"] == "decoyns"
+
+
+def test_snapshot_policy_clears_every_repository_variable_the_release_gate_clears(monkeypatch):
+    from tests.test_release_gate import run_release_gate
+
+    candidates = (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+        "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM", "GIT_ASKPASS",
+    )
+    for key in candidates:
+        monkeypatch.setenv(key, "/hostile")
+    hardened = run_release_gate._hardened_git_environment()
+
+    assert {key for key in candidates if key not in hardened} <= set(gs._AMBIENT_REPOSITORY_ENV)
+    snapshot = gs._hardened_snapshot_environment()
+    assert not set(gs._AMBIENT_REPOSITORY_ENV) & set(snapshot)
 
 
 @pytest.mark.parametrize(("stdout", "message"), [

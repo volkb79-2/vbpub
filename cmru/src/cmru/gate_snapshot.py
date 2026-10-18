@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
-from typing import Iterator
+from typing import Iterator, Mapping
 
 
 _LANE_EVIDENCE_FILES = (
@@ -229,13 +229,33 @@ def _worktree_api():
     return worktree
 
 
-@contextlib.contextmanager
-def _host_git_policy() -> Iterator[None]:
-    """Run lifecycle Git without system/global config, hooks, or fsmonitor."""
-    raw_count = os.environ.get("GIT_CONFIG_COUNT", "0")
+#: Ambient variables that point Git at another repository, index, object store or
+#: ref namespace than the checkout CMRU pinned. The release gate's
+#: ``_hardened_git_environment`` clears the same repository-location set (a test
+#: keeps this a superset of it); ``GIT_NAMESPACE`` is the ref-namespace addition.
+_AMBIENT_REPOSITORY_ENV = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+)
+
+
+def _environment_config_count(environment: Mapping[str, str]) -> int:
+    raw_count = environment.get("GIT_CONFIG_COUNT", "0")
     if not raw_count.isdecimal():
         raise RuntimeError("GIT_CONFIG_COUNT is malformed; refusing gate snapshot Git")
-    index = int(raw_count)
+    return int(raw_count)
+
+
+@contextlib.contextmanager
+def _host_git_policy() -> Iterator[None]:
+    """Run lifecycle Git without system/global config, hooks, fsmonitor, or redirection.
+
+    Ambient repository-location variables are removed for the duration, so a
+    lifecycle call cannot be pointed at another repository, index or object
+    store. Ambient environment config entries (Run-Gate's ``safe.directory``,
+    a transport proxy) are kept and the hook/fsmonitor policy is appended.
+    """
+    index = _environment_config_count(os.environ)
     updates = {
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -246,8 +266,10 @@ def _host_git_policy() -> Iterator[None]:
         f"GIT_CONFIG_KEY_{index + 1}": "core.fsmonitor",
         f"GIT_CONFIG_VALUE_{index + 1}": "false",
     }
-    previous = {key: os.environ.get(key) for key in updates}
+    previous = {key: os.environ.get(key) for key in (*updates, *_AMBIENT_REPOSITORY_ENV)}
     try:
+        for key in _AMBIENT_REPOSITORY_ENV:
+            os.environ.pop(key, None)
         os.environ.update(updates)
         yield
     finally:
@@ -256,6 +278,57 @@ def _host_git_policy() -> Iterator[None]:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _snapshot_git_environment(root: Path) -> dict[str, str]:
+    """The complete environment of one snapshot check against the pinned checkout.
+
+    ``GIT_DIR``/``GIT_WORK_TREE`` name the verified linked worktree on top of
+    :func:`_hardened_snapshot_environment`, so every check reads that checkout's
+    own HEAD, index, objects and refs.
+    """
+    admin, _common = _linked_git_context(root)
+    environment = _hardened_snapshot_environment()
+    environment["GIT_DIR"] = str(admin)
+    environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
+    return environment
+
+
+def _hardened_snapshot_environment() -> dict[str, str]:
+    """A snapshot Git environment built from scratch rather than inherited.
+
+    No ambient repository, index, object-store or ref-namespace redirection,
+    and no environment-injected config except ``safe.directory`` entries
+    (Run-Gate's ownership policy in a gate container, where global config is
+    disabled), followed by the host hook/fsmonitor policy.
+    """
+    ambient = os.environ
+    safe_directories = [
+        ("safe.directory", ambient.get(f"GIT_CONFIG_VALUE_{index}", ""))
+        for index in range(_environment_config_count(ambient))
+        if ambient.get(f"GIT_CONFIG_KEY_{index}", "").lower() == "safe.directory"
+    ]
+    environment = {
+        key: value for key, value in ambient.items()
+        if key not in _AMBIENT_REPOSITORY_ENV
+        and key != "GIT_CONFIG_PARAMETERS"
+        and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
+    entries = [
+        *safe_directories,
+        ("core.hooksPath", os.devnull),
+        ("core.fsmonitor", "false"),
+    ]
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": str(len(entries)),
+    })
+    for index, (key, value) in enumerate(entries):
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
+    return environment
 
 
 @contextlib.contextmanager
@@ -277,15 +350,10 @@ def host_git_hooks_disabled(root: Path) -> Iterator[None]:
 
 
 def _git(root: Path, *args: str, input: bytes | None = None) -> subprocess.CompletedProcess:
-    admin, _common = _linked_git_context(root)
-    with _host_git_policy():
-        environment = os.environ.copy()
-        environment["GIT_DIR"] = str(admin)
-        environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
-        result = subprocess.run(
-            ["git", *args], cwd=root, env=environment, capture_output=True,
-            text=False, check=False, input=input,
-        )
+    result = subprocess.run(
+        ["git", *args], cwd=root, env=_snapshot_git_environment(root), capture_output=True,
+        text=False, check=False, input=input,
+    )
     if result.returncode:
         detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
         raise RuntimeError(
@@ -363,7 +431,8 @@ def _verify_tracked_files_match_commit(root: Path, commit: str) -> None:
         elif raw_mode == b"160000" and object_type == b"commit":
             nested_result = subprocess.run(
                 ["git", "-C", str(path), "rev-parse", "HEAD"],
-                cwd=root, capture_output=True, text=True, check=False,
+                cwd=root, env=_hardened_snapshot_environment(),
+                capture_output=True, text=True, check=False,
             )
             if nested_result.returncode != 0:
                 raise RuntimeError(f"cannot inspect tracked snapshot submodule: {relative}")
@@ -444,19 +513,14 @@ def _anchor_ref_values(root: Path) -> dict[str, str]:
 
 
 def _git_is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
-    admin, _common = _linked_git_context(root)
-    environment = os.environ.copy()
-    environment["GIT_DIR"] = str(admin)
-    environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
-    with _host_git_policy():
-        result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=root,
+        env=_snapshot_git_environment(root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if result.returncode == 0:
         return True
     if result.returncode == 1:
