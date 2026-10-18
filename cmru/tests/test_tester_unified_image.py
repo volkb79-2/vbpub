@@ -739,7 +739,7 @@ def test_tester_unified_makes_the_inherited_cockpit_behaviour_explicit():
     command. D-002: tester-base redirects bytecode (it runs as root); this image runs as a user."""
     text = DOCKERFILE.read_text("utf-8")
     assert "/usr/local/bin/systemctl" in text and "chmod 0755 /usr/local/bin/systemctl" in text
-    assert "apt-get install -y --no-install-recommends zsh" in text  # D-003: test_path_hook's zsh cases
+    assert "apt-get install -y --no-install-recommends zsh nodejs" in text  # D-003/D-004: path-hook zsh cases, pwmcp gateway
     assert re.search(r"^ENV PYTHONPYCACHEPREFIX=$", text, re.MULTILINE)
     base = (REPO_ROOT / "tester-base" / "Dockerfile").read_text("utf-8")
     assert re.search(r"^ENV PYTHONPYCACHEPREFIX=/tmp/pycache$", base, re.MULTILINE)

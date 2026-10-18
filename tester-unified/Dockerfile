@@ -217,8 +217,11 @@ ENV PYTHONPYCACHEPREFIX=
 #    the shells it can find; without zsh its zsh cases are not skipped but silently NOT COLLECTED
 #    (10 tests fewer in the T8 skip-diff: 42 -> 32). zsh is a userland package this image's suites
 #    need, so it lives here rather than in the minimal tester-base (T2).
+#  * `nodejs` (D-004): pwmcp/tests/test_run_server_gateway.py runs the runtime gateway (a Node.js
+#    script) in two tests that skip when `node` is absent (pwmcp r1: 258 passed -> 256 + 2 skipped
+#    in the T8 skip-diff). Debian's nodejs only, no npm.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends zsh \
+ && apt-get install -y --no-install-recommends zsh nodejs \
  && rm -rf /var/lib/apt/lists/*
 
 USER 1003
