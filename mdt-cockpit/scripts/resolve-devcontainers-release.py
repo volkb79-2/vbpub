@@ -1277,10 +1277,8 @@ def base_images_from_bake() -> tuple[str, str]:
     )
 
 _FAMILY_TITLES = {
-    "mdt-cockpit": "Modern Debian Tools + Python Debug",
-    "mdt-cockpit-devcontainer": (
-        "Modern Debian Tools + Python Debug VS Code Devcontainer"
-    ),
+    "mdt-cockpit": "mdt-cockpit",
+    "mdt-cockpit-devcontainer": "mdt-cockpit VS Code Devcontainer",
 }
 
 # Historical package names retired 2026-07-07: the PHP 8.5 flavor used to publish under

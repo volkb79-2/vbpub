@@ -157,3 +157,21 @@ def test_the_namespace_rename_left_no_live_code_on_the_old_name() -> None:
         if "modern-debian-tools-python-debug" in text:
             offenders.append(relative)
     assert offenders == []
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "cmru.toml",
+        "docker-bake.hcl",
+        "scripts/resolve-devcontainers-release.py",
+        "templates/AGENTS.md",
+        "templates/README.md",
+        "templates/devcontainer.json",
+        "Dockerfile",
+    ],
+)
+def test_shipped_text_and_image_labels_use_the_new_product_name(path: str) -> None:
+    """OCI descriptions become labels on every build and templates are copied into consumer
+    repositories, so the retired display name must not survive in either."""
+    assert "Modern Debian Tools" not in _read(path)

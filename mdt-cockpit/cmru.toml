@@ -29,9 +29,9 @@ REPACK_VMEM_KB = "unlimited"
 REPACK_KEEP_FAILED = "true"
 DOCKER_REPACK_LOG = "warn"
 OCI_VENDOR = "Volker Badziong"
-OCI_DESCRIPTION = "Modern Debian Tools + Python Debug image family. Includes curated Debian/Python tooling and CIU-focused workflow tools."
-OCI_DESCRIPTION_BASE = "Modern Debian Tools + Python Debug base image."
-OCI_DESCRIPTION_VSC = "Modern Debian Tools + Python Debug VS Code devcontainer image."
+OCI_DESCRIPTION = "mdt-cockpit image family. Includes curated Debian/Python tooling and CIU-focused workflow tools."
+OCI_DESCRIPTION_BASE = "mdt-cockpit base image."
+OCI_DESCRIPTION_VSC = "mdt-cockpit VS Code devcontainer image."
 
 [build_metadata]
 date_env = "BUILD_DATE"

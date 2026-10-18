@@ -745,7 +745,7 @@ target "trixie-py314-php85" {
     PHP_VERSION = "8.5"
     INSTALL_PHP = "true"
     IMAGE_VARIANT = "php8.5"
-    OCI_DESCRIPTION = description_with_manifest_docs_variant("Modern Debian Tools + Python Debug + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "mdt-cockpit", "trixie", "3.14", "php8.5")
+    OCI_DESCRIPTION = description_with_manifest_docs_variant("mdt-cockpit + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "mdt-cockpit", "trixie", "3.14", "php8.5")
     OCI_DOCUMENTATION = package_manifest_url_variant("mdt-cockpit", "trixie", "3.14", "php8.5")
     OCI_URL = package_latest_url("mdt-cockpit")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath_variant("mdt-cockpit", "trixie", "3.14", "php8.5")
@@ -765,7 +765,7 @@ target "trixie-py314-php85-vsc" {
     PHP_VERSION = "8.5"
     INSTALL_PHP = "true"
     IMAGE_VARIANT = "php8.5"
-    OCI_DESCRIPTION = description_with_manifest_docs_variant("Modern Debian Tools + Python Debug + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "mdt-cockpit-devcontainer", "trixie", "3.14", "php8.5")
+    OCI_DESCRIPTION = description_with_manifest_docs_variant("mdt-cockpit + PHP 8.5 VS Code devcontainer image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and the common PHP extensions needed for web debugging.", "mdt-cockpit-devcontainer", "trixie", "3.14", "php8.5")
     OCI_DOCUMENTATION = package_manifest_url_variant("mdt-cockpit-devcontainer", "trixie", "3.14", "php8.5")
     OCI_URL = package_latest_url("mdt-cockpit-devcontainer")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath_variant("mdt-cockpit-devcontainer", "trixie", "3.14", "php8.5")

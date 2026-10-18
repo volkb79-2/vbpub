@@ -1,6 +1,6 @@
 # Development environment
 
-This repository runs in the Modern Debian Tools (MDT) devcontainer. Before
+This repository runs in the mdt-cockpit devcontainer. Before
 installing or downloading a CLI, inspect the existing image inventory:
 
 ```bash
