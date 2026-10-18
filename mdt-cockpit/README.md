@@ -801,11 +801,11 @@ host, with product assertions inside the guest:
   from>` is required; release images do not need it). Its driver is stdlib `unittest` in `tests/runtime/`; every
   container is offline, in the gate tier, and removed by exact name.
 - `./run-gate.py oci-push` runs the OCI-layout build-once-and-push test and the bake-file evaluation test (a real `registry:2`,
-  buildx export, `crane`/`regctl` digest verification) **inside the mdt-cockpit image**, which
-  ships those tools and tester-unified does not: `MDT_OCI_PUSH_IMAGE=<ref>` (no default). In that
-  lane a missing tool or unreachable registry is a failure, not a skip. `cmru release` runs it
-  after the `release` lane, so `MDT_OCI_PUSH_IMAGE` must be set for a release. See the
-  [placement note](docs/DESIGN-GUIDE.md#the-oci-push-test-runs-where-its-tools-are).
+  buildx export, `crane`/`regctl` digest verification) **inside the image the release just built**,
+  because that image ships those tools and tester-unified does not. Nobody types a ref: the driver imports
+  the OCI layout the `prepare` step left under `build/oci-layouts/` and FAILS if the release built no
+  image. A missing tool or unreachable registry is a failure, not a skip. `cmru release` runs it after
+  the `release` lane. See the [placement note](docs/DESIGN-GUIDE.md#the-oci-push-test-runs-where-its-tools-are).
 - `./run-gate.py vm-system` runs the MDT host setup acceptance in the shared
   QEMU/TCG harness. The bare-host lane only drives the runner; its assertions
   execute inside the guest and verify systemd PID 1, cgroup v2, Docker,

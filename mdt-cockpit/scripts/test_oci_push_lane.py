@@ -34,11 +34,61 @@ class PreconditionOutcome(unittest.TestCase):
 
 
 class Driver(unittest.TestCase):
-    def test_no_default_image_or_tier(self) -> None:
-        for env in ({}, {lane.ENV_GATES: "x.slice"}, {lane.ENV_IMAGE: "img"}, {lane.ENV_IMAGE: " ", lane.ENV_GATES: "x"}):
+    def test_the_gate_tier_has_no_default(self) -> None:
+        for env in ({}, {lane.ENV_GATES: " "}):
             with self.assertRaises(SystemExit):
-                lane.require_environment(env)
-        self.assertEqual(lane.require_environment({lane.ENV_IMAGE: "img:1", lane.ENV_GATES: "g.slice"}), ("img:1", "g.slice"))
+                lane.require_gates(env)
+        self.assertEqual(lane.require_gates({lane.ENV_GATES: "g.slice"}), "g.slice")
+
+    def test_the_lane_needs_no_typed_image_reference(self) -> None:
+        import tomllib
+
+        declared = tomllib.loads((Path(lane.__file__).resolve().parents[1] / "run-gate.toml").read_text(encoding="utf-8"))
+        required = declared["lanes"]["oci-push"]["required_env"]
+        self.assertEqual(required, ["CGROUP_PARENT_DEV_GATES"])
+        self.assertFalse(hasattr(lane, "ENV_IMAGE"))
+        source = Path(lane.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("MDT_OCI_PUSH_IMAGE", source.split('"""', 2)[2])
+
+    def test_no_layout_means_no_image_was_built_and_the_lane_fails(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for root in (Path(tmp) / "missing", Path(tmp)):
+                with self.assertRaises(SystemExit) as ctx:
+                    lane.find_layout(root)
+                self.assertIn("no image was built", str(ctx.exception))
+            (Path(tmp) / "half").mkdir()
+            (Path(tmp) / "half" / "oci-layout").write_text("{}")  # no index.json: not a layout
+            with self.assertRaises(SystemExit):
+                lane.find_layout(Path(tmp))
+
+    def test_the_first_complete_layout_is_chosen_and_its_digest_read(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, digest in (("trixie-py3.14-php8.5-vsc", "sha256:" + "b" * 64), ("trixie-py3.14-php8.5", "sha256:" + "a" * 64)):
+                d = Path(tmp) / name
+                d.mkdir()
+                (d / "oci-layout").write_text("{}")
+                (d / "index.json").write_text(json.dumps({"manifests": [{"digest": digest}]}))
+            chosen = lane.find_layout(Path(tmp))
+            self.assertEqual(chosen.name, "trixie-py3.14-php8.5")
+            self.assertEqual(lane.top_digest(chosen), "sha256:" + "a" * 64)
+            (chosen / "index.json").write_text(json.dumps({"manifests": []}))
+            with self.assertRaises(SystemExit):
+                lane.top_digest(chosen)
+
+    def test_the_export_is_platform_pinned_and_named_for_docker_load(self) -> None:
+        argv = lane.export_argv(Path("/l"), "sha256:" + "a" * 64, "mdt-cockpit-oci-push:9")
+        self.assertEqual(argv[:3], ["regctl", "image", "export"])
+        self.assertIn("--name", argv)
+        self.assertEqual(argv[argv.index("--name") + 1], "mdt-cockpit-oci-push:9")
+        self.assertEqual(argv[-1], "ocidir:///l@sha256:" + "a" * 64)
+
+    def test_the_layout_root_is_build_pushs_own_resolution(self) -> None:
+        self.assertEqual(lane.layout_root(), Path(lane.__file__).resolve().parents[1] / "build" / "oci-layouts")
 
     def test_the_container_is_gate_placed_reaped_named_and_forces_the_requirement(self) -> None:
         argv = lane.docker_run_argv("img:1", "g.slice", "mdt-cockpit-oci-push-7")
@@ -59,6 +109,15 @@ class Driver(unittest.TestCase):
         # the buildx-dependent bake-file test moved here from tester-unified (T8 skip-diff)
         self.assertIn("scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags", lane.INNER)
         self.assertIn("&&", lane.INNER, "both stages must succeed")
+
+    def test_the_smoke_lane_deselects_the_bake_test_explicitly_and_oci_push_runs_it(self) -> None:
+        import tomllib
+
+        root = Path(__file__).resolve().parents[1]
+        smoke = tomllib.loads((root / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["smoke"]["argv"][-1]
+        node = "scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone"
+        self.assertIn(f"--deselect {node}", smoke)
+        self.assertIn(node, lane.INNER)
 
     def test_the_bake_test_fails_instead_of_skipping_when_required(self) -> None:
         import test_local_dev as local_dev_tests

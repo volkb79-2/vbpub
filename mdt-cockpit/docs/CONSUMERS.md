@@ -606,11 +606,14 @@ do not list still come from their releases. The images are loaded into your loca
 
 ## Release consumer
 
-A release also runs the `oci-push` lane (the push mechanics against a real local registry,
-inside the image you are releasing): name the image ref for it.
+A release also runs the `oci-push` lane (the push mechanics against a real local registry), inside
+the image that same release just built. You do not name an image: `cmru release` runs `prepare`
+(`build-push.py --build`, which leaves the OCI layouts) and then the lane. To run it by hand after
+a build:
 
 ```bash
-MDT_OCI_PUSH_IMAGE=ghcr.io/volkb79-2/mdt-cockpit:<tag> ./run-gate.py oci-push
+python3 build-push.py --build      # leaves build/oci-layouts/<target>/
+./run-gate.py oci-push             # fails if no layout exists
 ```
 
 The MDT release configuration (schema version 1) contains these values:

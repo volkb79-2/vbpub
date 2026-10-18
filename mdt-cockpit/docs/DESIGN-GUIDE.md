@@ -404,12 +404,18 @@ persists.
 real registry, and so needs docker, buildx, `crane` and `regctl`. tester-unified (built on
 `tester-base`) carries none of buildx/crane/regctl by design, and a test that silently skips
 there certifies nothing. It therefore lives in its own lane, `oci-push`, which starts the exact
-mdt-cockpit image (`MDT_OCI_PUSH_IMAGE`) from a bare-host driver (`scripts/run_oci_push_lane.py`):
-gate tier, `--init`, uniquely named and removed by exact name, the host docker socket mounted, the
-tracked sources streamed in on stdin (no devcontainer path is bind-mounted). `MDT_OCI_PUSH_REQUIRED=1`
-turns every missing precondition into a failure; outside the lane (a developer's shell) the same
-test still skips when a tool is missing. The release step runs the lane, so the image ref comes from
-the operator at release time (there is no default to fall back to).
+image the release just built from a bare-host driver (`scripts/run_oci_push_lane.py`): gate tier,
+`--init`, uniquely named and removed by exact name, the host docker socket mounted, the tracked
+sources streamed in on stdin (no devcontainer path is bind-mounted). `MDT_OCI_PUSH_REQUIRED=1` turns
+every missing precondition into a failure; outside the lane (a developer's shell) the same test still
+skips when a tool is missing.
+
+**The image is derived, not typed (D-006).** In the shipped `RELEASE_IMAGE_FLOW=load` the `prepare`
+step leaves one OCI layout per bake target under `build/oci-layouts/` (the directory `build-push.py`
+resolves). The driver exports the first with `regctl image export --name <private tag> | docker load`
+(this daemon cannot load an OCI layout directly), runs the lane in it, and removes that tag by exact
+name. With no layout the lane fails with "no image was built in this transaction": it never falls
+back to another image, and the `required_env` of the lane is only the gate tier.
 
 ## Built-image acceptance is a separate test boundary
 

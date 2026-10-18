@@ -14,10 +14,13 @@
 # =============================================================================
 schema_version = 1
 
+# The bake-file evaluation test needs `docker buildx`, which tester-unified (built on tester-base)
+# deliberately does not carry. It is DESELECTED here, explicitly, so no skip hides it; its only
+# coverage is the `oci-push` lane below, in the mdt-cockpit image, where it is required (T6/R6).
 [lanes.smoke]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests -q -rs && echo 'smoke: OK'"]
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1 && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests -q -rs --deselect scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone && echo 'smoke: OK'"]
 budget = "2m"
 
 [lanes.smoke.resources]
@@ -36,15 +39,17 @@ budget = "15m"
 
 # The OCI-layout push test (real registry:2, buildx export, crane/regctl digest verification)
 # needs tools tester-unified does not carry, so it runs INSIDE the mdt-cockpit image, with the
-# host docker socket (MDTC-02 T6). The driver only orchestrates: it starts the exact image given,
+# host docker socket (MDTC-02 T6). The driver only orchestrates: it starts the image the release built,
 # gate-placed, and streams the tracked sources in. In that container a missing tool FAILS.
-#   MDT_OCI_PUSH_IMAGE=<mdt-cockpit ref> ./run-gate.py oci-push
+# The image is DERIVED, never typed: the one the release's `prepare` step just built (the first OCI
+# layout under build/oci-layouts, imported under a private tag). No built image = the lane FAILS.
+#   ./run-gate.py oci-push        (after `python3 build-push.py --build`; cmru release does both)
 [lanes.oci-push]
 kind = "command"
 environment = "bare-host"
 argv = ["python3", "scripts/run_oci_push_lane.py"]
 clean_tree = true
-required_env = ["CGROUP_PARENT_DEV_GATES", "MDT_OCI_PUSH_IMAGE"]
+required_env = ["CGROUP_PARENT_DEV_GATES"]
 budget = "20m"
 
 [lanes.assay-full]

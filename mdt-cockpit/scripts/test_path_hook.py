@@ -1,6 +1,7 @@
 """The login-shell PATH hook merges; /etc/profile is patched only when it is exactly stock."""
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -16,8 +17,30 @@ HOOK = ROOT / "customization" / "path-hook.sh"
 ENTRIES = "/usr/local/share/mdt-cockpit/path-entries"
 PREFIX = "/opt/mdt/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin"
 SUFFIX = "/home/vscode/.local/bin"
-SHELLS = [shell for shell in ("bash", "sh", "zsh") if shutil.which(shell)]
+# The parametrisation NEVER shrinks with the machine: a shell that is not installed used to drop its
+# cases at collection time (42 tests became 32 in tester-unified, silently). A missing shell now
+# skips its cases on a developer machine and FAILS them in a lane that sets MDT_REQUIRE_SHELLS=1
+# (the mdt-cockpit smoke lane, run in tester-unified, which installs zsh for exactly this).
+SHELLS = ["bash", "sh", "zsh"]
 SHELL_PATH = {shell: shutil.which(shell) for shell in SHELLS}
+SHELLS_REQUIRED = os.environ.get("MDT_REQUIRE_SHELLS") == "1"
+
+
+def shell_precondition(shell: str, path: str | None, required: bool) -> None:
+    """Raise pytest's outcome for a shell that is not installed: failure when required, else skip."""
+    if path is not None:
+        return
+    if required:
+        pytest.fail(f"MDT_REQUIRE_SHELLS=1 but {shell} is not installed in this lane's image", pytrace=False)
+    pytest.skip(f"{shell} is not installed")
+
+
+@pytest.fixture(autouse=True)
+def _the_shell_under_test_is_installed(request: pytest.FixtureRequest) -> None:
+    callspec = getattr(request.node, "callspec", None)
+    shell = callspec.params.get("shell") if callspec else None
+    if shell in SHELL_PATH:
+        shell_precondition(shell, SHELL_PATH[shell], SHELLS_REQUIRED)
 
 
 @pytest.fixture()
@@ -41,7 +64,18 @@ def _run(shell: str, hook: Path, path: str, times: int = 1) -> tuple[list[str], 
 
 
 def test_the_hook_exists_for_the_shells_under_test() -> None:
-    assert "bash" in SHELLS and "sh" in SHELLS
+    assert "bash" in SHELLS and "sh" in SHELLS and "zsh" in SHELLS
+    assert SHELL_PATH["bash"] and SHELL_PATH["sh"]
+
+
+def test_a_missing_shell_fails_when_required_and_skips_otherwise() -> None:
+    with pytest.raises(pytest.fail.Exception, match="MDT_REQUIRE_SHELLS=1 but zsh"):
+        shell_precondition("zsh", None, True)
+    with pytest.raises(pytest.skip.Exception):
+        shell_precondition("zsh", None, False)
+    shell_precondition("zsh", "/usr/bin/zsh", True)
+    # the parametrisation is fixed, so a lane without zsh sees the zsh ids and cannot lose them quietly
+    assert SHELLS == ["bash", "sh", "zsh"]
 
 
 @pytest.mark.parametrize("shell", SHELLS)
@@ -248,3 +282,10 @@ def test_a_path_that_grows_by_the_same_prepended_list_each_time_stays_fixed(shel
     levels = [line.removeprefix("PATH=") for line in result.stdout.splitlines()]
 
     assert len(levels) == 3 and levels[0] == levels[1] == levels[2]
+
+
+def test_the_smoke_lane_that_runs_these_tests_requires_every_shell() -> None:
+    import tomllib
+
+    lane = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["smoke"]
+    assert "MDT_REQUIRE_SHELLS=1" in lane["argv"][-1]
