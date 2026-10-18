@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -504,6 +505,36 @@ def test_local_dev_tag_plan_accepts_dev_tags_and_refuses_a_release_tag(
     )
     with pytest.raises(SystemExit, match="not a local-dev tag"):
         build_push.local_dev_tag_plan(["t"], "dev-20261018")
+
+
+def test_the_build_mode_is_in_the_environment_before_the_tag_plan_is_computed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The bake file emits dev-only tags only in local-dev mode, so the plan must be
+    computed with the mode already set (the first real run caught this order bug)."""
+    seen: dict[str, str | None] = {}
+    monkeypatch.delenv("MDT_BUILD_MODE", raising=False)
+    monkeypatch.setenv("BUILD_DATE", "dev-20261018")
+    monkeypatch.setattr(build_push, "_prepare_local_dev", lambda _m: ([], {"PWMCP_VERSION": PWMCP_VERSION}))
+    monkeypatch.setattr(build_push, "ensure_devcontainers_base_from_bake_defaults", lambda: None)
+    monkeypatch.setattr(build_push, "run_resolver", lambda: {})
+    monkeypatch.setattr(build_push.local_dev, "stage", lambda *_a, **_k: None)
+    monkeypatch.setattr(build_push, "ensure_manifests_dir", lambda: None)
+    monkeypatch.setattr(build_push, "save_build_env", lambda *_a, **_k: None)
+    monkeypatch.setattr(build_push, "run_step", lambda *_a, **_k: None)
+    monkeypatch.setattr(build_push, "verify_local_dev_images", lambda _plan: None)
+
+    def plan(requested, build_date):
+        seen["mode"] = os.environ.get("MDT_BUILD_MODE")
+        return {"t": DEV_TAGS}
+
+    monkeypatch.setattr(build_push, "local_dev_tag_plan", plan)
+    manifest = tmp_path / "m.toml"
+    manifest.write_text("", encoding="utf-8")
+
+    build_push.do_local_dev_build(False, manifest, ["t"])
+
+    assert seen["mode"] == "local-dev"
 
 
 # ── the bake wrapper: no publishing flow is reachable with local-dev state ───

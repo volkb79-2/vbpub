@@ -472,6 +472,10 @@ def do_local_dev_build(
         )
 
     ensure_devcontainers_base_from_bake_defaults()
+    # The mode must be in the environment before ANYTHING evaluates the bake file:
+    # in local-dev mode it emits only -dev- tags, and the tag plan below is checked
+    # against exactly that.
+    os.environ["MDT_BUILD_MODE"] = local_dev.MODE_LOCAL_DEV
     build_date = _local_dev_build_date()
     os.environ["BUILD_DATE"] = build_date
     sys.stderr.write(f"[INFO] BUILD_DATE={build_date}\n")
