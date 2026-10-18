@@ -186,22 +186,59 @@ def test_the_shipped_example_parses_as_a_manifest_shape() -> None:
 # ── staging and provenance ───────────────────────────────────────────────────
 
 
-def test_staging_replaces_a_stale_wheel_of_the_same_distribution(tmp_path: Path) -> None:
-    wheels = tmp_path / "pip" / "wheels"
-    wheels.mkdir(parents=True)
-    (wheels / "ciu-7.10.0-py3-none-any.whl").write_bytes(b"old")
-    (wheels / "ciu-7.10.0-py3-none-any.whl.sha256").write_text("x")
-    (wheels / "cmru-6.0.0-py3-none-any.whl").write_bytes(b"other")
+def test_staging_never_writes_into_the_shared_release_wheel_directory(tmp_path: Path) -> None:
+    """A local wheel left in pip/wheels/ would be baked into the next RELEASE build."""
+    shared = tmp_path / "pip" / "wheels"
+    shared.mkdir(parents=True)
+    (shared / "cmru-6.0.0-py3-none-any.whl").write_bytes(b"release wheel")
+    before = {path.name: path.read_bytes() for path in shared.iterdir()}
     artifacts = _load(tmp_path, _ciu_entry(tmp_path))
     staging = tmp_path / "build" / "local-dev"
 
-    local_dev.stage(artifacts, wheels_dir=wheels, staging_dir=staging)
+    local_dev.stage(artifacts, staging_dir=staging)
 
-    assert sorted(path.name for path in wheels.iterdir()) == [
-        "ciu-7.11.0-py3-none-any.whl",
-        "cmru-6.0.0-py3-none-any.whl",
-    ]
-    assert (wheels / "ciu-7.11.0-py3-none-any.whl").read_bytes() == b"ciu wheel"
+    assert {path.name: path.read_bytes() for path in shared.iterdir()} == before
+    assert (staging / "wheels" / "ciu-7.11.0-py3-none-any.whl").read_bytes() == b"ciu wheel"
+    record = json.loads((staging / "provenance.json").read_text())
+    assert record["artifacts"][0]["staged"] == "wheels/ciu-7.11.0-py3-none-any.whl"
+
+
+def test_staging_replaces_the_previous_context_wholesale(tmp_path: Path) -> None:
+    staging = tmp_path / "build" / "local-dev"
+    (staging / "wheels").mkdir(parents=True)
+    (staging / "wheels" / "ciu-7.10.0-py3-none-any.whl").write_bytes(b"old")
+
+    local_dev.stage(_load(tmp_path, _ciu_entry(tmp_path)), staging_dir=staging)
+
+    assert [path.name for path in (staging / "wheels").iterdir()] == ["ciu-7.11.0-py3-none-any.whl"]
+
+
+def test_staging_hashes_the_copy_and_refuses_a_file_changed_after_verification(tmp_path: Path) -> None:
+    entry = _ciu_entry(tmp_path)
+    artifacts = _load(tmp_path, entry)
+    Path(entry["path"]).write_bytes(b"rebuilt in between")  # the resolver runs the network in between
+
+    with pytest.raises(local_dev.LocalDevError, match="changed after the manifest was verified"):
+        local_dev.stage(artifacts, staging_dir=tmp_path / "build" / "local-dev")
+
+    assert not (tmp_path / "build" / "local-dev" / "wheels" / "ciu-7.11.0-py3-none-any.whl").exists()
+
+
+def test_staged_files_are_readable_by_the_unprivileged_build_user_under_umask_077(tmp_path: Path) -> None:
+    bundle, bundle_sha = _write_artifact(tmp_path, "pwmcp-1.64.0-r2.tar.xz", b"bundle")
+    entries = [_ciu_entry(tmp_path), {"name": "pwmcp-bundle", "path": str(bundle), "sha256": bundle_sha, "version": PWMCP_VERSION}]
+    artifacts = _load(tmp_path, *entries)
+    staging = tmp_path / "build" / "local-dev"
+    previous = os.umask(0o077)
+    try:
+        local_dev.stage(artifacts, staging_dir=staging)
+    finally:
+        os.umask(previous)
+
+    for path in staging.rglob("*"):
+        mode = path.stat().st_mode & 0o777
+        assert mode == (0o755 if path.is_dir() else 0o644), f"{path.relative_to(staging)} is {oct(mode)}"
+    assert (staging.stat().st_mode & 0o777) == 0o755
 
 
 def test_staging_records_pwmcp_files_and_their_hashes(tmp_path: Path) -> None:
@@ -214,7 +251,7 @@ def test_staging_records_pwmcp_files_and_their_hashes(tmp_path: Path) -> None:
     artifacts = _load(tmp_path, *entries)
     staging = tmp_path / "build" / "local-dev"
 
-    local_dev.stage(artifacts, wheels_dir=tmp_path / "wheels", staging_dir=staging)
+    local_dev.stage(artifacts, staging_dir=staging)
 
     record = json.loads((staging / "provenance.json").read_text())
     by_name = {item["name"]: item for item in record["artifacts"]}

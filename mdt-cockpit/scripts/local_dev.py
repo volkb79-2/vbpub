@@ -197,21 +197,38 @@ def provenance_json(artifacts: Iterable[LocalArtifact]) -> str:
     return json.dumps(provenance_records(artifacts), separators=(",", ":"), sort_keys=True)
 
 
-def stage(
-    artifacts: Sequence[LocalArtifact], *, wheels_dir: Path, staging_dir: Path
-) -> None:
+def _copy_verified(source: Path, destination: Path, expected_sha256: str, what: str) -> None:
+    """Copy, hash THE COPY, compare with the recorded sha, then set readable modes.
+
+    The source was hashed when the manifest was loaded, but the resolver (network) runs
+    in between, so a rebuilt file would otherwise be baked under the old sha. Modes are
+    set explicitly because an umask-077 checkout would leave the copy unreadable to the
+    unprivileged build user.
+    """
+    shutil.copyfile(source, destination)
+    actual = sha256_of(destination)
+    if actual != expected_sha256:
+        destination.unlink()
+        raise LocalDevError(
+            f"{what}: {source} changed after the manifest was verified "
+            f"(recorded {expected_sha256}, copy hashes to {actual})"
+        )
+    destination.chmod(0o644)
+
+
+def stage(artifacts: Sequence[LocalArtifact], *, staging_dir: Path) -> None:
     """Place verified artifacts where the Dockerfile consumes them.
 
-    Wheels go into ``pip/wheels/`` (the existing offline-install context), replacing
-    any wheel of the same distribution - the Dockerfile installs ``*.whl`` in one
-    resolution, which cannot tolerate two versions of one package. The PWMCP files
-    go into ``staging_dir`` (the ``mdt-local-dev`` named context), together with a
-    ``provenance.json`` that the in-image installer re-verifies.
+    EVERYTHING goes into ``staging_dir`` (the ``mdt-local-dev`` named build context):
+    wheels under ``wheels/``, the PWMCP files under ``pwmcp/``, and a ``provenance.json``
+    that the in-image steps re-verify. Nothing is written into the shared, untracked
+    ``pip/wheels/`` - a local wheel left there would be baked into the next RELEASE build.
     """
     if staging_dir.exists():
         shutil.rmtree(staging_dir)
-    (staging_dir / "pwmcp").mkdir(parents=True)
-    wheels_dir.mkdir(parents=True, exist_ok=True)
+    for sub in ("", "pwmcp", "wheels"):
+        (staging_dir / sub).mkdir(parents=True, exist_ok=True)
+        (staging_dir / sub).chmod(0o755)
     records: list[dict[str, str]] = []
     for artifact in artifacts:
         record = {
@@ -221,24 +238,21 @@ def stage(
             "path": str(artifact.path),
         }
         if artifact.is_wheel:
-            dist, _ = wheel_identity(artifact.path.name)
-            for stale in wheels_dir.glob("*.whl"):
-                if wheel_identity(stale.name)[0] == dist:
-                    stale.unlink()
-                    sidecar = stale.with_name(stale.name + ".sha256")
-                    sidecar.unlink(missing_ok=True)
-            shutil.copyfile(artifact.path, wheels_dir / artifact.path.name)
-            record["staged"] = f"wheels/{artifact.path.name}"
+            target = f"wheels/{artifact.path.name}"
+        elif artifact.name == PWMCP_INSTALLER:
+            target = "pwmcp/get.py"
         else:
-            target = "pwmcp/get.py" if artifact.name == PWMCP_INSTALLER else "pwmcp/bundle.tar.xz"
-            shutil.copyfile(artifact.path, staging_dir / target)
-            record["staged"] = target
+            target = "pwmcp/bundle.tar.xz"
+        _copy_verified(artifact.path, staging_dir / target, artifact.sha256, artifact.name)
+        record["staged"] = target
         records.append(record)
-    (staging_dir / PROVENANCE_NAME).write_text(
+    provenance = staging_dir / PROVENANCE_NAME
+    provenance.write_text(
         json.dumps({"schema": SCHEMA_VERSION, "artifacts": records}, indent=2, sort_keys=True)
         + "\n",
         encoding="utf-8",
     )
+    provenance.chmod(0o644)
 
 
 def _split_ref(image_ref: str) -> tuple[str, str]:

@@ -60,7 +60,6 @@ BUILD_ENV_FILE = ROOT / ".build-env.json"
 LOCAL_DEV_BUILD_ENV_FILE = ROOT / ".build-env.local-dev.json"
 LOCAL_DEV_STAGING = ROOT / "build" / "local-dev"
 WHEELS_LIST = ROOT / "pip" / "wheels.list"
-WHEELS_DIR = ROOT / "pip" / "wheels"
 RESOLVER_SCRIPT = ROOT / "scripts" / "resolve-devcontainers-release.py"
 COUNTER_DIR = ROOT / "logs"
 _PUSH_STEP_GUARD = "MDT_RELEASE_PUSH_STEP_ACTIVE"
@@ -496,7 +495,7 @@ def do_local_dev_build(
     apply_env_to_os(env_vars)
 
     sys.stderr.write("[INFO] Step 2/3: Staging verified local artifacts ...\n")
-    local_dev.stage(artifacts, wheels_dir=WHEELS_DIR, staging_dir=LOCAL_DEV_STAGING)
+    local_dev.stage(artifacts, staging_dir=LOCAL_DEV_STAGING)
     ensure_manifests_dir()
 
     plan = local_dev_tag_plan(requested_targets, build_date)

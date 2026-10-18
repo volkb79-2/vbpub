@@ -796,21 +796,37 @@ RUN set -euo pipefail; \
 # floors here makes a missing offline dependency fail during the final venv
 # reconciliation, before the first-party wheel layer, rather than being
 # discovered there.
-# FATAL in every build mode when pip/wheels/ is empty or lacks a distribution that
-# wheels.list declares (scripts/check_wheel_set.py compares distribution names): an
-# image without ciu/cmru/topos/nyxloom/cli-extended must not be built, not discovered
-# when a user runs the missing CLI.
+# FATAL in every build mode unless the wheel set is EXACTLY the one this build reported
+# (scripts/check_wheel_set.py): pip/wheels/ must equal the resolver's RESOLVED.json (no
+# leftover, no extra file, matching sha256), a local-dev build's wheels come ONLY from the
+# `mdt-local-dev` context (never from pip/wheels/, so they cannot leak into a later
+# release build), and together they must supply exactly the distributions wheels.list
+# declares. Only the files the check emits are installed, and the installed set with its
+# sha256 is recorded in the image (first-party-wheels.json) for the runtime lane.
 # Source: https://github.com/volkb79-2/vbpub/releases — first-party project releases.
-RUN set -euo pipefail; \
+RUN --mount=type=bind,from=mdt-local-dev,source=/,target=/tmp/mdt-local-dev \
+    set -euo pipefail; \
     umask 0002; \
     wheels_dir="/tmp/pip/wheels"; \
     wheels_list="/tmp/pip/wheels.list"; \
-    python3 /tmp/check_wheel_set.py --wheels-dir "${wheels_dir}" --wheels-list "${wheels_list}"; \
+    install -d -m 0755 /usr/local/share/mdt-cockpit; \
+    python3 /tmp/check_wheel_set.py \
+        --wheels-dir "${wheels_dir}" \
+        --wheels-list "${wheels_list}" \
+        --build-mode "${MDT_BUILD_MODE}" \
+        --local-dir /tmp/mdt-local-dev \
+        --install-list /tmp/first-party-wheels.install \
+        --record /usr/local/share/mdt-cockpit/first-party-wheels.json; \
+    chmod 0644 /usr/local/share/mdt-cockpit/first-party-wheels.json; \
+    mapfile -t install_files < /tmp/first-party-wheels.install; \
+    find_links=(--find-links="${wheels_dir}"); \
+    if [ "${MDT_BUILD_MODE}" = "local-dev" ]; then find_links+=(--find-links=/tmp/mdt-local-dev/wheels); fi; \
     /opt/mdt/venv/bin/python -m pip install \
         --disable-pip-version-check \
         --no-index \
-        --find-links="${wheels_dir}" \
-        "${wheels_dir}"/*.whl; \
+        "${find_links[@]}" \
+        "${install_files[@]}"; \
+    rm -f /tmp/first-party-wheels.install; \
     mdt-perms fix /opt/mdt/venv
 
 # PWMCP instance in /srv (root:mdt 2775, created above). It is installed as the

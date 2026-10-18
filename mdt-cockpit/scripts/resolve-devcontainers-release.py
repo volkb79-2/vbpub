@@ -825,6 +825,48 @@ def _local_dev_wheels(wheel_list_names: list[str]) -> dict[str, "local_dev.Local
     return {a.name: a for a in artifacts if a.is_wheel}
 
 
+def purge_stale_wheels(wheels_dir: Path, name: str, *, keep: Path) -> list[Path]:
+    """Remove wheels (and their ``.sha256`` sidecars) of distribution ``name`` except ``keep``.
+
+    Compared as distributions: the file of ``cli-extended`` is ``cli_extended-*.whl``, which
+    a ``f"{name}-*.whl"`` glob never matched.
+    """
+    wanted = local_dev.normalize_dist(name)
+    removed: list[Path] = []
+    for stale in sorted(wheels_dir.glob("*.whl")) + sorted(wheels_dir.glob("*.whl.sha256")):
+        wheel = stale if stale.suffix == ".whl" else stale.with_suffix("")
+        if local_dev.normalize_dist(stale.name.split("-", 1)[0]) == wanted and wheel != keep:
+            print(f"[INFO] Removing stale wheel file {stale.name}", file=sys.stderr)
+            stale.unlink()
+            removed.append(stale)
+    return removed
+
+
+WHEELS_REPORT_NAME = "RESOLVED.json"
+
+
+def write_wheels_report(resolved: list[dict[str, str]]) -> Path:
+    """Write the exact set of release wheels THIS run resolved, next to the wheels.
+
+    The Dockerfile's wheel check demands that ``pip/wheels/`` equals this set: a wheel
+    that is present but was not reported (a leftover of an earlier build, a hand-copied
+    file) is an error, not something to install. Local-dev wheels are not listed here;
+    they travel in the ``mdt-local-dev`` context instead.
+    """
+    WHEELS_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
+    report = WHEELS_CONTEXT_DIR / WHEELS_REPORT_NAME
+    release = [
+        {"name": w["name"], "filename": w["whl_filename"], "sha256": w["sha256"]}
+        for w in resolved
+        if w.get("source") == "release"
+    ]
+    report.write_text(
+        json.dumps({"schema": 1, "wheels": release}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return report
+
+
 def resolve_first_party_wheels(
     owner: str, repo: str
 ) -> list[dict[str, str]]:
@@ -893,6 +935,7 @@ def resolve_first_party_wheels(
                 "version": artifact.version,
                 "sha256": artifact.sha256,
                 "whl_filename": artifact.path.name,
+                "source": "local-dev",
             })
             continue
         print(f"[INFO] Resolving first-party wheel: {name}", file=sys.stderr)
@@ -956,18 +999,9 @@ def resolve_first_party_wheels(
         whl_dest = WHEELS_CONTEXT_DIR / whl_filename
 
         # Purge any pre-existing wheels (and their .sha256 sidecars) for this
-        # package before staging the new one.  The Dockerfile installs via a
-        # bare glob ("pip install *.whl") which cannot tolerate two versions of
-        # the same package — pip raises ResolutionImpossible.
-        for stale in list(WHEELS_CONTEXT_DIR.glob(f"{name}-*.whl")):
-            if stale != whl_dest:
-                print(f"[INFO] Removing stale wheel {stale.name}", file=sys.stderr)
-                stale.unlink()
-        for stale in list(WHEELS_CONTEXT_DIR.glob(f"{name}-*.whl.sha256")):
-            stale_whl = stale.with_suffix("")  # strip .sha256 → .whl path
-            if stale_whl != whl_dest:
-                print(f"[INFO] Removing stale wheel sidecar {stale.name}", file=sys.stderr)
-                stale.unlink()
+        # package before staging the new one.  The Dockerfile installs a set of
+        # files that cannot tolerate two versions of the same package.
+        purge_stale_wheels(WHEELS_CONTEXT_DIR, name, keep=whl_dest)
 
         # Download wheel.
         print(f"[INFO] Downloading {whl_filename} from {whl_url}", file=sys.stderr)
@@ -1035,6 +1069,7 @@ def resolve_first_party_wheels(
             "version": version,
             "sha256": sha256_used,
             "whl_filename": whl_filename,
+            "source": "release",
         })
 
     return resolved
@@ -1892,6 +1927,7 @@ def main() -> int:
     # The actual rebuild happens in the FINAL CUT after cmru's P7 re-release.
     sys.stderr.write("[INFO] Resolving first-party wheels from pip/wheels.list...\n")
     first_party_wheels = resolve_first_party_wheels(github_owner, github_repo)
+    write_wheels_report(first_party_wheels)
 
     package_names = write_package_docs(
         build_date,

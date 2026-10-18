@@ -274,10 +274,21 @@ hazard), so local-dev is a **separate, explicit mode**:
   consistent with its version, and a PWMCP entry equal to the pinned release. The
   first failure refuses the build and names the entry. The resolver re-verifies
   the same manifest, and the in-image PWMCP installer re-hashes what it was given.
-- **Nothing local reaches a layer by accident.** Wheels are staged into the
-  existing offline `pip/wheels/` context; the PWMCP files travel through the bake
-  named context `mdt-local-dev` (an empty `FROM scratch` stage in a release
-  build), mounted into the single RUN that needs them. `get.py` is the unchanged
+- **Nothing local reaches a layer by accident.** Local wheels and the PWMCP files
+  travel through the bake named context `mdt-local-dev` (`build/local-dev/`; an
+  empty `FROM scratch` stage in a release build), mounted into the RUNs that need
+  them. They are **never** written into the shared, untracked `pip/wheels/`: a
+  local wheel left there would be installed by the next *release* build and
+  labelled `release`. That directory holds only what the resolver reports in
+  `pip/wheels/RESOLVED.json` for the current build, and the Dockerfile's wheel
+  step (`scripts/check_wheel_set.py`) requires equality with that report (a
+  leftover file is an error, not something to install), takes local-dev wheels
+  only from the context in local-dev mode, refuses any in release mode, requires
+  the union to be exactly the distributions `pip/wheels.list` declares, and
+  records the installed wheels with their sha256 in
+  `/usr/local/share/mdt-cockpit/first-party-wheels.json`. Staging copies a file,
+  hashes the *copy* against the manifest, then sets modes `0644`/`0755`, so a
+  file rebuilt after verification or an umask-077 checkout cannot slip through. `get.py` is the unchanged
   pinned installer: only its release-asset download is replaced, so its checksum,
   manifest-vs-tag and wheel verification still run.
 - **Recorded.** `net.volkb79.mdt.build-mode=local-dev` and
