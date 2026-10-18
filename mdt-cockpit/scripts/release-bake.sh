@@ -77,6 +77,46 @@ oci_layout_bake() {
     done
 }
 
+local_dev_bake() {
+    # Explicit local-dev build (build-push.py --build --local-dev): build the
+    # selected targets from verified local artifacts and LOAD them into the local
+    # Docker daemon under local-only tags. Nothing is exported to a registry or an
+    # OCI layout, so nothing here can be published; the image also carries the
+    # net.volkb79.mdt.build-mode=local-dev label that every publish path refuses.
+    : "${MDT_BAKE_TARGETS:?MDT_BAKE_TARGETS must list the targets to build}"
+    : "${MDT_LOCAL_DEV_STAGING:?MDT_LOCAL_DEV_STAGING must name the verified artifact directory}"
+    [[ -f "${MDT_LOCAL_DEV_STAGING}/provenance.json" ]] || {
+        echo "[ERROR] ${MDT_LOCAL_DEV_STAGING}/provenance.json is missing; stage the local artifacts first." >&2
+        return 1
+    }
+
+    local target tag
+    local -a targets bake_args tags
+    IFS=',' read -r -a targets <<<"${MDT_BAKE_TARGETS}"
+    for target in "${targets[@]}"; do
+        # docker-bake.hcl emits only -dev- tags when MDT_BUILD_MODE=local-dev;
+        # re-check here, because these are the tags the image will carry.
+        mapfile -t tags < <(docker buildx bake -f docker-bake.hcl "${target}" --print \
+            | jq -r --arg t "${target}" '.target[$t].tags[]?')
+        [[ "${#tags[@]}" -gt 0 ]] || {
+            echo "[ERROR] Target '${target}' has no tags." >&2
+            return 1
+        }
+        for tag in "${tags[@]}"; do
+            [[ "${tag##*:}" == *-dev-* ]] || {
+                echo "[ERROR] '${tag}' is not a local-dev tag; refusing to build it." >&2
+                return 1
+            }
+        done
+        # One target per invocation, as in the release flows (shared layers).
+        bake_args=(docker buildx bake -f docker-bake.hcl "${target}" --load --provenance=false --sbom=false)
+        bake_args+=(--set "${target}.contexts.mdt-local-dev=${MDT_LOCAL_DEV_STAGING}")
+        echo "[INFO] [local-dev] bake start (${target}: ${tags[*]}) $(ts)"
+        run_low_priority "${bake_args[@]}"
+        echo "[INFO] [local-dev] bake end (${target}) $(ts)"
+    done
+}
+
 registry_bake() {
     : "${IMAGE_COMPRESSION:?IMAGE_COMPRESSION must be configured}"
     : "${IMAGE_COMPRESSION_LEVEL:?IMAGE_COMPRESSION_LEVEL must be configured}"
@@ -118,6 +158,23 @@ if [[ "${ACTION}" != "build" && "${ACTION}" != "push" ]]; then
     exit 2
 fi
 
+# The build mode decides the flow, never the other way round. cmru applies the
+# project's [env] (RELEASE_IMAGE_FLOW = "load") over the caller's environment, so
+# an explicit local-dev build is recognised by MDT_BUILD_MODE, which cmru does not
+# manage, and is forced onto the one flow that can never publish. The reverse -
+# the local-dev flow without the local-dev mode - is refused.
+BUILD_MODE="${MDT_BUILD_MODE:-release}"
+if [[ "${BUILD_MODE}" == "local-dev" ]]; then
+    if [[ "${ACTION}" != "build" ]]; then
+        echo "[ERROR] MDT_BUILD_MODE=local-dev has no ${ACTION} step: a local-dev image is never published." >&2
+        exit 2
+    fi
+    FLOW="local-dev"
+elif [[ "${FLOW}" == "local-dev" ]]; then
+    echo "[ERROR] RELEASE_IMAGE_FLOW=local-dev requires MDT_BUILD_MODE=local-dev (build-push.py --build --local-dev)." >&2
+    exit 2
+fi
+
 bash scripts/ensure-release-builder.sh
 
 OCI_LAYOUT_DIR="${MDT_OCI_LAYOUT_DIR:-build/oci-layouts}"
@@ -147,6 +204,13 @@ case "${FLOW}" in
             # informational message must never stand in for publication.
             exec python3 build-push.py --push
         fi
+        ;;
+    local-dev)
+        if [[ "${ACTION}" != "build" ]]; then
+            echo "[ERROR] RELEASE_IMAGE_FLOW=local-dev has no ${ACTION} step: a local-dev image is never published." >&2
+            exit 2
+        fi
+        local_dev_bake
         ;;
     push)
         if [[ "${ACTION}" == "build" ]]; then
@@ -209,7 +273,7 @@ case "${FLOW}" in
         echo "[INFO] [repack] bounded repack end $(ts)"
         ;;
     *)
-        echo "[ERROR] Unsupported RELEASE_IMAGE_FLOW=${FLOW}. Use load, push, or repack." >&2
+        echo "[ERROR] Unsupported RELEASE_IMAGE_FLOW=${FLOW}. Use load, push, repack, or (explicit local-dev builds only) local-dev." >&2
         exit 2
         ;;
 esac

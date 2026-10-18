@@ -193,8 +193,8 @@ LEAVES: list[Leaf] = [
     Leaf("php_packages", "PHP package payload (dpkg Installed-Size)", ("mdt layers", "PHP 8.5 runtime"), ("Runtimes", "PHP")),
     Leaf("php_apt_residual", "uncleaned apt lists/cache (this RUN is missing `rm -rf /var/lib/apt/lists/*`)", ("mdt layers", "PHP 8.5 runtime"), ("Runtimes", "PHP")),
     # ── "Modern tools" mega-layer ────────────────────────────────────────────
-    Leaf("mt_claude", "claude (Claude Code, root binary)", ("mdt layers", '"Modern tools" mega-layer'), ("AI coding-agent tools",), ("/usr/local/bin/claude",)),
-    Leaf("mt_antigravity", "antigravity (+ duplicate `agy` copy)", ("mdt layers", '"Modern tools" mega-layer'), ("AI coding-agent tools",), ("/usr/local/bin/antigravity", "/usr/local/bin/agy")),
+    Leaf("mt_claude", "claude (Claude Code, root binary)", ("mdt layers", '"Modern tools" mega-layer'), ("AI coding-agent tools",), ("/opt/mdt/bin/claude",)),
+    Leaf("mt_antigravity", "antigravity (+ duplicate `agy` copy)", ("mdt layers", '"Modern tools" mega-layer'), ("AI coding-agent tools",), ("/opt/mdt/bin/antigravity", "/opt/mdt/bin/agy")),
     Leaf("mt_awscli", "awscli", ("mdt layers", '"Modern tools" mega-layer'), ("Service / infrastructure CLIs",), ("/usr/local/aws",)),
     Leaf("mt_vault", "vault", ("mdt layers", '"Modern tools" mega-layer'), ("Service / infrastructure CLIs",), ("/usr/local/bin/vault",)),
     Leaf("mt_consul", "consul", ("mdt layers", '"Modern tools" mega-layer'), ("Service / infrastructure CLIs",), ("/usr/local/bin/consul",)),
@@ -278,8 +278,8 @@ LAYER_RULES: list[tuple[tuple[str, ...], str]] = [
     (("mdt layers", "Primary venv"), r"python3 -m venv /opt/mdt/venv"),
     (("mdt layers", "Aider (venv mode)"), r"install_ai_cli_tools\.py venv"),
     (("mdt layers", "First-party wheels"), r"find-links=\"\$\{wheels_dir\}\""),
-    (("mdt layers", "Manifest generation step"), r"manifest_dir=\"/usr/local/share/modern-debian-tools-python-debug\""),
-    (("mdt layers", "misc config/customization copies"), r"zshrc_source=|share_dir=\"/usr/local/share/modern-debian-tools-python-debug\""),
+    (("mdt layers", "Manifest generation step"), r"manifest_dir=\"/usr/local/share/mdt-cockpit\""),
+    (("mdt layers", "misc config/customization copies"), r"share_dir=\"/usr/local/share/mdt-cockpit\""),
 ]
 
 

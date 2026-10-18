@@ -2,31 +2,33 @@
 
 The template binds the complete `/home/vscode` directory to one host source.
 This keeps agent logins, keys, histories, caches, shell preferences, and any
-other user-created home content across rebuilds. Image executables and runtime
-payloads live under `/opt/mdt`; default config sources live under
-`/usr/local/share/modern-debian-tools-python-debug`.
+other user-created home content across rebuilds. **A new home starts empty**:
+image executables and runtime payloads live under `/opt/mdt` and `/srv`, and
+every image default is wired system-wide (`/etc`,
+`/usr/local/share/mdt-cockpit`), so nothing is copied into the home.
 
 ## Adopt
 
-Copy all host-side files into the consuming repo's `.devcontainer` directory:
+Copy the host-side files into the consuming repo's `.devcontainer` directory:
 
 ```sh
-cp <vbpub>/mdt-cockpit/templates/{devcontainer.json,initialize_container_environment.py,migrate_persistent_home.py} .devcontainer/
+cp <vbpub>/mdt-cockpit/templates/{devcontainer.json,initialize_container_environment.py} .devcontainer/
 ```
 
 Adjust workspace-specific features, extensions, and mounts. Install and verify
 the MDT host setup before starting: the initializer checks the declared cgroup
-slices, creates missing bind sources, and refuses to create an empty home source
-while old split mounts still contain user data. See the
+slices and creates missing bind sources. See the
 [host cgroup preflight](../docs/CONSUMERS.md#host-cgroup-preflight).
 
 ## Persistent paths
 
 | Host source | Container target | Policy |
 |---|---|---|
-| `${localEnv:HOME}/mdt--mounted-folders/home-vscode/` | `/home/vscode` | Complete home, mode `0700` on a new source; all contents persist. |
-| `${localEnv:HOME}/mdt--mounted-folders/tmp/` | `/tmp` | Separate scratch/worktree source, mode `1777`. |
+| `${localEnv:HOME}/mdt-cockpit-home/` | `/home/vscode` | Complete home, mode `0700` on a new source; all contents persist. |
+| `${localEnv:HOME}/mdt-cockpit-tmp/` | `/tmp` | Separate scratch/worktree source, mode `1777`. |
 | `${localEnv:HOME}/.ssh/` | `/run/mdt/host-ssh` | Read-only native host SSH keys, outside the persistent home. |
+
+Any further mount source you add is named `${localEnv:HOME}/mdt-cockpit-<purpose>`.
 
 The home mount includes credentials and private keys stored under `~/.ssh`,
 `~/.gnupg`, and `~/.minisign`; protect the host source accordingly. Caches such
@@ -39,61 +41,43 @@ state, OpenCode, Pi, Reasonix, OpenClaw, GitHub CLI, shell history, `.config`,
 `CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared` and
 `shutdownAction: "none"`. See [Codex profile state and container lifetime](../docs/CONSUMERS.md#codex-profile-state-and-container-lifetime).
 
+The template deliberately sets neither `PATH` nor `NPM_CONFIG_PREFIX`: the image
+defines both once ([One PATH order](../docs/DESIGN-GUIDE.md#one-path-order)).
+
 ## Image paths and home defaults
 
-| Image-owned content | Image path | Home behavior after mount |
+| Image-owned content | Image path | In the home |
 |---|---|---|
-| Primary Python toolkit | `/opt/mdt/venv` | `~/.venv` compatibility symlink when the user has no existing path. |
-| Secondary Python environments | `/opt/mdt/venvs/pyNN` | `~/.venv-pyNN` compatibility symlink when free. |
-| npm agent CLIs | `/opt/mdt/npm` | Runtime npm installs default to the user's persistent `~/.local` prefix; user commands take precedence on `PATH`. |
-| uv-managed Python builds | `/opt/mdt/python` | User installs keep uv's normal per-user data path. |
-| Oh My Zsh distribution | `/opt/mdt/oh-my-zsh` | `~/.oh-my-zsh` compatibility symlink when free; personal extensions belong in `~/.oh-my-zsh-custom`. |
-| Shell and NvChad seed files | `/usr/local/share/modern-debian-tools-python-debug/home-defaults` | Finalizer seeds missing files and merges only missing config entries. |
-| MDT config defaults and manifest | `/usr/local/share/modern-debian-tools-python-debug` | Finalizer seeds missing user config files and the `~/mdt-manifest.md` compatibility link. |
+| Standalone CLIs (`claude`, `antigravity`, `agy`) | `/opt/mdt/bin` | Nothing. Group `mdt`, updatable without `sudo`. |
+| Primary Python toolkit | `/opt/mdt/venv` | Nothing; `python` resolves there via `PATH` (no `~/.venv`). |
+| Secondary Python environments | `/opt/mdt/venvs/pyNN` | Nothing (no `~/.venv-pyNN`). |
+| npm agent CLIs | `/opt/mdt/npm` | Nothing; `npm install -g` writes here (`NPM_CONFIG_PREFIX`). |
+| uv-managed Python builds | `/opt/mdt/python` | Nothing; user installs keep uv's per-user data path. |
+| Oh My Zsh distribution (VS Code image) | `/opt/mdt/oh-my-zsh` | Cache only, in `~/.cache/oh-my-zsh`. |
+| PWMCP instance | `/srv/pwmcp-instance` | Nothing. |
+| Shell, editor and tool defaults | `/etc/bash.bashrc`, `/etc/zsh/zshrc`, `/etc/nanorc`, `/etc/htoprc`, `/etc/mc/mc.ini`, `/etc/xdg/nvim` | Nothing - create your own file to override. |
+| MDT shell files, examples and manifest | `/usr/local/share/mdt-cockpit` | Nothing; your overrides go in `~/.config/mdt-cockpit/`. |
 
-The image itself must have no children under `/home/vscode`. The finalizer runs
-after the home mount is active and never replaces an existing user file or
-directory. Its home writes are intentional per-user defaults; changing them is
-safe and they persist across image updates.
+The image itself must have no children under `/home/vscode`. The finalizer
+runs after the home mount is active; its only home write is a comment-only
+`~/.zshrc` stub (when you have no zsh startup file) so zsh's new-user wizard
+does not take over your first terminal. It never replaces or edits an existing
+file, and running it twice changes nothing. Full tool-by-tool table:
+[System-wide defaults](../docs/DESIGN-GUIDE.md#system-wide-defaults).
 
-## Migrate an existing container
+## Moving from the previous template
 
-The migration utility reads the stopped container's merged `/home/vscode`,
-including the old split host mounts. It does not modify or delete those sources.
-Stop the container first so databases and other stateful writers are quiescent.
-
-```sh
-python3 .devcontainer/migrate_persistent_home.py <stopped-container>
-python3 .devcontainer/migrate_persistent_home.py <stopped-container> --apply
-```
-
-Review the dry-run counts, exclusions, unsupported special files, and free
-space before `--apply`. Apply refuses an archive containing unsupported
-special files rather than marking a partial copy complete. The utility also
-refuses a running container and a non-empty destination. It stages the copy
-beside the new source, hashes included regular files in both archive passes,
-and refuses to install if any path, mode, or file content changed. It writes
-`.mdt-home-migration.json` only after the copy completes, then installs the
-home directory. Keep the old split sources as rollback copies until the rebuilt
-container is verified.
-
-The migration omits the old image-owned `.venv`, `.venv-pyNN`, `.oh-my-zsh`,
-the read-only `.ssh-host` bind, and Codex's
-`.codex/packages/standalone` runtime. It preserves `.oh-my-zsh/custom` as
-`~/.oh-my-zsh-custom`. The old `.local` tree is preserved in full because it
-mixed image CLIs with user-installed commands and state; its commands can
-override the image prefix until you remove or update them yourself.
-
-After migration, rebuild with this template. If old split sources contain data
-but the marker is absent or invalid, the host bootstrap refuses to start and
-prints the migration command. Empty legacy directories alone do not block a
-new install.
+There is no migration. A new install starts with an empty home; if the previous
+`~/mdt--mounted-folders/` still holds files, the initializer prints one
+informational line (it never fails or blocks) and you copy what you want by
+hand: [Moving from modern-debian-tools-python-debug](../docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug)
+has a pasteable `cp -a` recipe and the old-image paths that must not be copied.
 
 ## Other template notes
 
-The template exposes `/srv/pwmcp-instance/bin` and `PWMCP_MCP_URL` to remote
-processes; each agent harness still configures its own MCP connection. See the
-[PWMCP browser service](../docs/CONSUMERS.md#pwmcp-browser-service).
+The template exports `PWMCP_MCP_URL` to remote processes (the `pwmcp` CLI is on
+the image `PATH`); each agent harness still configures its own MCP connection.
+See the [PWMCP browser service](../docs/CONSUMERS.md#pwmcp-browser-service).
 
 The host initializer is stdlib-only and distinguishes existing bind sources by
 actual host type. For missing custom sources, `create-by-spelling` treats a

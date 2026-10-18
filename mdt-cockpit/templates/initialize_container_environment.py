@@ -7,27 +7,28 @@ loaded from installed unit files, then prepares every `$HOME` bind-mount source
 with sane permissions. Docker's `--mount` form refuses a missing source; this
 script applies MDT's configured policy before Docker starts.
 
-Layout (grouped persistence):
-- The complete home is one real directory at `~/mdt--mounted-folders/home-vscode/`, bind-mounted
-  at `/home/vscode`. Image-owned tools and defaults live outside this mount.
-- `tmp` remains a separate host-backed `/tmp` at `~/mdt--mounted-folders/tmp/`, mode 1777, so
-  worktrees survive rebuilds and are visible to the sibling test-runner container.
-- The host's native `~/.ssh` is read-only at `/run/mdt/host-ssh`, outside the persistent home.
+Layout (fresh home; docs/HOME-PERSISTENCE.md):
+- The complete home is one real directory at `~/mdt-cockpit-home/` (mode 0700),
+  bind-mounted at `/home/vscode`. Image-owned tools and defaults live outside this
+  mount, so a new home starts EMPTY and the image fills in nothing but what the
+  tools themselves create.
+- `/tmp` is a separate host-backed directory at `~/mdt-cockpit-tmp/` (mode 1777),
+  so worktrees survive rebuilds and are visible to the sibling test-runner container.
+- Any further mount source is named `~/mdt-cockpit-<purpose>`.
+- The host's native `~/.ssh` is read-only at `/run/mdt/host-ssh`, outside the home.
 
 Design: stdlib-only and idempotent. Reads the sibling `devcontainer.json` and inspects each `type=bind`
 source under the host `$HOME`. Existing regular files and directories are handled according to their
 actual type, regardless of their names or suffixes. For a missing source, the host config policy
 defaults to `create-by-spelling`: a source ending in `/` creates a directory; a source without `/`
 creates an empty regular file. Set `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` in the host config
-to require every `$HOME` source managed here to exist already. Secret dirs
-(`.ssh`/`.gnupg`/`.minisign`) get 0700; `tmp` gets 1777; everything else 0755.
+to require every `$HOME` source managed here to exist already. `~/.ssh` gets 0700; `mdt-cockpit-tmp`
+gets 1777; the home gets 0700; everything else 0755.
 
-Migration safety: before creating a missing full-home source, this script checks the previous
-split sources under `~/mdt--mounted-folders/`. If any contains files, symlinks, or special files,
-the full-home source must contain a valid `.mdt-home-migration.json` marker written by
-`migrate_persistent_home.py`. Empty directories created by the previous bootstrap do not count as
-user data. This prevents Docker from starting with a new empty home while old state remains hidden
-in split mounts.
+No migration: this fork starts with an empty home and the user copies old content by hand.
+When the previous split-mount state (`~/mdt--mounted-folders/`) still holds files and the new
+home is absent or empty, `notify_legacy_split_state()` prints one informational line pointing at
+the manual-copy section of docs/HOME-PERSISTENCE.md. It never changes the exit status.
 """
 from __future__ import annotations
 
@@ -38,31 +39,26 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Secret dirs whose tools require 0700 (ssh/gpg/minisign reject loose perms).
-MODE_OVERRIDES = {".ssh": 0o700, ".gnupg": 0o700, ".minisign": 0o700}
-DEFAULT_MODE = 0o755
+# Mount sources under the host $HOME, spelled `mdt-cockpit-<purpose>` (D2).
+SOURCE_PREFIX = "mdt-cockpit-"
+HOME_SOURCE_NAME = SOURCE_PREFIX + "home"
+TMP_SOURCE_NAME = SOURCE_PREFIX + "tmp"
 TMP_MODE = 0o1777  # persisted host-backed /tmp: sticky + world-writable, like a normal /tmp
+HOME_MODE = 0o700
+# ssh insists on a private directory, whoever created it.
+MODE_OVERRIDES = {".ssh": 0o700}
+DEFAULT_MODE = 0o755
 
-# Name of the grouped-persistence parent under $HOME.
-PARENT_NAME = "mdt--mounted-folders"
-HOME_SOURCE_NAME = "home-vscode"
-HOME_MIGRATION_MARKER = ".mdt-home-migration.json"
-HOME_MIGRATION_SCHEMA_VERSION = 1
-
-# Canonical sources under the parent — used only if devcontainer.json can't be read.
-FALLBACK = [HOME_SOURCE_NAME]
+# Canonical sources - used only if devcontainer.json can't be read.
+FALLBACK = [HOME_SOURCE_NAME, TMP_SOURCE_NAME]
 FALLBACK_FILES: list[str] = []
-KNOWN_FILE_SOURCE_BASENAMES = {".claude.json", ".reasonix.toml", ".gitconfig"}
-KNOWN_DIRECTORY_SOURCE_NAMES = set(FALLBACK) | {"tmp"}
+KNOWN_FILE_SOURCE_BASENAMES = {SOURCE_PREFIX + "gitconfig"}
+KNOWN_DIRECTORY_SOURCE_NAMES = set(FALLBACK)
 
-# Sources mounted into the old split-home template. Keep these for the
-# one-time migration preflight; empty directories alone are not user data.
-LEGACY_DIRECTORY_SOURCE_NAMES = (
-    ".claude", ".claudelink", ".codex", ".codex2", ".config", ".gnupg",
-    ".local", ".minisign", ".openclaw", ".pi", ".reasonix", ".ssh",
-    "opencode-data",
-)
-LEGACY_FILE_SOURCE_NAMES = (".claude.json", ".reasonix.toml", ".gitconfig")
+# The previous template's grouped parent. It exists in live code ONLY so the
+# one-line notice can recognise it; nothing is ever created, read or migrated there.
+LEGACY_PARENT_NAME = "mdt--mounted-folders"
+MANUAL_COPY_DOC = "docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug"
 
 MISSING_SOURCE_POLICY_KEY = "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY"
 DEFAULT_MISSING_SOURCE_POLICY = "create-by-spelling"
@@ -352,10 +348,10 @@ def has_directory_marker(source: str) -> bool:
 
 
 def _mode_for(p: Path) -> int:
-    if p.name == "tmp" and p.parent.name == PARENT_NAME:
+    if p == HOME / TMP_SOURCE_NAME:
         return TMP_MODE
-    if p.name == HOME_SOURCE_NAME and p.parent.name == PARENT_NAME:
-        return 0o700
+    if p == HOME / HOME_SOURCE_NAME:
+        return HOME_MODE
     return MODE_OVERRIDES.get(p.name, DEFAULT_MODE)
 
 
@@ -363,7 +359,7 @@ def _is_known_directory_source(p: Path) -> bool:
     """Return whether a missing source is one of MDT's directory mounts."""
     if p == HOME / ".ssh":
         return True
-    return p.parent == HOME / PARENT_NAME and p.name in KNOWN_DIRECTORY_SOURCE_NAMES
+    return p.parent == HOME and p.name in KNOWN_DIRECTORY_SOURCE_NAMES
 
 
 def load_missing_source_policy(config_path: Path | None = None) -> str:
@@ -603,75 +599,71 @@ def ensure(
 
 def fallback_bind_paths() -> list[tuple[Path, str]]:
     """Return typed canonical sources when the sibling template is unavailable."""
-    parent = HOME / PARENT_NAME
     return (
         [(HOME / ".ssh", "directory")]
-        + [(parent / name, "directory") for name in FALLBACK]
-        + [(parent / "tmp", "directory")]
-        + [(parent / name, "file") for name in FALLBACK_FILES]
+        + [(HOME / name, "directory") for name in FALLBACK]
+        + [(HOME / name, "file") for name in FALLBACK_FILES]
     )
 
 
-def _contains_persisted_data(path: Path) -> bool:
-    """Return whether a legacy mount contains anything beyond empty dirs."""
+def _holds_file_or_symlink(path: Path) -> bool | None:
+    """Whether a tree holds any file, symlink or special file; None if unreadable.
+
+    Empty directories do not count. Symlinks are never followed: a symlink is
+    content in itself. `None` means the tree could not be fully inspected, which
+    is not the same as "empty" - the caller must not report it as empty.
+    """
     try:
-        path.lstat()
+        with os.scandir(path) as entries:
+            for entry in entries:
+                if entry.is_symlink() or not entry.is_dir(follow_symlinks=False):
+                    return True
+                nested = _holds_file_or_symlink(Path(entry.path))
+                if nested is not False:
+                    return nested
     except FileNotFoundError:
         return False
-    except OSError as exc:
-        raise ValueError(f"could not inspect legacy home source {path}: {exc}") from exc
-    if path.is_symlink():
-        return True
-    if path.is_file():
-        # A zero-byte config or marker can still be intentional user state.
-        # Only empty directories are safe to ignore during the cutover check.
-        return True
-    if not path.is_dir():
-        return True
-    try:
-        return any(_contains_persisted_data(child) for child in path.iterdir())
-    except OSError as exc:
-        raise ValueError(f"could not inspect legacy home source {path}: {exc}") from exc
+    except OSError:
+        return None
+    return False
 
 
-def _valid_home_migration_marker(home_source: Path) -> bool:
-    marker = home_source / HOME_MIGRATION_MARKER
+def _is_absent_or_empty(path: Path) -> bool | None:
+    """True when `path` is absent or an empty directory; None if it can't be told."""
     try:
-        if marker.is_symlink() or not marker.is_file():
-            return False
-        payload = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        with os.scandir(path) as entries:
+            return next(entries, None) is None
+    except FileNotFoundError:
+        return True
+    except NotADirectoryError:
         return False
-    return (
-        isinstance(payload, dict)
-        and payload.get("schema_version") == HOME_MIGRATION_SCHEMA_VERSION
-        and payload.get("complete") is True
-    )
+    except OSError:
+        return None
 
 
-def preflight_home_migration(parent: Path | None = None) -> bool:
-    """Refuse an empty new home while old split mounts still contain state."""
-    parent = parent or HOME / PARENT_NAME
-    home_source = parent / HOME_SOURCE_NAME
-    legacy_sources = [parent / name for name in LEGACY_DIRECTORY_SOURCE_NAMES]
-    legacy_sources.extend(parent / name for name in LEGACY_FILE_SOURCE_NAMES)
-    try:
-        populated = [path for path in legacy_sources if _contains_persisted_data(path)]
-    except ValueError as exc:
-        print(f"[mdt-bootstrap] ERROR {exc}", file=sys.stderr)
+def notify_legacy_split_state() -> bool:
+    """Print the one-line manual-copy pointer when old split state is left behind.
+
+    Informational only (D1): the exit status never depends on it. Fires when the
+    previous template's `~/mdt--mounted-folders/` holds files/symlinks AND the new
+    home is absent or empty. Returns whether the line was printed.
+    """
+    legacy = HOME / LEGACY_PARENT_NAME
+    legacy_state = _holds_file_or_symlink(legacy)
+    if legacy_state is False:
         return False
-    if not populated or _valid_home_migration_marker(home_source):
-        return True
-    listed = ", ".join(str(path) for path in populated[:5])
-    if len(populated) > 5:
-        listed += f", and {len(populated) - 5} more"
+    new_home_empty = _is_absent_or_empty(HOME / HOME_SOURCE_NAME)
+    if new_home_empty is False:
+        return False
+    legacy_text = "holds files" if legacy_state else "could not be fully inspected"
+    home_text = "is empty" if new_home_empty else "could not be inspected"
     print(
-        "[mdt-bootstrap] ERROR legacy home state still exists without a completed migration "
-        f"marker in {home_source}; found data under: {listed}. Stop the devcontainer and run "
-        "migrate_persistent_home.py <stopped-container> --apply before starting with the full-home template.",
+        f"[mdt-bootstrap] NOTE the previous split state ~/{LEGACY_PARENT_NAME}/ {legacy_text} "
+        f"and the new home ~/{HOME_SOURCE_NAME}/ {home_text}: this template starts with an empty "
+        f"home and migrates nothing - copy what you need by hand, see {MANUAL_COPY_DOC}.",
         file=sys.stderr,
     )
-    return False
+    return True
 
 
 def main() -> int:
@@ -715,8 +707,7 @@ def main() -> int:
     if not found_home_source:
         print("[mdt-bootstrap] no parseable $HOME bind mounts; using fallback set", file=sys.stderr)
         requested = dict(fallback_bind_paths())
-    if not preflight_home_migration():
-        return 1
+    notify_legacy_split_state()
     for p, expected_type in requested.items():
         result = ensure(
             p,

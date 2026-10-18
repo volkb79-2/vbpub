@@ -5,6 +5,7 @@ Uses mocks and temp paths; never reaches the network or installs packages.
 from __future__ import annotations
 
 import os
+import re
 import sys
 import tarfile
 import tempfile
@@ -206,28 +207,80 @@ class TestInstallOpencode:
             opencode_platform_package()
 
 
-def test_user_mode_sets_user_owned_npm_prefix(
+def test_user_mode_uses_the_callers_npm_prefix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tools_file = tmp_path / "tools"
+    tools_file.write_text("", encoding="utf-8")
+    monkeypatch.setenv("TOOLS_FILE", str(tools_file))
+    monkeypatch.setenv("NPM_CONFIG_PREFIX", "/chosen/prefix")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    assert main(["user"]) == 0
+    assert os.environ["NPM_CONFIG_PREFIX"] == "/chosen/prefix"
+    assert os.environ["PATH"].startswith("/chosen/prefix/bin:")
+
+
+def test_user_mode_refuses_to_guess_the_npm_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     tools_file = tmp_path / "tools"
     tools_file.write_text("", encoding="utf-8")
     monkeypatch.setenv("TOOLS_FILE", str(tools_file))
     monkeypatch.delenv("NPM_CONFIG_PREFIX", raising=False)
-    monkeypatch.setenv("PATH", "/usr/bin")
 
-    assert main(["user"]) == 0
-    assert os.environ["NPM_CONFIG_PREFIX"] == "/home/vscode/.local"
-    assert os.environ["PATH"].startswith("/home/vscode/.local/bin:")
+    with pytest.raises(InstallerError, match="NPM_CONFIG_PREFIX"):
+        main(["user"])
+    assert "NPM_CONFIG_PREFIX" not in os.environ
 
 
-def test_image_tools_and_python_live_outside_the_persistent_home() -> None:
+def test_image_binaries_are_group_writable_in_the_mdt_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import install_ai_cli_tools as mod
+
+    downloads = tmp_path / "downloads"
+    downloads.mkdir()
+    (downloads / "claude-1.2.3-linux-x64").write_bytes(b"#!/bin/sh\n")
+    archive = downloads / "antigravity-4.5.6.tar.gz"
+    _make_tar_with_binaries(archive, "antigravity")
+    bin_dir = tmp_path / "opt-mdt-bin"
+    monkeypatch.setattr(mod, "IMAGE_BIN_DIR", bin_dir)
+    monkeypatch.setenv("CLAUDE_CODE_VER", "1.2.3")
+    monkeypatch.setenv("ANTIGRAVITY_VER", "4.5.6")
+    monkeypatch.delenv("INSTALL_CLAUDE_CODE", raising=False)
+    monkeypatch.delenv("INSTALL_ANTIGRAVITY", raising=False)
+    ctx = _fake_ctx(tmp_path)
+
+    mod.install_claude(ctx)
+    mod.install_antigravity(ctx)
+
+    assert (bin_dir / "claude").read_bytes() == b"#!/bin/sh\n"
+    for name in ("claude", "antigravity", "agy"):
+        assert (bin_dir / name).stat().st_mode & 0o777 == 0o775, name
+
+
+def test_dockerfile_constructs_the_mdt_tree_before_any_content() -> None:
+    """The group contract is a construction rule: roots first, umask on every writer."""
     dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text(encoding="utf-8")
-    assert "NPM_CONFIG_PREFIX=/opt/mdt/npm python3 /tmp/install_ai_cli_tools.py root" in dockerfile
+    group_run = dockerfile.index('groupadd -g "${MDT_GID}" mdt')
+    assert group_run < dockerfile.index("/tmp/install_ai_cli_tools.py root")
+    assert group_run < dockerfile.index("python3 -m venv /opt/mdt/venv")
+    assert group_run < dockerfile.index("/tmp/install_pwmcp_instance.py \\")
     assert "python3 -m venv /opt/mdt/venv" in dockerfile
     assert "/opt/mdt/venvs/${venv_name}" in dockerfile
-    assert "UV_PYTHON_INSTALL_DIR=/opt/mdt/python" in dockerfile
+    assert 'ENV UV_PYTHON_INSTALL_DIR="/opt/mdt/python"' in dockerfile
+    assert 'ENV NPM_CONFIG_PREFIX="/opt/mdt/npm"' in dockerfile
     assert 'remaining="$(find "${home}" -mindepth 1 -maxdepth 1 -print)"' in dockerfile
+    assert "RUN mdt-perms check /opt/mdt /srv" in dockerfile
     assert "/home/vscode/.venv" not in dockerfile
+    # No recursive ownership pass over earlier-layer content: the only recursive
+    # operation on the mdt trees is the fix-up of Oh My Zsh, which the SAME RUN
+    # copies in (an overlayfs chown/chmod -R on older content copies it all up).
+    recursive = re.findall(
+        r"(?:chgrp|chmod|chown)\s+-[A-Za-z]*R[^;\n]*?(?:/opt/mdt|/srv)[^\s;]*", dockerfile
+    )
+    assert recursive == ["chown -R root:mdt /opt/mdt/oh-my-zsh"]
 
 
 # parse_tool_entries

@@ -84,32 +84,14 @@ except ImportError:
 
 # ── tiny logging (no color when not a tty) ──────────────────────────────────
 _TTY = sys.stdout.isatty()
-SHARED_PROFILE = Path("/usr/local/share/modern-debian-tools-python-debug/profile.sh")
-SHARED_CUSTOMIZATION_ROOT = SHARED_PROFILE.parent
-SHARED_HOME_DEFAULTS = SHARED_CUSTOMIZATION_ROOT / "home-defaults"
-CUSTOMIZATION_ROOT = Path(os.path.expanduser("~/.config/modern-debian-tools-python-debug"))
-IMAGE_VENV = Path("/opt/mdt/venv")
-IMAGE_VENVS = Path("/opt/mdt/venvs")
-IMAGE_OH_MY_ZSH = Path("/opt/mdt/oh-my-zsh")
-IMAGE_MANIFEST = SHARED_CUSTOMIZATION_ROOT / "manifest.md"
-CUSTOMIZATION_README = CUSTOMIZATION_ROOT / "README.md"
-CUSTOMIZATION_ENV = CUSTOMIZATION_ROOT / "ai.env"
-CUSTOMIZATION_ENV_EXAMPLE = CUSTOMIZATION_ROOT / "ai.env.example"
-CUSTOMIZATION_ALIASES = CUSTOMIZATION_ROOT / "aliases.sh"
-CUSTOMIZATION_ALIASES_EXAMPLE = CUSTOMIZATION_ROOT / "aliases.sh.example"
-CUSTOMIZATION_SHELL_ENV = CUSTOMIZATION_ROOT / "shell.env"
-CUSTOMIZATION_HTOPRC = CUSTOMIZATION_ROOT / "htoprc"
-CUSTOMIZATION_MC_INI = CUSTOMIZATION_ROOT / "mc.ini"
-CUSTOMIZATION_NANORC = CUSTOMIZATION_ROOT / "nanorc"
-CUSTOMIZATION_LESSPIPE = CUSTOMIZATION_ROOT / "lesspipe.sh"
-CUSTOMIZATION_ZSHRC = CUSTOMIZATION_ROOT / "zshrc"
-
-# Tool-local env files that should resolve back to the central ai.env.
-TOOL_ENV_LINKS = {
-    Path(os.path.expanduser("~/.codex/.env")),
-    Path(os.path.expanduser("~/.openclaw/.env")),
-    Path(os.path.expanduser("~/.reasonix/.env")),
-}
+# The user's startup files whose absence makes zsh run zsh-newuser-install.
+ZSH_STARTUP_FILES = (".zshenv", ".zprofile", ".zshrc", ".zlogin")
+ZSHRC_STUB = (
+    "# Created by mdt-cockpit's finalize step so that zsh-newuser-install does not\n"
+    "# take over your first terminal. It is a deliberate no-op: the image's zsh\n"
+    "# defaults are loaded system-wide from /etc/zsh/zshrc before this file runs.\n"
+    "# Edit or replace it freely; finalize never touches an existing ~/.zshrc.\n"
+)
 
 
 def _c(code: str, msg: str) -> str:
@@ -161,127 +143,29 @@ def detect_environment() -> dict:
 
 
 # ── generic mdt steps (best-effort) ─────────────────────────────────────────
-def _ensure_text_file(destination: Path, content: str) -> None:
+def setup_zshrc_stub() -> None:
+    """Keep zsh-newuser-install from taking over a fresh home's first terminal.
+
+    D7: every image default is wired system-wide, so the home stays empty. zsh is
+    the one tool that cannot be told to skip its new-user wizard system-wide: it
+    runs whenever the user has none of .zshenv/.zprofile/.zshrc/.zlogin. So a
+    comment-only ~/.zshrc is written - only then, only if absent, never replacing
+    or extending a user's file. (The image defaults reach the user through
+    /etc/zsh/zshrc, so image updates need no change to this file.)
+    """
+    home = Path(os.path.expanduser("~"))
+    if any(os.path.lexists(home / name) for name in ZSH_STARTUP_FILES):
+        return
     try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists():
-            return
-        destination.write_text(content, encoding="utf-8")
+        descriptor = os.open(home / ".zshrc", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(ZSHRC_STUB)
+    except FileExistsError:
+        return
     except OSError as e:
-        warn(f"could not seed {destination}: {e}")
-
-
-def _ensure_copy(source: Path, destination: Path) -> None:
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists() or destination.is_symlink():
-            return
-        shutil.copy2(source, destination)
-    except OSError as e:
-        warn(f"could not copy {source} -> {destination}: {e}")
-
-
-def _seed_tree_missing(source: Path, destination: Path) -> None:
-    """Copy default files recursively without following or replacing user paths."""
-    try:
-        if destination.is_symlink():
-            return
-        if source.is_dir() and not source.is_symlink():
-            if destination.exists() and not destination.is_dir():
-                return
-            destination.mkdir(parents=True, exist_ok=True)
-            for child in sorted(source.iterdir(), key=lambda item: item.name):
-                _seed_tree_missing(child, destination / child.name)
-            return
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        if destination.exists():
-            return
-        if source.is_symlink():
-            destination.symlink_to(os.readlink(source))
-        elif source.is_file():
-            shutil.copy2(source, destination)
-        else:
-            warn(f"skipping unsupported default entry {source}")
-    except OSError as e:
-        warn(f"could not seed {source} -> {destination}: {e}")
-
-
-def _ensure_symlink(source: Path, target: Path) -> None:
-    try:
-        source.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_symlink() or source.exists():
-            try:
-                if source.resolve() == target.resolve():
-                    return
-            except OSError:
-                pass
-            if source.is_dir() and not source.is_symlink():
-                return
-            warn(f"leaving existing path in place instead of linking {source} -> {target}")
-            return
-        source.symlink_to(target)
-    except OSError as e:
-        warn(f"could not link {source} -> {target}: {e}")
-
-
-def setup_shell_bootstrap() -> None:
-    for name in (".bashrc", ".bash_logout", ".profile", ".zshrc"):
-        source = SHARED_HOME_DEFAULTS / name
-        if source.is_file():
-            _ensure_copy(source, Path(os.path.expanduser(f"~/{name}")))
-    _seed_tree_missing(SHARED_HOME_DEFAULTS / ".config", Path(os.path.expanduser("~/.config")))
-    ok("home shell and editor defaults seeded without replacing user files")
-
-
-def setup_customization_root() -> None:
-    for name, destination in {
-        "README.md": CUSTOMIZATION_README,
-        "ai.env.example": CUSTOMIZATION_ENV_EXAMPLE,
-        "aliases.sh": CUSTOMIZATION_ALIASES,
-        "aliases.sh.example": CUSTOMIZATION_ALIASES_EXAMPLE,
-        "shell.env": CUSTOMIZATION_SHELL_ENV,
-        "htoprc": CUSTOMIZATION_HTOPRC,
-        "mc.ini": CUSTOMIZATION_MC_INI,
-        "nanorc": CUSTOMIZATION_NANORC,
-        "lesspipe.sh": CUSTOMIZATION_LESSPIPE,
-        "zshrc": CUSTOMIZATION_ZSHRC,
-    }.items():
-        _ensure_copy(SHARED_CUSTOMIZATION_ROOT / name, destination)
-
-
-def setup_tool_env_links() -> None:
-    for link in TOOL_ENV_LINKS:
-        _ensure_symlink(link, CUSTOMIZATION_ENV)
-
-
-def setup_editor_links() -> None:
-    _ensure_symlink(Path(os.path.expanduser("~/.nanorc")), CUSTOMIZATION_NANORC)
-    _ensure_symlink(
-        Path(os.path.expanduser("~/.config/nano/nanorc")),
-        CUSTOMIZATION_NANORC,
-    )
-    _ensure_symlink(
-        Path(os.path.expanduser("~/.config/htop/htoprc")),
-        CUSTOMIZATION_HTOPRC,
-    )
-    _ensure_symlink(Path(os.path.expanduser("~/.config/mc/ini")), CUSTOMIZATION_MC_INI)
-
-
-def setup_image_home_links() -> None:
-    """Expose image-owned tools through legacy home paths when those are free."""
-    _ensure_symlink(Path(os.path.expanduser("~/.venv")), IMAGE_VENV)
-    if IMAGE_VENVS.is_dir():
-        for venv in sorted(IMAGE_VENVS.glob("py*")):
-            if venv.is_dir():
-                _ensure_symlink(
-                    Path(os.path.expanduser(f"~/.venv-{venv.name}")), venv
-                )
-    _ensure_symlink(Path(os.path.expanduser("~/.oh-my-zsh")), IMAGE_OH_MY_ZSH)
-    _ensure_symlink(Path(os.path.expanduser("~/mdt-manifest.md")), IMAGE_MANIFEST)
-    try:
-        Path(os.path.expanduser("~/.oh-my-zsh-custom")).mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        warn(f"could not prepare user Oh My Zsh custom directory: {e}")
+        warn(f"could not write the ~/.zshrc stub: {e}")
+        return
+    ok("wrote the comment-only ~/.zshrc stub (zsh-newuser-install stays quiet)")
 
 
 def setup_vscode_settings(env_type: str) -> None:
@@ -505,11 +389,7 @@ def repair_docker_socket_relay() -> None:
 
 def run_generic_steps(envd: dict) -> bool:
     info("generic mdt steps…")
-    setup_customization_root()
-    setup_shell_bootstrap()
-    setup_image_home_links()
-    setup_tool_env_links()
-    setup_editor_links()
+    setup_zshrc_stub()
     setup_vscode_settings(envd["env_type"])
     repair_docker_socket_relay()
     buildkit_ok = setup_buildkit_builder(required=envd["env_type"] == "devcontainer")

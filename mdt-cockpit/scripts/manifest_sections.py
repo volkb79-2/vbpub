@@ -578,6 +578,63 @@ def _section_block(title: str, content: str) -> list[str]:
     return lines
 
 
+LOCAL_ARTIFACT_FIELDS = ("name", "version", "sha256", "path")
+
+
+def parse_local_artifacts(raw: str) -> list[dict[str, str]]:
+    """Parse and validate the local-artifact JSON recorded by a local-dev build.
+
+    An empty string means a release build. Anything else must be a JSON array of
+    objects carrying exactly the provenance fields; a malformed list is an error,
+    never an empty one (an unreadable provenance record must not render as
+    "no local artifacts").
+    """
+    if not raw.strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"local artifacts are not valid JSON: {exc}") from exc
+    if not isinstance(data, list):
+        raise ValueError("local artifacts must be a JSON array")
+    artifacts: list[dict[str, str]] = []
+    for entry in data:
+        if not isinstance(entry, dict) or any(
+            not isinstance(entry.get(field), str) or not entry.get(field)
+            for field in LOCAL_ARTIFACT_FIELDS
+        ):
+            raise ValueError(
+                "each local artifact needs non-empty string fields: "
+                + ", ".join(LOCAL_ARTIFACT_FIELDS)
+            )
+        artifacts.append({field: entry[field] for field in LOCAL_ARTIFACT_FIELDS})
+    return artifacts
+
+
+def render_build_provenance_section(
+    build_mode: str, local_artifacts: Sequence[Mapping[str, str]]
+) -> list[str]:
+    """Return the manifest section for a local-dev build; empty for a release."""
+    if build_mode != "local-dev":
+        return []
+    lines = [
+        "## Build Provenance", "",
+        "- Build mode: `local-dev`",
+        "- This image was built from LOCAL artifacts and is not publishable: "
+        "`build-push.py` refuses to push an image labelled `local-dev`.",
+        "",
+        "| Artifact | Version | SHA-256 | Original path |",
+        "|---|---|---|---|",
+    ]
+    for artifact in local_artifacts:
+        lines.append(
+            f"| `{artifact['name']}` | `{artifact['version']}` | "
+            f"`{artifact['sha256']}` | `{artifact['path']}` |"
+        )
+    lines.append("")
+    return lines
+
+
 def render_unified_manifest(
     *,
     source_manifest_content: str,
@@ -590,7 +647,7 @@ def render_unified_manifest(
     python_packages: Sequence[str],
     system_packages: Sequence[str],
     artifact_map: Mapping[str, dict] | None = None,
-    args_extra: dict[str, str] | None = None,
+    args_extra: dict[str, object] | None = None,
 ) -> str:
     """Render the unified devcontainer manifest (in-image + repo-hosted).
 
@@ -660,6 +717,14 @@ def render_unified_manifest(
             "```",
             "",
         ])
+
+    if args_extra:
+        lines.extend(
+            render_build_provenance_section(
+                str(args_extra.get("build_mode", "release")),
+                args_extra.get("local_artifacts") or [],
+            )
+        )
 
     if "Base" in src:
         lines.extend(_section_block("Base", src["Base"]))
@@ -831,7 +896,7 @@ def render_unified_manifest(
         lines.extend([
             "## In-Image File", "",
             "- Image manifest: "
-            "`/usr/local/share/modern-debian-tools-python-debug/manifest.md`",
+            "`/usr/local/share/mdt-cockpit/manifest.md`",
             "",
         ])
 
@@ -844,7 +909,7 @@ def render_unified_manifest(
             "The image labels therefore point to GitHub-hosted Markdown for richer, "
             "package-specific release notes.",
             "The same manifest content is installed in-image at "
-            "`/usr/local/share/modern-debian-tools-python-debug/manifest.md`.",
+            "`/usr/local/share/mdt-cockpit/manifest.md`.",
             "",
         ])
 
@@ -920,6 +985,14 @@ def _parse_args() -> argparse.Namespace:
     unified.add_argument("--repo", default="", help="GitHub repository name")
     unified.add_argument("--install-php", default="false", help="Whether PHP is installed ('true'/'false')")
     unified.add_argument("--php-extensions-file", default="", help="Path to php -m output file")
+    unified.add_argument(
+        "--build-mode", default="release", choices=("release", "local-dev"),
+        help="Build provenance: published release, or explicit local-dev build",
+    )
+    unified.add_argument(
+        "--local-artifacts-json", default="",
+        help="JSON array of the verified local artifacts (name, version, sha256, path)",
+    )
 
     return parser.parse_args()
 
@@ -962,7 +1035,7 @@ def _run_unified(args: argparse.Namespace) -> int:
     artifact_map = _load_artifact_map(args.artifact_metadata)
 
     # Build args_extra from CLI args for standalone generation.
-    args_extra: dict[str, str] = {}
+    args_extra: dict[str, object] = {}
     if args.description:
         args_extra["description"] = args.description
     if args.target:
@@ -980,6 +1053,8 @@ def _run_unified(args: argparse.Namespace) -> int:
     args_extra["install_php"] = (args.install_php or "false").lower() == "true"
     if args.php_extensions_file:
         args_extra["php_extensions_file"] = args.php_extensions_file
+    args_extra["build_mode"] = args.build_mode
+    args_extra["local_artifacts"] = parse_local_artifacts(args.local_artifacts_json)
 
     rendered = render_unified_manifest(
         source_manifest_content=source_content,

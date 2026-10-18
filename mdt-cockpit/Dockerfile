@@ -20,6 +20,14 @@ COPY customization/ksm-optin.c /tmp/ksm-optin.c
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && gcc -shared -fPIC -O2 -o /tmp/ksm-optin.so /tmp/ksm-optin.c
 
+# ── Local-dev artifacts (explicit opt-in; empty in every release build) ───────
+# `build-push.py --build --local-dev <manifest.toml>` overrides this empty stage
+# with the verified local artifacts (bake named context `mdt-local-dev`), so a
+# release build never depends on, or contains, anything local. Consumers mount
+# it with `--mount=type=bind,from=mdt-local-dev` (never COPY: nothing from it
+# may land in a layer).
+FROM scratch AS mdt-local-dev
+
 FROM ${BASE_IMAGE}
 
 SHELL ["/bin/bash", "-c"]
@@ -108,6 +116,17 @@ ARG COPILOT_VERSION="latest"
 ARG OPENCODE_VERSION="latest"
 ARG CLAUDELINK_VERSION="latest"
 ARG PI_VERSION="latest"
+# Build provenance: "release" for every published image; "local-dev" only for an
+# explicit `build-push.py --build --local-dev` build. MDT_LOCAL_ARTIFACTS_JSON is
+# the verified list of local artifacts (name, version, sha256, path) and is empty
+# for a release build. Both are recorded in OCI labels and the image manifest.
+ARG MDT_BUILD_MODE="release"
+ARG MDT_LOCAL_ARTIFACTS_JSON=""
+# Group that owns the image-managed tool trees (/opt/mdt, /srv). Policy choice,
+# not derived from anything: a high, fixed GID that is stable across rebuilds so
+# volumes and derived images can rely on it. The build refuses a base that
+# already uses it (see the group RUN below).
+ARG MDT_GID="2750"
 
 ENV DEBIAN_VERSION="${DEBIAN_VERSION}"
 ENV BACKPORTS_URI="${BACKPORTS_URI}"
@@ -127,6 +146,7 @@ COPY customization /tmp/customization
 COPY scripts/manifest_sections.py /tmp/manifest_sections.py
 COPY scripts/mdt_cli.py /tmp/mdt_cli.py
 COPY scripts/install_pwmcp_instance.py /tmp/install_pwmcp_instance.py
+COPY --chmod=0755 scripts/mdt-perms /usr/local/bin/mdt-perms
 COPY ai-cli-tools.list /tmp/ai-cli-tools.list
 COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py
 
@@ -138,6 +158,32 @@ RUN set -euo pipefail; \
         fi; \
         useradd -m -s /bin/bash -u 1000 -g 1000 vscode; \
     fi
+
+# The `mdt` group owns every image-managed tool tree (/opt/mdt, /srv) so the
+# runtime user can update tools in place without sudo, even after Dev
+# Containers' updateRemoteUserUID has re-numbered `vscode`: that step edits the
+# user's uid and primary gid and re-owns only $HOME, so ownership by uid 1000 is
+# lost at runtime while membership of a separately numbered group is kept.
+#
+# Construction rule (D3): the roots are created `root:mdt 2775` BEFORE any content
+# exists, and every later RUN that writes beneath them runs with `umask 0002`, so
+# new entries inherit group `mdt` (setgid directories) and group-write. Nothing
+# ever re-owns earlier-layer content: on overlayfs a recursive chgrp/chmod copies
+# every touched file up into a new layer and doubles the image.
+RUN set -euo pipefail; \
+    if getent group "${MDT_GID}" >/dev/null; then \
+        echo "ERROR: GID ${MDT_GID} is already used in the base image ($(getent group "${MDT_GID}")); pick another with --build-arg MDT_GID" >&2; \
+        exit 1; \
+    fi; \
+    if getent group mdt >/dev/null; then \
+        echo "ERROR: group 'mdt' already exists in the base image" >&2; \
+        exit 1; \
+    fi; \
+    groupadd -g "${MDT_GID}" mdt; \
+    usermod -aG mdt vscode; \
+    install -d -m 0775 -o root -g mdt /opt/mdt /opt/mdt/bin /opt/mdt/npm /opt/mdt/venv /opt/mdt/venvs /opt/mdt/python /srv; \
+    chmod g+s /opt/mdt /opt/mdt/bin /opt/mdt/npm /opt/mdt/venv /opt/mdt/venvs /opt/mdt/python /srv; \
+    chgrp mdt /srv
 
 # Release worktrees may be checked out under umask 077. These copied build
 # inputs contain public package metadata and must remain readable in the
@@ -191,10 +237,23 @@ RUN set -euo pipefail; \
     npm --version; \
     rm -rf /var/lib/apt/lists/*
 
-# Image-owned npm CLIs live outside the mounted home. Runtime installs use the
-# user's NPM_CONFIG_PREFIX, set by the devcontainer template to ~/.local.
-ENV NPM_CONFIG_PREFIX="/home/vscode/.local"
-ENV ZSH_CUSTOM="/home/vscode/.oh-my-zsh-custom"
+# Image-managed tools live outside the mounted home, in the `mdt` group tree
+# /opt/mdt (docs/DESIGN-GUIDE.md "Where each tool lives"). Global npm installs
+# and uv-managed interpreters therefore default to those trees, which the
+# runtime user can write through the `mdt` group.
+ENV NPM_CONFIG_PREFIX="/opt/mdt/npm"
+ENV UV_PYTHON_INSTALL_DIR="/opt/mdt/python"
+
+# The ONE definition of the command search path (D5). Image tools win over
+# anything else; ~/.local/bin is last, for the user's own additions only. The
+# base image's own PATH sits in the middle, unchanged. MDT_IMAGE_PATH is a
+# snapshot of the result for /etc/profile.d/50-mdt-cockpit.sh: Debian's
+# /etc/profile replaces PATH in every login shell, and the snapshot is how that
+# one file puts back exactly this value instead of re-spelling the list.
+ENV MDT_PATH_PREFIX="/opt/mdt/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin"
+ENV MDT_PATH_SUFFIX="/home/vscode/.local/bin"
+ENV PATH="${MDT_PATH_PREFIX}:${PATH}:${MDT_PATH_SUFFIX}"
+ENV MDT_IMAGE_PATH="${PATH}"
 
 # metadata.json is timestamped and only used by manifest generation later in
 # this Dockerfile. Keep it out of the tool-install cache boundary.
@@ -229,7 +288,7 @@ RUN --mount=type=bind,source=build/tool-artifacts-staging/downloads,target=/tmp/
         echo "[ERROR] Missing staged NvChad archive: ${nvchad_archive}" >&2; \
         exit 1; \
     fi; \
-    rm -rf /opt/nvim-linux-x86_64 /usr/local/share/modern-debian-tools-python-debug/home-defaults/.config/nvim; \
+    rm -rf /opt/nvim-linux-x86_64 /etc/xdg/nvim; \
     tar -C /opt -xzf "${nvim_archive}"; \
     nvim_root="$(find /opt -maxdepth 1 -type d -name 'nvim-linux-x86_64' | head -1)"; \
     if [ -z "${nvim_root}" ] || [ ! -x "${nvim_root}/bin/nvim" ]; then \
@@ -245,11 +304,12 @@ RUN --mount=type=bind,source=build/tool-artifacts-staging/downloads,target=/tmp/
         echo "[ERROR] Failed to unpack NvChad from ${nvchad_archive}" >&2; \
         exit 1; \
     fi; \
-    install -d -m 0755 /usr/local/share/modern-debian-tools-python-debug/home-defaults/.config/nvim; \
-    cp -a "${nvchad_root}/." /usr/local/share/modern-debian-tools-python-debug/home-defaults/.config/nvim/; \
+    install -d -m 0755 /etc/xdg/nvim; \
+    cp -a "${nvchad_root}/." /etc/xdg/nvim/; \
+    chown -R root:root /etc/xdg/nvim; \
+    install -m 0644 /tmp/customization/nvim/sysinit.vim /etc/xdg/nvim/sysinit.vim; \
     rm -rf /tmp/nvchad-extract; \
-    nvim --version | head -1; \
-    chown -R root:root /usr/local/share/modern-debian-tools-python-debug/home-defaults/.config/nvim
+    nvim --version | head -1
 
 # PHP 8.5 runtime for the php85 flavor. Debian trixie ships PHP 8.4, so the
 # 8.5 packages come from packages.sury.org.
@@ -278,9 +338,14 @@ RUN set -euo pipefail; \
         rm -rf /var/lib/apt/lists/*; \
     fi
 
+# Image defaults, installed where each tool already reads SYSTEM-WIDE
+# configuration (D7), so the user's home starts empty and a user overrides a
+# default by creating their own file. Every placement is verified in the built
+# image by the image-runtime lane (tests/runtime). docs/DESIGN-GUIDE.md
+# "System-wide defaults" records the per-tool lookup and why.
 RUN set -euo pipefail; \
-    share_dir="/usr/local/share/modern-debian-tools-python-debug"; \
-    install -d -m 0755 "${share_dir}" "${share_dir}/home-defaults"; \
+    share_dir="/usr/local/share/mdt-cockpit"; \
+    install -d -m 0755 "${share_dir}"; \
     install -m 0755 /tmp/customization/profile.sh "${share_dir}/profile.sh"; \
     install -m 0755 /tmp/customization/lesspipe.sh "${share_dir}/lesspipe.sh"; \
     install -m 0644 /tmp/customization/README.md "${share_dir}/README.md"; \
@@ -288,29 +353,27 @@ RUN set -euo pipefail; \
     install -m 0644 /tmp/customization/aliases.sh.example "${share_dir}/aliases.sh.example"; \
     install -m 0644 /tmp/customization/ai.env.example "${share_dir}/ai.env.example"; \
     install -m 0644 /tmp/customization/shell.env "${share_dir}/shell.env"; \
+    install -m 0644 /tmp/customization/bashrc "${share_dir}/bashrc"; \
     install -m 0644 /tmp/customization/zshrc "${share_dir}/zshrc"; \
     install -m 0644 /tmp/customization/htoprc "${share_dir}/htoprc"; \
     install -m 0644 /tmp/customization/mc.ini "${share_dir}/mc.ini"; \
     install -m 0644 /tmp/customization/nanorc "${share_dir}/nanorc"; \
     install -D -m 0644 /tmp/customization/lnav/formats/nyxloom/nyxloom_events.json /etc/lnav/formats/nyxloom/nyxloom_events.json; \
+    install -m 0644 /tmp/customization/htoprc /etc/htoprc; \
+    install -D -m 0644 /tmp/customization/mc.ini /etc/mc/mc.ini; \
+    test -f /etc/nanorc && test -f /etc/bash.bashrc && test -f /etc/zsh/zshrc; \
+    printf '\n# mdt-cockpit defaults (nano reads ~/.nanorc afterwards, so a user setting wins).\ninclude "%s/nanorc"\n' "${share_dir}" >> /etc/nanorc; \
+    printf '\n# mdt-cockpit interactive defaults (your ~/.bashrc runs afterwards).\n[ -r %s/bashrc ] && . %s/bashrc\n' "${share_dir}" "${share_dir}" >> /etc/bash.bashrc; \
+    printf '\n# mdt-cockpit interactive defaults (your ~/.zshrc runs afterwards).\n[[ -r %s/zshrc ]] && source %s/zshrc\n' "${share_dir}" "${share_dir}" >> /etc/zsh/zshrc; \
     install -d -m 0755 /etc/profile.d; \
-    printf '%s\n' '#!/bin/sh' '# shellcheck source=/dev/null' '. /usr/local/share/modern-debian-tools-python-debug/profile.sh' > /etc/profile.d/50-modern-debian-tools.sh; \
-    chmod 0644 /etc/profile.d/50-modern-debian-tools.sh
-
-# Stage the zsh default outside the home. The host's persistent home receives
-# this only when it has no user-owned ~/.zshrc.
-RUN set -euo pipefail; \
-    defaults="/usr/local/share/modern-debian-tools-python-debug/home-defaults"; \
-    install -d -m 0755 "${defaults}"; \
-    if [ -f /home/vscode/.zshrc ]; then \
-        cp -p /home/vscode/.zshrc "${defaults}/.zshrc"; \
-        if ! grep -Fqx 'source "$HOME/.config/modern-debian-tools-python-debug/zshrc"' "${defaults}/.zshrc"; then \
-            printf '\n# Modern Debian Tools interactive zsh defaults.\nsource "$HOME/.config/modern-debian-tools-python-debug/zshrc"\n' >> "${defaults}/.zshrc"; \
-        fi; \
-    else \
-        printf '%s\n' '# Modern Debian Tools interactive zsh defaults.' 'source "$HOME/.config/modern-debian-tools-python-debug/zshrc"' > "${defaults}/.zshrc"; \
-    fi; \
-    chown root:root "${defaults}/.zshrc"
+    printf '%s\n' \
+        '#!/bin/sh' \
+        '# mdt-cockpit login-shell hook. Debian'"'"'s /etc/profile replaces PATH in every login' \
+        '# shell; put back the value the image was built with (Dockerfile ENV PATH).' \
+        'if [ -n "${MDT_IMAGE_PATH:-}" ]; then PATH="$MDT_IMAGE_PATH"; export PATH; fi' \
+        '# shellcheck source=/dev/null' \
+        '. /usr/local/share/mdt-cockpit/profile.sh' > /etc/profile.d/50-mdt-cockpit.sh; \
+    chmod 0644 /etc/profile.d/50-mdt-cockpit.sh
 
 ENV LANG=en_US.UTF-8
 ENV LC_ALL=en_US.UTF-8
@@ -583,8 +646,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     cdebug --version; \
     mandb -q; \
     install -o vscode -g vscode -m 0644 "${STAGE_DIR}/tool-versions.env" /tmp/ai-tool-versions.env; \
-    install -d -m 0755 /opt/mdt/npm; \
-    NPM_CONFIG_PREFIX=/opt/mdt/npm python3 /tmp/install_ai_cli_tools.py root; \
+    ( umask 0002; python3 /tmp/install_ai_cli_tools.py root ); \
+    mdt-perms fix /opt/mdt/bin; \
     rm -rf \
         /tmp/bat-extract \
         /tmp/crane-extract \
@@ -607,13 +670,17 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
         /tmp/cdebug-extract \
         /tmp/awscli
 
-# npm-based agent CLIs get a distinct image-owned layer and prefix. The
-# persistent home uses ~/.local for user-installed versions and overrides.
+# npm-based agent CLIs get a distinct image-owned layer and prefix. The prefix is
+# group `mdt` (umask 0002 + the setgid roots created above), so the runtime user
+# can `npm install -g` / update here without sudo; ~/.local/bin stays last on
+# PATH for the user's own additions.
 RUN --mount=type=cache,target=/tmp/mdt-build-cache/npm,uid=0,gid=0,sharing=locked \
     set -euo pipefail; \
+    umask 0002; \
     set -a; . /tmp/ai-tool-versions.env; set +a; \
     NPM_CONFIG_PREFIX=/opt/mdt/npm NPM_CONFIG_CACHE=/tmp/mdt-build-cache/npm \
-        python3 /tmp/install_ai_cli_tools.py npm-image
+        python3 /tmp/install_ai_cli_tools.py npm-image; \
+    mdt-perms fix /opt/mdt/npm
 
 # Latest PostgreSQL and Redis clients (override versions via build args)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -654,17 +721,19 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     rm -rf /var/lib/apt/lists/*
 
 # ── Primary Python venv — full development toolkit ────────────────────────────
-# Installed into /opt/mdt/venv using the base-image Python.
+# Installed into /opt/mdt/venv using the base-image Python. The roots were created
+# `root:mdt 2775` up front; every RUN that writes beneath them uses `umask 0002`
+# and ends with `mdt-perms fix`, which repairs only entries this RUN created.
 # Consumer-facing list: see README.md § "Primary Venv Packages".
-RUN install -d -m 0755 /opt/mdt/venv /opt/mdt/venvs /opt/mdt/python
-
 RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locked \
     set -euo pipefail; \
+    umask 0002; \
     export PIP_CACHE_DIR=/tmp/mdt-build-cache/pip; \
     python3 -m venv /opt/mdt/venv; \
     /opt/mdt/venv/bin/python -m pip install --upgrade pip setuptools wheel --disable-pip-version-check --quiet; \
     /opt/mdt/venv/bin/python -m pip install --disable-pip-version-check --quiet \
-        -r /tmp/requirements/toolkit.txt
+        -r /tmp/requirements/toolkit.txt; \
+    mdt-perms fix /opt/mdt/venv
 # Aider gets its own layer, after the venv+toolkit.txt one above: it's the
 # only "venv" mode entry in ai-cli-tools.list, and its own dependency closure
 # (tree-sitter grammars, litellm, tokenizers, ...) is the single largest
@@ -673,8 +742,10 @@ RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locke
 # probe to split it back out of a merged layer.
 RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locked \
     set -euo pipefail; \
+    umask 0002; \
     export PIP_CACHE_DIR=/tmp/mdt-build-cache/pip; \
-    python3 /tmp/install_ai_cli_tools.py venv
+    python3 /tmp/install_ai_cli_tools.py venv; \
+    mdt-perms fix /opt/mdt/venv
 # Aider is installed after toolkit.txt and may change packages shared with the
 # first-party wheels. Reconcile the primary venv from the single requirements
 # source now, before the offline wheel layer; otherwise a successful Aider
@@ -682,17 +753,19 @@ RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locke
 # declared runtime floors.
 RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locked \
     set -euo pipefail; \
+    umask 0002; \
     export PIP_CACHE_DIR=/tmp/mdt-build-cache/pip; \
     /opt/mdt/venv/bin/python -m pip install \
         --disable-pip-version-check --upgrade --quiet \
-        -r /tmp/requirements/toolkit.txt
+        -r /tmp/requirements/toolkit.txt; \
+    mdt-perms fix /opt/mdt/venv
 # ── Secondary Python venvs — lean (uv + debugpy + ruff only) ─────────────────
 # Driven by SECONDARY_PYTHON_VERSIONS build arg (space-separated dotted versions, e.g. "3.11 3.9").
 # Each version gets /opt/mdt/venvs/py{nodot} (e.g. py311, py39).
 # Install project deps on demand: uv pip install -r requirements.txt --python /opt/mdt/venvs/py311/bin/python
 # Consumer-facing docs: see README.md § "Multi-Python Devcontainer Variants".
 RUN set -euo pipefail; \
-    export UV_PYTHON_INSTALL_DIR=/opt/mdt/python; \
+    umask 0002; \
     if [ -n "${SECONDARY_PYTHON_VERSIONS}" ]; then \
         for pyver in ${SECONDARY_PYTHON_VERSIONS}; do \
             venv_name="py${pyver//./}"; \
@@ -704,6 +777,7 @@ RUN set -euo pipefail; \
                 --quiet \
                 uv debugpy ruff; \
         done; \
+        mdt-perms fix /opt/mdt/venvs /opt/mdt/python; \
     fi
 # ── First-party wheels (pip/wheels.list) ─────────────────────────────────────
 # Resolved and downloaded pre-build by scripts/resolve-devcontainers-release.py.
@@ -719,6 +793,7 @@ RUN set -euo pipefail; \
 # Skipped (non-fatal) when pip/wheels/ is empty (release not yet published).
 # Source: https://github.com/volkb79-2/vbpub/releases — first-party project releases.
 RUN set -euo pipefail; \
+    umask 0002; \
     wheels_dir="/tmp/pip/wheels"; \
     wheels_list="/tmp/pip/wheels.list"; \
     if [ ! -d "${wheels_dir}" ] || [ -z "$(ls "${wheels_dir}"/*.whl 2>/dev/null || true)" ]; then \
@@ -733,21 +808,30 @@ RUN set -euo pipefail; \
             --no-index \
             --find-links="${wheels_dir}" \
             "${wheels_dir}"/*.whl; \
-    fi
+    fi; \
+    mdt-perms fix /opt/mdt/venv
 
-ENV PATH="/opt/mdt/venv/bin:/opt/mdt/npm/bin:${PATH}"
-
-USER root
-RUN install -d -m 0755 -o vscode -g vscode /srv
+# PWMCP instance in /srv (root:mdt 2775, created above). It is installed as the
+# unprivileged build user, which is a member of group `mdt`, under umask 0002 —
+# the same construction rule as the other trees, and the reason /srv is no longer
+# owned by `vscode`. A release build fetches the commit-pinned installer and
+# bundle; an explicit local-dev build supplies the verified local ones through
+# the `mdt-local-dev` named context (bind-mounted, never copied into a layer).
 USER vscode
-RUN python3 /tmp/install_pwmcp_instance.py \
+RUN --mount=type=bind,from=mdt-local-dev,source=/,target=/tmp/mdt-local-dev \
+    set -euo pipefail; \
+    umask 0002; \
+    local_args=(); \
+    if [ "${MDT_BUILD_MODE}" = "local-dev" ]; then local_args=(--local-dev-dir /tmp/mdt-local-dev); fi; \
+    python3 /tmp/install_pwmcp_instance.py \
         --getpy-url "${PWMCP_GETPY_URL}" \
         --getpy-sha256 "${PWMCP_GETPY_SHA256}" \
         --contract-url "${PWMCP_CONTRACT_URL}" \
         --contract-sha256 "${PWMCP_CONTRACT_SHA256}" \
-        --version "${PWMCP_VERSION}"
+        --version "${PWMCP_VERSION}" \
+        "${local_args[@]}"; \
+    mdt-perms fix /srv
 USER root
-ENV PATH="/srv/pwmcp-instance/bin:${PATH}"
 RUN rm -f /tmp/install_pwmcp_instance.py
 RUN rm -f /tmp/install_ai_cli_tools.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env
 # ── In-container devcontainer finalize (postCreateCommand) ──────────────────
@@ -779,7 +863,7 @@ RUN chmod 0755 /usr/local/bin/mdt /usr/local/bin/host-escape
 # Repo-owned consumer template: agents do not auto-discover files under
 # /usr/local/share, so projects explicitly copy/adapt this as AGENTS.md and use
 # a one-line CLAUDE.md adapter. Exact versions remain in the generated manifest.
-COPY templates/AGENTS.md /usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example
+COPY templates/AGENTS.md /usr/local/share/mdt-cockpit/AGENTS.md.example
 
 # Copy staged-artifact metadata for manifest generation (digests, source URLs).
 # Note: this is a separate COPY because downloads/ (the bulk of
@@ -793,7 +877,7 @@ COPY build/tool-artifacts-staging/metadata.json /tmp/tool-artifacts-metadata.jso
 # extracted post-build into package-manifests-versioned/ so the committed
 # and in-image versions are always identical (see build-push.py).
 RUN set -euo pipefail; \
-    manifest_dir="/usr/local/share/modern-debian-tools-python-debug"; \
+    manifest_dir="/usr/local/share/mdt-cockpit"; \
     canonical_manifest="${manifest_dir}/manifest.md"; \
     inventory_manifest="${manifest_dir}/installed-tools-manifest.md"; \
     mkdir -p "${manifest_dir}"; \
@@ -996,7 +1080,9 @@ RUN set -euo pipefail; \
         --username "${GITHUB_USERNAME}" \
         --repo "${GITHUB_REPO}" \
         --install-php "${INSTALL_PHP:-false}" \
-        --php-extensions-file "${php_extensions_file}"; \
+        --php-extensions-file "${php_extensions_file}" \
+        --build-mode "${MDT_BUILD_MODE}" \
+        --local-artifacts-json "${MDT_LOCAL_ARTIFACTS_JSON}"; \
     python3 /tmp/manifest_sections.py installed \
         --output "${inventory_manifest}" \
         --debian-version "${DEBIAN_VERSION}" \
@@ -1021,43 +1107,42 @@ RUN set -euo pipefail; \
         "${canonical_manifest}" "${inventory_manifest}" "${_image_tag}" "${_image_ref}" \
         "${OCI_VERSION}" "${BUILD_TIMESTAMP}" "${OCI_CREATED}" "${OCI_REVISION}" >> /etc/os-release
 
-# Keep the complete vscode home clear in the image. Home defaults are retained
-# as seed sources under /usr/local/share; image runtimes and CLI packages are
-# rooted under /opt/mdt. The runtime home bind mount therefore cannot hide them.
+# Keep the complete vscode home EMPTY in the image (D7). Nothing the image ships
+# lives in the home: tools are under /opt/mdt and /srv, defaults are wired
+# system-wide (see the customization RUN above). The only thing moved out of the
+# base image's home is Oh My Zsh (VS Code image family), which becomes the
+# image-owned /opt/mdt/oh-my-zsh. Everything else a base image or an earlier step
+# left there is deleted by name; anything UNKNOWN fails the build instead of being
+# silently deleted or shipped, so a new write into the home is noticed.
 RUN set -euo pipefail; \
+    umask 0002; \
     home=/home/vscode; \
-    share=/usr/local/share/modern-debian-tools-python-debug; \
-    defaults="${share}/home-defaults"; \
-    install -d -m 0755 "${defaults}"; \
-    for name in .bashrc .bash_logout .profile; do \
-        if [ -f "${home}/${name}" ]; then cp -p "${home}/${name}" "${defaults}/${name}"; fi; \
-    done; \
-    if [ -f "${defaults}/.bashrc" ] && ! grep -Fq '. /usr/local/share/modern-debian-tools-python-debug/profile.sh' "${defaults}/.bashrc"; then \
-        printf '\n# Modern Debian Tools shell environment.\n. /usr/local/share/modern-debian-tools-python-debug/profile.sh\n' >> "${defaults}/.bashrc"; \
-    fi; \
-    if [ ! -f "${defaults}/.bashrc" ]; then \
-        printf '%s\n' '# Modern Debian Tools shell environment.' '. /usr/local/share/modern-debian-tools-python-debug/profile.sh' > "${defaults}/.bashrc"; \
-    fi; \
-    if [ -d "${home}/.config" ]; then \
-        install -d -m 0755 "${defaults}/.config"; \
-        cp -a --no-clobber "${home}/.config/." "${defaults}/.config/"; \
-        rm -rf "${home}/.config"; \
-    fi; \
     if [ -L "${home}/.oh-my-zsh" ]; then echo 'ERROR: /home/vscode/.oh-my-zsh is an unclassified symlink' >&2; exit 1; fi; \
     if [ -d "${home}/.oh-my-zsh" ]; then \
         if [ -e /opt/mdt/oh-my-zsh ]; then echo 'ERROR: /opt/mdt/oh-my-zsh already exists' >&2; exit 1; fi; \
-        mv "${home}/.oh-my-zsh" /opt/mdt/oh-my-zsh; \
+        cp -a "${home}/.oh-my-zsh" /opt/mdt/oh-my-zsh; \
+        chown -R root:mdt /opt/mdt/oh-my-zsh; \
+        mdt-perms fix /opt/mdt/oh-my-zsh; \
+        rm -rf "${home}/.oh-my-zsh"; \
     fi; \
     rm -rf "${home}/.cache" "${home}/.npm"; \
-    rm -f "${home}/.bashrc" "${home}/.bash_logout" "${home}/.profile" "${home}/.zshrc"; \
-    if [ -d "${home}/.local" ] && [ -z "$(find "${home}/.local" -mindepth 1 -print -quit)" ]; then rmdir "${home}/.local"; fi; \
-    chown -R root:root "${defaults}"; \
+    rm -f "${home}/.bashrc" "${home}/.bash_logout" "${home}/.profile" "${home}/.zprofile" "${home}/.zshrc"; \
+    for dir in .config .local; do \
+        if [ -d "${home}/${dir}" ] && [ -z "$(find "${home}/${dir}" -mindepth 1 -print -quit)" ]; then rmdir "${home}/${dir}"; fi; \
+    done; \
     remaining="$(find "${home}" -mindepth 1 -maxdepth 1 -print)"; \
     if [ -n "${remaining}" ]; then \
         echo 'ERROR: image build left entries in /home/vscode; classify and relocate them:' >&2; \
         printf '%s\n' "${remaining}" >&2; \
         exit 1; \
     fi
+
+# Final-stage assertion of the `mdt` group contract (D3): beneath /opt/mdt and /srv
+# nothing but symlinks may be outside group mdt, every directory is setgid with
+# group rwx, every regular file is group-writable. This only READS (no layer
+# change). The image-runtime lane re-checks the same contract in a running
+# container.
+RUN mdt-perms check /opt/mdt /srv
 
 # ── KSM opt-in: every process in mdt-based containers becomes KSM-mergeable,
 # unless disabled at build time via ENABLE_KSM_OPTIN=false (docker-bake.hcl
@@ -1084,4 +1169,6 @@ LABEL org.opencontainers.image.title="${OCI_TITLE}" \
     org.opencontainers.image.revision="${OCI_REVISION}" \
     org.opencontainers.image.created="${OCI_CREATED}" \
     net.volkb79.base-devcontainers-release="${DEVCONTAINERS_RELEASE}" \
-    net.volkb79.base-devcontainers-version="${DEVCONTAINERS_VERSION}"
+    net.volkb79.base-devcontainers-version="${DEVCONTAINERS_VERSION}" \
+    net.volkb79.mdt.build-mode="${MDT_BUILD_MODE}" \
+    net.volkb79.mdt.local-artifacts="${MDT_LOCAL_ARTIFACTS_JSON}"

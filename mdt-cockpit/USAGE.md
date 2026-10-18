@@ -261,19 +261,18 @@ Counterexample (do NOT do this):
 The canonical user-facing manifest lives at:
 
 ```
-/usr/local/share/modern-debian-tools-python-debug/manifest.md
+/usr/local/share/mdt-cockpit/manifest.md
 ```
 
-That is the same manifest content published on the repo-hosted release page.
+That is the same manifest content published on the repo-hosted release page. There is no copy or link
+in the home.
 
-`/home/vscode/mdt-manifest.md` is kept as a compatibility symlink.
-
-`/etc/os-release` includes a custom `IMAGE_MANIFEST=/usr/local/share/modern-debian-tools-python-debug/manifest.md` entry so tooling can discover the file without a repo-specific path convention.
+`/etc/os-release` includes a custom `IMAGE_MANIFEST=/usr/local/share/mdt-cockpit/manifest.md` entry so tooling can discover the file without a repo-specific path convention.
 
 An internal inventory snapshot is also written at:
 
 ```
-/usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md
+/usr/local/share/mdt-cockpit/installed-tools-manifest.md
 ```
 
 That snapshot includes tool versions, pip package list, and selected Debian package versions.
@@ -281,7 +280,7 @@ That snapshot includes tool versions, pip package list, and selected Debian pack
 An example repository instruction file is shipped at:
 
 ```
-/usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example
+/usr/local/share/mdt-cockpit/AGENTS.md.example
 ```
 
 Copy and adapt it as the consumer repo's `AGENTS.md`; for Claude Code, use a
@@ -292,45 +291,30 @@ between this human inventory and registry OCI manifests/digests, see
 
 ## Persisting Agent State
 
-The vendored template mounts one host directory,
-`${localEnv:HOME}/mdt--mounted-folders/home-vscode/`, over `/home/vscode`. It preserves all
-agent and tool state, including Claude Code and ClaudeLink databases, Codex profiles and shared
-SQLite data, Pi sessions, OpenCode auth and sessions, `.config`, `.local`, SSH/GPG/minisign keys,
-shell startup files, caches, and user-created content.
+The vendored template mounts one host directory, `${localEnv:HOME}/mdt-cockpit-home/`, over
+`/home/vscode` - the complete home. It preserves all agent and tool state, including Claude Code and ClaudeLink
+databases, Codex profiles and shared SQLite data, Pi sessions, OpenCode auth and sessions,
+`.config`, `.local`, SSH/GPG/minisign keys, shell startup files, caches, and user-created content.
 
-The image leaves `/home/vscode` empty. Image-owned executables and runtimes live under `/opt/mdt`
-(primary and secondary Python environments, npm CLIs, uv-managed Pythons, and Oh My Zsh). Default
-config is stored under `/usr/local/share/modern-debian-tools-python-debug` and seeded only when a
-home entry is missing. The home mount's host source is mode `0700` when created. Host SSH keys
-remain a separate readonly mount at `/run/mdt/host-ssh`; `/tmp` remains a separate host-backed
-source at `~/mdt--mounted-folders/tmp`.
+The image leaves `/home/vscode` empty and a **new home starts empty**. Image-owned executables and
+runtimes live under `/opt/mdt` and `/srv` (primary and secondary Python environments, npm CLIs,
+standalone CLIs, uv-managed Pythons, Oh My Zsh, PWMCP), group-writable for the `mdt` group your user
+belongs to. Defaults for bash, zsh, nano, htop, mc, Neovim and `less` are wired system-wide under
+`/etc` and `/usr/local/share/mdt-cockpit`; you override one by creating your own file, and your
+`~/.config/mdt-cockpit/{ai.env,shell.env,aliases.sh}` are sourced after the image's. The only home
+file the finalizer writes is a comment-only `~/.zshrc` stub, and only when you have no zsh startup
+file. The home mount's host source is mode `0700` when created. Host SSH keys remain a separate
+readonly mount at `/run/mdt/host-ssh`; `/tmp` remains a separate host-backed source at
+`~/mdt-cockpit-tmp` (mode `1777`).
 
-For an existing container, copy `devcontainer.json`,
-`initialize_container_environment.py`, and `migrate_persistent_home.py` from `templates/` into the
-consumer's `.devcontainer`. Stop the old container and run the migration tool in dry-run mode,
-review its exclusions and space report, then apply:
+To adopt the template copy `devcontainer.json` and `initialize_container_environment.py` from
+`templates/` into the consumer's `.devcontainer` and rebuild. **There is no migration.** If you used
+the previous split-mount template the initializer prints one informational line while
+`~/mdt--mounted-folders/` still holds files and the new home is empty; copy what you want by hand -
+[Moving from modern-debian-tools-python-debug](docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug)
+has the `cp -a` recipe and the paths that must not be copied.
 
-```sh
-container_name="myrepo-devcontainer-alice"
-docker stop --timeout 30 "$container_name"
-test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = "false"
-python3 .devcontainer/migrate_persistent_home.py "$container_name"
-python3 .devcontainer/migrate_persistent_home.py "$container_name" --apply
-```
-
-The utility copies the stopped container's merged home, leaves old split sources untouched, and
-writes `.mdt-home-migration.json` only after a complete staged copy. It excludes image-owned
-`.venv*`, `.oh-my-zsh`, `.ssh-host`, and `.codex/packages/standalone`; it moves personal
-`.oh-my-zsh/custom` files to `~/.oh-my-zsh-custom`. It preserves `.local` whole because previous
-images mixed user-installed commands with image CLIs there. The host bootstrap refuses to create
-an empty full-home source while old split paths contain data and there is no valid marker. Keep
-old sources as rollback copies until the rebuilt container is verified. See the
-[consumer migration guide](templates/README.md#migrate-an-existing-container) and
-[lifecycle runbook](DEVCONTAINER-LIFECYCLE.md#migrating-to-the-complete-home).
-
-The generated manifest remains at
-`/usr/local/share/modern-debian-tools-python-debug/manifest.md`. After the home is mounted, the
-finalizer creates `~/mdt-manifest.md` as a compatibility symlink when that path is free.
+The generated manifest is at `/usr/local/share/mdt-cockpit/manifest.md`; there is no home symlink.
 
 Workspace files that should stay on the workspace mount include:
 

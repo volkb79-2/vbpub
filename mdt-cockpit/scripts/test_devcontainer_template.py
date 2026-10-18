@@ -21,7 +21,9 @@ MOUNT_RE = re.compile(
     r'^\s*"(?P<spec>source=(?P<source>[^,"]+),target=(?P<target>[^,"]+),'
     r'type=(?P<type>[^,"]+)(?:,[^"]*)?)",?\s*$'
 )
-PERSISTENCE_PREFIX = "${localEnv:HOME}/mdt--mounted-folders/"
+HOME_SOURCE = "${localEnv:HOME}/mdt-cockpit-home/"
+TMP_SOURCE = "${localEnv:HOME}/mdt-cockpit-tmp/"
+DOC_ANCHOR = "docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug"
 
 
 def _template_mounts() -> list[tuple[str, str, str]]:
@@ -33,10 +35,21 @@ def _template_mounts() -> list[tuple[str, str, str]]:
     return mounts
 
 
+def _bootstrap_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sources: list[str]) -> Path:
+    """Point the bootstrap at a throwaway host $HOME with the given mount sources."""
+    host_home = tmp_path / "host"
+    host_home.mkdir(exist_ok=True)
+    monkeypatch.setattr(bootstrap, "HOME", host_home)
+    monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
+    monkeypatch.setattr(bootstrap, "host_bind_sources", lambda _path: sources)
+    monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: True)
+    return host_home
+
+
 def test_template_mounts_the_complete_home_from_one_host_source() -> None:
     mounts = _template_mounts()
     home_mounts = [(source, target) for _, source, target in mounts if target == "/home/vscode"]
-    assert home_mounts == [(f"{PERSISTENCE_PREFIX}home-vscode/", "/home/vscode")]
+    assert home_mounts == [(HOME_SOURCE, "/home/vscode")]
     assert any(
         source == "${localEnv:HOME}/.ssh/" and target == "/run/mdt/host-ssh"
         for _, source, target in mounts
@@ -45,9 +58,24 @@ def test_template_mounts_the_complete_home_from_one_host_source() -> None:
         target.startswith("/home/vscode/")
         for _, _, target in mounts
     )
-    assert (f"{PERSISTENCE_PREFIX}tmp/", "/tmp") in [
-        (source, target) for _, source, target in mounts
+    assert (TMP_SOURCE, "/tmp") in [(source, target) for _, source, target in mounts]
+
+
+def test_template_names_every_home_source_mdt_cockpit_purpose_and_never_the_old_parent() -> None:
+    home_sources = [
+        source
+        for _, source, _ in _template_mounts()
+        if source.startswith("${localEnv:HOME}/") and source != "${localEnv:HOME}/.ssh/"
     ]
+    assert home_sources == [HOME_SOURCE, TMP_SOURCE]
+    assert all(
+        source.removeprefix("${localEnv:HOME}/").startswith("mdt-cockpit-")
+        for source in home_sources
+    )
+    # The old grouped parent survives in live code only inside the bootstrap's
+    # one-line notice; the template itself never mounts or mentions it.
+    assert "mdt--mounted-folders" not in TEMPLATE_TEXT
+    assert "migrate_persistent_home" not in TEMPLATE_TEXT
 
 
 def test_template_marks_home_directories_and_files_by_source_spelling() -> None:
@@ -74,21 +102,33 @@ def test_template_keeps_codex_database_persistent_and_container_running() -> Non
     assert '"shutdownAction": "none"' in TEMPLATE_TEXT
 
 
-def test_template_exposes_pwmcp_cli_and_mcp_endpoint_to_remote_processes() -> None:
+def test_template_exposes_the_pwmcp_endpoint_but_never_a_second_path_definition() -> None:
     document = bootstrap._parse_jsonc_object(TEMPLATE_TEXT)
-    assert document["remoteEnv"] == {
-        "PATH": "/home/vscode/.local/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin:${containerEnv:PATH}",
-        "PWMCP_MCP_URL": "http://pwmcp:8931/mcp",
-    }
+    assert document["remoteEnv"] == {"PWMCP_MCP_URL": "http://pwmcp:8931/mcp"}
+    # D5/D6: PATH and the npm prefix are defined once, by the image (Dockerfile
+    # ENV). A second spelling in the template could only drift from it.
+    for section in ("containerEnv", "remoteEnv"):
+        assert "PATH" not in document[section], section
+        assert "NPM_CONFIG_PREFIX" not in document[section], section
+    assert "/home/vscode/.local" not in json.dumps(document["containerEnv"])
 
 
-def test_image_selects_estate_python_without_claiming_shell_activation() -> None:
+def test_image_defines_the_command_path_once_and_the_login_hook_only_restores_it() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     profile = (ROOT / "customization" / "profile.sh").read_text(encoding="utf-8")
-    assert 'ENV PATH="/opt/mdt/venv/bin:/opt/mdt/npm/bin:${PATH}"' in dockerfile
+    prefix = "/opt/mdt/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin"
+    assert f'ENV MDT_PATH_PREFIX="{prefix}"' in dockerfile
+    assert 'ENV MDT_PATH_SUFFIX="/home/vscode/.local/bin"' in dockerfile
+    assert 'ENV PATH="${MDT_PATH_PREFIX}:${PATH}:${MDT_PATH_SUFFIX}"' in dockerfile
+    assert 'ENV MDT_IMAGE_PATH="${PATH}"' in dockerfile
+    assert dockerfile.count("ENV PATH=") == 1
     assert 'ENV VIRTUAL_ENV=' not in dockerfile
-    assert 'export PATH="$HOME/.local/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin:$PATH"' in profile
-    assert 'dstdns-venv.sh' not in dockerfile
+    assert "dstdns-venv.sh" not in dockerfile
+    # profile.sh is sourced by interactive shells too, where rewriting PATH would
+    # undo a user's activated venv: it must never touch PATH itself.
+    assert not re.search(r"^\s*(export\s+)?PATH=", profile, re.MULTILINE)
+    assert 'PATH="$MDT_IMAGE_PATH"' in dockerfile
+    assert "/opt/mdt/venv/bin:/opt/mdt/npm/bin" not in profile
 
 
 def test_bootstrap_derives_every_active_home_bind_source() -> None:
@@ -104,90 +144,107 @@ def test_bootstrap_derives_every_active_home_bind_source() -> None:
     finally:
         bootstrap.HOME = original_home
 
-    grouped = host_home / bootstrap.PARENT_NAME
-    expected = [
+    assert derived == [
         host_home / ".ssh",
-        grouped / "home-vscode",
-        grouped / "tmp",
+        host_home / "mdt-cockpit-home",
+        host_home / "mdt-cockpit-tmp",
     ]
-    assert derived == expected
 
 
-def test_bootstrap_refuses_old_split_state_before_creating_new_home(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    host_home = tmp_path / "host"
-    parent = host_home / bootstrap.PARENT_NAME
-    old_codex = parent / ".codex"
-    old_codex.mkdir(parents=True)
-    (old_codex / "auth.json").write_text("secret", encoding="utf-8")
-    monkeypatch.setattr(bootstrap, "HOME", host_home)
-    monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
-    monkeypatch.setattr(
-        bootstrap,
-        "host_bind_sources",
-        lambda _path: [f"${{localEnv:HOME}}/{bootstrap.PARENT_NAME}/home-vscode/"],
-    )
-    monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: True)
-
-    assert bootstrap.main() == 1
-    assert not (parent / "home-vscode").exists()
-    assert "migrate_persistent_home.py" in capsys.readouterr().err
-
-
-def test_bootstrap_treats_zero_byte_legacy_files_as_state(tmp_path: Path) -> None:
-    parent = tmp_path / bootstrap.PARENT_NAME
-    legacy = parent / ".reasonix.toml"
-    legacy.parent.mkdir(parents=True)
-    legacy.touch()
-
-    assert bootstrap.preflight_home_migration(parent) is False
-
-
-def test_bootstrap_allows_empty_old_mounts_and_creates_private_home_source(
+def test_bootstrap_creates_a_private_home_and_a_sticky_tmp(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    host_home = tmp_path / "host"
-    parent = host_home / bootstrap.PARENT_NAME
-    (parent / ".claude").mkdir(parents=True)
-    (parent / ".codex").mkdir()
-    monkeypatch.setattr(bootstrap, "HOME", host_home)
-    monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
-    monkeypatch.setattr(
-        bootstrap,
-        "host_bind_sources",
-        lambda _path: [f"${{localEnv:HOME}}/{bootstrap.PARENT_NAME}/home-vscode/"],
-    )
-    monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: True)
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [HOME_SOURCE, TMP_SOURCE])
 
     assert bootstrap.main() == 0
-    home = parent / "home-vscode"
-    assert home.is_dir()
-    assert home.stat().st_mode & 0o777 == 0o700
+
+    assert (host_home / "mdt-cockpit-home").stat().st_mode & 0o7777 == 0o700
+    assert (host_home / "mdt-cockpit-tmp").stat().st_mode & 0o7777 == 0o1777
 
 
-def test_bootstrap_accepts_only_a_valid_home_migration_marker(
-    tmp_path: Path,
+def test_bootstrap_notes_old_split_state_but_never_fails_or_migrates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    parent = tmp_path / bootstrap.PARENT_NAME
-    legacy = parent / ".local"
-    legacy.mkdir(parents=True)
-    (legacy / "data").write_text("user state", encoding="utf-8")
-    home = parent / "home-vscode"
-    home.mkdir()
-    marker = home / bootstrap.HOME_MIGRATION_MARKER
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [HOME_SOURCE])
+    old_codex = host_home / "mdt--mounted-folders" / ".codex"
+    old_codex.mkdir(parents=True)
+    (old_codex / "auth.json").write_text("secret", encoding="utf-8")
 
-    marker.write_text('{"schema_version":1,"complete":false}\n', encoding="utf-8")
-    assert bootstrap.preflight_home_migration(parent) is False
-    marker.write_text('{"schema_version":1,"complete":true}\n', encoding="utf-8")
-    assert bootstrap.preflight_home_migration(parent) is True
+    assert bootstrap.main() == 0
+
+    captured = capsys.readouterr()
+    notes = [line for line in captured.err.splitlines() if "NOTE" in line]
+    assert len(notes) == 1
+    assert DOC_ANCHOR in notes[0]
+    assert "mdt-cockpit-home" in notes[0]
+    # Nothing was read into, copied to, or removed from either place.
+    assert list((host_home / "mdt-cockpit-home").iterdir()) == []
+    assert (old_codex / "auth.json").read_text(encoding="utf-8") == "secret"
+
+
+@pytest.mark.parametrize(
+    "make_content",
+    [
+        lambda parent: (parent / ".reasonix.toml").touch(),
+        lambda parent: (parent / ".local").mkdir() or (parent / ".local" / "bin").symlink_to("/nowhere"),
+    ],
+    ids=["zero-byte-file", "dangling-symlink"],
+)
+def test_bootstrap_counts_any_file_or_symlink_as_old_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str], make_content
+) -> None:
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [HOME_SOURCE])
+    parent = host_home / "mdt--mounted-folders"
+    parent.mkdir()
+    make_content(parent)
+
+    assert bootstrap.main() == 0
+
+    assert "NOTE" in capsys.readouterr().err
+
+
+def test_bootstrap_stays_silent_when_old_state_is_only_empty_directories(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [HOME_SOURCE])
+    parent = host_home / "mdt--mounted-folders"
+    (parent / ".claude").mkdir(parents=True)
+    (parent / ".codex").mkdir()
+
+    assert bootstrap.main() == 0
+
+    assert "NOTE" not in capsys.readouterr().err
+
+
+def test_bootstrap_stays_silent_once_the_new_home_has_content(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [HOME_SOURCE])
+    (host_home / "mdt--mounted-folders").mkdir()
+    (host_home / "mdt--mounted-folders" / "leftover").write_text("old", encoding="utf-8")
+    (host_home / "mdt-cockpit-home").mkdir()
+    (host_home / "mdt-cockpit-home" / ".bash_history").write_text("ls\n", encoding="utf-8")
+
+    assert bootstrap.main() == 0
+
+    assert "NOTE" not in capsys.readouterr().err
+
+
+def test_bootstrap_without_old_state_prints_no_note(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _bootstrap_home(monkeypatch, tmp_path, [HOME_SOURCE])
+
+    assert bootstrap.main() == 0
+
+    assert "NOTE" not in capsys.readouterr().err
 
 
 def test_bootstrap_accepts_existing_extensionless_and_arbitrary_file_sources(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     host_home = tmp_path / "host"
-    source = host_home / "mdt--mounted-folders" / ".npmrc"
+    source = host_home / "mdt-cockpit-npmrc"
     source.parent.mkdir(parents=True)
     source.write_text("registry=https://registry.example/\n", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "HOME", host_home)
@@ -200,15 +257,12 @@ def test_bootstrap_accepts_existing_extensionless_and_arbitrary_file_sources(
 def test_bootstrap_defaults_missing_unmarked_custom_source_to_empty_file(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    host_home = tmp_path / "host"
-    source = "${localEnv:HOME}/mdt--mounted-folders/.custom-state"
-    monkeypatch.setattr(bootstrap, "HOME", host_home)
-    monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
-    monkeypatch.setattr(bootstrap, "host_bind_sources", lambda _path: [source])
-    monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: True)
+    host_home = _bootstrap_home(
+        monkeypatch, tmp_path, ["${localEnv:HOME}/mdt-cockpit-custom-state"]
+    )
 
     assert bootstrap.main() == 0
-    created = host_home / "mdt--mounted-folders" / ".custom-state"
+    created = host_home / "mdt-cockpit-custom-state"
     assert created.is_file()
     assert created.read_bytes() == b""
     assert created.stat().st_mode & 0o777 == 0o600
@@ -218,19 +272,17 @@ def test_bootstrap_defaults_missing_unmarked_custom_source_to_empty_file(
 def test_bootstrap_reads_strict_missing_source_policy_from_host_config(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    host_home = tmp_path / "host"
-    source = "${localEnv:HOME}/mdt--mounted-folders/.strict-state"
+    host_home = _bootstrap_home(
+        monkeypatch, tmp_path, ["${localEnv:HOME}/mdt-cockpit-strict-state"]
+    )
     config_path = tmp_path / "host-setup.env"
     config_path.write_text(
         'DEVCONTAINER_MISSING_BIND_SOURCE_POLICY="fail"\n', encoding="utf-8"
     )
-    monkeypatch.setattr(bootstrap, "HOME", host_home)
     monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", config_path)
-    monkeypatch.setattr(bootstrap, "host_bind_sources", lambda _path: [source])
-    monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: True)
 
     assert bootstrap.main() == 1
-    assert not (host_home / "mdt--mounted-folders" / ".strict-state").exists()
+    assert not (host_home / "mdt-cockpit-strict-state").exists()
     assert "policy is `fail`" in capsys.readouterr().err
 
 
@@ -251,42 +303,31 @@ def test_bootstrap_rejects_invalid_missing_source_policy(
 def test_bootstrap_refuses_conflicting_source_markers_without_fallback_creation(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    host_home = tmp_path / "host"
-    base = "${localEnv:HOME}/mdt--mounted-folders/.conflicted"
-    monkeypatch.setattr(bootstrap, "HOME", host_home)
-    monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
-    monkeypatch.setattr(
-        bootstrap,
-        "host_bind_sources",
-        lambda _path: [base, base + "/"],
-    )
-    monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: True)
+    base = "${localEnv:HOME}/mdt-cockpit-conflicted"
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [base, base + "/"])
 
     assert bootstrap.main() == 1
-    assert not (host_home / "mdt--mounted-folders" / ".conflicted").exists()
-    assert not (host_home / "mdt--mounted-folders" / ".claude").exists()
+    assert not (host_home / "mdt-cockpit-conflicted").exists()
+    assert not (host_home / "mdt-cockpit-home").exists()
     assert "conflicting file/directory source spellings" in capsys.readouterr().err
 
 
 def test_bootstrap_creates_missing_custom_directory_with_trailing_slash(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    host_home = tmp_path / "host"
-    source = "${localEnv:HOME}/mdt--mounted-folders/.custom-cache/"
-    monkeypatch.setattr(bootstrap, "HOME", host_home)
-    monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
-    monkeypatch.setattr(bootstrap, "host_bind_sources", lambda _path: [source])
-    monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: True)
+    host_home = _bootstrap_home(
+        monkeypatch, tmp_path, ["${localEnv:HOME}/mdt-cockpit-cache/"]
+    )
 
     assert bootstrap.main() == 0
-    assert (host_home / "mdt--mounted-folders" / ".custom-cache").is_dir()
+    assert (host_home / "mdt-cockpit-cache").is_dir()
 
 
-def test_bootstrap_treats_gitconfig_as_a_file_and_rejects_a_directory(
+def test_bootstrap_treats_the_gitconfig_source_as_a_file_and_rejects_a_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     host_home = tmp_path / "host"
-    source = host_home / "mdt--mounted-folders" / ".gitconfig"
+    source = host_home / "mdt-cockpit-gitconfig"
     source.parent.mkdir(parents=True)
     source.write_text("[user]\n\tname = Example\n", encoding="utf-8")
     monkeypatch.setattr(bootstrap, "HOME", host_home)
@@ -313,11 +354,7 @@ def test_bootstrap_treats_gitconfig_as_a_file_and_rejects_a_directory(
 def test_bootstrap_main_uses_complete_fallback_when_template_is_unreadable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    host_home = tmp_path / "host"
-    monkeypatch.setattr(bootstrap, "HOME", host_home)
-    monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
-    monkeypatch.setattr(bootstrap, "host_bind_sources", lambda _path: [])
-    monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: True)
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [])
     ensured: list[tuple[Path, str, str]] = []
 
     def record(path: Path, *, expected_type: str, missing_policy: str) -> None:
@@ -330,8 +367,8 @@ def test_bootstrap_main_uses_complete_fallback_when_template_is_unreadable(
         (path, expected_type, "create-by-spelling")
         for path, expected_type in bootstrap.fallback_bind_paths()
     ]
-    assert (host_home / bootstrap.PARENT_NAME / "home-vscode", "directory", "create-by-spelling") in ensured
-    assert (host_home / bootstrap.PARENT_NAME / "tmp", "directory", "create-by-spelling") in ensured
+    assert (host_home / "mdt-cockpit-home", "directory", "create-by-spelling") in ensured
+    assert (host_home / "mdt-cockpit-tmp", "directory", "create-by-spelling") in ensured
     assert (host_home / ".ssh", "directory", "create-by-spelling") in ensured
 
 
@@ -606,14 +643,14 @@ def test_bootstrap_checks_slices_before_preparing_host_sources(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     host_home = tmp_path / "host"
-    source = "${localEnv:HOME}/mdt--mounted-folders/.must-not-create"
+    source = "${localEnv:HOME}/mdt-cockpit-must-not-create/"
     monkeypatch.setattr(bootstrap, "HOME", host_home)
     monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
     monkeypatch.setattr(bootstrap, "host_bind_sources", lambda _path: [source])
     monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: False)
 
     assert bootstrap.main() == 1
-    assert not (host_home / bootstrap.PARENT_NAME / ".must-not-create").exists()
+    assert not (host_home / "mdt-cockpit-must-not-create").exists()
 
 
 @pytest.mark.parametrize(
@@ -628,24 +665,35 @@ def test_bootstrap_checks_slices_before_preparing_host_sources(
 )
 def test_user_facing_docs_match_persistence_targets(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    assert "home-vscode" in text, path
+    assert "mdt-cockpit-home" in text, path
     assert "complete" in text.lower(), path
+    assert "home-vscode" not in text, path
+    # The old parent may be NAMED (to explain what to copy from), but no doc may
+    # still show it as a mount source.
+    assert "localEnv:HOME}/mdt--mounted-folders" not in text, path
 
 
-def test_persistence_docs_expose_the_full_home_migration_recipe() -> None:
+def test_manual_copy_replaces_the_retired_migration_in_every_user_doc() -> None:
     template_readme = (ROOT / "templates" / "README.md").read_text(encoding="utf-8")
     lifecycle = (ROOT / "DEVCONTAINER-LIFECYCLE.md").read_text(encoding="utf-8")
     consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    persistence = (ROOT / "docs" / "HOME-PERSISTENCE.md").read_text(encoding="utf-8")
     usage = (ROOT / "USAGE.md").read_text(encoding="utf-8")
     top_readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    for text in (template_readme, lifecycle, consumers, usage):
-        assert "migrate_persistent_home.py" in text
-        assert ".mdt-home-migration.json" in text
-        assert "home-vscode" in text
-    assert "`~/.opencode`" not in template_readme
-    assert "`~/tmp`" not in template_readme
-    assert "templates/README.md#migrate-an-existing-container" in top_readme
+    for text in (template_readme, lifecycle, consumers, usage, top_readme, persistence):
+        assert "migrate_persistent_home" not in text
+        assert ".mdt-home-migration" not in text
+    assert "## Moving from modern-debian-tools-python-debug" in persistence
+    for name in (".claude/", ".claude.json", ".codex*/", ".ssh/", ".gnupg/", ".minisign/",
+                 ".claudelink/", ".pi/", ".reasonix/", ".openclaw/", ".local/share/opencode/"):
+        assert name in persistence, name
+    assert "cp -a" in persistence
+    for never_copy in ("~/.venv*", "~/.oh-my-zsh", "~/.local/bin", "~/.local/lib/node_modules",
+                       "~/.codex/packages/standalone"):
+        assert never_copy in persistence, never_copy
+    for text in (template_readme, lifecycle, consumers, usage, top_readme):
+        assert "HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug" in text
     assert "docs/DESIGN-GUIDE.md#the-home-is-user-state-image-assets-live-outside-it" in top_readme
 
 
@@ -670,36 +718,16 @@ def test_bind_source_type_policy_is_explained_and_cross_linked() -> None:
         assert "docs/CONSUMERS.md#optional-git-config-mount" in text or (
             "CONSUMERS.md#optional-git-config-mount" in text
         )
-    assert "source=${localEnv:HOME}/mdt--mounted-folders/.my-cache/" in consumers
+    assert "source=${localEnv:HOME}/mdt-cockpit-cache/" in consumers
     assert "append `/`" in consumers
     assert "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=create-by-spelling" in consumers
     assert "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail" in consumers
     assert "create-by-spelling" in design and "no trailing `/`" in design
     assert "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY" in template_readme
     assert "empty regular file (`0600`)" in lifecycle
-    assert ".gitconfig" in consumers
+    assert "mdt-cockpit-gitconfig" in consumers
     for text in (top_readme, design, consumers):
         assert "CODEX_SQLITE_HOME" in text
         assert 'shutdownAction: "none"' in text or 'shutdownAction` to `none' in text
     assert "docs/CONSUMERS.md#codex-profile-state-and-container-lifetime" in top_readme
     assert "CONSUMERS.md#codex-profile-state-and-container-lifetime" in design
-
-
-def test_full_home_migration_runbook_stops_before_dry_run_and_apply() -> None:
-    lifecycle = (ROOT / "DEVCONTAINER-LIFECYCLE.md").read_text(encoding="utf-8")
-
-    runbook_heading = "## Migrating to the complete home"
-    stopped_check = 'test "$(docker inspect --format \'{{.State.Running}}\' "$container_name")" = "false"'
-    assert runbook_heading in lifecycle
-    assert 'docker stop --timeout 30 "$container_name"' in lifecycle
-    assert stopped_check in lifecycle
-    assert 'python3 .devcontainer/migrate_persistent_home.py "$container_name"' in lifecycle
-    assert 'python3 .devcontainer/migrate_persistent_home.py "$container_name" --apply' in lifecycle
-    assert lifecycle.index("docker stop --timeout 30") < lifecycle.index(stopped_check)
-    assert lifecycle.index(stopped_check) < lifecycle.index(
-        'python3 .devcontainer/migrate_persistent_home.py "$container_name"'
-    )
-    for sidecar in ("nexus.db", "nexus.db-wal", "nexus.db-shm"):
-        assert sidecar in lifecycle
-    assert ".mdt-home-migration.json" in lifecycle
-    assert "leaves old sources untouched" in lifecycle

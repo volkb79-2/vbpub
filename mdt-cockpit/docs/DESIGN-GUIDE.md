@@ -59,72 +59,232 @@ internal deployments. No host port is published. The installed `pwmcp` CLI
 uses the version-matched client and Playwright wheel in the same private venv.
 See the [pasteable consumer steps](CONSUMERS.md#pwmcp-browser-service).
 
-The devcontainer template puts `/srv/pwmcp-instance/bin` on remote process
-`PATH` and exports `PWMCP_MCP_URL`. The CLI lives outside `/home/vscode`, so a
-persisted home mount cannot hide it. The endpoint variable makes the network
-resource explicit; each agent harness still owns its MCP registration format.
+The image puts `/srv/pwmcp-instance/bin` on `PATH` ([One PATH order](#one-path-order)),
+and the devcontainer template exports `PWMCP_MCP_URL`. The CLI lives outside
+`/home/vscode`, so a persisted home mount cannot hide it, and `/srv` is group
+`mdt` so the instance can be updated without `sudo`. The endpoint variable makes
+the network resource explicit; each agent harness still owns its MCP registration
+format.
 
 ## The home is user state; image assets live outside it
 
-The devcontainer persists one host directory at `/home/vscode`. A list of
-individual home mounts made state discoverability depend on knowing which
-tools wrote which dot directories, and image-built files in unmounted parts of
-the home disappeared on rebuild. A single home source makes persistence
-complete and visible in one host path.
+The devcontainer persists one host directory at `/home/vscode`
+(`~/mdt-cockpit-home/`, mode `0700`). A list of individual home mounts made
+state discoverability depend on knowing which tools wrote which dot
+directories, and image-built files in unmounted parts of the home disappeared
+on rebuild. A single home source makes persistence complete and visible in one
+host path.
 
 That mount hides every file baked below `/home/vscode`, so the image has a
 strict ownership boundary:
 
 - `/opt/mdt` contains image-owned Python environments, managed Python runtimes,
-  npm CLIs, and the Oh My Zsh distribution.
-- `/usr/local/share/modern-debian-tools-python-debug` contains config seed
-  files, shipped shell defaults, and manifests.
-- `/home/vscode` contains only user state at runtime. The host bind source is
-  `~/mdt--mounted-folders/home-vscode/`; `/tmp` remains separate scratch state.
+  npm CLIs, standalone CLI binaries and the Oh My Zsh distribution; `/srv`
+  holds the PWMCP instance. Both are group `mdt` ([below](#the-mdt-group)).
+- `/usr/local/share/mdt-cockpit` contains the shipped shell defaults,
+  examples and manifests. `/etc` holds the defaults wired into each tool
+  ([System-wide defaults](#system-wide-defaults)).
+- `/home/vscode` contains only user state at runtime. `/tmp` remains separate
+  scratch state (`~/mdt-cockpit-tmp/`, `1777`).
 - `/run/mdt/host-ssh` is the readonly native-host SSH integration, outside the
   mounted home.
 
-The build moves every intended shell/editor default out of the image home and
-fails if any home child remains. After the bind mount is active, the finalizer
-seeds only missing defaults. It merges missing files into an existing config
-tree, never follows a user symlink while seeding, and does not replace a
-conflicting user path. Compatibility links such as `~/.venv` are created only
-when free; image `PATH` points directly at `/opt/mdt/venv/bin` so a user's
-existing `.venv` cannot mask the curated Python.
+The build deletes what the base image left in the home and fails if any child
+remains, so the invariant is "the image's home is empty", not "we remembered to
+clean up". Because nothing the image ships needs to reach the home, **the
+finalizer has almost nothing to do**: a new home stays empty, a second run
+changes nothing, and the one stub it may write (a comment-only `~/.zshrc`,
+because zsh's new-user wizard cannot be disabled system-wide) is only ever
+created, never edited.
 
-Image npm packages are root-owned under `/opt/mdt/npm`. Runtime npm installs
-default to `~/.local`, which precedes the image prefix so users can install or
-override a CLI without modifying the image. Existing `.local` content is
-ambiguous because earlier images mixed user installs and image CLIs there, so
-the migration preserves that tree in full. Users can review and remove old
-image package copies after verifying the new image prefix.
-
-Migration must happen from a stopped container so agent databases and other
-writers are quiescent. The vendored migration utility dry-runs first, reports
-space and known exclusions, stages the copy beside the destination, writes a
-completion marker only after the copy succeeds, and never deletes old sources.
-It refuses unsupported special files and hashes regular files in both archive
-passes so it will not certify a partial or changed copy.
-It skips old image runtime paths and moves `.oh-my-zsh/custom` into the
-persistent `~/.oh-my-zsh-custom` path. Host bootstrap blocks startup when old
-split sources contain data without that marker; empty old mount directories do
-not block a clean install. See the [consumer migration steps](CONSUMERS.md#persisting-the-complete-vscode-home).
+**Why a fresh home and no migration.** mdt-cockpit is an opt-in fork, not an
+upgrade of the original image. A migrator has to decide, file by file, which of
+the old home's contents are user state and which are the old image's payload
+(venvs, CLIs, seeded defaults), and a wrong guess silently shadows the new
+image. Copying by hand puts that decision with the one person who knows, and
+removes a stopped-container tool, a marker file, and a startup refusal from the
+critical path. The bootstrap keeps only an informational line so the
+choice is never silent ([Moving from modern-debian-tools-python-debug](HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug)).
 
 Named volumes were not chosen as the default because operators need to see and
 back up the complete user home as an ordinary host directory. Individual
 mounts were not retained because each new tool would require another persistence
 decision and could again leave user state behind.
 
+## The `mdt` group
+
+Image-managed trees must be updatable by the runtime user without `sudo` -
+`npm install -g`, `pip install` into the primary venv, a tool's self-update -
+but the user is not stable: Dev Containers' `updateRemoteUserUID` re-numbers
+`vscode` (here uid 1003 instead of 1000) and re-owns **only** `$HOME`, so any
+tree owned by the build-time `vscode` uid is simply not writable at runtime.
+Ownership by a *group* survives that, because the step edits the user's uid and
+primary gid but leaves membership of a separately numbered group alone.
+
+- Group `mdt`, GID from the build argument `MDT_GID` (default **2750**). The GID
+  is a *policy choice*, not derived from anything: a fixed, high number that is
+  stable across rebuilds and unlikely to collide with a base image. The build
+  **fails** if the base already uses that GID or the name. `vscode` is a member.
+- `/opt/mdt` and `/srv` and everything beneath them: group `mdt`, directories
+  `2775` (setgid, so new entries inherit the group), regular files group-writable.
+- **Construction rule.** The roots are created `root:mdt 2775` *before* any
+  content, and every RUN that writes beneath them runs with `umask 0002`, so new
+  entries come out right the first time. A fix-up is allowed only on content
+  created in the *same* RUN, and only through `mdt-perms fix`, whose predicates
+  select offenders only. A recursive `chgrp`/`chmod` over earlier-layer content
+  is forbidden: on overlayfs even a no-op metadata change copies the file up into
+  a new layer, doubling the image (a test pins that no such command appears in
+  the Dockerfile).
+- **Assertion.** The last build step is `mdt-perms check /opt/mdt /srv`: no entry
+  (symlinks excluded) outside group `mdt`, no directory lacking setgid and group
+  rwx, no regular file lacking group write. The image-runtime lane re-checks the
+  same contract in a running container, so the build step and the shipped image
+  cannot disagree.
+- Not world-writable: the lane's negative control shows that a uid *outside*
+  `mdt` gets `EACCES` on the same writes, which proves the group (not a loosened
+  mode) grants access.
+
+*Security note.* Group-writable image tools grant no new privilege: `vscode`
+already has passwordless sudo in this image, so anyone who can write these trees
+could already become root. The group exists for convenience and uid-stability,
+not as a boundary. Runtime changes to these trees live in the container
+filesystem and are replaced by the image on recreate.
+
+## One PATH order
+
+`PATH` is defined **once**, in the Dockerfile:
+
+```text
+/opt/mdt/bin : /opt/mdt/venv/bin : /opt/mdt/npm/bin : /srv/pwmcp-instance/bin : <base image PATH> : /home/vscode/.local/bin
+```
+
+Image tools always win; `~/.local/bin` is **last**, for the user's own additions
+only. (The previous layout put it first so a user install could shadow an image
+tool - and a stale copy of an old image CLI in the persisted home silently
+did.) The base image's own entries (nvm, pipx, `/usr/local/bin`, ...) stay in the
+middle, unchanged; the Microsoft base already appends `~/.local/bin` last for
+interactive shells, which this order simply makes true for every shell.
+
+Debian's `/etc/profile` *replaces* `PATH` in every login shell, so the Dockerfile
+also records the finished value in `MDT_IMAGE_PATH`, and
+`/etc/profile.d/50-mdt-cockpit.sh` puts exactly that back - the list is never
+spelled a second time. `profile.sh`, which interactive shells also source, never
+touches `PATH` (rewriting it would undo an activated venv). The devcontainer
+template sets neither `PATH` nor `NPM_CONFIG_PREFIX`. The base image's own PATH
+contains `/usr/local/bin` twice; it is carried over verbatim so every shell sees
+the identical string, and the managed entries each appear once.
+
+## Environment variables
+
+Where each tool puts things is a fact of the image, so it is set once, here. This
+is the result of auditing every tool the image installs for manager prefixes,
+caches and config directories.
+
+| Variable | Value | Why | Set in |
+|---|---|---|---|
+| `PATH` | the order above | image tools win, `~/.local/bin` last | Dockerfile `ENV` |
+| `MDT_PATH_PREFIX`, `MDT_PATH_SUFFIX` | the two ends of `PATH` | the one spelling of the list | Dockerfile `ENV` |
+| `MDT_IMAGE_PATH` | snapshot of the final `PATH` | login shells restore it after `/etc/profile` | Dockerfile `ENV` |
+| `NPM_CONFIG_PREFIX` | `/opt/mdt/npm` | global npm installs/updates land in the group tree, not `~/.local` | Dockerfile `ENV` |
+| `UV_PYTHON_INSTALL_DIR` | `/opt/mdt/python` | uv-managed interpreters are image-owned | Dockerfile `ENV` |
+| `VIRTUAL_ENV` | **unset** | the primary venv is first on `PATH`; nothing claims shell activation | - |
+| `ZSH` | `/opt/mdt/oh-my-zsh` | Oh My Zsh (VS Code family) is image-owned | `profile.sh`, when the directory exists |
+| `ZSH_CUSTOM` | unset (OMZ default `$ZSH/custom`) | custom themes ship there; the tree is group-writable | - |
+| `ZSH_CACHE_DIR` | `~/.cache/oh-my-zsh` | OMZ's cache is state, so it goes to the home | `zshrc` |
+| `ZSH_COMPDUMP` | `$ZSH_CACHE_DIR/.zcompdump-...` | keeps the home root free of a stray dump file | `zshrc` |
+| `ZSH_DISABLE_COMPFIX` | `true` | the group-writable tree would make `compaudit` ask about "insecure directories" on every start | `zshrc` |
+| OMZ auto-update | disabled (`zstyle ':omz:update' mode disabled`) | the image owns the framework version | `zshrc` |
+| `LESSOPEN` | `|/usr/local/share/mdt-cockpit/lesspipe.sh %s` | system-wide syntax-highlighting preprocessor | `shell.env` |
+| `HTOPRC`, `LESSHISTFILE` | **unset** (were pointed into the home) | htop falls back to `/etc/htoprc`; less keeps its own history | - |
+| `XDG_CONFIG_DIRS` | unset (default `/etc/xdg`) | Neovim finds the system NvChad tree there | - |
+| `EDITOR`, `VISUAL`, `PAGER`, `LESS`, `LESSCHARSET` | `nvim`/`nano`, `less`, `-R -M`, `utf-8` | defaults a user file may override | `shell.env` |
+| `MDT_CUSTOMIZATION_ROOT` | `/usr/local/share/mdt-cockpit` | where the image's shell files live | `profile.sh` |
+| `PIPX_HOME`, `PIPX_BIN_DIR`, `NVM_DIR`, `NVM_SYMLINK_CURRENT` | base image values (VS Code family) | the Microsoft base's own group-owned trees (`pipx`, `nvm`) - same pattern as `mdt` | inherited |
+| `LD_PRELOAD` | the KSM shim | build-time opt-in | Dockerfile `ENV` |
+| `CODEX_SQLITE_HOME`, `BUILDX_CONFIG` | under `/home/vscode` | tool **state**, so deliberately in the home | template `containerEnv` |
+| `DOCKER_HOST`, `BUILDX_BUILDER`, `BUILDKIT_HOST`, `CGROUP_PARENT_DEV_*` | host sockets and slices | facts of the host, not the image | template `containerEnv` |
+
+Everything else (`~/.aws`, `~/.docker`, `~/.config/gh`, pip/uv/npm caches, ...)
+is user state and is deliberately left at each tool's own home default.
+
+## System-wide defaults
+
+Every default the image ships is installed where its tool reads *system-wide*
+configuration, not copied into the home (which would shadow later image updates
+and make "what is mine" unanswerable). Each lookup below was verified in the
+built image (`strace` of the real tool), and the image-runtime lane asserts it
+with an empty home.
+
+| Tool | System location | Home write? | Why / lookup order |
+|---|---|---|---|
+| bash (interactive) | hook appended to `/etc/bash.bashrc` -> `/usr/local/share/mdt-cockpit/bashrc` | none | `~/.bashrc` runs *after* it and wins |
+| bash (login) | `/etc/profile.d/50-mdt-cockpit.sh` | none | restores `PATH`, then `profile.sh` |
+| zsh | hook appended to `/etc/zsh/zshrc` -> `.../zshrc` | **stub**: comment-only `~/.zshrc` | zsh runs `zsh-newuser-install` on a terminal when none of `.zshenv/.zprofile/.zshrc/.zlogin` exists, and there is no system-wide switch; the stub is a no-op because the defaults arrive via `/etc/zsh/zshrc` (so image updates still reach the user) |
+| Oh My Zsh | `/opt/mdt/oh-my-zsh`, loaded by the zsh hook | none (cache in `~/.cache/oh-my-zsh`) | skipped when the user's own `~/.zshrc` already loads it |
+| nano | `include` appended to `/etc/nanorc` | none | `/etc/nanorc`, then `~/.nanorc`/`~/.config/nano/nanorc` (per-setting override) |
+| htop | `/etc/htoprc` | none (htop writes its own file when you save settings) | `~/.config/htop/htoprc`, `~/.htoprc`, then `/etc/htoprc` |
+| mc | `/etc/mc/mc.ini` | none | `~/.config/mc/ini`, then `/etc/mc/mc.ini`, then `/usr/share/mc/mc.ini` |
+| Neovim / NvChad | `/etc/xdg/nvim/` (tree + `sysinit.vim`) | none (plugins in `~/.local/share/nvim`, lazy lockfile redirected to `~/.local/state/nvim`) | `sysinit.vim` starts the tree only while the user has no `init.lua`/`init.vim`, so creating one replaces the default entirely |
+| less | `LESSOPEN` in `shell.env` | none | environment variable |
+| MDT shell files | `/usr/local/share/mdt-cockpit/{shell.env,aliases.sh}` | none | the user's `~/.config/mdt-cockpit/` files are sourced *after* and may override; `ai.env` has no image default |
+| lnav formats | `/etc/lnav/formats/` | none | already system-wide |
+| image manifest | `/usr/local/share/mdt-cockpit/manifest.md` | none (no `~/mdt-manifest.md`) | `IMAGE_MANIFEST` in `/etc/os-release` |
+
+Neovim note: the shipped `NVCHAD_VER` archive is the `NvChad/NvChad` core
+repository, whose `init.lua` is a placeholder that prints a hint, not a
+ready-to-run starter configuration. The move keeps that behaviour as it was
+(tracked as MDT-007); the lockfile redirection in `sysinit.vim` takes effect as
+soon as a starter-style `configs/lazy` module is present.
+
 ## OCI names keep runtime paths stable
 
 The fork publishes the native and VSC image families as `mdt-cockpit` and
-`mdt-cockpit-devcontainer`. The persisted home keeps the established
-`~/.config/modern-debian-tools-python-debug` user-config path, and the image
-keeps its `/usr/local/share/modern-debian-tools-python-debug` support path.
-Those paths are runtime compatibility surfaces used by existing files in the
-persistent home and by the finalizer. A package rename alone does not move
-user-owned configuration; a future path migration would need an explicit
-copy/compatibility policy.
+`mdt-cockpit-devcontainer`, and the runtime namespace now matches: the image's
+support files live in `/usr/local/share/mdt-cockpit` and the user's overrides in
+`~/.config/mdt-cockpit`. The original project's paths
+(`modern-debian-tools-python-debug`) are not carried over. That is possible
+exactly because a fork user starts with an empty home and copies old content by
+hand ([Moving from modern-debian-tools-python-debug](HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug));
+there is no persisted file that depends on the old name, so keeping it would
+only leave two products sharing one path convention.
+
+## Local-dev builds are explicit, verified and unpublishable
+
+Testing an image sometimes needs artifacts that are not published yet - a wheel
+built in a worktree, a PWMCP bundle whose release URL does not exist. The
+default build must never quietly substitute for a missing release (a *default
+that stands in for a fact that exists elsewhere* is the estate's recurring
+hazard), so local-dev is a **separate, explicit mode**:
+`./build-push.py --build --local-dev local-dev-artifacts.toml`.
+
+- **Fail-closed manifest.** The manifest lists each local artifact (`name`,
+  absolute `path`, `sha256`, `version`). Before any network or build work every
+  entry is checked: the name must be known (a typo does not fall back to the
+  release), the file present and readable, the hash equal, the wheel's file name
+  consistent with its version, and a PWMCP entry equal to the pinned release. The
+  first failure refuses the build and names the entry. The resolver re-verifies
+  the same manifest, and the in-image PWMCP installer re-hashes what it was given.
+- **Nothing local reaches a layer by accident.** Wheels are staged into the
+  existing offline `pip/wheels/` context; the PWMCP files travel through the bake
+  named context `mdt-local-dev` (an empty `FROM scratch` stage in a release
+  build), mounted into the single RUN that needs them. `get.py` is the unchanged
+  pinned installer: only its release-asset download is replaced, so its checksum,
+  manifest-vs-tag and wheel verification still run.
+- **Recorded.** `net.volkb79.mdt.build-mode=local-dev` and
+  `net.volkb79.mdt.local-artifacts` (JSON of name, version, sha256, original
+  path) are image labels, and the image manifest has a `Build Provenance` section.
+  Release images carry `build-mode=release`.
+- **Tagged apart.** `<debian>-py<python>[-<flavor>]-dev-<YYYYMMDD>[-<n>]` plus the
+  floating `...-dev-latest`. Release tags, `...-latest` and bare `latest` are
+  dropped by construction, not by convention.
+- **Unpublishable, three ways.** The image is only *loaded* into the local daemon
+  (no registry or OCI-layout export exists for this mode); `release-bake.sh` forces
+  the local-dev flow whenever `MDT_BUILD_MODE=local-dev` (cmru re-applies the
+  project's `RELEASE_IMAGE_FLOW=load` over the environment, so the mode - not the
+  flow variable - is authoritative) and has no push step for it; and the publish
+  path refuses any layout whose build-mode label is not `release` (fail-closed:
+  unreadable labels refuse too). The mode keeps its own state file so a local-dev
+  build can neither clobber nor be mistaken for the saved release state.
 
 ## Built-image acceptance is a separate test boundary
 
@@ -137,8 +297,9 @@ declared runtime contract.
 
 ## The estate venv is selected by PATH
 
-The MDT image puts `/opt/mdt/venv/bin` first in image and login-shell
-`PATH`. This selects the estate Python for all cockpit processes, including
+The MDT image puts `/opt/mdt/venv/bin` right after `/opt/mdt/bin` in the one
+image-defined `PATH` ([One PATH order](#one-path-order)), for image and login
+shells alike. This selects the estate Python for all cockpit processes, including
 noninteractive agent commands and children started by release tools. It does
 not pretend that every process has activated a shell venv: `VIRTUAL_ENV` is
 reserved for actual activation, while the selected interpreter and its
@@ -184,7 +345,7 @@ before Docker starts. The marker is an MDT bootstrap convention, not Docker
 mount metadata; the shipped template marks every directory source with `/`. See the
 [consumer example](CONSUMERS.md#optional-git-config-mount).
 
-The template puts Codex's shared SQLite database under the persistent `.codex` mount with
+The template puts Codex's shared SQLite database under the persistent home's `.codex` with
 `CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`, so profile data survives a rebuild.
 It sets `shutdownAction: "none"` so closing the attached Dev Containers session leaves the
 container available. Adoption details are in the

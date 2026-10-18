@@ -38,25 +38,34 @@ see `host-setup/etc/sysctl.d/99-inotify.conf`
 
 ## MDT-004 - move to a persisted `/home/vscode` in mdt-cockpit
 
-The `mdt-cockpit` fork now implements the complete host-persisted
-`/home/vscode` mount. Keep MDT-004 open until its image build and runtime
-acceptance pass and the consumer cutover is complete. Inventory every shipped
-image path and persistent home path, then decide which content belongs in the
-image, in user configuration, or in host-persisted runtime state.
-In particular, audit tools and runtimes installed under `~`, agent settings
-under `~/.config` and `~/.local`, and files that a home mount would hide from
-the image. Preserve executable discovery, seed only intentional defaults, and
-explain how users move existing state without silently replacing it.
+**CLOSED 2026-10-18 (MDTC-01, Phase 1; runtime acceptance is MDT-006).** Redesigned as a
+fresh-home layout instead of a migrated one:
 
-Deliver a consumer guide with reusable rules for choosing image paths,
-configuration paths, caches, secrets, and persisted state. Its acceptance
-inventory must cover every current `/home/vscode` file and directory and name
-the owner and persistence policy for each one before the mount changes. The
-image build must fail if any child remains under `/home/vscode`; the host
-bootstrap must block an empty new source when legacy sources contain data;
-and migration must be dry-runnable, stopped-container-only, no-overwrite, and
-recoverable without deleting the old state. Update README, DESIGN-GUIDE,
-CONSUMERS, and lifecycle/template docs together.
+- the home is `~/mdt-cockpit-home/` (`0700`), `/tmp` is `~/mdt-cockpit-tmp/` (`1777`), any further
+  source is `~/mdt-cockpit-<purpose>`; a new home **starts empty**;
+- **no migration**: `migrate_persistent_home.py`, its tests, the legacy-source refusal and the
+  completion-marker logic are deleted. The bootstrap prints one informational line when the old
+  `~/mdt--mounted-folders/` holds files and the new home is empty; users copy by hand
+  (`docs/HOME-PERSISTENCE.md`, "Moving from modern-debian-tools-python-debug");
+- image-managed trees (`/opt/mdt`, `/srv`) are group `mdt` (GID 2750, setgid dirs, group-writable
+  files) so the re-numbered runtime user can update tools without `sudo`; the build asserts the
+  contract (`mdt-perms check`);
+- one `PATH` (Dockerfile `ENV`; `~/.local/bin` last), `NPM_CONFIG_PREFIX=/opt/mdt/npm`,
+  `UV_PYTHON_INSTALL_DIR=/opt/mdt/python`;
+- every default is wired system-wide (`/etc/bash.bashrc`, `/etc/zsh/zshrc`, `/etc/nanorc`,
+  `/etc/htoprc`, `/etc/mc/mc.ini`, `/etc/xdg/nvim`, `LESSOPEN`); the finalizer's only home write is a
+  comment-only `~/.zshrc` stub. The `~/.venv*`, `~/.oh-my-zsh`, `~/mdt-manifest.md` compatibility
+  symlinks and the per-tool `.env` symlinks are gone;
+- the namespace is `mdt-cockpit` (`/usr/local/share/mdt-cockpit`, `~/.config/mdt-cockpit`).
+
+## MDT-007 - the shipped "NvChad" tree is the core repository, not a starter
+
+`NVCHAD_VER` stages the `NvChad/NvChad` repository tag. Its `init.lua` is the placeholder
+`print('use this along starter!!!')` - the real configuration is the separate `NvChad/starter`
+repository. The previous layout seeded that tree as `~/.config/nvim` and the move to
+`/etc/xdg/nvim` (system-wide) preserves the behaviour as it was. Decide: stage the starter (and let
+`customization/nvim/sysinit.vim`'s `configs.lazy` lockfile redirection apply), or ship plain
+defaults. Needs network on first run either way (lazy.nvim bootstraps its plugins).
 
 ## MDT-005 - adopt `cli-extended` for grammer, wizard, sematic check, ...
 

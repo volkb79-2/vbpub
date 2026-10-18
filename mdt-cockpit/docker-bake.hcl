@@ -147,6 +147,25 @@ variable "PWMCP_CONTRACT_SHA256" {
   default = ""
 }
 
+// === Build provenance (D9) ================================================
+// "release" for every published image. "local-dev" ONLY for an explicit
+// `build-push.py --build --local-dev <manifest.toml>` build, which sets both
+// variables from the verified manifest. They are recorded in OCI labels and the
+// image manifest, and the push/publish paths refuse any image labelled local-dev.
+variable "MDT_BUILD_MODE" {
+  default = "release"
+}
+// JSON array of {name, version, sha256, path}; empty for a release build.
+variable "MDT_LOCAL_ARTIFACTS_JSON" {
+  default = ""
+}
+// Suffix of every floating alias tag. A local-dev build floats on "dev-latest" and
+// carries a "dev-YYYYMMDD[-n]" date coordinate (BUILD_DATE), so none of its tags can
+// equal a release tag.
+variable "FLOATING_TAG" {
+  default = MDT_BUILD_MODE == "local-dev" ? "dev-latest" : "latest"
+}
+
 // === Devcontainer release metadata =======================================
 // Stable devcontainer release identifier copied into image labels by the resolver.
 variable "DEVCONTAINERS_RELEASE_STABLE" {
@@ -385,7 +404,7 @@ function "base_tag" {
 
 function "base_latest_tag" {
   params = [debian, python]
-  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit:${debian}-py${python}-latest"
+  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit:${debian}-py${python}-${FLOATING_TAG}"
 }
 
 function "vsc_tag" {
@@ -395,7 +414,7 @@ function "vsc_tag" {
 
 function "vsc_latest_tag" {
   params = [debian, python]
-  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:${debian}-py${python}-latest"
+  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:${debian}-py${python}-${FLOATING_TAG}"
 }
 
 // Variant-aware tags: a flavor like PHP 8.5 is a TAG dimension of the base package
@@ -410,7 +429,7 @@ function "base_tag_variant" {
 
 function "base_latest_tag_variant" {
   params = [debian, python, variant]
-  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit:${debian}-py${python}-${variant}-latest"
+  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit:${debian}-py${python}-${variant}-${FLOATING_TAG}"
 }
 
 function "vsc_tag_variant" {
@@ -420,7 +439,7 @@ function "vsc_tag_variant" {
 
 function "vsc_latest_tag_variant" {
   params = [debian, python, variant]
-  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:${debian}-py${python}-${variant}-latest"
+  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:${debian}-py${python}-${variant}-${FLOATING_TAG}"
 }
 
 // Tag helper: multi-Python labels keep the full encoded interpreter set in one string.
@@ -433,7 +452,14 @@ function "vsc_multi_tag" {
 // Floating alias for the same multi-Python matrix entry.
 function "vsc_multi_latest_tag" {
   params = [debian, pythons_label]
-  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:${debian}-${pythons_label}-latest"
+  result = "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:${debian}-${pythons_label}-${FLOATING_TAG}"
+}
+
+// Family-wide floating tags (bare "latest", "latest-stable") are release-only: a
+// local-dev build never receives one, so this filter drops them in that mode.
+function "release_only" {
+  params = [tags]
+  result = [for tag in tags : tag if MDT_BUILD_MODE != "local-dev"]
 }
 
 // Build helper: package manifest directories are grouped by package family.
@@ -566,6 +592,8 @@ target "base" {
     PWMCP_GETPY_SHA256 = "${PWMCP_GETPY_SHA256}"
     PWMCP_CONTRACT_URL = "${PWMCP_CONTRACT_URL}"
     PWMCP_CONTRACT_SHA256 = "${PWMCP_CONTRACT_SHA256}"
+    MDT_BUILD_MODE = "${MDT_BUILD_MODE}"
+    MDT_LOCAL_ARTIFACTS_JSON = "${MDT_LOCAL_ARTIFACTS_JSON}"
     CIU_WHEEL_TAG = "${CIU_WHEEL_TAG}"
     CIU_WHEEL_ASSET_NAME = "${CIU_WHEEL_ASSET_NAME}"
     CIU_WHEEL_URL = "${CIU_WHEEL_URL}"
@@ -647,7 +675,7 @@ target "trixie-py314" {
     OCI_URL = package_latest_url("mdt-cockpit")
     PACKAGE_MANIFEST_SOURCE = package_manifest_relpath("mdt-cockpit", "trixie", "3.14")
   }
-  tags = [base_tag("trixie", "3.14"), base_latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit:latest"]
+  tags = concat([base_tag("trixie", "3.14"), base_latest_tag("trixie", "3.14")], release_only(["${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit:latest"]))
 }
 
 
@@ -701,7 +729,7 @@ target "trixie-py314-vsc" {
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
-  tags = [vsc_tag("trixie", "3.14"), vsc_latest_tag("trixie", "3.14"), "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:latest"]
+  tags = concat([vsc_tag("trixie", "3.14"), vsc_latest_tag("trixie", "3.14")], release_only(["${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:latest"]))
 }
 
 // PHP 8.5 flavor of the BASE package family. The variant lives in the TAG
@@ -784,7 +812,7 @@ target "trixie-py314-py311-py39-vsc" {
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
-  tags = [vsc_multi_tag("trixie", "py314-py311-py39"), vsc_multi_latest_tag("trixie", "py314-py311-py39"), "${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:latest"]
+  tags = concat([vsc_multi_tag("trixie", "py314-py311-py39"), vsc_multi_latest_tag("trixie", "py314-py311-py39")], release_only(["${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:latest"]))
 }
 
 
@@ -804,7 +832,7 @@ target "latest-vsc" {
     DEVCONTAINERS_RELEASE = "${DEVCONTAINERS_RELEASE_STABLE}"
     DEVCONTAINERS_VERSION = "${DEVCONTAINERS_VERSION_STABLE}"
   }
-  tags = ["${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:latest-stable"]
+  tags = release_only(["${REGISTRY}/${GITHUB_USERNAME}/mdt-cockpit-devcontainer:latest-stable"])
 }
 
 // === Build groups ==========================================================

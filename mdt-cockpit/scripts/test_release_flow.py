@@ -240,7 +240,7 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("!templates/AGENTS.md", dockerignore)
         self.assertIn(
             "COPY templates/AGENTS.md "
-            "/usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example",
+            "/usr/local/share/mdt-cockpit/AGENTS.md.example",
             dockerfile,
         )
         self.assertIn("IMAGE_MANIFEST", template)

@@ -19,6 +19,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import local_dev
 from manifest_sections import (
     AI_CLI_TOOL_NAMES,
     netcat_package_for_debian,
@@ -809,6 +810,21 @@ def _verify_wheel_sha256(whl_path: Path, expected_sha256: str) -> None:
         )
 
 
+def _local_dev_wheels(wheel_list_names: list[str]) -> dict[str, "local_dev.LocalArtifact"]:
+    """Verified local wheels of an explicit local-dev build; empty for a release."""
+    manifest = os.getenv(local_dev.ENV_MANIFEST, "").strip()
+    if not manifest:
+        return {}
+    pwmcp_version = os.getenv("PWMCP_VERSION", "").strip() or None
+    try:
+        artifacts = local_dev.load_manifest(
+            Path(manifest), allowed_wheels=wheel_list_names, pwmcp_version=pwmcp_version
+        )
+    except local_dev.LocalDevError as exc:
+        raise RuntimeError(f"local-dev manifest rejected: {exc}") from exc
+    return {a.name: a for a in artifacts if a.is_wheel}
+
+
 def resolve_first_party_wheels(
     owner: str, repo: str
 ) -> list[dict[str, str]]:
@@ -850,6 +866,12 @@ def resolve_first_party_wheels(
     if not names:
         return []
 
+    # Explicit local-dev build: wheels the operator listed in the verified local
+    # manifest are NOT resolved from a release (build-push.py stages the verified
+    # files into pip/wheels/). Names absent from the manifest still come from
+    # their releases below. The manifest is re-verified here, never trusted blindly.
+    local_wheels = _local_dev_wheels(names)
+
     token = (os.getenv("GITHUB_PUSH_PAT") or os.getenv("GITHUB_TOKEN") or "").strip()
     gh = GitHubReleases(owner=owner, repo=repo, token=token)
     gh_public = GitHubReleases(owner=owner, repo=repo, token="")
@@ -859,6 +881,20 @@ def resolve_first_party_wheels(
     resolved: list[dict[str, str]] = []
 
     for name in names:
+        if name in local_wheels:
+            artifact = local_wheels[name]
+            print(
+                f"[INFO] First-party wheel {name}: LOCAL-DEV artifact {artifact.path} "
+                f"(version {artifact.version}, sha256 {artifact.sha256[:16]}...)",
+                file=sys.stderr,
+            )
+            resolved.append({
+                "name": name,
+                "version": artifact.version,
+                "sha256": artifact.sha256,
+                "whl_filename": artifact.path.name,
+            })
+            continue
         print(f"[INFO] Resolving first-party wheel: {name}", file=sys.stderr)
         try:
             info = gh.resolve_latest(name)
@@ -1570,7 +1606,7 @@ def render_manifest(
         f"docker pull ghcr.io/{username}/{package_name}:{tag}\n"
         "docker run --rm "
         f"ghcr.io/{username}/{package_name}:{tag} \\n"
-        "  cat /usr/local/share/modern-debian-tools-python-debug/manifest.md\n"
+        "  cat /usr/local/share/mdt-cockpit/manifest.md\n"
         "```\n"
     )
 
@@ -1711,7 +1747,11 @@ def write_package_docs(
     username: str,
     repo: str,
     first_party_wheels: list[dict[str, str]] | None = None,
+    entry_pages_only: bool = False,
 ) -> list[str]:
+    """Write the package docs; ``entry_pages_only`` (local-dev) writes just the
+    per-build manifest pages the Dockerfile needs, leaving the committed family
+    README/latest pages untouched."""
     description_base = os.getenv("OCI_DESCRIPTION_BASE") or os.getenv("OCI_DESCRIPTION") or ""
     description_vsc = os.getenv("OCI_DESCRIPTION_VSC") or os.getenv("OCI_DESCRIPTION") or ""
 
@@ -1727,10 +1767,11 @@ def write_package_docs(
         grouped.setdefault(entry["package_name"], []).append(entry)
 
     PACKAGE_DOCS_ROOT.mkdir(parents=True, exist_ok=True)
-    (PACKAGE_DOCS_ROOT / "README.md").write_text(
-        render_root_readme(grouped, username=username, repo=repo),
-        encoding="utf-8",
-    )
+    if not entry_pages_only:
+        (PACKAGE_DOCS_ROOT / "README.md").write_text(
+            render_root_readme(grouped, username=username, repo=repo),
+            encoding="utf-8",
+        )
 
     for package_name, package_entries in grouped.items():
         package_dir = PACKAGE_DOCS_ROOT / package_name
@@ -1740,29 +1781,30 @@ def write_package_docs(
             latest_python=latest_python,
             latest_debian=latest_debian,
         )
-        (package_dir / "README.md").write_text(
-            render_family_readme(
-                package_name,
-                package_entries[0]["family_title"],
-                package_entries,
-                username=username,
-                repo=repo,
-                build_date=build_date,
-            ),
-            encoding="utf-8",
-        )
-        (package_dir / "latest.md").write_text(
-            render_family_latest(
-                package_name,
-                package_entries[0]["family_title"],
-                latest_entry,
-                package_entries,
-                username=username,
-                repo=repo,
-                build_date=build_date,
-            ),
-            encoding="utf-8",
-        )
+        if not entry_pages_only:
+            (package_dir / "README.md").write_text(
+                render_family_readme(
+                    package_name,
+                    package_entries[0]["family_title"],
+                    package_entries,
+                    username=username,
+                    repo=repo,
+                    build_date=build_date,
+                ),
+                encoding="utf-8",
+            )
+            (package_dir / "latest.md").write_text(
+                render_family_latest(
+                    package_name,
+                    package_entries[0]["family_title"],
+                    latest_entry,
+                    package_entries,
+                    username=username,
+                    repo=repo,
+                    build_date=build_date,
+                ),
+                encoding="utf-8",
+            )
         for entry in package_entries:
             description = description_vsc if entry["family_kind"] == "vsc" else description_base
             manifest_filename = build_tag(entry["debian"], entry["python"], build_date, entry.get("variant", ""))
@@ -1862,6 +1904,7 @@ def main() -> int:
         username=github_owner,
         repo=github_repo,
         first_party_wheels=first_party_wheels,
+        entry_pages_only=bool(os.getenv(local_dev.ENV_MANIFEST, "").strip()),
     )
 
     print(

@@ -1,12 +1,33 @@
-# Shared interactive zsh defaults for both image families.
-# This file is sourced from ~/.zshrc and deliberately does not own the prompt:
-# the VSC base image may provide Oh My Zsh, while the native image does not.
+# mdt-cockpit interactive zsh defaults.
+#
+# Loaded system-wide from /etc/zsh/zshrc (the hook is appended by the
+# Dockerfile). zsh reads the user's ~/.zshrc AFTER this file, so anything there
+# overrides what follows. The finalizer only writes a comment-only ~/.zshrc stub
+# (when none exists) so zsh-newuser-install does not take over the terminal.
 
-# Same env/aliases/cgroup-banner profile that ~/.bashrc sources for bash — zsh
-# otherwise never picks up ai.env / shell.env / aliases.sh (this file only
-# covers zsh-specific interactive niceties below).
-if [ -r /usr/local/share/modern-debian-tools-python-debug/profile.sh ]; then
-    . /usr/local/share/modern-debian-tools-python-debug/profile.sh
+# Same env/aliases/cgroup-banner profile that bash gets — zsh otherwise never
+# picks up shell.env / ai.env / aliases.sh.
+if [ -r /usr/local/share/mdt-cockpit/profile.sh ]; then
+    . /usr/local/share/mdt-cockpit/profile.sh
+fi
+
+# Oh My Zsh (VS Code image family): image-owned under /opt/mdt/oh-my-zsh, with the
+# devcontainers theme the Microsoft base image configured. Skipped when the user's
+# own ~/.zshrc already loads it, so a bring-your-own setup is never initialised
+# twice.
+#  - the cache goes to the home (the image tree is not where state belongs);
+#  - updates are disabled: the image owns the framework version;
+#  - ZSH_DISABLE_COMPFIX: the image tree is group-writable by design (group `mdt`,
+#    see docs/DESIGN-GUIDE.md), which compaudit would report as insecure and ask
+#    about interactively on every start.
+if [[ -n "${ZSH:-}" && -r "$ZSH/oh-my-zsh.sh" ]] && ! grep -qs 'oh-my-zsh\.sh' "$HOME/.zshrc" 2>/dev/null; then
+    export ZSH_CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/oh-my-zsh"
+    ZSH_COMPDUMP="$ZSH_CACHE_DIR/.zcompdump-${SHORT_HOST:-$HOST}-$ZSH_VERSION"
+    ZSH_DISABLE_COMPFIX=true
+    ZSH_THEME="devcontainers"
+    plugins=(git)
+    zstyle ':omz:update' mode disabled
+    source "$ZSH/oh-my-zsh.sh"
 fi
 
 # Keep the familiar emacs-style editing mode and make Ctrl-R useful even when

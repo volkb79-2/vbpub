@@ -413,9 +413,8 @@ a second hand-written tester command in `cmru.toml`.
 
 ### Persistent AI CLI state
 
-The vendored template mounts one host directory,
-`${localEnv:HOME}/mdt--mounted-folders/home-vscode/`, over `/home/vscode`. This keeps every
-agent state root and all other home data across rebuilds.
+The vendored template mounts one host directory, `${localEnv:HOME}/mdt-cockpit-home/`, over
+`/home/vscode`. This keeps every agent state root and all other home data across rebuilds.
 
 | Tool | Persistent home path | Durable state |
 |---|---|---|
@@ -426,19 +425,33 @@ agent state root and all other home data across rebuilds.
 | Claude Code | `~/.claude`, `~/.claude.json` | auth, projects, page state, and history |
 
 The same mount includes `.config`, `.local`, `.ssh`, `.gnupg`, `.minisign`, shell startup files,
-cache directories, and user-created paths. The host creates a new home source with mode `0700`.
-The native host's readonly SSH directory remains separate at `/run/mdt/host-ssh`.
+cache directories, and user-created paths. The host creates a new home source with mode `0700`
+and `/tmp` as a separate `mdt-cockpit-tmp` source with mode `1777`. The native host's readonly SSH
+directory remains separate at `/run/mdt/host-ssh`.
 
-The image package names are `mdt-cockpit` and `mdt-cockpit-devcontainer`. The
-persisted user's MDT configuration remains at
-`~/.config/modern-debian-tools-python-debug`, so changing image package names
-does not change the location of existing settings.
+The image package names are `mdt-cockpit` and `mdt-cockpit-devcontainer`, and the runtime
+namespace matches: your own MDT overrides go under `~/.config/mdt-cockpit/` (a directory *you*
+create; `ai.env` for keys, optional `shell.env` and `aliases.sh`), and the image's files,
+examples and manifest are under `/usr/local/share/mdt-cockpit/`.
 
-Image-owned executables and runtimes are outside the mounted home: `/opt/mdt/venv`,
-`/opt/mdt/venvs/pyNN`, `/opt/mdt/npm`, `/opt/mdt/python`, and `/opt/mdt/oh-my-zsh`.
-Default shell/editor config is under `/usr/local/share/modern-debian-tools-python-debug` and
-the finalizer seeds only missing home entries. See the
-[design rationale](DESIGN-GUIDE.md#the-home-is-user-state-image-assets-live-outside-it).
+Image-owned executables and runtimes are outside the mounted home, in the `mdt` group tree:
+`/opt/mdt/bin`, `/opt/mdt/venv`, `/opt/mdt/venvs/pyNN`, `/opt/mdt/npm`, `/opt/mdt/python`,
+`/opt/mdt/oh-my-zsh` and `/srv/pwmcp-instance`. Defaults for bash, zsh, nano, htop, mc, Neovim
+and `less` are wired system-wide, so a **new home is empty** and you override a default by
+creating your own file. See the
+[design rationale](DESIGN-GUIDE.md#the-home-is-user-state-image-assets-live-outside-it) and
+[System-wide defaults](DESIGN-GUIDE.md#system-wide-defaults).
+
+Update an image tool in place, with no `sudo`, because your user is in group `mdt`:
+
+```bash
+npm install -g @openai/codex@latest        # goes to /opt/mdt/npm (NPM_CONFIG_PREFIX)
+/opt/mdt/venv/bin/python -m pip install --upgrade ciu   # writes into the primary venv
+```
+
+Such changes live in the container filesystem; recreating the container restores the image's
+version. Put your own CLIs in `~/.local/bin` - it is last on `PATH`, so an image tool of the same
+name wins.
 
 ### Codex profile state and container lifetime
 
@@ -449,10 +462,11 @@ so the container remains running when the attached Dev Containers session discon
 ### Optional Git config mount
 
 The complete home already persists a container-local `.gitconfig`. If a consumer wants to share
-the host's native Git config instead, add this entry to its `mounts` array:
+the host's native Git config instead, add this entry to its `mounts` array (any further mount source
+is named `mdt-cockpit-<purpose>`):
 
 ```jsonc
-"source=${localEnv:HOME}/mdt--mounted-folders/.gitconfig,target=/home/vscode/.gitconfig,type=bind"
+"source=${localEnv:HOME}/mdt-cockpit-gitconfig,target=/home/vscode/.gitconfig,type=bind"
 ```
 
 The bootstrap uses the host filesystem type for existing sources, so an existing regular-file
@@ -463,15 +477,15 @@ mode `0600`. This is an MDT convention, not a Docker mount type option. For exam
 custom directory source is marked for creation:
 
 ```jsonc
-"source=${localEnv:HOME}/mdt--mounted-folders/.my-cache/,target=/home/vscode/.my-cache,type=bind"
+"source=${localEnv:HOME}/mdt-cockpit-cache/,target=/home/vscode/.my-cache,type=bind"
 ```
 
 A directory mount must keep its trailing `/`, including in copied template entries. For a missing
 `$HOME` source without `/`, MDT creates a file regardless of its basename or suffix. Other existing
 host sources retain their actual type. The MDT host-setup wizard can instead set
 `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail`; this requires every `$HOME` source managed by the
-bootstrap to exist before Docker starts the devcontainer. `.gitconfig` is recognized as a file name
-and a directory at that path is refused.
+bootstrap to exist before Docker starts the devcontainer. `mdt-cockpit-gitconfig` is recognized as
+a file source and a directory at that path is refused.
 
 Choose the policy with `sudo ./install.sh --wizard` from MDT's `host-setup/` directory on the Docker
 host. The bootstrap reads the resulting `/etc/mdt/host-setup.env` when `initializeCommand` runs.
@@ -482,55 +496,81 @@ created the source, or after inspecting any already-created file:
 ```sh
 set -eu
 source_file="$HOME/.gitconfig"
-target_file="$HOME/mdt--mounted-folders/.gitconfig"
+target_file="$HOME/mdt-cockpit-gitconfig"
 test -f "$source_file"
 if [ -e "$target_file" ] || [ -L "$target_file" ]; then
   printf 'Refusing to overwrite existing Git config source: %s\n' "$target_file" >&2
   exit 1
 fi
-install -D -m 600 "$source_file" "$target_file"
+install -m 600 "$source_file" "$target_file"
 ```
 
-If an earlier bootstrap created a directory or empty file at the grouped `.gitconfig` path, inspect
+If an earlier bootstrap created a directory or empty file at the `mdt-cockpit-gitconfig` path, inspect
 it before moving, replacing, or removing it. If Git config is not needed in the container, remove
 the mount instead.
 
-### Persisting the complete vscode home
+### Using the fresh-home template
 
-Copy the vendored template, host initializer, and migration utility into the consumer's
-`.devcontainer` directory. The template binds the complete home from
-`${localEnv:HOME}/mdt--mounted-folders/home-vscode/`; the host initializer prepares that
-directory and leaves `/tmp` as a separate mount.
+Copy the vendored template and host initializer into the consumer's `.devcontainer` directory:
 
-For an existing devcontainer, migrate before rebuilding. Stop the container to quiesce
-ClaudeLink and other writers; `migrate_persistent_home.py` refuses a running container.
-Its dry run is read-only and reports payload size, exclusions, unsupported
-special entries, and free space:
-
-```sh
-container_name="myrepo-devcontainer-alice"  # replace with the current container name
-docker stop --timeout 30 "$container_name"
-test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = "false"
-python3 .devcontainer/migrate_persistent_home.py "$container_name"
-python3 .devcontainer/migrate_persistent_home.py "$container_name" --apply
+```bash
+cp <vbpub>/mdt-cockpit/templates/{devcontainer.json,initialize_container_environment.py} .devcontainer/
+# then "Dev Containers: Rebuild Container"
 ```
 
-Review the dry-run report before `--apply`. Apply refuses archives containing unsupported special
-entries rather than marking a partial copy complete. The utility copies the container's merged
-home, including old split bind mounts, into a staging directory beside the new home source. It
-hashes regular files across its scan and copy passes, keeps existing source data untouched, and
-writes `.mdt-home-migration.json` only after the full copy succeeds. The host bootstrap refuses
-startup when old split sources contain files but the new home lacks a valid marker. Empty
-directories from earlier bootstrap runs do not block adoption.
+The template binds the complete home from `${localEnv:HOME}/mdt-cockpit-home/`; the host
+initializer prepares that directory (mode `0700`) and `${localEnv:HOME}/mdt-cockpit-tmp/` (mode
+`1777`, the separate `/tmp` mount). The new home starts **empty**. Nothing is migrated: there is
+no stopped-container step, no marker file, and no startup refusal.
 
-The migration omits the old image `.venv`, `.venv-pyNN`, `.oh-my-zsh`, native `.ssh-host`, and
-Codex's `.codex/packages/standalone` runtime. It moves `.oh-my-zsh/custom` to
-`~/.oh-my-zsh-custom`. It preserves `.local` in full because older images mixed user installs
-and image CLIs there; inspect user-local overrides after confirming the new image tools work.
-Keep the old split sources as rollback copies until authentication, CLI discovery, shell config,
-and stateful agents work in the rebuilt container. The full guide and rollback notes are in
-[templates/README.md](../templates/README.md#migrate-an-existing-container) and
-[DEVCONTAINER-LIFECYCLE.md](../DEVCONTAINER-LIFECYCLE.md#migrating-to-the-complete-home).
+If you used the previous split-mount template, the initializer prints one informational line
+while `~/mdt--mounted-folders/` still holds files and the new home is empty. Copy what you want by
+hand: [Moving from modern-debian-tools-python-debug](HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug)
+has a pasteable `cp -a` recipe and the list of old-image paths that must **not** be copied
+(`~/.venv*`, `~/.oh-my-zsh`, `~/.local/bin`, `~/.local/lib/node_modules`,
+`~/.codex/packages/standalone`). The old state is never touched; delete it yourself when satisfied.
+
+### Local-dev build
+
+Build and test an image from artifacts that are not released yet - always an explicit opt-in,
+never a fallback for a missing release.
+
+```bash
+cd <vbpub>/mdt-cockpit
+cp local-dev-artifacts.toml.example local-dev-artifacts.toml     # git-ignored
+sha256sum /path/to/ciu-7.11.0-py3-none-any.whl                    # fill sha256 + version
+$EDITOR local-dev-artifacts.toml
+```
+
+```toml
+schema_version = 1
+
+[[artifact]]
+name = "ciu"
+path = "/path/to/ciu-7.11.0-py3-none-any.whl"
+sha256 = "<64 hex digits>"
+version = "7.11.0"
+
+[[artifact]]
+name = "pwmcp-bundle"
+path = "/path/to/pwmcp-1.64.0-r2.tar.xz"
+sha256 = "<64 hex digits>"
+version = "1.64.0-r2"
+```
+
+```bash
+nice -n 19 ionice -c 3 ./build-push.py --build --local-dev local-dev-artifacts.toml \
+    --target trixie-py314-php85 --target trixie-py314-php85-vsc
+docker image inspect <printed -dev- tag> \
+    --format '{{index .Config.Labels "net.volkb79.mdt.build-mode"}}'   # -> local-dev
+```
+
+Allowed names are the packages in `pip/wheels.list` plus `pwmcp-installer` and `pwmcp-bundle`.
+An unknown, missing, unreadable or hash-mismatched entry refuses the build and names it; names you
+do not list still come from their releases. The images are loaded into your local Docker daemon as
+`...-dev-<YYYYMMDD>[-<n>]` and `...-dev-latest`, labelled `local-dev`, and cannot be pushed - the
+`--push`/`--rebuild` paths and the release wrapper refuse them. Point a devcontainer at one with
+`"image": "<that tag>"`. Why it is built this way: [Local-dev builds](DESIGN-GUIDE.md#local-dev-builds-are-explicit-verified-and-unpublishable).
 
 ## Release consumer
 

@@ -22,6 +22,11 @@ from pathlib import Path
 DEFAULT_TOOLS_FILE = Path("/tmp/ai-cli-tools.list")
 DEFAULT_DOWNLOADS_DIR = Path("/tmp/tool-artifacts-staging/downloads")
 DEFAULT_VENV_PYTHON = Path("/opt/mdt/venv/bin/python")
+# Image-managed standalone binaries live in the `mdt` group tree, ahead of
+# everything else on PATH (D4/D5). Group-writable so the runtime user can replace
+# them in place; the Dockerfile RUN creates /opt/mdt/bin `root:mdt 2775`.
+IMAGE_BIN_DIR = Path("/opt/mdt/bin")
+IMAGE_BINARY_MODE = 0o775
 
 
 class InstallerError(RuntimeError):
@@ -87,10 +92,10 @@ def run_command(argv: list[str]) -> None:
         raise InstallerError(f"Command failed with exit code {exc.returncode}: {rendered}") from exc
 
 
-def copy_binary(source: Path, destination: Path) -> None:
+def copy_binary(source: Path, destination: Path, mode: int = 0o755) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination)
-    destination.chmod(0o755)
+    destination.chmod(mode)
 
 
 def link_binary(source: Path, destination: Path) -> None:
@@ -106,7 +111,9 @@ def find_binary(root: Path, binary_name: str) -> Path:
     raise InstallerError(f"Failed to locate {binary_name} in extracted archive")
 
 
-def install_binary_from_archive(archive: Path, binary_name: str, destination: Path) -> None:
+def install_binary_from_archive(
+    archive: Path, binary_name: str, destination: Path, mode: int = 0o755
+) -> None:
     with tempfile.TemporaryDirectory(prefix=f"{binary_name}-extract-") as temp_dir:
         extract_root = Path(temp_dir)
         try:
@@ -114,7 +121,7 @@ def install_binary_from_archive(archive: Path, binary_name: str, destination: Pa
         except (shutil.ReadError, ValueError) as exc:
             raise InstallerError(f"Failed to extract archive: {archive}") from exc
         extracted_binary = find_binary(extract_root, binary_name)
-        copy_binary(extracted_binary, destination)
+        copy_binary(extracted_binary, destination, mode)
 
 
 def install_binaries_from_archive(archive: Path, *pairs: tuple[str, Path]) -> None:
@@ -148,7 +155,7 @@ def install_claude(ctx: InstallerContext) -> None:
     version = env_value("CLAUDE_CODE_VER", "CLAUDE_CODE_VERSION", default="latest")
     binary = ctx.downloads_dir / f"claude-{version}-linux-x64"
     require_file(binary, "staged Claude Code binary")
-    copy_binary(binary, Path("/usr/local/bin/claude"))
+    copy_binary(binary, IMAGE_BIN_DIR / "claude", IMAGE_BINARY_MODE)
 
 
 def install_antigravity(ctx: InstallerContext) -> None:
@@ -160,8 +167,10 @@ def install_antigravity(ctx: InstallerContext) -> None:
     archive = ctx.downloads_dir / f"antigravity-{version}.tar.gz"
     require_file(archive, "staged Antigravity archive")
 
-    install_binary_from_archive(archive, "antigravity", Path("/usr/local/bin/antigravity"))
-    copy_binary(Path("/usr/local/bin/antigravity"), Path("/usr/local/bin/agy"))
+    install_binary_from_archive(
+        archive, "antigravity", IMAGE_BIN_DIR / "antigravity", IMAGE_BINARY_MODE
+    )
+    copy_binary(IMAGE_BIN_DIR / "antigravity", IMAGE_BIN_DIR / "agy", IMAGE_BINARY_MODE)
 
 
 def install_reasonix() -> None:
@@ -319,12 +328,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.mode == "user":
-        npm_prefix = os.environ.setdefault(
-            "NPM_CONFIG_PREFIX", "/home/vscode/.local"
-        )
+        # The prefix is a fact of the target environment (the image ENV, or the
+        # caller's choice), never guessed here: a wrong guess would install into
+        # the wrong tree and still "succeed".
+        npm_prefix = os.environ.get("NPM_CONFIG_PREFIX", "").strip()
+        if not npm_prefix:
+            raise InstallerError("user mode requires NPM_CONFIG_PREFIX to be set")
         os.environ["PATH"] = f"{npm_prefix}/bin:{os.environ.get('PATH', '')}"
     elif args.mode in {"root", "npm-image"}:
-        # Image packages live in a root-owned prefix outside the mounted home.
+        # Image packages live in the `mdt` group tree outside the mounted home.
         npm_prefix = os.environ.setdefault("NPM_CONFIG_PREFIX", "/opt/mdt/npm")
         os.environ["PATH"] = f"{npm_prefix}/bin:{os.environ.get('PATH', '')}"
 

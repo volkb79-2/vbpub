@@ -9,7 +9,7 @@ test -r "$manifest" && sed -n '1,220p' "$manifest"
 ```
 
 The fuller inventory is
-`/usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md`.
+`/usr/local/share/mdt-cockpit/installed-tools-manifest.md`.
 
 The image normally includes Python/uv/pip, Node/npm, Git/GitHub tooling,
 Docker/Buildx and container inspection/security tools, common database and

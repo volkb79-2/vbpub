@@ -1,123 +1,141 @@
-# Persisting the complete `vscode` home
+# The persistent `vscode` home (fresh-home design)
 
-The supported template mounts one host directory at `/home/vscode`. The home
-mount is user state: it survives container rebuilds, while image-owned tools
-and defaults live outside it so the mount cannot hide them. The template source
-is `${localEnv:HOME}/mdt--mounted-folders/home-vscode/`.
+The supported template mounts one host directory at `/home/vscode`:
+`${localEnv:HOME}/mdt-cockpit-home/` (mode `0700`). The home is **user state**: it
+survives container rebuilds, the image never puts anything into it, and a new home
+**starts empty**. Image-owned tools live outside the mount (`/opt/mdt`, `/srv`) and every
+image default is wired where its tool reads system-wide configuration (`/etc`,
+`/usr/local/share/mdt-cockpit`), so the mount can neither hide the image nor go stale
+against it. There is **no migration**: moving from an older layout means copying what you
+want by hand ([below](#moving-from-modern-debian-tools-python-debug)).
 
-## Design plan and invariants
+## Design and invariants
 
-1. Keep the runtime home at `/home/vscode`, owned by `vscode` (uid/gid 1000 in
-   the standard image), and make the image's home directory empty before the
-   final image is produced.
-2. Put image-owned executables, Python environments, Node packages, managed
-   Python runtimes, and the shared Oh My Zsh distribution under `/opt/mdt`.
-   Put generated manifests and source defaults under
-   `/usr/local/share/modern-debian-tools-python-debug`.
-3. Preserve useful old paths with post-create symlinks (`~/.venv`, configured
-   secondary venvs, and `~/.oh-my-zsh`). The symlinks are materialized only
-   after the persistent home is mounted; their targets remain image-owned and
-   outside the mount.
-4. Seed shell and editor defaults only when a destination is absent. Never
-   replace an existing user's file or directory. A user may edit the seeded
-   copy; a later image rebuild does not overwrite it.
-5. Keep credentials, agent history, editor state, user-installed tools,
-   caches, worktrees, and other user-created home contents in the persistent
-   home. Do not copy image runtime payloads into it during migration.
-6. Run a host-side preflight before Docker starts. If the old split state has
-   content and the new home has not been migrated, refuse to start instead of
-   silently mounting an empty directory over that state.
-7. Migrate only from a stopped container. Dry-run first, check free space, and
-   copy without replacing any existing destination. Refuse unsupported special
-   files and verify regular-file hashes across the scan and copy. Keep old host
-   sources as rollback copies until the new home is verified.
+1. The runtime home is `/home/vscode`, owned by `vscode` (uid/gid 1000 in the image; Dev
+   Containers may re-number it and re-owns only the home). The image's own home is
+   **empty**: the Dockerfile deletes what the base image left there and fails the build if
+   anything unclassified remains.
+2. Image-owned executables, Python environments, Node packages, managed Python runtimes
+   and the Oh My Zsh distribution live under `/opt/mdt` (and PWMCP under `/srv`), owned by
+   group `mdt` — see [The `mdt` group](DESIGN-GUIDE.md#the-mdt-group). The runtime user is a
+   member, so image tools can be updated in place without `sudo`.
+3. Defaults are **system-wide, never copied** ([System-wide defaults](DESIGN-GUIDE.md#system-wide-defaults)):
+   a user overrides one by creating their own file in the home. Only when a tool cannot be
+   configured system-wide may the finalizer write a minimal stub, only if the target is
+   absent. The single such case is a comment-only `~/.zshrc` that keeps
+   `zsh-newuser-install` quiet.
+4. Credentials, agent history, editor state, user-installed tools, caches, worktrees and
+   every other user-created file stay in the home. The finalizer never replaces, extends or
+   links over a user file, and a second run leaves the home byte-identical.
+5. `PATH` is defined once, by the image ([One PATH order](DESIGN-GUIDE.md#one-path-order)).
+   `~/.local/bin` is **last**: it holds the user's own additions and never shadows an
+   image tool. The template does not set `PATH` or `NPM_CONFIG_PREFIX`.
+6. The host bootstrap creates the two sources (`mdt-cockpit-home` `0700`, `mdt-cockpit-tmp`
+   `1777`), names any further source `mdt-cockpit-<purpose>`, and — when the previous
+   `~/mdt--mounted-folders/` still holds files while the new home is empty — prints one
+   informational line pointing here. That line never changes the exit status.
 
 ## Home inventory and policy
 
-This inventory records the previous image's home roots and all path classes
-that the new image or template creates. Contents below a listed directory
-inherit that directory's owner and persistence policy. The September image
-inspection measured `/home/vscode` at 2.8 GB; the largest roots were `.local`
-(npm CLIs), `.venv` (the toolkit), `.codex` (the standalone Codex payload),
-`.oh-my-zsh`, and `.config`. The rootfs build check now verifies that the new
-image leaves no files or directories below `/home/vscode`.
+Every path class the image, the template or the finalizer can create in or around the home.
+Contents below a listed directory inherit that directory's owner and persistence policy.
 
-| Path or path class | Owner / role | New location or policy |
+| Path or path class | Owner / role | Policy |
 |---|---|---|
-| `/home/vscode` | `vscode` home and mount point | Empty in the image; whole directory bind-mounted from `home-vscode/`. |
-| `.venv` | MDT image Python toolkit | `/opt/mdt/venv`; post-create compatibility symlink. Root-owned in the image. |
-| `.venv-pyNN` | MDT image secondary Python environments | `/opt/mdt/venvs/pyNN`; configured compatibility symlinks. |
-| `.local/bin`, `.local/lib/node_modules` | Previously mixed image CLIs and user-installed CLIs | New image copies live in `/opt/mdt/npm`; the persistent `.local` remains the user prefix and can override image commands. |
-| `.local/share/uv/python` | Previously uv-managed interpreters | Image-managed versions live in `/opt/mdt/python`; runtime user installs use uv's user data directory in the persistent home. |
-| `.codex/packages/standalone` | Previous standalone Codex install payload | New image installs the supported npm package under `/opt/mdt/npm`; `CODEX_HOME` remains user state under `~/.codex`. |
-| `.oh-my-zsh` | Base image shell framework | `/opt/mdt/oh-my-zsh`; post-create compatibility symlink. User extensions belong in `~/.oh-my-zsh-custom`. |
-| `.bashrc`, `.bash_logout`, `.profile`, `.zshrc` | Base-image shell defaults, editable by the user | Source templates live under `.../home-defaults`; seeded into the mounted home only when missing. |
-| `.config/nvim` | MDT-shipped NvChad defaults, editable by the user | Source tree lives under `.../home-defaults/.config/nvim`; seed missing entries without replacing user entries. |
-| `.config/modern-debian-tools-python-debug/*` | MDT shell/API examples and user-editable defaults | Source copies live under `/usr/local/share/modern-debian-tools-python-debug`; the finalizer seeds missing files into the mounted home. |
-| `.config/mc`, `.config/nano`, `.config/htop`, `.nanorc` | MDT default editor/tool configuration | Defaults remain in the share directory; the finalizer creates compatibility links only when the home target is absent. |
-| `mdt-manifest.md` | Compatibility view of the image manifest | Manifest lives in `/usr/local/share/modern-debian-tools-python-debug/manifest.md`; finalizer creates a home symlink only when absent. |
-| `.agents`, `.devcontainer` | Agent instructions and consumer-specific devcontainer configuration | Persist as user-owned content; image-wide defaults belong in image/share paths and are seeded only when absent. |
-| `.claude`, `.claude.json`, `.claudelink`, `.codex`, `.codex2`, `.copilot`, `.openclaw`, `.pi`, `.reasonix` | User authentication, settings, history, sessions, and state | Persist in the whole home. Never seeded with credentials. |
-| `.config` after MDT defaults | User settings, API keys, and tool state | Persist in the whole home; seeded defaults do not replace existing files. |
-| `.gnupg`, `.minisign`, `.ssh` | User keys and credentials | Persist in the whole home with their existing private permissions. Native host SSH remains a separate read-only mount outside `/home/vscode`. |
-| `.local` after image move | User-installed executables, packages, and application state | Persist in the whole home. User-local commands take precedence over image commands on `PATH`. |
-| `.cache`, `.npm`, `.docker`, `.dotnet`, `.redhat`, `.vscode-server`, runtime logs/history, and other tool-created paths | Rebuildable caches, CLI configuration, editor runtime, and user state | Persist because the complete home is mounted. Users may clear rebuildable caches when desired; the image does not own these paths. |
-| `.bash_history`, `.zsh_history`, `.zprofile`, `.zshenv`, `.zcompdump*`, and other shell state | User shell preferences, command history, generated completion caches | Persist. Image defaults are seeded only for explicitly listed absent files. |
-| Project checkouts, worktrees, gate directories, downloads, and home-level files | User/project data, scratch, or cache | Persist without migration filtering; cleanup remains the user's choice. |
-| Any other user-created home file or directory | `vscode` runtime/user data | Persist in the whole home; no image build step may create it. |
-| `/home/vscode/.ssh-host` | Read-only native host SSH keys | Re-targeted to `/run/mdt/host-ssh`, outside the persistent home. |
-| `/tmp` | Shared scratch/worktree storage | Remains the separate host-backed `/tmp` mount; it is not part of the home. |
+| `/home/vscode` | `vscode` home and mount point | Empty in the image; the whole directory is bind-mounted from `mdt-cockpit-home/`. |
+| `.zshrc` | comment-only stub | The only file the finalizer ever writes (only when none of `.zshenv`, `.zprofile`, `.zshrc`, `.zlogin` exists). Yours from then on. |
+| `.bashrc`, `.bash_logout`, `.profile`, `.zprofile` | optional user shell startup | **Not created.** bash and zsh load the image defaults from `/etc/bash.bashrc` and `/etc/zsh/zshrc`; create your own file to add to or override them. |
+| `.config/mdt-cockpit/` | **your** MDT overrides: `ai.env`, optional `shell.env`, `aliases.sh` | Not created by the image. Sourced after the image's own files. Examples: `/usr/local/share/mdt-cockpit/*.example`. |
+| `.config/htop/htoprc`, `.config/mc/ini`, `.nanorc` / `.config/nano/nanorc`, `.config/nvim/init.lua` | per-tool user config | **Not created.** The image defaults load from `/etc/htoprc`, `/etc/mc/mc.ini`, `/etc/nanorc`, `/etc/xdg/nvim`; creating your file overrides them (nano: per setting). Tools write these files themselves when you save settings. |
+| `.local/bin` | the user's own CLIs | Last on `PATH`. An image tool of the same name wins; call the user copy by path or put it earlier in your own startup file. |
+| `.local/share`, `.local/state`, `.cache` (including `.cache/oh-my-zsh`) | tool data, state and rebuildable caches | Created by the tools themselves on first use; persist. |
+| `.local/share/uv` | uv's user data (user-installed interpreters/tools) | Persists. Image-managed interpreters are in `/opt/mdt/python` (`UV_PYTHON_INSTALL_DIR`). |
+| `.npm` | npm's cache | Persists; rebuildable. Global installs go to `/opt/mdt/npm` (`NPM_CONFIG_PREFIX`), not here. |
+| `.claude`, `.claude.json`, `.claudelink`, `.codex`, `.codex2`, `.copilot`, `.openclaw`, `.pi`, `.reasonix` | agent authentication, settings, history, sessions | Persist. Never seeded with credentials. `CODEX_SQLITE_HOME` is `~/.codex/sqlite-shared`. |
+| `.gnupg`, `.minisign`, `.ssh` | keys and credentials | Persist with their private permissions. The host's native `~/.ssh` is a separate read-only mount at `/run/mdt/host-ssh`. |
+| `.bash_history`, `.zsh_history`, `.zcompdump*`, `.lesshst` | shell/pager state and caches | Created by the tools; persist. |
+| `.vscode-server`, `.docker`, `.dotnet`, `.redhat`, runtime logs | editor runtime and CLI configuration | Created by their tools; persist. |
+| Project checkouts, worktrees, gate directories, downloads | user/project data | Persist; cleanup is the user's choice. |
+| Any other user-created file or directory | `vscode` runtime/user data | Persists; no image build step may create it. |
+| `/opt/mdt/{bin,venv,venvs,npm,python,oh-my-zsh}`, `/srv/pwmcp-instance` | image-managed tools | **Not in the home.** Group `mdt`, directories `2775`, files group-writable. Changes made at runtime live in the container filesystem. |
+| `/usr/local/share/mdt-cockpit/` | image support files, examples, manifest | Not in the home; no `~/mdt-manifest.md` link. |
+| `/tmp` | shared scratch/worktree storage | A separate host-backed mount (`mdt-cockpit-tmp/`, `1777`); not part of the home. |
 
-The final image may create `/home/vscode` itself as the Docker `USER` home, but
-it must not bake any child entry beneath it. Build caches use temporary paths
-and are not image contents.
+The final image may create `/home/vscode` itself as the Docker `USER` home but must not bake any
+child entry beneath it; the image-runtime lane asserts this on both image families.
 
-The path classes above were cross-checked against Dockerfile home writes,
-template mounts, finalizer writes, migration exclusions, and the live cockpit
-home roots. The inventory classifies user and project data by owner and policy;
-it does not copy one developer's filenames into the shared image manifest.
+## Moving from modern-debian-tools-python-debug
 
-## Moving existing state
+mdt-cockpit is an opt-in fork: a user starts with an **empty** home and copies old content
+by hand. Nothing is migrated, nothing is detected beyond the one-line bootstrap note, and the
+old state is never touched or deleted.
 
-The old template mounted selected directories from
-`${localEnv:HOME}/mdt--mounted-folders/` and left the rest of the live home in
-the container. Before adopting the whole-home mount:
+The previous template kept its state under `~/mdt--mounted-folders/` (split mounts such as
+`.claude`, `.codex`, `.ssh`, `.local`, `opencode-data`; an interim unreleased variant used
+`~/mdt--mounted-folders/home-vscode/`). Worth copying:
 
-1. Copy the new template and `migrate_persistent_home.py` into the consumer's
-   `.devcontainer` directory.
-2. Close editors/agents and stop writers such as ClaudeLink so databases and
-   SQLite WAL/SHM files are quiescent. Stop the devcontainer.
-3. Run `python3 .devcontainer/migrate_persistent_home.py <container-name>` to
-   inspect the stopped container and estimate the copy. Review the dry-run
-   exclusions and required free space.
-4. Run the same command with `--apply`. It creates the new home source only
-   when absent or empty, copies user state without overwriting, omits the old
-   image toolkit/runtime paths, and writes a migration marker after success.
-   Apply refuses archives containing unsupported special entries so it cannot
-   mark a partial copy complete. The native `.ssh-host` bind is omitted because
-   it will remain available at `/run/mdt/host-ssh`.
-5. Leave the old split sources in place as rollback copies. Rebuild, verify
-   authentication, shell/editor defaults, Python and CLI paths, and only then
-   remove old sources manually.
+| Old item | Copy to | Notes |
+|---|---|---|
+| `.claude/`, `.claude.json` | same name | Claude Code auth, settings, history. |
+| `.codex*/` (`.codex`, `.codex2`) | same name | **Without** `packages/standalone` (the old image's Codex payload). |
+| `.ssh/`, `.gnupg/`, `.minisign/` | same name | Keep their modes (`cp -a`). |
+| `.claudelink/`, `.pi/`, `.reasonix/`, `.openclaw/` | same name | Agent state. `.reasonix.toml` and `.gitconfig` (single files) too. |
+| `opencode-data/` or `.local/share/opencode/` | `.local/share/opencode/` | OpenCode data. |
+| `.config/<tool>/` | `.config/<tool>/` | **Selectively**: `gh`, `git`, `docker`, `opencode`, … — only directories you recognise as yours. |
+| `.config/modern-debian-tools-python-debug/ai.env` | `.config/mdt-cockpit/ai.env` | Your API keys. |
 
-`initialize_container_environment.py` refuses startup when legacy split
-sources contain data and the new home has no migration marker. A new install
-with no legacy state may create an empty source; post-create seeds only the
-intentional defaults listed above. The migration tool never copies file
-contents to its report, never removes old sources, and refuses non-empty
-destination conflicts.
+Stop the container first (so SQLite WAL/SHM files are quiescent), then, on the host:
+
+```bash
+OLD=~/mdt--mounted-folders
+NEW=~/mdt-cockpit-home
+mkdir -p "$NEW" "$NEW/.config/mdt-cockpit" "$NEW/.local/share"
+
+for item in .claude .claude.json .ssh .gnupg .minisign .claudelink .pi .reasonix .openclaw \
+            .reasonix.toml .gitconfig; do
+    [ -e "$OLD/$item" ] && cp -a "$OLD/$item" "$NEW/"
+done
+for codex in .codex .codex2; do
+    [ -d "$OLD/$codex" ] && cp -a "$OLD/$codex" "$NEW/" && rm -rf "$NEW/$codex/packages/standalone"
+done
+[ -d "$OLD/opencode-data" ] && cp -a "$OLD/opencode-data" "$NEW/.local/share/opencode"
+[ -d "$OLD/.local/share/opencode" ] && cp -a "$OLD/.local/share/opencode" "$NEW/.local/share/"
+[ -f "$OLD/.config/modern-debian-tools-python-debug/ai.env" ] \
+    && cp -a "$OLD/.config/modern-debian-tools-python-debug/ai.env" "$NEW/.config/mdt-cockpit/ai.env"
+for tool in gh git docker opencode; do
+    [ -d "$OLD/.config/$tool" ] && cp -a "$OLD/.config/$tool" "$NEW/.config/"
+done
+```
+
+Run it as the host user who owns the cockpit — Dev Containers maps `vscode` to that user's uid,
+so `cp -a` keeps every file readable inside the container. Verify logins and keys, then delete
+the old directory yourself when you are satisfied.
+
+**Do not copy** the old image's runtime payloads — they are replaced by the new image and
+would shadow it or point at paths that no longer exist:
+
+- `~/.venv*` (the old toolkit and secondary venvs) and `~/.oh-my-zsh` — now `/opt/mdt/venv`,
+  `/opt/mdt/venvs/*`, `/opt/mdt/oh-my-zsh`.
+- `~/.local/bin` and `~/.local/lib/node_modules` — the old image's CLIs (now `/opt/mdt/bin` and
+  `/opt/mdt/npm`); copy only a CLI of your own, deliberately.
+- `~/.codex/packages/standalone` — the old standalone Codex payload.
+- The seeded copies of image defaults (`~/.bashrc`, `~/.zshrc`, `~/.config/nvim`,
+  `~/.config/htop`, `~/.config/mc`, `~/.nanorc`, `~/.config/modern-debian-tools-python-debug/{htoprc,mc.ini,nanorc,zshrc,shell.env,lesspipe.sh,aliases.sh}`)
+  — they would shadow the system-wide defaults and stop image updates reaching you. Re-create
+  only the customisations you actually made.
 
 ## Verification contract
 
-- Image build: assert `/home/vscode` is empty after all install and manifest
-  steps; assert image-owned paths and binaries exist outside the home.
-- Finalizer: seed into a temporary empty home, rerun, and prove it is
-  idempotent; prove user files and directories are never replaced.
-- Host bootstrap: parse the full-home source, refuse missing migration when
-  legacy state exists, and accept a valid migration marker.
-- Migration utility: dry-run and apply against a stopped fixture container;
-  verify exclusions, symlink preservation, no-overwrite behavior, and marker
-  ordering. A running container and a conflicting destination must be refused.
-- Template: exactly one persistent home mount targets `/home/vscode`; host
-  integration mounts stay outside that root; no individual home-state mount
-  can mask the home source.
+- Image build: the home is empty after every install and manifest step; `mdt-perms check`
+  proves the `mdt` group contract over `/opt/mdt` and `/srv`; image tools exist outside the home.
+- Image runtime (`./run-gate.py image-runtime`, both image families): empty home, group
+  membership, the group contract re-checked in a running container, one `PATH` in every shell,
+  writes through the group under a re-numbered uid (and `EACCES` without it), a finalizer run
+  that leaves a fresh home with only the stub and is idempotent, silent interactive shells, and
+  every system-wide default loading with an empty home.
+- Finalizer (unit): the stub is the only write, a second run is byte-identical, any user zsh
+  startup file suppresses it and is never modified.
+- Host bootstrap (unit): exactly the declared `$HOME` sources are prepared with their modes, the
+  note appears only for old state with an empty new home, and the exit status never depends on it.
+- Template (unit): exactly one mount targets `/home/vscode`, host integration mounts stay
+  outside it, and the template defines neither `PATH` nor `NPM_CONFIG_PREFIX`.

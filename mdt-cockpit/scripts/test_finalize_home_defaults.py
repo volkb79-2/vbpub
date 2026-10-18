@@ -1,7 +1,11 @@
-"""Tests for post-mount home default seeding and compatibility paths."""
+"""Tests for the finalizer's only home write: the comment-only ~/.zshrc stub.
+
+D7: every image default is wired system-wide, so the home stays empty. The one
+tool that cannot be configured that way is zsh's new-user wizard, which runs when
+none of .zshenv/.zprofile/.zshrc/.zlogin exists.
+"""
 from __future__ import annotations
 
-import os
 from pathlib import Path
 import sys
 
@@ -14,61 +18,94 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import finalize_container_environment as finalize  # noqa: E402
 
 
-def test_shell_and_config_defaults_seed_only_missing_entries(
+def _tree(root: Path) -> dict[str, tuple[int, bytes | None]]:
+    """Path -> (mode, content) for everything under root, links not followed."""
+    entries: dict[str, tuple[int, bytes | None]] = {}
+    for path in sorted(root.rglob("*")):
+        relative = str(path.relative_to(root))
+        mode = path.lstat().st_mode
+        entries[relative] = (mode, path.read_bytes() if path.is_file() else None)
+    return entries
+
+
+def test_fresh_home_receives_only_a_comment_only_zshrc_stub(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = tmp_path / "home"
-    defaults = tmp_path / "defaults"
-    (defaults / ".config/nvim/lua/custom").mkdir(parents=True)
-    (defaults / ".bashrc").write_text("# image bash defaults\n", encoding="utf-8")
-    (defaults / ".profile").write_text("# image profile\n", encoding="utf-8")
-    (defaults / ".zshrc").write_text("# image zsh defaults\n", encoding="utf-8")
-    (defaults / ".config/nvim/init.lua").write_text("return {}\n", encoding="utf-8")
-    (defaults / ".config/nvim/lua/custom/plugin.lua").write_text("-- image\n", encoding="utf-8")
-    (home / ".config/nvim/lua/custom").mkdir(parents=True)
-    (home / ".zshrc").write_text("# user zshrc\n", encoding="utf-8")
-    (home / ".config/nvim/init.lua").write_text("-- user config\n", encoding="utf-8")
+    home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(finalize, "SHARED_HOME_DEFAULTS", defaults)
 
-    finalize.setup_shell_bootstrap()
-    finalize.setup_shell_bootstrap()
+    finalize.setup_zshrc_stub()
 
-    assert (home / ".bashrc").read_text(encoding="utf-8") == "# image bash defaults\n"
-    assert (home / ".profile").read_text(encoding="utf-8") == "# image profile\n"
-    assert (home / ".zshrc").read_text(encoding="utf-8") == "# user zshrc\n"
-    assert (home / ".config/nvim/init.lua").read_text(encoding="utf-8") == "-- user config\n"
-    assert (home / ".config/nvim/lua/custom/plugin.lua").read_text(encoding="utf-8") == "-- image\n"
+    assert [path.name for path in home.iterdir()] == [".zshrc"]
+    stub = (home / ".zshrc").read_text(encoding="utf-8")
+    code = [line for line in stub.splitlines() if line.strip() and not line.startswith("#")]
+    assert code == []
 
 
-def test_image_home_compatibility_links_do_not_replace_user_paths(
+def test_second_run_leaves_the_home_byte_identical(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = tmp_path / "home"
-    image_venv = tmp_path / "opt/mdt/venv"
-    image_venvs = tmp_path / "opt/mdt/venvs"
-    image_oh_my_zsh = tmp_path / "opt/mdt/oh-my-zsh"
-    manifest = tmp_path / "share/manifest.md"
-    image_venv.mkdir(parents=True)
-    (image_venvs / "py311").mkdir(parents=True)
-    image_oh_my_zsh.mkdir(parents=True)
-    manifest.parent.mkdir(parents=True)
-    manifest.write_text("manifest\n", encoding="utf-8")
-    (home / ".venv").mkdir(parents=True)
-    (home / ".venv/user-file").write_text("keep", encoding="utf-8")
+    home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setattr(finalize, "IMAGE_VENV", image_venv)
-    monkeypatch.setattr(finalize, "IMAGE_VENVS", image_venvs)
-    monkeypatch.setattr(finalize, "IMAGE_OH_MY_ZSH", image_oh_my_zsh)
-    monkeypatch.setattr(finalize, "IMAGE_MANIFEST", manifest)
 
-    finalize.setup_image_home_links()
+    finalize.setup_zshrc_stub()
+    first = _tree(home)
+    finalize.setup_zshrc_stub()
 
-    assert (home / ".venv/user-file").read_text(encoding="utf-8") == "keep"
-    assert not (home / ".venv").is_symlink()
-    assert (home / ".venv-py311").is_symlink()
-    assert (home / ".venv-py311").resolve() == (image_venvs / "py311").resolve()
-    assert (home / ".oh-my-zsh").resolve() == image_oh_my_zsh.resolve()
-    assert (home / "mdt-manifest.md").resolve() == manifest.resolve()
-    assert (home / ".oh-my-zsh-custom").is_dir()
+    assert _tree(home) == first
 
+
+@pytest.mark.parametrize("existing", [".zshrc", ".zshenv", ".zprofile", ".zlogin"])
+def test_any_user_zsh_startup_file_suppresses_the_stub_and_is_never_modified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: str
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / existing).write_text("# user content\n", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    finalize.setup_zshrc_stub()
+
+    assert [path.name for path in home.iterdir()] == [existing]
+    assert (home / existing).read_text(encoding="utf-8") == "# user content\n"
+
+
+def test_a_dangling_symlink_counts_as_a_user_startup_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / ".zshrc").symlink_to(tmp_path / "not-there")
+    monkeypatch.setenv("HOME", str(home))
+
+    finalize.setup_zshrc_stub()
+
+    assert (home / ".zshrc").is_symlink()
+    assert not (tmp_path / "not-there").exists()
+
+
+def test_generic_steps_no_longer_seed_copy_or_link_anything_else_into_the_home(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The retired steps (config copies, tool links, compatibility symlinks) are gone."""
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(finalize, "repair_docker_socket_relay", lambda: None)
+    monkeypatch.setattr(finalize, "setup_buildkit_builder", lambda *, required=False: True)
+    monkeypatch.setattr(finalize, "verify_base_tools", lambda: None)
+
+    assert finalize.run_generic_steps({"env_type": "local"}) is True
+
+    assert sorted(path.name for path in home.rglob("*")) == [".zshrc"]
+    for retired in (
+        "setup_customization_root",
+        "setup_shell_bootstrap",
+        "setup_image_home_links",
+        "setup_tool_env_links",
+        "setup_editor_links",
+    ):
+        assert not hasattr(finalize, retired), retired

@@ -12,6 +12,11 @@ Usage:
   ./build-push.py --push         # Load saved state, push images (skips resolver)
   ./build-push.py --rebuild      # Build then push sequentially
                                  # (push/repack publish during build; their later step is terminal)
+  ./build-push.py --build --local-dev local-dev-artifacts.toml [--target NAME ...]
+                                 # EXPLICIT local-dev build from verified local artifacts
+                                 # (docs/CONSUMERS.md "Local-dev build"): loaded into the
+                                 # local Docker daemon under ``...-dev-...`` tags, labelled
+                                 # local-dev, never publishable.
 """
 from __future__ import annotations
 
@@ -41,12 +46,21 @@ for source_root in (
 ):
     if str(source_root) not in sys.path:
         sys.path.insert(0, str(source_root))
+if str(ROOT / "scripts") not in sys.path:
+    sys.path.insert(0, str(ROOT / "scripts"))
 
+import local_dev  # noqa: E402
 from cmru import exit_codes  # noqa: E402
 from cmru.ghcr import GitHubPackages  # noqa: E402
 from cmru.runner import run_step  # noqa: E402
 
 BUILD_ENV_FILE = ROOT / ".build-env.json"
+# A local-dev build keeps its own state: it must neither clobber the saved
+# release state a pending `--push` reads, nor ever be read by one.
+LOCAL_DEV_BUILD_ENV_FILE = ROOT / ".build-env.local-dev.json"
+LOCAL_DEV_STAGING = ROOT / "build" / "local-dev"
+WHEELS_LIST = ROOT / "pip" / "wheels.list"
+WHEELS_DIR = ROOT / "pip" / "wheels"
 RESOLVER_SCRIPT = ROOT / "scripts" / "resolve-devcontainers-release.py"
 COUNTER_DIR = ROOT / "logs"
 _PUSH_STEP_GUARD = "MDT_RELEASE_PUSH_STEP_ACTIVE"
@@ -71,7 +85,30 @@ def parse_args() -> argparse.Namespace:
             "Python/Debian releases on MCR."
         ),
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--local-dev",
+        metavar="MANIFEST",
+        type=Path,
+        help=(
+            "Explicit local-dev build (only with --build): use the local artifacts listed "
+            "in MANIFEST (TOML; see local-dev-artifacts.toml.example) instead of the "
+            "releases they replace. The image is loaded into the local Docker daemon "
+            "under -dev- tags, labelled local-dev, and can never be pushed."
+        ),
+    )
+    parser.add_argument(
+        "--target",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="Bake target to build (repeatable; only with --local-dev; default: group 'all').",
+    )
+    args = parser.parse_args()
+    if args.local_dev is not None and not args.build:
+        parser.error("--local-dev is only valid with --build (a local-dev image is never pushed)")
+    if args.target and args.local_dev is None:
+        parser.error("--target is only valid with --local-dev; release builds always use group 'all'")
+    return args
 
 
 def _read_bake_default(var_name: str) -> str | None:
@@ -207,14 +244,15 @@ def run_resolver() -> dict[str, str]:
     return env_vars
 
 
-def save_build_env(env_vars: dict[str, str]) -> None:
-    """Save resolved env vars to .build-env.json with a timestamp."""
+def save_build_env(env_vars: dict[str, str], path: Path | None = None) -> None:
+    """Save resolved env vars (default .build-env.json) with a timestamp."""
+    path = path or BUILD_ENV_FILE
     data = {
         "resolved_at": datetime.now(timezone.utc).isoformat(),
         "vars": env_vars,
     }
-    BUILD_ENV_FILE.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
-    sys.stderr.write(f"[INFO] Saved build environment to {BUILD_ENV_FILE}\n")
+    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    sys.stderr.write(f"[INFO] Saved build environment to {path}\n")
 
 
 def load_build_env() -> dict[str, str]:
@@ -329,6 +367,160 @@ def ensure_manifests_dir() -> None:
         manifests_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _prepare_local_dev(
+    manifest: Path,
+) -> tuple[list[local_dev.LocalArtifact], dict[str, str]]:
+    """Verify the local-dev manifest in full BEFORE any network or build work.
+
+    Returns the verified artifacts and the pinned PWMCP build inputs. Any entry
+    that is unknown, missing, unreadable or hash-mismatched refuses the build.
+    """
+    pwmcp = pwmcp_build_inputs()
+    try:
+        artifacts = local_dev.load_manifest(
+            manifest,
+            allowed_wheels=local_dev.wheel_names(WHEELS_LIST),
+            pwmcp_version=pwmcp["PWMCP_VERSION"],
+        )
+    except local_dev.LocalDevError as exc:
+        raise SystemExit(f"[ERROR] local-dev manifest rejected: {exc}") from None
+    return artifacts, pwmcp
+
+
+def _local_dev_build_date() -> str:
+    """The ``dev-YYYYMMDD[-n]`` coordinate; a release date is refused, never reused."""
+    explicit = os.getenv("BUILD_DATE")
+    if explicit:
+        if not re.fullmatch(r"dev-\d{8}(?:-\d+)?", explicit):
+            raise SystemExit(
+                f"[ERROR] BUILD_DATE={explicit!r} is not a local-dev coordinate "
+                "(dev-YYYYMMDD[-n]); unset it for a local-dev build."
+            )
+        return explicit
+    return compute_build_date_with_counter(
+        "dev-" + datetime.now(timezone.utc).strftime("%Y%m%d")
+    )
+
+
+def _bake_print_targets(names: list[str]) -> dict:
+    result = subprocess.run(
+        ["docker", "buildx", "bake", "-f", str(ROOT / "docker-bake.hcl"), "--print", *names],
+        cwd=str(ROOT), capture_output=True, text=True, check=True,
+    )
+    return json.loads(result.stdout).get("target") or {}
+
+
+def local_dev_tag_plan(requested: list[str], build_date: str) -> dict[str, list[str]]:
+    """Per bake target, the tags a local-dev build will carry - proven local-only.
+
+    The tags come from ``docker-bake.hcl`` evaluated in local-dev mode (which emits
+    only ``-dev-`` tags); ``local_dev.check_local_dev_tags`` refuses anything else.
+    """
+    if requested:
+        names = list(dict.fromkeys(requested))
+        specs = _bake_print_targets(names)
+    else:
+        specs, names = _enumerate_bake_targets()
+    plan: dict[str, list[str]] = {}
+    for name in names:
+        spec = specs.get(name)
+        if spec is None:
+            raise SystemExit(f"[ERROR] unknown bake target {name!r}")
+        try:
+            plan[name] = local_dev.check_local_dev_tags(
+                [str(tag) for tag in spec.get("tags") or []], build_date
+            )
+        except local_dev.LocalDevError as exc:
+            raise SystemExit(f"[ERROR] target {name!r}: {exc}") from None
+    if not plan:
+        raise SystemExit("[ERROR] no bake targets selected for the local-dev build")
+    return plan
+
+
+def verify_local_dev_images(plan: dict[str, list[str]]) -> None:
+    """After the build: every local-dev tag exists and carries the local-dev label."""
+    for target, tags in plan.items():
+        for tag in tags:
+            result = subprocess.run(
+                [
+                    "docker", "image", "inspect", tag, "--format",
+                    "{{.Id}} {{.Size}} {{index .Config.Labels \"" + local_dev.BUILD_MODE_LABEL + "\"}}",
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            fields = result.stdout.split()
+            if result.returncode != 0 or len(fields) != 3 or fields[2] != local_dev.MODE_LOCAL_DEV:
+                raise SystemExit(
+                    f"[ERROR] built image {tag} (target {target}) is missing or lacks the "
+                    f"{local_dev.BUILD_MODE_LABEL}={local_dev.MODE_LOCAL_DEV} label: "
+                    f"{result.stdout.strip() or result.stderr.strip()}"
+                )
+            sys.stderr.write(f"[INFO] local-dev image {tag} id={fields[0]} size={fields[1]}\n")
+
+
+def do_local_dev_build(
+    ignore_new_releases: bool, manifest: Path, requested_targets: list[str]
+) -> None:
+    """Explicit local-dev build: verified local artifacts, loaded locally, unpublishable."""
+    sys.stderr.write("[INFO] === mdt-cockpit: LOCAL-DEV build (never published) ===\n")
+    manifest = manifest.resolve()
+    artifacts, pwmcp = _prepare_local_dev(manifest)
+    for artifact in artifacts:
+        sys.stderr.write(
+            f"[INFO] local-dev artifact {artifact.name} {artifact.version} "
+            f"sha256={artifact.sha256} <- {artifact.path}\n"
+        )
+
+    ensure_devcontainers_base_from_bake_defaults()
+    build_date = _local_dev_build_date()
+    os.environ["BUILD_DATE"] = build_date
+    sys.stderr.write(f"[INFO] BUILD_DATE={build_date}\n")
+    build_timestamp = (
+        datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
+    os.environ["BUILD_TIMESTAMP"] = build_timestamp
+    if ignore_new_releases:
+        os.environ["DEVCONTAINERS_IGNORE_NEW_RELEASES"] = "true"
+
+    # The resolver re-verifies the manifest and skips the release lookup for the
+    # wheels it lists; it needs the pinned PWMCP version for that check.
+    os.environ[local_dev.ENV_MANIFEST] = str(manifest)
+    os.environ["PWMCP_VERSION"] = pwmcp["PWMCP_VERSION"]
+    sys.stderr.write("[INFO] Step 1/3: Resolving environment (local-dev) ...\n")
+    env_vars = run_resolver()
+    env_vars.update(pwmcp)
+    apply_env_to_os(env_vars)
+
+    sys.stderr.write("[INFO] Step 2/3: Staging verified local artifacts ...\n")
+    local_dev.stage(artifacts, wheels_dir=WHEELS_DIR, staging_dir=LOCAL_DEV_STAGING)
+    ensure_manifests_dir()
+
+    plan = local_dev_tag_plan(requested_targets, build_date)
+    env_vars.update(
+        {
+            "BUILD_DATE": build_date,
+            "BUILD_TIMESTAMP": build_timestamp,
+            "RELEASE_IMAGE_FLOW": local_dev.MODE_LOCAL_DEV,
+            "MDT_BUILD_MODE": local_dev.MODE_LOCAL_DEV,
+            "MDT_LOCAL_ARTIFACTS_JSON": local_dev.provenance_json(artifacts),
+            "MDT_BAKE_TARGETS": ",".join(plan),
+            "MDT_LOCAL_DEV_STAGING": str(LOCAL_DEV_STAGING),
+        }
+    )
+    apply_env_to_os(env_vars)
+    save_build_env(env_vars, LOCAL_DEV_BUILD_ENV_FILE)
+
+    sys.stderr.write(
+        f"[INFO] Step 3/3: Building {', '.join(plan)} (MDT_BUILD_MODE=local-dev) ...\n"
+    )
+    try:
+        run_step(ROOT / "cmru.toml", "build")
+    except subprocess.CalledProcessError as exc:
+        sys.stderr.write(f"[ERROR] Build failed. Exit code: {exc.returncode}\n")
+        raise SystemExit(exc.returncode) from None
+    verify_local_dev_images(plan)
+
+
 def do_build(ignore_new_releases: bool) -> None:
     """Build phase: resolve env, compute counter, build images."""
     sys.stderr.write("[INFO] === mdt-cockpit: build ===\n")
@@ -412,7 +604,7 @@ def do_build(ignore_new_releases: bool) -> None:
     extract_manifests(build_date, env_vars)
 
 
-_MANIFEST_PATH = "/usr/local/share/modern-debian-tools-python-debug/manifest.md"
+_MANIFEST_PATH = "/usr/local/share/mdt-cockpit/manifest.md"
 
 
 def _require_crane_regctl() -> None:
@@ -462,6 +654,22 @@ def _enumerate_bake_targets() -> tuple[dict, list[str]]:
     return (bake.get("target") or {}), list(names)
 
 
+def _read_layout_labels(layout_ref: str) -> dict[str, str]:
+    """Image config labels of a built OCI layout; fail closed when unreadable."""
+    try:
+        result = subprocess.run(
+            ["regctl", "image", "config", layout_ref, "--format", "{{json .Config.Labels}}"],
+            cwd=str(ROOT), capture_output=True, text=True, check=True,
+        )
+        labels = json.loads(result.stdout or "null") or {}
+    except (subprocess.CalledProcessError, OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f"[ERROR] cannot read the labels of {layout_ref}: {exc}; refusing to publish an "
+            "image whose build mode cannot be verified."
+        ) from None
+    return {str(key): str(value) for key, value in labels.items()}
+
+
 def _push_oci_layouts(env_vars: dict[str, str]) -> None:
     """Push each target's OCI layout built by oci_layout_bake(), verifying that
     the registry ends up reporting the exact digest that was built and
@@ -490,6 +698,12 @@ def _push_oci_layouts(env_vars: dict[str, str]) -> None:
             )
         ref_name = _tag_component(tags[0])
         layout_ref = f"ocidir://{layout_dir}:{ref_name}"
+
+        # A local-dev image must never reach a registry, however it got here.
+        try:
+            local_dev.refuse_unpublishable(_read_layout_labels(layout_ref), layout_ref)
+        except local_dev.LocalDevError as exc:
+            raise SystemExit(f"[ERROR] {exc}") from None
 
         local_digest = subprocess.run(
             ["regctl", "manifest", "digest", layout_ref],
@@ -708,6 +922,11 @@ def do_push() -> None:
 
     # Load and apply saved env vars
     env_vars = load_build_env()
+    if (env_vars.get("MDT_BUILD_MODE") or local_dev.MODE_RELEASE) != local_dev.MODE_RELEASE:
+        raise SystemExit(
+            f"[ERROR] the saved build state is MDT_BUILD_MODE={env_vars['MDT_BUILD_MODE']!r}; "
+            "only a release build can be pushed."
+        )
     apply_env_to_os(env_vars)
 
     release_image_flow = (env_vars.get("RELEASE_IMAGE_FLOW") or "load").strip().lower()
@@ -753,7 +972,9 @@ def do_push() -> None:
 def main() -> None:
     args = parse_args()
 
-    if args.build:
+    if args.build and args.local_dev is not None:
+        do_local_dev_build(args.ignore_new_releases, args.local_dev, args.target)
+    elif args.build:
         do_build(args.ignore_new_releases)
     elif args.push:
         do_push()

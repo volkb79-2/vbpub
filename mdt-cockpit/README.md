@@ -39,11 +39,11 @@ explained in [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md).
    `mcr.microsoft.com/devcontainers/python:${PYTHON_VERSION}-${DEBIAN_VERSION}`.
    Microsoft devcontainer behavior plus the same tooling.
 
-The fork keeps MDT's existing runtime configuration namespace under
-`~/.config/modern-debian-tools-python-debug` and image support files under
-`/usr/local/share/modern-debian-tools-python-debug` so existing persisted
-settings remain readable. Its published OCI package names are `mdt-cockpit`
-and `mdt-cockpit-devcontainer`. See the [runtime namespace rationale](docs/DESIGN-GUIDE.md#oci-names-keep-runtime-paths-stable).
+The fork uses its own runtime namespace: user overrides under `~/.config/mdt-cockpit` and
+image support files under `/usr/local/share/mdt-cockpit`. Its published OCI package names are
+`mdt-cockpit` and `mdt-cockpit-devcontainer`. Nothing is carried over from the original
+project's paths; see [Moving from modern-debian-tools-python-debug](docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug)
+and the [namespace rationale](docs/DESIGN-GUIDE.md#oci-names-keep-runtime-paths-stable).
 
 PHP 8.5 is **not** a third family — it is a tag variant of both, see
 [Tags and variants](#tags-and-variants).
@@ -100,6 +100,8 @@ and [PWMCP's install and design notes](../pwmcp/README.md#standalone-instance-fo
 | `trixie-py3.14-php8.5-20260707-10` | PHP 8.5 flavor, same package family |
 | `trixie-py3.14-php8.5-latest` | floating PHP 8.5 tag |
 | `latest` | family-wide floating tag — see the caveat below |
+| `trixie-py3.14-php8.5-dev-20261018` | **local-dev** build (`--local-dev`), local daemon only — see [Local-dev builds](#local-dev-builds) |
+| `trixie-py3.14-php8.5-dev-latest` | floating local-dev alias; never pushed |
 
 Tags produced by the `*_tag` / `*_latest_tag` helpers always follow the pattern above. The
 bare family-wide `latest` is different: it is **hardcoded inline** on three targets in
@@ -130,9 +132,9 @@ flavor should follow the same pattern — a new tag segment, never a new package
 
 | Venv | Path | Contents |
 |---|---|---|
-| Primary | `/opt/mdt/venv` | Full toolkit — see below; `~/.venv` is a compatibility symlink when available |
-| Secondary 3.11 | `/opt/mdt/venvs/py311` | Lean: `pip`, `uv`, `debugpy`, `ruff`; `~/.venv-py311` compatibility link |
-| Secondary 3.9 | `/opt/mdt/venvs/py39` | Lean: `pip`, `uv`, `debugpy`, `ruff`; `~/.venv-py39` compatibility link |
+| Primary | `/opt/mdt/venv` | Full toolkit — see below; first on `PATH`, `python` resolves here (no `VIRTUAL_ENV`, no home symlink) |
+| Secondary 3.11 | `/opt/mdt/venvs/py311` | Lean: `pip`, `uv`, `debugpy`, `ruff` |
+| Secondary 3.9 | `/opt/mdt/venvs/py39` | Lean: `pip`, `uv`, `debugpy`, `ruff` |
 
 Secondary venvs exist only in the multi-Python targets and are baked at build time — no
 post-create download. VS Code discovers them automatically (`Python: Select Interpreter`),
@@ -196,9 +198,8 @@ Enabled by default, each controlled by an `INSTALL_*` build arg:
 
 - `aider-chat` (`INSTALL_AIDER`) — in the venv.
 - `reasonix`, `openclaw`, `opencode`, `copilot`, `claudelink`, `pi` — npm-based, installed
-  into the image-owned `/opt/mdt/npm` prefix on the image's Node 26 toolchain. At runtime,
-  `NPM_CONFIG_PREFIX` defaults to the user's persistent `~/.local` prefix, which appears first
-  on `PATH` and can hold user-installed overrides. OpenCode
+  into the `mdt`-group prefix `/opt/mdt/npm` (the image's `NPM_CONFIG_PREFIX`) on the image's
+  Node 26 toolchain; the runtime user updates them in place without `sudo`. OpenCode
   uses its resolved platform package directly, because the `opencode-ai` meta-package can
   select mutually incompatible glibc and musl optional packages under npm 11. `claudelink`
   (npm package `claudelink`) is an MCP server that coordinates multiple already-installed
@@ -206,18 +207,22 @@ Enabled by default, each controlled by an `INSTALL_*` build arg:
   `@earendil-works/pi-coding-agent`) is the Pi coding-agent CLI.
 - `codex` — the official `@openai/codex` npm package under `/opt/mdt/npm`; its user data remains
   under `~/.codex`.
-- `claude-code`, `antigravity` — image-owned binaries.
+- `claude-code`, `antigravity` (`agy`) — image-owned binaries in `/opt/mdt/bin`.
 
-Image CLI packages are root-owned. Install a user-owned CLI version without `sudo` by using
-the template's default `NPM_CONFIG_PREFIX=$HOME/.local`, for example
-`npm install -g @openai/codex@latest`. User-local binaries override image binaries on `PATH`.
+Image-managed tools live in the `mdt` group tree (`/opt/mdt`, `/srv`): group-writable, so the
+runtime user (a member of `mdt`) can `npm install -g @openai/codex@latest` or `pip install`
+into the primary venv without `sudo`, even though Dev Containers re-numbers the `vscode` uid.
+Such in-place updates live in the container filesystem and are replaced by the image on
+recreate. `PATH` is one definition ([One PATH order](docs/DESIGN-GUIDE.md#one-path-order)):
+`/opt/mdt/bin`, the primary venv, `/opt/mdt/npm/bin`, PWMCP, the base image's own entries, and
+`~/.local/bin` **last** — so a tool in `~/.local/bin` never silently shadows an image tool.
 Rebuild the image to refresh its pinned tool versions.
 
 Node 26 comes from NodeSource because Debian 13 ships Node 20, which is too old for the
 npm-based CLIs.
 
 Startup guidance for consumer repos: the shipped
-`/usr/local/share/modern-debian-tools-python-debug/AGENTS.md.example`. The cross-CLI
+`/usr/local/share/mdt-cockpit/AGENTS.md.example`. The cross-CLI
 adapter pattern is in [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md).
 
 Pin versions or opt out at build time:
@@ -234,11 +239,12 @@ the current PyPI release at staging time, which keeps the manifest concrete.
 ### Shell and CLI tooling
 
 Both variants install zsh, Debian's zsh completion support, `zsh-autosuggestions`, and
-`zsh-syntax-highlighting`. The shared config at
-`~/.config/modern-debian-tools-python-debug/zshrc` enables standalone fzf integration
+`zsh-syntax-highlighting`. The shared config, loaded system-wide from `/etc/zsh/zshrc`
+(your `~/.zshrc` runs after it and wins), enables standalone fzf integration
 (`fzf --zsh`), Ctrl-R fuzzy history, Ctrl-T file search, Alt-C directory search,
-completions, inline suggestions, and syntax highlighting. The VSC base `.zshrc` is
-*extended*, not replaced, so its prompt and Oh My Zsh behavior survive.
+completions, inline suggestions, and syntax highlighting. On the VSC image it also loads the
+image-owned Oh My Zsh (`ZSH=/opt/mdt/oh-my-zsh`) with the devcontainers prompt, unless your own
+`~/.zshrc` already loads it.
 
 **On Powerlevel10k:** Oh My Zsh is a configuration framework (plugins, themes, startup);
 p10k is a prompt theme. p10k is not required for history search, completions, fzf,
@@ -259,10 +265,10 @@ Container and system inspection, in-image:
 | `zswap-status` | prints kernel zswap counters directly from sysfs/debugfs |
 | `lnav` | ncurses log/JSONL viewer with SQL queries over parsed fields — see below |
 
-Neovim ships as `nvim` with the NvChad `v2.5` starter config stored under
-`/usr/local/share/modern-debian-tools-python-debug/home-defaults/.config/nvim`. The finalizer
-seeds missing files into the mounted home without replacing user config; the shell defaults
-prefer `nvim` as `$EDITOR` when present.
+Neovim ships as `nvim` with the NvChad tree in `/etc/xdg/nvim` (system-wide, started by
+`/etc/xdg/nvim/sysinit.vim` only while you have no `~/.config/nvim/init.lua` or `init.vim`);
+the shell defaults prefer `nvim` as `$EDITOR` when present. Every default is wired where its
+tool reads system-wide configuration — see [System-wide defaults](docs/DESIGN-GUIDE.md#system-wide-defaults).
 GitHub-release tools keep their manpages and completions where upstream ships them; `fd` is
 installed as both `fd` and Debian-compatible `fdfind`.
 
@@ -317,25 +323,29 @@ containers built from the same layers.
 
 ### Complete persistent home
 
-The vendored template mounts one host directory,
-`${localEnv:HOME}/mdt--mounted-folders/home-vscode/`, over `/home/vscode`. Agent logins,
-keys, histories, shell preferences, caches, worktrees, and arbitrary user-created home data
-therefore survive image rebuilds without maintaining a list of individual mount points.
-The image itself leaves `/home/vscode` empty. Image-owned runtimes and CLIs live under
-`/opt/mdt`; config sources and seed defaults live under
-`/usr/local/share/modern-debian-tools-python-debug`.
+The vendored template mounts one host directory, `${localEnv:HOME}/mdt-cockpit-home/` (mode
+`0700`), over `/home/vscode`. Agent logins, keys, histories, shell preferences, caches,
+worktrees, and arbitrary user-created home data therefore survive image rebuilds without
+maintaining a list of individual mount points. `/tmp` is a second host-backed source,
+`${localEnv:HOME}/mdt-cockpit-tmp/` (mode `1777`); any further source is named
+`${localEnv:HOME}/mdt-cockpit-<purpose>`.
 
-After the mount is active, the finalizer seeds missing shell and NvChad defaults, user-editable
-MDT config, and compatibility symlinks such as `~/.venv`. It never replaces an existing home
-file or directory. User npm installs use the persistent `~/.local` prefix and take precedence
-over image CLI packages under `/opt/mdt/npm`. The native host SSH directory remains a separate
-read-only mount at `/run/mdt/host-ssh`; `/tmp` remains separate and host-backed.
+**A new home starts empty and stays that way.** The image leaves `/home/vscode` empty and ships
+no copy of any default into it: image-owned runtimes and CLIs live under `/opt/mdt` and `/srv`,
+and every default (bash, zsh, nano, htop, mc, Neovim, `less`, the MDT shell files) is wired
+where its tool reads system-wide configuration, so you override a default by creating your
+own file. The in-container finalizer's only home write is a comment-only `~/.zshrc` stub (only
+if you have no zsh startup file) that keeps `zsh-newuser-install` from taking over your first
+terminal. The native host SSH directory remains a separate read-only mount at
+`/run/mdt/host-ssh`.
 
-Existing split mounts require a one-time migration from a stopped container. The host bootstrap
-refuses startup if legacy sources contain data without a completed migration marker. Follow the
-[migration guide](templates/README.md#migrate-an-existing-container) and see the
-[path policy and rationale](docs/DESIGN-GUIDE.md#the-home-is-user-state-image-assets-live-outside-it),
-plus the [home path inventory and implementation plan](docs/HOME-PERSISTENCE.md).
+There is no migration. If you used the previous split-mount template, the host bootstrap prints
+one informational line while `~/mdt--mounted-folders/` still holds files and the new home is
+empty, and you copy what you want by hand —
+[Moving from modern-debian-tools-python-debug](docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug)
+lists what is worth copying and what is not. See the
+[path policy and rationale](docs/DESIGN-GUIDE.md#the-home-is-user-state-image-assets-live-outside-it)
+and the [home path inventory](docs/HOME-PERSISTENCE.md).
 
 The template sets `CODEX_SQLITE_HOME` to `/home/vscode/.codex/sqlite-shared` and keeps the
 container running when its Dev Containers session disconnects with `shutdownAction: "none"`.
@@ -345,16 +355,17 @@ See the [Codex profile and container-lifetime notes](docs/CONSUMERS.md#codex-pro
 
 Image defaults, user config, and secrets have distinct roles:
 
-- `/usr/local/share/modern-debian-tools-python-debug/` — image-owned profile files, default
-  shell/editor config, templates, and manifest support files.
-- `/home/vscode/.config/modern-debian-tools-python-debug/` — user-editable bootstrap state:
-  `ai.env`, `aliases.sh`, `shell.env`, `htoprc`, `mc.ini`, `nanorc`, `lesspipe.sh`.
+- `/usr/local/share/mdt-cockpit/` — image-owned profile files, default shell/editor config,
+  examples (`ai.env.example`, `aliases.sh.example`) and manifest support files. Nothing copies
+  these into the home.
+- `/home/vscode/.config/mdt-cockpit/` — **yours, created by you**: `ai.env` (keys), plus
+  optional `shell.env` and `aliases.sh` that are sourced after the image's own and can override
+  them. The image never writes this directory.
 
-The shell profile sources the user files once per session, which makes **`ai.env` the single
-source of truth** for Aider, Claude Code, Codex, Reasonix, OpenClaw, and OpenCode. Tool-specific
-auth files that need a local path are symlinked back to it rather than duplicating secrets.
-Supported keys: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`,
-`DEEPSEEK_API_KEY`.
+The shell profile sources `ai.env` once per session, which makes it the single source of truth
+for Aider, Claude Code, Codex, Reasonix, OpenClaw, and OpenCode: the keys are exported into
+every shell, so tools need no per-tool secret file. Supported keys: `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`.
 
 Consuming repos can add file mounts with any filename. Existing sources use their actual host type;
 missing sources follow the configured policy and source spelling. See the
@@ -364,9 +375,8 @@ missing sources follow the configured policy and source spelling. See the
 ### Canonical manifest
 
 Every image writes a Markdown manifest to
-`/usr/local/share/modern-debian-tools-python-debug/manifest.md`.
-`/home/vscode/mdt-manifest.md` is created as a compatibility symlink after the home is mounted,
-and `/etc/os-release` carries
+`/usr/local/share/mdt-cockpit/manifest.md` (there is no copy or link in the home), and a
+local-dev image adds a `Build Provenance` section. `/etc/os-release` carries
 `IMAGE_MANIFEST=<that path>` so scripts can find it without hardcoding a second location.
 The repository-hosted versioned page under
 [`package-manifests-versioned/`](package-manifests-versioned/README.md) is regenerated on
@@ -484,6 +494,28 @@ limits. The configured CMRU release flow is `load`: build and manifest
 extraction run first, then the gate and source promotion, then the post-gate
 layout publication. The alternate `push` and `repack` flows publish during the
 build and therefore do not provide source-first publication ordering.
+
+### Local-dev builds
+
+To test an image built from artifacts that are not (yet) released — a wheel built in a
+worktree, a PWMCP bundle whose release URL 404s — ask for it explicitly:
+
+```bash
+cp local-dev-artifacts.toml.example local-dev-artifacts.toml     # git-ignored; list only what is local
+./build-push.py --build --local-dev local-dev-artifacts.toml     # group 'all', or add --target NAME
+```
+
+The manifest names every local artifact (`name`, absolute `path`, `sha256`, `version`) for
+the first-party wheels in `pip/wheels.list` and the PWMCP installer/bundle. It is a
+**fail-closed opt-in, never a fallback**: an unknown, missing, unreadable or hash-mismatched
+entry refuses the build and names the entry, and an artifact you do not list still comes from
+its release. The result is loaded into the local Docker daemon as
+`<debian>-py<python>[-<flavor>]-dev-<YYYYMMDD>[-<n>]` plus a floating `...-dev-latest`
+(never a release tag, never bare `latest`), labelled `net.volkb79.mdt.build-mode=local-dev`
+with every artifact recorded in `net.volkb79.mdt.local-artifacts` and the image manifest
+(`Build Provenance`), and **can never be pushed** — see
+[Local-dev builds in the design guide](docs/DESIGN-GUIDE.md#local-dev-builds-are-explicit-verified-and-unpublishable)
+and the [worked example](docs/CONSUMERS.md#local-dev-build).
 
 ### Release caches
 
@@ -721,7 +753,8 @@ production-quality. Windows as of June 2026:
 | [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCOVERY.md) | Cross-CLI adapter pattern; why exact versions stay in the generated inventory |
 | [docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md) | Build/repack/publication flow, cgroup boundaries, load attribution |
 | [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate; managed socket access and host namespace access |
-| [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable host governance, host escape, managed BuildKit, and release adoption |
+| [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable host governance, host escape, managed BuildKit, release adoption, the fresh-home template, and local-dev builds |
+| [docs/HOME-PERSISTENCE.md](docs/HOME-PERSISTENCE.md) | The fresh-home design, the home path inventory, and moving from `modern-debian-tools-python-debug` |
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
 | [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |

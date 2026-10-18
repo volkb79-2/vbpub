@@ -12,7 +12,7 @@
 //     into the mdt image — you reference it by name (see postCreateCommand below),
 //     you do NOT copy it.
 //
-//   cp <vbpub>/mdt-cockpit/templates/{devcontainer.json,initialize_container_environment.py,migrate_persistent_home.py} .devcontainer/
+//   cp <vbpub>/mdt-cockpit/templates/{devcontainer.json,initialize_container_environment.py} .devcontainer/
 //   # then "Dev Containers: Rebuild Container"
 //
 // Entries are ordered by lifecycle phase:
@@ -28,10 +28,11 @@
   // prepares each $HOME bind source under DEVCONTAINER_MISSING_BIND_SOURCE_POLICY.
   // Docker accepts an unknown cgroup parent by creating an unlimited transient
   // slice, so the host check must pass before runArgs can start this container.
-  // Docker's --mount form refuses a missing source. The full-home and /tmp
-  // sources are directory paths; trailing `/` marks each missing source as a
-  // directory. The bootstrap also protects existing split-home data before
-  // creating the new full-home source.
+  // Docker's --mount form refuses a missing source. The home and /tmp sources
+  // are directory paths; trailing `/` marks each missing source as a directory.
+  // A new home starts EMPTY and nothing is migrated: if the previous split-mount
+  // state still holds files, the bootstrap prints one pointer to the manual-copy
+  // section of docs/HOME-PERSISTENCE.md and carries on.
   "initializeCommand": "python3 .devcontainer/initialize_container_environment.py",
 
   // ─── 3. Container image ────────────────────────────────────────────────────────
@@ -52,10 +53,10 @@
   "remoteUser": "vscode",
 
   // ─── 6. Mounts ─────────────────────────────────────────────────────────────────
-  // Grouped persistence — every persist-worthy dir lives under
-  // ~/mdt--mounted-folders/ on the host (real dirs, created by
+  // Persistence — the home and /tmp live in `mdt-cockpit-<purpose>` directories
+  // directly under the host $HOME (real dirs, created by
   // initialize_container_environment.py). A rebuild never wipes them, and one
-  // `ls ~/mdt--mounted-folders/` shows the whole set.
+  // `ls -d ~/mdt-cockpit-*` shows the whole set.
   "mounts": [
     // ── Docker / host integration ──────────────────────────────────────────────
     // A DIRECTORY-level bind mount, not a file-level one — see
@@ -118,16 +119,16 @@
     "source=${localEnv:HOME}/.ssh/,target=/run/mdt/host-ssh,type=bind,consistency=cached,readonly",
 
     // ── Persistent home and scratch (survive rebuilds) ─────────────────────────
-    // One host-backed source owns all of /home/vscode. Image-owned executables,
-    // runtimes, and default config sources live under /opt/mdt or /usr/local/share
-    // so this mount cannot mask them. The host bootstrap refuses this source if
-    // old split mounts still contain data and the home migration marker is absent.
-    // create-by-spelling creates this missing source as a directory; set the
-    // policy to `fail` to require it to exist already.
-    "source=${localEnv:HOME}/mdt--mounted-folders/home-vscode/,target=/home/vscode,type=bind,consistency=cached",
+    // One host-backed source owns all of /home/vscode (mode 0700). Image-owned
+    // executables and runtimes live under /opt/mdt and /srv, and every default is
+    // wired system-wide (/etc, /usr/local/share), so this mount cannot mask them
+    // and a new home starts empty. create-by-spelling creates this missing source
+    // as a directory; set the policy to `fail` to require it to exist already.
+    // Any further mount source is named ${localEnv:HOME}/mdt-cockpit-<purpose>.
+    "source=${localEnv:HOME}/mdt-cockpit-home/,target=/home/vscode,type=bind,consistency=cached",
 
     // ── Persisted host-backed /tmp (mode 1777) ─────────────────────────────────
-    "source=${localEnv:HOME}/mdt--mounted-folders/tmp/,target=/tmp,type=bind,consistency=cached",
+    "source=${localEnv:HOME}/mdt-cockpit-tmp/,target=/tmp,type=bind,consistency=cached",
 
     // ── Sibling-repo workspace mounts (multi-root workspace) ───────────────────
     // "source=${localWorkspaceFolder}/../vbpub,target=/workspaces/vbpub,type=bind,consistency=cached"
@@ -169,16 +170,15 @@
     "BUILDX_BUILDER": "mdt-managed",
     "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock",
     // Share Codex's SQLite session database across the dual-profile setup.
-    "CODEX_SQLITE_HOME": "/home/vscode/.codex/sqlite-shared",
-    // Image CLIs are under /opt/mdt/npm. Runtime npm installs default to the
-    // user's persisted prefix, which can override image commands on PATH.
-    "NPM_CONFIG_PREFIX": "/home/vscode/.local"
+    "CODEX_SQLITE_HOME": "/home/vscode/.codex/sqlite-shared"
+    // Deliberately NOT set here: PATH and NPM_CONFIG_PREFIX. The image defines
+    // them once (Dockerfile ENV PATH: /opt/mdt/bin, /opt/mdt/venv/bin,
+    // /opt/mdt/npm/bin and /srv/pwmcp-instance/bin first, ~/.local/bin last;
+    // NPM_CONFIG_PREFIX=/opt/mdt/npm). A second spelling here could only drift.
   },
 
-  // Expose tools installed outside the persistent home mount to remote agent,
-  // editor, and terminal processes. MCP registration remains harness-specific.
+  // MCP registration remains harness-specific. No PATH here: see containerEnv.
   "remoteEnv": {
-    "PATH": "/home/vscode/.local/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin:${containerEnv:PATH}",
     "PWMCP_MCP_URL": "http://pwmcp:8931/mcp"
   },
 

@@ -40,7 +40,7 @@ sed -n '1,220p' "$manifest"
 The fuller installed-tool snapshot is:
 
 ```text
-/usr/local/share/modern-debian-tools-python-debug/installed-tools-manifest.md
+/usr/local/share/mdt-cockpit/installed-tools-manifest.md
 ```
 
 The canonical release manifest contains the curated first-party wheels, AI

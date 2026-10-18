@@ -1,7 +1,7 @@
 # mdt devcontainer lifecycle — hooks and persistent home
 
 This is the **canonical** reference for the lifecycle hooks an mdt-based devcontainer wires up,
-the complete persistent home, and its one-time migration. Consuming repos point here and keep only
+the complete persistent home, and moving from the previous layout. Consuming repos point here and keep only
 their project-specific notes.
 
 The shipped template uses `shutdownAction: "none"`; the devcontainer remains running when its
@@ -21,8 +21,8 @@ database beneath the complete persistent home.
 > from the image; it must be a file in your repo checkout. `postCreateCommand` runs **inside** the
 > container, so its script (`finalize_container_environment.py`) **is** baked into the mdt image and
 > you reference it by name. `devcontainer.json` itself is inherently repo-specific, so it is also
-> vendored. Hence mdt ships three **templates** to copy (`devcontainer.json`,
-> `initialize_container_environment.py`, `migrate_persistent_home.py`) and one **baked-in** script
+> vendored. Hence mdt ships two **templates** to copy (`devcontainer.json`,
+> `initialize_container_environment.py`) and one **baked-in** script
 > you just call (finalize).
 
 ### Pre script — `initialize_container_environment.py` (host)
@@ -30,13 +30,15 @@ Runs on the host before Docker starts and prepares `$HOME` bind-mount sources. I
 idempotent. It parses the sibling `devcontainer.json` and inspects every `type=bind` source under
 `$HOME` by its actual filesystem type. Existing regular files and directories are accepted without
 name or suffix heuristics. Under the default policy, MDT creates its known directory sources as
-**real dirs** with the right mode: the complete `home-vscode` source gets `0700`, `tmp` gets
-`1777`, and other directories get `0755`. For missing custom directories, a trailing `/` on the source is an MDT bootstrap hint
+**real dirs** with the right mode: the complete `mdt-cockpit-home` source gets `0700`,
+`mdt-cockpit-tmp` gets `1777`, and other directories get `0755`. For missing custom directories, a trailing `/` on the source is an MDT bootstrap hint
 that selects directory creation under the default `create-by-spelling` policy; a missing source
 without `/` becomes an empty regular file (`0600`). The host-setup wizard can select
 `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` to require every `$HOME` source managed by the
-bootstrap to exist first. Before creating an empty full-home source, it also refuses when old
-split-home sources contain data without a completed migration marker. Keep the trailing slash on
+bootstrap to exist first. There is no migration: when the previous `~/mdt--mounted-folders/` still
+holds files and the new home is absent or empty, it prints one informational line pointing at the
+[manual-copy section](docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug) and
+carries on (the exit status never depends on it). Keep the trailing slash on
 every directory source in the JSON; Docker itself does not interpret it as a source-kind setting. See the
 [consumer example](docs/CONSUMERS.md#optional-git-config-mount).
 
@@ -45,8 +47,9 @@ Lives in the mdt image at `/usr/local/bin/finalize_container_environment.py`; a 
 only `"postCreateCommand": "finalize_container_environment.py"`. Symmetric to the host-side
 `initialize_container_environment.py`. stdlib-only, idempotent.
 
-It does the **generic, ciu-AGNOSTIC** setup every mdt devcontainer wants — image and user CLI paths,
-shell and editor defaults when missing, `.vscode/settings.json` (global python), and a base-image tool check — and
+It does the **generic, ciu-AGNOSTIC** setup every mdt devcontainer wants — the comment-only
+`~/.zshrc` stub (only when no zsh startup file exists, so zsh's new-user wizard stays quiet),
+`.vscode/settings.json` (global python), the managed-BuildKit check, and a base-image tool check — and
 **brackets** that with the consumer's own hooks. mdt **never** imports or calls ciu: mdt *ships and
 encourages* ciu, but a repo that doesn't use it still gets a fully working devcontainer.
 
@@ -73,31 +76,31 @@ finalize discovers and runs hooks from your repo's `.devcontainer/` (no need to 
 `.devcontainer/finalize.post.d/10-<repo>-ciu.sh` that exports `REPO_ROOT`, runs `ciu env generate`,
 installs repo deps, etc. mdt provides the bracket; the consumer owns the contents.
 
-## Complete persistent home — `home-vscode`
+## Complete persistent home — `mdt-cockpit-home`
 
-The template binds `${localEnv:HOME}/mdt--mounted-folders/home-vscode/` to `/home/vscode`.
+The template binds `${localEnv:HOME}/mdt-cockpit-home/` to `/home/vscode`.
 It persists the entire home: agent credentials and sessions, `.config`, `.local`, shell startup
 files, caches, worktrees stored below home, and any other user-created files. A new host source is
-created as a real directory with mode `0700`. The host bootstrap refuses to create it while old
-split sources contain data unless the migration tool has written a valid completion marker.
+created as a real directory with mode `0700`, and **a new home starts empty**.
 
 | Host source | Container target | Notes |
 |---|---|---|
-| `~/mdt--mounted-folders/home-vscode` | `/home/vscode` | complete persistent home, mode `0700` on creation |
-| `~/mdt--mounted-folders/tmp` | `/tmp` | independent host-backed scratch/worktree storage, mode `1777` |
+| `~/mdt-cockpit-home` | `/home/vscode` | complete persistent home, mode `0700` on creation |
+| `~/mdt-cockpit-tmp` | `/tmp` | independent host-backed scratch/worktree storage, mode `1777` |
 | `~/.ssh` (native host) | `/run/mdt/host-ssh` (ro) | host SSH keys remain available outside the home mount |
 
-The image keeps executables and runtimes outside the home mount: `/opt/mdt/venv`,
-`/opt/mdt/venvs/pyNN`, `/opt/mdt/npm`, `/opt/mdt/python`, and `/opt/mdt/oh-my-zsh`.
-Defaults and config sources live under `/usr/local/share/modern-debian-tools-python-debug`.
-After the mount is active, the finalizer seeds missing shell and editor files, merges only missing
-NvChad defaults, creates compatibility links when paths are free, and never replaces an existing
-user path. User npm installs go to `~/.local` and take precedence over image CLIs.
+The image keeps executables and runtimes outside the home mount, in the `mdt` group tree:
+`/opt/mdt/bin`, `/opt/mdt/venv`, `/opt/mdt/venvs/pyNN`, `/opt/mdt/npm`, `/opt/mdt/python`,
+`/opt/mdt/oh-my-zsh`, and `/srv/pwmcp-instance`. Defaults are wired **system-wide** - `/etc/bash.bashrc`,
+`/etc/zsh/zshrc`, `/etc/nanorc`, `/etc/htoprc`, `/etc/mc/mc.ini`, `/etc/xdg/nvim`, `LESSOPEN` - and the
+MDT shell files, examples and manifest live under `/usr/local/share/mdt-cockpit`. The finalizer copies
+nothing into the home, creates no links, and never replaces a user path; creating your own file
+overrides the matching default. `PATH` is the image's one definition with `~/.local/bin` last.
 
-The user-editable central API key file remains `~/.config/modern-debian-tools-python-debug/ai.env`.
-Shell startup sources it once; Reasonix/OpenClaw/Codex also get tool-local `.env` symlinks back to
-the same file so values live in one place. The same customization root carries `aliases.sh`,
-`shell.env`, `htoprc`, `mc.ini`, and `nanorc`.
+The user-editable central API key file is `~/.config/mdt-cockpit/ai.env`, a file **you** create from
+`/usr/local/share/mdt-cockpit/ai.env.example`. Shell startup sources it once, so the keys are in every
+tool's environment. The same directory may carry optional `aliases.sh` and `shell.env` overrides,
+sourced after the image's own.
 
 **Why a persisted host-backed `/tmp`:** `/tmp` git worktrees then survive rebuilds AND are visible to
 **sibling containers** (e.g. the `test-runner`) that bind the same host dir — so `/tmp`-based worktrees
@@ -200,62 +203,27 @@ The above covers the devcontainer *itself*. Release builds run through `docker b
 cgroup normally appears as a separate scope in `system.slice`, and how the local repack workers
 inherit the caller's slice.
 
-## Migrating to the complete home
+## Moving to the fresh home
 
-Copy `devcontainer.json`, `initialize_container_environment.py`, and
-`migrate_persistent_home.py` from `templates/` into the consumer's `.devcontainer/` directory.
-The migration utility copies the stopped container's merged `/home/vscode`, including state that
-was previously supplied by split bind mounts. It does not modify or remove those old host sources.
+There is no migration tool, no completion marker and no startup refusal. Copy the two host-side
+files (`devcontainer.json`, `initialize_container_environment.py`) from `templates/` into the
+consumer's `.devcontainer/` directory and rebuild; the container starts with an empty home.
 
-Before copying, stop the whole container so shell agents, ClaudeLink, and other database writers
-are quiescent. Run the migration utility once without `--apply` and inspect the report:
+If you used the previous split-mount template, stop the container (so shell agents, ClaudeLink and
+other database writers are quiescent) and copy what you want by hand. The bootstrap prints one line
+pointing at the recipe whenever `~/mdt--mounted-folders/` still holds files and the new home is empty:
+[Moving from modern-debian-tools-python-debug](docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug)
+lists what is worth copying (agent state, keys, selected `.config` directories), gives a pasteable
+`cp -a` example, and names what must **not** be copied (`~/.venv*`, `~/.oh-my-zsh`, `~/.local/bin`,
+`~/.local/lib/node_modules`, `~/.codex/packages/standalone`, and seeded copies of image defaults).
 
-```sh
-container_name="myrepo-devcontainer-alice"  # use the existing container name
-# Gracefully stop ClaudeLink first if its documented service-control command is available.
-docker stop --timeout 30 "$container_name"
-test "$(docker inspect --format '{{.State.Running}}' "$container_name")" = "false"
-python3 .devcontainer/migrate_persistent_home.py "$container_name"
-```
-
-The dry run reports included files, total regular-file bytes, exclusions, unsupported special
-files, and available host space. It must run against a stopped container; the tool refuses if
-Docker reports it is running. Apply refuses archives containing unsupported special files so it
-cannot mark a partial copy complete. Review the exclusions, then apply:
-
-```sh
-python3 .devcontainer/migrate_persistent_home.py "$container_name" --apply
-```
-
-Apply rechecks the container state, destination, and free space. It streams the home archive into a
-staging directory beside the destination, preserves file modes and symlinks without following
-archive paths, writes `.mdt-home-migration.json` only after the copy succeeds, and atomically
-installs the new home source. On failure it removes staging and leaves old sources untouched.
-It refuses a non-empty new home rather than merging over user data.
-
-Known image payloads are excluded: `.venv`, `.venv-pyNN`, `.oh-my-zsh`, the readonly native
-`.ssh-host` mount, and `.codex/packages/standalone`. User additions from
-`.oh-my-zsh/custom` are moved to `~/.oh-my-zsh-custom`. The old `.local` tree is preserved as a
-whole because earlier images mixed image CLIs with user installs and state. Review that prefix
-after rebuilding; user-local commands appear first on `PATH` and may shadow image versions.
-Caches such as `.cache` and `.npm` are preserved with the rest of the complete home.
-
-Rebuild using the new template. Before creating its host bind source, the bootstrap checks all
-legacy split sources for data. If any contain files, symlinks, or special files and the new home
-lacks a valid completion marker, startup stops with the migration command. Empty directories left
-by previous bootstrap runs do not block a fresh home.
-
-Verify the rebuilt container before deleting the old split sources:
+Verify the rebuilt container before deleting the old directory yourself:
 
 ```sh
 docker exec "$container_name" sh -lc 'test -d "$HOME/.claude"; test -d "$HOME/.pi"; test -d "$HOME/.claudelink"; test -x /opt/mdt/venv/bin/python; command -v python3; command -v pwmcp'
-test -f "$HOME/mdt--mounted-folders/home-vscode/.mdt-home-migration.json"
 ```
 
-Check agent login state, ClaudeLink's `nexus.db` and any WAL/SHM sidecars, user shell config, and
-user-installed commands. Keep the old split sources as rollback copies until verification passes.
-If ClaudeLink uses SQLite WAL mode, verify that `nexus.db-wal` and `nexus.db-shm` came from the
-same stopped-container snapshot; never copy only the main database or mix sidecars from snapshots.
-If rollback is needed after the new container has written data, stop it and reconcile new home
-changes with the untouched legacy sources before reverting the template; do not discard the new
-home or blindly restore stale SQLite copies.
+Check agent login state, ClaudeLink's `nexus.db` and any WAL/SHM sidecars, and user shell config.
+If ClaudeLink uses SQLite WAL mode, copy `nexus.db`, `nexus.db-wal` and `nexus.db-shm` together from
+the same stopped-container snapshot; never copy only the main database or mix sidecars from
+different snapshots. The old directory is never touched by mdt-cockpit, so it remains your rollback.

@@ -1,13 +1,37 @@
 #!/bin/sh
-MDT_CUSTOMIZATION_ROOT=/usr/local/share/modern-debian-tools-python-debug
-export MDT_CUSTOMIZATION_ROOT
-NPM_CONFIG_PREFIX=${NPM_CONFIG_PREFIX:-$HOME/.local}
-export NPM_CONFIG_PREFIX
-export PATH="$HOME/.local/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin:$PATH"
+# mdt-cockpit shell environment. SOURCED (never executed) by every shell family:
+#   login shells        /etc/profile.d/50-mdt-cockpit.sh  (restores PATH first)
+#   interactive bash    /etc/bash.bashrc  -> bashrc
+#   interactive zsh     /etc/zsh/zshrc    -> zshrc
+# It never edits PATH: the one definition lives in the Dockerfile (ENV PATH) and
+# the login-shell hook merely puts that value back after Debian's /etc/profile
+# replaced it. See docs/DESIGN-GUIDE.md "One PATH order".
 
+# Sourced more than once per shell (login + interactive): do the work once.
+if [ -n "${_mdt_profile_done:-}" ]; then
+    return 0 2>/dev/null || true
+fi
+_mdt_profile_done=1
+
+MDT_CUSTOMIZATION_ROOT=/usr/local/share/mdt-cockpit
+export MDT_CUSTOMIZATION_ROOT
+# The user's overrides. Nothing here exists until the user creates it; the image
+# never writes into this directory.
+MDT_USER_CONFIG="$HOME/.config/mdt-cockpit"
+
+# Oh My Zsh (VS Code image family) is image-owned. ZSH is the only variable the
+# framework needs to find itself; its cache goes to the home (see zshrc).
+if [ -d /opt/mdt/oh-my-zsh ]; then
+    ZSH=/opt/mdt/oh-my-zsh
+    export ZSH
+fi
+
+# Image defaults first, then the user's files, so a user file can override or
+# unset any default. ai.env has no image default: it carries the user's keys.
 for bootstrap_file in \
-    "$HOME/.config/modern-debian-tools-python-debug/shell.env" \
-    "$HOME/.config/modern-debian-tools-python-debug/ai.env"
+    "$MDT_CUSTOMIZATION_ROOT/shell.env" \
+    "$MDT_USER_CONFIG/shell.env" \
+    "$MDT_USER_CONFIG/ai.env"
 do
     if [ -r "$bootstrap_file" ]; then
         set -a
@@ -55,10 +79,15 @@ mdt_ksm_banner() {
 
 case "$-" in
     *i*)
-        if [ -r "$HOME/.config/modern-debian-tools-python-debug/aliases.sh" ]; then
-            # shellcheck source=/dev/null
-            . "$HOME/.config/modern-debian-tools-python-debug/aliases.sh"
-        fi
+        for aliases_file in \
+            "$MDT_CUSTOMIZATION_ROOT/aliases.sh" \
+            "$MDT_USER_CONFIG/aliases.sh"
+        do
+            if [ -r "$aliases_file" ]; then
+                # shellcheck source=/dev/null
+                . "$aliases_file"
+            fi
+        done
         mdt_cgroup_banner
         mdt_ksm_banner
         ;;
