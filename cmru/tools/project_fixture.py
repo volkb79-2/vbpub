@@ -19,12 +19,30 @@ ROOT_CMRU_ARTIFACTS = (
 SHARED_LIBRARIES = (
     Path("libraries/worktree"),
 )
+# Tracked inputs the full suite reads while COLLECTING in this fixture. The tests
+# that judge tester-unified and nyxloom skip here ("isolated canary tree"): their
+# full mode needs a Git checkout and cli-extended source, which a fixture never
+# carries. Their skip keys are tester-unified/gen-requirements.py and
+# build-image.sh, so those two must stay absent. Collection still reads:
+# - tester-unified/Dockerfile: test_tester_image_cli_extended_identity module
+#   constants, and test_bootstrap_from_zero_sequence's real-pin check;
+# - nyxloom/pyproject.toml plus its setuptools search root nyxloom/src:
+#   test_tester_unified_image's _nyxloom_wheel_inputs() parametrize list.
+SUITE_COLLECTION_INPUTS = (
+    Path("tester-unified/Dockerfile"),
+    Path("nyxloom/pyproject.toml"),
+    Path("nyxloom/src"),
+)
+# mutation_campaign fingerprints and dirty-checks exactly the pathspecs of the
+# four fixture constants, so the collection inputs join this one rather than
+# forming a fifth constant that its manifest would not see.
 EXTERNAL_DOC_ARTIFACTS = (
     Path("wheel-builder/Dockerfile"),
     Path("docs/ciu-vs-cmru.md"),
     Path("docs/RELEASE-TOOLING.md"),
     Path("docs/plan-cmru-release-modes.md"),
     Path("run-gate-project/CONSUMERS.md"),
+    *SUITE_COLLECTION_INPUTS,
 )
 ESTATE_CONFIG_FIXTURES = (
     Path("topos/cmru.toml"),
@@ -96,9 +114,9 @@ def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path
     """Copy CMRU and the external files its full test suite reads.
 
     The project tests exercise source-checkout imports for CMRU's shared
-    libraries. Estate configs are also read by adoption contract tests, so both
-    the libraries and configs must be present in the known-good control and
-    every mutated candidate.
+    libraries. Estate configs are also read by adoption contract tests, and
+    SUITE_COLLECTION_INPUTS by test collection, so all of them must be present
+    in the known-good control and every mutated candidate.
     """
     repo_root = repo_root.resolve(strict=True)
     project_root = project_root.resolve(strict=True)
@@ -116,12 +134,16 @@ def copy_project_fixture(*, repo_root: Path, project_root: Path, workspace: Path
     if not any(path == project_prefix or path.startswith(project_prefix + "/") for path in files):
         raise ValueError(f"CMRU fixture has no tracked project files: {project_root}")
 
-    required_files = {
+    required = {
         *ROOT_CMRU_ARTIFACTS,
         *(path.as_posix() for path in EXTERNAL_DOC_ARTIFACTS),
         *(path.as_posix() for path in ESTATE_CONFIG_FIXTURES),
     }
-    missing = sorted(required_files - set(files))
+    # A file pathspec must be tracked itself; a tree pathspec must select a file.
+    missing = sorted(
+        spec for spec in required
+        if not any(path == spec or path.startswith(spec + "/") for path in files)
+    )
     if missing:
         raise ValueError(f"required tracked CMRU fixture inputs are missing: {', '.join(missing)}")
     for relative in SHARED_LIBRARIES:
