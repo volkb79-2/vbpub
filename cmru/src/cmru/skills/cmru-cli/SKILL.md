@@ -79,7 +79,10 @@ Use this KI-82 candidate flow only when the installed `cmru release --help`
 lists `--from-worktree`; registered gate evidence is pending.
 A FAILED release keeps its worktree for inspection; `--resume WORKTREE` recovers
 a retained transaction only when its recorded tag/publication state is safe to
-continue. There is no `release --abandon`: discarding is the `abandon` verb below.
+continue. A resume keeps the version the first attempt recorded (D-001): do not
+repeat `--minor`/`--major`/`--set-version`; one that selects a different version
+is refused (exit 4) before anything changes. There is no `release --abandon`:
+discarding is the `abandon` verb below.
 
 ## Build, publish, history
 

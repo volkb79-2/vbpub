@@ -49,6 +49,11 @@ def pytest_configure(config):
         "markers",
         "release_controller_provenance: exercise the installed-wheel release-controller boundary",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_release_version_plan: run the real D-001 release version-plan step "
+        "instead of the neutral stub unrelated release-child tests get",
+    )
 
 
 #: The release-controller identity unit tests see. The launcher records it and
@@ -121,6 +126,30 @@ def _neutral_release_notes_preflight(request):
             cli._pending_release_notes_or_refuse,
             cli._preview_release_bodies,
         ) = saved
+
+
+@pytest.fixture(autouse=True)
+def _neutral_release_version_plan(request):
+    """Release-child tests of OTHER behaviour fake their plan and repository.
+
+    The D-001 version-plan step reads transaction sidecars and the candidate's
+    Git history, which those mocked, non-repository fixtures do not have. They
+    get a neutral step that leaves the invocation's flags in force; the D-001
+    tests carry the ``real_release_version_plan`` marker and exercise the real
+    step. The release end-to-end tests run CMRU in a subprocess and always use
+    the real step. Plain attribute swap, for the reason given above.
+    """
+    if request.node.get_closest_marker("real_release_version_plan"):
+        yield
+        return
+    from cmru import cli
+
+    saved = cli._release_version_plan
+    cli._release_version_plan = lambda *_args, **_kwargs: None
+    try:
+        yield
+    finally:
+        cli._release_version_plan = saved
 
 
 @pytest.fixture(autouse=True)

@@ -20,7 +20,7 @@ import pytest
 import cli_extended
 import cmru
 import worktree
-from cmru import transaction
+from cmru import exit_codes, transaction
 
 _TAG = "demo-v0.1.0"
 
@@ -527,6 +527,114 @@ def test_a_failure_between_local_tagging_and_tag_push_leaves_no_tag_and_resumes(
     assert e2e.published() == ["pub"]
     e2e.git("fetch", "-q", "origin", "--tags")
     assert e2e.out("rev-list", "-n1", _TAG) == candidate
+
+
+# --- D-001: a retry keeps the exact version plan of its first attempt --------
+
+
+def _land_a_fix_with_a_note(e2e) -> None:
+    """After the first release: a patch-level change plus a curated pending note."""
+    changes = e2e.project / "CHANGES.md"
+    changes.write_text(changes.read_text().replace(
+        "## [Unreleased]\n\n", "## [Unreleased]\n\n- Second release note.\n\n", 1,
+    ))
+    (e2e.project / "b.txt").write_text("fix\n")
+    e2e.git("add", "-A")
+    e2e.git("commit", "-q", "-m", "fix: second change")
+    e2e.git("push", "-q", "origin", "HEAD:refs/heads/main")
+
+
+def _fail_the_gate(e2e) -> Path:
+    """Make the release gate fail (after the version candidate is committed) until removed."""
+    marker = e2e.root / "gate-fails"
+    marker.write_text("")
+    e2e.hook("gate-fails", f'[ ! -e "{marker}" ] || exit 1\n')
+    return marker
+
+
+def _minor_attempt_that_fails_before_tagging(e2e) -> tuple[Path, Path]:
+    first = e2e.release()
+    assert first.returncode == 0, first.log  # demo-v0.1.0
+    _land_a_fix_with_a_note(e2e)
+    marker = _fail_the_gate(e2e)
+    failed = e2e.release("--minor")
+    assert failed.returncode != 0, failed.log
+    assert "Release version plan recorded: demo 0.2.0" in failed.log
+    assert "refs/tags/demo-v0.2.0" not in e2e.origin_tags()
+    assert e2e.published() == ["pub"]
+    return e2e.retained_workspace(), marker
+
+
+def _assert_released_once_as(e2e, version: str, *, absent: str) -> None:
+    tags = e2e.origin_tags()
+    assert f"refs/tags/demo-v{version}" in tags and f"refs/tags/demo-v{absent}" not in tags
+    e2e.git("fetch", "-q", "origin", "--tags")
+    history = e2e.out("show", f"demo-v{version}:demo/CHANGES.md")
+    assert history.count(f"## [{version}]") == 1 and f"## [{absent}]" not in history
+
+
+def test_d001_a_minor_release_resumes_as_the_same_version_without_the_flag(e2e):
+    workspace, marker = _minor_attempt_that_fails_before_tagging(e2e)
+    marker.unlink()
+
+    resumed = e2e.release("--resume", str(workspace))
+
+    assert resumed.returncode == 0, resumed.log
+    assert "Resuming with the recorded version plan: demo 0.2.0" in resumed.log
+    _assert_released_once_as(e2e, "0.2.0", absent="0.1.1")
+    assert e2e.published() == ["pub", "pub"]
+    section = e2e.out("show", "demo-v0.2.0:demo/CHANGES.md").split("## [0.2.0]", 1)[1]
+    assert "Second release note." in section.split("## [0.1.0]", 1)[0]
+
+
+def test_d001_an_explicit_version_resumes_as_that_version_without_the_flag(e2e):
+    marker = _fail_the_gate(e2e)
+    failed = e2e.release("--set-version", "3.0.0")
+    assert failed.returncode != 0, failed.log
+    assert "Release version plan recorded: demo 3.0.0" in failed.log
+    workspace = e2e.retained_workspace()
+    marker.unlink()
+
+    resumed = e2e.release("--resume", str(workspace))
+
+    assert resumed.returncode == 0, resumed.log
+    _assert_released_once_as(e2e, "3.0.0", absent="0.1.0")
+    assert e2e.published() == ["pub"]
+
+
+def test_d001_a_conflicting_override_on_resume_refuses_before_any_change(e2e):
+    workspace, marker = _minor_attempt_that_fails_before_tagging(e2e)
+    marker.unlink()
+    origin_refs = e2e.out("ls-remote", "origin")
+    local_tags = e2e.local_tags()
+    candidate = e2e.out("rev-parse", "HEAD", cwd=workspace)
+
+    refused = e2e.release("--resume", str(workspace), "--set-version", "9.9.9")
+
+    assert refused.returncode == exit_codes.REFUSED, refused.log
+    assert "conflicts for: demo 0.2.0 (override selects 9.9.9)" in refused.log
+    assert e2e.out("ls-remote", "origin") == origin_refs
+    assert e2e.local_tags() == local_tags
+    assert e2e.out("rev-parse", "HEAD", cwd=workspace) == candidate
+    assert e2e.published() == ["pub"]
+
+    # The retained candidate is intact: an override naming the same plan proceeds.
+    resumed = e2e.release("--resume", str(workspace), "--minor")
+    assert resumed.returncode == 0, resumed.log
+    _assert_released_once_as(e2e, "0.2.0", absent="9.9.9")
+
+
+def test_d001_a_legacy_candidate_resumes_with_the_version_its_commits_prove(e2e):
+    workspace, marker = _minor_attempt_that_fails_before_tagging(e2e)
+    marker.unlink()
+    (plan,) = e2e.scope_files(".version-plan.json")
+    plan.unlink()  # a transaction created before D-001 has no recorded plan
+
+    resumed = e2e.release("--resume", str(workspace))
+
+    assert resumed.returncode == 0, resumed.log
+    assert "Resuming with committed candidate evidence: demo 0.2.0" in resumed.log
+    _assert_released_once_as(e2e, "0.2.0", absent="0.1.1")
 
 
 def test_m16_a_non_race_push_failure_fails_at_once_without_merging(e2e, monkeypatch):

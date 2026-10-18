@@ -370,6 +370,51 @@ record's path, branch, source, workspace ID, and base to match its routing
 environment. This preserves the older recovery path while making ownership
 explicit before execution.
 
+### A retry keeps its recorded version plan (D-001)
+
+A resumable release is one operator decision carried out in steps, so the version
+it ships must be the one that decision chose. Before this record existed, a resume
+recomputed the version from whatever flags the retry happened to carry. A run
+started with `--set-version 2.0.0` or `--minor` that failed before tagging and was
+resumed without the flag tagged a different version. Its curated notes then stayed
+folded under the never-released version, which is the class of mistake behind an
+estate incident in which a forgotten `--set-version` shipped a wrong major release.
+The controller decision is recorded as
+[D-001](../nyxloom-trove/decisions.md#d-001--a-release-retry-keeps-its-exact-version-plan).
+
+So a new transaction resolves each selected project's exact version with the
+invocation's flags before its first side effect (the scope record, candidate push,
+gate, tag, build or publish). It writes them once to `<token>.version-plan.json`,
+bound to the transaction branch and base commit, beside the other transaction
+records. Every retry reads that record and passes each project its recorded
+version, so the generated history, the folded notes and the tag all name it. The
+record is validated on read. A missing project, a foreign branch or base, a
+malformed document, or committed candidate evidence naming another version is a
+refusal, never a quiet return to recomputation; a default that substitutes for an
+authoritative fact is exactly what this record exists to remove.
+
+Alternatives rejected:
+
+- **Recording the flags and replaying them.** `--minor` replayed after a newer tag
+  appeared would compute a later version, and the decision forbids that.
+- **Requiring the operator to repeat the flag.** That is the forget-to-repeat
+  hazard itself.
+- **Letting an override on resume win.** That would retag a candidate whose
+  committed history and notes already name the first version.
+
+An override that selects the same version is accepted, because it states the same
+intent. A transaction created before the record existed has no stated intent. It
+resumes only when its committed release-history commit proves the version (exactly
+one new dated changelog section since the base); otherwise CMRU refuses before any
+side effect and the candidate is abandoned and released anew. External-version and
+no-tag projects record `null`: CMRU does not choose their version, and version
+flags are already refused for them.
+
+The plan is fixed for the whole run, so a later project in a multi-project run
+keeps its planned version even if an earlier project's promotion merges new
+`origin/main` commits under its paths. Preserving the chosen intent is the
+decision. A run that should pick up such commits is a new release.
+
 Cleanup freezes remote IDs and local build-record/worktree identities before
 confirmation. For a declared `steps.clean`, CMRU snapshots dirty paths
 immediately before running the step and commits only paths that become dirty

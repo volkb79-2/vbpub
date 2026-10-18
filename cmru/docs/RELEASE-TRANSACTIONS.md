@@ -201,6 +201,16 @@ the corrected branch tip, then ships that candidate commit:
 cmru release <project> --resume /path/reported/by/cmru
 ```
 
+The resume keeps the exact version the first attempt chose (D-001). Before its first side
+effect, a new transaction records each project's resolved version in
+`<token>.version-plan.json` beside its other transaction records, bound to the transaction
+branch and base commit. A run started with `--minor` or `--set-version X` therefore resumes as
+that same version without repeating the flag. A flag that would select a different version
+refuses with exit 4 before the candidate, a tag, or a publication changes. A candidate created
+before this record existed resumes only when its committed release-history commit proves the
+version (one new dated changelog section since the base); otherwise CMRU refuses and the
+candidate must be abandoned and released anew.
+
 Do not copy generated files back into the caller's dirty checkout. A successful
 transaction removes the ephemeral branch/worktree, but retains its project logs, declared
 artifacts, and declared gate evidence by default first: logs move into

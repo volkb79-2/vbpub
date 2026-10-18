@@ -920,6 +920,92 @@ def read_release_source(
     return {key: str(value) for key, value in raw.items() if key != "schema_version"}
 
 
+_RELEASE_VERSION_RE = re.compile(r"[0-9A-Za-z][0-9A-Za-z.+-]*")
+
+
+def write_release_version_plan(
+    repo_root: Path, workspace: ReleaseWorkspace, versions: Mapping[str, str | None],
+) -> None:
+    """Record the resolved per-project version plan before any release side effect (D-001).
+
+    ``versions`` maps each project of the attempt to the exact version CMRU will
+    tag, or ``None`` where CMRU does not derive one (an external-version or
+    no-tag project). The record is bound to this transaction's branch and base
+    commit and is created exactly once: a retry reuses it, never rewrites it.
+    """
+    if not versions or any(
+        not isinstance(name, str) or not name
+        or (version is not None and not _RELEASE_VERSION_RE.fullmatch(version))
+        for name, version in versions.items()
+    ):
+        raise RuntimeError("release version plan is empty or names an invalid version")
+    path = _ensure_scope_dir(repo_root) / f"{_release_token(workspace)}.version-plan.json"
+    payload = {
+        "schema_version": 1,
+        "transaction": workspace.branch,
+        "base": workspace.base,
+        "versions": dict(sorted(versions.items())),
+    }
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeError(f"release version plan already exists: {path}") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def read_release_version_plan(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> dict[str, str | None] | None:
+    """Return the validated recorded version plan, or None when none was recorded.
+
+    ``None`` means only "no record exists" (a new transaction before planning,
+    or one created before D-001). A record that is unreadable, malformed, or
+    bound to another transaction branch or base is an error, never a default.
+    """
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.version-plan.json"
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect release version plan {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"release version plan is not a regular file: {path}")
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"cannot read release version plan {path}: {exc}") from exc
+    versions = raw.get("versions") if isinstance(raw, dict) else None
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != {"schema_version", "transaction", "base", "versions"}
+        or type(raw["schema_version"]) is not int
+        or raw["schema_version"] != 1
+        or raw["transaction"] != workspace.branch
+        or raw["base"] != workspace.base
+        or not isinstance(versions, dict)
+        or not versions
+        or any(
+            not name
+            or (version is not None and (
+                not isinstance(version, str) or not _RELEASE_VERSION_RE.fullmatch(version)
+            ))
+            for name, version in versions.items()
+        )
+    ):
+        raise RuntimeError(
+            f"release version plan is malformed or does not match {workspace.branch}: {path}"
+        )
+    return dict(versions)
+
+
 def _valid_local_branch_name(branch: str, repo_root: Path) -> bool:
     if not branch or branch.startswith("-"):
         return False
@@ -1413,6 +1499,7 @@ def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     marker is otherwise never cleaned up — see remove_workspace())."""
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.source.json").unlink(missing_ok=True)
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.version-plan.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.tags.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-attempts.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json").unlink(missing_ok=True)

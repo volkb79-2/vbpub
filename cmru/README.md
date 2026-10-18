@@ -295,7 +295,11 @@ still validates the exact checkout before changing Git state. See the
 
 For a retained release, `cmru worktrees` also shows the recorded project scope
 and a scope-safe resume command. `cmru release --resume PATH` derives that saved
-scope when one is available; an explicit target must match it. Pass the same
+scope when one is available; an explicit target must match it. A resume also keeps
+the exact version the first attempt recorded: a release started with `--minor` or
+`--set-version X` resumes as that same version without repeating the flag, and a
+flag that would pick another version is refused before anything changes (see the
+[version-plan design](docs/DESIGN-GUIDE.md#a-retry-keeps-its-recorded-version-plan-d-001)). Pass the same
 `--config PATH` again if the failed release used an external config; the path is
 not recorded in the transaction. Older candidates without scope metadata require
 an explicit target after inspection. For scripts, release rows in

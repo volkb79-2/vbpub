@@ -3275,6 +3275,168 @@ def _run_tagged_build_and_publish(
         raise
 
 
+def _cmru_derives_version(project: "ProjectConfig") -> bool:
+    """True when CMRU, not the project, chooses this project's release version."""
+    return bool(getattr(project, "git_tag", True)) and not _version_strategy(
+        project,
+    ).startswith("external:")
+
+
+def _planned_release_version(
+    repo_root: Path, configs: Mapping[str, "ProjectConfig"], name: str, *,
+    minor: bool, major: bool, set_version: Optional[str],
+) -> Optional[str]:
+    """The version this invocation's flags select for *name* (None when not CMRU's)."""
+    from cmru.changelog import _project_release_plan
+
+    if not _cmru_derives_version(configs[name]):
+        return None
+    version, _previous = _project_release_plan(
+        repo_root, configs[name], minor=minor, major=major, set_version=set_version,
+        known_projects=configs, known_project_names=_known_project_scope_names(configs),
+    )
+    return version
+
+
+def _changelog_versions_at(repo_root: Path, revision: str, path: str) -> set[str]:
+    """Dated release headings of one changelog in a commit (empty when absent)."""
+    from cmru.changelog import _dated_versions
+
+    if not _git(repo_root, "ls-tree", "--name-only", revision, "--", path):
+        return set()
+    return _dated_versions(_git(repo_root, "show", f"{revision}:{path}"))
+
+
+def _committed_release_versions(
+    repo_root: Path, workspace: transaction.ReleaseWorkspace,
+    configs: Mapping[str, "ProjectConfig"], names: Sequence[str],
+) -> dict[str, Optional[str]]:
+    """The version each project's committed candidate evidence proves, else None.
+
+    The proof is the one dated changelog section a project's candidate added
+    since the transaction base (the generated release-history commit). No
+    changelog, no new section, or more than one new section proves nothing.
+    """
+    from cmru.changelog import _validate_changelog_path
+
+    root = Path(repo_root).resolve()
+    proven: dict[str, Optional[str]] = {}
+    for name in names:
+        if not getattr(configs[name], "changelog", None):
+            proven[name] = None
+            continue
+        path = _validate_changelog_path(configs[name], root).relative_to(root).as_posix()
+        added = (
+            _changelog_versions_at(repo_root, "HEAD", path)
+            - _changelog_versions_at(repo_root, workspace.base, path)
+        )
+        proven[name] = next(iter(added)) if len(added) == 1 else None
+    return proven
+
+
+def _release_version_plan(
+    repo_root: Path, workspace: transaction.ReleaseWorkspace,
+    configs: Mapping[str, "ProjectConfig"], release_names: Sequence[str], *,
+    minor: bool, major: bool, set_version: Optional[str], dry_run: bool,
+) -> Optional[dict[str, Optional[str]]]:
+    """Resolve, record, or reuse the transaction's per-project version plan (D-001).
+
+    A new transaction (no recorded plan, no recorded scope or results, candidate
+    still at its base) records the plan its flags select before any side effect;
+    a new ``--dry-run`` records nothing and keeps using the flags. A retry reuses
+    the recorded plan. A transaction created before D-001 resumes only with the
+    plan its committed candidate proves. A conflicting override, a project with
+    no trustworthy planned version, or committed evidence naming another version
+    refuses before the candidate, a tag or a publication changes. Returns None
+    when the caller's flags apply unchanged.
+    """
+    from cmru.version import ReleasePlanRefused
+
+    if not release_names:
+        return None
+    recorded = transaction.read_release_version_plan(repo_root, workspace)
+    if recorded is None and (
+        transaction.read_release_scope(repo_root, workspace) is None
+        and not transaction.read_release_results(repo_root, workspace)
+        and _git(repo_root, "rev-parse", "HEAD") == workspace.base
+    ):
+        if dry_run:
+            return None
+        plan = {
+            name: _planned_release_version(
+                repo_root, configs, name, minor=minor, major=major, set_version=set_version,
+            )
+            for name in release_names
+        }
+        transaction.write_release_version_plan(repo_root, workspace, plan)
+        log_info(
+            "Release version plan recorded: "
+            + ", ".join(f"{name} {version or '(not CMRU-derived)'}" for name, version in plan.items())
+        )
+        return plan
+
+    derived = [name for name in release_names if _cmru_derives_version(configs[name])]
+    evidence = _committed_release_versions(repo_root, workspace, configs, derived)
+    if recorded is None:
+        unproven = sorted(name for name in derived if evidence[name] is None)
+        if unproven:
+            raise ReleasePlanRefused(
+                f"retained transaction {workspace.branch} has no recorded version plan and its "
+                "committed candidate does not prove the version for: " + ", ".join(unproven)
+                + ". CMRU never recomputes a retried release's version (D-001); abandon this "
+                "candidate and start a new release"
+            )
+        plan = {name: evidence.get(name) for name in release_names}
+        source = "committed candidate evidence"
+    else:
+        untrusted = sorted(
+            name for name in release_names
+            if name not in recorded or (recorded[name] is None) == (name in derived)
+        )
+        disagree = sorted(
+            name for name in derived
+            if name in recorded and evidence[name] not in (None, recorded[name])
+        )
+        if untrusted or disagree:
+            raise ReleasePlanRefused(
+                f"retained transaction {workspace.branch} has no trustworthy recorded version for: "
+                + ", ".join(sorted(set(untrusted) | set(disagree)))
+                + "; refusing to recompute it (D-001). Inspect the candidate, then abandon it"
+            )
+        plan = {name: recorded[name] for name in release_names}
+        source = "the recorded version plan"
+    if minor or major or set_version:
+        conflicts = [
+            f"{name} {plan[name]} (override selects {requested})"
+            for name in derived
+            if (requested := _planned_release_version(
+                repo_root, configs, name, minor=minor, major=major, set_version=set_version,
+            )) != plan[name]
+        ]
+        if conflicts:
+            raise ReleasePlanRefused(
+                "a retried release keeps its original version plan (D-001); the version "
+                "override conflicts for: " + ", ".join(conflicts)
+                + ". Rerun without --minor/--major/--set-version, or abandon the candidate"
+            )
+    log_info(
+        f"Resuming with {source}: "
+        + ", ".join(f"{name} {version or '(not CMRU-derived)'}" for name, version in plan.items())
+    )
+    return plan
+
+
+def _release_version_flags(
+    version_plan: Optional[Mapping[str, Optional[str]]], name: str, *,
+    minor: bool, major: bool, set_version: Optional[str],
+) -> dict[str, object]:
+    """The version arguments for one project: its planned version when there is one."""
+    planned = (version_plan or {}).get(name)
+    if planned is not None:
+        return {"minor": False, "major": False, "set_version": planned}
+    return {"minor": minor, "major": major, "set_version": set_version}
+
+
 def _release_projects_sequentially(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -3288,6 +3450,7 @@ def _release_projects_sequentially(
     minor: bool = False,
     major: bool = False,
     set_version: Optional[str] = None,
+    version_plan: Optional[Mapping[str, Optional[str]]] = None,
 ) -> List[str]:
     """Release every named project one after another.
 
@@ -3336,11 +3499,13 @@ def _release_projects_sequentially(
         project = configs[name]
         apply_project_release_env(github_config, env_config, project)
         log_info(f"=== {name}: releasing ===")
-
-        _prepare_release_projects(
-            repo_root, configs, [name], minor=minor, major=major,
-            set_version=set_version,
+        # D-001: a recorded plan pins this project's exact version for both the
+        # generated history and the tag, whatever flags this retry was given.
+        version_flags = _release_version_flags(
+            version_plan, name, minor=minor, major=major, set_version=set_version,
         )
+
+        _prepare_release_projects(repo_root, configs, [name], **version_flags)
         # Keep the remote candidate branch current before the gate too. A gate
         # failure must leave the generated candidate available for inspection.
         transaction.push_backup_branch(
@@ -3374,8 +3539,7 @@ def _release_projects_sequentially(
             finish_candidate(name, name, project)
         else:
             release_cmd(
-                repo_root, {name: project}, minor=minor, major=major,
-                set_version=set_version, known_projects=configs,
+                repo_root, {name: project}, **version_flags, known_projects=configs,
                 known_project_names=_known_project_scope_names(configs),
             )
             # release_cmd created the release tag locally. Until _push_tags runs
@@ -6822,21 +6986,51 @@ def _release_child(
         transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
         sys.exit(exit_codes.REFUSED)
 
+    # D-001: record the exact per-project version plan before any side effect,
+    # or reuse a retry's recorded plan; a conflicting override refuses here.
+    try:
+        version_plan = _release_version_plan(
+            repo_root, workspace, configs, release_names,
+            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            dry_run=vargs.dry_run,
+        )
+    except ReleasePlanRefused as exc:
+        log_error(str(exc))
+        transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+        sys.exit(exit_codes.REFUSED)
+
     if vargs.dry_run:
         # Preview only: show what would be tagged for every changed project, no
         # commits/gates/promotion/tags — nothing here has side effects.
-        _preview_release_bodies(
-            repo_root, ordered, release_names,
-            no_build=vargs.no_build,
-            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-            known_projects=configs,
-        )
-        release_cmd(
-            repo_root, selected_ordered,
-            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-            dry_run=True, known_projects=configs,
-            known_project_names=_known_project_scope_names(configs),
-        )
+        if version_plan is None:
+            _preview_release_bodies(
+                repo_root, ordered, release_names,
+                no_build=vargs.no_build,
+                minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+                known_projects=configs,
+            )
+            release_cmd(
+                repo_root, selected_ordered,
+                minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+                dry_run=True, known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
+            )
+        else:
+            # A retry previews its recorded plan, one project's exact version at a time.
+            for name in release_names:
+                version_flags = _release_version_flags(
+                    version_plan, name,
+                    minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+                )
+                _preview_release_bodies(
+                    repo_root, ordered, [name], no_build=vargs.no_build,
+                    **version_flags, known_projects=configs,
+                )
+                release_cmd(
+                    repo_root, {name: ordered[name]}, **version_flags,
+                    dry_run=True, known_projects=configs,
+                    known_project_names=_known_project_scope_names(configs),
+                )
         log_info("[DRY RUN] No tags pushed, nothing built/published.")
         return
 
@@ -6868,7 +7062,7 @@ def _release_child(
         github_config=github_config, env_config=env_config,
         git_auth=git_auth,
         no_build=vargs.no_build, minor=vargs.minor, major=vargs.major,
-        set_version=vargs.set_version,
+        set_version=vargs.set_version, version_plan=version_plan,
     )
 
     if released:

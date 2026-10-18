@@ -1420,6 +1420,25 @@ test "$head" = "$CMRU_RELEASE_COMMIT"
 test "$tag_commit" = "$CMRU_RELEASE_COMMIT"
 ```
 
+**A resume keeps the first attempt's version (D-001).** CMRU records each project's exact
+version before the first release side effect, and every resume reuses it. Do not repeat the
+version flag:
+
+```sh
+# The first attempt chose CMRU 6.2.0 with --minor and failed before tagging:
+cmru release cmru --minor --from-worktree
+# Resume it; it releases 6.2.0, never a recomputed 6.1.1:
+cmru release --resume /path/to/repo/.worktrees/<candidate-worktree>
+```
+
+The resume log names the version it kept, as `Resuming with the recorded version plan: cmru
+6.2.0`. A flag that selects a different version, such as `--set-version 9.9.9` here, refuses
+with exit 4 before the candidate, a tag, or a publication changes. Repeating a flag that
+selects the same version is accepted. A candidate created by an older CMRU has no recorded plan.
+It resumes only when its committed release-history commit proves the version; otherwise CMRU
+refuses and you abandon it (`cmru abandon <candidate-branch>`) and start a new release.
+See the [design rationale](DESIGN-GUIDE.md#a-retry-keeps-its-recorded-version-plan-d-001).
+
 On resume, CMRU checks tag-push attempts and recorded release results against origin. A tag that
 may have been pushed without a completed result, or a recorded result whose source commit is not
 in `origin/main` (for a feature-source candidate: not in its origin candidate branch), causes a refusal and keeps the candidate for inspection. A release-plan refusal

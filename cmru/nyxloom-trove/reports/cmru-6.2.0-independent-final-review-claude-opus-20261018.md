@@ -46,7 +46,7 @@ was checked only with `ast.parse`.
 
 ## Open findings, not fixed
 
-- **BLOCKED (product decision): resume does not record or reconcile `--set-version`, `--minor`
+- **RESOLVED (formerly BLOCKED; closed by D-001 in the continuation below): resume does not record or reconcile `--set-version`, `--minor`
   or `--major`.**
   - Where: `src/cmru/transaction.py` records only project names; the `cli.py` resume path does not check version flags.
   - Trigger: a pre-tag failure of a run started with `--set-version X`, then `cmru release --resume <candidate>` without it.
@@ -104,5 +104,72 @@ was checked only with `ast.parse`.
 1. Run the full registered gates (coverage at 100% branch, and `gate-provisional`) on this
    commit through `cmru release`. The new F1 e2e test and the new zombie and removed-snapshot
    tests have never been executed.
-2. Decide the BLOCKED version-intent finding (D-NNN) before relying on `--resume` after a
-   `--set-version`, `--minor` or `--major` start. The 6.2.0 release itself uses `--minor`.
+2. ~~Decide the BLOCKED version-intent finding.~~ Decided as D-001 and implemented in the
+   continuation below.
+
+## Continuation 2026-10-18 — D-001 version intent (same session)
+
+- Starting HEAD: `99e261a47f799349f36da0df961c2ccf15b5c0a9`. Final commit: the commit that
+  adds this section (its hash is in the controller hand-back).
+- Decision: the controller's D-001, recorded in `cmru/nyxloom-trove/decisions.md` (the first
+  CMRU decision) and linked from DESIGN-GUIDE § "A retry keeps its recorded version plan (D-001)".
+- **Disposition of the version-intent finding: FIXED.** The BLOCKED rule did not trigger. The
+  plan is tied to the retained transaction's existing identity: the per-transaction token,
+  branch and base commit already used by its scope, source and result records. It is written
+  before the first release side effect.
+
+**Mechanism:**
+
+- `transaction.write_release_version_plan` and `read_release_version_plan` store
+  `<token>.version-plan.json` as `{schema_version: 1, transaction, base, versions}`.
+  - The file is created exclusively, once.
+  - Every read validates it strictly; a missing file is the only state that returns "no record".
+  - `forget_release_scope` removes it.
+- `cli._release_version_plan` runs in the release child after planning and before the scope
+  record, the candidate push, and any gate, tag, build or publish.
+  - **New transaction** (no record, no scope or results, candidate at its base): records the
+    plan its flags select. A new `--dry-run` records nothing.
+  - **Retry**: reuses the record. A missing project, a contradicted `null`/version, or committed
+    evidence naming another version refuses.
+  - **Legacy** (no record): resumes only with the version proven by exactly one new dated
+    changelog section since the base; otherwise it refuses.
+  - **Any override** (`--minor`/`--major`/`--set-version`) that selects a different version
+    refuses with exit 4 before any change. One that selects the same version is accepted.
+- `_release_projects_sequentially` passes each project its planned version as an exact
+  `set_version` to both the generated history and the tag. A retry `--dry-run` previews the
+  recorded versions.
+
+**Exact resume behavior:** `cmru release cmru --minor --from-worktree` records `cmru 6.2.0`.
+After a pre-tag failure, `cmru release --resume <candidate>` logs `Resuming with the recorded
+version plan: cmru 6.2.0` and tags `cmru-v6.2.0`. `--resume <candidate> --set-version 9.9.9`
+exits 4 and changes nothing.
+
+**Accepted limitation:** the plan is fixed for the whole run. A later project in a
+multi-project run keeps its planned version even if an earlier project's promotion merges new
+`origin/main` commits under its paths. This is documented in DESIGN-GUIDE.
+
+**Oracles added (never executed here):**
+
+- `tests/test_release_end_to_end_real_git.py`, real Git with a bare origin:
+  - `test_d001_a_minor_release_resumes_as_the_same_version_without_the_flag`: 0.2.0 is kept,
+    not 0.1.1; the note sits under one `[0.2.0]` section.
+  - `test_d001_an_explicit_version_resumes_as_that_version_without_the_flag`: 3.0.0 is kept,
+    not 0.1.0.
+  - `test_d001_a_conflicting_override_on_resume_refuses_before_any_change`: exit 4, with origin
+    refs, local tags, the candidate HEAD and publications unchanged; then a matching `--minor`
+    proceeds.
+  - `test_d001_a_legacy_candidate_resumes_with_the_version_its_commits_prove`: the record is
+    deleted and the committed evidence is used.
+- `tests/test_release_version_plan.py`: record round trip, write-once, validation, and
+  partial-write cleanup; every branch of the decision; the evidence proof on real Git; and the
+  child's refusal, hand-off and retry-dry-run paths.
+- `tests/conftest.py`: an autouse neutral stub for unrelated mocked release-child tests (the
+  existing seam pattern), with the `real_release_version_plan` marker for the D-001 tests.
+
+**Docs:** README (what), DESIGN-GUIDE (why, D-001), CONSUMERS (pasteable resume), SPEC
+(normative and release row), RELEASE-TRANSACTIONS, the skill, and CHANGES.
+
+**Gate evidence: none.** No tests and no gates were run in this continuation either. The
+controller must run the registered gates on the final commit through `cmru release`. That
+includes 100% branch coverage over the new code, and the new end-to-end tests, which were
+written without execution.
