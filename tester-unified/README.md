@@ -14,8 +14,10 @@ maintenance config; its `PATH` is `/opt/tester-venv/bin:` followed by the base's
 Build the base, then the image, from the repository root:
 
 ```bash
-docker build -t tester-base:local tester-base/
-docker build -f tester-unified/Dockerfile --build-arg TESTER_BASE=tester-base:local -t tester-unified:local .
+docker buildx build --load -t tester-base:local tester-base/
+# a local-only base needs the docker-driver builder (a remote builder cannot see the local store)
+BUILDX_BUILDER=default docker buildx build --load -f tester-unified/Dockerfile \
+  --build-arg TESTER_BASE=tester-base:local -t tester-unified:local .
 ```
 
 Image contents worth knowing (KI-52 / BG-05, 2026-10):

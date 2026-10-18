@@ -20,7 +20,7 @@ Consumers: `tester-unified` and `wheel-builder` (`ARG TESTER_BASE` + `FROM ${TES
 run-gate's `host` environment (`run-gate.root.toml`).
 
 ```bash
-docker build -t tester-base:local tester-base/                 # public upstream inputs only
+docker buildx build --load -t tester-base:local tester-base/   # public upstream inputs only
 TESTER_BASE_IMAGE=tester-base:local ./run-gate.py contract      # the registered gate
 ```
 

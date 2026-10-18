@@ -3,15 +3,22 @@
 ## Bootstrap order (nothing published yet)
 ```bash
 # 1. the base - public upstream inputs only
-docker build -t tester-base:local tester-base/
+docker buildx build --load -t tester-base:local tester-base/
 # 2. the gate image on top of it (repo-root context, tester-unified's own README)
-docker build -f tester-unified/Dockerfile --build-arg TESTER_BASE=tester-base:local \
-  -t tester-unified:local .
+BUILDX_BUILDER=default docker buildx build --load -f tester-unified/Dockerfile \
+  --build-arg TESTER_BASE=tester-base:local -t tester-unified:local .
 # 3. gates / cmru work
 TESTER_BASE_IMAGE=tester-base:local CGROUP_PARENT_DEV_GATES=$CGROUP_PARENT_DEV_GATES \
   ./tester-base/run-gate.py contract
 # 4. cmru releases tester-base (controller)
 ```
+**Builder note.** `FROM tester-base:local` resolves the base in the *local* image store, which only
+the `docker` driver builder (`BUILDX_BUILDER=default`) can see; a remote builder such as this
+estate's `mdt-managed` fails to resolve it (measured: the base would be pulled from a registry
+instead, and a local-only tag does not exist there). That is why step 2 selects the default builder,
+and why `--load` is needed on a non-`docker` builder in step 1. After the release the base is a
+registry reference and any builder works.
+
 After the first release the controller replaces the three pin sites with the published digest:
 the `ARG TESTER_BASE=` defaults in `tester-unified/Dockerfile` and `wheel-builder/Dockerfile`, and
 `[environments.host].image` in `run-gate.root.toml`
