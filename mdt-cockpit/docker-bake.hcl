@@ -291,9 +291,9 @@ variable "CODEX_VERSION" {
   default = "latest"
 }
 
-// Explicit pin for Claude Code (checked against the 14-day freshness rule at staging time).
-// Empty = resolve the newest release that is at least 14 days old. There is deliberately no
-// "latest" default: the installer requires the staged, concrete version.
+// Explicit pin for Claude Code (must be a published release). Empty = resolve the registry
+// `latest` at staging time. There is deliberately no "latest" default here: the installer
+// requires the staged, exact version recorded in tool-versions.env.
 variable "CLAUDE_CODE_VERSION" {
   default = ""
 }

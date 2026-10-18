@@ -279,7 +279,7 @@ def test_claude_requires_the_staged_concrete_version_and_never_installs_latest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str | None
 ) -> None:
     """Without CLAUDE_CODE_VER the Dockerfile ARG used to supply "latest", so npm installed
-    @latest and the 14-day freshness rule was bypassed."""
+    @latest, an unrecorded version (the image must ship a pin it recorded)."""
     import install_ai_cli_tools as mod
 
     calls: list[list[str]] = []

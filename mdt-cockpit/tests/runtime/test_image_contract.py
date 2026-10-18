@@ -63,13 +63,27 @@ INSTALL_VERB = re.compile(
     r"|curl|wget|tar|unzip|git clone|cp|mv|install|rsync|COPY|ADD|venv)\b|install_\w+\.py|get\.py"
 )
 LARGE_LAYER_BYTES = 50e6
-# `docker history` prints a RUN as "|N ARG=value ... /bin/sh -c <command> # buildkit" (or
-# "/bin/sh -c #(nop) <instruction>"): the ARG blob is build metadata, not the command.
-SHELL_PREFIX = re.compile(r"^.*?/bin/sh -c (?:#\(nop\)\s*)?", re.DOTALL)
+# `docker history` prints a RUN as "RUN |N ARG=value ... <shell> -c <command> # buildkit" (or
+# "<shell> -c #(nop) <instruction>"). <shell> is /bin/sh, or /bin/bash when the Dockerfile has
+# `SHELL ["/bin/bash", "-c"]` - as this image's does. The ARG blob is build metadata, not the command.
+SHELL_PREFIX = re.compile(r"^.*?/bin/(?:ba)?sh -c (?:#\(nop\)\s*)?", re.DOTALL)
+NON_SHELL_INSTRUCTION = re.compile(
+    r"^(?:ARG|ENV|COPY|ADD|LABEL|USER|WORKDIR|CMD|ENTRYPOINT|EXPOSE|VOLUME|SHELL|HEALTHCHECK|STOPSIGNAL|ONBUILD|FROM)\b"
+)
 
 
 def command_text(created_by: str) -> str:
-    return SHELL_PREFIX.sub("", created_by, count=1)
+    """The command of a layer without the build-arg blob and the shell prefix.
+
+    A RUN-looking layer whose prefix is not recognised is an ERROR: passing it through unstripped
+    would let an ARG value containing "install"/"cp"/"tar" exempt a permission-only layer.
+    """
+    if NON_SHELL_INSTRUCTION.match(created_by):
+        return created_by
+    stripped, count = SHELL_PREFIX.subn("", created_by, count=1)
+    if not count:
+        raise ValueError(f"unrecognised docker history layer form: {created_by[:160]!r}")
+    return stripped
 
 
 def permission_only_layers(history_lines: list[str]) -> list[tuple[str, str]]:
@@ -243,6 +257,34 @@ class Contract:
         else:
             self.assertEqual(lines["login-zsh"], "unset")
             self.assertIn("no-omz-dir", lines)
+
+    def test_etc_profile_still_keeps_an_inherited_path(self) -> None:
+        """N9: /etc/profile is a base-files conffile; the build patched it, and it must still be."""
+        result = self.sh("grep -nF 'PATH=' /etc/profile")
+        self.assertOk(result)
+        lines = [line.partition(":")[2] for line in result.stdout.splitlines()]
+        self.assertEqual(
+            lines,
+            ['  PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"',
+             '  PATH="${PATH:-/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games}"'],
+            result.output,
+        )
+
+    def test_every_run_layer_of_the_real_image_has_its_prefix_stripped(self) -> None:
+        history = harness._docker(
+            ["history", "--no-trunc", "--format", "{{.Size}}\t{{.CreatedBy}}", self.image.ref]
+        )
+        self.assertEqual(history.returncode, 0, history.stderr)
+        runs = 0
+        for line in history.stdout.decode("utf-8", "replace").splitlines():
+            created_by = line.partition("\t")[2]
+            command = command_text(created_by)  # raises on an unrecognised RUN form
+            if created_by.startswith("RUN "):
+                runs += 1
+                self.assertFalse(command.startswith(("RUN", "|")), f"prefix left in place: {command[:120]!r}")
+                self.assertNotRegex(command[:40], r"^\|\d+ ", command[:120])
+                self.assertNotRegex(command[:20], r"/bin/(?:ba)?sh -c", command[:120])
+        self.assertGreater(runs, 10, "the image has RUN layers; none were seen")
 
     def test_no_layer_exists_only_to_change_permissions_of_the_mdt_tree(self) -> None:
         """O2: a recursive chgrp/chmod over earlier-layer content copies it up (a layer of

@@ -207,7 +207,7 @@ Enabled by default, each controlled by an `INSTALL_*` build arg:
   `@earendil-works/pi-coding-agent`) is the Pi coding-agent CLI.
 - `codex` — the official `@openai/codex` npm package under `/opt/mdt/npm`; its user data remains
   under `~/.codex`.
-- `claude` — the official `@anthropic-ai/claude-code` npm package under `/opt/mdt/npm` (pinned to the newest release at least 14 days old); `claude update` and its background updater run `npm install -g` into that prefix, so an update is the `claude` on `PATH`. `antigravity` (`agy`) — an image-owned binary in `/opt/mdt/bin`.
+- `claude` — the official `@anthropic-ai/claude-code` npm package under `/opt/mdt/npm` (staged as the exact registry `latest`, or an explicit pin, and recorded in the manifest; user-updatable tools follow upstream and the image pins what it shipped); `claude update` and its background updater run `npm install -g` into that prefix, so an update is the `claude` on `PATH`. `antigravity` (`agy`) — an image-owned binary in `/opt/mdt/bin`.
 
 Image-managed tools live in the `mdt` group tree (`/opt/mdt`, `/srv`): group-writable, so the
 runtime user (a member of `mdt`) can `npm install -g @openai/codex@latest` or `pip install`

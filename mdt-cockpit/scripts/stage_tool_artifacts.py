@@ -380,61 +380,37 @@ def _resolve_codex_version(requested: str | None) -> str:
 
 
 CLAUDE_CODE_NPM_PACKAGE = "@anthropic-ai/claude-code"
-# Freshness rule (estate policy): prefer the newest release, but only one at least this old,
-# a vetting buffer against a just-shipped regression or supply-chain incident.
-MIN_RELEASE_AGE_DAYS = 14
-_STABLE_SEMVER = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
 
 
-def _newest_aged_stable_version(
-    publish_times: dict[str, str], *, now: datetime, min_age_days: int = MIN_RELEASE_AGE_DAYS
-) -> str:
-    """Highest stable semver from an npm ``time`` map that is at least ``min_age_days`` old."""
-    best: tuple[tuple[int, int, int], str] | None = None
-    for version, stamp in publish_times.items():
-        match = _STABLE_SEMVER.fullmatch(version)
-        if not match:
-            continue  # created/modified keys, prereleases
-        published = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        if (now - published).total_seconds() < min_age_days * 86400:
-            continue
-        key = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
-        if best is None or key > best[0]:
-            best = (key, version)
-    if best is None:
-        raise StageError(f"no stable release is at least {min_age_days} days old")
-    return best[1]
+def _install_enabled(name: str) -> bool:
+    """An INSTALL_* build switch: unset means enabled, as everywhere else in the build."""
+    value = os.getenv(name)
+    if value is None:
+        return True
+    return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _claude_publish_times() -> dict:
-    document = _fetch_json(f"https://registry.npmjs.org/{CLAUDE_CODE_NPM_PACKAGE}")
-    times = document.get("time")
-    if not isinstance(times, dict):
-        raise StageError(f"npm registry returned no publish times for {CLAUDE_CODE_NPM_PACKAGE}")
-    return times
+def _resolve_claude_code_version(requested: str | None) -> str:
+    """The exact Claude Code version the image ships and records.
 
-
-def _resolve_claude_code_version(requested: str | None, *, now: datetime | None = None) -> str:
-    """The Claude Code version to install: the newest release at least 14 days old, or an
-    explicit pin that is itself at least 14 days old. No override: a pin younger than the
-    freshness buffer is refused, naming its release date."""
-    now = now or datetime.now(timezone.utc)
+    Claude is user-updatable (`claude update` runs `npm install -g` into /opt/mdt/npm), so it
+    follows upstream rather than a freshness window: the npm `latest` dist-tag, or the explicit
+    pin when one is given. Either way the EXACT version is returned and recorded in
+    tool-versions.env and the image manifest; a pin must be a published release.
+    """
     value = (requested or "").strip()
-    times = _claude_publish_times()
     if not value or value == "latest":
-        return _newest_aged_stable_version(times, now=now)
+        return _resolve_npm_version(None, CLAUDE_CODE_NPM_PACKAGE)
     if not CLAUDE_VERSION_RE.fullmatch(value):
         raise StageError(f"Unsupported CLAUDE_CODE_VERSION value: {value!r}")
-    stamp = times.get(value)
-    if not stamp:
-        raise StageError(f"CLAUDE_CODE_VERSION {value} is not a published {CLAUDE_CODE_NPM_PACKAGE} release")
-    published = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-    age_days = (now - published).total_seconds() / 86400
-    if age_days < MIN_RELEASE_AGE_DAYS:
+    try:
+        document = _fetch_json(f"https://registry.npmjs.org/{CLAUDE_CODE_NPM_PACKAGE}/{value}")
+    except StageError as exc:
         raise StageError(
-            f"CLAUDE_CODE_VERSION {value} was released on {published.date().isoformat()} "
-            f"({age_days:.1f} days ago); the freshness rule requires at least {MIN_RELEASE_AGE_DAYS} days"
-        )
+            f"CLAUDE_CODE_VERSION {value} is not a published {CLAUDE_CODE_NPM_PACKAGE} release ({exc})"
+        ) from exc
+    if document.get("version") != value:
+        raise StageError(f"CLAUDE_CODE_VERSION {value} is not a published {CLAUDE_CODE_NPM_PACKAGE} release")
     return value
 
 
@@ -1559,7 +1535,6 @@ def _resolve_versions() -> dict[str, str]:
 
     resolved = {
         "CODEX_VER": _resolve_codex_version(os.getenv("CODEX_VERSION")),
-        "CLAUDE_CODE_VER": _resolve_claude_code_version(os.getenv("CLAUDE_CODE_VERSION")),
         "ANTIGRAVITY_VER": (os.getenv("ANTIGRAVITY_VERSION") or "latest").strip() or "latest",
         "AIDER_VER": aider_version,
         "REASONIX_VER": _resolve_npm_version(os.getenv("REASONIX_VERSION"), "reasonix"),
@@ -1598,6 +1573,11 @@ def _resolve_versions() -> dict[str, str]:
         "RGA_VER": _resolve_version(os.getenv("RGA_VERSION"), "phiresky/ripgrep-all"),
         "VAULT_VER": _resolve_version(os.getenv("VAULT_VERSION"), "hashicorp/vault"),
     }
+
+    if _install_enabled("INSTALL_CLAUDE_CODE"):
+        resolved["CLAUDE_CODE_VER"] = _resolve_claude_code_version(os.getenv("CLAUDE_CODE_VERSION"))
+    else:
+        _log("INSTALL_CLAUDE_CODE is false: skipping Claude Code version resolution (no registry lookup)")
 
     aws_requested = (os.getenv("AWSCLI_VERSION") or "latest").strip()
     resolved["AWSCLI_VER"] = aws_requested or "latest"

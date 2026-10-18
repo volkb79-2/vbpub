@@ -35,6 +35,8 @@ PACKAGE_DOCS_ROOT = Path(__file__).resolve().parent.parent / "package-manifests-
 TOOL_VERSION_DISPLAY_ORDER = [
     ("aider", "AIDER_VER"),
     ("reasonix", "REASONIX_VER"),
+    ("opencode", "OPENCODE_VER"),
+    ("pi", "PI_VER"),
     ("openclaw", "OPENCLAW_VER"),
     ("antigravity", "ANTIGRAVITY_VER"),
     ("awscli", "AWSCLI_VER"),

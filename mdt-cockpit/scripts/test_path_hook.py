@@ -177,6 +177,19 @@ def test_the_command_patches_a_stock_file_in_place(tmp_path: Path) -> None:
     assert profile.read_text(encoding="utf-8") == patch_etc_profile.patch(STOCK_PROFILE)
 
 
+def test_the_final_dockerfile_assertion_checks_exactly_the_lines_the_patcher_writes() -> None:
+    """N9: /etc/profile is a base-files conffile; a later step could undo the patch."""
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    final = dockerfile[dockerfile.index("RUN mdt-perms check /opt/mdt /srv"):]
+    assert final.index("grep -qxF") > 0
+    for line in patch_etc_profile.PATCHED.splitlines():
+        if "${PATH:-" in line:
+            assert f"grep -qxF '{line}' /etc/profile" in final, line
+    assert "exit 1" in final
+    # nothing after the assertion may run an apt step that could reconcile the conffile
+    assert "apt-get" not in final and "dpkg" not in final
+
+
 def test_the_dockerfile_patches_etc_profile_with_this_script_and_writes_the_entries_file() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY scripts/patch_etc_profile.py /tmp/patch_etc_profile.py" in dockerfile

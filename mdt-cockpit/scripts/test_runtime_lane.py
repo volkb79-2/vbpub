@@ -284,3 +284,48 @@ def test_install_verbs_in_the_arg_blob_do_not_exempt_a_permission_only_layer() -
 )
 def test_command_text_drops_the_arg_blob_and_the_shell_prefix(created_by: str, command: str) -> None:
     assert test_image_contract.command_text(created_by) == command
+
+
+# ── N7: the real image's SHELL is /bin/bash, so every RUN reads "RUN |N ARGS... /bin/bash -c ..." ──
+
+HISTORY_FIXTURE = RUNTIME / "fixtures" / "docker-history-vsc-dev-20261018-13.txt"
+REAL_RUN_LINES = [
+    line for line in HISTORY_FIXTURE.read_text(encoding="utf-8").splitlines() if not line.startswith("#")
+]
+
+
+def test_the_fixture_is_real_history_with_both_shell_forms() -> None:
+    assert len(REAL_RUN_LINES) >= 40
+    assert any("/bin/bash -c" in line for line in REAL_RUN_LINES), "this image's own RUN layers use bash"
+    assert any("/bin/sh -c" in line for line in REAL_RUN_LINES), "the base image's layers use sh"
+
+
+def test_command_text_strips_the_prefix_of_every_real_run_layer() -> None:
+    for line in REAL_RUN_LINES:
+        created_by = line.partition("\t")[2]
+        command = test_image_contract.command_text(created_by)
+        assert not command.startswith(("RUN", "|")), created_by[:160]
+        assert "PYTHON_VERSION=" not in command[:200] or "/bin/bash" not in created_by[:50], created_by[:160]
+        assert command != created_by
+
+
+def test_a_real_bash_layer_with_its_arg_blob_cannot_exempt_a_permission_only_command() -> None:
+    real = next(line for line in REAL_RUN_LINES if "/bin/bash -c" in line and "|82 " in line)
+    blob = real.partition("\t")[2].split("/bin/bash -c ", 1)[0]
+    assert "install" in blob.lower() or "tar" in blob or "cp" in blob  # the real blob holds exempting words
+    permission_only = f"657MB\t{blob}/bin/bash -c chmod -R g+rwX /opt/mdt/npm # buildkit"
+
+    assert test_image_contract.permission_only_layers([permission_only]) != []
+    assert test_image_contract.permission_only_layers([permission_only.replace("chmod -R g+rwX /opt/mdt/npm", "npm install -g codex; mdt-perms fix /opt/mdt/npm")]) == []
+
+
+def test_no_real_layer_of_the_fixture_is_flagged() -> None:
+    assert test_image_contract.permission_only_layers(REAL_RUN_LINES) == []
+
+
+def test_an_unrecognised_run_form_fails_instead_of_passing_through() -> None:
+    with pytest.raises(ValueError, match="unrecognised"):
+        test_image_contract.command_text("RUN |3 A=install /usr/bin/zsh -c chmod -R g+w /srv")
+    with pytest.raises(ValueError, match="unrecognised"):
+        test_image_contract.permission_only_layers(["657MB\tRUN |3 A=install /usr/bin/zsh -c chmod -R g+w /srv"])
+    assert test_image_contract.command_text("ENV PATH=/opt/mdt/bin:/usr/bin") == "ENV PATH=/opt/mdt/bin:/usr/bin"

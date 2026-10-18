@@ -215,77 +215,94 @@ if __name__ == "__main__":
     unittest.main()
 
 
-# ── Claude Code version: newest release at least 14 days old (freshness rule) ──
+# ── Claude Code version: the exact `latest` or the explicit pin, recorded (R16) ──
+#
+# Claude is user-updatable, so the image follows upstream and pins/records what it shipped; there is
+# deliberately NO freshness window for it.
 
 import pytest  # noqa: E402
-from datetime import datetime, timezone  # noqa: E402
-
-_NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
-_TIMES = {
-    "created": "2025-02-01T00:00:00.000Z",
-    "modified": "2026-10-17T00:00:00.000Z",
-    "2.1.286": "2026-09-30T10:00:00.000Z",
-    "2.1.289": "2026-10-03T20:12:02.717Z",   # 14d 16h old: eligible
-    "2.1.292": "2026-10-04T12:00:00.000Z",   # exactly 14 days old: eligible
-    "2.1.296": "2026-10-04T12:00:01.000Z",   # one second short of 14 days: not eligible
-    "2.1.302": "2026-10-16T16:48:28.057Z",
-    "2.2.0-beta.1": "2026-08-01T00:00:00.000Z",  # old but a prerelease
-}
 
 
-def test_the_newest_release_at_least_fourteen_days_old_is_chosen() -> None:
-    assert staging._newest_aged_stable_version(_TIMES, now=_NOW) == "2.1.292"
-
-
-def test_ordering_is_numeric_not_lexicographic() -> None:
-    times = {"2.1.9": "2026-01-01T00:00:00Z", "2.1.10": "2026-01-02T00:00:00Z", "2.0.99": "2026-01-03T00:00:00Z"}
-    assert staging._newest_aged_stable_version(times, now=_NOW) == "2.1.10"
-
-
-def test_prereleases_and_bookkeeping_keys_are_never_chosen() -> None:
-    times = {"created": "2020-01-01T00:00:00Z", "3.0.0-rc.1": "2020-01-01T00:00:00Z"}
-    with pytest.raises(staging.StageError, match="at least 14 days old"):
-        staging._newest_aged_stable_version(times, now=_NOW)
-
-
-def test_claude_latest_resolves_through_the_registry_with_the_freshness_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_claude_latest_resolves_to_the_exact_dist_tag_version_not_the_word_latest(monkeypatch: pytest.MonkeyPatch) -> None:
     urls: list[str] = []
 
     def fake_fetch(url: str, **_kw) -> dict:
         urls.append(url)
-        return {"time": _TIMES}
+        return {"version": "2.1.302"}
 
     monkeypatch.setattr(staging, "_fetch_json", fake_fetch)
 
-    assert staging._resolve_claude_code_version("latest", now=_NOW) == "2.1.292"
-    assert staging._resolve_claude_code_version(None, now=_NOW) == "2.1.292"
-    assert urls == ["https://registry.npmjs.org/@anthropic-ai/claude-code"] * 2
+    assert staging._resolve_claude_code_version("latest") == "2.1.302"
+    assert staging._resolve_claude_code_version(None) == "2.1.302"
+    assert urls == ["https://registry.npmjs.org/@anthropic-ai/claude-code/latest"] * 2
 
 
-def test_an_explicit_claude_pin_at_least_fourteen_days_old_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(staging, "_fetch_json", lambda *a, **k: {"time": _TIMES})
+def test_a_freshly_published_claude_release_is_accepted_there_is_no_age_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(staging, "_fetch_json", lambda url, **k: {"version": url.rsplit("/", 1)[-1]})
 
-    assert staging._resolve_claude_code_version("2.1.289", now=_NOW) == "2.1.289"
-    with pytest.raises(staging.StageError, match="Unsupported"):
-        staging._resolve_claude_code_version("two", now=_NOW)
+    assert staging._resolve_claude_code_version("2.1.302") == "2.1.302"
 
 
-def test_an_explicit_claude_pin_younger_than_fourteen_days_is_refused_naming_its_release_date(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(staging, "_fetch_json", lambda *a, **k: {"time": _TIMES})
+def test_an_explicit_claude_pin_must_be_a_published_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    def missing(url: str, **_kw) -> dict:
+        raise staging.StageError("HTTP 404")
 
-    with pytest.raises(staging.StageError, match=r"2\.1\.302 was released on 2026-10-16.*at least 14 days"):
-        staging._resolve_claude_code_version("2.1.302", now=_NOW)
-    with pytest.raises(staging.StageError, match="2026-10-04"):
-        staging._resolve_claude_code_version("2.1.296", now=_NOW)  # one second short
-
-
-def test_an_explicit_claude_pin_that_was_never_published_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(staging, "_fetch_json", lambda *a, **k: {"time": _TIMES})
-
+    monkeypatch.setattr(staging, "_fetch_json", missing)
     with pytest.raises(staging.StageError, match="not a published"):
-        staging._resolve_claude_code_version("9.9.9", now=_NOW)
+        staging._resolve_claude_code_version("9.9.9")
+    monkeypatch.setattr(staging, "_fetch_json", lambda *a, **k: {"version": "something-else"})
+    with pytest.raises(staging.StageError, match="not a published"):
+        staging._resolve_claude_code_version("9.9.9")
+    with pytest.raises(staging.StageError, match="Unsupported"):
+        staging._resolve_claude_code_version("two")
+
+
+def _stub_other_resolvers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(staging, "_resolve_npm_version", lambda requested, package: f"npm-{package}")
+    monkeypatch.setattr(staging, "_resolve_codex_version", lambda _v: "codex-x")
+    monkeypatch.setattr(staging, "_resolve_pypi_version", lambda _v, package: f"pypi-{package}")
+    monkeypatch.setattr(staging, "_resolve_version", lambda _v, repo: f"gh-{repo}")
+
+
+def test_the_resolved_claude_version_is_what_staging_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_other_resolvers(monkeypatch)
+    monkeypatch.setattr(staging, "_resolve_claude_code_version", lambda requested: "2.1.302")
+    monkeypatch.delenv("INSTALL_CLAUDE_CODE", raising=False)
+
+    resolved = staging._resolve_versions()
+
+    assert resolved["CLAUDE_CODE_VER"] == "2.1.302" and "latest" not in resolved["CLAUDE_CODE_VER"]
+
+
+@pytest.mark.parametrize("value", ["false", "FALSE", "0", "no", "off"])
+def test_claude_resolution_is_skipped_and_logged_when_claude_is_not_installed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], value: str
+) -> None:
+    _stub_other_resolvers(monkeypatch)
+    monkeypatch.setattr(staging, "_resolve_claude_code_version", lambda requested: pytest.fail("no registry lookup"))
+    monkeypatch.setenv("INSTALL_CLAUDE_CODE", value)
+
+    resolved = staging._resolve_versions()
+
+    assert "CLAUDE_CODE_VER" not in resolved
+    assert "skipping Claude Code version resolution" in capsys.readouterr().err
+
+
+def test_the_five_user_updatable_tools_are_recorded_by_their_exact_resolved_version(monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_other_resolvers(monkeypatch)
+    monkeypatch.setattr(staging, "_resolve_claude_code_version", lambda requested: "2.1.302")
+    monkeypatch.delenv("INSTALL_CLAUDE_CODE", raising=False)
+
+    resolved = staging._resolve_versions()
+
+    assert {k: resolved[k] for k in ("CODEX_VER", "CLAUDE_CODE_VER", "REASONIX_VER", "OPENCODE_VER", "PI_VER")} == {
+        "CODEX_VER": "codex-x", "CLAUDE_CODE_VER": "2.1.302", "REASONIX_VER": "npm-reasonix",
+        "OPENCODE_VER": "npm-opencode-ai", "PI_VER": "npm-@earendil-works/pi-coding-agent",
+    }
+    display = dict(resolver.TOOL_VERSION_DISPLAY_ORDER)
+    for tool, key in (("codex", "CODEX_VER"), ("claude", "CLAUDE_CODE_VER"), ("reasonix", "REASONIX_VER"),
+                      ("opencode", "OPENCODE_VER"), ("pi", "PI_VER")):
+        assert display[tool] == key, f"{tool} is not listed in the image manifest's version table"
 
 
 def test_claude_is_no_longer_staged_as_a_native_binary() -> None:

@@ -1178,6 +1178,14 @@ RUN set -euo pipefail; \
 # container.
 RUN mdt-perms check /opt/mdt /srv
 
+# Final-stage assertion that /etc/profile still keeps an inherited PATH. /etc/profile is a
+# base-files conffile, so a later apt step (or a runtime upgrade of base-files) could reconcile it
+# back to the stock unconditional assignments - the same kind of drift that re-moded /srv. This
+# only READS; the build fails instead of shipping an image whose login shells drop PATH additions.
+RUN grep -qxF '  PATH="${PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"' /etc/profile \
+    && grep -qxF '  PATH="${PATH:-/usr/local/bin:/usr/bin:/bin:/usr/local/games:/usr/games}"' /etc/profile \
+    || { echo "ERROR: /etc/profile no longer keeps an inherited PATH (the build patched it earlier; a later step undid that)" >&2; exit 1; }
+
 # ── KSM opt-in: every process in mdt-based containers becomes KSM-mergeable,
 # unless disabled at build time via ENABLE_KSM_OPTIN=false (docker-bake.hcl
 # resolves that into KSM_OPTIN_LD_PRELOAD — the shim's path, or "" to leave

@@ -190,6 +190,13 @@ Login shells need two things, both done at build time:
    image before the hook de-duplicated: 16 entries in the image `PATH`, 21 in a login shell, 26 in a login shell
    inside it, 31 in a third (VS Code terminals are a login shell inside the `userEnvProbe` login environment, so
    users would see this). The hook's first-occurrence de-duplication makes every nesting level identical.
+   `/etc/profile` is a **base-files conffile**. dpkg never overwrites a locally modified conffile
+   silently: a non-interactive upgrade keeps the local (patched) file, an *interactive* `apt upgrade`
+   of `base-files` in a running container asks whether to keep it or take the maintainer's version, and
+   taking the maintainer's version restores the unconditional assignments (runtime additions are then
+   dropped by login shells again until the patch is re-applied or the image is rebuilt). The same drift
+   re-moded `/srv` once, so the build ends with an assertion that the two patched lines are still in
+   `/etc/profile` (and the lane re-checks it in the running image).
 2. **The hook merges.** The build writes the managed prefix and suffix (not a whole `PATH`) to
    `/usr/local/share/mdt-cockpit/path-entries`. `path-hook.sh` removes those entries wherever they
    occur in the current `PATH`, prepends the prefix in the order above, appends the suffix, and keeps
@@ -345,10 +352,15 @@ hazard), so local-dev is a **separate, explicit mode**:
 **Policy.** Everything under `/opt/mdt` and `/srv` is group `mdt`, so the runtime user updates
 the image's tools in place without `sudo`. Those updates live in the **container's writable
 layer**: they last for the life of the container, a recreate restores the image's version, and
-**rebuilding the image is the durable way to change a version.** The image pins each tool;
-Claude Code is pinned to the newest release that is at least 14 days old (the estate freshness
-rule, resolved at staging time from the npm registry); an explicit `CLAUDE_CODE_VERSION` pin must be
-at least that old too (no override), and the installer accepts only the staged, concrete version.
+**rebuilding the image is the durable way to change a version.** **Version policy for the
+user-updatable tools (claude, codex, reasonix, opencode, pi):** the user can update them in place
+anyway, so they follow upstream - no freshness window - and the image pins and records what it
+shipped. Staging resolves the registry `latest` (or an explicit pin) to an EXACT version, writes it to
+`tool-versions.env`, and the image manifest lists it. Claude's installer accepts only that staged,
+exact version (never empty, never `latest`), a `CLAUDE_CODE_VERSION` pin must be a published release,
+and with `INSTALL_CLAUDE_CODE=false` the registry is not consulted. The tools that are *not*
+user-updatable in this sense (copilot, openclaw, claudelink, aider, the release tools) keep their
+current resolution until the cmru-versions adoption.
 
 **Claude Code is an npm-global install.** The image installs the official
 `@anthropic-ai/claude-code` package into `/opt/mdt/npm`. For such an install `claude update`
