@@ -48,10 +48,10 @@ defines both once ([One PATH order](../docs/DESIGN-GUIDE.md#one-path-order)).
 
 | Image-owned content | Image path | In the home |
 |---|---|---|
-| Standalone CLIs (`claude`, `antigravity`, `agy`) | `/opt/mdt/bin` | Nothing. Group `mdt`, updatable without `sudo`. |
+| Standalone CLIs (`antigravity`, `agy`) | `/opt/mdt/bin` | Nothing. Group `mdt`, updatable without `sudo`. |
 | Primary Python toolkit | `/opt/mdt/venv` | Nothing; `python` resolves there via `PATH` (no `~/.venv`). |
 | Secondary Python environments | `/opt/mdt/venvs/pyNN` | Nothing (no `~/.venv-pyNN`). |
-| npm agent CLIs | `/opt/mdt/npm` | Nothing; `npm install -g` writes here (`NPM_CONFIG_PREFIX`). |
+| npm agent CLIs (including `claude`) | `/opt/mdt/npm` | Nothing; `npm install -g` and `claude update` write here (`NPM_CONFIG_PREFIX`). |
 | uv-managed Python builds | `/opt/mdt/python` | Nothing; user installs keep uv's per-user data path. |
 | Oh My Zsh distribution (VS Code image) | `/opt/mdt/oh-my-zsh` | Cache only, in `~/.cache/oh-my-zsh`. |
 | PWMCP instance | `/srv/pwmcp-instance` | Nothing. |

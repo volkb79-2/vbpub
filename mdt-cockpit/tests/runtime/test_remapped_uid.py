@@ -126,6 +126,41 @@ class Contract:
         )
         self.assertOk(result)
 
+    def test_claude_updates_in_place_through_group_mdt_and_stays_the_only_claude(self) -> None:
+        """What `claude update` does for an npm-global install, offline: re-install the same
+        version from the package's own files over the existing one, as the remapped uid."""
+        script = r"""
+set -eu
+export HOME=/home/vscode CI=1 npm_config_registry=http://127.0.0.1:9 npm_config_fetch_retries=0
+before=$(claude --version | head -1)
+rm -rf /tmp/cc /tmp/pk && mkdir /tmp/pk && cp -a /opt/mdt/npm/lib/node_modules/@anthropic-ai/claude-code /tmp/cc
+(cd /tmp/pk && npm pack /tmp/cc --silent --offline --ignore-scripts >/dev/null)
+npm install -g --offline --ignore-scripts --omit=optional --no-audit --no-fund --loglevel=error /tmp/pk/*.tgz >/dev/null
+echo "before=$before"
+echo "after=$(claude --version | head -1)"
+echo "resolved=$(command -v claude)"
+echo "all=$(which -a claude | tr '\n' ' ')"
+echo "group=$(stat -c %G /opt/mdt/npm/lib/node_modules/@anthropic-ai/claude-code)"
+echo "home=$(ls -A ~ | tr '\n' ' ')"
+"""
+        result = harness.sh(self.remapped, script)
+        self.assertOk(result, "offline same-version reinstall of claude")
+        lines = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        self.assertEqual(lines["before"], lines["after"])
+        self.assertEqual(lines["resolved"], "/opt/mdt/npm/bin/claude")
+        self.assertEqual(lines["all"].split(), ["/opt/mdt/npm/bin/claude"], "no shadow copy appeared")
+        self.assertEqual(lines["group"], "mdt")
+        self.assertNotIn(".local", lines["home"].split(), "the update must not write a native install into the home")
+
+    def test_negative_control_a_uid_outside_mdt_cannot_touch_the_claude_install(self) -> None:
+        result = harness.sh(
+            self.image.ref,
+            "touch /opt/mdt/npm/lib/node_modules/@anthropic-ai/claude-code/mdt-rt-write-test",
+            user=OUTSIDER, env={"HOME": "/tmp"},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(result.output, r"Permission denied|EACCES")
+
     def test_negative_control_a_uid_outside_mdt_gets_eacces_on_the_same_writes(self) -> None:
         """Same three writes, uid not in `mdt`, on the unmodified candidate image."""
         env = {"HOME": "/tmp", "npm_config_cache": "/tmp/npmcache"}

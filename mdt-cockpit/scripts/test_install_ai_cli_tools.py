@@ -234,30 +234,44 @@ def test_user_mode_refuses_to_guess_the_npm_prefix(
     assert "NPM_CONFIG_PREFIX" not in os.environ
 
 
-def test_image_binaries_are_group_writable_in_the_mdt_tree(
+def test_standalone_binaries_are_group_writable_in_the_mdt_tree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import install_ai_cli_tools as mod
 
     downloads = tmp_path / "downloads"
     downloads.mkdir()
-    (downloads / "claude-1.2.3-linux-x64").write_bytes(b"#!/bin/sh\n")
     archive = downloads / "antigravity-4.5.6.tar.gz"
     _make_tar_with_binaries(archive, "antigravity")
     bin_dir = tmp_path / "opt-mdt-bin"
     monkeypatch.setattr(mod, "IMAGE_BIN_DIR", bin_dir)
-    monkeypatch.setenv("CLAUDE_CODE_VER", "1.2.3")
     monkeypatch.setenv("ANTIGRAVITY_VER", "4.5.6")
-    monkeypatch.delenv("INSTALL_CLAUDE_CODE", raising=False)
     monkeypatch.delenv("INSTALL_ANTIGRAVITY", raising=False)
-    ctx = _fake_ctx(tmp_path)
 
-    mod.install_claude(ctx)
-    mod.install_antigravity(ctx)
+    mod.install_antigravity(_fake_ctx(tmp_path))
 
-    assert (bin_dir / "claude").read_bytes() == b"#!/bin/sh\n"
-    for name in ("claude", "antigravity", "agy"):
+    for name in ("antigravity", "agy"):
         assert (bin_dir / name).stat().st_mode & 0o777 == 0o775, name
+
+
+def test_claude_is_installed_through_npm_into_the_mdt_prefix_not_as_a_copied_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The native/copied binary shadowed the update the tool wrote into ~/.local: updates
+    silently never took effect. The npm-global install updates itself in NPM_CONFIG_PREFIX."""
+    import install_ai_cli_tools as mod
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mod, "run_command", lambda command, *a, **k: calls.append(list(command)))
+    monkeypatch.setattr(mod, "require_command", lambda *a, **k: None)
+    monkeypatch.setenv("CLAUDE_CODE_VER", "1.2.3")
+    monkeypatch.delenv("INSTALL_CLAUDE_CODE", raising=False)
+
+    mod.install_claude(_fake_ctx(tmp_path))
+
+    assert calls == [["npm", "install", "-g", "@anthropic-ai/claude-code@1.2.3"]]
+    listed = dict(mod.parse_tool_entries(Path(__file__).resolve().parents[1] / "ai-cli-tools.list"))
+    assert listed["claude"] == "npm-image", "claude must be installed in the npm-image step, not copied by the root step"
 
 
 def test_dockerfile_constructs_the_mdt_tree_before_any_content() -> None:

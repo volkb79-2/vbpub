@@ -152,10 +152,14 @@ def install_claude(ctx: InstallerContext) -> None:
         log("INFO", "INSTALL_CLAUDE_CODE=false; skipping Claude Code")
         return
 
+    # Installed through npm into NPM_CONFIG_PREFIX (/opt/mdt/npm), the officially
+    # documented npm-global install of Claude Code. Its `claude update` and background
+    # updater then run `npm install -g` into that group-writable prefix; the native
+    # installer writes ~/.local/share/claude and ~/.local/bin/claude instead, which the
+    # image copy used to shadow, so updates silently never took effect.
     version = env_value("CLAUDE_CODE_VER", "CLAUDE_CODE_VERSION", default="latest")
-    binary = ctx.downloads_dir / f"claude-{version}-linux-x64"
-    require_file(binary, "staged Claude Code binary")
-    copy_binary(binary, IMAGE_BIN_DIR / "claude", IMAGE_BINARY_MODE)
+    require_command("npm", "npm is required to install Claude Code")
+    run_command(["npm", "install", "-g", f"@anthropic-ai/claude-code@{version}"])
 
 
 def install_antigravity(ctx: InstallerContext) -> None:

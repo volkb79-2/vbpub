@@ -95,6 +95,8 @@ def test_every_closed_vocabulary_value_a_consumer_types_is_documented() -> None:
         "~/.config/mdt-cockpit", "/usr/local/share/mdt-cockpit",
         "/opt/mdt/bin", "/opt/mdt/npm", "/opt/mdt/venv", "/srv/pwmcp-instance",
         "NPM_CONFIG_PREFIX", "UV_PYTHON_INSTALL_DIR", "/usr/local/share/mdt-cockpit/path",
+        "@anthropic-ai/claude-code", "npm install -g reasonix@latest", "npm install -g opencode-linux-x64-baseline@latest",
+        "rebuilding the image is the durable way", "first-party-wheels.json",
         "ZSH_DISABLE_COMPFIX", "ZSH_CACHE_DIR",
         "/etc/xdg/nvim", "/etc/htoprc", "/etc/mc/mc.ini", "/etc/nanorc", "/etc/zsh/zshrc", "/etc/bash.bashrc",
     ]

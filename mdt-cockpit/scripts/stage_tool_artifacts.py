@@ -379,20 +379,45 @@ def _resolve_codex_version(requested: str | None) -> str:
     return _normalize_codex_version(latest_tag)
 
 
-def _resolve_claude_code_version(requested: str | None) -> str:
+CLAUDE_CODE_NPM_PACKAGE = "@anthropic-ai/claude-code"
+# Freshness rule (estate policy): prefer the newest release, but only one at least this old,
+# a vetting buffer against a just-shipped regression or supply-chain incident.
+MIN_RELEASE_AGE_DAYS = 14
+_STABLE_SEMVER = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)$")
+
+
+def _newest_aged_stable_version(
+    publish_times: dict[str, str], *, now: datetime, min_age_days: int = MIN_RELEASE_AGE_DAYS
+) -> str:
+    """Highest stable semver from an npm ``time`` map that is at least ``min_age_days`` old."""
+    best: tuple[tuple[int, int, int], str] | None = None
+    for version, stamp in publish_times.items():
+        match = _STABLE_SEMVER.fullmatch(version)
+        if not match:
+            continue  # created/modified keys, prereleases
+        published = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
+        if (now - published).total_seconds() < min_age_days * 86400:
+            continue
+        key = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        if best is None or key > best[0]:
+            best = (key, version)
+    if best is None:
+        raise StageError(f"no stable release is at least {min_age_days} days old")
+    return best[1]
+
+
+def _resolve_claude_code_version(requested: str | None, *, now: datetime | None = None) -> str:
     value = (requested or "").strip()
     if value and value != "latest":
         if not CLAUDE_VERSION_RE.fullmatch(value):
             raise StageError(f"Unsupported CLAUDE_CODE_VERSION value: {value!r}")
         return value
 
-    latest = _download_text("https://downloads.claude.ai/claude-code-releases/latest").strip()
-    if not CLAUDE_VERSION_RE.fullmatch(latest):
-        raise StageError(
-            "Failed to resolve latest Claude Code release version from "
-            "downloads.claude.ai"
-        )
-    return latest
+    document = _fetch_json(f"https://registry.npmjs.org/{CLAUDE_CODE_NPM_PACKAGE}")
+    times = document.get("time")
+    if not isinstance(times, dict):
+        raise StageError(f"npm registry returned no publish times for {CLAUDE_CODE_NPM_PACKAGE}")
+    return _newest_aged_stable_version(times, now=now or datetime.now(timezone.utc))
 
 
 def _tar_contains_binary(archive: Path, binary_name: str) -> bool:
@@ -483,21 +508,6 @@ def _parse_hashicorp_sha256(sums_file: Path, expected_file_name: str) -> str:
         if name.lstrip("*") == expected_file_name:
             return checksum.lower()
     raise StageError(f"Unable to find checksum entry for {expected_file_name}")
-
-
-def _parse_claude_sha256(manifest: dict, platform: str) -> str:
-    platforms = manifest.get("platforms")
-    if not isinstance(platforms, dict):
-        raise StageError("Claude manifest missing 'platforms' map")
-
-    entry = platforms.get(platform)
-    if not isinstance(entry, dict):
-        raise StageError(f"Claude manifest missing platform entry for {platform}")
-
-    checksum = str(entry.get("checksum") or "").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{64}", checksum):
-        raise StageError(f"Claude manifest contains invalid checksum for platform {platform}")
-    return checksum
 
 
 def _parse_github_asset_sha256(release: dict, expected_asset_name: str) -> str:
@@ -730,50 +740,6 @@ def _stage_zip_tool(
     )
 
 
-def _stage_claude_code(version: str, records: list[StagedArtifact]) -> None:
-    platform = "linux-x64"
-    manifest_url = f"https://downloads.claude.ai/claude-code-releases/{version}/manifest.json"
-    binary_url = f"https://downloads.claude.ai/claude-code-releases/{version}/{platform}/claude"
-
-    manifest_path = DOWNLOADS_DIR / f"claude-{version}-manifest.json"
-    binary_path = DOWNLOADS_DIR / f"claude-{version}-{platform}"
-
-    manifest_final_url = _download(manifest_url, manifest_path)
-    try:
-        manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise StageError("Invalid Claude manifest JSON payload") from exc
-
-    expected_sha = _parse_claude_sha256(manifest_payload, platform)
-    binary_final_url = _download(binary_url, binary_path)
-    actual_sha = _sha256(binary_path)
-    if expected_sha != actual_sha:
-        raise StageError(
-            f"Claude checksum mismatch: expected {expected_sha}, got {actual_sha}"
-        )
-
-    _record_artifact(
-        records,
-        tool="claude",
-        version=version,
-        source_url=binary_url,
-        final_url=binary_final_url,
-        path=binary_path,
-        kind="binary",
-        verification="sha256 from versioned manifest.json",
-    )
-    _record_artifact(
-        records,
-        tool="claude-manifest",
-        version=version,
-        source_url=manifest_url,
-        final_url=manifest_final_url,
-        path=manifest_path,
-        kind="manifest",
-        verification="downloaded",
-    )
-
-
 def _stage_antigravity(requested: str, records: list[StagedArtifact]) -> str:
     requested_normalized = (requested or "").strip()
     if requested_normalized and requested_normalized != "latest":
@@ -913,7 +879,6 @@ def _stage_regctl(version: str, records: list[StagedArtifact]) -> None:
 def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     records: list[StagedArtifact] = []
 
-    _stage_claude_code(resolved["CLAUDE_CODE_VER"], records)
     resolved["ANTIGRAVITY_VER"] = _stage_antigravity(resolved["ANTIGRAVITY_VER"], records)
 
     _stage_b2(resolved["B2_VER"], records)

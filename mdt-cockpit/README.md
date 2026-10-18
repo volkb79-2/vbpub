@@ -207,13 +207,16 @@ Enabled by default, each controlled by an `INSTALL_*` build arg:
   `@earendil-works/pi-coding-agent`) is the Pi coding-agent CLI.
 - `codex` — the official `@openai/codex` npm package under `/opt/mdt/npm`; its user data remains
   under `~/.codex`.
-- `claude-code`, `antigravity` (`agy`) — image-owned binaries in `/opt/mdt/bin`.
+- `claude` — the official `@anthropic-ai/claude-code` npm package under `/opt/mdt/npm` (pinned to the newest release at least 14 days old); `claude update` and its background updater run `npm install -g` into that prefix, so an update is the `claude` on `PATH`. `antigravity` (`agy`) — an image-owned binary in `/opt/mdt/bin`.
 
 Image-managed tools live in the `mdt` group tree (`/opt/mdt`, `/srv`): group-writable, so the
 runtime user (a member of `mdt`) can `npm install -g @openai/codex@latest` or `pip install`
 into the primary venv without `sudo`, even though Dev Containers re-numbers the `vscode` uid.
-Such in-place updates live in the container filesystem and are replaced by the image on
-recreate. `PATH` is one definition ([One PATH order](docs/DESIGN-GUIDE.md#one-path-order)):
+Such in-place updates under `/opt/mdt` last for the life of the container only: a recreate
+restores the image's version, so **rebuilding the image is the durable way to change a tool**.
+OpenCode is updated with `npm install -g opencode-linux-x64-baseline@latest` (its own `upgrade`
+command cannot be used, see the [update table](docs/DESIGN-GUIDE.md#how-the-ai-clis-update-themselves));
+Reasonix with `npm install -g reasonix@latest`. `PATH` is one definition ([One PATH order](docs/DESIGN-GUIDE.md#one-path-order)):
 `/opt/mdt/bin`, the primary venv, `/opt/mdt/npm/bin`, PWMCP, the base image's own entries, and
 `~/.local/bin` **last** — so a tool in `~/.local/bin` never silently shadows an image tool.
 Rebuild the image to refresh its pinned tool versions.

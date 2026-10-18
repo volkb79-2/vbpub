@@ -311,33 +311,49 @@ hazard), so local-dev is a **separate, explicit mode**:
   unreadable labels refuse too). The mode keeps its own state file so a local-dev
   build can neither clobber nor be mistaken for the saved release state.
 
-## How the AI CLIs update themselves (measured, not designed)
+## How the AI CLIs update themselves
 
-Measured 2026-10-18 on the VS Code image with network, as a re-numbered uid (4242, member of
-`mdt`) and an empty home volume; each tool's own update command was run once, then the same volume
-was mounted in a second container. Every tool was already at its latest release, so a *download*
-was never observed - only what each command writes and where it points. The design did not change
-because of this table.
+**Policy.** Everything under `/opt/mdt` and `/srv` is group `mdt`, so the runtime user updates
+the image's tools in place without `sudo`. Those updates live in the **container's writable
+layer**: they last for the life of the container, a recreate restores the image's version, and
+**rebuilding the image is the durable way to change a version.** The image pins each tool;
+Claude Code is pinned to the newest release that is at least 14 days old (the estate freshness
+rule, resolved at staging time from the npm registry).
+
+**Claude Code is an npm-global install.** The image installs the official
+`@anthropic-ai/claude-code` package into `/opt/mdt/npm`. For such an install `claude update`
+(and the background updater) run `npm install -g` into that prefix, so the updated binary is
+the one `command -v claude` resolves to in every shell. The previous layout copied a native
+binary into `/opt/mdt/bin`; `claude update` then wrote a *native* install into
+`~/.local/share/claude` and `~/.local/bin/claude`, and the image copy shadowed it on `PATH`, so
+updates silently never took effect. Measured 2026-10-18 as the remapped uid 4242 (member of
+`mdt`, no sudo, empty home), starting from 2.1.286: `claude update` reported "Installation
+method set to: global", updated to 2.1.302, and wrote only `/opt/mdt/npm/lib/node_modules`,
+`/opt/mdt/npm/bin/claude`, the npm cache and logs under `~/.npm`, and Claude's own state
+(`~/.claude.json`, `~/.claude/`); nothing under `~/.local`. The documented alternative, the
+native installer, has no install-location setting. The background updater is the same npm path
+and was not exercised separately.
+
+Measured 2026-10-18 on the VS Code image with network, same uid and an empty home volume, each
+tool's own update command run once. Unless noted a tool was already at its latest release, so a
+*download* was not observed - only what the command writes and where it points.
 
 | tool | installed at | update command | what it wrote | works as `vscode` via `mdt` | `command -v` after |
 |---|---|---|---|---|---|
-| claude | `/opt/mdt/bin/claude` (copy) | `claude update` | `~/.local/share/claude`, `~/.local/bin/claude` (symlink), `~/.claude.json`, `~/.claude/backups/` | nothing to download; it records a *native* install in the home, so a real update would land in `~/.local/share/claude` | `/opt/mdt/bin/claude` (image copy shadows the home one: `~/.local/bin` is last) |
+| claude | `/opt/mdt/npm` (`@anthropic-ai/claude-code`) | `claude update` | **updated 2.1.286 to 2.1.302:** `/opt/mdt/npm/lib/node_modules` (11 files), `/opt/mdt/npm/bin/claude`, `~/.npm`, `~/.claude.json`, `~/.claude/` | yes | `/opt/mdt/npm/bin/claude` (the only `claude` on `PATH`) |
 | codex | `/opt/mdt/npm` | `codex update` (runs `npm install -g @openai/codex`) | `/opt/mdt/npm/lib` (48 files), `/opt/mdt/npm/bin`, `~/.npm` cache | yes | `/opt/mdt/npm/bin/codex` |
-| copilot | `/opt/mdt/npm` | `copilot update` | `~/.cache/copilot/pkg`, `~/.local/state/gh`, `~/.copilot/logs` | self-update downloads into the home cache, not `/opt/mdt` | `/opt/mdt/npm/bin/copilot` |
-| opencode | `/opt/mdt/npm` | `opencode upgrade` | `~/.local/share/opencode` | prompts "installed ... may be managed by a package manager - Install anyways?" and waits (blocks a non-tty run); `-m npm` skips the prompt and would use `npm -g` | `/opt/mdt/npm/bin/opencode` |
+| copilot | `/opt/mdt/npm` | `copilot update` | `~/.cache/copilot/pkg`, `~/.local/state/gh`, `~/.copilot/logs` | its self-update downloads into the home cache, not `/opt/mdt` | `/opt/mdt/npm/bin/copilot` |
+| opencode | `/opt/mdt/npm` (platform package `opencode-linux-x64-baseline`) | `npm install -g opencode-linux-x64-baseline@latest` (use the `opencode-linux-*` package `opencode_platform_package()` selects for your architecture) | `/opt/mdt/npm/lib` | yes (1.19.3 to 1.19.2 and back, measured). **Not** `opencode upgrade`: it cannot tell how it was installed, asks "Install anyways?" and waits for a terminal; `opencode upgrade -m npm` installs the `opencode-ai` meta-package and failed with "Upgrade failed for npm (exit code 1)" | `/opt/mdt/npm/bin/opencode` |
 | pi | `/opt/mdt/npm` | `pi update self` | with `--force`: `/opt/mdt/npm/lib` (15033 files, `npm --prefix /opt/mdt/npm install -g`), `~/.npm` | yes (forced reinstall, 36 s) | `/opt/mdt/npm/bin/pi` |
-| reasonix | `/opt/mdt/npm` | `reasonix upgrade` | `~/.reasonix/locks/` only | `--force` refuses: "installed through a package manager ... npm install -g reasonix@latest" | `/opt/mdt/npm/bin/reasonix` |
+| reasonix | `/opt/mdt/npm` | `npm install -g reasonix@latest` (`reasonix upgrade` only checks: with `--force` it refuses, "installed through a package manager ... npm install -g reasonix@latest") | `~/.reasonix/locks/` from the check | yes | `/opt/mdt/npm/bin/reasonix` |
 | openclaw | `/opt/mdt/npm` | `openclaw update --yes --no-restart` | `~/.openclaw/update-reports/`, `~/.openclaw/state/openclaw.sqlite`, `~/.openclaw.update-captures/`, `~/.npm` | update mode `npm` (global prefix `/opt/mdt/npm`); already current | `/opt/mdt/npm/bin/openclaw` |
 | claudelink | `/opt/mdt/npm` | none (no update subcommand, no `--version`); `npm install -g claudelink@latest` | `/opt/mdt/npm/lib` (3854 files, 131 packages), `~/.npm` | yes | `/opt/mdt/npm/bin/claudelink` |
 | antigravity / agy | `/opt/mdt/bin` (two copies) | `antigravity update` / `agy update` | `~/.gemini/antigravity-cli/updater` (2 files) | "already on the latest version"; the target of a real update is unmeasured | `/opt/mdt/bin/antigravity`, `/opt/mdt/bin/agy` |
 | aider | `/opt/mdt/venv` | `aider --upgrade` (runs `pip install --upgrade aider-chat`) | `/opt/mdt/venv/lib` (1426 files), `~/.cache/pip`, `~/.aider/analytics.json` | yes; the version stayed `0.86.3.dev53+g5dc9490bb` | `/opt/mdt/venv/bin/aider` |
 
-Survival across a container recreate follows from where the write landed: everything under `/opt/mdt`
-and `/srv` is the container's writable layer, so a recreate restores the image's version of that tool;
-everything under the home is in the named volume and persists (the second container saw the same
-`command -v` and versions). Two consequences worth knowing: a tool that records a *home* install
-(claude, copilot) is shadowed by the image copy on `PATH` until the image is rebuilt, and the
-npm-based tools update in place for the life of the container only.
+Everything above that wrote under `/opt/mdt` is gone after a container recreate (the image's version
+returns); everything written under the home (Claude's own state, caches) is in the named volume and
+persists.
 
 ## Built-image acceptance is a separate test boundary
 

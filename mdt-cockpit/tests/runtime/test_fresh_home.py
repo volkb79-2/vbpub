@@ -115,6 +115,10 @@ class Contract:
                         if line.strip() and not BANNER.match(line)
                     ]
                     self.assertEqual(residue, [], f"{shell} -ic true printed more than the banner")
+            shadows = self.in_home(
+                volume, "ls -d ~/.local/bin/claude ~/.local/share/claude 2>&1 | grep -vc 'No such file'; true"
+            ).stdout.strip()
+            self.assertEqual(shadows, "0", "a native Claude install appeared in the home and would shadow updates")
             created = {entry.split("|")[0].removeprefix("./").split("/")[0] for entry in self.snapshot(volume)}
             allowed = TOOL_CREATED_VSC if self.is_vsc else TOOL_CREATED_NATIVE
             unexplained = sorted(created - set(allowed))

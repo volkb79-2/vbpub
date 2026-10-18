@@ -193,7 +193,6 @@ LEAVES: list[Leaf] = [
     Leaf("php_packages", "PHP package payload (dpkg Installed-Size)", ("mdt layers", "PHP 8.5 runtime"), ("Runtimes", "PHP")),
     Leaf("php_apt_residual", "uncleaned apt lists/cache (this RUN is missing `rm -rf /var/lib/apt/lists/*`)", ("mdt layers", "PHP 8.5 runtime"), ("Runtimes", "PHP")),
     # ── "Modern tools" mega-layer ────────────────────────────────────────────
-    Leaf("mt_claude", "claude (Claude Code, root binary)", ("mdt layers", '"Modern tools" mega-layer'), ("AI coding-agent tools",), ("/opt/mdt/bin/claude",)),
     Leaf("mt_antigravity", "antigravity (+ duplicate `agy` copy)", ("mdt layers", '"Modern tools" mega-layer'), ("AI coding-agent tools",), ("/opt/mdt/bin/antigravity", "/opt/mdt/bin/agy")),
     Leaf("mt_awscli", "awscli", ("mdt layers", '"Modern tools" mega-layer'), ("Service / infrastructure CLIs",), ("/usr/local/aws",)),
     Leaf("mt_vault", "vault", ("mdt layers", '"Modern tools" mega-layer'), ("Service / infrastructure CLIs",), ("/usr/local/bin/vault",)),
@@ -227,6 +226,7 @@ LEAVES: list[Leaf] = [
     Leaf("ai_codex", "Codex (@openai/codex)", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/@openai",)),
     Leaf("ai_opencode", "opencode", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/opencode-linux-*",)),
     Leaf("ai_reasonix", "reasonix", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/reasonix",)),
+    Leaf("ai_claude", "claude (@anthropic-ai/claude-code)", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/@anthropic-ai",)),
     Leaf("ai_claudelink", "claudelink", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/claudelink",)),
     Leaf("ai_pi", "pi (@earendil-works/pi-coding-agent)", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/@earendil-works",)),
     # ── Primary venv + aider ─────────────────────────────────────────────────

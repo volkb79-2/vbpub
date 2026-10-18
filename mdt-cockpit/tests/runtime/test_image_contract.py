@@ -189,6 +189,26 @@ class Contract:
                 self.assertEqual(rc, "0", f"`{command} {PROBE_ARGS.get(command, '--version')}` failed: {first_line}")
                 self.assertTrue(first_line.strip(), f"`{command}` printed nothing")
 
+    def test_claude_has_exactly_one_install_and_no_shadow_copy(self) -> None:
+        """Claude updates itself (`claude update`, the background updater) by running
+        `npm install -g` into NPM_CONFIG_PREFIX. A second `claude` anywhere on PATH - the old
+        copied binary in /opt/mdt/bin, a native install under ~/.local - would shadow that
+        update silently."""
+        result = self.sh(
+            "which -a claude; echo ---; test -e /opt/mdt/bin/claude && echo COPY-IN-OPT-MDT-BIN; "
+            "test -e ~/.local/bin/claude && echo NATIVE-LINK; test -e ~/.local/share/claude && echo NATIVE-DIR; "
+            "echo ---; claude --version | head -1; "
+            "npm ls -g --depth=0 --parseable @anthropic-ai/claude-code | tail -1; "
+            "node -p \"require('/opt/mdt/npm/lib/node_modules/@anthropic-ai/claude-code/package.json').version\""
+        )
+        self.assertOk(result)
+        found, markers, versions = result.stdout.split("---\n")
+        self.assertEqual(found.split(), ["/opt/mdt/npm/bin/claude"], "exactly one claude on PATH")
+        self.assertEqual(markers.strip(), "", markers)
+        version_line, package_dir, package_version = versions.strip().splitlines()
+        self.assertTrue(package_dir.endswith("/@anthropic-ai/claude-code"), package_dir)
+        self.assertTrue(version_line.startswith(package_version), f"{version_line!r} vs package {package_version}")
+
     def test_python_is_the_primary_venv_without_claiming_activation(self) -> None:
         result = self.sh(
             "python -c 'import sys; print(sys.prefix)'; command -v python; "

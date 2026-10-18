@@ -213,3 +213,63 @@ class OciToolStagingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── Claude Code version: newest release at least 14 days old (freshness rule) ──
+
+import pytest  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
+
+_NOW = datetime(2026, 10, 18, 12, 0, tzinfo=timezone.utc)
+_TIMES = {
+    "created": "2025-02-01T00:00:00.000Z",
+    "modified": "2026-10-17T00:00:00.000Z",
+    "2.1.286": "2026-09-30T10:00:00.000Z",
+    "2.1.289": "2026-10-03T20:12:02.717Z",   # 14d 16h old: eligible
+    "2.1.292": "2026-10-04T12:00:00.000Z",   # exactly 14 days old: eligible
+    "2.1.296": "2026-10-04T12:00:01.000Z",   # one second short of 14 days: not eligible
+    "2.1.302": "2026-10-16T16:48:28.057Z",
+    "2.2.0-beta.1": "2026-08-01T00:00:00.000Z",  # old but a prerelease
+}
+
+
+def test_the_newest_release_at_least_fourteen_days_old_is_chosen() -> None:
+    assert staging._newest_aged_stable_version(_TIMES, now=_NOW) == "2.1.292"
+
+
+def test_ordering_is_numeric_not_lexicographic() -> None:
+    times = {"2.1.9": "2026-01-01T00:00:00Z", "2.1.10": "2026-01-02T00:00:00Z", "2.0.99": "2026-01-03T00:00:00Z"}
+    assert staging._newest_aged_stable_version(times, now=_NOW) == "2.1.10"
+
+
+def test_prereleases_and_bookkeeping_keys_are_never_chosen() -> None:
+    times = {"created": "2020-01-01T00:00:00Z", "3.0.0-rc.1": "2020-01-01T00:00:00Z"}
+    with pytest.raises(staging.StageError, match="at least 14 days old"):
+        staging._newest_aged_stable_version(times, now=_NOW)
+
+
+def test_claude_latest_resolves_through_the_registry_with_the_freshness_rule(monkeypatch: pytest.MonkeyPatch) -> None:
+    urls: list[str] = []
+
+    def fake_fetch(url: str, **_kw) -> dict:
+        urls.append(url)
+        return {"time": _TIMES}
+
+    monkeypatch.setattr(staging, "_fetch_json", fake_fetch)
+
+    assert staging._resolve_claude_code_version("latest", now=_NOW) == "2.1.292"
+    assert staging._resolve_claude_code_version(None, now=_NOW) == "2.1.292"
+    assert urls == ["https://registry.npmjs.org/@anthropic-ai/claude-code"] * 2
+
+
+def test_an_explicit_claude_version_is_honoured_without_a_network_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(staging, "_fetch_json", lambda *a, **k: pytest.fail("no lookup for a pinned version"))
+
+    assert staging._resolve_claude_code_version("2.1.289") == "2.1.289"
+    with pytest.raises(staging.StageError, match="Unsupported"):
+        staging._resolve_claude_code_version("two")
+
+
+def test_claude_is_no_longer_staged_as_a_native_binary() -> None:
+    source = (Path(__file__).resolve().parent / "stage_tool_artifacts.py").read_text(encoding="utf-8")
+    assert "_stage_claude_code" not in source and "downloads.claude.ai" not in source
