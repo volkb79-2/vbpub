@@ -149,6 +149,7 @@ COPY scripts/install_pwmcp_instance.py /tmp/install_pwmcp_instance.py
 COPY --chmod=0755 scripts/mdt-perms /usr/local/bin/mdt-perms
 COPY ai-cli-tools.list /tmp/ai-cli-tools.list
 COPY scripts/install_ai_cli_tools.py /tmp/install_ai_cli_tools.py
+COPY scripts/check_wheel_set.py /tmp/check_wheel_set.py
 
 # Ensure vscode user exists (non-devcontainers bases)
 RUN set -euo pipefail; \
@@ -795,25 +796,21 @@ RUN set -euo pipefail; \
 # floors here makes a missing offline dependency fail during the final venv
 # reconciliation, before the first-party wheel layer, rather than being
 # discovered there.
-# Skipped (non-fatal) when pip/wheels/ is empty (release not yet published).
+# FATAL in every build mode when pip/wheels/ is empty or lacks a distribution that
+# wheels.list declares (scripts/check_wheel_set.py compares distribution names): an
+# image without ciu/cmru/topos/nyxloom/cli-extended must not be built, not discovered
+# when a user runs the missing CLI.
 # Source: https://github.com/volkb79-2/vbpub/releases — first-party project releases.
 RUN set -euo pipefail; \
     umask 0002; \
     wheels_dir="/tmp/pip/wheels"; \
     wheels_list="/tmp/pip/wheels.list"; \
-    if [ ! -d "${wheels_dir}" ] || [ -z "$(ls "${wheels_dir}"/*.whl 2>/dev/null || true)" ]; then \
-        echo "[INFO] pip/wheels/ is empty — no first-party wheels to install (FINAL CUT will populate it)" >&2; \
-    else \
-        wheel_expected="$(sed 's/#.*//;/^[[:space:]]*$/d' "${wheels_list}" | tr '\n' ' ')"; \
-        echo "[INFO] wheels.list declares: ${wheel_expected:-<none>}" >&2; \
-        echo "[INFO] Installing resolved first-party wheels present in ${wheels_dir}:" >&2; \
-        ls -1 "${wheels_dir}"/*.whl >&2; \
-        /opt/mdt/venv/bin/python -m pip install \
-            --disable-pip-version-check \
-            --no-index \
-            --find-links="${wheels_dir}" \
-            "${wheels_dir}"/*.whl; \
-    fi; \
+    python3 /tmp/check_wheel_set.py --wheels-dir "${wheels_dir}" --wheels-list "${wheels_list}"; \
+    /opt/mdt/venv/bin/python -m pip install \
+        --disable-pip-version-check \
+        --no-index \
+        --find-links="${wheels_dir}" \
+        "${wheels_dir}"/*.whl; \
     mdt-perms fix /opt/mdt/venv
 
 # PWMCP instance in /srv (root:mdt 2775, created above). It is installed as the
@@ -849,7 +846,7 @@ RUN --mount=type=bind,from=mdt-local-dev,source=/,target=/tmp/mdt-local-dev \
     mdt-perms fix /srv
 USER root
 RUN rm -f /tmp/install_pwmcp_instance.py
-RUN rm -f /tmp/install_ai_cli_tools.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env
+RUN rm -f /tmp/install_ai_cli_tools.py /tmp/check_wheel_set.py /tmp/ai-cli-tools.list /tmp/ai-tool-versions.env
 # ── In-container devcontainer finalize (postCreateCommand) ──────────────────
 # Baked into the image so any mdt-based repo wires only:
 #   "postCreateCommand": "finalize_container_environment.py"

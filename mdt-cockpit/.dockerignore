@@ -19,6 +19,7 @@
 !scripts/manifest_sections.py
 !scripts/mdt-perms
 !scripts/install_ai_cli_tools.py
+!scripts/check_wheel_set.py
 !scripts/finalize_container_environment.py
 !ai-cli-tools.list
 !templates/AGENTS.md

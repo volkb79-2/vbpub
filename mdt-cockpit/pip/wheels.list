@@ -6,8 +6,9 @@
 # Format mirrors apt/packages.list: one entry per line, '#' starts a comment.
 #
 # Depends on <name>-latest GitHub Release existing at build time.
-# The actual download is skipped (non-fatal warning) when no release is found;
-# the first rebuild after cmru's P7 re-release will populate pip/wheels/.
+# The resolver only warns when a release is not found, but the image build then FAILS
+# (scripts/check_wheel_set.py): an empty pip/wheels/, or one lacking a name declared
+# here, is an error in every build mode.
 #
 # See: docs/plan-cmru-finish.md §2B (deferred build / cmru-latest dependency).
 
