@@ -192,6 +192,14 @@ template sets neither `PATH` nor `NPM_CONFIG_PREFIX`. The base image's own PATH
 contains `/usr/local/bin` twice; it is carried over verbatim so every shell sees
 the identical string, and the managed entries each appear once.
 
+**Known limit (measured, not fixed).** A login shell does not keep an entry added to the
+*inherited* `PATH` at runtime (a consumer `containerEnv.PATH`, a Dev Containers feature, the Dev
+Containers `userEnvProbe` login shell): stock Debian `/etc/profile` assigns `PATH` unconditionally
+before any `/etc/profile.d` script runs, so the entry is already gone when the hook starts and a hook
+that merged instead of restoring could not recover it. Non-login shells (`bash -ic`) keep it. The
+image does not patch `/etc/profile`; zsh login shells, which do not read it, are restored by the same
+hook. The template sets no `PATH` for this reason.
+
 ## Environment variables
 
 Where each tool puts things is a fact of the image, so it is set once, here. This
