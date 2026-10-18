@@ -23,7 +23,10 @@ MOUNT_RE = re.compile(
 )
 HOME_SOURCE = "${localEnv:HOME}/mdt-cockpit-home/"
 TMP_SOURCE = "${localEnv:HOME}/mdt-cockpit-tmp/"
-DOC_ANCHOR = "docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug"
+DOC_ANCHOR = (
+    "https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/docs/HOME-PERSISTENCE.md"
+    "#moving-from-modern-debian-tools-python-debug"
+)
 
 
 def _template_mounts() -> list[tuple[str, str, str]]:
@@ -733,3 +736,15 @@ def test_bind_source_type_policy_is_explained_and_cross_linked() -> None:
         assert 'shutdownAction: "none"' in text or 'shutdownAction` to `none' in text
     assert "docs/CONSUMERS.md#codex-profile-state-and-container-lifetime" in top_readme
     assert "CONSUMERS.md#codex-profile-state-and-container-lifetime" in design
+
+
+def test_the_d1_notice_url_is_absolute_and_names_this_repository() -> None:
+    """The template is vendored into a consumer's .devcontainer/, where docs/ does not exist."""
+    import tomllib
+
+    identity = tomllib.loads((ROOT.parent / "cmru.orchestration.toml").read_text(encoding="utf-8"))["github"]
+    url = bootstrap.MANUAL_COPY_DOC
+
+    assert url.startswith(f"https://github.com/{identity['owner']}/{identity['repo']}/blob/main/mdt-cockpit/docs/")
+    assert url.endswith("HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug")
+    assert url == DOC_ANCHOR

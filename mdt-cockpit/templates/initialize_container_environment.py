@@ -28,7 +28,7 @@ gets 1777; the home gets 0700; everything else 0755.
 No migration: this fork starts with an empty home and the user copies old content by hand.
 When the previous split-mount state (`~/mdt--mounted-folders/`) still holds files and the new
 home is absent or empty, `notify_legacy_split_state()` prints one informational line pointing at
-the manual-copy section of docs/HOME-PERSISTENCE.md. It never changes the exit status.
+the manual-copy section of docs/HOME-PERSISTENCE.md (printed as its full GitHub URL). It never changes the exit status.
 """
 from __future__ import annotations
 
@@ -58,7 +58,13 @@ KNOWN_DIRECTORY_SOURCE_NAMES = set(FALLBACK)
 # The previous template's grouped parent. It exists in live code ONLY so the
 # one-line notice can recognise it; nothing is ever created, read or migrated there.
 LEGACY_PARENT_NAME = "mdt--mounted-folders"
-MANUAL_COPY_DOC = "docs/HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug"
+# This file is vendored into the consumer's .devcontainer/, where no docs/ directory
+# exists, so the notice must carry an absolute URL. The owner/repo equal the
+# [github] table of the monorepo's cmru.orchestration.toml (a unit test pins that).
+MANUAL_COPY_DOC = (
+    "https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/docs/HOME-PERSISTENCE.md"
+    "#moving-from-modern-debian-tools-python-debug"
+)
 
 MISSING_SOURCE_POLICY_KEY = "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY"
 DEFAULT_MISSING_SOURCE_POLICY = "create-by-spelling"
