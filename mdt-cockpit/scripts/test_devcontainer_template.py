@@ -131,8 +131,13 @@ def test_image_defines_the_command_path_once_and_the_login_hook_only_restores_it
     # undo a user's activated venv: it must never touch PATH itself.
     assert not re.search(r"^\s*(export\s+)?PATH=", profile, re.MULTILINE)
     assert "printf '%s\\n' \"${PATH}\" > \"${share_dir}/path\"" in dockerfile
-    assert 'PATH="$(cat /usr/local/share/mdt-cockpit/path)"' in dockerfile
-    assert "path is missing; PATH left as /etc/profile set it" in dockerfile
+    hook = (ROOT / "customization" / "path-hook.sh").read_text(encoding="utf-8")
+    assert 'PATH="$(cat /usr/local/share/mdt-cockpit/path)"' in hook
+    assert "path is missing; PATH left as the login shell set it" in hook
+    # both login-shell families source the same hook: bash/sh via profile.d, zsh via zprofile
+    # (Debian's zsh does not read /etc/profile)
+    assert "'. /usr/local/share/mdt-cockpit/path-hook.sh'" in dockerfile
+    assert ">> /etc/zsh/zprofile" in dockerfile and "/path-hook.sh\\n' \"${share_dir}\"" in dockerfile
     assert "/opt/mdt/venv/bin:/opt/mdt/npm/bin" not in profile
 
 

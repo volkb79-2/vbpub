@@ -367,23 +367,20 @@ RUN set -euo pipefail; \
     install -D -m 0644 /tmp/customization/lnav/formats/nyxloom/nyxloom_events.json /etc/lnav/formats/nyxloom/nyxloom_events.json; \
     install -m 0644 /tmp/customization/htoprc /etc/htoprc; \
     install -D -m 0644 /tmp/customization/mc.ini /etc/mc/mc.ini; \
-    test -f /etc/nanorc && test -f /etc/bash.bashrc && test -f /etc/zsh/zshrc; \
+    test -f /etc/nanorc && test -f /etc/bash.bashrc && test -f /etc/zsh/zshrc && test -f /etc/zsh/zprofile; \
     printf '\n# mdt-cockpit defaults (nano reads ~/.nanorc afterwards, so a user setting wins).\ninclude "%s/nanorc"\n' "${share_dir}" >> /etc/nanorc; \
     printf '\n# mdt-cockpit interactive defaults (your ~/.bashrc runs afterwards).\n[ -r %s/bashrc ] && . %s/bashrc\n' "${share_dir}" "${share_dir}" >> /etc/bash.bashrc; \
     printf '\n# mdt-cockpit interactive defaults (your ~/.zshrc runs afterwards).\n[[ -r %s/zshrc ]] && source %s/zshrc\n' "${share_dir}" "${share_dir}" >> /etc/zsh/zshrc; \
     printf '%s\n' "${PATH}" > "${share_dir}/path"; \
     chmod 0644 "${share_dir}/path"; \
+    install -m 0644 /tmp/customization/path-hook.sh "${share_dir}/path-hook.sh"; \
+    printf '\n# mdt-cockpit: put the image PATH back in login shells (zsh does not read /etc/profile).\n. %s/path-hook.sh\n' "${share_dir}" >> /etc/zsh/zprofile; \
     install -d -m 0755 /etc/profile.d; \
     printf '%s\n' \
         '#!/bin/sh' \
-        '# mdt-cockpit login-shell hook. Debian'"'"'s /etc/profile replaces PATH in every login' \
-        '# shell, also one that starts with a cleared environment: put back the value the' \
-        '# image was built with, read from the file the build wrote (Dockerfile ENV PATH).' \
-        'if [ -r /usr/local/share/mdt-cockpit/path ]; then' \
-        '    PATH="$(cat /usr/local/share/mdt-cockpit/path)"; export PATH' \
-        'else' \
-        '    echo "mdt-cockpit: /usr/local/share/mdt-cockpit/path is missing; PATH left as /etc/profile set it" >&2' \
-        'fi' \
+        '# mdt-cockpit login-shell hook (bash, sh): see path-hook.sh for why PATH is restored here.' \
+        '# shellcheck source=/dev/null' \
+        '. /usr/local/share/mdt-cockpit/path-hook.sh' \
         '# shellcheck source=/dev/null' \
         '. /usr/local/share/mdt-cockpit/profile.sh' > /etc/profile.d/50-mdt-cockpit.sh; \
     chmod 0644 /etc/profile.d/50-mdt-cockpit.sh

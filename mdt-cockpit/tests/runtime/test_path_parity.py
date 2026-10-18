@@ -68,18 +68,20 @@ class Contract:
 
     def test_a_missing_path_file_is_reported_not_skipped(self) -> None:
         """The hook must not silently do nothing: one line on stderr, PATH left alone."""
-        result = harness.run(
-            self.image.ref,
-            ["bash", "-c",
-             "mv /usr/local/share/mdt-cockpit/path /tmp/path.gone && "
-             "env -i /bin/bash -lc 'echo \"PATH-IS:$PATH\"'"],
-            user="0",
-        )
-        self.assertEqual(result.returncode, 0, result.output)
-        self.assertIn("mdt-cockpit: /usr/local/share/mdt-cockpit/path is missing", result.stderr)
-        path_lines = [line for line in result.stdout.splitlines() if line.startswith("PATH-IS:")]
-        self.assertEqual(len(path_lines), 1)
-        self.assertNotIn("/opt/mdt", path_lines[0], "the managed entries must not appear from nowhere")
+        for login_shell in ("/bin/bash", "/usr/bin/zsh"):
+            with self.subTest(shell=login_shell):
+                result = harness.run(
+                    self.image.ref,
+                    ["bash", "-c",
+                     "mv /usr/local/share/mdt-cockpit/path /tmp/path.gone && "
+                     f"env -i {login_shell} -lc 'echo \"PATH-IS:$PATH\"'"],
+                    user="0",
+                )
+                self.assertEqual(result.returncode, 0, result.output)
+                self.assertIn("mdt-cockpit: /usr/local/share/mdt-cockpit/path is missing", result.stderr)
+                path_lines = [line for line in result.stdout.splitlines() if line.startswith("PATH-IS:")]
+                self.assertEqual(len(path_lines), 1)
+                self.assertNotIn("/opt/mdt", path_lines[0], "the managed entries must not appear from nowhere")
 
     def test_a_command_resolves_the_same_in_every_shell(self) -> None:
         """The order has an observable consequence: `python` is the venv's everywhere."""

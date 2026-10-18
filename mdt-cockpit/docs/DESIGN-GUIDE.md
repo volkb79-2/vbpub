@@ -179,10 +179,14 @@ Debian's `/etc/profile` *replaces* `PATH` in every login shell, including a logi
 shell started with a **cleared environment** (`su -`, `sudo -i`, `ssh`, cron,
 `env -i bash -l`), where an environment variable would not exist. So the build
 writes the finished value to `/usr/local/share/mdt-cockpit/path`, and
-`/etc/profile.d/50-mdt-cockpit.sh` reads that file and puts exactly it back - the
-list is never spelled a second time. If the file is missing the hook prints one
-line to stderr and leaves `PATH` as `/etc/profile` set it; it never skips
-silently. `profile.sh`, which interactive shells also source, never
+the hook `path-hook.sh` reads that file and puts exactly it back - the list is
+never spelled a second time. bash and sh reach it through
+`/etc/profile.d/50-mdt-cockpit.sh`; **zsh does not read `/etc/profile` on Debian**
+(`/etc/zsh/zprofile` is only comments), so the same hook is also sourced from
+`/etc/zsh/zprofile` - without that, `env -i zsh -l` kept zsh's compiled-in
+`/bin:/usr/bin:/usr/ucb:/usr/local/bin` (found by the lane). If the file is missing
+the hook prints one line to stderr and leaves `PATH` as the login shell set it; it
+never skips silently. `profile.sh`, which interactive shells also source, never
 touches `PATH` (rewriting it would undo an activated venv). The devcontainer
 template sets neither `PATH` nor `NPM_CONFIG_PREFIX`. The base image's own PATH
 contains `/usr/local/bin` twice; it is carried over verbatim so every shell sees

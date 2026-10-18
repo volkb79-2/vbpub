@@ -26,6 +26,7 @@ What ships here and where it is wired:
 | `mc.ini` | `/etc/mc/mc.ini` | mc reads it when the user has no `~/.config/mc/ini` |
 | `nanorc` | `include` line appended to `/etc/nanorc` | nano reads `~/.nanorc` after it |
 | `nvim/sysinit.vim` | `/etc/xdg/nvim/sysinit.vim`, beside the NvChad tree | redirects a starter-style tree's lazy lockfile into the state directory while the user has no `~/.config/nvim/init.lua` or `init.vim` (Neovim itself starts the tree from `$XDG_CONFIG_DIRS`) |
+| `path-hook.sh` | `/usr/local/share/mdt-cockpit/path-hook.sh`, sourced by `/etc/profile.d/50-mdt-cockpit.sh` and `/etc/zsh/zprofile` | puts the image `PATH` (read from `/usr/local/share/mdt-cockpit/path`) back in login shells, also with a cleared environment |
 | `lesspipe.sh` | `LESSOPEN` in `shell.env` | syntax-highlighting preprocessor for `less` |
 | `*.example` | `/usr/local/share/mdt-cockpit/` | copy to `~/.config/mdt-cockpit/` and edit |
 
