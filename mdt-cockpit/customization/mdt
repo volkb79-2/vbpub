@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# mdt — modern-debian-tools operator CLI.
+# mdt — mdt-cockpit operator CLI.
 #
 #   mdt host-exec [-t|--target PID] [--] <cmd> [args...]
 #   mdt host-shell [-t|--target PID]

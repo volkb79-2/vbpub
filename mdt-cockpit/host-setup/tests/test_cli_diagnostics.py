@@ -25,7 +25,7 @@ def test_mdt_parser_help_uses_the_existing_image_version_environment():
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.splitlines()[0] == (
-        "MDT image-20260918 — modern Debian tools and Python debug"
+        "MDT image-20260918 — mdt-cockpit"
     )
 
 
@@ -41,7 +41,7 @@ def test_mdt_host_parser_argument_errors_use_the_same_headline():
     )
     assert proc.returncode == 2
     assert proc.stderr.splitlines()[0] == (
-        "MDT host-20260918 — modern Debian tools and Python debug"
+        "MDT host-20260918 — mdt-cockpit"
     )
 
 

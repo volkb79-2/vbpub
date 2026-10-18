@@ -609,4 +609,4 @@ reuses that cache without streaming a second local cache export through the
 client API. Forced recompression is disabled so large layers that already have
 a suitable encoding do not take a second compression pass.
 
-When collecting an MDT script failure, keep the first diagnostic line: `MDT <version> — modern Debian tools and Python debug`, with the version read from `MDT_VERSION` or `MDT_IMAGE_VERSION` at invocation time.
+When collecting an MDT script failure, keep the first diagnostic line: `MDT <version> — mdt-cockpit`, with the version read from `MDT_VERSION` or `MDT_IMAGE_VERSION` at invocation time.

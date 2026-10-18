@@ -1,4 +1,4 @@
-"""Standalone parser diagnostics for modern-debian-tools scripts."""
+"""Standalone parser diagnostics for mdt-cockpit scripts."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ def mdt_version() -> str:
 
 
 def cli_headline() -> str:
-    return f"MDT {mdt_version()} — modern Debian tools and Python debug"
+    return f"MDT {mdt_version()} — mdt-cockpit"
 
 
 class MdtArgumentParser(argparse.ArgumentParser):

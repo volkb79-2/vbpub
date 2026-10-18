@@ -2,7 +2,7 @@
 
 ## MDT-001 - requirements for `aider-chat`
 
-starting `MDT_IMAGE_VERSION="20261002"`, `IMAGE_MANIFEST="/usr/local/share/modern-debian-tools-python-debug/manifest.md"` gives this startup info
+starting `MDT_IMAGE_VERSION="20261002"`, `IMAGE_MANIFEST="/usr/local/share/mdt-cockpit/manifest.md"` gives this startup info
 
 ```
 [INFO] Using requirements file: /workspaces/dstdns/requirements.txt

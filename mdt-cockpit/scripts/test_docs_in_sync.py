@@ -114,49 +114,132 @@ def test_every_cross_document_anchor_resolves() -> None:
     assert unresolved == []
 
 
-# Names the retirement of which two documents (the design rationale and the home
-# inventory) must be free to explain; every other document must not use them at all.
+# Names that must not appear in ANY live document: they describe mechanisms that no longer
+# exist. (Every entry is a plain single-line substring, so it can actually match.)
 RETIRED_EVERYWHERE = (
-    "migrate_persistent_home", ".mdt-home-migration", "localEnv:HOME}/mdt--mounted-folders",
-    "~/.config/modern-debian-tools-python-debug/ai.env\n",
+    "migrate_persistent_home",
+    ".mdt-home-migration",
+    "mdt--mounted-folders/home",
+    "~/.config/modern-debian-tools-python-debug/ai.env",
 )
 RETIRED_OUTSIDE_THE_EXPLAINERS = ("home-vscode", "~/mdt-manifest.md", "~/.oh-my-zsh-custom", "home-defaults")
 EXPLAINERS = ("docs/DESIGN-GUIDE.md", "docs/HOME-PERSISTENCE.md")
+# The one document that walks a user through the old layout may name those paths.
+EXEMPT_FROM_EVERYWHERE = ("docs/HOME-PERSISTENCE.md",)
 
 
 @pytest.mark.parametrize("doc", LIVE_DOCS)
 def test_no_live_doc_still_directs_the_reader_to_a_retired_name(doc: str) -> None:
     text = _read(doc)
-    retired = RETIRED_EVERYWHERE + (() if doc in EXPLAINERS else RETIRED_OUTSIDE_THE_EXPLAINERS)
+    retired = (() if doc in EXEMPT_FROM_EVERYWHERE else RETIRED_EVERYWHERE) + (
+        () if doc in EXPLAINERS else RETIRED_OUTSIDE_THE_EXPLAINERS
+    )
     for name in retired:
         assert name not in text, f"{doc} still mentions {name!r}"
 
 
-def test_the_namespace_rename_left_no_live_code_on_the_old_name() -> None:
-    offenders = []
-    for path in sorted(ROOT.rglob("*")):
-        relative = path.relative_to(ROOT).as_posix()
-        if path.is_symlink():
-            continue  # run-gate.py is the shared estate runner, not this project's code
+def test_every_retired_name_is_a_plain_substring_that_can_match() -> None:
+    for name in RETIRED_EVERYWHERE + RETIRED_OUTSIDE_THE_EXPLAINERS:
+        assert name and name == name.strip() and "\n" not in name, repr(name)
+
+
+# ── the rename guard: every text file of the project, both spellings of the old name ──
+
+OLD_NAME = re.compile(r"modern[- ]debian[- ]tools", re.IGNORECASE)
+# The link text/anchor of the one section that explains how to move from the old project.
+ALLOWED_PHRASES = (
+    "moving-from-modern-debian-tools-python-debug",
+    "Moving from modern-debian-tools-python-debug",
+    "(`modern-debian-tools-python-debug`) are not carried over",
+)
+# Files that legitimately name the old project, each with its reason. Anything else that
+# mentions it is a straggler of the rename.
+HISTORICAL = {
+    "CHANGES.md": "generated release history",
+    "plan-image-info-do-not-use-home.md": "dated planning record",
+    "docs/HOME-PERSISTENCE.md": "the section that explains moving from the old project",
+    "GHCR-ACCESS-GUIDE.md": "explains old-package tags",
+    "package-manifests-versioned/README.md": "links the original project's output",
+    "scripts/test_docs_in_sync.py": "this guard names the patterns",
+    "scripts/test_devcontainer_template.py": "pins the anchor and the old-layout notice",
+}
+HISTORICAL_PREFIXES = {
+    "handoff/": "dated handoff packages",
+    "benchmarks/results/": "recorded measurements",
+}
+# host-setup design records and reports (markdown only - its scripts are live code).
+HISTORICAL_MARKDOWN_PREFIXES = {"host-setup/": "design records and reports predate the rename"}
+# Never part of the tracked tree (ignored, generated, or caches).
+SKIPPED_DIRECTORIES = {
+    ".git", "__pycache__", ".pytest_cache", ".hypothesis", ".run-gate", "logs", "build",
+}
+
+
+def _project_text_files(root: Path) -> list[Path]:
+    found = []
+    for path in sorted(root.rglob("*")):
+        relative = path.relative_to(root)
         if (
-            not path.is_file() or path.suffix not in {".py", ".sh", ".hcl", ".toml", ".json", ".example"}
-            and path.name not in {"Dockerfile", "mdt", "host-escape", "mdt-perms"}
+            path.is_symlink() or not path.is_file()
+            or any(part in SKIPPED_DIRECTORIES for part in relative.parts)
         ):
             continue
-        if any(part in {".hypothesis", "__pycache__", "benchmarks", "handoff", "logs", "build", ".pytest_cache", ".run-gate"}
-               for part in path.parts) or relative.startswith("tests/runtime/__"):
+        name = relative.as_posix()
+        if name.startswith(("package-manifests-versioned/", "pip/wheels/")) and name != "package-manifests-versioned/README.md":
+            continue  # generated per build / downloaded
+        if name == "local-dev-artifacts.toml" or name.startswith(".build-env"):
+            continue  # operator-local, git-ignored
+        try:
+            path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # binary
+        found.append(path)
+    return found
+
+
+def _is_historical(relative: str) -> bool:
+    return (
+        relative in HISTORICAL
+        or any(relative.startswith(prefix) for prefix in HISTORICAL_PREFIXES)
+        or (relative.endswith(".md") and any(relative.startswith(p) for p in HISTORICAL_MARKDOWN_PREFIXES))
+    )
+
+
+def _stragglers(root: Path, files: list[Path]) -> list[str]:
+    offenders = []
+    for path in files:
+        relative = path.relative_to(root).as_posix()
+        if _is_historical(relative):
             continue
-        if relative == "scripts/test_docs_in_sync.py":
-            continue
-        # The doc section that explains moving FROM the original project names it by
-        # title; that anchor is the one legitimate live mention.
-        text = path.read_text(encoding="utf-8", errors="replace")
-        text = text.replace("moving-from-modern-debian-tools-python-debug", "").replace(
-            "Moving from modern-debian-tools-python-debug", ""
-        )
-        if "modern-debian-tools-python-debug" in text:
+        text = path.read_text(encoding="utf-8")
+        for phrase in ALLOWED_PHRASES:
+            text = text.replace(phrase, "")
+        if OLD_NAME.search(text):
             offenders.append(relative)
-    assert offenders == []
+    return offenders
+
+
+def test_the_rename_left_no_text_file_on_either_spelling_of_the_old_name() -> None:
+    files = _project_text_files(ROOT)
+    suffixes = {path.suffix for path in files}
+    # the scan really covers the suffixes the previous allowlist-based guard missed
+    assert {".md", ".in", ".list", ".conf", ".vim", ".ini", ".py", ".sh", ".hcl"} <= suffixes
+    assert _stragglers(ROOT, files) == []
+
+
+def test_the_rename_guard_catches_both_spellings_in_any_suffix(tmp_path: Path) -> None:
+    for name, content in (
+        ("a.vim", '" the Modern Debian Tools + Python Debug config'),
+        ("b.conf", "path=/usr/local/share/modern-debian-tools-python-debug"),
+        ("c.in", "MODERN DEBIAN TOOLS"),
+    ):
+        (tmp_path / name).write_text(content, encoding="utf-8")
+    (tmp_path / "d.md").write_text(
+        "see [Moving from modern-debian-tools-python-debug](x.md#moving-from-modern-debian-tools-python-debug)",
+        encoding="utf-8",
+    )
+
+    assert _stragglers(tmp_path, _project_text_files(tmp_path)) == ["a.vim", "b.conf", "c.in"]
 
 
 @pytest.mark.parametrize(

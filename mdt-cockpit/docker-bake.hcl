@@ -387,7 +387,7 @@ variable "CIU_INSTALL_REQUIRED" {
 }
 
 // Space-separated Python versions to install as lean secondary environments.
-// Each target sets this explicitly, and the value controls which .venv-py* directories are added.
+// Each target sets this explicitly, and the value controls which /opt/mdt/venvs/pyNN environments are added.
 variable "SECONDARY_PYTHON_VERSIONS" {
   default = ""
 }

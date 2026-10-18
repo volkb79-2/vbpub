@@ -1,4 +1,4 @@
-# MDT Cockpit — Modern Debian Tools + Python Debug
+# mdt-cockpit — a curated Debian + Python devcontainer cockpit
 
 A curated, reproducible Debian + Python environment with modern CLI tooling, an AI-agent
 toolchain, and a debug cockpit venv. The fork defines two GHCR package families for local
@@ -754,7 +754,7 @@ production-quality. Windows as of June 2026:
 | [docs/BUILD-ARCHITECTURE.md](docs/BUILD-ARCHITECTURE.md) | Build/repack/publication flow, cgroup boundaries, load attribution |
 | [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate; managed socket access and host namespace access |
 | [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable host governance, host escape, managed BuildKit, release adoption, the fresh-home template, and local-dev builds |
-| [docs/HOME-PERSISTENCE.md](docs/HOME-PERSISTENCE.md) | The fresh-home design, the home path inventory, and moving from `modern-debian-tools-python-debug` |
+| [docs/HOME-PERSISTENCE.md](docs/HOME-PERSISTENCE.md) | The fresh-home design, the home path inventory, and moving from the original project |
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
 | [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |
@@ -825,7 +825,7 @@ in the Python R0-R3 lane.
 
 The shipped MDT Python parser scripts prefix help, usage, missing-argument,
 unknown-argument, and configuration diagnostics at every parser depth with
-`MDT <version> — modern Debian tools and Python debug` as line 1. The value is
+`MDT <version> — mdt-cockpit` as line 1. The value is
 read from the existing `MDT_VERSION` or `MDT_IMAGE_VERSION` runtime
 environment; when neither is supplied the diagnostic says `unknown` rather
 than inventing a release version.
