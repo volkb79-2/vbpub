@@ -1,0 +1,284 @@
+# MDT testing design
+
+This document records why the MDT test surface is split between
+`tester-unified` and the shared QEMU harness.
+
+## Two environments, two claims
+
+The ordinary Python lane runs in `tester-unified`. It owns parser behavior,
+configuration validation, pure sizing invariants, mocked command boundaries,
+coverage, mutation, and the canary. Assay runs that lane at its declared R0,
+R1, R2, and R3 levels and keeps the resume and progress evidence under the
+git-ignored `.assay/` directory.
+
+The system lane runs the product assertions inside a disposable QEMU guest.
+The guest owns PID 1, systemd, cgroup v2, Docker, service files, and the
+kernel-visible configuration. The cockpit or gate container only drives the
+VM. This boundary is required because a Docker container shares the host
+kernel; a privileged container would still be able to affect host-wide
+systemd, loop, swap, or device state.
+
+The VM controller is itself governed by `CGROUP_PARENT_DEV_GATES`, probes the
+interactive tier before starting, and builds through the declared
+`BUILDX_BUILDER`. It maps a worktree source through Docker's authoritative
+mount table and refuses an unmapped or missing source. This prevents a
+container path from being passed to the daemon as if it were a host path.
+
+## VM system prerequisites live in Run-Gate
+
+The VM lane is a Run-Gate command lane. Its five host inputs are declared once
+in `run-gate.toml`, so Run-Gate can refuse before starting the controller when
+the environment is incomplete. The controller inherits the caller's selected
+Docker endpoint and Buildx configuration. Wrapping this R0 orchestration
+receipt in Assay would require a second environment allowlist to pass the same
+inputs to the shell command without adding judgment beyond Run-Gate's own
+record. Systemd, Docker, and cgroup assertions remain inside the QEMU guest;
+the Python wizard lane supplies the deeper R1-R3 evidence for behavior that
+can be reproduced safely in `tester-unified`.
+
+MDT has no owned HTTP/OpenAPI contract. Hypothesis is used for pure
+configuration invariants where generated values are meaningful; Schemathesis
+would add no evidence to this product.
+
+## PWMCP service in the image
+
+The MDT Dockerfile installs PWMCP from the same committed CMRU `get.py` and
+contract that its build inputs identify. The build helper records both source
+URLs at the exact repository commit and their SHA-256 digests; the helper
+rejects a mismatched download before running the installer. The installer
+then fetches the versioned PWMCP bundle, verifies its checksum and wheel
+manifest, and creates `/srv/pwmcp-instance` as a `vscode`-owned user-scope
+install. PWMCP is a declared release dependency, so the matching bundle exists
+before an MDT image build can consume it.
+
+The instance is preinstalled but does not start during image build. A user runs
+`ciu up` when browser service is needed. CIU's standalone root gives the
+service its own internal network and attaches the current devcontainer; this
+keeps the unauthenticated internal-network policy identical to PWMCP's other
+internal deployments. No host port is published. The installed `pwmcp` CLI
+uses the version-matched client and Playwright wheel in the same private venv.
+See the [pasteable consumer steps](CONSUMERS.md#pwmcp-browser-service).
+
+The devcontainer template puts `/srv/pwmcp-instance/bin` on remote process
+`PATH` and exports `PWMCP_MCP_URL`. The CLI lives outside `/home/vscode`, so a
+persisted home mount cannot hide it. The endpoint variable makes the network
+resource explicit; each agent harness still owns its MCP registration format.
+
+## The home is user state; image assets live outside it
+
+The devcontainer persists one host directory at `/home/vscode`. A list of
+individual home mounts made state discoverability depend on knowing which
+tools wrote which dot directories, and image-built files in unmounted parts of
+the home disappeared on rebuild. A single home source makes persistence
+complete and visible in one host path.
+
+That mount hides every file baked below `/home/vscode`, so the image has a
+strict ownership boundary:
+
+- `/opt/mdt` contains image-owned Python environments, managed Python runtimes,
+  npm CLIs, and the Oh My Zsh distribution.
+- `/usr/local/share/modern-debian-tools-python-debug` contains config seed
+  files, shipped shell defaults, and manifests.
+- `/home/vscode` contains only user state at runtime. The host bind source is
+  `~/mdt--mounted-folders/home-vscode/`; `/tmp` remains separate scratch state.
+- `/run/mdt/host-ssh` is the readonly native-host SSH integration, outside the
+  mounted home.
+
+The build moves every intended shell/editor default out of the image home and
+fails if any home child remains. After the bind mount is active, the finalizer
+seeds only missing defaults. It merges missing files into an existing config
+tree, never follows a user symlink while seeding, and does not replace a
+conflicting user path. Compatibility links such as `~/.venv` are created only
+when free; image `PATH` points directly at `/opt/mdt/venv/bin` so a user's
+existing `.venv` cannot mask the curated Python.
+
+Image npm packages are root-owned under `/opt/mdt/npm`. Runtime npm installs
+default to `~/.local`, which precedes the image prefix so users can install or
+override a CLI without modifying the image. Existing `.local` content is
+ambiguous because earlier images mixed user installs and image CLIs there, so
+the migration preserves that tree in full. Users can review and remove old
+image package copies after verifying the new image prefix.
+
+Migration must happen from a stopped container so agent databases and other
+writers are quiescent. The vendored migration utility dry-runs first, reports
+space and known exclusions, stages the copy beside the destination, writes a
+completion marker only after the copy succeeds, and never deletes old sources.
+It refuses unsupported special files and hashes regular files in both archive
+passes so it will not certify a partial or changed copy.
+It skips old image runtime paths and moves `.oh-my-zsh/custom` into the
+persistent `~/.oh-my-zsh-custom` path. Host bootstrap blocks startup when old
+split sources contain data without that marker; empty old mount directories do
+not block a clean install. See the [consumer migration steps](CONSUMERS.md#persisting-the-complete-vscode-home).
+
+Named volumes were not chosen as the default because operators need to see and
+back up the complete user home as an ordinary host directory. Individual
+mounts were not retained because each new tool would require another persistence
+decision and could again leave user state behind.
+
+## OCI names keep runtime paths stable
+
+The fork publishes the native and VSC image families as `mdt-cockpit` and
+`mdt-cockpit-devcontainer`. The persisted home keeps the established
+`~/.config/modern-debian-tools-python-debug` user-config path, and the image
+keeps its `/usr/local/share/modern-debian-tools-python-debug` support path.
+Those paths are runtime compatibility surfaces used by existing files in the
+persistent home and by the finalizer. A package rename alone does not move
+user-owned configuration; a future path migration would need an explicit
+copy/compatibility policy.
+
+## Built-image acceptance is a separate test boundary
+
+Source tests in `tester-unified` cannot certify the image filesystem or its
+runtime environment. Dockerfile install steps currently run version probes for
+some tools, and image manifest generation records selected versions. The
+current release build does not execute the final OCI artifacts. MDT-006 tracks
+an acceptance stage that runs the exact CMRU-built artifacts and verifies the
+declared runtime contract.
+
+## The estate venv is selected by PATH
+
+The MDT image puts `/opt/mdt/venv/bin` first in image and login-shell
+`PATH`. This selects the estate Python for all cockpit processes, including
+noninteractive agent commands and children started by release tools. It does
+not pretend that every process has activated a shell venv: `VIRTUAL_ENV` is
+reserved for actual activation, while the selected interpreter and its
+installed packages are determined by `PATH`.
+
+## DAMON_STAT is an explicit host choice
+
+`DAMON_STAT` and cgprofile's generic DAMON sysfs sessions are mutually
+exclusive kernel consumers. MDT asks the host operator whether to disable
+`DAMON_STAT`, recommends disabling it for the development host, and applies
+the choice through a boot-time tmpfiles rule. The non-wizard example keeps the
+kernel default. This keeps a host-wide monitoring policy out of cgprofile's
+runtime and gives the operator a clear way to preserve `DAMON_STAT` when it is
+needed for other workloads.
+
+## Managed BuildKit socket access
+
+The rootless BuildKit process creates its Unix socket with its container
+uid/gid, which may be translated by Docker `userns-remap` and need not match
+the host `docker` group. A setgid parent alone does not repair that: a live
+rootless BuildKit probe created the socket as `1000:1000`. Host setup waits for
+the socket, makes its root-owned parent non-writable, rechecks that the
+endpoint is a non-symlink socket, then compares socket owner and daemon uid
+inside the same container namespace. Only then does it change the socket to
+host group `docker`, mode `0660`. Locking the parent before the privileged
+`chgrp`/`chmod` closes a path-replacement race; the next start temporarily
+restores directory mode `01777` for socket creation. This shares the BuildKit
+API only with principals already trusted for Docker access; it does not make
+the socket world-accessible.
+
+## Bootstrap uses the source filesystem type
+
+Devcontainer bind-mount syntax declares a source and target but has no
+source-kind field. Names and suffixes do not identify a missing source's type:
+`.gitconfig` is usually a file, while `.ssh` is a directory, and custom dotfiles
+can be either. The host bootstrap checks existing host sources by their actual
+filesystem type, regardless of name or suffix. For missing sources, the
+`DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` setting controls whether MDT creates
+the path or refuses it. The shipped default, `create-by-spelling`, interprets a
+trailing `/` as a directory and no trailing `/` as an empty regular file. The
+`fail` option requires every `$HOME` source managed by the bootstrap to exist
+before Docker starts. The marker is an MDT bootstrap convention, not Docker
+mount metadata; the shipped template marks every directory source with `/`. See the
+[consumer example](CONSUMERS.md#optional-git-config-mount).
+
+The template puts Codex's shared SQLite database under the persistent `.codex` mount with
+`CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared`, so profile data survives a rebuild.
+It sets `shutdownAction: "none"` so closing the attached Dev Containers session leaves the
+container available. Adoption details are in the
+[consumer guide](CONSUMERS.md#codex-profile-state-and-container-lifetime).
+
+## Host cgroup preflight
+
+Docker accepts an unknown `--cgroup-parent` by creating a transient, unlimited
+systemd slice. A check performed from a container launched under that parent is
+too late: the check has already caused the unsafe placement it is supposed to
+prevent. The vendored `initializeCommand` runs on the Docker host before the
+devcontainer starts, so it verifies `dev-interactive.slice`,
+`dev-background.slice`, and `dev-gates.slice` are each loaded from an installed
+unit file. Missing, transient, malformed, or unqueryable units stop startup.
+
+This check is part of the host setup contract, not a fallback policy. The host
+installer creates and verifies the unit files; the bootstrap confirms the
+running systemd manager loaded them before `runArgs` can use the interactive
+slice. Gate launchers separately verify the gates slice before launching a lane.
+The initializer parses Docker's option/value boundaries in `runArgs` before
+matching the effective `--cgroup-parent` with the interactive tier. If an
+earlier value-taking option consumes a token that looks like a cgroup parent,
+or an option cannot be classified, startup refuses instead of accepting a
+decoy.
+See the [consumer setup](CONSUMERS.md#host-cgroup-preflight) for the required
+install and rebuild steps.
+
+## BuildKit guard policy
+
+The guard defaults to `report-only` because a reserved Buildx worker may be
+legitimate during a development build or image rebuild. Automatically
+removing it can abort work during export, which Docker reports as an RPC
+unexpected EOF. The report mode leaves the worker available and records the
+identity mismatch. Operators who intentionally want the guard to remove
+unapproved workers can select `terminate`; the wizard requires a second
+confirmation because this action stops a live container.
+An existing `terminate` value is not confirmation for a later plain install:
+the installer stops and disables the guard and requires the wizard to confirm
+termination again.
+
+## Per-container memory policy
+
+Parent slices already bound the combined tier, while callers such as CIU may
+set their own container memory limit or `MemoryMin` floor. An unconditional
+1G leaf cap can stop an otherwise valid workload and may conflict with that
+floor. The inotify watcher therefore ships with both per-container memory
+values set to `-` for each tier. Operators can configure a leaf cap where a
+workload needs one, then explicitly confirm enabling it in the wizard; the
+wizard keeps it disabled when that confirmation is declined. Any configured
+cap must remain compatible with the other memory properties on that scope.
+`WATCHER_MEMORY_POLICY=disabled` is the shipped setting and requires all six
+leaf values to be `-`; `WATCHER_MEMORY_POLICY=enabled` requires at least one
+configured value. The installer rejects mismatched policy/value combinations
+instead of ignoring configured values or starting an empty watcher. During
+upgrades, if an older host config has leaf values but no policy key, the wizard
+carries those values forward for review and confirmation.
+
+## Shared io.cost generator
+
+MDT and `debian-install-v2` use one generated copy of the Linux kernel's
+`iocost_coef_gen.py`. The pristine vendor file stays byte-for-byte intact;
+explicit patches carry the local LVM, file-target, no-COW, and partition
+sysfs behavior. The generator records hashes for its source and patch series,
+and `tools/build-iocost-generator.py --check` verifies the checked-in runtime
+artifact. This keeps calibration behavior aligned without copying one
+consumer's local fork over another. MDT always uses a persistent file target
+on the Docker-data filesystem; automated scratch-partition setup remains a
+separate reviewed change.
+
+The file target is explicitly disposable benchmark scratch. Calibration
+rewrites its contents, including when an existing exact-size file is reused.
+The generator refuses to replace a symlink, non-regular file, multiply linked
+file, or file with a different size, so changing a target's shape requires an
+explicit operator action instead of silently unlinking the prior path.
+
+## Host namespace access
+
+An MDT devcontainer cannot inspect or change the host's cgroup tree through
+its private cgroup namespace. `host-escape` provides one documented route for
+host diagnostics: it starts a privileged helper and enters the selected host
+process's mount, UTS, network, IPC, and cgroup namespaces. This keeps operators
+from improvising several subtly different escape commands, but it is not a
+sandbox: every command runs with host-root authority. Since that helper can
+touch the host cgroup mount namespace, it runs `mdt doctor` on exit to restore
+required cgroup2 flags if needed; `mdt doctor --check-only` provides a
+read-only check.
+
+## Release relationship
+
+The `release` run-gate lane contains the image release-flow tests and is the
+single declaration consumed by `cmru.toml`. The image build and push remain
+CMRU steps, while the acceptance checks stay in `tester-unified`; this keeps
+the release transaction from carrying a second hand-written test recipe.
+
+See the [README testing section](../README.md#testing) for the user-facing
+lane list and [CONSUMERS.md](CONSUMERS.md) for commands and environment
+requirements.

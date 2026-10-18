@@ -1,0 +1,43 @@
+{
+  "$schema": "https://lnav.org/schemas/format-v1.schema.json",
+  "nyxloom_events": {
+    "title": "nyxloom events",
+    "description": "nyxloom per-project event-store JSONL (events.jsonl, and the identical `nyxloom events` dump). Schema: nyxloom/src/nyxloom/types.py Event / storage.py append_event.",
+    "json": true,
+    "file-pattern": ".*/events\\.jsonl(\\.[0-9]+)?$",
+    "timestamp-field": "timestamp",
+    "timestamp-format": ["%Y-%m-%dT%H:%M:%S.%f%z"],
+    "level-field": "type",
+    "level": {
+      "error": "^(ATTEMPT_FAILED|TICK_ERROR|BUDGET_EXHAUSTED|NOTIFICATION_FAILED)$",
+      "warning": "^(TASK_BLOCKED|TASK_CANCELLED|ATTEMPT_STALLED|ATTEMPT_INTERRUPTED|NEEDS_OPERATOR|SPEC_ATTENTION|BUDGET_WARNING|PAUSE_SET)$"
+    },
+    "body-field": "payload",
+    "line-format": [
+      { "field": "type", "min-width": 20 },
+      " ",
+      { "field": "project" },
+      " ",
+      { "field": "actor/kind" },
+      ":",
+      { "field": "actor/id" },
+      " seq=",
+      { "field": "sequence" },
+      " ",
+      { "field": "payload" }
+    ],
+    "value": {
+      "schema_version": { "kind": "integer", "hidden": true },
+      "sequence": { "kind": "integer", "foreign-key": true },
+      "project": { "kind": "string", "identifier": true },
+      "type": { "kind": "string", "identifier": true },
+      "actor/kind": { "kind": "string", "identifier": true },
+      "actor/id": { "kind": "string", "identifier": true },
+      "task_id": { "kind": "string", "identifier": true },
+      "attempt_id": { "kind": "string", "identifier": true },
+      "wave_id": { "kind": "string", "identifier": true },
+      "decision_id": { "kind": "string", "identifier": true },
+      "payload": { "kind": "json" }
+    }
+  }
+}

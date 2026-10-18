@@ -26,6 +26,8 @@ registry = ["ghcr.io"]
 #   pwmcp <- cli-extended, cmru  (declared release order)
 #   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
+#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
+#     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
 #   tls-edge <- cmru  (declared release order)
 #   cgroup-profiler <- cmru  (declared release order)
 #
@@ -33,7 +35,7 @@ registry = ["ghcr.io"]
 #   L0: cli-extended
 #   L1: cmru
 #   L2: ciu, run-gate-project, assay, topos, nyxloom, pwmcp, tls-edge, cgroup-profiler
-#   L3: modern-debian-tools-python-debug
+#   L3: modern-debian-tools-python-debug, mdt-cockpit
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
@@ -41,9 +43,9 @@ registry = ["ghcr.io"]
 # LEVELS (W3-ZERO; `cmru dependencies` prints the derived level table):
 #   L0 cli-extended | L1 cmru | L2 projects whose build/release tooling is cmru
 #   (ciu, run-gate-project, assay, topos, nyxloom, pwmcp, tls-edge, cgroup-profiler)
-#   | L3 modern-debian-tools-python-debug (stages the wheels of L0-L2).
+#   | L3 modern-debian-tools-python-debug, mdt-cockpit (stage the wheels of L0-L2).
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "pwmcp", "modern-debian-tools-python-debug", "tls-edge", "cgroup-profiler"]
+project_order = ["cli-extended", "cmru", "ciu", "run-gate-project", "assay", "topos", "nyxloom", "pwmcp", "modern-debian-tools-python-debug", "mdt-cockpit", "tls-edge", "cgroup-profiler"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -175,6 +177,11 @@ config = "modern-debian-tools-python-debug/cmru.toml"
 # cli-extended: cmru's wheel requires it and the image install is `pip --no-index`
 # (pip/wheels.list stages it). PWMCP is also released first so the image can install
 # its exact CIU root and client CLI through the generated CMRU get.py.
+depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
+
+[orchestration.project.mdt-cockpit]
+config = "mdt-cockpit/cmru.toml"
+# The fork uses the same first-party CIU and CLI tooling in its image.
 depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
 
 [orchestration.project.pwmcp]

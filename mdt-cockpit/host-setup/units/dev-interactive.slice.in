@@ -1,0 +1,66 @@
+# RENDERED by host-setup/install.sh from host-setup.env — do not edit the
+# installed copy; edit /etc/mdt/host-setup.env and re-run install.sh.
+[Unit]
+Description=Interactive devcontainers + IDE — responsive, bounded, below any production tier
+Before=slices.target
+
+[Slice]
+# NOTE: no explicit parent directive — systemd derives nesting from the
+# dash-separated name (same mechanism nyxloom-gates.slice uses under
+# nyxloom.slice): "dev-interactive.slice" nests under "dev.slice"
+# automatically once dev.slice.in is also installed. See units/dev.slice.in
+# for the shared IOPS/bandwidth ceiling this tier inherits from there.
+
+# Generous ceilings: this tier is also the VS Code / IDE server — a too-low
+# MemoryMax OOM-kills the IDE. memory.high throttling into zswap is the
+# intended pressure valve; the hard cap is only the leak backstop.
+MemoryMin=@DEV_INTERACTIVE_MEMORY_MIN@
+MemoryHigh=@DEV_INTERACTIVE_MEMORY_HIGH@
+MemoryMax=@DEV_INTERACTIVE_MEMORY_MAX@
+# Soft protection of the IDE working set against OTHER tiers' pressure.
+# NOTE: this only reaches the container's pages if cgroup2 is mounted with
+# memory_recursiveprot (the systemd >= 248 boot default — but runtime remounts
+# can strip it; check.sh verifies, mdt-dev-governance-reconcile.sh warns/fixes).
+MemoryLow=@DEV_INTERACTIVE_MEMORY_LOW@
+
+CPUWeight=@DEV_INTERACTIVE_CPU_WEIGHT@
+# Absolute ceiling too, same "single tier can't alone claim the whole
+# parent budget" reasoning as dev.slice's own CPUQuota — see
+# units/dev.slice.in.
+CPUQuota=@DEV_INTERACTIVE_CPU_QUOTA@
+# CPU ratios are exact; IO ratios are NOT on a BFQ host unless the weights stay
+# <= 100 (systemd rescales IOWeight 1..10000 into BFQ's 1..1000, compressing
+# everything above 100 by ~11x). See CGROUP-NOTES.md §BFQ.
+IOWeight=@DEV_INTERACTIVE_IO_WEIGHT@
+
+# NO absolute IO cap here — the shared parent dev.slice carries the one
+# IOPS/bandwidth ceiling for this tier AND dev-background.slice combined (host
+# dev-tier cgroup governance rollout: even interactive/IDE activity must not
+# be able to starve production I/O). See units/dev.slice.in. (Unlike CPU and
+# swap, no per-tier IOPS sub-ceiling for this tier either — that's only on
+# dev-gates.slice/dev-buildkitd.slice, see those units.)
+
+# Same swap-capacity reasoning as dev-background.slice's own MemorySwapMax:
+# auto-detected from this host's real total swap (DEV_SWAP_CASCADE_PCT% of
+# dev.slice's own derived ceiling, itself DEV_SWAP_CASCADE_PCT% of the host
+# total) unless set explicitly — see host-setup.env.example.
+MemorySwapMax=@DEV_INTERACTIVE_MEMORY_SWAP_MAX@
+
+# Whether this tier's coldest pages may drain from zswap out to disk swap.
+# Shipped default is "yes": zswap is a cache, and letting its LRU evict the
+# coldest-of-cold keeps pool RAM available for pages that are actually warm.
+# Set DEV_INTERACTIVE_ZSWAP_WRITEBACK=no to pin the cold tail in compressed RAM
+# instead — that avoids disk swap-in stalls in the IDE, but permanently spends
+# pool RAM on pages nobody is touching. See host-setup.env.example.
+# (Directive needs systemd >= 256; install.sh drops this line on older hosts
+# and mdt-dev-governance-reconcile.sh raw-writes memory.zswap.writeback as the fallback.)
+# NOTE: this is a per-cgroup toggle, NOT inherited from dev.slice's own value
+# above (or vice versa) — every tier needs its own explicit line to state its
+# own intent. Full reasoning: units/dev.slice.in's own MemoryZSwapWriteback
+# comment, CGROUP-NOTES.md "zswap writeback — who may page to disk".
+MemoryZSwapWriteback=@DEV_INTERACTIVE_ZSWAP_WRITEBACK@
+
+# Deliberately NO ManagedOOM* here: never OOM-kill the IDE tier.
+# Devcontainers join via devcontainer.json runArgs:
+#   "--cgroup-parent=dev-interactive.slice"
+# (see ../templates/devcontainer.json — placement is CREATE-time only).

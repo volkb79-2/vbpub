@@ -1,0 +1,14 @@
+# RENDERED by host-setup/install.sh from host-setup.env (WATCHER_INTERVAL).
+# Periodic re-apply: catches containers created after boot — buildx_buildkit_*
+# workers appear on demand and can't be placed via compose cgroup_parent;
+# devcontainers get recreated on every rebuild. The sweep is idempotent.
+[Unit]
+Description=mdt host-setup — periodic dev governance reconciliation
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=@WATCHER_INTERVAL@
+Unit=mdt-dev-governance-reconcile.service
+
+[Install]
+WantedBy=timers.target

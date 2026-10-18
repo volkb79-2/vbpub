@@ -1,0 +1,5 @@
+# First-party wheel files downloaded by scripts/resolve-devcontainers-release.py.
+# These are binary build artifacts — not committed; regenerated at build time.
+# The resolver downloads them from cmru-v* GitHub Releases into this directory.
+*.whl
+*.whl.sha256

@@ -1,0 +1,484 @@
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+# Privileged sidecar: digest-pinned, started --pull=never (must be local).
+# `docker image inspect --format '{{index .RepoDigests 0}}' docker:dind`, 2026-10-05.
+CMRU_TESTER_DIND_IMAGE = "docker@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e"
+# Required DinD limits (nested containers draw on these, separate from the workload's).
+CMRU_TESTER_DIND_MEMORY = "2g"
+CMRU_TESTER_DIND_CPUS = "1.5"
+CMRU_TESTER_DIND_PIDS_LIMIT = "2048"
+RELEASE_IMAGE_FLOW = "load"
+IMAGE_COMPRESSION = "zstd"
+IMAGE_COMPRESSION_LEVEL = "3"
+IMAGE_FORCE_COMPRESSION = "false"
+IMAGE_OCI_MEDIA_TYPES = "true"
+IMAGE_PROVENANCE_MODE = "max"
+IMAGE_SBOM = "true"
+BUILDX_BUILDER = "mdt-managed"
+BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
+REPACK_WORK_DIR = "build/repack"
+REPACK_TARGET_SIZE = "2GB"
+REPACK_COMPRESSION_LEVEL = "9"
+REPACK_JOBS = "1"
+REPACK_CONCURRENCY = "2"
+REPACK_VMEM_KB = "unlimited"
+REPACK_KEEP_FAILED = "true"
+DOCKER_REPACK_LOG = "warn"
+OCI_VENDOR = "Volker Badziong"
+OCI_DESCRIPTION = "Modern Debian Tools + Python Debug image family. Includes curated Debian/Python tooling and CIU-focused workflow tools."
+OCI_DESCRIPTION_BASE = "Modern Debian Tools + Python Debug base image."
+OCI_DESCRIPTION_VSC = "Modern Debian Tools + Python Debug VS Code devcontainer image."
+
+[build_metadata]
+date_env = "BUILD_DATE"
+date_format = "%Y%m%d"
+
+[project]
+id = "mdt-cockpit"
+description = "Curated Debian and Python development/debug container images."
+template_revision = 4
+prefix = "mdt-cockpit-v"
+artifacts = ["oci-image"]
+
+[project.version]
+strategy = "none"
+bump = "conventional"
+
+[project.release]
+git_tag = false
+build_step = "prepare"
+commit_generated = ["package-manifests-versioned"]
+artifact_dirs = ["package-manifests-versioned"]
+
+[steps.prepare]
+quiet = true
+commands = [
+  { label = "mdt-cockpit: private build and manifest extraction", argv = ["python3", "build-push.py", "--build"], cwd = "." },
+]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "mdt-cockpit: run-gate release lane", argv = ["./run-gate.py", "release"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+no_cache_env = "BUILD_NO_CACHE"
+bake_set_prefix = "base.args."
+bake_set_vars = ["AWSCLI_VERSION", "B2_VERSION", "BACKPORTS_URI", "BAT_VERSION", "CRANE_VERSION", "REGCTL_VERSION", "CODEX_VERSION", "CLAUDE_CODE_VERSION", "ANTIGRAVITY_VERSION", "AIDER_VERSION", "REASONIX_VERSION", "OPENCLAW_VERSION", "OPENCODE_VERSION", "INSTALL_CODEX", "INSTALL_CLAUDE_CODE", "INSTALL_ANTIGRAVITY", "INSTALL_AIDER", "INSTALL_REASONIX", "INSTALL_OPENCLAW", "INSTALL_OPENCODE", "NODE_MAJOR", "ENABLE_KSM_OPTIN", "DELTA_VERSION", "GH_VERSION", "GRPCURL_VERSION", "LNAV_VERSION", "CONSUL_VERSION", "FD_VERSION", "FZF_VERSION", "POSTGRESQL_CLIENT_VERSION", "REDIS_TOOLS_VERSION", "RIPGREP_VERSION", "RGA_VERSION", "SHELLCHECK_VERSION", "VAULT_VERSION", "YQ_VERSION", "NVIM_VER", "NVCHAD_VER", "GITHUB_USERNAME", "GITHUB_REPO", "PWMCP_VERSION", "PWMCP_GETPY_URL", "PWMCP_GETPY_SHA256", "PWMCP_CONTRACT_URL", "PWMCP_CONTRACT_SHA256", "CIU_WHEEL_TAG", "CIU_WHEEL_ASSET_NAME", "CIU_INSTALL_REQUIRED", "OCI_TITLE", "OCI_DESCRIPTION", "OCI_DESCRIPTION_BASE", "OCI_DESCRIPTION_VSC", "OCI_SOURCE", "OCI_DOCUMENTATION", "OCI_URL", "OCI_LICENSES", "OCI_VENDOR", "OCI_VERSION", "OCI_REVISION", "OCI_CREATED", "BUILD_TIMESTAMP", "DEVCONTAINERS_RELEASE_STABLE", "DEVCONTAINERS_RELEASE_DEV", "DEVCONTAINERS_VERSION_STABLE", "DEVCONTAINERS_VERSION_DEV", "DEVCONTAINERS_BASE_DYNAMIC_LATEST", "DEVCONTAINERS_DYNAMIC_LATEST_TAG", "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON", "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN"]
+commands = [
+  { label = "mdt-cockpit: build images", argv = ["bash", "scripts/release-bake.sh", "build"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+bake_set_prefix = "base.args."
+bake_set_vars = ["AWSCLI_VERSION", "B2_VERSION", "BACKPORTS_URI", "BAT_VERSION", "CRANE_VERSION", "REGCTL_VERSION", "CODEX_VERSION", "CLAUDE_CODE_VERSION", "ANTIGRAVITY_VERSION", "AIDER_VERSION", "REASONIX_VERSION", "OPENCLAW_VERSION", "OPENCODE_VERSION", "INSTALL_CODEX", "INSTALL_CLAUDE_CODE", "INSTALL_ANTIGRAVITY", "INSTALL_AIDER", "INSTALL_REASONIX", "INSTALL_OPENCLAW", "INSTALL_OPENCODE", "NODE_MAJOR", "ENABLE_KSM_OPTIN", "DELTA_VERSION", "GH_VERSION", "GRPCURL_VERSION", "LNAV_VERSION", "CONSUL_VERSION", "FD_VERSION", "FZF_VERSION", "POSTGRESQL_CLIENT_VERSION", "REDIS_TOOLS_VERSION", "RIPGREP_VERSION", "RGA_VERSION", "SHELLCHECK_VERSION", "VAULT_VERSION", "YQ_VERSION", "NVIM_VER", "NVCHAD_VER", "GITHUB_USERNAME", "GITHUB_REPO", "PWMCP_VERSION", "PWMCP_GETPY_URL", "PWMCP_GETPY_SHA256", "PWMCP_CONTRACT_URL", "PWMCP_CONTRACT_SHA256", "CIU_WHEEL_TAG", "CIU_WHEEL_ASSET_NAME", "CIU_INSTALL_REQUIRED", "OCI_TITLE", "OCI_DESCRIPTION", "OCI_DESCRIPTION_BASE", "OCI_DESCRIPTION_VSC", "OCI_SOURCE", "OCI_DOCUMENTATION", "OCI_URL", "OCI_LICENSES", "OCI_VENDOR", "OCI_VERSION", "OCI_REVISION", "OCI_CREATED", "BUILD_TIMESTAMP", "DEVCONTAINERS_RELEASE_STABLE", "DEVCONTAINERS_RELEASE_DEV", "DEVCONTAINERS_VERSION_STABLE", "DEVCONTAINERS_VERSION_DEV", "DEVCONTAINERS_BASE_DYNAMIC_LATEST", "DEVCONTAINERS_DYNAMIC_LATEST_TAG", "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON", "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN"]
+required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
+commands = [
+  { label = "mdt-cockpit: push images", argv = ["bash", "scripts/release-bake.sh", "push"], cwd = "." },
+]
+
+[versions]
+
+[versions.discovery]
+requirements_files = ["requirements/toolkit.txt"]
+
+[versions.targets]
+
+[versions.targets."pypi.debugpy"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.debugpy".pypi]
+name = "debugpy"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.ipdb"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.ipdb".pypi]
+name = "ipdb"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.ipython"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.ipython".pypi]
+name = "ipython"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.ruff"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.ruff".pypi]
+name = "ruff"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.mypy"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.mypy".pypi]
+name = "mypy"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest".pypi]
+name = "pytest"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest-asyncio"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest-asyncio".pypi]
+name = "pytest-asyncio"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest-cov"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest-cov".pypi]
+name = "pytest-cov"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest-mock"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest-mock".pypi]
+name = "pytest-mock"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest-xdist"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest-xdist".pypi]
+name = "pytest-xdist"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.coverage"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.coverage".pypi]
+name = "coverage"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.build"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.build".pypi]
+name = "build"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.twine"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.twine".pypi]
+name = "twine"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.setuptools-scm"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.setuptools-scm".pypi]
+name = "setuptools-scm"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.check-wheel-contents"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.check-wheel-contents".pypi]
+name = "check-wheel-contents"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pip-audit"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pip-audit".pypi]
+name = "pip-audit"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pre-commit"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pre-commit".pypi]
+name = "pre-commit"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.uv"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.uv".pypi]
+name = "uv"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.tox"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.tox".pypi]
+name = "tox"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.requests"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.requests".pypi]
+name = "requests"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.httpx"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.httpx".pypi]
+name = "httpx"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.aiohttp"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.aiohttp".pypi]
+name = "aiohttp"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.boto3"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.boto3".pypi]
+name = "boto3"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.asyncpg"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.asyncpg".pypi]
+name = "asyncpg"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.redis"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.redis".pypi]
+name = "redis"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.hvac"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.hvac".pypi]
+name = "hvac"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.sqlalchemy"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.sqlalchemy".pypi]
+name = "sqlalchemy"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.dnspython"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.dnspython".pypi]
+name = "dnspython"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.websockets"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.websockets".pypi]
+name = "websockets"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pydantic"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pydantic".pypi]
+name = "pydantic"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pydantic-settings"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pydantic-settings".pypi]
+name = "pydantic-settings"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.structlog"]
+mode = "single"
+constraint = "<27"
+
+[versions.targets."pypi.structlog".pypi]
+name = "structlog"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pyyaml"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pyyaml".pypi]
+name = "pyyaml"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.jsonschema"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.jsonschema".pypi]
+name = "jsonschema"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.jinja2"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.jinja2".pypi]
+name = "jinja2"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.tomli-w"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.tomli-w".pypi]
+name = "tomli-w"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.click"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.click".pypi]
+name = "click"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.rich"]
+mode = "single"
+constraint = ">=15.0.0"
+
+[versions.targets."pypi.rich".pypi]
+name = "rich"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pygments"]
+mode = "single"
+constraint = ">=2.21.0"
+
+[versions.targets."pypi.pygments".pypi]
+name = "pygments"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.textual"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.textual".pypi]
+name = "textual"
+registry = "https://pypi.org"
+
+[versions.targets."oci.python.311.bookworm"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.311.bookworm".oci]
+image = "docker.io/library/python"
+tag = "3.11-bookworm"
+selection = "rolling"
+
+[versions.targets."oci.python.313.bookworm"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.313.bookworm".oci]
+image = "docker.io/library/python"
+tag = "3.13-bookworm"
+selection = "rolling"
+
+[versions.targets."oci.python.311.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.311.trixie".oci]
+image = "docker.io/library/python"
+tag = "3.11-trixie"
+selection = "rolling"
+
+[versions.targets."oci.python.313.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.313.trixie".oci]
+image = "docker.io/library/python"
+tag = "3.13-trixie"
+selection = "rolling"
+
+[versions.targets."oci.python.314.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.314.trixie".oci]
+image = "docker.io/library/python"
+tag = "3.14-trixie"
+selection = "rolling"
+
+[versions.targets."oci.devcontainers-python.311.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.devcontainers-python.311.trixie".oci]
+image = "mcr.microsoft.com/devcontainers/python"
+tag = "3.11-trixie"
+selection = "rolling"
+
+[versions.targets."oci.devcontainers-python.313.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.devcontainers-python.313.trixie".oci]
+image = "mcr.microsoft.com/devcontainers/python"
+tag = "3.13-trixie"
+selection = "rolling"
+
+[versions.targets."oci.devcontainers-python.314.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.devcontainers-python.314.trixie".oci]
+image = "mcr.microsoft.com/devcontainers/python"
+tag = "3.14-trixie"
+selection = "rolling"

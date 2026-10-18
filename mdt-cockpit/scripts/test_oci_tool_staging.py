@@ -1,0 +1,215 @@
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import io
+import subprocess
+import sys
+import tarfile
+import tempfile
+import tomllib
+import unittest
+from pathlib import Path
+from unittest import mock
+
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import stage_tool_artifacts as staging  # noqa: E402
+import manifest_sections  # noqa: E402
+
+_resolver_spec = importlib.util.spec_from_file_location(
+    "resolve_devcontainers_release", ROOT / "scripts/resolve-devcontainers-release.py"
+)
+assert _resolver_spec is not None and _resolver_spec.loader is not None
+resolver = importlib.util.module_from_spec(_resolver_spec)
+_resolver_spec.loader.exec_module(resolver)
+
+
+class OciToolStagingTests(unittest.TestCase):
+    def test_base_image_pull_failure_preserves_bounded_docker_diagnostic(self) -> None:
+        failed = subprocess.CompletedProcess(
+            ["docker", "pull", "example.invalid/image:tag"],
+            1,
+            stdout="",
+            stderr="permission denied while trying to connect to the docker API",
+        )
+        with mock.patch.object(resolver.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, "permission denied.*docker API"):
+                resolver.pull_fresh("example.invalid/image:tag")
+
+    def test_base_image_pull_failure_truncates_unbounded_docker_output(self) -> None:
+        failed = subprocess.CompletedProcess(
+            ["docker", "pull", "example.invalid/image:tag"],
+            1,
+            stdout="",
+            stderr="x" * 3000,
+        )
+        with mock.patch.object(resolver.subprocess, "run", return_value=failed):
+            with self.assertRaises(RuntimeError) as raised:
+                resolver.pull_fresh("example.invalid/image:tag")
+        message = str(raised.exception)
+        self.assertLessEqual(
+            len(message),
+            len("Failed to pull base image: example.invalid/image:tag\n") + 2001,
+        )
+        self.assertTrue(message.endswith("…"))
+
+    def test_live_discovery_payloads_are_never_artifact_cache_entries(self) -> None:
+        self.assertFalse(
+            staging._cacheable_download(
+                "https://api.github.com/repos/example/tool/releases/latest",
+                staging.STAGE_ROOT / "tmp-json-response",
+            )
+        )
+        self.assertFalse(
+            staging._cacheable_download(
+                "https://example.invalid/latest",
+                staging.STAGE_ROOT / "tmp-text-response",
+            )
+        )
+
+    def test_verified_artifact_cache_restores_bytes_without_network(self) -> None:
+        url = "https://example.invalid/releases/tool-1.2.3.tar.gz"
+        payload = b"verified artifact"
+        with tempfile.TemporaryDirectory() as temp:
+            cache = Path(temp) / "cache"
+            destination = Path(temp) / "stage" / "tool.tar.gz"
+            source = Path(temp) / "source"
+            source.write_bytes(payload)
+            with mock.patch.object(staging, "_artifact_cache_dir", return_value=cache):
+                staging._store_cached_download(url, url, source)
+                self.assertEqual(staging._restore_cached_download(url, destination), url)
+
+            self.assertEqual(destination.read_bytes(), payload)
+
+    def test_github_asset_digest_parser_is_strict(self) -> None:
+        digest = "a" * 64
+        payload = {"assets": [{"name": "regctl-linux-amd64", "digest": f"sha256:{digest}"}]}
+        self.assertEqual(
+            staging._parse_github_asset_sha256(payload, "regctl-linux-amd64"),
+            digest,
+        )
+        with self.assertRaises(staging.StageError):
+            staging._parse_github_asset_sha256(
+                {"assets": [{"name": "regctl-linux-amd64", "digest": "sha1:deadbeef"}]},
+                "regctl-linux-amd64",
+            )
+
+    def test_regctl_uses_github_asset_digest_and_writes_offline_sidecar(self) -> None:
+        binary = b"regctl-test-binary"
+        expected = hashlib.sha256(binary).hexdigest()
+        release = {
+            "assets": [
+                {
+                    "name": "regctl-linux-amd64",
+                    "digest": f"sha256:{expected}",
+                }
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as temp:
+            downloads = Path(temp)
+
+            def fake_download(url: str, destination: Path, **_: object) -> str:
+                destination.write_bytes(binary)
+                return url
+
+            records: list[staging.StagedArtifact] = []
+            with (
+                mock.patch.object(staging, "DOWNLOADS_DIR", downloads),
+                mock.patch.object(staging, "_fetch_json", return_value=release),
+                mock.patch.object(staging, "_download", side_effect=fake_download),
+            ):
+                staging._stage_regctl("1.2.3", records)
+
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].tool, "regctl")
+            self.assertEqual(records[0].sha256, expected)
+            self.assertEqual(
+                (downloads / "regctl-1.2.3.sha256").read_text(),
+                f"{expected}  regctl-1.2.3-linux-amd64\n",
+            )
+
+    def test_crane_uses_upstream_checksum_file(self) -> None:
+        archive_stream = io.BytesIO()
+        with tarfile.open(fileobj=archive_stream, mode="w:gz") as archive:
+            member = tarfile.TarInfo("crane")
+            member.mode = 0o755
+            payload = b"crane-test-binary"
+            member.size = len(payload)
+            archive.addfile(member, io.BytesIO(payload))
+        archive_bytes = archive_stream.getvalue()
+        expected = hashlib.sha256(archive_bytes).hexdigest()
+
+        with tempfile.TemporaryDirectory() as temp:
+            downloads = Path(temp)
+
+            def fake_download(url: str, destination: Path, **_: object) -> str:
+                if destination.name.endswith("checksums.txt"):
+                    destination.write_text(
+                        f"{expected}  go-containerregistry_Linux_x86_64.tar.gz\n"
+                    )
+                else:
+                    destination.write_bytes(archive_bytes)
+                return url
+
+            records: list[staging.StagedArtifact] = []
+            with (
+                mock.patch.object(staging, "DOWNLOADS_DIR", downloads),
+                mock.patch.object(staging, "_download", side_effect=fake_download),
+            ):
+                staging._stage_crane("1.2.3", records)
+
+            self.assertEqual([record.tool for record in records], ["crane", "crane-checksums"])
+            self.assertEqual(records[0].sha256, expected)
+
+    def test_image_and_release_configuration_are_wired(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text()
+        bake = (ROOT / "docker-bake.hcl").read_text()
+        manifest = (ROOT / "scripts" / "manifest_sections.py").read_text()
+        resolver = (ROOT / "scripts" / "resolve-devcontainers-release.py").read_text()
+        config = tomllib.loads((ROOT / "cmru.toml").read_text())
+
+        for requested, resolved, binary in (
+            ("CRANE_VERSION", "CRANE_VER", "crane"),
+            ("REGCTL_VERSION", "REGCTL_VER", "regctl"),
+        ):
+            self.assertIn(f'variable "{requested}"', bake)
+            self.assertIn(f"ARG {requested}", dockerfile)
+            self.assertIn(resolved, dockerfile)
+            self.assertIn(f'"{binary}"', manifest)
+            self.assertIn(resolved, resolver)
+            for step in ("build", "push"):
+                self.assertIn(requested, config["steps"][step]["bake_set_vars"])
+
+        self.assertIn(
+            "regctl version 2>&1 | awk '/^VCSTag:/ "
+            "{ sub(/^v/, \"\", $2); print $2; exit }'",
+            dockerfile,
+        )
+
+    def test_generated_manifest_links_digest_to_immutable_source(self) -> None:
+        digest = "1" * 64
+        source = (
+            "https://github.com/google/go-containerregistry/releases/download/"
+            "v1.2.3/go-containerregistry_Linux_x86_64.tar.gz"
+        )
+        rendered = "\n".join(
+            manifest_sections.render_tool_table(
+                {"crane": "1.2.3"},
+                artifact_map={
+                    "crane": {
+                        "sha256": digest,
+                        "source_url": source,
+                    }
+                },
+            )
+        )
+        self.assertIn("`1.2.3`", rendered)
+        self.assertIn(f"[`sha256:{digest[:24]}…`]({source})", rendered)
+
+
+if __name__ == "__main__":
+    unittest.main()

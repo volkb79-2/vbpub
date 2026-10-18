@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# host-escape — thin backward-compat alias for `mdt host-exec` / `mdt host-shell`.
+# The escape mechanism (and the cgroup2 self-heal that now runs after every
+# use — see host-setup/CGROUP-NOTES.md §5) lives in `mdt`; new scripts should
+# call that directly. Kept so existing muscle-memory or references to this
+# name keep working. Same -t/--target and argv passthrough as before.
+set -euo pipefail
+
+if [[ $# -eq 0 ]]; then
+    exec mdt host-shell
+fi
+case "$1" in
+    -h|--help|help)
+        exec mdt --help
+        ;;
+esac
+exec mdt host-exec "$@"
