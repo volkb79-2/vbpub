@@ -3,13 +3,17 @@
 tooling incompatibility between buildx's OCI export, crane, and regctl shows
 up here instead of only during a real release.
 
-Skipped automatically when docker/buildx/crane/regctl aren't available (e.g. a
-restricted CI runner) rather than failing the whole suite.
+This test belongs to the `oci-push` lane, which runs in the mdt-cockpit image (it ships
+docker, buildx, crane and regctl; tester-unified does not) with the host docker socket
+(MDTC-02 T6). There the environment sets MDT_OCI_PUSH_REQUIRED=1 and a missing tool or an
+unreachable registry is a FAILURE, never a skip. Without that flag (a developer's own
+shell) a missing tool still skips, so the suite does not fail where it cannot run.
 """
 from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -35,6 +39,31 @@ def _tools_available() -> bool:
     return all(shutil.which(tool) for tool in ("docker", "crane", "regctl", "curl", "tar"))
 
 
+REQUIRED_ENV = "MDT_OCI_PUSH_REQUIRED"
+
+
+def precondition_outcome(required: bool, missing: list[str]) -> None:
+    """Raise the outcome for a missing precondition: a failure when the lane requires the
+    test to run, a skip otherwise. Returns normally when nothing is missing."""
+    if not missing:
+        return
+    message = "not available: " + ", ".join(missing)
+    if required:
+        raise AssertionError(f"{REQUIRED_ENV}=1 but the oci-push test cannot run ({message})")
+    raise unittest.SkipTest(message)
+
+
+def _missing() -> list[str]:
+    missing = [tool for tool in ("docker", "crane", "regctl", "curl", "tar") if not shutil.which(tool)]
+    if not missing and not _docker_reachable():
+        missing.append("a reachable docker daemon")
+    return missing
+
+
+def _required() -> bool:
+    return os.environ.get(REQUIRED_ENV) == "1"
+
+
 def _docker_reachable() -> bool:
     try:
         _docker("version", "--format", "{{.Server.Version}}")
@@ -43,13 +72,13 @@ def _docker_reachable() -> bool:
         return False
 
 
-@unittest.skipUnless(_tools_available() and _docker_reachable(), "docker/crane/regctl not available")
 class OciLayoutPushTests(unittest.TestCase):
     """Build a tiny throwaway image, push it to a real registry:2 container, and
     exercise build-push.py's digest-verified push mechanics against it."""
 
     @classmethod
     def setUpClass(cls) -> None:
+        precondition_outcome(_required(), _missing())
         cls.build_push = _load_build_push()
         cls.work = Path(tempfile.mkdtemp(prefix="mdt-oci-push-test-"))
 
@@ -86,7 +115,8 @@ class OciLayoutPushTests(unittest.TestCase):
             )
             if probe.returncode == 0:
                 return f"{host}:{port}"
-        raise unittest.SkipTest(f"local registry:2 (port {port}) not reachable from this process")
+        precondition_outcome(_required(), [f"local registry:2 (port {port}) reachable from this process"])
+        raise AssertionError("unreachable")  # precondition_outcome always raises for a non-empty list
 
     def _build_oci_layout(self, name: str, marker_path: str, marker_content: str) -> Path:
         """Build a tiny image via buildx --output type=oci and extract it to a

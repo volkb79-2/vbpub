@@ -606,6 +606,13 @@ do not list still come from their releases. The images are loaded into your loca
 
 ## Release consumer
 
+A release also runs the `oci-push` lane (the push mechanics against a real local registry,
+inside the image you are releasing): name the image ref for it.
+
+```bash
+MDT_OCI_PUSH_IMAGE=ghcr.io/volkb79-2/mdt-cockpit:<tag> ./run-gate.py oci-push
+```
+
 The MDT release configuration (schema version 1) contains these values:
 
 ```toml

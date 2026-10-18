@@ -64,6 +64,7 @@ commands = [
 quiet = true
 commands = [
   { label = "mdt-cockpit: run-gate release lane", argv = ["./run-gate.py", "release"], cwd = "." },
+  { label = "mdt-cockpit: run-gate oci-push lane (needs MDT_OCI_PUSH_IMAGE)", argv = ["./run-gate.py", "oci-push"], cwd = "." },
 ]
 
 [steps.build]

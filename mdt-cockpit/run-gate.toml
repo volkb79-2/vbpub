@@ -30,9 +30,22 @@ memory_swap = "2g"
 [lanes.release]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && exec /opt/tester-venv/bin/python -m unittest scripts.test_release_flow scripts.test_oci_tool_staging scripts.test_oci_layout_push"]
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && exec /opt/tester-venv/bin/python -m unittest scripts.test_release_flow scripts.test_oci_tool_staging scripts.test_oci_push_lane"]
 clean_tree = true
 budget = "15m"
+
+# The OCI-layout push test (real registry:2, buildx export, crane/regctl digest verification)
+# needs tools tester-unified does not carry, so it runs INSIDE the mdt-cockpit image, with the
+# host docker socket (MDTC-02 T6). The driver only orchestrates: it starts the exact image given,
+# gate-placed, and streams the tracked sources in. In that container a missing tool FAILS.
+#   MDT_OCI_PUSH_IMAGE=<mdt-cockpit ref> ./run-gate.py oci-push
+[lanes.oci-push]
+kind = "command"
+environment = "bare-host"
+argv = ["python3", "scripts/run_oci_push_lane.py"]
+clean_tree = true
+required_env = ["CGROUP_PARENT_DEV_GATES", "MDT_OCI_PUSH_IMAGE"]
+budget = "20m"
 
 [lanes.assay-full]
 kind = "assay"

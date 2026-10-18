@@ -398,6 +398,19 @@ Everything above that wrote under `/opt/mdt` is gone after a container recreate 
 returns); everything written under the home (Claude's own state, caches) is in the named volume and
 persists.
 
+## The oci-push test runs where its tools are
+
+`scripts/test_oci_layout_push.py` exercises the active `RELEASE_IMAGE_FLOW=load` path against a
+real registry, and so needs docker, buildx, `crane` and `regctl`. tester-unified (built on
+`tester-base`) carries none of buildx/crane/regctl by design, and a test that silently skips
+there certifies nothing. It therefore lives in its own lane, `oci-push`, which starts the exact
+mdt-cockpit image (`MDT_OCI_PUSH_IMAGE`) from a bare-host driver (`scripts/run_oci_push_lane.py`):
+gate tier, `--init`, uniquely named and removed by exact name, the host docker socket mounted, the
+tracked sources streamed in on stdin (no devcontainer path is bind-mounted). `MDT_OCI_PUSH_REQUIRED=1`
+turns every missing precondition into a failure; outside the lane (a developer's shell) the same
+test still skips when a tool is missing. The release step runs the lane, so the image ref comes from
+the operator at release time (there is no default to fall back to).
+
 ## Built-image acceptance is a separate test boundary
 
 Source tests in `tester-unified` cannot certify the image filesystem or its
