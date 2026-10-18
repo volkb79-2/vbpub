@@ -4,6 +4,111 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
+     folds pending notes into the version section in the disposable release candidate.
+     KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
+     carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
+     pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`.
+
+     6.0.0 release notes (LANDPREP, 2026-10-06): `cmru release` generates the `## [6.0.0]`
+     section below from the commit subjects since `cmru-v5.5.0`; a hand-written 6.0.0 section
+     cannot coexist with it (the generator refuses to overwrite one). The pre-wave hand-written
+     [Unreleased] bullets (versions/age-window, OCI rolling tags, secret-overlay and mutation
+     hardening) describe work already shipped in 5.5.0 or covered by those commit subjects, so
+     nothing from them is lost by leaving this body empty. The breaking changes (command
+     grammar, exit codes, retired cmru-agent/cmru-controller, cli-extended as a wheel
+     dependency) are in `docs/UPGRADING-6.0.md`.
+
+     PROVISIONAL RELEASE: the R2 mutation campaign for 6.0.0 was postponed by operator
+     decision 2026-10-06 and is tracked as KI-62 (`KNOWN_ISSUES_TODO_BACKLOG.md`); the
+     release ran `gate-provisional`, whose evidence carries `.assay/mutation-postponed-cmru.json`.
+     The release-notes commit subject (`docs(cmru): 6.0.0 release notes ...`) states this in the
+     generated Documentation list. TODO(cmru-6.0 post-release): once KI-62 is closed, append a
+     one-line pointer to the 6.0.x notes.
+
+     HOTFIX (KI-63, 2026-10-06): the release-gate secret-overlay inventory no longer aborts on
+     a directory owned by another uid that it cannot list (e.g. the live Mattermost postgres
+     volume); it skips it with a stderr WARN. The release-notes generator picks this up from
+     the `fix(cmru): ...` commit subject. -->
+
+<!-- cmru: release history -->
+
+## [6.2.0] - 2026-10-18
+<!-- cmru: generated -->
+<!-- cmru: source-end=03c2f5bab3c3b6127b67e56d684aa748d779d5e6 -->
+
+### Added
+- feat(assay,ciu,cmru,cgroup-profiler,nyxloom,run-gate): complete integrated release wave (1fa737782)
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+- feat(cmru): KI-78 serves every consumer: exclude the configured changelog from change detection, drop the file-name limit (72e05e3f3)
+- feat(cmru): carry [Unreleased] notes into the release body and consume them after a successful publish (KI-78) (07871df27)
+- feat(cmru): bind the release gate to HEAD, scope its ref check, add KI-75 release bodies (3cf2e8f37)
+- feat(cmru): bind mutation and release gates to source (7bb29e359)
+- feat(cmru): pass protected release source identity to artifact steps (b310458e9)
+
+### Fixed
+- fix(cmru): make gate-snapshot Git reads immune to ambient repository redirection (03c2f5bab)
+- fix(cmru): D-001 a release retry keeps its exact recorded version plan (a45337a50)
+- fix(cmru): independent final 6.2.0 review fixes (99e261a47)
+- fix(cmru): complete the canary fixture's support inputs; BLOCKED on estate test (81d3a0f1e)
+- fix(cmru): give the canary/mutation fixture the suite's collection inputs (34cae01ca)
+- fix(cmru): align the from-zero guide and tester-image oracles with Run-Gate 24.0.1 (3266b10fa)
+- fix(wheel-builder): build from the upstream Python base with the bootstrap label (de82d894a)
+- fix(cmru): restore tester image identity contracts; cover OCI retry refusals (54a9934d9)
+- fix(cmru): name a timed-out probe container that could not be removed (7f5437588)
+- fix(cmru): add safe OCI release body retry (a87489743)
+- fix(cmru): follow CommonMark code spans when folding release notes (75dfe0552)
+- fix(cmru): exact-tip review fixes for the 6.2.0 candidate (827b4f136)
+- fix: close remaining release wave review findings (edac3e69c)
+- fix: bind release gates to exact tool candidates (cd673fecd)
+- fix: close release-wave followup findings (08632f747)
+- fix: close release-wave review findings (49e4be092)
+- fix(tester-unified): probe Run-Gate venv entrypoint explicitly (2c9f6be37)
+- fix(cmru): use Run-Gate SemVer as judge floor (482b2ee83)
+- fix(cmru): align release gate fixtures and docs (78194a9d6)
+- fix(cmru): bind gate identity and release notes (f0f87a50c)
+- fix(cmru): fold pending notes into the tagged candidate (45975cf0e)
+- fix(cmru): isolate generated test artifacts (187366468)
+- fix(cmru): run release gate through installed Run-Gate CLI (b8ad0f01e)
+- fix(cmru): isolate release gate driver and use installed run-gate (5916df90d)
+- fix(cmru): accept Run-Gate's per-project state store between gate lanes (ea9ee1b93)
+- fix(cmru): publish without curated notes through the unchanged call shape (48f566146)
+- fix(cmru): fail closed on secret overlay gaps (56a3433b3)
+- fix: bind image builds to exact source identity (a0ad6f40d)
+
+### Changed
+- cmru: close feature-release coverage gaps (d0253e65e)
+- Fix CMRU coverage after feature release integration (afa312098)
+- cmru: reconcile release graph and bundled worktree code (d7a3ee057)
+- cmru: integrate local release candidate work (9f94742de)
+- merge CMRU release hardening and KI-78 notes (510c9e30f)
+- merge latest main into Run-Gate SemVer candidate (7af06b66c)
+- chore(cmru): advance the Assay R1/R2 base to the latest published release cmru-v6.1.0 (670f99d46)
+- wip: checkpoint integrated release candidate (91a4ab26a)
+- chore: integrate contract-2 release wave (336336d81)
+
+### Documentation
+- docs(cmru): exact-tip review and release-wave inventory report; KI-67 second instance (29ccad28b)
+- docs(cmru): use installed run-gate command in guide (202387c31)
+- docs(cmru): preserve Opus review of release candidate (710f3b89f)
+- docs(cmru): implementation report for the 2026-10-13 release-fix wave (31763c61a)
+- docs: track release notes and adoption blockers (3af2bc238)
+- docs: load tester image from remote builder (6b8615c5d)
+
+### Testing
+- test(cmru): skip the real-estate wheel-builder test outside a complete estate (cf92f5752)
+- test(cmru): cover multi-line code spans and an unclosed final backtick (a5a23ef5a)
+- test(cmru): exercise feature worktree release against bare origin (200b78aee)
+- test(cmru): include Docker RUN prefix in assertion (86f68575a)
+- test(cmru): assert offline Run-Gate wheel install (0bedb764d)
+- test(cmru): match here-doc source and wheel install flags (bb93f8eb1)
+- test(cmru): align image checks with Run-Gate wheel build (fb2a502a6)
+- test(cmru): cover legacy snapshot digest upgrade (b2f55f7de)
+- test(cmru): cover release-note refusal boundaries (1ddc25f1f)
+- test(cmru): declare preview publisher in fixtures (81f79ff75)
+- test(cmru): fix stale tests and cover gate cleanup branches (0fa13df87)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - KI-82 candidate: `cmru release --from-worktree` releases a clean named branch only when its fetched `origin/<branch>` tip matches `HEAD`; it leaves local and remote `main` untouched and retains the generated `cmru-release-*` candidate branch (locally and under the same name on origin) for a PR. `--secret-file PATH` explicitly selects a root credential file; an inferred main-worktree path is advice only and is never read automatically. The release may be public before the PR merges; preserve the tagged commit with a merge or fast-forward. Registered gate evidence is pending.
 - `cmru abandon` can retire a completed feature-source transaction after hosting has deleted its merged PR branch, but only after verifying the exact published candidate tip in `origin/main` and rechecking release tags; missing branch state alone is not sufficient.
@@ -65,35 +170,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Explain that a Run-Gate development/local build fails CMRU's stable `24.0.0` release-gate floor and name the minimum stable SemVer required.
 - Fix a `NameError` that stopped every real `cmru release` while it recorded the installed controller identity: the audit line logged through an undefined `log_debug`. It now goes through the shared `cmru` logger at debug level.
 - Refuse a selected project with no declared `run-tests` gate as the typed pre-change refusal (exit 4) before CMRU reads any Git state, so the refusal no longer depends on the checkout being a Git worktree.
-
-<!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
-     folds pending notes into the version section in the disposable release candidate.
-     KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
-     carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
-     pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`.
-
-     6.0.0 release notes (LANDPREP, 2026-10-06): `cmru release` generates the `## [6.0.0]`
-     section below from the commit subjects since `cmru-v5.5.0`; a hand-written 6.0.0 section
-     cannot coexist with it (the generator refuses to overwrite one). The pre-wave hand-written
-     [Unreleased] bullets (versions/age-window, OCI rolling tags, secret-overlay and mutation
-     hardening) describe work already shipped in 5.5.0 or covered by those commit subjects, so
-     nothing from them is lost by leaving this body empty. The breaking changes (command
-     grammar, exit codes, retired cmru-agent/cmru-controller, cli-extended as a wheel
-     dependency) are in `docs/UPGRADING-6.0.md`.
-
-     PROVISIONAL RELEASE: the R2 mutation campaign for 6.0.0 was postponed by operator
-     decision 2026-10-06 and is tracked as KI-62 (`KNOWN_ISSUES_TODO_BACKLOG.md`); the
-     release ran `gate-provisional`, whose evidence carries `.assay/mutation-postponed-cmru.json`.
-     The release-notes commit subject (`docs(cmru): 6.0.0 release notes ...`) states this in the
-     generated Documentation list. TODO(cmru-6.0 post-release): once KI-62 is closed, append a
-     one-line pointer to the 6.0.x notes.
-
-     HOTFIX (KI-63, 2026-10-06): the release-gate secret-overlay inventory no longer aborts on
-     a directory owned by another uid that it cannot list (e.g. the live Mattermost postgres
-     volume); it skips it with a stderr WARN. The release-notes generator picks this up from
-     the `fix(cmru): ...` commit subject. -->
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [6.1.0] - 2026-10-07
 <!-- cmru: generated -->
