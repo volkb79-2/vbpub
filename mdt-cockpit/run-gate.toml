@@ -17,7 +17,7 @@ schema_version = 1
 [lanes.smoke]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests -q && echo 'smoke: OK'"]
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests -q -rs && echo 'smoke: OK'"]
 budget = "2m"
 
 [lanes.smoke.resources]
