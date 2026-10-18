@@ -110,12 +110,12 @@ ARG PACKAGE_MANIFEST_SOURCE=""
 ARG DEVCONTAINERS_RELEASE=""
 ARG DEVCONTAINERS_VERSION=""
 ARG SECONDARY_PYTHON_VERSIONS=""
-ARG REASONIX_VERSION="latest"
+ARG REASONIX_VERSION
 ARG OPENCLAW_VERSION="latest"
 ARG COPILOT_VERSION="latest"
-ARG OPENCODE_VERSION="latest"
+ARG OPENCODE_VERSION
 ARG CLAUDELINK_VERSION="latest"
-ARG PI_VERSION="latest"
+ARG PI_VERSION
 # Build provenance: "release" for every published image; "local-dev" only for an
 # explicit `build-push.py --build --local-dev` build. MDT_LOCAL_ARTIFACTS_JSON is
 # the verified list of local artifacts (name, version, sha256, path) and is empty

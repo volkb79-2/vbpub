@@ -137,12 +137,27 @@ def install_binaries_from_archive(archive: Path, *pairs: tuple[str, Path]) -> No
             copy_binary(extracted_binary, destination)
 
 
+def staged_version(variable: str, label: str) -> str:
+    """The exact version staging resolved and recorded in tool-versions.env.
+
+    REQUIRED: an absent, empty or `latest` value must not let npm install an unrecorded
+    `@latest`, so the image would ship a version nothing recorded.
+    """
+    version = env_value(variable)
+    if not version or version == "latest":
+        raise InstallerError(
+            f"{variable} is not set to a concrete version (the staged, recorded value from "
+            f"tool-versions.env); refusing to install {label} @latest"
+        )
+    return version
+
+
 def install_codex(ctx: InstallerContext) -> None:
     if not is_enabled("INSTALL_CODEX", True):
         log("INFO", "INSTALL_CODEX=false; skipping Codex")
         return
 
-    version = env_value("CODEX_VER", "CODEX_VERSION", default="latest")
+    version = staged_version("CODEX_VER", "Codex")
     require_command("npm", "npm is required to install Codex")
     run_command(["npm", "install", "-g", f"@openai/codex@{version}"])
 
@@ -160,12 +175,7 @@ def install_claude(ctx: InstallerContext) -> None:
     # REQUIRED and only from the staged value: staging resolved the exact version that is
     # recorded in tool-versions.env and the image manifest, so an absent value must not let npm
     # install an unrecorded `@latest`.
-    version = env_value("CLAUDE_CODE_VER")
-    if not version or version == "latest":
-        raise InstallerError(
-            "CLAUDE_CODE_VER is not set to a concrete version (the staged, recorded "
-            "value from tool-versions.env); refusing to install Claude Code @latest"
-        )
+    version = staged_version("CLAUDE_CODE_VER", "Claude Code")
     require_command("npm", "npm is required to install Claude Code")
     run_command(["npm", "install", "-g", f"@anthropic-ai/claude-code@{version}"])
 
@@ -190,7 +200,7 @@ def install_reasonix() -> None:
         log("INFO", "INSTALL_REASONIX=false; skipping Reasonix")
         return
 
-    version = env_value("REASONIX_VER", "REASONIX_VERSION", default="latest")
+    version = staged_version("REASONIX_VER", "Reasonix")
     require_command("npm", "npm is required to install Reasonix")
     run_command(["npm", "install", "-g", f"reasonix@{version}"])
 
@@ -230,7 +240,7 @@ def install_pi() -> None:
         log("INFO", "INSTALL_PI=false; skipping Pi")
         return
 
-    version = env_value("PI_VER", "PI_VERSION", default="latest")
+    version = staged_version("PI_VER", "Pi")
     require_command("npm", "npm is required to install Pi")
     run_command(["npm", "install", "-g", f"@earendil-works/pi-coding-agent@{version}"])
 
@@ -280,7 +290,7 @@ def install_opencode() -> None:
         log("INFO", "INSTALL_OPENCODE=false; skipping OpenCode")
         return
 
-    version = env_value("OPENCODE_VER", "OPENCODE_VERSION", default="latest")
+    version = staged_version("OPENCODE_VER", "OpenCode")
     require_command("npm", "npm is required to install OpenCode")
     package = opencode_platform_package()
     run_command(["npm", "install", "-g", f"{package}@{version}"])

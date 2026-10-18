@@ -26,7 +26,7 @@ from manifest_sections import (
     read_apt_package_names,
     render_runtime_probe_sections,
 )
-from stage_tool_artifacts import stage_tool_artifacts
+from stage_tool_artifacts import install_enabled, stage_tool_artifacts
 
 
 REGISTRY_URL = "https://mcr.microsoft.com/v2/devcontainers/python/tags/list"
@@ -1128,12 +1128,6 @@ def build_runtime_custom_tooling_map(
         raw = tool_metadata.get("resolved_versions")
         if isinstance(raw, dict):
             resolved_versions = raw
-
-    def install_enabled(env_name: str) -> bool:
-        value = os.getenv(env_name)
-        if value is None:
-            return True
-        return value.strip().lower() not in {"0", "false", "no", "off"}
 
     install_aider = install_enabled("INSTALL_AIDER")
     install_reasonix = install_enabled("INSTALL_REASONIX")

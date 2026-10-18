@@ -308,3 +308,48 @@ def test_the_five_user_updatable_tools_are_recorded_by_their_exact_resolved_vers
 def test_claude_is_no_longer_staged_as_a_native_binary() -> None:
     source = (Path(__file__).resolve().parent / "stage_tool_artifacts.py").read_text(encoding="utf-8")
     assert "_stage_claude_code" not in source and "downloads.claude.ai" not in source
+
+
+# ── M2: an explicit pin of any R16 npm tool must be a published version ──
+
+@pytest.mark.parametrize("variable,package", [
+    ("REASONIX_VERSION", "reasonix"),
+    ("OPENCODE_VERSION", "opencode-ai"),
+    ("PI_VERSION", "@earendil-works/pi-coding-agent"),
+])
+def test_an_explicit_npm_pin_must_be_published(monkeypatch: pytest.MonkeyPatch, variable: str, package: str) -> None:
+    _stub_other_resolvers(monkeypatch)
+    monkeypatch.setattr(staging, "_resolve_claude_code_version", lambda requested: "2.1.302")
+    monkeypatch.delenv("INSTALL_CLAUDE_CODE", raising=False)
+    monkeypatch.setenv(variable, "9.9.9")
+
+    def fetch(url: str, **_kw) -> dict:
+        assert url == f"https://registry.npmjs.org/{package}/9.9.9"
+        raise staging.StageError("HTTP 404")
+
+    monkeypatch.setattr(staging, "_fetch_json", fetch)
+    monkeypatch.setattr(staging, "_resolve_npm_version", staging._resolve_npm_version)  # real latest path unused
+
+    with pytest.raises(staging.StageError, match="not a published"):
+        staging._resolve_versions()
+
+
+# ── M3: one shared "install enabled" definition ──
+
+@pytest.mark.parametrize("value", [None, "", " ", "true", "1", "yes", "on", "false", "FALSE", " 0 ", "no", "Off"])
+def test_install_enabled_has_one_definition_shared_by_staging_resolver_and_installer(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    import importlib.util
+    import install_ai_cli_tools as installer
+
+    spec = importlib.util.spec_from_file_location("resolve_release", Path(__file__).parent / "resolve-devcontainers-release.py")
+    resolver_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(resolver_module)
+    assert resolver_module.install_enabled is staging.install_enabled, "the resolver must import, not redefine"
+    if value is None:
+        monkeypatch.delenv("INSTALL_X", raising=False)
+    else:
+        monkeypatch.setenv("INSTALL_X", value)
+
+    assert staging.install_enabled("INSTALL_X") == installer.is_enabled("INSTALL_X", True)

@@ -164,49 +164,6 @@ class TestInstallOpencode:
             Path("/opt/mdt/npm/bin/opencode"),
         )]
 
-    def test_version_env_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """OPENCODE_VERSION is used when OPENCODE_VER is not set."""
-        monkeypatch.delenv("OPENCODE_VER", raising=False)
-        monkeypatch.setenv("OPENCODE_VERSION", "2.0.0")
-        monkeypatch.setenv("NPM_CONFIG_PREFIX", "/opt/mdt/npm")
-        recorded: list[list[str]] = []
-
-        def fake_run(argv: list[str]) -> None:
-            recorded.append(argv)
-
-        import install_ai_cli_tools as mod
-        monkeypatch.setattr(mod.platform, "machine", lambda: "aarch64")
-        monkeypatch.setattr(mod.platform, "libc_ver", lambda: ("musl", "1.2"))
-        monkeypatch.setattr(mod, "require_command", lambda *_args: None)
-        monkeypatch.setattr(mod, "require_file", lambda *_args: None)
-        monkeypatch.setattr(mod, "link_binary", lambda *_args: None)
-        original_run = mod.run_command
-        try:
-            mod.run_command = fake_run
-            install_opencode()
-        finally:
-            mod.run_command = original_run
-
-        assert len(recorded) == 1
-        assert recorded[0] == ["npm", "install", "-g", "opencode-linux-arm64-musl@2.0.0"]
-
-    def test_platform_package_prefers_portable_x64_build(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import install_ai_cli_tools as mod
-
-        monkeypatch.setattr(mod.platform, "machine", lambda: "amd64")
-        monkeypatch.setattr(mod.platform, "libc_ver", lambda: ("glibc", "2.41"))
-        assert opencode_platform_package() == "opencode-linux-x64-baseline"
-
-    def test_unsupported_architecture_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        import install_ai_cli_tools as mod
-
-        monkeypatch.setattr(mod.platform, "machine", lambda: "riscv64")
-        with pytest.raises(InstallerError, match="Unsupported OpenCode architecture"):
-            opencode_platform_package()
-
-
 def test_user_mode_uses_the_callers_npm_prefix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -407,7 +364,7 @@ def test_stage_resolves_opencode_from_npm_package(monkeypatch: pytest.MonkeyPatc
 
     resolved = stage._resolve_versions()
 
-    assert ("latest", "opencode-ai") in npm_calls
+    assert (None, "opencode-ai") in npm_calls
     assert resolved["OPENCODE_VER"] == "resolved-opencode-ai"
 
 
@@ -425,3 +382,45 @@ def test_a_build_arg_pin_cannot_stand_in_for_the_staged_claude_version(
 
     with pytest.raises(mod.InstallerError, match="CLAUDE_CODE_VER"):
         mod.install_claude(_fake_ctx(tmp_path))
+
+
+# ── M1: every npm tool of the R16 policy installs only a staged, exact, recorded version ──
+
+STAGED_INSTALLERS = [
+    ("install_codex", "CODEX_VER", "CODEX_VERSION", "INSTALL_CODEX", True),
+    ("install_reasonix", "REASONIX_VER", "REASONIX_VERSION", "INSTALL_REASONIX", False),
+    ("install_pi", "PI_VER", "PI_VERSION", "INSTALL_PI", False),
+    ("install_opencode", "OPENCODE_VER", "OPENCODE_VERSION", "INSTALL_OPENCODE", False),
+]
+
+
+@pytest.mark.parametrize("value", [None, "", "  ", "latest"])
+@pytest.mark.parametrize("function,ver,arg,switch,takes_ctx", STAGED_INSTALLERS)
+def test_the_npm_tools_refuse_an_unstaged_or_latest_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, function: str, ver: str, arg: str, switch: str,
+    takes_ctx: bool, value: str | None,
+) -> None:
+    import install_ai_cli_tools as mod
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(mod, "run_command", lambda command, *a, **k: calls.append(list(command)))
+    monkeypatch.setattr(mod, "require_command", lambda *a, **k: None)
+    monkeypatch.delenv(switch, raising=False)
+    monkeypatch.setenv(arg, "9.9.9")  # a build ARG must not stand in for the staged value
+    if value is None:
+        monkeypatch.delenv(ver, raising=False)
+    else:
+        monkeypatch.setenv(ver, value)
+
+    args = (_fake_ctx(tmp_path),) if takes_ctx else ()
+    with pytest.raises(mod.InstallerError, match=ver):
+        getattr(mod, function)(*args)
+
+    assert calls == []
+
+
+def test_the_dockerfile_has_no_latest_default_for_the_staged_npm_tools() -> None:
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
+    for arg in ("REASONIX_VERSION", "OPENCODE_VERSION", "PI_VERSION"):
+        assert re.search(rf"^ARG {arg}\s*$", dockerfile, re.MULTILINE), f"ARG {arg} must have no default"
+    assert not re.search(r'^ARG (?:REASONIX|OPENCODE|PI)_VERSION="latest"', dockerfile, re.MULTILINE)

@@ -356,8 +356,9 @@ layer**: they last for the life of the container, a recreate restores the image'
 user-updatable tools (claude, codex, reasonix, opencode, pi):** the user can update them in place
 anyway, so they follow upstream - no freshness window - and the image pins and records what it
 shipped. Staging resolves the registry `latest` (or an explicit pin) to an EXACT version, writes it to
-`tool-versions.env`, and the image manifest lists it. Claude's installer accepts only that staged,
-exact version (never empty, never `latest`), a `CLAUDE_CODE_VERSION` pin must be a published release,
+`tool-versions.env`, and the image manifest lists it. The installers of all five accept only that staged,
+exact version (never empty, never `latest`; a build ARG cannot stand in for it), an explicit pin of any
+of the npm ones must be a published release,
 and with `INSTALL_CLAUDE_CODE=false` the registry is not consulted. The tools that are *not*
 user-updatable in this sense (copilot, openclaw, claudelink, aider, the release tools) keep their
 current resolution until the cmru-versions adoption.

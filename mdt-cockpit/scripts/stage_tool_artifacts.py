@@ -382,36 +382,39 @@ def _resolve_codex_version(requested: str | None) -> str:
 CLAUDE_CODE_NPM_PACKAGE = "@anthropic-ai/claude-code"
 
 
-def _install_enabled(name: str) -> bool:
-    """An INSTALL_* build switch: unset means enabled, as everywhere else in the build."""
+def install_enabled(name: str) -> bool:
+    """An INSTALL_* build switch: unset means enabled. The single definition shared with
+    resolve-devcontainers-release.py (the in-image installer cannot import it, and a test pins
+    that its own `is_enabled` agrees on every value)."""
     value = os.getenv(name)
     if value is None:
         return True
     return value.strip().lower() not in {"0", "false", "no", "off"}
 
 
-def _resolve_claude_code_version(requested: str | None) -> str:
-    """The exact Claude Code version the image ships and records.
+def _resolve_pinned_npm_version(requested: str | None, package: str, variable: str) -> str:
+    """The exact version of an npm-installed, user-updatable tool the image ships and records.
 
-    Claude is user-updatable (`claude update` runs `npm install -g` into /opt/mdt/npm), so it
-    follows upstream rather than a freshness window: the npm `latest` dist-tag, or the explicit
-    pin when one is given. Either way the EXACT version is returned and recorded in
+    Such a tool follows upstream (no freshness window): the npm `latest` dist-tag, or the
+    explicit pin when one is given. The EXACT version is returned and recorded in
     tool-versions.env and the image manifest; a pin must be a published release.
     """
     value = (requested or "").strip()
     if not value or value == "latest":
-        return _resolve_npm_version(None, CLAUDE_CODE_NPM_PACKAGE)
+        return _resolve_npm_version(None, package)
     if not CLAUDE_VERSION_RE.fullmatch(value):
-        raise StageError(f"Unsupported CLAUDE_CODE_VERSION value: {value!r}")
+        raise StageError(f"Unsupported {variable} value: {value!r}")
     try:
-        document = _fetch_json(f"https://registry.npmjs.org/{CLAUDE_CODE_NPM_PACKAGE}/{value}")
+        document = _fetch_json(f"https://registry.npmjs.org/{package}/{value}")
     except StageError as exc:
-        raise StageError(
-            f"CLAUDE_CODE_VERSION {value} is not a published {CLAUDE_CODE_NPM_PACKAGE} release ({exc})"
-        ) from exc
+        raise StageError(f"{variable} {value} is not a published {package} release ({exc})") from exc
     if document.get("version") != value:
-        raise StageError(f"CLAUDE_CODE_VERSION {value} is not a published {CLAUDE_CODE_NPM_PACKAGE} release")
+        raise StageError(f"{variable} {value} is not a published {package} release")
     return value
+
+
+def _resolve_claude_code_version(requested: str | None) -> str:
+    return _resolve_pinned_npm_version(requested, CLAUDE_CODE_NPM_PACKAGE, "CLAUDE_CODE_VERSION")
 
 
 def _tar_contains_binary(archive: Path, binary_name: str) -> bool:
@@ -1537,12 +1540,12 @@ def _resolve_versions() -> dict[str, str]:
         "CODEX_VER": _resolve_codex_version(os.getenv("CODEX_VERSION")),
         "ANTIGRAVITY_VER": (os.getenv("ANTIGRAVITY_VERSION") or "latest").strip() or "latest",
         "AIDER_VER": aider_version,
-        "REASONIX_VER": _resolve_npm_version(os.getenv("REASONIX_VERSION"), "reasonix"),
+        "REASONIX_VER": _resolve_pinned_npm_version(os.getenv("REASONIX_VERSION"), "reasonix", "REASONIX_VERSION"),
         "OPENCLAW_VER": _resolve_npm_version(os.getenv("OPENCLAW_VERSION"), "openclaw"),
         "COPILOT_VER": _resolve_npm_version(os.getenv("COPILOT_VERSION"), "@github/copilot"),
-        "OPENCODE_VER": _resolve_npm_version(os.getenv("OPENCODE_VERSION"), "opencode-ai"),
+        "OPENCODE_VER": _resolve_pinned_npm_version(os.getenv("OPENCODE_VERSION"), "opencode-ai", "OPENCODE_VERSION"),
         "CLAUDELINK_VER": _resolve_npm_version(os.getenv("CLAUDELINK_VERSION"), "claudelink"),
-        "PI_VER": _resolve_npm_version(os.getenv("PI_VERSION"), "@earendil-works/pi-coding-agent"),
+        "PI_VER": _resolve_pinned_npm_version(os.getenv("PI_VERSION"), "@earendil-works/pi-coding-agent", "PI_VERSION"),
         "DTOP_VER": _resolve_version(os.getenv("DTOP_VERSION"), "amir20/dtop"),
         "LAZYDOCKER_VER": _resolve_version(os.getenv("LAZYDOCKER_VERSION"), "jesseduffield/lazydocker"),
         "GLANCES_VER": _resolve_pypi_version(os.getenv("GLANCES_VERSION"), "glances"),
@@ -1574,7 +1577,7 @@ def _resolve_versions() -> dict[str, str]:
         "VAULT_VER": _resolve_version(os.getenv("VAULT_VERSION"), "hashicorp/vault"),
     }
 
-    if _install_enabled("INSTALL_CLAUDE_CODE"):
+    if install_enabled("INSTALL_CLAUDE_CODE"):
         resolved["CLAUDE_CODE_VER"] = _resolve_claude_code_version(os.getenv("CLAUDE_CODE_VERSION"))
     else:
         _log("INSTALL_CLAUDE_CODE is false: skipping Claude Code version resolution (no registry lookup)")
