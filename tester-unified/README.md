@@ -11,6 +11,12 @@ change the gate environment and none of the cockpit's baked release CLIs sit on 
 image adds the `/opt/tester-venv` closure, the uid-1003 identity and the git foreground
 maintenance config; its `PATH` is `/opt/tester-venv/bin:` followed by the base's own.
 
+Two things the old cockpit base supplied implicitly are now explicit in this image (see
+`tester-base/docs/DESIGN-GUIDE.md`, "What the skip-diff found"): a harmless `systemctl` stub
+(topos shells out to it unguarded; removed once topos guards the missing binary) and `zsh`
+(the mdt-cockpit login-hook tests exercise it). It also resets `PYTHONPYCACHEPREFIX`, which the root-run
+base sets, so lanes keep the historical in-tree `__pycache__`.
+
 Build the base, then the image, from the repository root:
 
 ```bash
