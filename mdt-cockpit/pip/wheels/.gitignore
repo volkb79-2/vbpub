@@ -3,3 +3,4 @@
 # The resolver downloads them from cmru-v* GitHub Releases into this directory.
 *.whl
 *.whl.sha256
+RESOLVED.json
