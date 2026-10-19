@@ -2199,13 +2199,3 @@ prefix characters, untracked files at the matching tag, `HEAD` ahead of the tag,
 local tag, a moved or absent origin tag, an unreachable origin (failure, not absence),
 malformed origin advertisements, and a `--dry-run` with origin unreachable that makes no
 origin query and shows only the body command.
-
-### KI-85 — dependency preflight reads only `<project>/pyproject.toml`, so a project whose wheel lives in a subdirectory (pwmcp: `pwmcp/client/pyproject.toml`) can depend on a first-party wheel without declaring it — *open, severity: minor (found 2026-10-07 by pwmcp PWMCP-02)*
-
-**Observed:** `src/cmru/dependencies.py` (`_pyproject_requirements`, called at the `Path(project_root) / "pyproject.toml"` site) is the only source of the "requires first-party X" check. pwmcp ships its `pwmcp-client` wheel from `pwmcp/client/pyproject.toml` (project root `pwmcp/` has no `pyproject.toml`). With `cli-extended>=0.3.0` declared in that wheel's dependencies and `[orchestration.project.pwmcp] depends_on = ["cmru"]` (no `cli-extended`), `cmru dependencies` still reports `PREFLIGHT: PASS` (verified in the PWMCP-02 worktree by removing the edge again). nyxloom, whose wheel is at its project root, is guarded.
-
-**Fix direction:** let a project name its wheel pyproject(s) in `cmru.toml` (for example `[project] wheel_pyprojects = ["client/pyproject.toml"]`) and run the same requirement check over them, or document that the declaration is manual for nested wheels. pwmcp declares the edge by hand for now.
-
-**Oracle:** a fixture project whose nested `client/pyproject.toml` requires a first-party wheel not listed in `depends_on` fails the preflight naming the consumer, the provider and the nested file.
-
-**Numbering note (INT-01, 2026-10-19):** filed as `KI-70` on origin/main by PWMCP-02 (`194f01e1d`), where `pwmcp/CHANGES.md` and `pwmcp/docs/PWMCP-02-REPORT.md` still cite it under that id. `KI-70` is already taken by the released cgprofile-v1.0.0 lineage (custom mutation campaign false kills), so this entry was renumbered. The candidate's `KI-83` (dependency preflight misses first-party requirements in nested wheel projects) describes the same defect; reconcile the two when KI-83's fix lands.
