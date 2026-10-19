@@ -106,8 +106,8 @@ _mdt_load_baseline
 #
 # Why there is no "clear" path any more (measured on the live host
 # 2026-10-19, MDT-016): `systemctl set-property --runtime dev.slice
-# IOReadBandwidthMax=` does NOT "reveal the values declared by the installed
-# slice unit".  In systemd an empty assignment resets the WHOLE list, unit-file
+# IOReadBandwidthMax=` does NOT fall back to the values declared in the
+# installed slice unit (the old comment here claimed it did).  In systemd an empty assignment resets the WHOLE list, unit-file
 # values included, and the runtime drop-in it leaves behind is empty: dev.slice
 # ended with an empty io.max — no IO cap at all — while this script logged
 # that the static fallback was authoritative.  The runtime layer therefore

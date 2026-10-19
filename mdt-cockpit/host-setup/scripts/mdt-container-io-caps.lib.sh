@@ -398,7 +398,7 @@ _mdt_dev_majmin() {
 # _mdt_io_max_fields <cgroup-dir> <maj:min>: prints "rbps wbps riops wiops"
 # ("max" where the kernel prints no limit) for that device.  rc 1 = no file,
 # or no line for the device.  cgroupfs files report size 0, so this reads the
-# CONTENT; `[ -s file ]` on a cgroup control file is always false.
+# CONTENT; a size test on a cgroup control file is always false.
 _mdt_io_max_fields() {
   local file="$1/io.max" majmin="$2" content mm rest kv rbps=max wbps=max riops=max wiops=max found=1
   content=$(cat "$file" 2>/dev/null) || return 1

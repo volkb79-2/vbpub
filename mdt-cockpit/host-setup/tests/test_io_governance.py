@@ -129,13 +129,15 @@ class Host:
         (dev / "vda" / "dev").write_text("254:0\n")
         (dev / "vda" / "vda1" / "dev").write_text("1:3\n")
         (dev / "vda" / "vda1" / "partition").write_text("1\n")
-        (dev / "vdb").mkdir()
+        (dev / "vdb" / "vdb1").mkdir(parents=True)
         (dev / "vdb" / "dev").write_text("8:16\n")
+        (dev / "vdb" / "vdb1" / "dev").write_text("1:5\n")
+        (dev / "vdb" / "vdb1" / "partition").write_text("1\n")
         blk = self.sys / "dev" / "block"
         blk.mkdir(parents=True)
         (blk / "1:3").symlink_to("../../devices/vda/vda1")
         (blk / "254:0").symlink_to("../../devices/vda")
-        (blk / "1:5").symlink_to("../../devices/vdb")  # /dev/zero: a second disk
+        (blk / "1:5").symlink_to("../../devices/vdb/vdb1")  # /dev/zero: a partition of a second disk
         (blk / "8:16").symlink_to("../../devices/vdb")
         self.set_swaps([])
         _write_exec(self.bin / "systemctl", FAKE_SYSTEMCTL.replace("__PY__", sys.executable))
@@ -479,8 +481,10 @@ class ListingToolTests(unittest.TestCase):
                 try:
                     with open(path, "w") as handle:
                         handle.write(content)
+                except BrokenPipeError:
+                    continue  # a reader that closed early; serve the next one
                 except OSError:
-                    return
+                    return  # the fixture directory is gone
 
         threading.Thread(target=serve, daemon=True).start()
 
