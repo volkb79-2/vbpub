@@ -745,6 +745,7 @@ def _dockerfile_copy_specs_before_command(
     run_sensitive_sources: tuple[str, ...] = (),
     allowed_pre_sensitive_run_bodies: tuple[str, ...] = (),
     allowed_external_contexts: tuple[str, ...] = (),
+    allowed_pure_image_stages: tuple[str, ...] = (),
     allowed_shell_prefix: tuple[str, ...] = (),
     expected_run_body: str | None = None,
 ) -> list[tuple[PurePosixPath, str, tuple[str, ...]]]:
@@ -806,9 +807,16 @@ def _dockerfile_copy_specs_before_command(
             ):
                 if run_sensitive_sources and source.parts[:1] == ("__stage_copy__",):
                     context_or_stage = source.parts[1] if len(source.parts) > 1 else ""
+                    # A declared stage is refused (its content is unproven) unless it is named as
+                    # a pure-image stage: a stage that is only `FROM <digest-pinned image>` and so
+                    # cannot have rewritten a wheel input (the node-source stage; its pin is
+                    # asserted by test_tester_unified_has_no_systemctl_stub_...).
                     if (
                         context_or_stage in declared_stages
-                        or context_or_stage not in allowed_external_contexts
+                        and context_or_stage not in allowed_pure_image_stages
+                    ) or (
+                        context_or_stage not in declared_stages
+                        and context_or_stage not in allowed_external_contexts
                     ):
                         raise ValueError(
                             "cannot certify wheel inputs copied from another build stage"
@@ -3752,6 +3760,7 @@ def test_dockerfile_copies_every_cmru_wheel_input_before_build():
         run_sensitive_sources=("cmru", "libraries/worktree"),
         allowed_pre_sensitive_run_bodies=CMRU_PRE_SENSITIVE_RUN_BODIES,
         allowed_external_contexts=("run-gate-wheel",),
+        allowed_pure_image_stages=("node-source",),
         allowed_shell_prefix=(
             "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified",
         ),
@@ -4095,6 +4104,7 @@ def test_tester_cmru_and_worktree_package_source_trees_are_nonempty():
         # (`COPY --from=run-gate-wheel`); it is not a CMRU input. Declared or
         # intermediate stages are still refused.
         allowed_external_contexts=("run-gate-wheel",),
+        allowed_pure_image_stages=("node-source",),
         allowed_shell_prefix=(
             "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified",
         ),
