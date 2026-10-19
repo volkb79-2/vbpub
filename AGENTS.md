@@ -79,6 +79,12 @@ scope to preserve context and avoid repeating orientation. Start a separate
 persistent session for independent blind reviews or when the task or review
 target materially changes.
 
+**Long-running agent polling.** For Claude or other agent work expected to run
+longer than a minute, do not poll every few seconds. Wait at least 90 seconds
+before the first status check. If the tool supports waiting for completion or
+input, use that; otherwise check about every five minutes. Check sooner only
+when a concrete deadline, interruption, or required user input makes it useful.
+
 When stdin carries the prompt, pass `-` as the prompt argument and do not also
 pass a positional prompt. Codex appends piped stdin to a positional prompt as a
 `<stdin>` block; some versions can also wait on inherited non-TTY stdin when a
