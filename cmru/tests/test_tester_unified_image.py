@@ -3656,6 +3656,20 @@ def test_the_final_stage_labels_the_base_it_was_built_from():
     assert '{{index .Config.Labels "org.vbpub.tester-unified.base-image"}}' in builder
 
 
+def test_the_tester_image_records_the_identity_of_the_base_it_was_built_on():
+    """INT-01 A-10: the base reference can be a mutable local tag, so build-image.sh resolves its identity
+    (image id, or the digest of a digest reference), refuses a base it cannot identify, passes it as a
+    build argument, and re-reads the label the Dockerfile writes."""
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    assert re.search(r"^ARG TESTER_UNIFIED_BASE_IMAGE_ID$", text, re.MULTILINE)
+    assert 'LABEL org.vbpub.tester-unified.base-image-id="${TESTER_UNIFIED_BASE_IMAGE_ID}"' in text
+    builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
+    assert 'docker image inspect --format \'{{.Id}}\' "$base_ref"' in builder
+    assert "is not present locally and is not a digest reference" in builder
+    assert 'build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE_ID=$expected_base_image_id")' in builder
+    assert '{{index .Config.Labels "org.vbpub.tester-unified.base-image-id"}}' in builder
+
+
 def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
     dockerfile = (REPO_ROOT / "wheel-builder" / "Dockerfile").read_text("utf-8")
     readme = (REPO_ROOT / "cmru" / "README.md").read_text("utf-8")
