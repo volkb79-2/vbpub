@@ -146,6 +146,20 @@ VERSION_SHAPE = re.compile(r"[0-9][0-9A-Za-z.+_\-]*")
 COMMIT_SHAPE = re.compile(r"[0-9a-f]{40}")
 
 
+BEFORE_SHAPE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+
+
+def staged_before(variable: str, label: str) -> str:
+    """The age cutoff staging recorded for a vetted tool; installs hold ALL dependencies to it (npm --before)."""
+    before = env_value(variable)
+    if not BEFORE_SHAPE.fullmatch(before):
+        raise InstallerError(
+            f"{variable} is not a staged UTC cutoff like 2026-10-05T00:00:00Z (from tool-versions.env); "
+            f"refusing to install {label} with floating dependencies"
+        )
+    return before
+
+
 def staged_version(variable: str, label: str) -> str:
     """The exact version staging resolved and recorded in tool-versions.env.
 
@@ -221,7 +235,8 @@ def install_openclaw() -> None:
 
     version = staged_version("OPENCLAW_VER", "OpenClaw")
     require_command("npm", "npm is required to install OpenClaw")
-    run_command(["npm", "install", "-g", f"openclaw@{version}"])
+    before = staged_before("OPENCLAW_BEFORE", "OpenClaw")
+    run_command(["npm", "install", "-g", "--before", before, f"openclaw@{version}"])
 
 
 def install_copilot() -> None:
@@ -231,7 +246,8 @@ def install_copilot() -> None:
 
     version = staged_version("COPILOT_VER", "GitHub Copilot CLI")
     require_command("npm", "npm is required to install GitHub Copilot CLI")
-    run_command(["npm", "install", "-g", f"@github/copilot@{version}"])
+    before = staged_before("COPILOT_BEFORE", "GitHub Copilot CLI")
+    run_command(["npm", "install", "-g", "--before", before, f"@github/copilot@{version}"])
 
 
 def install_claudelink() -> None:
@@ -241,7 +257,8 @@ def install_claudelink() -> None:
 
     version = staged_version("CLAUDELINK_VER", "ClaudeLink")
     require_command("npm", "npm is required to install ClaudeLink")
-    run_command(["npm", "install", "-g", f"claudelink@{version}"])
+    before = staged_before("CLAUDELINK_BEFORE", "ClaudeLink")
+    run_command(["npm", "install", "-g", "--before", before, f"claudelink@{version}"])
 
 
 def install_pi() -> None:
@@ -267,6 +284,7 @@ def install_aider(ctx: InstallerContext) -> None:
             f"AIDER_COMMIT must be a full 40-hex commit sha staged from aider-main-pin.toml (got {commit!r}); "
             "refusing to install an unpinned aider main"
         )
+    before = staged_before("AIDER_BEFORE", "Aider")
     spec = f"aider-chat @ git+https://github.com/Aider-AI/aider.git@{commit}"
 
     run_command(
@@ -277,6 +295,8 @@ def install_aider(ctx: InstallerContext) -> None:
             "install",
             "--disable-pip-version-check",
             "--quiet",
+            "--uploaded-prior-to",
+            before,
             spec,
         ]
     )

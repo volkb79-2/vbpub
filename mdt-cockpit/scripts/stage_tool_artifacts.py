@@ -1580,12 +1580,14 @@ def _aider_main_pin(path: Path | None = None) -> dict[str, str]:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise StageError(f"aider needs {path.name} (an exact commit of aider main): {exc}") from exc
-    commit, version = data.get("commit"), data.get("version")
+    commit, version, before = data.get("commit"), data.get("version"), data.get("deps_before")
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise StageError(f"{path.name}: `commit` must be a full 40-hex commit sha, never a branch like `main`")
     if not isinstance(version, str) or not re.fullmatch(r"[0-9][0-9A-Za-z.+_\-]*", version) or commit[:9] not in version:
         raise StageError(f"{path.name}: `version` must be the version that commit builds (it carries `g{commit[:9]}`)")
-    return {"AIDER_COMMIT": commit, "AIDER_VER": version}
+    if not isinstance(before, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", before):
+        raise StageError(f"{path.name}: `deps_before` must be a UTC timestamp like 2026-10-05T00:00:00Z (aider's PyPI dependencies are held to it)")
+    return {"AIDER_COMMIT": commit, "AIDER_VER": version, "AIDER_BEFORE": before}
 
 
 def _vetted_ai_cli_versions(load=_load_version_records, now: datetime | None = None) -> dict[str, str]:
@@ -1621,10 +1623,53 @@ def _vetted_ai_cli_versions(load=_load_version_records, now: datetime | None = N
         age = _record_age_days(resolved.get("resolved_at"), now)
         if age > RECORD_MAX_AGE_DAYS:
             raise StageError(f"{target} was resolved {age:.0f} days ago (limit {RECORD_MAX_AGE_DAYS}): {RESOLVE_ADVICE}")
+        prefix = env_key[: -len("_VER")]
         vetted[env_key] = version
+        vetted[f"{prefix}_BEFORE"], reason = _check_record(target, declaration, resolved, version)
+        if reason:
+            vetted[f"{prefix}_REASON"] = reason
     if install_enabled("INSTALL_AIDER"):
         vetted.update(_aider_main_pin())
     return vetted
+
+
+def _parse_utc(value: object, what: str) -> datetime:
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise StageError(f"{what}: unreadable timestamp {value!r}; {RESOLVE_ADVICE}") from exc
+
+
+def _check_record(target: str, declaration: dict, resolved: dict, version: str) -> tuple[str, str]:
+    """Cross-check one record; returns (the `npm --before` cutoff, the override reason or "").
+
+    * resolved.version must equal the source's version (a hand-edited record is caught);
+    * without an override the release must be at least as old as the age cutoff;
+    * a declared `version` override must equal the resolved value (an override edited without re-resolving
+      fails) and carries a reason, which is carried into tool-versions.env and the image manifest;
+    * the cutoff handed to npm is the record's own age cutoff, or the override's release date when that is
+      later, so transitive dependencies obey the same window as the top-level package.
+    """
+    source = (resolved.get("sources") or {}).get("npm") if isinstance(resolved.get("sources"), dict) else None
+    if not isinstance(source, dict) or source.get("version") != version:
+        raise StageError(f"{target}: resolved.version {version!r} does not equal the source's version; {RESOLVE_ADVICE}")
+    cutoff_text = resolved.get("age_cutoff")
+    cutoff = _parse_utc(cutoff_text, f"{target} age_cutoff")
+    released = _parse_utc(source.get("released_at"), f"{target} released_at")
+    override = declaration.get("version")
+    reason = ""
+    if override is not None:
+        reason = declaration.get("reason")
+        if override != version:
+            raise StageError(f"{target}: the declared override {override!r} differs from the resolved {version!r}; {RESOLVE_ADVICE}")
+        if not isinstance(reason, str) or not reason.strip():
+            raise StageError(f"{target}: an override needs a reason; {RESOLVE_ADVICE}")
+        reason = reason.strip()
+        if released > cutoff:
+            cutoff_text = source["released_at"]
+    elif released > cutoff:
+        raise StageError(f"{target}: {version} was released {source['released_at']}, after the age cutoff {cutoff_text}; {RESOLVE_ADVICE}")
+    return str(cutoff_text), reason
 
 
 def _resolve_versions() -> dict[str, str]:
@@ -1677,7 +1722,10 @@ def _resolve_versions() -> dict[str, str]:
 
 
 def _write_versions_env(resolved_versions: dict[str, str]) -> None:
-    lines = [f"{key}={value}" for key, value in sorted(resolved_versions.items())]
+    import shlex
+
+    # The file is sourced by the Dockerfile's shell: a value with spaces (an override reason) must be quoted.
+    lines = [f"{key}={shlex.quote(str(value))}" for key, value in sorted(resolved_versions.items())]
     VERSIONS_ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 

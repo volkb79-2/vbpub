@@ -676,7 +676,7 @@ The login lives only in Docker's standard credential store (`~/.docker/config.js
 home, or a credential helper). `docker`, `buildx` including the remote `mdt-managed` builder, `crane`,
 `regctl` and, once its backlog item lands, `cmru versions` all read it from there. `mdt doctor` prints a
 non-fatal notice when no `docker.io` entry exists (it checks the config's `auths`, `credHelpers` and
-`credsStore` keys only and never reads a secret). Why one holder:
+`credsStore` keys and, for a store, the helper's `list` verb (URLs only), and never reads a secret). Why one holder:
 [Docker Hub login](docs/DESIGN-GUIDE.md#docker-hub-login-has-one-holder); how:
 [CONSUMERS](docs/CONSUMERS.md#docker-hub-login).
 

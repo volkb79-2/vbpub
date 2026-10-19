@@ -367,8 +367,30 @@ the committed record offline (`cmru versions check` queries every target of the 
 rate-limited OCI registries, so a build would fail on an unrelated 429). Environment pins are refused, not
 silently ignored; cmru's reasoned `version` + `reason` override is the one supported pin. The OCI targets of
 the project are literal patch tags (a rolling family tag younger than the window makes `resolve` refuse the
-whole project; known issue, `handoff/CMRU-GAPS-2026-10-19.md`), and no build reads them, so the cockpit's
-actual base image did not change.
+whole project; known issue, `handoff/CMRU-GAPS-2026-10-19.md`).
+
+**The OCI records are advisory: not consumed by the build (MDT-009).** The base image is still chosen by
+`scripts/resolve-devcontainers-release.py` (a floating `mcr.microsoft.com/devcontainers/python` tag passed as
+`BASE_IMAGE`), so a record with a digest and a `released_at` is NOT a 14-day certification of the cockpit's
+base; it only keeps `cmru versions resolve` working and shows what a vetted base would be. Each target in
+`cmru.toml` carries an `ADVISORY` comment, and `scripts/test_ai_cli_versions.py` fails if any build input
+(Dockerfile, bake, `build-push.py`, the staging scripts) names a record or its digest while the label stands.
+MDT-009 makes the build take the devcontainers record as the `FROM` digest, with an equality test like
+`tester-base/tests/test_pins.py`; the label, these paragraphs and that test change together then.
+
+**Transitive dependencies obey the window too.** `npm install -g pkg@ver` pins only the top-level version
+(and ignores `package-lock.json`), so the three npm installs also pass `--before <cutoff>`: the record's own
+`age_cutoff` (resolved_at minus the window - cmru's definition of "old enough", so the whole tree is judged
+by the rule that judged the package; for a reasoned override younger than the cutoff, its release date, so
+the pinned release itself stays installable). Measured: npm 11.20.0 in the image honours `--before` with `-g`
+(a date before the release gives `notarget`). `package-lock.json` is therefore produced by `cmru versions
+resolve` (it is how cmru derives the constraints) and never consumed by the image build. aider's PyPI
+dependencies are held to `deps_before` in `aider-main-pin.toml` with `pip install --uploaded-prior-to`
+(pip 26.2 in the venv). The cutoffs, the aider commit and any override reason are written to
+`tool-versions.env` and listed in the image manifest ("Dependency age cutoffs"). Staging also cross-checks
+every record (resolved version equals its source's, release not after the cutoff, an override equals the
+resolved value and has a reason), so a hand-edited record or an override changed without `cmru versions
+resolve` fails.
 
 **aider is a documented exception.** Its newest vetted release (0.86.2) declares `Requires-Python <3.13`
 and cannot be installed into this image's Python 3.14 venv (pip: no matching distribution, also with
@@ -421,7 +443,7 @@ Docker's standard credential store (`~/.docker/config.json` in the persisted hom
 is the single holder of the Docker Hub login. Every client that talks to Docker Hub already knows how to read
 it: `docker`, `buildx` (the remote `mdt-managed` builder is driven through the client's credentials), `crane`
 and `regctl`; cmru is meant to join them (gap recorded in `handoff/CMRU-GAPS-2026-10-19.md`). `mdt doctor`
-only reports whether an entry exists, by the config's `auths`/`credHelpers`/`credsStore` keys, and never
+only reports whether an entry exists, by the config's `auths`/`credHelpers`/`credsStore` keys (for a `credsStore`: the helper's `list` verb, URLs only, offline-tolerant - an absent helper reads "cannot confirm"), and never
 reads or prints a secret; the notice is non-fatal because anonymous pulls are slow-failing, not impossible.
 Rejected alternatives: **cmru-only env vars** (`username_env`/`token_env`) - a second copy of the secret
 that only one tool reads; **an mdt env file** - a plaintext secret in the persisted home next to the real

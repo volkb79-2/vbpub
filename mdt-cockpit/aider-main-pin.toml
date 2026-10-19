@@ -11,4 +11,7 @@
 # soon as an aider release supports Python 3.14 (a release whose `Requires-Python` admits 3.14).
 commit = "5dc9490bb35f9729ef2c95d00a19ccd30c26339c"
 version = "0.86.3.dev53+g5dc9490bb"
+# aider's PyPI dependencies are held to this upload date (`pip install --uploaded-prior-to`): the 14-day window
+# measured from the day the commit was pinned. Move it together with `commit` when bumping.
+deps_before = "2026-10-05T00:00:00Z"
 exit_condition = "until an aider release supports Python 3.14"

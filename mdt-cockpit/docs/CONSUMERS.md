@@ -619,7 +619,7 @@ printf '%s' "$HUB_READ_TOKEN" | docker login docker.io --username <your-hub-user
 * **Who reads it:** `docker`, `buildx` (including the remote `mdt-managed` builder), `crane` and `regctl`
   today; `cmru versions` once its backlog item lands (it currently needs `username_env`/`token_env`).
 * **Check:** `mdt doctor` (also `--check-only`) prints a notice, never an error, when there is no
-  `docker.io` entry. The check looks at the config's `auths`, `credHelpers` and `credsStore` keys only.
+  `docker.io` entry. The check reads the config's `auths`, `credHelpers` and `credsStore` keys; for a `credsStore` it runs the helper's `list` verb (server URLs only, never `get`, usernames are not printed) and says "cannot confirm" when the helper is absent or fails.
 
 ## AI CLI versions (copilot, openclaw, claudelink)
 
@@ -642,6 +642,15 @@ constraint = "*"
 version = "1.0.90"
 reason = "1.0.92-4 breaks the MCP handshake; revisit when 1.0.93 is eligible"
 ```
+
+Staging fails when an override was edited without re-resolving (the declared `version` must equal the
+resolved one) and the reason appears in the image manifest. Dependencies are held to the same cutoff
+(`npm install --before`), so a build today installs the same tree as the day you resolved. `package-lock.json`
+is written by `cmru versions resolve` and not read by the build.
+
+**The eight `oci.*` targets are advisory: not consumed by the build (MDT-009).** They keep `resolve`
+working and show what a vetted base would be; the base image is still the floating devcontainers tag chosen
+by `scripts/resolve-devcontainers-release.py`, so do not read their digests as a certification of it.
 
 `COPILOT_VERSION`, `OPENCLAW_VERSION`, `CLAUDELINK_VERSION`, `AIDER_VERSION` and `AIDER_COMMIT` are
 refused with a message pointing here. aider is the documented exception: `aider-main-pin.toml` holds an

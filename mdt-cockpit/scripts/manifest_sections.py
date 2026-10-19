@@ -60,9 +60,11 @@ INSTALLATION_SOURCES: dict[str, str] = {
 # in a policy-note block at the top of each tool table section.
 POLICY_NOTES = {
     "AI CLI Tools": (
-        "**Version policy:** latest npm/GitHub release at build time (override via build arg). "
-        "AI CLI tool versions are resolved dynamically during `stage_tool_artifacts` from "
-        "the respective package registries (npm, PyPI, GitHub Releases)."
+        "**Version policy:** claude, codex, reasonix, opencode and pi follow upstream latest and the image "
+        "records the exact version it shipped; copilot, openclaw and claudelink are the newest release at "
+        "least 14 days old recorded by `cmru versions`, installed with every dependency held to the same "
+        "cutoff; aider is an exact upstream commit (documented exception). Versions are staged by "
+        "`stage_tool_artifacts` into tool-versions.env."
     ),
     "Container Inspection Tools": (
         "**Version policy:** latest GitHub release at build time (override via build arg). "

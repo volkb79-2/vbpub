@@ -36,7 +36,21 @@ def fake_version_records(versions: dict[str, str] | None = None, resolved_at: st
 
     versions = versions or {"npm.copilot": "1.0.92-4", "npm.openclaw": "2026.9.8", "npm.claudelink": "1.6.1"}
     stamp = resolved_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return {t: {"mode": "single", "constraint": "*", "resolved": {"version": v, "resolved_at": stamp}} for t, v in versions.items()}
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    try:
+        base = datetime.strptime(stamp, fmt).replace(tzinfo=timezone.utc)
+    except ValueError:
+        base = datetime.now(timezone.utc)  # a deliberately unreadable resolved_at stays unreadable below
+    from datetime import timedelta
+
+    cutoff = (base - timedelta(days=14)).strftime(fmt)
+    released = (base - timedelta(days=15)).strftime(fmt)
+    return {
+        t: {"mode": "single", "constraint": "*", "resolved": {
+            "version": v, "resolved_at": stamp, "age_cutoff": cutoff,
+            "sources": {"npm": {"version": v, "released_at": released, "age_source": "npm-registry-time"}}}}
+        for t, v in versions.items()
+    }
 
 
 @_pytest.fixture(autouse=True)

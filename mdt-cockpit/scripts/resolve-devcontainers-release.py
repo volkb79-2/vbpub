@@ -38,6 +38,8 @@ TOOL_VERSION_DISPLAY_ORDER = [
     ("opencode", "OPENCODE_VER"),
     ("pi", "PI_VER"),
     ("openclaw", "OPENCLAW_VER"),
+    ("copilot", "COPILOT_VER"),
+    ("claudelink", "CLAUDELINK_VER"),
     ("antigravity", "ANTIGRAVITY_VER"),
     ("awscli", "AWSCLI_VER"),
     ("b2", "B2_VER"),
@@ -1511,6 +1513,7 @@ def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
             lines.extend(["### AI CLI Tools", ""])
             lines.extend(sorted(ai_lines, key=lambda item: item.lower()))
             lines.append("")
+            lines.extend(render_vetting_lines(resolved_versions))
 
         if support_lines:
             lines.extend(["### Supporting Tool Versions", ""])
@@ -1522,6 +1525,28 @@ def render_tool_artifact_lines(tool_metadata: dict | None) -> list[str]:
     )
     lines.append("")
     return lines
+
+
+VETTED_TOOLS = (("copilot", "COPILOT"), ("openclaw", "OPENCLAW"), ("claudelink", "CLAUDELINK"), ("aider", "AIDER"))
+
+
+def render_vetting_lines(resolved_versions: dict) -> list[str]:
+    """The age cutoff every vetted tool's dependencies were held to, and any reasoned override."""
+    rows: list[str] = []
+    for name, prefix in VETTED_TOOLS:
+        before = str(resolved_versions.get(f"{prefix}_BEFORE") or "").strip()
+        if not before:
+            continue
+        row = f"- {name}: all dependencies uploaded/published before `{before}`"
+        if resolved_versions.get(f"{prefix}_COMMIT"):
+            row += f"; exact upstream commit `{resolved_versions[f'{prefix}_COMMIT']}` (documented exception, aider-main-pin.toml)"
+        reason = str(resolved_versions.get(f"{prefix}_REASON") or "").strip()
+        if reason:
+            row += f"; pinned by override, reason: {reason}"
+        rows.append(row)
+    if not rows:
+        return []
+    return ["### Dependency age cutoffs (14-day rule)", "", *rows, ""]
 
 
 def render_artifact_digests_appendix(tool_metadata: dict | None) -> list[str]:
