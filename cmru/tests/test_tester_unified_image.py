@@ -219,8 +219,27 @@ NYXLOOM_FINAL_WHEEL_INSTALL_RUN_BODY = (
     "cli_extended, nyxloom; print('nyxloom', nyxloom.__version__, "
     "'self-contained OK')\" && rm -rf /tmp/wheels"
 )
+# Userland the suites and gate scripts execute (MDTC-02 / INT-01): zsh, the real systemctl client and
+# the npm/npx links beside the node binary copied from the digest-pinned node stage. None of them
+# touches a CMRU wheel input, and they run before any of those inputs are copied.
+TESTER_ZSH_RUN = (
+    "apt-get update && apt-get install -y --no-install-recommends zsh "
+    "&& rm -rf /var/lib/apt/lists/*"
+)
+TESTER_SYSTEMCTL_RUN = (
+    "apt-get update && apt-get install -y --no-install-recommends systemd "
+    "&& rm -rf /var/lib/apt/lists/* && /bin/systemctl --version"
+)
+TESTER_NODE_LINKS_RUN = (
+    "ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm "
+    "&& ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx "
+    "&& node --version && npm --version && npx --version"
+)
 CMRU_PRE_SENSITIVE_RUN_BODIES = (
     TESTER_HOST_TOOLS_RUN,
+    TESTER_ZSH_RUN,
+    TESTER_SYSTEMCTL_RUN,
+    TESTER_NODE_LINKS_RUN,
     CMRU_SOURCE_TREE_CLEAN_RUN,
     CMRU_VENV_CLEAN_RUN,
     TESTER_GIT_MAINTENANCE_RUN,
