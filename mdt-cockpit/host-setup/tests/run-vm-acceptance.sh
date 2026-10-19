@@ -27,6 +27,14 @@ run_with_timeout() {
 }
 
 cleanup() {
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        # Evidence BEFORE the guest is destroyed, over a FRESH ssh from this side: a guest-side
+        # EXIT trap does not survive the outer timeout killing the ssh session.
+        echo "run-vm-acceptance: exit $rc; dumping guest diagnostics before the guest is torn down" >&2
+        timeout --foreground 4m "$HARNESS" ssh "$RUN" -- \
+            "sudo bash '$GUEST_ROOT/host-setup/tests/vm-dump-diagnostics.sh'" || true
+    fi
     MDT_VM_SOURCE_DIR="$WORKTREE_ROOT" "$HARNESS" destroy "$RUN" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
@@ -49,7 +57,9 @@ run_with_timeout 5m "$HARNESS" copy "$RUN" /source/mdt-cockpit/ "$GUEST_ROOT/"
 run_with_timeout 2m "$HARNESS" ssh "$RUN" -- "mkdir -p '$GUEST_SHARED_SCRIPTS'"
 run_with_timeout 5m "$HARNESS" copy "$RUN" /source/scripts/debian-install-v2/ "$GUEST_SHARED_SCRIPTS/"
 
-run_with_timeout 25m "$HARNESS" ssh "$RUN" -- \
+# The guest step contains: a pre-pull (<= 10 min), install.sh (buildkitd start <= 10 min plus the
+# rest) and the governance script; 40 minutes covers their sum with margin.
+run_with_timeout 40m "$HARNESS" ssh "$RUN" -- \
     "set -eu
      cd '$GUEST_ROOT'
      test \"\$(ps -p 1 -o comm=)\" = systemd
@@ -89,7 +99,7 @@ dst.write_text(''.join(out))
 PY
      sudo install -D -m 0644 /tmp/mdt-host-setup.env /etc/mdt/host-setup.env
      sudo systemctl enable --now docker
-     sudo bash host-setup/install.sh
+     sudo bash host-setup/tests/vm-install-with-diagnostics.sh
      sudo /usr/local/sbin/mdt-host-check.sh
      for unit in dev.slice dev-gates.slice dev-buildkitd.slice; do
          state=\"\$(sudo systemctl show \"\$unit\" -p LoadState --value)\"
@@ -101,4 +111,5 @@ PY
      sudo grep -q 'dev-background.slice' /etc/docker/daemon.json
      sudo docker info >/dev/null
      sudo docker buildx version
-     echo 'MDT VM acceptance: systemd, cgroup2, Docker, rendered slices, and host check passed'"
+     sudo bash host-setup/tests/vm-governance-acceptance.sh
+     echo 'MDT VM acceptance: systemd, cgroup2, Docker, rendered slices, host check, and IO governance passed'"

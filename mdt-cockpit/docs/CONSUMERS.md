@@ -196,6 +196,81 @@ available. A successful measurement temporarily replaces them with
 `DEV_IO_CAP_PCT` percent of the measured ceilings. Without current results,
 containers receive no guessed per-container IO cap.
 
+### Dev-tier IO governance: pin, verify, swap
+
+On a virtual disk a benchmark can read the hypervisor's write-back cache (one
+host: 4.3 GB/s measured, ~20 MB/s real), so pin the dev.slice caps from a
+sustained measurement instead of trusting a percentage of the baseline. The four
+`DEV_IO_*_MAX` keys are read by the periodic reconcile with no reinstall:
+
+```bash
+# 1. measure sustained write for minutes, use the LAST minute only
+sudo iostat -x 5            # while the disk is saturated; or fio --direct=1 --fsync=1 --time_based
+# 2. pin: add or edit these lines in /etc/mdt/host-setup.env
+#    positive integers or K/M/G/T suffixes; 0 is refused
+#      DEV_IO_RBPS_MAX=80M
+#      DEV_IO_WBPS_MAX=40M
+#      DEV_IO_RIOPS_MAX=800
+#      DEV_IO_WIOPS_MAX=600
+sudo ./host-setup/install.sh        # refresh the unit-file fallback from the same keys
+# 3. apply and verify
+sudo systemctl start mdt-dev-governance-reconcile.service
+systemctl is-failed mdt-dev-governance-reconcile.service     # expect: active (not "failed")
+sudo mdt-cgroup-io-limits.sh dev.slice --all --systemd       # limits, EFFECTIVE, drop-in paths
+```
+
+On a pin-only host (no valid baseline, the normal state on a virtio disk) the per-container
+caps, the Docker-events watcher caps and the per-scope `IOWeight=1` deprioritisation of
+gate and BuildKit containers are inactive: they need a valid baseline. The slice-level caps
+(the `dev.slice` pins and the per-tier keys, plus the slices' own `IOWeight`) are the whole
+protection, and are enough.
+
+Upgrading an existing host: the 20 pin keys (`DEV_IO_*_MAX` and `DEV_<TIER>_IO_*_MAX`) and
+`IO_BASELINE_ROTATIONAL_FLAG` are **runtime-optional**: absent from an older
+`/etc/mdt/host-setup.env` they mean "not set", so a plain `sudo ./host-setup/install.sh`
+works and prints one NOTICE naming the effective cap source (the static fallback
+`DEV_STATIC_*`, lowered only by a current, plausible baseline), plus a NOTICE counting the
+absent runtime-optional keys. Render-time keys still refuse when absent. Run
+`install.sh --wizard` to review and add them.
+
+virtio-blk reports `rotational=1` by default, so a genuinely fast virtio disk can have
+its baseline refused as implausible; set `IO_BASELINE_ROTATIONAL_FLAG=ignore` in `/etc/mdt/host-setup.env` only if you
+know the disk is fast (`mdt-io-baseline.py`, the wizard benchmark and the reconcile all read it
+from there), and pin the caps from a sustained measurement either way.
+
+The values above are an illustration (one 16 GiB virtio host), not a default.
+Expected after a good run: the journal line
+`dev.slice: verified kernel io.max 254:0 rbps=83886080 wbps=41943040 riops=800 wiops=600`
+followed by `is authoritative`; `dev-gates.slice` and `dev-buildkitd.slice` show
+`riops=480 wiops=360` (`DEV_SUBSLICE_IOPS_PCT`% of the effective values). A
+**kernel update** makes the baseline stale until `mdt-io-baseline.py --force`
+is re-run; pinned values keep the cap meanwhile. The reconcile logs `ERROR` and
+exits non-zero if the kernel does not hold the intended values, and warns
+`UNCAPPED SWAP` when a swap device sits on a disk with no `dev.slice` `io.max`
+entry (`mdt-host-check.sh` reports the same).
+
+Swap stays ample (80% of host swap cascades to `dev.slice` and to every child;
+that default is kept). The protection against a gate thrashing the shared disk is
+a tight IO cap on the gate tier: swap-out IO is charged to the page owner's
+cgroup (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`), so a gate that swaps is throttled by its own cap. Runtime keys in
+`host-setup.env`, picked up by the next reconcile (illustration from one host,
+not a default):
+
+```bash
+DEV_GATES_IO_RBPS_MAX=40M
+DEV_GATES_IO_WBPS_MAX=20M
+DEV_GATES_IO_RIOPS_MAX=300    # min(DEV_SUBSLICE_IOPS_PCT sub-ceiling, 300)
+DEV_GATES_IO_WIOPS_MAX=200
+```
+
+The same four keys exist for `INTERACTIVE`, `BACKGROUND` and `BUILDKITD`. A
+throttled gate stalls and runs slowly: classify that as an infrastructure
+slowdown, not a product failure. `DEV_SWAP_MAX` / `DEV_GATES_MEMORY_SWAP_MAX`
+(absolute values such as `8G`/`2G`) remain available for a smaller allowance. If
+the reconcile ever has to withdraw a cap it re-asserts explicit values with
+`set-property --runtime`: a `daemon-reload` after removing a runtime drop-in was
+measured not to re-apply the unit-file value.
+
 The wizard also asks for `CGROUP2_FLAGS`, the timer interval, and the one
 out-of-tree Buildx name-pattern field. Correctly placed containers are selected
 by their cgroup path, not a pattern. `CGROUP2_FLAGS=fix` lets the periodic host

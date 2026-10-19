@@ -1,5 +1,21 @@
 # debian-install-v2 — TODO / backlog
 
+## OPEN (MDT-016 / D-HS-01-2, 2026-10-19): the io.cost generator measures through the hypervisor cache
+
+`tools/iocost_coef_gen.py` (patched copy of the Linux generator, built by `tools/build-iocost-generator.py`)
+runs `fio --direct=1 ... --time_based` and reports the mean. O_DIRECT does not defeat a hypervisor
+write-back cache: one virtio host measured 4.3 GB/s read / 2 GB/s write / 94k IOPS from a disk that
+saturated at ~20 MB/s with 35-60 ms write latency, so the numbers (and any io.cost model or io.max cap
+derived from them) are cache readings. Shipped now (both consumers, mdt-cockpit `mdt-io-baseline.py` and
+`tools/iocost-calibrate.sh`): a plausibility REFUSAL for a rotational-flagged device above 1 GiB/s sequential or
+20,000 random 4-KiB IOPS (one shared definition, `tools/iocost_plausibility.py`; override
+`IO_BASELINE_ROTATIONAL_FLAG=ignore` for a fast virtio disk). NOT done (too large, touches the vendored patch series and the sha256): redesign the
+generator to use `--fsync`/`--end_fsync` for writes, a working set larger than the cache the host can
+see, and a steady-state tail measurement (ramp then measure only the last N seconds), recorded in the
+output. Also open: `Installer._run_io_benchmark()` persists the generator's numbers without the
+plausibility check (advisory data, never applied as caps); add it with the redesign. Tracked in
+mdt-cockpit as MDT-017.
+
 ## OPEN (operator note, 2026-10-06): test Augeas as an alternative for in-place config edits
 
 Test Augeas as an alternative for in-place config edits (see

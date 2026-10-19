@@ -43,7 +43,21 @@ DEFAULT_SIZE_GB = 16
 DEFAULT_DURATION = 120
 DEFAULT_NUMJOBS = 1
 METHOD = "iocost-coef-gen"
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
+# Recorded in the results so a reader can tell how the numbers were obtained
+# and what was (and was not) done about caches.  Schema 3 exists because
+# schema 2 numbers were measured through the hypervisor's write-back cache
+# (MDT-016): the generator uses O_DIRECT, but in a guest that only bypasses the
+# GUEST page cache; without an fsync the host cache still absorbs writes.
+MEASURE_DETAIL = (
+    "fio direct=1 libaio via iocost_coef_gen; mean over DURATION_SEC; "
+    "no fsync and no steady-state tail (hypervisor caches are NOT defeated); "
+    "accepted only if plausibility-class-ceiling-v2 passes"
+)
+PLAUSIBILITY = "class-ceiling-v2"
+# The plausibility rule is ONE shared definition (tools/iocost_plausibility.py,
+# installed beside the generator in /usr/local/lib/mdt) used by this script and by
+# debian-install-v2's iocost-calibrate.sh, so the two cannot drift.
 MATRIX_KEYS = ("RBPS", "RSEQIOPS", "RRANDIOPS", "WBPS", "WSEQIOPS", "WRANDIOPS")
 SAFE_HOST_PATH_RE = re.compile(
     r"/(?:[A-Za-z0-9._+@%=:,-]+(?:/[A-Za-z0-9._+@%=:,-]+)*)?"
@@ -239,20 +253,80 @@ def device_identity(testfile: Path, io_dev_path: Path | None = None) -> dict[str
     return facts
 
 
-def results_are_valid(path: Path) -> bool:
-    values = parse_env(path)
-    if (
-        values.get("SCHEMA_VERSION") != SCHEMA_VERSION
-        or values.get("MEASURE_METHOD") != METHOD
-        or not values.get("MEASURED_AT")
-    ):
-        return False
-    if any(not values.get(key) for key in REQUIRED_RESULT_FIELDS):
-        return False
+def _shared_plausibility():
+    import importlib.util
+    candidates = (
+        Path(os.environ.get("MDT_LIB_DIR") or "/usr/local/lib/mdt"),
+        Path(__file__).resolve().parents[3] / "scripts/debian-install-v2/tools",
+    )
+    for directory in candidates:
+        path = directory / "iocost_plausibility.py"
+        if path.is_file():
+            spec = importlib.util.spec_from_file_location("iocost_plausibility", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
+def rotational_flag_ignored() -> bool:
+    """IO_BASELINE_ROTATIONAL_FLAG=ignore, from the environment or, failing that, from
+    host-setup.env (MDT_HOST_SETUP_CONF, default /etc/mdt/host-setup.env): the same file the reconcile
+    reads, so the tool that WRITES the baseline and the service that READS it agree."""
+    value = os.environ.get("IO_BASELINE_ROTATIONAL_FLAG")
+    if value is None or value == "":
+        conf = Path(os.environ.get("MDT_HOST_SETUP_CONF") or "/etc/mdt/host-setup.env")
+        value = parse_env(conf).get("IO_BASELINE_ROTATIONAL_FLAG", "").strip().strip("\"'")
+    return value == "ignore"
+
+
+def plausibility_problem(values: dict[str, str]) -> str | None:
+    """Why these numbers cannot be a real sustained device ceiling, or None.
+
+    A missing shared module is a refusal, never a pass: numbers that cannot be
+    checked are not verified numbers."""
+    shared = _shared_plausibility()
+    if shared is None:
+        return "iocost_plausibility.py is not installed, so the baseline's plausibility cannot be verified"
     try:
-        return all(int(values[key]) > 0 for key in (*MATRIX_KEYS, "RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS", "TESTFILE_SIZE_BYTES"))
+        return shared.plausibility_problem(
+            rbps=int(values["RBW_MAX_BPS"]), wbps=int(values["WBW_MAX_BPS"]),
+            rrandiops=int(values["RRANDIOPS"]), wrandiops=int(values["WRANDIOPS"]),
+            rotational=values.get("DEVICE_ROTATIONAL", ""),
+            flag_ignored=rotational_flag_ignored(),
+            names={"rbps": "RBW_MAX_BPS", "wbps": "WBW_MAX_BPS",
+                   "rrandiops": "RRANDIOPS", "wrandiops": "WRANDIOPS"},
+        )
     except (KeyError, ValueError):
-        return False
+        return None
+
+
+def results_problem(path: Path) -> str | None:
+    """Why the results file is not usable (structure, schema, plausibility)."""
+    values = parse_env(path)
+    if not values:
+        return f"no benchmark results at {path}"
+    if values.get("SCHEMA_VERSION") != SCHEMA_VERSION:
+        return (
+            f"benchmark-results schema is {values.get('SCHEMA_VERSION') or 'missing'}, expected {SCHEMA_VERSION} "
+            "(stale: measured by an older method that read through the hypervisor write-back cache; "
+            "re-run mdt-io-baseline.py --force)"
+        )
+    if values.get("MEASURE_METHOD") != METHOD or not values.get("MEASURED_AT"):
+        return "benchmark results lack MEASURE_METHOD/MEASURED_AT"
+    missing = [key for key in REQUIRED_RESULT_FIELDS if not values.get(key)]
+    if missing:
+        return f"benchmark results are missing {', '.join(missing)}"
+    try:
+        if not all(int(values[key]) > 0 for key in (*MATRIX_KEYS, "RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS", "TESTFILE_SIZE_BYTES")):
+            return "benchmark results contain a non-positive value"
+    except (KeyError, ValueError):
+        return "benchmark results contain a non-integer value"
+    return plausibility_problem(values)
+
+
+def results_are_valid(path: Path) -> bool:
+    return results_problem(path) is None
 
 
 def results_are_current(path: Path, testfile: Path | None = None) -> bool:
@@ -372,7 +446,8 @@ def run(args: argparse.Namespace) -> int:
         if results_are_current(output, testfile):
             print(f"current io.cost benchmark results: {output} (device and target identity match)")
             return 0
-        print(f"no current io.cost benchmark results: {output} (missing, invalid, or device/target identity changed)", file=sys.stderr)
+        problem = results_problem(output)
+        print(f"no current io.cost benchmark results: {output} ({problem or 'device/target identity changed or kernel/generator differs'})", file=sys.stderr)
         return 1
     if os.geteuid() != 0:
         print("ERROR: run as root from the Docker host", file=sys.stderr)
@@ -436,6 +511,8 @@ def run(args: argparse.Namespace) -> int:
     results = {
         "SCHEMA_VERSION": SCHEMA_VERSION,
         "MEASURE_METHOD": METHOD,
+        "MEASURE_DETAIL": MEASURE_DETAIL,
+        "PLAUSIBILITY": PLAUSIBILITY,
         "MEASURED_AT": now,
         "KERNEL_RELEASE": os.uname().release,
         "GENERATOR_SHA256": generator_digest(generator),
@@ -449,6 +526,10 @@ def run(args: argparse.Namespace) -> int:
         "RBW_MAX_BPS": matrix["RBPS"], "WBW_MAX_BPS": matrix["WBPS"],
         **matrix, "DURATION_SEC": str(args.duration), "NUMJOBS": str(args.numjobs),
     }
+    problem = plausibility_problem(results)
+    if problem:
+        print(f"ERROR: {problem}; existing benchmark results remain untouched", file=sys.stderr)
+        return 1
     try:
         write_results(output, results)
     except OSError as exc:

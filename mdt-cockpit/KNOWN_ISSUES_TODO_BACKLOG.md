@@ -259,3 +259,52 @@ waiver fail or age out: an override released after the age cutoff waives the 14-
 tool's dependencies indefinitely. Give a waiver an expiry or a ceiling (for example refuse a waiver older
 than the record age limit) and test it.
 
+
+## MDT-016 - dev.slice IO governance was not in effect and certified itself (2026-10-19)
+
+**CLOSED 2026-10-19 (MDT-HS-01).** Production game servers (`wings.slice`) lagged while dev gates ran.
+Measured on the live host: (1) after a kernel update the reconcile rejected the baseline and ran its
+clear path, `set-property --runtime dev.slice IOReadBandwidthMax= ...`; in systemd an empty assignment
+resets the whole list including unit-file values, so `dev.slice` ended with empty runtime drop-ins and an
+empty `io.max` (no IO cap) while the script logged "static unit fallback is authoritative"; the timer
+re-applied this every 60 s. (2) The stored baseline (4.3 GB/s read, 2 GB/s write, 94k/68k IOPS; fio 120 s,
+numjobs=1, 16 GiB file) was hypervisor-cache inflated: the virtio `vda` (write back, rotational=1) really
+saturated at ~90% util, ~1,500-1,800 merged writes/s, ~20 MB/s, w_await 35-60 ms, so 60% of it never bound.
+(3) The resolved device (`/dev/mapper/gstammtisch--vg-root` -> whole disk `vda`, 254:0) was invisible, and
+nothing checked that the swap partitions (vda6, vda7) sat on a capped disk. (4) `DEV_SWAP_CASCADE_PCT=80`
+gave dev.slice 59 GB and each child 47 GB of swap on a 16 GiB host; a gate that outgrew its memory thrashed
+swap. (5) The operator's listing script tested `[ -s io.max ]`; cgroupfs files report size 0.
+
+Fixed: no clear path (explicit fallback re-asserted, empty assignments only without a device); kernel
+`io.max` read back after every apply, non-zero exit on mismatch; operator-pinned `DEV_IO_*_MAX` keys (min
+with a baseline); baseline schema 3 + plausibility refusal; `UNCAPPED SWAP` warning in the reconcile and
+`mdt-host-check.sh`; `mdt-cgroup-io-limits.sh` shipped. Design: `docs/DESIGN-GUIDE.md` D-HS-01-1..4.
+Tests: `host-setup/tests/test_io_governance.py`.
+
+## MDT-017 - measure a sustained, cache-defeating IO baseline (D-HS-01-2)
+
+`mdt-io-baseline.py` only refuses an implausible baseline; it still measures through the hypervisor cache.
+Redesign: O_DIRECT with `--fsync`/`--end_fsync` for writes, a working set larger than the cache the host
+can see, and a steady-state tail measurement (last N seconds) recorded in the results. This changes the
+shared `scripts/debian-install-v2/tools/iocost_coef_gen.py` (and its vendored patch series), which is
+outside `mdt-cockpit`; coordinate with debian-install-v2 (same item filed there in `TODO.md`). The
+plausibility refusal is shipped in both consumers (`mdt-io-baseline.py`, `iocost-calibrate.sh`). Until the
+redesign, pinned `DEV_IO_*_MAX` are the recommended source on a virtual disk.
+
+## MDT-018 - dev-tier swap sizing default (D-HS-01-3)
+
+**CLOSED 2026-10-19 (decided by the operator, amendment A1).** Swap stays ample (the 80% cascade is kept).
+The protection is a tight IO cap on the gate tier (`DEV_GATES_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX`, and the
+same four keys per tier): swap-out IO is charged to the page owner's cgroup (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`). A throttled gate runs
+slowly, an infrastructure-classified slowdown. `DEV_SWAP_MAX` / `DEV_GATES_MEMORY_SWAP_MAX` stay
+available but are not the protection.
+
+## MDT-019 - a transient findmnt failure strips per-container IO caps for one sweep (pre-existing)
+
+With no block device discovered (for example a transient `findmnt` failure), `_mdt_derive_watcher_caps`
+sets `WATCHER_SKIP` and `_mdt_clear_container_caps` removes MDT's per-container transient IO caps for that
+one run; the next sweep or the Docker-events watcher re-applies them. The dev.slice and tier paths are
+guarded since MDT-016 (no write, ERROR when limits exist); the container sweep is not. Not fixed here: the
+existing no-baseline sweep test depends on the strip, and a guard needs the same "carries limits" probe per
+scope. Fix: skip `_mdt_clear_container_caps` when the device is merely undiscovered, keep it for a missing
+baseline.

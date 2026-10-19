@@ -658,6 +658,48 @@ instead of ignoring configured values or starting an empty watcher. During
 upgrades, if an older host config has leaf values but no policy key, the wizard
 carries those values forward for review and confirmation.
 
+## dev.slice IO governance must be verified, not asserted
+
+The reconcile used to claim governance it did not have (MDT-016). Four decisions
+came out of the 2026-10-19 incident; the mechanism is in
+`host-setup/CGROUP-NOTES.md` section 3, adoption in CONSUMERS.
+
+- **D-HS-01-1: withdraw by re-asserting, never by emptying.** An empty
+  `IO*Max=` assignment resets systemd's whole list, unit-file values included.
+  Rejected, by measurement: deleting systemd's runtime drop-in and running
+  `daemon-reload`. On the live host (2026-10-19) the unit-file value was NOT
+  re-applied to the cgroup (`memory.swap.max` stayed at the old runtime value
+  until an explicit `set-property`). Chosen: `set-property --runtime` with the explicit
+  fallback numbers; empty assignments only when no device exists. Every apply
+  is read back from the kernel `io.max` (device = the originating whole disk) and
+  a mismatch fails the service; "authoritative" is only said after a match.
+- **D-HS-01-2: baseline plausibility now, redesign later.** The measurement
+  reads the hypervisor's cache. A real fix (O_DIRECT + `--fsync`, a working set
+  beyond the visible cache, a steady-state tail) changes the shared
+  `scripts/debian-install-v2/tools/iocost_coef_gen.py`, outside `mdt-cockpit`,
+  so it is MDT-017 (D-NNN filed in both mdt-cockpit and debian-install-v2: the plausibility refusal ships in both consumers, `mdt-io-baseline.py` and `iocost-calibrate.sh`; the generator itself is unchanged). Shipped: schema 3 records the method, old schemas are stale,
+  and a rotational-flagged device above 1 GiB/s sequential or 20k random 4 KiB IOPS is refused by ONE definition shared with debian-install-v2 (`iocost_plausibility.py`; sequential 4 KiB IOPS are never judged, merging is off in that run). virtio-blk is `rotational=1` by default, so a fast virtio disk is refused too: fail closed, with an explicit `IO_BASELINE_ROTATIONAL_FLAG=ignore` opt-in (a "looks virtual" heuristic was rejected: it misclassifies both ways). The honest limit:
+  a non-rotational device is not bounded, so operator-pinned `DEV_IO_*_MAX` are
+  the recommended source on a virtual disk (min of pin and baseline).
+- **D-HS-01-3: swap stays ample, the gate tier is throttled (DECIDED by the
+  operator, 2026-10-19; MDT-018 closed).** Options were (a) keep 80% of host swap
+  cascading, (b) absolute defaults (dev 8G / gates 2G), (c) RAM-relative. Chosen:
+  (a), plus a tight IO cap on the gate tier: swap-out IO is charged to the page
+  owner's cgroup, so a gate that swaps is throttled by its own cap and cannot
+  thrash the shared disk (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`). Per-tier keys `DEV_<TIER>_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX`
+  (`DEV_GATES_IO_WBPS_MAX` and its siblings); the IOPS sub-ceiling becomes
+  min(sub-ceiling, absolute). Cost: a throttled gate stalls and runs slowly, which
+  is an infrastructure-classified slowdown, not a product failure. The reconcile
+  warns `UNCAPPED SWAP` when swap sits on a disk with no `dev.slice` entry.
+- **D-HS-01-4: bytes, base 1024, one conversion.** systemd and MDT could read
+  `80M` differently; MDT converts K/M/G/T (base 1024) once and hands systemd and
+  the unit file plain byte counts, so unit, runtime and read-back agree.
+
+The size-0 trap: cgroupfs files report size 0, so a size test on one is always
+false (the operator's first listing script never showed a limit). MDT reads
+content only, ships `mdt-cgroup-io-limits.sh`, and tests it against FIFO-backed
+files that report size 0.
+
 ## Shared io.cost generator
 
 MDT and `debian-install-v2` use one generated copy of the Linux kernel's

@@ -54,12 +54,14 @@ MemoryLow=@DEV_MEMORY_LOW@
 MemoryHigh=@DEV_MEMORY_HIGH@
 MemoryMax=@DEV_MEMORY_MAX@
 #
-# Static boot-window fallbacks (deliberately tight — mdt-dev-governance-reconcile.service
-# overrides them at runtime with DEV_IO_CAP_PCT% (60% by default) of the
-# measured ceilings from io-baseline.env; a static unit file cannot express
-# "a percentage of what this disk actually does"). If no baseline has been
-# measured yet, these statics stay in force indefinitely — see
-# CGROUP-NOTES.md §3.
+# Static fallbacks (deliberately tight), rendered from ONE source: the
+# operator-pinned DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX when set, else DEV_STATIC_*
+# (install.sh renders them as plain byte counts). mdt-dev-governance-reconcile
+# .service re-asserts the SAME values at runtime whenever there is no usable
+# baseline — it never resets this list to empty (an empty IO*Max= assignment
+# wipes these unit-file values too: measured 2026-10-19, MDT-016) — and
+# applies min(pinned, DEV_IO_CAP_PCT% of a plausible baseline) when one exists,
+# then reads the kernel io.max back. See CGROUP-NOTES.md §3.
 IOReadBandwidthMax=@IO_DEV_PATH@ @DEV_STATIC_RBW@
 IOWriteBandwidthMax=@IO_DEV_PATH@ @DEV_STATIC_WBW@
 IOReadIOPSMax=@IO_DEV_PATH@ @DEV_STATIC_RIOPS@

@@ -363,7 +363,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "baseline.env"
             path.write_text(
-                "SCHEMA_VERSION=2\nKERNEL_RELEASE=test\nGENERATOR_SHA256=test\n"
+                "SCHEMA_VERSION=3\nKERNEL_RELEASE=test\nGENERATOR_SHA256=test\n"
                 "RIOPS_MAX=1\nWIOPS_MAX=1\nRBW_MAX_BPS=1\nWBW_MAX_BPS=1\n"
                 "DEVNO=8:0\nTESTFILE_STAT_DEV=1\nDOCKER_STAT_DEV=1\n"
                 "FINDMNT_SOURCE=/dev/sda\nDEVICE_SIZE_SECTORS=1\n"
@@ -411,7 +411,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
             target.write_bytes(b"x")
             baseline = root / "baseline.env"
             baseline.write_text(
-                "SCHEMA_VERSION=2\n"
+                "SCHEMA_VERSION=3\n"
                 f"KERNEL_RELEASE={os.uname().release}\n"
                 "MEASURE_METHOD=iocost-coef-gen\nMEASURED_AT=now\n"
                 "RIOPS_MAX=1000\nWIOPS_MAX=1000\nRBW_MAX_BPS=1000000\nWBW_MAX_BPS=1000000\n"
@@ -476,7 +476,12 @@ esac
             systemctl.write_text("#!/usr/bin/env bash\nexit 0\n")
             systemctl.chmod(0o755)
             env = os.environ.copy()
+            # the identity/plausibility checker must exist: its absence is not a pass
+            checker = fake_bin / "baseline-ok"
+            checker.write_text("#!/usr/bin/env bash\nexit 0\n")
+            checker.chmod(0o755)
             env.update({
+                "MDT_IO_BASELINE_PY": str(checker),
                 "CONF": str(config),
                 "FAKE_DOCKER_LOG": str(docker_log),
                 "PATH": f"{fake_bin}:/usr/bin:/bin",
@@ -763,7 +768,11 @@ esac
                 "STATE_PATH": str(state),
                 "SYSTEMCTL_LOG": str(systemctl_log),
             })
-            for io_device in ("/dev/fake", ""):
+            # Only the NO-DEVICE case may use empty assignments (nothing can be
+            # capped on a device we cannot name).  With a device the reconcile
+            # re-asserts explicit values and never clears: see
+            # test_io_governance.py (MDT-016).
+            for io_device in ("",):
                 state.write_text(
                     "dev.slice|IOReadBandwidthMax|stale-read-bandwidth\n"
                     "dev.slice|IOWriteBandwidthMax|stale-write-bandwidth\n"
@@ -793,30 +802,21 @@ esac
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout)
-                self.assertIn("dev.slice keeps static fallback", result.stdout)
+                self.assertIn("no host block device was discovered", result.stdout)
                 calls = systemctl_log.read_text()
-                self.assertIn(
-                    "set-property --runtime dev.slice IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax=",
-                    calls,
-                )
-                self.assertIn(
-                    "set-property --runtime dev-gates.slice IOReadIOPSMax= IOWriteIOPSMax=",
-                    calls,
-                )
-                self.assertIn(
-                    "set-property --runtime dev-buildkitd.slice IOReadIOPSMax= IOWriteIOPSMax=",
-                    calls,
-                )
+                # H-04: with no device discovered the reconcile must NOT touch the
+                # dev tier's IO properties at all (an empty assignment wipes the unit-file
+                # cap; a transient findmnt failure must not uncap the host).
+                for unit in ("dev.slice", "dev-gates.slice", "dev-buildkitd.slice"):
+                    self.assertNotIn(f"set-property --runtime {unit} ", calls)
                 self.assertNotIn("CPUWeight=", calls)
                 self.assertNotIn("MemoryMax=", calls)
                 remaining = state.read_text()
                 self.assertIn("dev.slice|CPUWeight|900", remaining)
                 self.assertIn("dev.slice|MemoryMax|123456", remaining)
                 self.assertIn("dev-gates.slice|MemoryMax|234567", remaining)
-                self.assertNotIn("IOReadBandwidthMax", remaining)
-                self.assertNotIn("IOWriteBandwidthMax", remaining)
-                self.assertNotIn("IOReadIOPSMax", remaining)
-                self.assertNotIn("IOWriteIOPSMax", remaining)
+                self.assertIn("dev.slice|IOReadBandwidthMax|stale-read-bandwidth", remaining)
+                self.assertIn("dev-gates.slice|IOReadIOPSMax|stale-gates", remaining)
                 self.assertNotIn("docker-stale.scope|IOReadBandwidthMax", remaining)
                 self.assertNotIn("docker-stale.scope|IOWriteBandwidthMax", remaining)
                 self.assertNotIn("docker-stale.scope|IOReadIOPSMax", remaining)

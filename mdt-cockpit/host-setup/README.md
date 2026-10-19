@@ -592,6 +592,7 @@ the test stacks.
 | `units/mdt-container-io-events-watcher.service` | systemd (enabled, unconditional) | `docker events` watcher applying measured IO caps to governed scopes and named out-of-tree Buildx workers |
 | `units/mdt-container-memory-inotify-watcher.service` | systemd (enabled only when inotify works, `WATCHER_MEMORY_POLICY=enabled`, and at least one per-container value is explicitly configured) | optional cgroupfs inotify watcher applying configured per-container memory caps to new scopes; shipped policy disables the unit |
 | `scripts/mdt-dev-governance-reconcile.sh` | `/usr/local/sbin/` | reconciliation implementation (see below) |
+| `scripts/mdt-cgroup-io-limits.sh` | `/usr/local/sbin/` | read-only IO limit listing with EFFECTIVE values and `--systemd` drop-in paths; reads cgroup file *content* (size is always 0) |
 | `scripts/mdt-container-io-events-watcher.sh` | `/usr/local/sbin/` | `docker events` event watcher — instant counterpart to reconciliation's per-container IO pass |
 | `scripts/mdt-container-io-caps.lib.sh` | `/usr/local/sbin/` | shared `_mdt_*` matching/cap-application functions — sourced by both of the above, one definition of "how a container gets capped" |
 | `scripts/mdt_cli.py` | `/usr/local/sbin/` | shared argparse diagnostics imported by installed Python entrypoints |
@@ -623,21 +624,26 @@ cannot express the next:
    from `host-setup.env` at install time so per-host tuning stays in one
    reviewable file.
 
-   If the io.cost baseline is missing or invalid, `mdt-dev-governance-reconcile.sh`
-   clears only MDT's runtime IO properties on `dev.slice` and its runtime IOPS
-   sub-ceilings on `dev-gates.slice`/`dev-buildkitd.slice`. That makes the
-   configured static unit-file values authoritative again instead of allowing
-   stale measured values to survive; unrelated cgroup properties are untouched.
-   On a no-baseline or no-device transition, MDT also clears its previously
+   The reconcile never withdraws `dev.slice`'s IO limits by clearing them. In
+   systemd an empty `IO*Max=` assignment resets the whole list, unit-file values
+   included (measured live, MDT-016), so with no usable baseline (missing, stale
+   after a kernel update, or implausible) `mdt-dev-governance-reconcile.sh`
+   re-asserts the explicit pinned or static values with
+   `set-property --runtime` and then reads the kernel `io.max` back; a mismatch
+   fails the service. Removing a runtime drop-in and running `daemon-reload` was
+   measured NOT to re-apply the unit-file value, which is why re-asserting is the
+   mechanism. With no block device discovered it writes nothing: it refuses
+   loudly if `dev.slice` carries limits and otherwise has nothing to cap.
+   On a no-baseline transition MDT also clears its previously
    applied transient caps from currently governed containers; otherwise an old
    cap would remain indefinitely. Governed containers then receive **no guessed
    per-container IO cap** until valid benchmark results are available. A
    missing or invalid measurement is indeterminate, so the Docker-events watcher remains
-   connected but skips cap application, and the periodic sweep applies measured
-   caps after the baseline is installed; restart the watcher after creating a
-   baseline so its one-time configuration load sees it. The explicit static
-   `DEV_STATIC_*` values remain the boot-window fallback for the root unit and
-   are a separate, operator-tunable policy.
+   connected but skips cap application, and the periodic sweep applies
+   measured caps after the baseline is installed; restart the watcher after
+   creating a baseline so its one-time configuration load sees it. The explicit
+   `DEV_STATIC_*` values (or the pinned `DEV_IO_*_MAX`) remain the fallback for the
+   root unit and are a separate, operator-tunable policy.
 2. **Boot service + periodic timer** (`mdt-dev-governance-reconcile.service/.timer` →
    `mdt-dev-governance-reconcile.sh`) — everything units *can't* declare:
    - the **measured** whole-estate IO caps on `dev.slice` (`DEV_IO_CAP_PCT`%
@@ -794,7 +800,58 @@ service temporarily replaces them with `DEV_IO_CAP_PCT` percent of the
 measured ceilings. Without current results, the static root values remain in
 force and no per-container rate is guessed.
 
-The caps derived from it sit in a **60–80% band** of the measured ceiling:
+### What is really applied: pins, plausibility, read-back (MDT-016)
+
+The effective `dev.slice` cap per value is, in order: the operator-pinned
+absolute key (`DEV_IO_RBPS_MAX`, `DEV_IO_WBPS_MAX`, `DEV_IO_RIOPS_MAX`,
+`DEV_IO_WIOPS_MAX`; runtime keys: edit `host-setup.env`, the next reconcile
+picks them up; positive integers or K/M/G/T suffixes, `0` refused), else
+`DEV_IO_CAP_PCT`% of a current, **plausible** baseline, else the static
+fallback; when a pin and a baseline both exist the smaller wins. The pins also
+become the static fallback in the rendered `dev.slice` unit. On a virtual disk
+**pin them from a sustained measurement**: a baseline can read the hypervisor's
+write-back cache (one host measured 4.3 GB/s from a disk that saturated at
+~20 MB/s), and the reconcile refuses an obviously cache-inflated one (a rotational-flagged device above 1 GiB/s sequential or 20,000 random 4 KiB IOPS). virtio-blk reports `rotational=1` by default, so a genuinely fast virtio disk is refused too: set `IO_BASELINE_ROTATIONAL_FLAG=ignore` only if you know it is fast, and pin the caps either way. On a host whose swap or root sits on md/LVM spanning several disks the runtime caps cannot be applied or verified (one clear ERROR per run; the unit-file statics stay the only cap). A
+**kernel update** invalidates the baseline until `mdt-io-baseline.py --force`
+is re-run; pins are unaffected.
+
+The reconcile never resets the runtime IO list to empty (an empty `IO*Max=`
+assignment also wipes the unit-file values, measured live), and after every
+apply it reads the kernel `io.max` back: a mismatch logs `ERROR` and fails the
+service. It also warns `UNCAPPED SWAP` when an active swap device lies on a
+disk with no `dev.slice` `io.max` entry. Check any host with
+`mdt-cgroup-io-limits.sh dev.slice --all --systemd` (limits, EFFECTIVE value
+along the ancestor path, resolved device names, systemd properties and
+drop-in paths). Why: [CGROUP-NOTES section 3](CGROUP-NOTES.md#3-caps-expressed-as-a-percentage-of-what-the-disk-actually-does);
+adoption steps: [CONSUMERS](../docs/CONSUMERS.md#dev-tier-io-governance-pin-verify-swap).
+
+**Swap stays ample; the gate tier is throttled by IO instead (decided).** The
+default (`DEV_SWAP_CASCADE_PCT=80` of host swap, cascading) is kept. A gate that
+swaps is throttled by its own tight IO cap, because swap-out IO is charged to the
+page owner's cgroup (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`): set `DEV_GATES_IO_RBPS_MAX`, `DEV_GATES_IO_WBPS_MAX`,
+`DEV_GATES_IO_RIOPS_MAX`, `DEV_GATES_IO_WIOPS_MAX` (runtime keys; the same four
+exist for `INTERACTIVE`, `BACKGROUND` and `BUILDKITD`; IOPS values combine with the
+`DEV_SUBSLICE_IOPS_PCT` sub-ceiling as min). Illustration from the incident host:
+`dev.slice` 80M/40M/800/600, gates 40M/20M/300/200. A throttled gate runs slowly:
+that is an infrastructure-classified slowdown, not a product failure. A smaller
+swap allowance (`DEV_SWAP_MAX`, `DEV_GATES_MEMORY_SWAP_MAX`) stays available but is
+not the protection (D-HS-01-3). The withdraw path re-asserts values because a
+`daemon-reload` after removing a runtime drop-in was measured NOT to re-apply the
+unit-file value (D-HS-01-1).
+
+**On a pin-only host the slice-level caps are the whole protection.** On a virtual disk the
+baseline is normally absent or refused (implausible, stale after a kernel update), and the
+per-container caps (`WATCHER_IO_CAP_PCT`), the Docker-events watcher's caps and the per-scope
+`IOWeight=1`/`io.bfq.weight` deprioritisation of gate and BuildKit containers are applied only
+from a valid baseline, so on such a host they are inactive. What remains, and is enough, is the
+slice level: the `dev.slice` pins, the per-tier `DEV_<TIER>_IO_*_MAX` caps and the slices' own
+`IOWeight` (`DEV_GATES_IO_WEIGHT`, `DEV_BUILDKITD_IO_WEIGHT`, rendered into the units). The
+per-scope `IOWeight=1` was deliberately NOT decoupled from the baseline: it is a relative
+share on top of the slice weight, applying it needs the same per-scope sweep and clear path
+as the caps, and doing so would change the reconcile logic of a change whose purpose is to
+make the slice-level caps verifiable.
+
+The caps derived from it sit in a **60-80% band** of the measured ceiling:
 `DEV_IO_CAP_PCT=60` for the whole `dev.slice` estate (it bounds every
 governed child together — protects PRODUCTION from the tier, but not tier
 members from each other), `WATCHER_IO_CAP_PCT=80` per governed container
@@ -821,7 +878,9 @@ hardware: point `IO_BASELINE_ENV` at it or copy the file.
 
 ## Verification
 
-`mdt-host-check.sh` checks: `memory_recursiveprot` mount flag, unit presence +
+`mdt-cgroup-io-limits.sh dev.slice --all --systemd` shows what IO limits are
+really in force; `mdt-host-check.sh` checks: `UNCAPPED SWAP` coverage,
+`memory_recursiveprot` mount flag, unit presence +
 activity (`dev.slice`, `dev-interactive.slice`, `dev-background.slice`,
 `dev-gates.slice`, `dev-buildkitd.slice`),
 effective cgroupfs values (including `io.bfq.weight` next to `io.weight` —

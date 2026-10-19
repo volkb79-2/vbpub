@@ -500,6 +500,11 @@ deletes the partition and reads the table back before swap placement. Results
 `state_dir/io-benchmark.json` (0600), the `io_benchmark` step and one
 milestone notification. A benchmark failure is advisory (step `warned`, the
 install continues); a cleanup that cannot be verified stops the install.
+**Caveat (2026-10-19):** the generator measures with `fio --direct=1`, which does not defeat a
+hypervisor write-back cache, so on a virtual disk the numbers can be cache readings (one host: 4.3 GB/s
+from a disk that saturated at ~20 MB/s). `tools/iocost-calibrate.sh` now refuses to write an io.cost model
+from a rotational-flagged device measuring above 1 GiB/s sequential or 20,000 random 4 KiB IOPS (shared `tools/iocost_plausibility.py`; `IO_BASELINE_ROTATIONAL_FLAG=ignore` overrides it for a fast virtio disk); the installer step still records
+the numbers unchecked and they are advisory only. The generator redesign is in `TODO.md`.
 It needs `fio` and `pv` (installed only when the benchmark runs) and, while
 it runs, the tool sets the disk's scheduler to `none` and disables merging
 (the installer restores both itself, success or failure). Every long command has
