@@ -93,3 +93,18 @@ release flow, so `cmru release` does not run it against the images it publishes.
 A release builds and pushes images but never runs the lane against them, so a published image can
 still skip the runtime contract. Decide where the refs come from (the build's saved state) and wire
 the lane between build and push; until then it is run by hand against a local-dev or release build.
+
+## MDT-009 - `resolve-devcontainers-release.py` consumes `cmru versions` JSON
+
+Once cmru's `versions` has the OCI fixes in `handoff/CMRU-GAPS-2026-10-19.md` (G2 digest on semver
+records, G3 no 5000-tag refusal, G6 Docker credential store), `scripts/resolve-devcontainers-release.py`
+keeps only its devcontainers advisory (which devcontainers image release a base tag belongs to) and takes
+the tag/digest selection from `cmru versions check --json` instead of its own `fetch_registry_tags` /
+`select_latest_stable_tag` scanner. Until then the scanner is the design input for those cmru items.
+
+## MDT-010 - aider returns to a vetted release
+
+`aider-main-pin.toml` pins an exact commit of upstream `main` because aider's newest release needs
+Python <3.13 (MDTC-03). When an aider release supports Python 3.14: delete the file, declare
+`pypi.aider-chat` in `cmru.toml`, read it in `_vetted_ai_cli_versions` with the other three, and drop the
+documented exception from README / DESIGN-GUIDE.

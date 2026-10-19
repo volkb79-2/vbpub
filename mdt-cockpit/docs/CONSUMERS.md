@@ -604,6 +604,51 @@ do not list still come from their releases. The images are loaded into your loca
 `--push`/`--rebuild` paths and the release wrapper refuse them. Point a devcontainer at one with
 `"image": "<that tag>"`. Why it is built this way: [Local-dev builds](DESIGN-GUIDE.md#local-dev-builds-are-explicit-verified-and-unpublishable).
 
+## Docker Hub login
+
+Anonymous pulls from Docker Hub are limited to 100 per hour per IP, and every session on this host
+shares that IP, so a build or `cmru versions resolve` can fail with `429`. Create a **read-only** access
+token in Docker Hub (Account settings, Personal access tokens, "Public Repo Read-only") and log in once:
+
+```bash
+printf '%s' "$HUB_READ_TOKEN" | docker login docker.io --username <your-hub-user> --password-stdin
+```
+
+* **Where it is kept:** `~/.docker/config.json` in the persisted home, or a credential helper
+  (`credsStore` / `credHelpers`). Nothing else holds it: no env file, no `ciu` secret, no cmru variable.
+* **Who reads it:** `docker`, `buildx` (including the remote `mdt-managed` builder), `crane` and `regctl`
+  today; `cmru versions` once its backlog item lands (it currently needs `username_env`/`token_env`).
+* **Check:** `mdt doctor` (also `--check-only`) prints a notice, never an error, when there is no
+  `docker.io` entry. The check looks at the config's `auths`, `credHelpers` and `credsStore` keys only.
+
+## AI CLI versions (copilot, openclaw, claudelink)
+
+These three install the newest release that is at least 14 days old. The decision is recorded in
+`cmru.toml` (`[versions.targets."npm.<tool>".resolved]`); `scripts/stage_tool_artifacts.py` reads that
+record offline and refuses to stage when it is missing, unresolved or older than 28 days.
+
+```bash
+cd mdt-cockpit
+cmru versions check        # is a newer eligible version available? (queries every target)
+cmru versions resolve      # refresh the record, then commit cmru.toml, package-lock.json, constraints/, versions/
+```
+
+To pin one on purpose, give the target a reasoned override (cmru's supported form) and resolve:
+
+```toml
+[versions.targets."npm.copilot"]
+mode = "single"
+constraint = "*"
+version = "1.0.90"
+reason = "1.0.92-4 breaks the MCP handshake; revisit when 1.0.93 is eligible"
+```
+
+`COPILOT_VERSION`, `OPENCLAW_VERSION`, `CLAUDELINK_VERSION`, `AIDER_VERSION` and `AIDER_COMMIT` are
+refused with a message pointing here. aider is the documented exception: `aider-main-pin.toml` holds an
+exact upstream `main` commit and the version it builds, until an aider release supports Python 3.14.
+The R16 tools (claude, codex, reasonix, opencode, pi) keep following upstream latest with an exact
+recorded version and no age window.
+
 ## Release consumer
 
 A release also runs the `oci-push` lane (the push mechanics against a real local registry), inside

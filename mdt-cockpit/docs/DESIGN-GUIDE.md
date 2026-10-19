@@ -360,8 +360,25 @@ shipped. Staging resolves the registry `latest` (or an explicit pin) to an EXACT
 exact version (never empty, never `latest`; a build ARG cannot stand in for it), an explicit pin of any
 of the npm ones must be a published release,
 and with `INSTALL_CLAUDE_CODE=false` the registry is not consulted. The tools that are *not*
-user-updatable in this sense (copilot, openclaw, claudelink, aider, the release tools) keep their
-current resolution until the cmru-versions adoption.
+user-updatable in this sense follow the estate's 14-day rule, enforced by `cmru versions` rather than by
+a resolver of our own: copilot, openclaw and claudelink (npm targets in `cmru.toml`, which needs a
+`package.json` beside it in cmru 6.1.0) install the newest release at least 14 days old, and staging reads
+the committed record offline (`cmru versions check` queries every target of the project, including
+rate-limited OCI registries, so a build would fail on an unrelated 429). Environment pins are refused, not
+silently ignored; cmru's reasoned `version` + `reason` override is the one supported pin. The OCI targets of
+the project are literal patch tags (a rolling family tag younger than the window makes `resolve` refuse the
+whole project; known issue, `handoff/CMRU-GAPS-2026-10-19.md`), and no build reads them, so the cockpit's
+actual base image did not change.
+
+**aider is a documented exception.** Its newest vetted release (0.86.2) declares `Requires-Python <3.13`
+and cannot be installed into this image's Python 3.14 venv (pip: no matching distribution, also with
+`--ignore-requires-python`); 3.14 support exists only on upstream `main`. So `aider-main-pin.toml` pins an
+exact COMMIT of `main` and the version that commit builds; the installer refuses an unpinned `main`, and
+fails when the built version differs from the record. Both values reach `tool-versions.env`, the build
+metadata and the image manifest. **Exit condition: until an aider release supports Python 3.14** - then the
+file is deleted and `pypi.aider-chat` becomes a normal vetted target. (The `rich` pin conflict between
+aider-chat and the toolkit targets, which made `cmru versions resolve` unsatisfiable, disappeared with it.)
+The release tools keep their current resolution.
 
 **Claude Code is an npm-global install.** The image installs the official
 `@anthropic-ai/claude-code` package into `/opt/mdt/npm`. For such an install `claude update`
@@ -397,6 +414,18 @@ tool's own update command run once. Unless noted a tool was already at its lates
 Everything above that wrote under `/opt/mdt` is gone after a container recreate (the image's version
 returns); everything written under the home (Claude's own state, caches) is in the named volume and
 persists.
+
+## Docker Hub login has one holder
+
+Docker's standard credential store (`~/.docker/config.json` in the persisted home, or a credential helper)
+is the single holder of the Docker Hub login. Every client that talks to Docker Hub already knows how to read
+it: `docker`, `buildx` (the remote `mdt-managed` builder is driven through the client's credentials), `crane`
+and `regctl`; cmru is meant to join them (gap recorded in `handoff/CMRU-GAPS-2026-10-19.md`). `mdt doctor`
+only reports whether an entry exists, by the config's `auths`/`credHelpers`/`credsStore` keys, and never
+reads or prints a secret; the notice is non-fatal because anonymous pulls are slow-failing, not impossible.
+Rejected alternatives: **cmru-only env vars** (`username_env`/`token_env`) - a second copy of the secret
+that only one tool reads; **an mdt env file** - a plaintext secret in the persisted home next to the real
+store; **ciu secrets** - the login is a property of the host user's Docker client, not of any stack.
 
 ## The oci-push test runs where its tools are
 

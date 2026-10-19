@@ -133,8 +133,8 @@ Optional overrides (environment variables):
 - `REGISTRY`, `GITHUB_USERNAME`, `BUILD_DATE`, `BACKPORTS_URI`, `CIU_INSTALL_REQUIRED`
 - `RELEASE_IMAGE_FLOW` (`load` is the configured source-first OCI-layout lane, `push` is a direct-registry export alternative, and `repack` is the validated optional compression lane)
 - `REPACK_TARGET_SIZE` (`2GB` by default for the repack flow)
-- `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`, `AIDER_VERSION`
-- `REASONIX_VERSION`, `OPENCLAW_VERSION`, `OPENCODE_VERSION`
+- `CODEX_VERSION`, `CLAUDE_CODE_VERSION`, `ANTIGRAVITY_VERSION`
+- `REASONIX_VERSION`, `OPENCODE_VERSION`
 - `INSTALL_CODEX`, `INSTALL_CLAUDE_CODE`, `INSTALL_ANTIGRAVITY`, `INSTALL_AIDER`
 - `INSTALL_REASONIX`, `INSTALL_OPENCLAW`, `INSTALL_OPENCODE`
 
@@ -158,19 +158,13 @@ Disable optional AI tooling for a minimal image:
 INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_ANTIGRAVITY=false INSTALL_AIDER=false INSTALL_REASONIX=false INSTALL_OPENCLAW=false ./build-push.py --build
 ```
 
-### AIDER_VERSION modes (three-way)
+### aider, copilot, openclaw and claudelink versions
 
-`AIDER_VERSION` accepts three kinds of values:
-
-| Value | Behavior | Use case |
-|-------|----------|----------|
-| `main` (default) | `pip install` from git `@main` branch | Python 3.13/3.14 support (PR #4899 merged but not yet released) |
-| `latest` | Resolve the current PyPI release during staging, then install that exact version | Stable release tracking with a concrete manifest version |
-| `<version>` e.g. `0.86.2` | `pip install aider-chat==<version>` | Pinned reproducible builds |
-
-**Background**: The default `AIDER_VERSION=main` still exists for the Python 3.13/3.14 support case while the
-upstream release cadence catches up. If you use `latest`, staging resolves the current PyPI release version
-up front so the manifest records a concrete version instead of a symbolic placeholder.
+There is no `AIDER_VERSION`, `COPILOT_VERSION`, `OPENCLAW_VERSION` or `CLAUDELINK_VERSION` input any more
+(staging refuses them). copilot, openclaw and claudelink are the newest releases at least 14 days old,
+recorded by `cmru versions resolve` in `cmru.toml`; aider is an exact commit of upstream `main` recorded in
+`aider-main-pin.toml` (its newest release needs Python <3.13; exit condition: until an aider release
+supports Python 3.14). See [docs/CONSUMERS.md](docs/CONSUMERS.md#ai-cli-versions-copilot-openclaw-claudelink).
 
 `ANTIGRAVITY_VERSION` currently uses upstream latest-manifest resolution during artifact staging.
 

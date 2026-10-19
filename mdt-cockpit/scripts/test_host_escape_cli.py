@@ -87,3 +87,49 @@ class HostEscapeCliTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DoctorHubLoginNoticeTests(HostEscapeCliTests):
+    """`mdt doctor` prints a NON-FATAL notice when Docker Hub has no login entry (presence keys only)."""
+
+    NOTICE = "no docker.io login found"
+    SECRET = "c2VjcmV0LXRva2Vu-DO-NOT-PRINT"
+
+    def doctor(self, config: object | None) -> subprocess.CompletedProcess[str]:
+        home = Path(self.temp.name) / "home"
+        (home / ".docker").mkdir(parents=True, exist_ok=True)
+        cfg = home / ".docker" / "config.json"
+        cfg.unlink(missing_ok=True)
+        if config is not None:
+            import json
+
+            cfg.write_text(config if isinstance(config, str) else json.dumps(config), encoding="utf-8")
+        self.env["HOME"] = str(home)
+        self.env.pop("DOCKER_CONFIG", None)
+        return self.run_mdt("doctor", "--check-only")
+
+    def test_notice_when_there_is_no_config_or_no_hub_entry(self) -> None:
+        for label, config in (
+            ("no file", None), ("not json", "{oops"), ("empty", {}),
+            ("only ghcr", {"auths": {"ghcr.io": {"auth": self.SECRET}}}),
+            ("helper for another registry", {"credHelpers": {"ghcr.io": "pass"}}),
+            ("empty credsStore", {"credsStore": ""}),
+        ):
+            with self.subTest(label):
+                result = self.doctor(config)
+                self.assertIn(self.NOTICE, result.stderr)
+                self.assertEqual(result.returncode, 0, "the notice never fails the doctor")
+                self.assertNotIn(self.SECRET, result.stdout + result.stderr)
+
+    def test_no_notice_when_a_hub_entry_exists_and_the_secret_is_never_printed(self) -> None:
+        for label, config in (
+            ("auths index.docker.io/v1", {"auths": {"https://index.docker.io/v1/": {"auth": self.SECRET}}}),
+            ("auths docker.io", {"auths": {"docker.io": {"auth": self.SECRET}}}),
+            ("credHelpers", {"credHelpers": {"docker.io": "desktop"}}),
+            ("credsStore", {"credsStore": "pass", "auths": {}}),
+        ):
+            with self.subTest(label):
+                result = self.doctor(config)
+                self.assertNotIn(self.NOTICE, result.stderr)
+                self.assertEqual(result.returncode, 0)
+                self.assertNotIn(self.SECRET, result.stdout + result.stderr)

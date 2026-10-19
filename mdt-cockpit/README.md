@@ -196,7 +196,10 @@ tests that do not create/access such devices or mutate global kernel state.
 
 Enabled by default, each controlled by an `INSTALL_*` build arg:
 
-- `aider-chat` (`INSTALL_AIDER`) — in the venv.
+- `aider-chat` (`INSTALL_AIDER`) — in the venv, from an exact commit of upstream `main`
+  (`aider-main-pin.toml`) - the one tool that is not a vetted release, because the newest release needs
+  Python <3.13 and this image is 3.14; exit condition: until an aider release supports Python 3.14
+  ([why](docs/DESIGN-GUIDE.md#how-the-ai-clis-update-themselves)).
 - `reasonix`, `openclaw`, `opencode`, `copilot`, `claudelink`, `pi` — npm-based, installed
   into the `mdt`-group prefix `/opt/mdt/npm` (the image's `NPM_CONFIG_PREFIX`) on the image's
   Node 26 toolchain; the runtime user updates them in place without `sudo`. OpenCode
@@ -231,12 +234,14 @@ adapter pattern is in [docs/AI-AGENT-TOOL-DISCOVERY.md](docs/AI-AGENT-TOOL-DISCO
 Pin versions or opt out at build time:
 
 ```bash
-CODEX_VERSION=0.34.0 CLAUDE_CODE_VERSION=1.0.27 AIDER_VERSION=0.64.0 ./build-push.py --build
+CODEX_VERSION=0.34.0 CLAUDE_CODE_VERSION=1.0.27 ./build-push.py --build
 INSTALL_CODEX=false INSTALL_CLAUDE_CODE=false INSTALL_AIDER=false ./build-push.py --build
 ```
 
-`AIDER_VERSION` defaults to `main` (upstream git branch); `AIDER_VERSION=latest` resolves
-the current PyPI release at staging time, which keeps the manifest concrete.
+`copilot`, `openclaw` and `claudelink` are not pinned by environment: they install the newest release at
+least 14 days old, recorded in `cmru.toml` by `cmru versions resolve` (a reasoned `version` + `reason`
+override on the target is the supported pin; see [CONSUMERS](docs/CONSUMERS.md#ai-cli-versions-copilot-openclaw-claudelink)).
+`AIDER_VERSION` and `AIDER_COMMIT` are refused: aider's commit is `aider-main-pin.toml`.
 `ANTIGRAVITY_VERSION` follows upstream `latest` manifest resolution.
 
 ### Shell and CLI tooling
@@ -656,6 +661,24 @@ Built images carry `net.volkb79.base-devcontainers-release` and
 docker image inspect <image> \
   --format '{{ index .Config.Labels "net.volkb79.base-devcontainers-release" }}'
 ```
+
+### Docker Hub login
+
+Anonymous Docker Hub pulls are limited to 100 per hour per IP, and every session on this host shares
+that IP: a build, a version resolve and a few `docker pull`s exhaust it (`429 Too Many Requests`). Log in
+once with a read-only Docker Hub access token:
+
+```bash
+docker login docker.io --username <your-hub-user> --password-stdin <<< "$HUB_READ_TOKEN"
+```
+
+The login lives only in Docker's standard credential store (`~/.docker/config.json` in the persisted
+home, or a credential helper). `docker`, `buildx` including the remote `mdt-managed` builder, `crane`,
+`regctl` and, once its backlog item lands, `cmru versions` all read it from there. `mdt doctor` prints a
+non-fatal notice when no `docker.io` entry exists (it checks the config's `auths`, `credHelpers` and
+`credsStore` keys only and never reads a secret). Why one holder:
+[Docker Hub login](docs/DESIGN-GUIDE.md#docker-hub-login-has-one-holder); how:
+[CONSUMERS](docs/CONSUMERS.md#docker-hub-login).
 
 ### Compression and layer topology
 

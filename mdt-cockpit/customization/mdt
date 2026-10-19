@@ -127,6 +127,9 @@ usage_doctor() {
 Usage:
   mdt doctor [--check-only]
 
+First prints a non-fatal notice when no docker.io login exists in Docker's credential config
+(presence only, via the `auths`/`credHelpers`/`credsStore` keys; no secret is read or printed).
+
 Check the host cgroup2 mount for MDT's required flags. By default, remount the
 host cgroup2 filesystem to restore missing flags. `--check-only` reports a
 missing flag and exits nonzero without attempting the repair.
@@ -146,6 +149,38 @@ usage_error() {
     echo >&2
     usage_host_run "$2" >&2
     return 2
+}
+
+# ── Docker Hub login notice (non-fatal; docs/CONSUMERS.md "Docker Hub login") ─
+# Anonymous Docker Hub pulls are limited to 100/hour per IP, shared by every session on this host.
+# Docker's standard credential store is the ONE holder of the login, so this only checks that an entry
+# exists - through the config's `auths`, `credHelpers` and `credsStore` KEYS. It never prints or reads an
+# `auth` value, never runs a credential helper and never fails: absence is a notice, not an error.
+mdt_hub_login_notice() {
+    local config="${DOCKER_CONFIG:-${HOME:-}/.docker}/config.json" state
+    state=$(python3 -I - "$config" <<'PY' 2>/dev/null
+import json, sys
+HUB = {"docker.io", "index.docker.io", "registry-1.docker.io", "registry.hub.docker.com",
+       "https://index.docker.io/v1/", "https://docker.io", "https://registry-1.docker.io"}
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        config = json.load(handle)
+except (OSError, ValueError):
+    print("absent")
+    raise SystemExit(0)
+auths = config.get("auths") if isinstance(config, dict) else None
+helpers = config.get("credHelpers") if isinstance(config, dict) else None
+store = config.get("credsStore") if isinstance(config, dict) else None
+found = (isinstance(auths, dict) and bool(HUB & set(auths))) \
+    or (isinstance(helpers, dict) and bool(HUB & set(helpers))) \
+    or (isinstance(store, str) and bool(store))
+print("present" if found else "absent")
+PY
+    )
+    if [[ "$state" != "present" ]]; then
+        echo "[mdt doctor] notice: no docker.io login found in ${config} - anonymous Docker Hub pulls are limited to 100/hour per IP, shared by every session on this host. Log in once: docker login docker.io --username <user> --password-stdin (read-only access token; see docs/CONSUMERS.md \"Docker Hub login\")." >&2
+    fi
+    return 0
 }
 
 # ── cgroup2 mount-flag self-heal (host-setup/CGROUP-NOTES.md §5) ────────────
@@ -168,6 +203,8 @@ mdt_doctor() {
                 ;;
         esac
     done
+
+    mdt_hub_login_notice
 
     # shellcheck disable=SC2016
     local script='
