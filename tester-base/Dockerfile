@@ -14,11 +14,11 @@
 # repository (key fingerprint verified), and the shellcheck release (sha256 verified).
 #
 # BASE PIN (T1, freshness rule: the digest must be at least 14 days old when adopted).
-#   The literal below is the digest `cmru versions resolve tester-base` records for target
+#   The literal below is the tag and digest `cmru versions resolve tester-base` records for target
 #   `oci.python.314.trixie` (tester-base/cmru.toml -> versions/oci-images.json) under the estate's
-#   14-day age window, and tests/test_pins.py fails when the two differ. The target follows the
-#   immutable patch tags (python:3.14.N-trixie): a rolling tag cannot express "newest digest that is
-#   already old enough" (cmru refuses while the tag's current digest is younger than the window).
+#   14-day age window, and tests/test_pins.py fails when they differ. The target is a rolling target on
+#   the literal patch tag (a family tag such as 3.14-trixie is refused while its current digest is
+#   younger than the window); bumping the base is a reviewed edit of the tag in both places.
 #   tag      python:3.14.7-trixie (NOT -slim: gcc/g++ stay for ruptures, which has no cp314 wheel
 #            and builds from sdist; git, curl, openssh-client come with it). Created 2026-09-19.
 #   history  adopted 2026-10-18 when python:3.14-trixie had moved to 3.14.8 (2026-10-11, 7 days old,

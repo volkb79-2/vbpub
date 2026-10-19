@@ -29,8 +29,9 @@ ARG TESTER_BASE=tester-base:local
 
 # Node.js for the suites that execute it (pwmcp's runtime gateway). The official node image,
 # major 26 (the cockpit's NODE_MAJOR; the major is the deliberate manual pin), pinned by digest.
-# The digest is the one `cmru versions resolve tester-base` records for target `oci.node.26.trixie`
-# under the 14-day age window (tester-base/versions/oci-images.json); a test asserts they are equal.
+# The tag and digest are the ones `cmru versions resolve tester-base` records for target
+# `oci.node.26.trixie` under the 14-day age window (tester-base/versions/oci-images.json; the target
+# lives in tester-base/cmru.toml because tester-unified has no cmru project); a test asserts equality.
 FROM docker.io/library/node:26.9.0-trixie@sha256:fa271c47a5d81dc321f4a45be01362f5b3de7559edc7e76b8c4089be1e50d866 AS node-source
 
 FROM ${TESTER_BASE}

@@ -57,10 +57,16 @@ the digest that was pushed. `docker-ce-cli` is pinned to an exact recorded versi
   record in `versions/oci-images.json`, so a hand-edited digest cannot drift from what cmru vetted. Both
   targets live in this project's `cmru.toml` because tester-base is the image family's only cmru project
   (tester-unified has no cmru project of its own to own them).
-- **Why patch tags.** A *rolling* tag target (`3.14-trixie`) cannot express "the newest digest that is
-  already 14 days old": cmru refuses while the tag's current digest is younger than the window. The
-  targets therefore follow the immutable patch tags (`3.14.N-trixie`, `26.x.y-trixie`) and cmru picks
-  the newest that is old enough.
+- **Why rolling targets on literal patch tags.** Measured with the installed cmru (6.1.1): a rolling
+  target on the family tag (`3.14-trixie`) is refused while that tag's current digest is younger than the
+  window and cannot pick an older digest; a semver target (`{version}-trixie`) picks the newest old-enough
+  patch tag but its record carries no digest, and for `docker.io/library/node` it fails ("listed more than
+  5000 tags"); both enumerate tags against Docker Hub's 100-per-hour anonymous limit. A rolling target on
+  a *literal* patch tag (`3.14.7-trixie`, `26.9.0-trixie`) is the shape that records the digest, enforces the
+  age window on the chosen tag and needs one manifest request. Choosing the tag is therefore a reviewed edit
+  (bump the tag in `cmru.toml` and the Dockerfile together; `cmru versions resolve tester-base` then
+  refuses a tag younger than 14 days), and the maintainer picks the newest patch tag at or past the window
+  from Docker Hub's tag list. The remaining gap is reported as cmru backlog.
 
 ## What the skip-diff found (MDTC-02 T8) and where each answer lives
 Running every tester-unified lane on the old image (built from the cockpit) and on one built from

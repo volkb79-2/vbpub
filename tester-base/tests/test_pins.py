@@ -1,7 +1,8 @@
 """Every digest literal in the gate-image Dockerfiles is the digest `cmru versions` vetted (D-004, T1).
 
 `FROM image:tag@sha256:...` pins by digest, and a digest typed by hand proves nothing about its age.
-`cmru versions resolve tester-base` writes versions/oci-images.json under the estate's 14-day window;
+`cmru versions resolve tester-base` writes versions/oci-images.json (tag + digest + creation time) under the
+estate's 14-day window - a target younger than the window is refused;
 this test requires each Dockerfile literal (image, tag AND digest) to equal the record of its target.
 A missing record FAILS: there is no fallback to "trust the literal". Run
 `cmru versions resolve tester-base` (and commit versions/) to refresh it.
@@ -39,7 +40,8 @@ class Pins(unittest.TestCase):
         for _dockerfile, _stage, target in PINS:
             self.assertIn(target, declared)
             oci = declared[target]["oci"]
-            self.assertEqual(oci["tag"], "{version}-trixie", "patch-tag targets: a rolling tag cannot express 'old enough'")
+            self.assertEqual(oci["selection"], "rolling", "only a rolling target records the digest")
+            self.assertEqual(declared[target]["constraint"], "*")
 
     def test_the_resolved_record_exists(self) -> None:
         self.assertTrue(RECORD.is_file(), f"{RECORD} is missing: run `cmru versions resolve tester-base` and commit versions/")
@@ -53,7 +55,8 @@ class Pins(unittest.TestCase):
                 pinned = literal(dockerfile, stage)
                 entry = record["targets"][target]
                 self.assertTrue(entry["image"].endswith(pinned.group("image").removeprefix("docker.io/")))
-                self.assertEqual(pinned.group("tag"), entry["tag"])
+                self.assertEqual(pinned.group("tag"), entry["tag"], "the Dockerfile tag and the cmru target tag must be bumped together")
+                self.assertEqual(entry["tag"], tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))["versions"]["targets"][target]["oci"]["tag"])
                 self.assertEqual(pinned.group("digest"), entry["digest"], f"{dockerfile.name} carries a digest cmru did not record")
 
     def test_the_comparison_can_fail(self) -> None:

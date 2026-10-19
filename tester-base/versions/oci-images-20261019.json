@@ -1,0 +1,25 @@
+{
+  "generated_by": "cmru versions resolve",
+  "resolved_at": "2026-10-19T00:01:28Z",
+  "schema_version": 1,
+  "targets": {
+    "oci.node.26.trixie": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:fa271c47a5d81dc321f4a45be01362f5b3de7559edc7e76b8c4089be1e50d866",
+      "image": "docker.io/library/node",
+      "reason": null,
+      "released_at": "2026-09-19T12:24:11Z",
+      "tag": "26.9.0-trixie",
+      "version": "26.9.0-trixie"
+    },
+    "oci.python.314.trixie": {
+      "age_source": "oci-image-created-fallback",
+      "digest": "sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e",
+      "image": "docker.io/library/python",
+      "reason": null,
+      "released_at": "2026-09-19T13:55:46Z",
+      "tag": "3.14.7-trixie",
+      "version": "3.14.7-trixie"
+    }
+  }
+}
