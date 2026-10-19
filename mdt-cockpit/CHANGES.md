@@ -4,6 +4,14 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## UNRELEASED
+
+### Fixed
+- host-setup: the dev.slice IO reconcile no longer resets the runtime IO list to empty (which removed the unit-file cap as well); it re-asserts explicit values, reads the kernel `io.max` back after every apply and exits non-zero on a mismatch (MDT-016)
+
+### Added
+- host-setup: operator-pinned `DEV_IO_RBPS_MAX`, `DEV_IO_WBPS_MAX`, `DEV_IO_RIOPS_MAX`, `DEV_IO_WIOPS_MAX` runtime keys; baseline schema 3 with a plausibility refusal (old results are stale); `UNCAPPED SWAP` warning; `mdt-cgroup-io-limits.sh`. Existing `/etc/mdt/host-setup.env` files need the four new (empty) keys: re-run `install.sh --wizard`
+
 ## [source-998a43552c36] - 2026-10-02
 <!-- cmru: generated -->
 <!-- cmru: source-end=998a43552c36a51bc4a87932bd40098f227fd93d -->

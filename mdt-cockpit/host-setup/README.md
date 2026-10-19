@@ -592,6 +592,7 @@ the test stacks.
 | `units/mdt-container-io-events-watcher.service` | systemd (enabled, unconditional) | `docker events` watcher applying measured IO caps to governed scopes and named out-of-tree Buildx workers |
 | `units/mdt-container-memory-inotify-watcher.service` | systemd (enabled only when inotify works, `WATCHER_MEMORY_POLICY=enabled`, and at least one per-container value is explicitly configured) | optional cgroupfs inotify watcher applying configured per-container memory caps to new scopes; shipped policy disables the unit |
 | `scripts/mdt-dev-governance-reconcile.sh` | `/usr/local/sbin/` | reconciliation implementation (see below) |
+| `scripts/mdt-cgroup-io-limits.sh` | `/usr/local/sbin/` | read-only IO limit listing with EFFECTIVE values and `--systemd` drop-in paths; reads cgroup file *content* (size is always 0) |
 | `scripts/mdt-container-io-events-watcher.sh` | `/usr/local/sbin/` | `docker events` event watcher — instant counterpart to reconciliation's per-container IO pass |
 | `scripts/mdt-container-io-caps.lib.sh` | `/usr/local/sbin/` | shared `_mdt_*` matching/cap-application functions — sourced by both of the above, one definition of "how a container gets capped" |
 | `scripts/mdt_cli.py` | `/usr/local/sbin/` | shared argparse diagnostics imported by installed Python entrypoints |
@@ -794,7 +795,39 @@ service temporarily replaces them with `DEV_IO_CAP_PCT` percent of the
 measured ceilings. Without current results, the static root values remain in
 force and no per-container rate is guessed.
 
-The caps derived from it sit in a **60–80% band** of the measured ceiling:
+### What is really applied: pins, plausibility, read-back (MDT-016)
+
+The effective `dev.slice` cap per value is, in order: the operator-pinned
+absolute key (`DEV_IO_RBPS_MAX`, `DEV_IO_WBPS_MAX`, `DEV_IO_RIOPS_MAX`,
+`DEV_IO_WIOPS_MAX`; runtime keys: edit `host-setup.env`, the next reconcile
+picks them up; positive integers or K/M/G/T suffixes, `0` refused), else
+`DEV_IO_CAP_PCT`% of a current, **plausible** baseline, else the static
+fallback; when a pin and a baseline both exist the smaller wins. The pins also
+become the static fallback in the rendered `dev.slice` unit. On a virtual disk
+**pin them from a sustained measurement**: a baseline can read the hypervisor's
+write-back cache (one host measured 4.3 GB/s from a disk that saturated at
+~20 MB/s), and the reconcile refuses an obviously cache-inflated one. A
+**kernel update** invalidates the baseline until `mdt-io-baseline.py --force`
+is re-run; pins are unaffected.
+
+The reconcile never resets the runtime IO list to empty (an empty `IO*Max=`
+assignment also wipes the unit-file values, measured live), and after every
+apply it reads the kernel `io.max` back: a mismatch logs `ERROR` and fails the
+service. It also warns `UNCAPPED SWAP` when an active swap device lies on a
+disk with no `dev.slice` `io.max` entry. Check any host with
+`mdt-cgroup-io-limits.sh dev.slice --all --systemd` (limits, EFFECTIVE value
+along the ancestor path, resolved device names, systemd properties and
+drop-in paths). Why: [CGROUP-NOTES section 3](CGROUP-NOTES.md#3-caps-expressed-as-a-percentage-of-what-the-disk-actually-does);
+adoption steps: [CONSUMERS](../docs/CONSUMERS.md#dev-tier-io-governance-pin-verify-swap).
+
+**Swap sizing is yours to set.** The default (`DEV_SWAP_CASCADE_PCT=80` of host
+swap, cascading) gave dev.slice 59 GB and each child 47 GB on a 16 GiB host: a
+disposable gate that outgrows its memory can thrash a shared disk for hours.
+Set `DEV_SWAP_MAX` and e.g. `DEV_GATES_MEMORY_SWAP_MAX` to absolute values
+(`8G`/`2G` worked on the incident host) and re-run `install.sh`; the default
+semantics are unchanged until that decision is made (D-HS-01-3).
+
+The caps derived from it sit in a **60-80% band** of the measured ceiling:
 `DEV_IO_CAP_PCT=60` for the whole `dev.slice` estate (it bounds every
 governed child together — protects PRODUCTION from the tier, but not tier
 members from each other), `WATCHER_IO_CAP_PCT=80` per governed container
@@ -821,7 +854,9 @@ hardware: point `IO_BASELINE_ENV` at it or copy the file.
 
 ## Verification
 
-`mdt-host-check.sh` checks: `memory_recursiveprot` mount flag, unit presence +
+`mdt-cgroup-io-limits.sh dev.slice --all --systemd` shows what IO limits are
+really in force; `mdt-host-check.sh` checks: `UNCAPPED SWAP` coverage,
+`memory_recursiveprot` mount flag, unit presence +
 activity (`dev.slice`, `dev-interactive.slice`, `dev-background.slice`,
 `dev-gates.slice`, `dev-buildkitd.slice`),
 effective cgroupfs values (including `io.bfq.weight` next to `io.weight` —

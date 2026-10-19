@@ -92,12 +92,80 @@ and `dev-background.slice` combined, cgroup v2's hierarchical accounting does
 the rest, and neither child needs its own IO cap). The unit files keep
 deliberately **tight** static caps on `dev.slice` as the boot-window fallback:
 between boot and the first sweep, and forever on a host where nobody ran the
-benchmark, those statics are the operative values. On every no-valid-baseline
-or no-device sweep, MDT also clears only its runtime `io.max` properties on
-`dev.slice` and its runtime IOPS sub-ceilings on `dev-gates.slice` and
-`dev-buildkitd.slice`, using empty systemd assignments so stale measured values
-cannot override the unit-file statics. It does not revert or clear unrelated
-cgroup properties. On the same transition it clears MDT's previously applied
+benchmark, those statics are the operative values.
+
+**The clear path must never reset to nothing (MDT-016, measured 2026-10-19).**
+`systemctl set-property --runtime dev.slice IOReadBandwidthMax=` does *not*
+"reveal the values declared by the installed slice unit". In systemd an empty
+assignment resets the **whole list, unit-file values included**, and leaves an
+empty runtime drop-in (`/run/systemd/system.control/dev.slice.d/50-IO*.conf`):
+`io.max` came out empty (no cap at all) while the old script logged that the
+static fallback was authoritative. The timer re-ran it every 60 s, so a manual
+fix lasted a minute. So the reconcile has **no clear path** any more: with no
+usable baseline the runtime layer holds the *explicit* fallback values
+(`set-property --runtime` with the same numbers the unit file renders).
+Re-asserting was chosen over deleting systemd's private drop-ins and
+`daemon-reload`ing because that depends on systemd's file naming, races
+systemd's own writes, and re-reads every unit on a host running production
+workloads (D-HS-01-1). The one exception is a host with no block-device node:
+no static line was rendered and nothing can be capped, so stale MDT runtime
+values are removed with empty assignments.
+
+**Every apply is read back (D3).** After setting, the reconcile reads the
+kernel's `io.max` of `dev.slice` and of each capped child and compares it with
+the intended `MAJ:MIN` and values. The device is the one systemd resolves to,
+the originating **whole disk** (`/dev/mapper/vg-root` is cap-keyed as `254:0`,
+the disk `vda`, never the mapper node), and the log shows what is *actually*
+applied. A mismatch logs `ERROR` and the service exits non-zero, so it shows as
+failed in systemd; the word "authoritative" appears only after a successful
+read-back. A slice whose cgroup does not exist yet is *indeterminate* (logged,
+not a pass, not a failure).
+
+**Effective cap per value (D4).** The operator-pinned absolute key
+(`DEV_IO_RBPS_MAX`, `DEV_IO_WBPS_MAX`, `DEV_IO_RIOPS_MAX`, `DEV_IO_WIOPS_MAX`,
+runtime keys) when set; else `DEV_IO_CAP_PCT`% of a *current, plausible*
+baseline; else the static fallback; a pin and a baseline together give the
+smaller. The static fallback rendered into the unit comes from the same keys
+(pin, else `DEV_STATIC_*`), as plain byte counts, so the unit and the runtime
+can never disagree. `0` is refused everywhere (in `io.max` it halts IO).
+`dev-gates.slice`/`dev-buildkitd.slice` get `DEV_SUBSLICE_IOPS_PCT`% of the
+*effective* `dev.slice` IOPS in every state.
+
+**A baseline can be a cache reading, not a disk (D5).** The measured baseline
+on the incident host was 4.3 GB/s read, 2 GB/s write, 94k IOPS, from a virtio
+disk (`write back` cache, `rotational=1`) that saturated at ~20 MB/s with
+1,500-1,800 merged writes/s and 35-60 ms write latency. `fio --direct=1` only
+bypasses the *guest* page cache; the hypervisor's cache still absorbs the
+writes, and a 120 s mean hides the steady state. So a percentage of that
+baseline never bound. Schema 3 of the results records the method
+(`MEASURE_DETAIL`, `PLAUSIBILITY`) and the reconcile refuses an implausible
+baseline: a device that declares itself rotational but measures above 1 GiB/s
+or 20,000 IOPS is reading a cache. This is deliberately narrow: it cannot
+prove a number right (a non-rotational device is not bounded), so on a virtual
+disk **pin the four `DEV_IO_*_MAX` values from a sustained measurement** (see
+CONSUMERS.md). Old schema-2 results and results from a previous kernel are
+rejected as stale with a message naming the cause. The full redesign (O_DIRECT
+plus `--fsync`, a working set beyond the visible cache, a steady-state tail) is
+recorded as D-HS-01-2 / MDT-017: it needs a change to the shared
+`iocost_coef_gen.py`, which is outside `mdt-cockpit`.
+
+**Swap IO is charged to the page's memcg, so the disk cap covers it, if the
+swap disk has an entry (D6).** Both swap partitions on the incident host sat on
+`vda`; a gate that outgrew its memory thrashed them at ~18 MB/s, ~1,700 writes/s
+and hurt the production game server. The reconcile (and `mdt-host-check.sh`)
+warns `UNCAPPED SWAP` when an active swap device (`/proc/swaps`) lies on a whole
+disk with no `dev.slice` `io.max` entry. zram and other memory-backed devices
+have no disk and are skipped.
+
+**The cgroupfs size-0 trap (D8).** cgroupfs control files always report size 0,
+whatever they hold. A shell size test on `io.max` is therefore always false: the
+first operator listing script never showed a limit, and its test had used
+ordinary files, which is why it was missed. Everything that reads a control file
+here reads its *content*; `mdt-cgroup-io-limits.sh` is the supported listing
+tool and its tests run against FIFO-backed files that report size 0 (a static
+test also forbids the size test in every MDT shell script).
+
+On the same transition (no valid baseline) MDT clears its previously applied
 transient IO properties from currently governed containers; otherwise an old
 cap would remain indefinitely. Governed containers then receive **no guessed
 per-container IO cap** until a valid baseline exists. A missing or invalid measurement is
@@ -105,9 +173,10 @@ indeterminate; applying a host-independent per-container fallback can
 turn normal interactive IO into D-state stalls. The Docker-events watcher
 remains connected but skips cap application, and the periodic sweep applies
 measured caps after the baseline is installed; restart the watcher after
-creating a baseline so its one-time configuration load sees it. The explicit
-`DEV_STATIC_*` values remain the boot-window fallback for the root unit and are
-a separate, operator-tunable policy.
+creating a baseline so its one-time configuration load sees it. A **kernel
+update** makes the baseline stale (`KERNEL_RELEASE` no longer matches) until
+`mdt-io-baseline.py --force` is re-run; pinned `DEV_IO_*_MAX` caps do not depend
+on it.
 
 **Why the cap sits at 60–80% and never 100%:** a device driven to saturation
 queues everything behind the burst, which is precisely the stall the tiering
@@ -274,6 +343,7 @@ mdt-host-check.sh                                    # everything below, with ve
 
 grep cgroup2 /proc/mounts                            # memory_recursiveprot present?
 systemctl show dev-interactive.slice -p FragmentPath     # unit file exists (not transient)?
+mdt-cgroup-io-limits.sh dev.slice --all --systemd        # limits + EFFECTIVE + drop-ins (size of io.max is always 0: read content)
 cat /sys/fs/cgroup/dev.slice/io.max                      # aggregate cap in force (statics or measured?)
 cat /sys/fs/cgroup/dev-interactive.slice/io.bfq.weight   # NOT io.weight
 docker inspect -f '{{.HostConfig.CgroupParent}}' <c> # placement — create-time, recreate to change

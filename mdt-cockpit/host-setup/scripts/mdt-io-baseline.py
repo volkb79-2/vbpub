@@ -43,7 +43,28 @@ DEFAULT_SIZE_GB = 16
 DEFAULT_DURATION = 120
 DEFAULT_NUMJOBS = 1
 METHOD = "iocost-coef-gen"
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
+# Recorded in the results so a reader can tell how the numbers were obtained
+# and what was (and was not) done about caches.  Schema 3 exists because
+# schema 2 numbers were measured through the hypervisor's write-back cache
+# (MDT-016): the generator uses O_DIRECT, but in a guest that only bypasses the
+# GUEST page cache; without an fsync the host cache still absorbs writes.
+MEASURE_DETAIL = (
+    "fio direct=1 libaio via iocost_coef_gen; mean over DURATION_SEC; "
+    "no fsync and no steady-state tail (hypervisor caches are NOT defeated); "
+    "accepted only if plausibility-class-ceiling-v1 passes"
+)
+PLAUSIBILITY = "class-ceiling-v1"
+# Plausibility ceilings for a device that declares itself rotational.  Linux
+# sets queue/rotational=1 for every virtio disk that does not say otherwise, so
+# the flag alone does not prove spinning media, but no spindle (or small array)
+# sustains more than ~1 GiB/s sequential or ~20k 4-KiB random IOPS: a
+# rotational device measuring above either is reading a cache (observed:
+# 4.3 GB/s and 94k IOPS from a disk that saturated at ~20 MB/s).  Rotational
+# devices that really are faster are refused here and the operator pins the
+# caps explicitly (DEV_IO_*_MAX) -- a refusal costs a pin, never an outage.
+ROTATIONAL_MAX_BPS = 1024 ** 3
+ROTATIONAL_MAX_IOPS = 20000
 MATRIX_KEYS = ("RBPS", "RSEQIOPS", "RRANDIOPS", "WBPS", "WSEQIOPS", "WRANDIOPS")
 SAFE_HOST_PATH_RE = re.compile(
     r"/(?:[A-Za-z0-9._+@%=:,-]+(?:/[A-Za-z0-9._+@%=:,-]+)*)?"
@@ -239,20 +260,62 @@ def device_identity(testfile: Path, io_dev_path: Path | None = None) -> dict[str
     return facts
 
 
-def results_are_valid(path: Path) -> bool:
-    values = parse_env(path)
-    if (
-        values.get("SCHEMA_VERSION") != SCHEMA_VERSION
-        or values.get("MEASURE_METHOD") != METHOD
-        or not values.get("MEASURED_AT")
-    ):
-        return False
-    if any(not values.get(key) for key in REQUIRED_RESULT_FIELDS):
-        return False
+def plausibility_problem(values: dict[str, str]) -> str | None:
+    """Why these numbers cannot be a real sustained device ceiling, or None.
+
+    Deliberately narrow: it only refuses what is demonstrably cache-inflated.
+    It cannot prove a number is right (a non-rotational device is not bounded
+    here), so the operator-pinned DEV_IO_*_MAX caps remain the recommended
+    source for a virtualised disk.
+    """
+    if values.get("DEVICE_ROTATIONAL") != "1":
+        return None
     try:
-        return all(int(values[key]) > 0 for key in (*MATRIX_KEYS, "RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS", "TESTFILE_SIZE_BYTES"))
+        for key in ("RBW_MAX_BPS", "WBW_MAX_BPS"):
+            if int(values[key]) > ROTATIONAL_MAX_BPS:
+                return (
+                    f"implausible baseline: {key}={values[key]} B/s exceeds {ROTATIONAL_MAX_BPS} B/s on a "
+                    "rotational device (the measurement read a cache); pin DEV_IO_*_MAX caps from a sustained "
+                    "measurement instead"
+                )
+        for key in ("RIOPS_MAX", "WIOPS_MAX"):
+            if int(values[key]) > ROTATIONAL_MAX_IOPS:
+                return (
+                    f"implausible baseline: {key}={values[key]} exceeds {ROTATIONAL_MAX_IOPS} IOPS on a "
+                    "rotational device (the measurement read a cache); pin DEV_IO_*_MAX caps from a sustained "
+                    "measurement instead"
+                )
     except (KeyError, ValueError):
-        return False
+        return None
+    return None
+
+
+def results_problem(path: Path) -> str | None:
+    """Why the results file is not usable (structure, schema, plausibility)."""
+    values = parse_env(path)
+    if not values:
+        return f"no benchmark results at {path}"
+    if values.get("SCHEMA_VERSION") != SCHEMA_VERSION:
+        return (
+            f"benchmark-results schema is {values.get('SCHEMA_VERSION') or 'missing'}, expected {SCHEMA_VERSION} "
+            "(stale: measured by an older method that read through the hypervisor write-back cache; "
+            "re-run mdt-io-baseline.py --force)"
+        )
+    if values.get("MEASURE_METHOD") != METHOD or not values.get("MEASURED_AT"):
+        return "benchmark results lack MEASURE_METHOD/MEASURED_AT"
+    missing = [key for key in REQUIRED_RESULT_FIELDS if not values.get(key)]
+    if missing:
+        return f"benchmark results are missing {', '.join(missing)}"
+    try:
+        if not all(int(values[key]) > 0 for key in (*MATRIX_KEYS, "RIOPS_MAX", "WIOPS_MAX", "RBW_MAX_BPS", "WBW_MAX_BPS", "TESTFILE_SIZE_BYTES")):
+            return "benchmark results contain a non-positive value"
+    except (KeyError, ValueError):
+        return "benchmark results contain a non-integer value"
+    return plausibility_problem(values)
+
+
+def results_are_valid(path: Path) -> bool:
+    return results_problem(path) is None
 
 
 def results_are_current(path: Path, testfile: Path | None = None) -> bool:
@@ -372,7 +435,8 @@ def run(args: argparse.Namespace) -> int:
         if results_are_current(output, testfile):
             print(f"current io.cost benchmark results: {output} (device and target identity match)")
             return 0
-        print(f"no current io.cost benchmark results: {output} (missing, invalid, or device/target identity changed)", file=sys.stderr)
+        problem = results_problem(output)
+        print(f"no current io.cost benchmark results: {output} ({problem or 'device/target identity changed or kernel/generator differs'})", file=sys.stderr)
         return 1
     if os.geteuid() != 0:
         print("ERROR: run as root from the Docker host", file=sys.stderr)
@@ -436,6 +500,8 @@ def run(args: argparse.Namespace) -> int:
     results = {
         "SCHEMA_VERSION": SCHEMA_VERSION,
         "MEASURE_METHOD": METHOD,
+        "MEASURE_DETAIL": MEASURE_DETAIL,
+        "PLAUSIBILITY": PLAUSIBILITY,
         "MEASURED_AT": now,
         "KERNEL_RELEASE": os.uname().release,
         "GENERATOR_SHA256": generator_digest(generator),
@@ -449,6 +515,10 @@ def run(args: argparse.Namespace) -> int:
         "RBW_MAX_BPS": matrix["RBPS"], "WBW_MAX_BPS": matrix["WBPS"],
         **matrix, "DURATION_SEC": str(args.duration), "NUMJOBS": str(args.numjobs),
     }
+    problem = plausibility_problem(results)
+    if problem:
+        print(f"ERROR: {problem}; existing benchmark results remain untouched", file=sys.stderr)
+        return 1
     try:
         write_results(output, results)
     except OSError as exc:

@@ -196,6 +196,50 @@ available. A successful measurement temporarily replaces them with
 `DEV_IO_CAP_PCT` percent of the measured ceilings. Without current results,
 containers receive no guessed per-container IO cap.
 
+### Dev-tier IO governance: pin, verify, swap
+
+On a virtual disk a benchmark can read the hypervisor's write-back cache (one
+host: 4.3 GB/s measured, ~20 MB/s real), so pin the dev.slice caps from a
+sustained measurement instead of trusting a percentage of the baseline. The four
+`DEV_IO_*_MAX` keys are read by the periodic reconcile with no reinstall:
+
+```bash
+# 1. measure sustained write for minutes, use the LAST minute only
+sudo iostat -x 5            # while the disk is saturated; or fio --direct=1 --fsync=1 --time_based
+# 2. pin: edit the four (empty) lines in /etc/mdt/host-setup.env
+#    positive integers or K/M/G/T suffixes; 0 is refused
+#      DEV_IO_RBPS_MAX=80M
+#      DEV_IO_WBPS_MAX=40M
+#      DEV_IO_RIOPS_MAX=800
+#      DEV_IO_WIOPS_MAX=600
+sudo ./host-setup/install.sh        # refresh the unit-file fallback from the same keys
+# 3. apply and verify
+sudo systemctl start mdt-dev-governance-reconcile.service
+systemctl is-failed mdt-dev-governance-reconcile.service     # expect: active (not "failed")
+sudo mdt-cgroup-io-limits.sh dev.slice --all --systemd       # limits, EFFECTIVE, drop-in paths
+```
+
+The values above are an illustration (one 16 GiB virtio host), not a default.
+Expected after a good run: the journal line
+`dev.slice: verified kernel io.max 254:0 rbps=83886080 wbps=41943040 riops=800 wiops=600`
+followed by `is authoritative`; `dev-gates.slice` and `dev-buildkitd.slice` show
+`riops=480 wiops=360` (`DEV_SUBSLICE_IOPS_PCT`% of the effective values). A
+**kernel update** makes the baseline stale until `mdt-io-baseline.py --force`
+is re-run; pinned values keep the cap meanwhile. The reconcile logs `ERROR` and
+exits non-zero if the kernel does not hold the intended values, and warns
+`UNCAPPED SWAP` when a swap device sits on a disk with no `dev.slice` `io.max`
+entry (`mdt-host-check.sh` reports the same).
+
+Swap is sized separately and the default is generous: 80% of host swap cascades
+to `dev.slice` and again to every child, so a disposable gate that outgrows its
+memory can thrash the shared disk. Bound it explicitly in `host-setup.env` and
+re-run `install.sh`:
+
+```bash
+DEV_SWAP_MAX=8G
+DEV_GATES_MEMORY_SWAP_MAX=2G
+```
+
 The wizard also asks for `CGROUP2_FLAGS`, the timer interval, and the one
 out-of-tree Buildx name-pattern field. Correctly placed containers are selected
 by their cgroup path, not a pattern. `CGROUP2_FLAGS=fix` lets the periodic host

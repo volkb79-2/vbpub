@@ -460,6 +460,21 @@ else
   echo "WARN: findmnt did not expose a host /dev block-device node — static IO caps will be omitted"
 fi
 
+# The static fallback in the rendered dev.slice unit comes from the SAME
+# resolution the runtime reconcile uses (scripts/mdt-container-io-caps.lib.sh):
+# the operator-pinned DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX when set, else
+# DEV_STATIC_*.  Rendered as plain byte counts, so systemd never applies its
+# own K/M/G base to an MDT number.  An invalid value refuses the install.
+log(){ echo "$*" >&2; }
+# shellcheck source=./scripts/mdt-container-io-caps.lib.sh
+. "$HERE/scripts/mdt-container-io-caps.lib.sh"
+if ! _mdt_resolve_static_io; then
+  echo "ERROR: invalid IO cap value in host-setup.env (see above); no host policy changes beyond this point were applied" >&2
+  exit 2
+fi
+DEV_STATIC_RBW="$MDT_STATIC_RBPS"; DEV_STATIC_WBW="$MDT_STATIC_WBPS"
+DEV_STATIC_RIOPS="$MDT_STATIC_RIOPS"; DEV_STATIC_WIOPS="$MDT_STATIC_WIOPS"
+
 # CPUQuota, absolute ceilings mirroring the IO one: auto-
 # detected from nproc when left unset in host-setup.env, floored at 1 core —
 # same auto-discovery convention as IO_DEV_PATH above. An explicit value in
@@ -706,8 +721,8 @@ render "$HERE/units/docker-scope-default-limits.conf.in" \
   /etc/systemd/system/docker-.scope.d/50-default-limits.conf
 
 if [ -n "${IO_DEV_PATH:-}" ]; then
-  echo "static IO fallback: dev.slice on ${IO_DEV_PATH} = ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} read/write bandwidth"
-  echo "  applies from boot, and whenever no current identity-verified baseline is available; the reconciliation service replaces it with measured percentage caps after a successful baseline"
+  echo "static IO fallback: dev.slice on ${IO_DEV_PATH} = ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bytes/s read/write (DEV_IO_*_MAX when set, else DEV_STATIC_*)"
+  echo "  applies from boot, and whenever no current plausible identity-verified baseline is available; the reconciliation service re-asserts it explicitly, applies min(pinned, ${DEV_IO_CAP_PCT:-60}% of baseline) per value when a baseline exists, and verifies the kernel io.max (check with: mdt-cgroup-io-limits.sh dev.slice --systemd)"
 else
   echo "static IO fallback: NOT ACTIVE — no host block device was discovered; the four configured values (${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bandwidth) are retained for the next host-side device discovery"
 fi
@@ -817,6 +832,8 @@ echo "== scripts =="
 # directory as them, not just be present in the repo checkout.
 install -m 0644 "$HERE/scripts/mdt-container-io-caps.lib.sh" /usr/local/sbin/mdt-container-io-caps.lib.sh
 install -m 0755 "$HERE/scripts/mdt-dev-governance-reconcile.sh"  /usr/local/sbin/mdt-dev-governance-reconcile.sh
+# Read-only IO limit listing (reads cgroup CONTENT; cgroupfs files report size 0).
+install -m 0755 "$HERE/scripts/mdt-cgroup-io-limits.sh"  /usr/local/sbin/mdt-cgroup-io-limits.sh
 install -m 0755 "$HERE/scripts/mdt-container-io-events-watcher.sh"  /usr/local/sbin/mdt-container-io-events-watcher.sh
 # These Python entrypoints import the shared parser for consistent --version,
 # help, and error output. Keep it beside them so /usr/local/sbin is on

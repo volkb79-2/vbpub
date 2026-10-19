@@ -443,6 +443,16 @@ monitor. Its recommended answer is yes, which lets cgprofile use the generic
 DAMON interface to collect per-session samples; choosing no preserves the
 kernel default. See the [host policy guide](host-setup/README.md#optional-damon_stat-policy).
 
+The shared `dev.slice` IO ceiling is verified, not assumed: the reconcile reads
+the kernel `io.max` back after every apply and fails the service on a mismatch,
+accepts operator-pinned `DEV_IO_RBPS_MAX`/`DEV_IO_WBPS_MAX`/`DEV_IO_RIOPS_MAX`/
+`DEV_IO_WIOPS_MAX` caps (recommended on a virtual disk, where a benchmark can
+read the hypervisor's cache), warns `UNCAPPED SWAP`, and ships
+`mdt-cgroup-io-limits.sh` to list what is really in force. Swap allowances are
+yours to size (`DEV_SWAP_MAX`, `DEV_GATES_MEMORY_SWAP_MAX`). A kernel update
+invalidates the measured baseline. Why: [DESIGN-GUIDE](docs/DESIGN-GUIDE.md#devslice-io-governance-must-be-verified-not-asserted);
+how: [CONSUMERS](docs/CONSUMERS.md#dev-tier-io-governance-pin-verify-swap).
+
 ```bash
 sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — quiet window
 sudo mdt-host-check.sh

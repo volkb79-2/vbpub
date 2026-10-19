@@ -13,6 +13,10 @@ info(){ printf '  INFO %s\n' "$*"; }   # neither pass nor fail -- disclosure onl
 
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && . "$CONF"
+# Shared IO-governance helpers (swap coverage); installed beside this script.
+log(){ :; }
+# shellcheck source=./mdt-container-io-caps.lib.sh
+. "$(dirname "$0")/mdt-container-io-caps.lib.sh"
 IO_BASELINE_ENV="${IO_BASELINE_ENV:-/var/lib/mdt/io-baseline.env}"
 IO_BASELINE_TESTFILE="${IO_BASELINE_TESTFILE:-/var/lib/mdt/iocost-coef-fio.testfile}"
 
@@ -212,7 +216,21 @@ DEV_PATH="$(_slice_path dev.slice)"
 if [ -d "$DEV_PATH" ]; then
   iom=$(cat "$DEV_PATH/io.max" 2>/dev/null)
   [ -n "$iom" ] && echo "  io.max: $iom" \
-    || warn "no io.max on dev.slice — neither statics nor runtime caps applied"
+    || warn "no io.max on dev.slice — neither statics nor runtime caps applied (list what is really in force: mdt-cgroup-io-limits.sh dev.slice --systemd)"
+  # D6: swap-out IO is charged to the page's memcg, so dev.slice's io.max
+  # bounds it only if the disk holding the swap has an entry.
+  _swap_uncapped=$(_mdt_uncapped_swap_devices 2>/dev/null)
+  if [ -n "$_swap_uncapped" ]; then
+    while read -r _sd _sm; do
+      if [ "$_sm" = unresolved ]; then
+        warn "swap device $_sd: whole disk could not be resolved — cannot confirm its IO is capped"
+      else
+        warn "UNCAPPED SWAP: $_sd lies on disk $_sm which has NO dev.slice io.max entry — a dev container that swaps can saturate it"
+      fi
+    done <<<"$_swap_uncapped"
+  elif [ -r "${MDT_PROC_ROOT:-/proc}/swaps" ]; then
+    ok "every active swap disk has a dev.slice io.max entry"
+  fi
   printf '  %-14s %s\n' io.bfq.weight "$(cat "$DEV_PATH/io.bfq.weight" 2>/dev/null)"
   _cpu_quota_check dev.slice DEV_CPU_QUOTA
   _swap_max_check dev.slice DEV_SWAP_MAX

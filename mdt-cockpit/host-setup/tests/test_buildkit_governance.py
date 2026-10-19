@@ -363,7 +363,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "baseline.env"
             path.write_text(
-                "SCHEMA_VERSION=2\nKERNEL_RELEASE=test\nGENERATOR_SHA256=test\n"
+                "SCHEMA_VERSION=3\nKERNEL_RELEASE=test\nGENERATOR_SHA256=test\n"
                 "RIOPS_MAX=1\nWIOPS_MAX=1\nRBW_MAX_BPS=1\nWBW_MAX_BPS=1\n"
                 "DEVNO=8:0\nTESTFILE_STAT_DEV=1\nDOCKER_STAT_DEV=1\n"
                 "FINDMNT_SOURCE=/dev/sda\nDEVICE_SIZE_SECTORS=1\n"
@@ -763,7 +763,11 @@ esac
                 "STATE_PATH": str(state),
                 "SYSTEMCTL_LOG": str(systemctl_log),
             })
-            for io_device in ("/dev/fake", ""):
+            # Only the NO-DEVICE case may use empty assignments (nothing can be
+            # capped on a device we cannot name).  With a device the reconcile
+            # re-asserts explicit values and never clears: see
+            # test_io_governance.py (MDT-016).
+            for io_device in ("",):
                 state.write_text(
                     "dev.slice|IOReadBandwidthMax|stale-read-bandwidth\n"
                     "dev.slice|IOWriteBandwidthMax|stale-write-bandwidth\n"
@@ -793,7 +797,7 @@ esac
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout)
-                self.assertIn("dev.slice keeps static fallback", result.stdout)
+                self.assertIn("no host block device was discovered", result.stdout)
                 calls = systemctl_log.read_text()
                 self.assertIn(
                     "set-property --runtime dev.slice IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax=",

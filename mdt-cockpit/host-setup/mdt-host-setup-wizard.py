@@ -469,6 +469,32 @@ def validate_positive_size(value: str) -> str | None:
     return None
 
 
+_IO_PIN_RE = re.compile(r"^([0-9]+)([KMGT]?)$")
+
+
+def validate_io_pin(value: str) -> str | None:
+    """DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX: an operator-pinned absolute dev.slice cap.
+
+    Empty = not pinned (the percentage of a plausible baseline, else the
+    static fallback, applies).  Otherwise a positive integer with an optional
+    K/M/G/T suffix (base 1024).  ``0`` is refused because in io.max a zero is
+    not "unlimited", it halts IO; the shell side applies the same rule
+    (``_mdt_size_to_bytes``), so a value this accepts is a value the runtime
+    accepts.
+    """
+    if value == "":
+        return None
+    match = _IO_PIN_RE.match(value)
+    if not match:
+        return (
+            f"{value!r} is not a positive integer with an optional K/M/G/T suffix "
+            "(e.g. 80M for bytes/s, 800 for IOPS); leave empty to not pin, '-' at the prompt clears it"
+        )
+    if int(match.group(1)) <= 0:
+        return "0 would halt all IO on dev.slice (it is not 'unlimited'); give a positive value, or leave empty to not pin"
+    return None
+
+
 def validate_optional_positive_size(value: str) -> str | None:
     if value in ("", "-"):
         return None
@@ -779,6 +805,10 @@ def _config_value_validators() -> dict[str, Validator]:
         "WATCHER_GATES_MEMORY_MAX": validate_optional_positive_size,
         "CGROUP2_FLAGS": validate_cgroup2_flags,
         "DEV_IO_CAP_PCT": validate_cap_pct,
+        "DEV_IO_RBPS_MAX": validate_io_pin,
+        "DEV_IO_WBPS_MAX": validate_io_pin,
+        "DEV_IO_RIOPS_MAX": validate_io_pin,
+        "DEV_IO_WIOPS_MAX": validate_io_pin,
         "WATCHER_IO_CAP_PCT": validate_cap_pct,
         "WATCHER_BUILDKIT_NAME_PATTERNS": validate_watcher_patterns,
         "WATCHER_INTERVAL": validate_systemd_timespan,
@@ -1628,7 +1658,7 @@ def step_static_io_fallback(
     for bullet in (
         "These four positive values are written to `dev.slice`'s unit file and apply to every dev child together.",
         "They are used at boot and whenever the baseline is missing, incomplete, or fails its device-identity check.",
-        "After a successful baseline, `mdt-dev-governance-reconcile.service` temporarily overrides them with `DEV_IO_CAP_PCT`% of the measured ceiling.",
+        "After a successful, plausible baseline, `mdt-dev-governance-reconcile.service` applies `DEV_IO_CAP_PCT`% of the measured ceiling (the smaller of that and any pinned `DEV_IO_*_MAX`), and always reads the kernel `io.max` back.",
         "If results are unavailable, these are the only active root IO limits; no per-container rate is guessed.",
     ):
         out(f"- {bullet}", hang="  ")
@@ -1657,6 +1687,40 @@ def step_static_io_fallback(
     return {
         key: walk_key(label, key, cfg_current, example_defaults, validate=validator)
         for label, key, validator in fields
+    }
+
+
+def step_io_pins(
+    cfg_current: dict[str, str], example_defaults: dict[str, str], results: dict[str, int]
+) -> dict[str, str]:
+    """Ask for the operator-pinned absolute dev.slice caps (DEV_IO_*_MAX).
+
+    These are read by the reconcile at runtime (no reinstall) and are the
+    recommended source on a virtualised disk, where a benchmark can read the
+    hypervisor's write-back cache (a host measured 4.3 GB/s from a disk that
+    saturated at ~20 MB/s).  The wizard never invents a value: it shows the
+    baseline-derived number when one exists, tells the operator how to take a
+    sustained measurement, and otherwise leaves the key empty.
+    """
+    out("Operator-pinned absolute caps (optional; recommended on a virtual disk):")
+    for bullet in (
+        "Effective dev.slice cap per value = the pinned value when set; else `DEV_IO_CAP_PCT`% of a current plausible baseline; else the static fallback. When a pin AND a baseline exist, the smaller wins.",
+        "The pinned values also become the static fallback rendered into the `dev.slice` unit, so boot and runtime agree.",
+        "Take them from a SUSTAINED measurement, not a burst: e.g. `fio --name=w --filename=<file on the Docker disk> --rw=randwrite --bs=4k --iodepth=16 --direct=1 --fsync=1 --size=2G --runtime=120 --time_based` and read the last 60 seconds, or watch `iostat -x 5` while the disk is saturated; pin about the sustained figure, never the peak.",
+        "Positive integers with optional K/M/G/T suffix (base 1024); `0` is refused (it halts IO). Type `-` to clear a value.",
+    ):
+        out(f"- {bullet}", hang="  ")
+    if results:
+        out(f"Current plausible baseline would give: {_io_cap_result_text(results, resolve_default('DEV_IO_CAP_PCT', cfg_current, example_defaults, None))}")
+    fields = (
+        ("Pinned read bandwidth cap (bytes/s, e.g. 80M; empty = not pinned)", "DEV_IO_RBPS_MAX"),
+        ("Pinned write bandwidth cap (bytes/s, e.g. 40M; empty = not pinned)", "DEV_IO_WBPS_MAX"),
+        ("Pinned read IOPS cap (e.g. 800; empty = not pinned)", "DEV_IO_RIOPS_MAX"),
+        ("Pinned write IOPS cap (e.g. 600; empty = not pinned)", "DEV_IO_WIOPS_MAX"),
+    )
+    return {
+        key: walk_key(label, key, cfg_current, example_defaults, validate=validate_io_pin, empty_token="-")
+        for label, key in fields
     }
 
 
@@ -1920,6 +1984,7 @@ def step_io_settings(
         out(f"- {bullet}", hang="  ")
     out("Static root limits:")
     values = step_static_io_fallback(cfg_current, example_defaults)
+    values.update(step_io_pins(cfg_current, example_defaults, results))
     out("Measured percentage limits:")
     dev_default = resolve_default("DEV_IO_CAP_PCT", cfg_current, example_defaults, None)
     watcher_default = resolve_default("WATCHER_IO_CAP_PCT", cfg_current, example_defaults, None)
