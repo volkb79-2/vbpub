@@ -145,6 +145,22 @@ def _governance_drift(entity_frame: EntityFrame, _config: ToposConfig) -> RuleMa
     )
 
 
+def _governance_systemd_unavailable(entity_frame: EntityFrame, _config: ToposConfig) -> RuleMatch | None:
+    summary = (entity_frame.governance or {}).get("summary")
+    systemd = summary.get("systemd") if isinstance(summary, dict) else None
+    if not isinstance(systemd, dict) or systemd.get("available") is not False:
+        return None
+    return RuleMatch(
+        severity="info",
+        message=(
+            "Governance attribution is unavailable: systemctl could not be run here "
+            f"({systemd.get('reason')}), so live limits are not attributed to systemd units and no drift is claimed."
+        ),
+        remedy="Run topos where systemctl is installed to see origins and drift; this is not a statement that the unit is absent.",
+        confidence="n/a",
+    )
+
+
 def _socket_buffers_material(entity_frame: EntityFrame, config: ToposConfig) -> RuleMatch | None:
     sock = _metric_value(entity_frame, "sock")
     rx_pps = _metric_value(entity_frame, "net_rx_pps") or 0.0
@@ -184,6 +200,7 @@ RULES = (
     Rule("memory_high_user_visible", "red", ("ram", "mem_high", "psi_mem_full_avg10"), _memory_high_user_visible),
     Rule("io_cap_expected_throttle", "info", ("psi_io_full_avg10", "io_max_capped"), _io_cap_expected_throttle),
     Rule("governance_drift", "warn", ("governance_drift", "effective_memory_min"), _governance_drift),
+    Rule("governance_systemd_unavailable", "info", ("governance_drift",), _governance_systemd_unavailable),
     Rule("socket_buffers_material", "warn", ("sock", "net_rx_pps", "net_tx_pps"), _socket_buffers_material),
     Rule("host_netns_network_absent", "info", ("net_rx_bps", "net_tx_bps"), _host_netns_na),
 )

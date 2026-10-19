@@ -42,6 +42,10 @@ class ShowResult:
     stdout: str
     stderr: str = ""
     returncode: int = 0
+    # True ONLY when systemctl itself could not be run (not installed / not executable). This is
+    # different from "systemctl ran and does not know the unit" (returncode != 0, unavailable False):
+    # in the first case nothing is known about systemd's records, in the second the unit is absent.
+    unavailable: bool = False
 
 
 SystemctlShowRunner = Callable[[str, tuple[str, ...]], ShowResult]
@@ -63,6 +67,10 @@ class UnitView:
     control_group: str | None
     transient: bool
     values: dict[str, int | None | object]
+    # False when systemctl could not be run at all: `found` is then False too, but it means "unknown",
+    # not "this unit does not exist".
+    available: bool = True
+    unavailable_reason: str | None = None
 
     def recorded_value(self, property_name: str) -> int | None | object:
         return self.values.get(property_name, _UNSET)
@@ -88,7 +96,7 @@ def default_systemctl_show_runner(unit: str, properties: tuple[str, ...]) -> Sho
         # No usable systemctl (a container, WSL, Alpine, a minimal CI image): the unit properties are
         # unavailable, exactly as for a failing `systemctl show`. 127 is the shell's "command not found"
         # status; the collector degrades to "no governed properties" instead of crashing.
-        return ShowResult(stdout="", stderr=f"systemctl is not available: {exc}", returncode=127)
+        return ShowResult(stdout="", stderr=f"systemctl is not available: {exc}", returncode=127, unavailable=True)
     return ShowResult(stdout=proc.stdout, stderr=proc.stderr, returncode=proc.returncode)
 
 
@@ -136,15 +144,19 @@ def _annotate_entity(
     entity_frame.metrics["effective_memory_min"] = effective_metric
     entity_frame.metrics["governance_origin"] = MetricValue(ORIGIN_CODES[summary_origin], "derived")
     entity_frame.metrics["governance_drift"] = MetricValue(SEVERITY_CODES[summary_severity], "derived")
+    summary: dict[str, object] = {
+        "origin": summary_origin,
+        "drift": summary_severity != "none",
+        "severity": summary_severity,
+        "drifted_limits": drifted_limits,
+        "reasons": summary_reasons,
+        "unit": leaf_unit,
+    }
+    if leaf_view is not None and not leaf_view.available:
+        # surfaced in --json frames and by the `governance_systemd_unavailable` diagnostic
+        summary["systemd"] = {"available": False, "reason": leaf_view.unavailable_reason}
     entity_frame.governance = {
-        "summary": {
-            "origin": summary_origin,
-            "drift": summary_severity != "none",
-            "severity": summary_severity,
-            "drifted_limits": drifted_limits,
-            "reasons": summary_reasons,
-            "unit": leaf_unit,
-        },
+        "summary": summary,
         "limits": limit_details,
         "effective_memory_min": effective_info,
     }
@@ -159,6 +171,7 @@ def _classify_limit(
     effective_info: dict[str, object],
 ) -> dict[str, object]:
     live_metric = live_metric or MetricValue(None, "unavail_kernel")
+    systemd_unavailable = leaf_view is not None and not leaf_view.available
     recorded_value = _UNSET if leaf_view is None else leaf_view.recorded_value(limit.property_name)
     recorded_present = recorded_value is not _UNSET
     recorded_origin = _recorded_origin(leaf_view) if recorded_present else None
@@ -173,6 +186,14 @@ def _classify_limit(
         else:
             origin = "unset"
             reason = f"no readable live value for {limit.metric_name}"
+    elif systemd_unavailable:
+        # systemctl could not be run: nothing is known about systemd's records, so neither "systemd owns
+        # this" nor "raw write" may be claimed. Say so instead of reporting a drift that was not measured.
+        origin = "unset"
+        reason = (
+            f"systemd records for {leaf_unit} are unavailable ({leaf_view.unavailable_reason}); "
+            f"the live {limit.metric_name} cannot be attributed to a unit"
+        )
     elif recorded_present and recorded_origin is not None:
         if _values_equal(live_metric, recorded_value):
             origin = recorded_origin
@@ -213,7 +234,9 @@ def _classify_limit(
                 f"the effective floor to {effective_value}"
             )
 
+    unavailable_note = {"systemd": "unavailable"} if systemd_unavailable else {}
     return {
+        **unavailable_note,
         "origin": origin,
         "recorded_origin": recorded_origin,
         "recorded_value": None if recorded_value is _UNSET else recorded_value,
@@ -251,12 +274,14 @@ def _unit_view(unit: str, result: ShowResult) -> UnitView:
     }
     return UnitView(
         unit=unit,
-        found=result.returncode == 0,
+        found=result.returncode == 0 and not result.unavailable,
         fragment_path=props.get("FragmentPath") or None,
         dropin_paths=tuple(path for path in props.get("DropInPaths", "").split() if path),
         control_group=props.get("ControlGroup") or None,
         transient=str(props.get("Transient", "")).lower() in {"1", "yes", "true"},
         values=values,
+        available=not result.unavailable,
+        unavailable_reason=(result.stderr.strip() or "systemctl is not available") if result.unavailable else None,
     )
 
 

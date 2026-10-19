@@ -365,6 +365,12 @@ Measured on an image without `systemctl`: **49 of 3033 tests failed**, all with 
 same degradation as a failing `systemctl show`. `tests/test_systemctl_missing.py` pins it at the unit and
 real-subprocess level (RED with the guard removed). The tester-unified `systemctl` stub is deleted.
 
+**Unavailable is not absent (fix round 2).** `ShowResult.unavailable` / `UnitView.available` now keep "systemctl could not
+be run" apart from "systemctl ran and does not know the unit". Without systemctl no `raw_write` drift is claimed
+(nothing is known about systemd's records): each limit detail says `systemd: unavailable`, the entity's governance
+summary carries `systemd: {available: false, reason: ...}` (visible in `--json` frames), and the info diagnostic
+`governance_systemd_unavailable` reports it. An absent unit with a working systemctl still reports `raw_write`.
+
 ## TP-VMLANE - proposal (not built): what a topos VM lane would add
 
 The suite above proves topos' logic on fixtures. What only a real kernel/systemd can prove, and no

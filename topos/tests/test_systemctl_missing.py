@@ -49,3 +49,69 @@ def test_the_unit_view_of_an_unavailable_systemctl_is_simply_not_found() -> None
 
     assert view.found is False and view.fragment_path is None and view.dropin_paths == ()
     assert all(value is origin._UNSET for value in view.values.values())
+
+
+# ── "systemctl is not available" is a different state from "unit absent" (V3) ─────────────────────
+
+
+def test_the_unit_view_distinguishes_unavailable_from_unit_absent() -> None:
+    unavailable = origin._unit_view("a.service", ShowResult("", "systemctl is not available: x", 127, unavailable=True))
+    absent = origin._unit_view("a.service", ShowResult("", "Unit a.service could not be found.", 4))
+
+    assert (unavailable.found, unavailable.available) == (False, False)
+    assert unavailable.unavailable_reason == "systemctl is not available: x"
+    assert (absent.found, absent.available, absent.unavailable_reason) == (False, True, None)
+
+
+def test_a_missing_systemctl_is_flagged_unavailable_by_the_real_runner(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    assert default_systemctl_show_runner("x.service", ("MemoryMax",)).unavailable is True
+
+
+def _collect(runner, tmp_path):
+    import shutil
+
+    from conftest import fixture_root
+    from topos.collect.collector import Collector
+    from topos.config import ToposConfig
+
+    root = tmp_path / "cg"
+    shutil.copytree(fixture_root() / "cgroupfs" / "gstammtisch", root)
+    key = "system.slice/docker-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.scope"
+    (root / key / "memory.high").write_text("2147483648")  # a live value no systemd record explains
+    frame = Collector(
+        cgroup_root=root, config=ToposConfig(interval=5.0), host_collector=lambda: {}, now=lambda: 100.0,
+        network_providers=(), systemctl_show_runner=runner,
+    ).collect_once()
+    return frame.entities[key]
+
+
+def test_without_systemctl_no_drift_is_claimed_and_the_unavailability_is_reported(tmp_path) -> None:
+    entity = _collect(lambda unit, props: ShowResult("", "systemctl is not available: nope", 127, unavailable=True), tmp_path)
+
+    summary = entity.governance["summary"]
+    assert summary["drift"] is False and summary["severity"] == "none"
+    assert summary["systemd"] == {"available": False, "reason": "systemctl is not available: nope"}
+    detail = entity.governance["limits"]["mem_high"]
+    assert detail["origin"] != "raw_write" and detail["systemd"] == "unavailable"
+    assert "unavailable" in detail["reason"] and "cannot be attributed" in detail["reason"]
+
+
+def test_an_absent_unit_with_a_working_systemctl_still_reports_raw_write_drift(tmp_path) -> None:
+    entity = _collect(lambda unit, props: ShowResult("", "Unit could not be found.", 4), tmp_path)
+
+    assert entity.governance["limits"]["mem_high"]["origin"] == "raw_write"
+    assert "systemd" not in entity.governance["summary"]
+
+
+def test_the_diagnostic_says_governance_is_unavailable_not_that_a_unit_is_absent(tmp_path) -> None:
+    from topos.config import ToposConfig
+    from topos.diag.rules import RULES
+
+    entity = _collect(lambda unit, props: ShowResult("", "systemctl is not available: nope", 127, unavailable=True), tmp_path)
+    rule = next(r for r in RULES if r.rule_id == "governance_systemd_unavailable")
+    match = rule.evaluator(entity, ToposConfig(interval=5.0))
+
+    assert match is not None and match.severity == "info"
+    assert "unavailable" in match.message and "no drift is claimed" in match.message
