@@ -157,8 +157,8 @@ class DockerfilePins(unittest.TestCase):
         match = re.search(r"^FROM (\S+)$", self.text, re.MULTILINE)
         self.assertRegex(match.group(1), r"^python:3\.14\.\d+-trixie@sha256:[0-9a-f]{64}$")
 
-    def test_the_base_pin_names_its_cmru_target_and_why_it_follows_patch_tags(self) -> None:
-        for needle in ("oci.python.314.trixie", "versions/oci-images.json", "14-day", "patch tags", "test_pins.py"):
+    def test_the_base_pin_names_its_cmru_target_and_the_literal_patch_tag_rule(self) -> None:
+        for needle in ("oci.python.314.trixie", "versions/oci-images.json", "14-day", "literal patch tag", "test_pins.py"):
             self.assertIn(needle, self.text)
 
     def test_docker_key_file_must_hold_exactly_the_one_primary_key(self) -> None:
