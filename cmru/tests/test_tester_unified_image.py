@@ -4052,7 +4052,7 @@ def test_tester_copy_oracle_rejects_excluding_all_cmru_modules():
         "RUN pip wheel /src/cmru\n"
     )
     specs = _dockerfile_copy_specs_before_command(
-        text, TESTER_STAGE, r"pip wheel[\s\S]*?/src/cmru",
+        text, "stage-0", r"pip wheel[\s\S]*?/src/cmru",
     )
     with pytest.raises(AssertionError, match="not copied from"):
         _assert_copy_spec_covers_path_at_destination(

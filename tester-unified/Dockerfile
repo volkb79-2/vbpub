@@ -73,6 +73,35 @@ RUN set -eu \
  && git --version \
  && nsenter --version
 
+# Behaviour the old MDT cockpit base supplied implicitly, now explicit (MDTC-02 T8 skip-diff):
+#  * `zsh` (D-003): mdt-cockpit/scripts/test_path_hook.py tests the login hook under zsh. The test
+#    FAILS (MDT_REQUIRE_SHELLS=1 in the smoke lane) when zsh is absent instead of silently not
+#    collecting its cases. It is a userland package this image's suites need, so it lives here and
+#    not in the minimal tester-base (T2).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends zsh \
+ && rm -rf /var/lib/apt/lists/*
+#  * `systemctl` (INT-01 finding): host-placement gate scripts (scripts/cgroup-profiler/tools/gate.sh
+#    placement probe, shared-ramdisk-depot-manager/tools/cgroup-parent.sh) run /bin/systemctl INSIDE
+#    this image against the host's system bus, and the old cockpit base carried the binary. Without it
+#    the cgprofile r0-r1 probe exits 127. This is the real client from Debian's `systemd` package, not
+#    a stub (MDTC-02 D-001 forbids a fake one; topos handles an unreachable systemd itself).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends systemd \
+ && rm -rf /var/lib/apt/lists/* \
+ && /bin/systemctl --version
+#  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
+#    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
+#    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.
+#    corepack is NOT copied: the node 26 image no longer ships it (measured: `corepack: not found`).
+COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && node --version && npm --version && npx --version
+# (These userland additions sit BEFORE the source-built CMRU wheel on purpose: the cmru Dockerfile
+# oracle forbids any layer that could rewrite the installed wheel from following its install.)
+
 # git's detached auto-maintenance (`git gc --auto` / `git maintenance run
 # --auto` after a commit) forks a daemon that is orphaned to PID 1. A gate
 # makes thousands of commits; 2026-10-05 left 19,108 zombies and exhausted the
@@ -332,33 +361,6 @@ RUN if getent group 1003 >/dev/null; then \
  && mkdir -p /home/tester/.config /home/tester/.cache /home/tester/.local/state \
  && chown -R 1003:1003 /home/tester \
  && chown -R 1003:1003 /opt/tester-venv
-
-# Behaviour the old MDT cockpit base supplied implicitly, now explicit (MDTC-02 T8 skip-diff):
-#  * `zsh` (D-003): mdt-cockpit/scripts/test_path_hook.py tests the login hook under zsh. The test
-#    FAILS (MDT_REQUIRE_SHELLS=1 in the smoke lane) when zsh is absent instead of silently not
-#    collecting its cases. It is a userland package this image's suites need, so it lives here and
-#    not in the minimal tester-base (T2).
-RUN apt-get update \
- && apt-get install -y --no-install-recommends zsh \
- && rm -rf /var/lib/apt/lists/*
-#  * `systemctl` (INT-01 finding): host-placement gate scripts (scripts/cgroup-profiler/tools/gate.sh
-#    placement probe, shared-ramdisk-depot-manager/tools/cgroup-parent.sh) run /bin/systemctl INSIDE
-#    this image against the host's system bus, and the old cockpit base carried the binary. Without it
-#    the cgprofile r0-r1 probe exits 127. This is the real client from Debian's `systemd` package, not
-#    a stub (MDTC-02 D-001 forbids a fake one; topos handles an unreachable systemd itself).
-RUN apt-get update \
- && apt-get install -y --no-install-recommends systemd \
- && rm -rf /var/lib/apt/lists/* \
- && /bin/systemctl --version
-#  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
-#    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
-#    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.
-#    corepack is NOT copied: the node 26 image no longer ships it (measured: `corepack: not found`).
-COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
-COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
- && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
- && node --version && npm --version && npx --version
 
 USER 1003
 ENV PATH=/opt/tester-venv/bin:${PATH} \
