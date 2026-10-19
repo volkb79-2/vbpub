@@ -4,9 +4,11 @@
 ```bash
 # 1. the base - public upstream inputs only
 docker buildx build --load -t tester-base:local tester-base/
-# 2. the gate image on top of it (repo-root context, tester-unified's own README)
-BUILDX_BUILDER=default docker buildx build --load -f tester-unified/Dockerfile \
-  --build-arg TESTER_BASE=tester-base:local -t tester-unified:local .
+# 2. the gate image on top of it, with the supported builder: it supplies the Run-Gate wheel context
+#    and the base's resolved identity (tester-unified's own README has the full flow)
+BUILDX_BUILDER=default tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local
+#    wheel-builder shares the base: cmru/build-initial-standalone.sh builds tester-base:local first
+#    when it is absent and then wheel-builder:local FROM it
 # 3. gates / cmru work
 TESTER_BASE_IMAGE=tester-base:local CGROUP_PARENT_DEV_GATES=$CGROUP_PARENT_DEV_GATES \
   (cd tester-base && run-gate contract)
@@ -20,14 +22,15 @@ and why `--load` is needed on a non-`docker` builder in step 1. After the releas
 registry reference and any builder works.
 
 After the first release the controller replaces the three pin sites with the published digest:
-the `ARG TESTER_BASE=` defaults in `tester-unified/Dockerfile` and `wheel-builder/Dockerfile`, and
+the `ARG TESTER_UNIFIED_BASE_IMAGE=` default in `tester-unified/Dockerfile`, the
+`ARG WHEEL_BUILDER_BASE_IMAGE=` default in `wheel-builder/Dockerfile`, and
 `[environments.host].image` in `run-gate.root.toml`
 (`ghcr.io/volkb79-2/tester-base@sha256:<digest>` as reported by cmru).
 
 ## Using it as a base
 ```dockerfile
-ARG TESTER_BASE=tester-base:local
-FROM ${TESTER_BASE}
+ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local
+FROM ${TESTER_UNIFIED_BASE_IMAGE}
 USER root
 # add your venv and your uid-1003 identity here; the base creates none
 ```

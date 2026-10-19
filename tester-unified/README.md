@@ -12,12 +12,16 @@ cannot change the gate environment and none of the cockpit's baked release CLIs 
 This image adds the `/opt/tester-venv` closure, the uid-1003 identity and the git foreground
 maintenance config; its `PATH` is `/opt/tester-venv/bin:` followed by the base's own.
 
-Three things the old cockpit base supplied implicitly are now explicit in this image (the
+Things the old cockpit base supplied implicitly are now explicit in this image (the
 [skip-diff section of the tester-base design guide](../tester-base/docs/DESIGN-GUIDE.md#what-the-skip-diff-found-mdtc-02-t8-and-where-each-answer-lives)
 has the evidence): `zsh` (the mdt-cockpit login-hook tests exercise it and FAIL, rather than lose their
 zsh cases, when `MDT_REQUIRE_SHELLS=1` and it is absent), Node.js with npm and npx (copied
 from the digest-pinned official `node:26.x-trixie` image; pwmcp's runtime-gateway tests run `node`), and
-the uid-1003 identity. There is deliberately no fake `systemctl`: topos now handles a missing one itself.
+the uid-1003 identity, and the real `systemctl` client (Debian's `systemd` package: the cgroup-profiler
+placement probe `tools/gate.sh` / `lib/access.py` runs `systemctl show <slice>` inside this image against
+the host system bus, which it can reach only when the bus socket and `/run/systemd/system` are mounted;
+in a plain container it exits 1, and no systemd runs here). There is deliberately no *fake* `systemctl`:
+topos handles an unavailable one itself. See the [DESIGN-GUIDE](docs/DESIGN-GUIDE.md#userland-added-on-top-of-the-base).
 
 Build the Run-Gate wheel from the same checkout first, then build the base and use the
 supported image builder to install those exact wheel bytes into the image. The wheel
@@ -49,10 +53,11 @@ tester-unified/build-image.sh \
 ```
 
 The Dockerfile installs and checks its required host-facing tools on any base,
-installing only what the base lacks: tester-base carries Docker's `docker-ce-cli`
-(no compose plugin) and an MDT base carries both `docker-ce-cli` and
-`docker-compose-plugin`, which are kept; the upstream Python base gets Debian's
-`docker-cli` and `docker-compose`. CMRU, Assay, project sources, and the exact Run-Gate wheel still come
+installing only what the base lacks: tester-base carries Docker's `docker-ce-cli` but no
+compose plugin (tester-base T2), so on the default base this step installs Debian's `docker-compose`
+(an unpinned Debian package) because the step requires `docker compose version` to answer; an MDT
+base carries both `docker-ce-cli` and `docker-compose-plugin`, which are kept; the upstream Python
+base gets Debian's `docker-cli` and `docker-compose`. CMRU, Assay, project sources, and the exact Run-Gate wheel still come
 from the selected vbpub checkout. Set the lane image to its immutable ID before
 running release gates:
 

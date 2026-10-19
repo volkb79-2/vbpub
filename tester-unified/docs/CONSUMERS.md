@@ -21,8 +21,10 @@ must export `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`,
 `CMRU_TESTER_CGROUP_PROBE_IMAGE` from `cmru.orchestration.toml`. The probe
 image must already be available locally.
 
-For a zero-release bootstrap, choose the upstream Python base explicitly so
-building the gate image does not require MDT's published image. Bootstrap CMRU
+The default base is the local `tester-base:local` (`docker buildx build --load -t tester-base:local
+tester-base/`, public upstream inputs only; a missing base fails the build). For a zero-release
+bootstrap you may instead choose the upstream Python base explicitly, so building the gate image does
+not require any published vbpub image. Bootstrap CMRU
 and cli-extended from this checkout first, then pass the digest that command
 prints for its source-built cli-extended wheel:
 

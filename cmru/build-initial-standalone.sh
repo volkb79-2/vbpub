@@ -263,8 +263,26 @@ if docker image inspect "${builder_image}" >/dev/null 2>&1; then
         "${builder_image}" 2>/dev/null || true)"
 fi
 if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
+    # The builder's base is the declared ARG default of wheel-builder/Dockerfile (read, not retyped).
+    # The estate default is tester-base:local, a LOCAL tag built from public upstream inputs only
+    # (tester-base/Dockerfile): no published vbpub image is needed, but the tag must exist before
+    # this build, and a local-only tag is visible to the `docker` driver builder only (a remote
+    # builder would try a registry), and `--pull` would ask a registry for it too.
+    builder_base="$(sed -n 's/^ARG WHEEL_BUILDER_BASE_IMAGE=\(.*\)$/\1/p' \
+        "${repo_root}/wheel-builder/Dockerfile")"
+    [[ -n "${builder_base}" ]] || {
+        echo "[ERROR] wheel-builder/Dockerfile declares no ARG WHEEL_BUILDER_BASE_IMAGE default" >&2
+        exit 2
+    }
+    if [[ "${builder_base}" == "tester-base:local" ]] && ! docker image inspect "${builder_base}" >/dev/null 2>&1; then
+        echo "[INFO] Building ${builder_base} from tester-base/Dockerfile (public upstream inputs only)" >&2
+        BUILDX_BUILDER=default docker buildx build --load \
+            --cgroup-parent "${cgroup_parent}" \
+            -t "${builder_base}" \
+            "${repo_root}/tester-base"
+    fi
     echo "[INFO] Building ${builder_image} from wheel-builder/Dockerfile (image label is ${builder_kind:-missing})" >&2
-    docker buildx build --load --pull \
+    BUILDX_BUILDER=default docker buildx build --load \
         --cgroup-parent "${cgroup_parent}" \
         -f "${repo_root}/wheel-builder/Dockerfile" \
         -t "${builder_image}" \

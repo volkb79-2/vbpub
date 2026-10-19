@@ -57,8 +57,9 @@ The source mode is explicit, creates a `+bootstrap.source` library wheel at
 CMRU's declared dependency floor, and never activates as a fallback. The
 temporary CMRU version is pinned whether or not the checkout has a CMRU tag, so
 the controller can never be mistaken for a release. The script verifies
-the wheel-builder image label and rebuilds its configured tag from Microsoft's
-upstream Python base if the image is absent or belongs to another build. Before
+the wheel-builder image label and rebuilds its configured tag FROM the local
+`tester-base` tag (itself built first, from public upstream inputs, when absent) if the image is
+absent or belongs to another build. Before
 any Docker/Buildx work it verifies, on the Docker host and for the exact slice it
 then passes to Docker, that the build slice and the gates slice
 (`CMRU_TESTER_CGROUP_PARENT`, declared from `$CGROUP_PARENT_DEV_GATES`) are real

@@ -16,8 +16,12 @@ It deliberately has no AI CLI, node, PHP, zsh, nvim, systemd shim, `/home/vscode
 virtualenv, crane, regctl, buildx, iproute2, systemd-tmpfiles or fdisk; the `contract` lane
 asserts that list is absent.
 
-Consumers: `tester-unified` and `wheel-builder` (`ARG TESTER_BASE` + `FROM ${TESTER_BASE}`) and
-run-gate's `host` environment (`run-gate.root.toml`).
+Consumers: `tester-unified` (`ARG TESTER_UNIFIED_BASE_IMAGE` + `FROM ${TESTER_UNIFIED_BASE_IMAGE}`; the
+name is a published interface that `build-image.sh` and Run-Gate's release preparation parse),
+`wheel-builder` (`ARG WHEEL_BUILDER_BASE_IMAGE`; both default to `tester-base:local`) and run-gate's
+`host` environment (`run-gate.root.toml`). Consumers add their own userland on top (tester-unified:
+zsh, node, the real `systemctl` client, Debian `docker-compose`); the `contract` lane asserts the
+negative list for tester-base only.
 
 ```bash
 docker buildx build --load -t tester-base:local tester-base/   # public upstream inputs only

@@ -124,6 +124,28 @@ printf '%s  %s\n' "$run_gate_sha256" "$wheel_stage/$run_gate_filename" \
     exit 2
   }
 
+# The base is named by a reference that can be a mutable tag (tester-base:local). Record the identity
+# it resolved to at build time as a second label, so two images built on different content of the same
+# tag are distinguishable. A digest reference is its own identity; a local tag is resolved with
+# `docker image inspect`; anything else refuses (a base that is not present locally cannot be
+# identified before the build, and guessing would record a made-up value).
+base_ref="${base_image:-$expected_base_image}"
+case "$base_ref" in
+  *@sha256:*) expected_base_image_id="sha256:${base_ref##*@sha256:}" ;;
+  *)
+    expected_base_image_id="$(docker image inspect --format '{{.Id}}' "$base_ref" 2>/dev/null)" || {
+      echo "cannot resolve the identity of base image $base_ref: it is not present locally and is not a digest reference" >&2
+      echo "build or pull it first (tester-base: docker build -t tester-base:local tester-base/)" >&2
+      exit 2
+    }
+    ;;
+esac
+[[ "$expected_base_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+  echo "unexpected base image identity '$expected_base_image_id' for $base_ref" >&2
+  exit 2
+}
+build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE_ID=$expected_base_image_id")
+
 docker buildx build --load --cgroup-parent "$cgroup_parent" \
   "${build_args[@]}" \
   --build-context "run-gate-wheel=$wheel_stage" \
@@ -154,5 +176,13 @@ if [[ "$actual_base_image" != "$expected_base_image" ]]; then
   echo "loaded tester image was not built from the requested base" >&2
   echo "expected: $expected_base_image" >&2
   echo "observed: ${actual_base_image:-<no label>}" >&2
+  exit 2
+fi
+
+actual_base_image_id="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified.base-image-id"}}' "$image_tag")"
+if [[ "$actual_base_image_id" != "$expected_base_image_id" ]]; then
+  echo "loaded tester image does not record the identity of the base it was built on" >&2
+  echo "expected: $expected_base_image_id" >&2
+  echo "observed: ${actual_base_image_id:-<no label>}" >&2
   exit 2
 fi

@@ -277,7 +277,9 @@ def test_bootstrap_rebuilds_an_existing_tag_that_is_not_the_declared_wheel_build
     _run_bootstrap(tree)
 
     docker_commands = Path(tree["docker_log"]).read_text(encoding="utf-8")
-    assert "buildx build --load --pull --cgroup-parent test.slice" in docker_commands
+    # No --pull: the builder's base is the LOCAL tester-base tag, which a registry pull would refuse.
+    assert "buildx build --load --cgroup-parent test.slice" in docker_commands
+    assert "--pull" not in docker_commands
     assert "wheel-builder/Dockerfile" in docker_commands
     assert "-t wheel-builder:test" in docker_commands
     assert Path(tree["builder_marker"]).is_file()

@@ -23,12 +23,15 @@
 # in context if ever needed — today nothing is COPY'd from it, so the build is fast:
 #   docker build -f wheel-builder/Dockerfile -t wheel-builder:local /workspaces/vbpub
 #
-# BASE: the upstream Python devcontainer image, so the zero-release bootstrap needs no vbpub
-# image (reviewed invariant, test_wheel_builder_does_not_depend_on_a_published_vbpub_image).
-# MDTC-02 moved tester-unified to tester-base; moving this builder too is an open decision
-# (INT-01 D-001): its default would become `tester-base:local` once tester-base is a bootstrap
-# step. The base stays one declared ARG so that switch is a one-line change.
-ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie
+# BASE (MDTC-02, operator decision 2026-10-18): tester-base, the minimal digest-pinned gate base
+# (python:3.14-trixie + docker client + minisign + shellcheck), the same base as tester-unified.
+# tester-base is built LOCALLY from public upstream inputs only (`docker build -t tester-base:local
+# tester-base/`, which cmru/build-initial-standalone.sh does when the tag is absent), so the
+# zero-release bootstrap still needs no PUBLISHED vbpub image. Until tester-base has its first CMRU
+# release the default is that local tag; the controller then switches it to the published
+# `ghcr.io/volkb79-2/tester-base@sha256:...`. No other fallback: a missing base is a build failure.
+# A local-only tag is visible to the `docker` driver builder only (BUILDX_BUILDER=default).
+ARG WHEEL_BUILDER_BASE_IMAGE=tester-base:local
 FROM ${WHEEL_BUILDER_BASE_IMAGE}
 
 LABEL org.vbpub.wheel-builder.kind="python-wheel-builder"

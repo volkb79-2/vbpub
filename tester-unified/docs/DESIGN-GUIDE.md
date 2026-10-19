@@ -56,22 +56,28 @@ from the estate configuration. Direct shell builds must provide those same
 declared settings explicitly, and the pinned host probe must already be
 present locally.
 
-The default base is MDT's published devcontainer image for parity with the
-cockpit. The explicit `--base-image` override supports first-release
-bootstrapping: it lets the tester image start from the upstream Python
+The default base is `tester-base:local` (MDTC-02): the minimal, digest-pinned gate base, not the
+floating 8 GB MDT cockpit image, so a cockpit release can no longer change the gate environment
+without a commit. After tester-base's first release the controller switches the default to its
+published digest (the one pin site is the Dockerfile's `ARG TESTER_UNIFIED_BASE_IMAGE=`, an ARG name
+that build-image.sh and Run-Gate's release preparation parse). The explicit `--base-image` override
+supports first-release bootstrapping: it lets the tester image start from the upstream Python
 devcontainer while vbpub has no released images. The Dockerfile installs its
-small host-tool set itself. A missing MDT release never triggers an implicit
+small host-tool set itself. A missing base never triggers an implicit
 fallback; the base choice is visible in the build command. The image also
 records that choice as the `org.vbpub.tester-unified.base-image` label, and the
 builder and Run-Gate's release preparation compare it with the requested base.
 Buildx only warns about a build argument that no stage consumes, so a renamed
 `ARG` would otherwise build the default base while the command named another.
-The label records the reference, not a digest: a mutable tag still resolves at
-build time.
+The reference label records a name, which can be a mutable tag (`tester-base:local`), so a second
+label, `org.vbpub.tester-unified.base-image-id`, records the identity (image id or digest) the
+reference resolved to when `build-image.sh` built the image; the builder refuses a base it cannot
+identify and re-reads the label after the build. Two images built on different content of the same
+tag are therefore distinguishable.
 
 The Docker client is installed by capability, not unconditionally. Debian's
 `docker-cli` / `docker-compose` own the same files as Docker's `docker-ce-cli` /
-`docker-compose-plugin` that the MDT base ships, so installing them over the
+`docker-compose-plugin` that an MDT base ships, so installing them over an
 MDT base makes dpkg refuse the overwrite or, if apt resolved the clash, quietly
 swaps the gate's Docker client. The step therefore installs `docker-cli` only
 when `docker` is absent from PATH and `docker-compose` only when
@@ -80,6 +86,32 @@ variants are covered by an executable oracle
 (`run-gate-project/tests/test_tester_unified_base_variants.py`) that runs the
 Dockerfile's real RUN step against a dpkg-style ownership clash; building an
 image on each base remains a release-lane activity.
+
+## Userland added on top of the base
+Beyond the Docker client step, this image adds (all before the source-built CMRU wheel, so the cmru
+Dockerfile oracle that forbids a later layer rewriting that wheel still holds): `zsh` (the mdt-cockpit
+login-hook tests exercise it), Node.js with npm and npx copied from a digest-pinned official node image
+stage (it is only a `FROM <image>@sha256:` stage, which the oracle asserts) and the **real `systemctl`
+client** from Debian's `systemd` package.
+
+Why `systemctl`: the cgroup-profiler placement probe (`scripts/cgroup-profiler/tools/gate.sh`,
+`lib/access.py` `_PLACEMENT_PROBE`, "placement verifier image must provide systemctl") starts a probe
+container from this image and runs `systemctl show <slice> --property=LoadState,FragmentPath,ControlGroup`
+inside it against the HOST system bus (`/run/dbus/system_bus_socket` and `/run/systemd/system` bind-mounted
+read-only), the estate proof that a slice name is a real unit and not a fail-open transient one. The old
+cockpit base carried the binary; tester-base does not, and without it the probe exits 127. What it can do:
+with the bus and `/run/systemd/system` mounted it answers for the host. What it cannot: in a plain
+gate container there is no systemd, so it exits 1 (`Failed to connect to system scope bus`, or `System has
+not been booted with systemd`); tests must not rely on it (topos treats an unavailable systemctl as
+`unavailable`, ciu tests inject the lookup, assay's cgroup-parent tests fake it). No stub is installed
+(MDTC-02 D-001), and the package also puts `busctl`, `systemd-run` and `systemd-tmpfiles` on PATH: the
+one test that skips when `systemd-tmpfiles` is absent is `os_integration`-marked and deselected by every
+lane that runs its suite. The revert path is a dedicated probe image for the cgroup probes.
+
+The Docker compose layer: tester-base keeps the compose plugin out (T2), so on the default base the
+capability step installs Debian's `docker-compose` (2.26.1 when measured), an unpinned Debian package
+outside tester-base's version management. Whether tester-base should carry compose, or tester-unified
+should stop requiring it, is open (INT-01 D-006).
 
 The wheel supplies the command entrypoint; the bind-mounted checkout supplies
 lane configuration and judged project files. CIU's release gate also compares

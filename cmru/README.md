@@ -77,8 +77,8 @@ several repositories below it. A nested orchestration file starts a new root.
 To build CMRU itself before any CMRU wheel is installed, use the supported
 fresh-checkout bootstrap script. It imports handlers from `src`; the wheel bytes
 are built in the dedicated `wheel-builder` image, so the host does not need the
-`build` package. The image is built from Microsoft's upstream Python base and
-does not need a released vbpub image. The handlers also need `cli_extended`,
+`build` package. The image is built FROM the local `tester-base` tag (the script builds
+it from public upstream inputs when absent), so no published vbpub image is needed. The handlers also need `cli_extended`,
 so the script normally obtains the released wheel, verifies its sha256, and
 unpacks it into a private temporary directory on `PYTHONPATH` (nothing is
 installed into `$CMRU_BOOTSTRAP_PYTHON`). For a zero-release estate, explicitly

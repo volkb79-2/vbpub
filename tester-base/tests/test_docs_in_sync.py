@@ -15,6 +15,17 @@ DOCS = [ROOT / "README.md", ROOT / "docs" / "DESIGN-GUIDE.md", ROOT / "docs" / "
 LINKING = DOCS + [REPO / "tester-unified" / "README.md"]
 
 
+def consumer_base_args() -> dict[str, str]:
+    """{consumer Dockerfile: ARG name} for every shipped consumer whose base ARG defaults to tester-base:local."""
+    found = {}
+    for relative in ("tester-unified/Dockerfile", "wheel-builder/Dockerfile"):
+        text = (REPO / relative).read_text(encoding="utf-8")
+        match = re.search(r"^ARG (\w+)=tester-base:local$", text, re.MULTILINE)
+        if match:
+            found[relative] = match.group(1)
+    return found
+
+
 def text_of(paths: list[Path]) -> str:
     return "\n".join(p.read_text(encoding="utf-8") for p in paths)
 
@@ -47,9 +58,21 @@ class DocsTriad(unittest.TestCase):
             tomllib.loads((ROOT / name).read_text(encoding="utf-8"))
 
     def test_every_dockerfile_example_matches_the_shipped_pattern(self) -> None:
+        shipped = consumer_base_args()
+        self.assertGreaterEqual(len(shipped), 2, f"expected tester-unified and wheel-builder, found {shipped}")
         for block in re.findall(r"```dockerfile\n(.*?)```", text_of(DOCS), re.DOTALL):
-            self.assertIn("ARG TESTER_BASE=tester-base:local", block)
-            self.assertIn("FROM ${TESTER_BASE}", block)
+            declared = re.findall(r"^ARG (\w+)=tester-base:local$", block, re.MULTILINE)
+            self.assertTrue(declared, "a dockerfile example must declare the base ARG with its tester-base:local default")
+            for name in declared:
+                self.assertIn(name, shipped.values(), f"{name} is not a base ARG of any shipped consumer Dockerfile")
+                self.assertIn(f"FROM ${{{name}}}", block)
+
+    def test_the_docs_name_the_real_pin_site_of_every_shipped_consumer(self) -> None:
+        docs = text_of(DOCS)
+        for dockerfile, name in consumer_base_args().items():
+            self.assertIn(f"ARG {name}=", docs, f"{dockerfile}: the pin-site ARG {name} is not named in the docs")
+        self.assertNotIn("TESTER_BASE=", docs.replace("TESTER_BASE_IMAGE=", ""))
+        self.assertNotIn("ARG TESTER_BASE", docs)
 
     def test_every_vocabulary_value_a_consumer_types_is_documented(self) -> None:
         docs = text_of(DOCS)
@@ -60,7 +83,8 @@ class DocsTriad(unittest.TestCase):
         for lane, body in lanes.items():
             typed.add(lane)
             typed |= set(body.get("required_env", []))
-        typed |= {"TESTER_BASE", "BUILDX_BUILDER"}
+        typed |= set(consumer_base_args().values())  # read from the shipped consumer Dockerfiles
+        typed |= {"BUILDX_BUILDER"}
         # the digest/checksum ARGs are documented as a group; each name must still appear somewhere
         missing = sorted(name for name in typed if name not in docs)
         self.assertEqual(missing, [], f"undocumented vocabulary: {missing}")

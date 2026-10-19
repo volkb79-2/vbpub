@@ -259,9 +259,12 @@ The first CMRU wheel can be built before either CMRU or `cli-extended` has a
 release. `build-initial-standalone.sh` has an explicit source mode, selected with
 `CMRU_BOOTSTRAP_CLI_EXTENDED=source`, that builds
 `cli-extended` from the same checkout at CMRU's declared runtime floor and
-marks it `+bootstrap.source`. The standalone wheel-builder uses Microsoft's
-upstream Python base, so this bootstrap does not depend on MDT's published
-image. The bootstrap verifies the builder image's dedicated label and
+marks it `+bootstrap.source`. The standalone wheel-builder is built FROM the local
+`tester-base` tag (operator decision 2026-10-18: the gate images share one digest-pinned base;
+`tester-base` builds from public upstream inputs alone, so the bootstrap needs no PUBLISHED vbpub
+image and none of MDT's). The script builds that tag first when it is absent, with the `docker`
+driver builder and without `--pull`, because a local-only tag is invisible to a remote builder and
+to a registry. The bootstrap verifies the builder image's dedicated label and
 rebuilds a missing or mismatched tag from this Dockerfile, rather than
 mistaking an unrelated local tag for the builder. The operator supplies a temporary local
 version (`0.0.0+bootstrap.source`) for the bootstrap controller whether or not the checkout has a CMRU tag;

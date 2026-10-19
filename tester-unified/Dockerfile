@@ -45,6 +45,10 @@ FROM ${TESTER_UNIFIED_BASE_IMAGE}
 # renamed or unconsumed build argument cannot silently build the default base.
 ARG TESTER_UNIFIED_BASE_IMAGE
 LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"
+# The identity the base reference resolved to when this image was built (build-image.sh supplies and
+# re-reads it): the reference above can be a mutable local tag, the id says which content it was.
+ARG TESTER_UNIFIED_BASE_IMAGE_ID
+LABEL org.vbpub.tester-unified.base-image-id="${TESTER_UNIFIED_BASE_IMAGE_ID}"
 
 USER root
 
@@ -53,7 +57,9 @@ USER root
 # client only; the launcher supplies the host socket when a lane needs it.
 #
 # Install only what the base lacks. The default tester-base ships Docker's own
-# `docker-ce-cli` (without the compose plugin, tester-base T2) and the MDT cockpit
+# `docker-ce-cli` WITHOUT the compose plugin (tester-base T2), so on it this step installs Debian's
+# `docker-compose` because `docker compose version` must answer (an unpinned Debian package; INT-01
+# D-006 is open on whether tester-base or this requirement should change); the MDT cockpit
 # image ships `docker-ce-cli` and `docker-compose-plugin`; Debian's `docker-cli` and
 # `docker-compose` own the same files (/usr/bin/docker and the compose
 # plugin), so installing them over it makes dpkg refuse the overwrite or, if
@@ -89,6 +95,7 @@ RUN apt-get update \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends systemd \
  && rm -rf /var/lib/apt/lists/* \
+ && test "$(dpkg -S /usr/bin/systemctl | cut -d: -f1)" = systemd \
  && /bin/systemctl --version
 #  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
 #    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.

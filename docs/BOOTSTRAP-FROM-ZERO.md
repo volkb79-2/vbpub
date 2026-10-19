@@ -21,9 +21,11 @@ Run-Gate wheel plus a tester image containing those exact Run-Gate bytes.
 Run-Gate can be built and released with the source-bootstrapped CMRU controller,
 so this is a one-way edge rather than a cycle.
 
-The tester image normally uses the published MDT devcontainer. During the
-zero-release bootstrap, use the upstream Python devcontainer base explicitly
-with `tester-unified/build-image.sh --base-image ...`. The tester image builds
+The tester image's default base is `tester-base:local`, built from `tester-base/` with public
+upstream inputs only (the bootstrap script in step 1 builds it when absent, and
+`wheel-builder` shares it). Until tester-base has a release this local tag is the default; a
+missing base fails the build. During the zero-release bootstrap the upstream Python devcontainer
+base can instead be chosen explicitly with `tester-unified/build-image.sh --base-image ...`. The tester image builds
 CMRU from the selected checkout, installs the explicitly digest-checked local
 `cli-extended` wheel, and installs the exact Run-Gate wheel supplied by the
 builder. No published vbpub image is needed.
@@ -133,7 +135,8 @@ supplies the whole-source line-and-branch qualification.
    automatic fallback. Before building, the script verifies the build slice on
    the Docker host and checks the configured wheel-builder image's dedicated
    label; a missing or mismatched image is built from `wheel-builder/Dockerfile`
-   on Microsoft's upstream Python base. A local MDT image tag cannot be reused
+   on the local `tester-base` tag, which it first builds from `tester-base/` (public upstream
+   inputs only) when that tag is absent. A local MDT image tag cannot be reused
    as the builder by accident.
 
 2. **Build the first tester image from source inputs.** Copy the one

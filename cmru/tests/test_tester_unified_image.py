@@ -228,7 +228,9 @@ TESTER_ZSH_RUN = (
 )
 TESTER_SYSTEMCTL_RUN = (
     "apt-get update && apt-get install -y --no-install-recommends systemd "
-    "&& rm -rf /var/lib/apt/lists/* && /bin/systemctl --version"
+    "&& rm -rf /var/lib/apt/lists/* "
+    '&& test "$(dpkg -S /usr/bin/systemctl | cut -d: -f1)" = systemd '
+    "&& /bin/systemctl --version"
 )
 TESTER_NODE_LINKS_RUN = (
     "ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm "
@@ -811,6 +813,20 @@ def _dockerfile_copy_specs_before_command(
                     # a pure-image stage: a stage that is only `FROM <digest-pinned image>` and so
                     # cannot have rewritten a wheel input (the node-source stage; its pin is
                     # asserted by test_tester_unified_has_no_systemctl_stub_...).
+                    if context_or_stage in allowed_pure_image_stages:
+                        # Verified, not trusted by name: the stage is exactly one digest-pinned FROM.
+                        body = [
+                            text for _o, selector, _i, text in instructions
+                            if selector == context_or_stage
+                        ]
+                        if len(body) != 1 or not re.fullmatch(
+                            rf"(?i)FROM\s+\S+@sha256:[0-9a-f]{{64}}\s+AS\s+{re.escape(context_or_stage)}",
+                            body[0],
+                        ):
+                            raise ValueError(
+                                f"stage {context_or_stage!r} is not a lone digest-pinned FROM; "
+                                "cannot allow it as a pure-image stage"
+                            )
                     if (
                         context_or_stage in declared_stages
                         and context_or_stage not in allowed_pure_image_stages
@@ -3646,8 +3662,14 @@ def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
     design = (REPO_ROOT / "cmru" / "docs" / "DESIGN-GUIDE.md").read_text("utf-8")
     consumers = (REPO_ROOT / "cmru" / "docs" / "CONSUMERS.md").read_text("utf-8")
 
-    assert "ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie" in dockerfile
+    # The invariant is "no PUBLISHED vbpub image": the base is the LOCAL tester-base tag (no registry
+    # host), and tester-base itself is built from public upstream inputs alone (its FROM names no
+    # vbpub registry path). Operator decision 2026-10-18: wheel-builder moves to tester-base.
+    assert re.search(r"^ARG WHEEL_BUILDER_BASE_IMAGE=tester-base:local$", dockerfile, re.MULTILINE)
     assert "FROM ${WHEEL_BUILDER_BASE_IMAGE}" in dockerfile
+    tester_base = (REPO_ROOT / "tester-base" / "Dockerfile").read_text("utf-8")
+    base_froms = re.findall(r"^FROM (\S+)", tester_base, re.MULTILINE)
+    assert base_froms and not any("volkb79-2" in ref or ref.startswith("ghcr.io/") for ref in base_froms), base_froms
     assert "apt-get install -y --no-install-recommends ca-certificates git passwd" in dockerfile
     assert "ghcr.io/volkb79-2/modern-debian-tools-python-debug" not in dockerfile
     for document in (readme, design, consumers):
@@ -4212,12 +4234,13 @@ def test_tester_unified_is_built_from_tester_base_with_no_other_fallback():
     assert re.search(r'^LABEL org\.vbpub\.tester-unified\.base-image="\$\{TESTER_UNIFIED_BASE_IMAGE\}"$', text, re.MULTILINE)
 
 
-def test_wheel_builder_base_stays_a_declared_arg_with_no_published_vbpub_image():
-    """INT-01 D-001 interim: wheel-builder keeps the reviewed upstream default (the zero-release
-    bootstrap needs no vbpub image); switching it to tester-base is an open decision."""
-    text = WHEEL_BUILDER.read_text("utf-8")
-    assert re.search(r"^ARG WHEEL_BUILDER_BASE_IMAGE=\S+$", text, re.MULTILINE)
-    assert re.findall(r"^FROM (\S+)", text, re.MULTILINE) == ["${WHEEL_BUILDER_BASE_IMAGE}"]
+def test_bootstrap_builds_tester_base_before_the_wheel_builder_that_is_based_on_it():
+    """The wheel builder's base is tester-base:local, so the zero-release bootstrap script must make
+    that tag exist first and must not ask a registry for it (`--pull`)."""
+    script = (REPO_ROOT / "cmru" / "build-initial-standalone.sh").read_text("utf-8")
+    assert script.index('"${repo_root}/tester-base"') < script.index('-f "${repo_root}/wheel-builder/Dockerfile"')
+    assert "--pull" not in "\n".join(line for line in script.splitlines() if "buildx build" in line)
+    assert script.count("BUILDX_BUILDER=default docker buildx build") == 2
 
 
 @pytest.mark.parametrize("dockerfile", [DOCKERFILE, WHEEL_BUILDER])
@@ -4239,14 +4262,46 @@ def test_tester_unified_path_is_its_own_venv_then_the_base_path():
     assert re.search(r"^ENV PATH=/opt/tester-venv/bin:\$\{PATH\}(?: \\)?$", text, re.MULTILINE)
 
 
+def test_a_pure_image_stage_must_be_a_lone_digest_pinned_from():
+    """The allowance for the node-source stage is verified: add a RUN, drop the digest or add a COPY
+    to that stage and the oracle refuses to allow it."""
+    base = "FROM docker.io/library/node:26@sha256:" + "a" * 64 + " AS node-source\n"
+    final = "FROM base:latest\nCOPY --from=node-source /a /a\nCOPY cmru/ /src/cmru/\nRUN pip wheel /src/cmru\n"
+
+    def run(first_stage):
+        return _dockerfile_copy_specs_before_command(
+            first_stage + final, "stage-1", r"pip wheel[\s\S]*?/src/cmru",
+            run_sensitive_sources=("cmru",), allowed_pure_image_stages=("node-source",),
+        )
+
+    run(base)  # the lone pinned FROM is accepted
+    for bad in (
+        base + "RUN echo tampered > /a\n",
+        "FROM docker.io/library/node:26 AS node-source\n",
+        base + "COPY x /a\n",
+    ):
+        with pytest.raises(ValueError, match="pure-image stage|not a lone"):
+            run(bad)
+
+
 def test_tester_unified_has_no_systemctl_stub_and_installs_what_its_suites_run():
     """D-001: no fake systemd (topos handles a missing systemctl itself) - but the REAL client IS
     installed, because host-placement gate scripts run /bin/systemctl inside this image (the
     cgprofile r0-r1 probe exited 127 without it). D-003: zsh. D-004: node, npm and npx copied from
     the digest-pinned official node image (node 26 ships no corepack)."""
     code = "\n".join(_code_lines(DOCKERFILE))
-    # no stub: nothing writes a systemctl file; the only systemctl action is the real package + check
-    assert not re.search(r"(?:>|tee|install|cp|ln)[^\n]*/systemctl\b", code.replace("/bin/systemctl --version", ""))
+    # no stub: the ONLY instruction that mentions systemctl is the exact real-package RUN, no COPY/ADD
+    # lands anything at a systemctl path, and the build proves the binary is owned by the systemd package
+    # (a stub that merely prints a version would not satisfy `dpkg -S`).
+    mentioning = [
+        line for line in _dockerfile_logical_instructions(DOCKERFILE.read_text("utf-8"))
+        if "systemctl" in line
+    ]
+    assert mentioning == [f"RUN {TESTER_SYSTEMCTL_RUN}"], mentioning
+    for instruction in _dockerfile_logical_instructions(DOCKERFILE.read_text("utf-8")):
+        if re.match(r"(?i)^(COPY|ADD)\b", instruction):
+            assert "systemctl" not in instruction, instruction
+    assert 'dpkg -S /usr/bin/systemctl | cut -d: -f1)" = systemd' in code
     assert "apt-get install -y --no-install-recommends systemd" in code
     assert "/bin/systemctl --version" in code
     assert "apt-get install -y --no-install-recommends zsh" in code
