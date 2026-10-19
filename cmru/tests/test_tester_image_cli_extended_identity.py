@@ -61,6 +61,12 @@ def _tree(tmp_path: Path):
     (fake_bin / "docker").write_text(
         "#!/bin/sh\n"
         f'echo "$*" >> "{log}"\n'
+        # A base that is absent until pulled (FAKE_BASE_ABSENT_UNTIL_PULL) or never present (FAKE_BASE_ABSENT):
+        'if [ "$1" = pull ]; then touch "$FAKE_PULLED_MARKER"; exit 0; fi\n'
+        'case "$*" in *"{{.Id}}"*)\n'
+        '  if [ -n "$FAKE_BASE_ABSENT" ]; then exit 1; fi\n'
+        '  if [ -n "$FAKE_BASE_ABSENT_UNTIL_PULL" ] && [ ! -f "$FAKE_PULLED_MARKER" ]; then exit 1; fi;;\n'
+        'esac\n'
         'if [ "$1" = image ]; then\n'
         '  case "$*" in\n'
         '    *org.vbpub.run-gate.version*) echo 24.0.0;;\n'
@@ -87,6 +93,7 @@ def _tree(tmp_path: Path):
         # The identity the (fake) docker resolves the base to, and what the built image's id label says.
         "FAKE_BASE_IMAGE_ID": BASE_ID,
         "FAKE_BASE_IMAGE_ID_LABEL": BASE_ID,
+        "FAKE_PULLED_MARKER": str(tmp_path / "pulled"),
     }
     return root, env, log
 
@@ -278,3 +285,51 @@ def test_a_digest_reference_is_its_own_identity(tmp_path):
     )
     assert result.returncode == 0, result.stderr
     assert f"--build-arg TESTER_UNIFIED_BASE_IMAGE_ID=sha256:{digest}" in _buildx(log)
+
+
+# --- base presence: pull a registry reference, refuse an absent registry-less tag --------
+
+
+def _pulled(log: Path) -> bool:
+    return any(line.startswith("pull ") for line in log.read_text(encoding="utf-8").splitlines())
+
+
+def test_an_absent_registry_base_is_pulled_explicitly_then_identified(tmp_path):
+    """The documented zero-release flows pass an upstream --base-image that is not local on a clean host."""
+    result, log = _build(
+        tmp_path, "--base-image", UPSTREAM_BASE, label=PINNED_DIGEST, base_label=UPSTREAM_BASE,
+        env_extra={"FAKE_BASE_ABSENT_UNTIL_PULL": "1"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "pulling it" in result.stderr
+    lines = log.read_text(encoding="utf-8").splitlines()
+    pull = next(i for i, line in enumerate(lines) if line == f"pull {UPSTREAM_BASE}")
+    build = next(i for i, line in enumerate(lines) if line.startswith("buildx build"))
+    assert pull < build
+    assert f"--build-arg TESTER_UNIFIED_BASE_IMAGE_ID={BASE_ID}" in lines[build]
+
+
+def test_a_present_base_is_not_pulled(tmp_path):
+    result, log = _build(tmp_path, "--base-image", UPSTREAM_BASE, label=PINNED_DIGEST, base_label=UPSTREAM_BASE)
+    assert result.returncode == 0, result.stderr
+    assert not _pulled(log)
+
+
+def test_an_absent_registry_less_tag_is_refused_with_how_to_build_it_and_never_pulled(tmp_path):
+    result, log = _build(
+        tmp_path, label=PINNED_DIGEST, base_label=DEFAULT_BASE, env_extra={"FAKE_BASE_ABSENT": "1"},
+    )
+    assert result.returncode == 2
+    assert "has no registry to pull from" in result.stderr
+    assert "docker buildx build --load -t tester-base:local tester-base/" in result.stderr
+    assert not _pulled(log)
+    assert not any(line.startswith("buildx build") for line in log.read_text(encoding="utf-8").splitlines())
+
+
+def test_a_registry_base_that_cannot_be_pulled_is_refused(tmp_path):
+    result, log = _build(
+        tmp_path, "--base-image", UPSTREAM_BASE, label=PINNED_DIGEST, base_label=UPSTREAM_BASE,
+        env_extra={"FAKE_BASE_ABSENT": "1"},
+    )
+    assert result.returncode == 2
+    assert "cannot identify base image" in result.stderr

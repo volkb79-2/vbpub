@@ -89,6 +89,15 @@ class DocsTriad(unittest.TestCase):
         missing = sorted(name for name in typed if name not in docs)
         self.assertEqual(missing, [], f"undocumented vocabulary: {missing}")
 
+    def test_the_zero_state_gate_image_command_passes_the_base_explicitly(self) -> None:
+        """No tester-unified:local exists before the first build, so build-image.sh's tester-gate preflight needs
+        --base-image; the documented step 2 must carry it (build-image.sh's own comment says so)."""
+        consumers = DOCS[2].read_text(encoding="utf-8")
+        commands = re.findall(r"tester-unified/build-image\.sh[^\n]*(?:\\\n[^\n]*)*", consumers)
+        self.assertTrue(commands, "CONSUMERS.md documents no build-image.sh command")
+        for command in commands:
+            self.assertIn("--base-image tester-base:local", command)
+
     def test_the_documented_tools_equal_the_contract_lanes_positive_list(self) -> None:
         readme = DOCS[0].read_text(encoding="utf-8")
         contract = (ROOT / "tests" / "test_contract.py").read_text(encoding="utf-8")

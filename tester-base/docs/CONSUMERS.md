@@ -2,11 +2,16 @@
 
 ## Bootstrap order (nothing published yet)
 ```bash
-# 1. the base - public upstream inputs only
+# 1. the base - public upstream inputs only (cmru/build-initial-standalone.sh does the same and adds the
+#    source-hash label that lets it reuse the tag safely)
 docker buildx build --load -t tester-base:local tester-base/
 # 2. the gate image on top of it, with the supported builder: it supplies the Run-Gate wheel context
-#    and the base's resolved identity (tester-unified's own README has the full flow)
-BUILDX_BUILDER=default tester-unified/build-image.sh --wheel-dir run-gate-project/dist --tag tester-unified:local
+#    and the base's resolved identity (tester-unified's own README has the full flow). In the ZERO state
+#    there is no tester-unified:local yet, so the base is passed explicitly: cmru's tester-gate preflight
+#    then probes in tester-base itself. Prerequisites: cmru installed (step 1 of docs/BOOTSTRAP-FROM-ZERO.md),
+#    the Run-Gate wheel built in run-gate-project/dist, and the CMRU_TESTER_* variables of that guide exported.
+BUILDX_BUILDER=default tester-unified/build-image.sh --base-image tester-base:local \
+  --wheel-dir run-gate-project/dist --tag tester-unified:local
 #    wheel-builder shares the base: cmru/build-initial-standalone.sh builds tester-base:local first
 #    when it is absent and then wheel-builder:local FROM it
 # 3. gates / cmru work
@@ -50,6 +55,7 @@ Every pin is a reviewed edit of the Dockerfile, never a build-time surprise:
 | `DOCKER_APT_PRIMARY_FPR` | the only primary key the Docker apt key file may hold (the SET of primary fingerprints must equal exactly this) | a deliberate key rotation |
 | `DOCKER_CE_CLI_VERSION` | the exact `docker-ce-cli` package version (the contract lane asserts the installed version equals it) | editing the line to a newer version Docker's repository serves |
 | `SHELLCHECK_VERSION`, `SHELLCHECK_SHA256_X86_64`, `SHELLCHECK_SHA256_AARCH64` | the shellcheck release and the sha256 of each architecture's upstream asset | the three together |
+| `TESTER_BASE_SOURCE_HASH` | not a pin: the sha256 of `tester-base/Dockerfile`, written to the `org.vbpub.tester-base.source-hash` label (next to `org.vbpub.tester-base.kind=tester-base`) by `cmru/build-initial-standalone.sh` so a local `tester-base:local` is reused only when it matches the current source, rebuilt when stale, refused when it is not a tester-base build; a plain `docker build` leaves it empty, which reads as stale | the bootstrap script supplies it |
 
 The `FROM` digest is the one `cmru versions resolve tester-base` records under the 14-day age
 window (see the DESIGN-GUIDE "Version pins").

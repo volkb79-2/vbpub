@@ -37,7 +37,9 @@ docker buildx build --load -t tester-base:local tester-base/
 Then build the image with `build-image.sh` as shown below. When no vbpub image has been released yet and a different base is wanted, `--base-image`
 selects it explicitly (for example the upstream Python devcontainer, which has no vbpub
 dependency at all); the chosen reference is recorded in the
-`org.vbpub.tester-unified.base-image` label and compared by the builder:
+`org.vbpub.tester-unified.base-image` label and compared by the builder. A registry reference that is not
+local is pulled first (explicitly, then identified: the id lands in `org.vbpub.tester-unified.base-image-id`);
+a registry-less tag such as `tester-base:local` that is absent is refused with how to build it:
 
 ```bash
 SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \

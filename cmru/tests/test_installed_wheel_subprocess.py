@@ -109,6 +109,10 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
         (PROJECT_DIR / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8",
     )
     # The script reads the wheel builder's base from the real Dockerfile (committed with the tree).
+    (repo_root / "tester-base").mkdir()
+    (repo_root / "tester-base" / "Dockerfile").write_text(
+        (REPO_ROOT / "tester-base" / "Dockerfile").read_text(encoding="utf-8"), encoding="utf-8",
+    )
     (repo_root / "wheel-builder").mkdir()
     (repo_root / "wheel-builder" / "Dockerfile").write_text(
         (REPO_ROOT / "wheel-builder" / "Dockerfile").read_text(encoding="utf-8"), encoding="utf-8",
@@ -139,6 +143,12 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     docker.write_text(
         "#!/bin/sh\n"
         f'printf "docker %s\\n" "$*" >> "{order_log}"\n'
+        'if [ "$1" = "buildx" ] && [ "$2" = "inspect" ] && [ -n "$CMRU_TEST_NO_DEFAULT_BUILDER" ]; then exit 1; fi\n'
+        # tester-base:local labels: kind and source hash come from the environment (the test sets them).
+        'case "$*" in\n'
+        '  *"image inspect --format"*org.vbpub.tester-base.kind*) echo "$CMRU_TEST_TB_KIND"; exit 0;;\n'
+        '  *"image inspect --format"*org.vbpub.tester-base.source-hash*) echo "$CMRU_TEST_TB_HASH"; exit 0;;\n'
+        'esac\n'
         # tester-base:local is present unless CMRU_TEST_NO_TESTER_BASE is set; building it makes it appear.
         'if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "tester-base:local" ]; then\n'
         f'  if [ -n "$CMRU_TEST_NO_TESTER_BASE" ] && [ ! -f "{tester_base_marker}" ]; then exit 1; fi\n'
@@ -220,6 +230,9 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "CMRU_BOOTSTRAP_PYTHON": "fakepython",
         "CMRU_WHEEL_BUILDER_IMAGE": "wheel-builder:test",
+        # a present tester-base:local is, by default, a current tester-base build of this tree's Dockerfile
+        "CMRU_TEST_TB_KIND": "tester-base",
+        "CMRU_TEST_TB_HASH": hashlib.sha256((repo_root / "tester-base" / "Dockerfile").read_bytes()).hexdigest(),
         "CMRU_BOOTSTRAP_CGROUP_PARENT": "test.slice",
         "SOURCE_DATE_EPOCH": "1",
         "TMPDIR": str(tmp_path),
@@ -300,28 +313,62 @@ def test_bootstrap_rebuilds_an_existing_tag_that_is_not_the_declared_wheel_build
     assert Path(tree["builder_marker"]).is_file()
 
 
-def test_bootstrap_builds_tester_base_first_when_it_is_absent_and_only_then(tmp_path):
-    """The wheel builder is FROM the local tester-base tag: absent, the script builds it (public inputs)
-    before the builder, with the docker-driver builder and no --pull; present, it is not rebuilt."""
-    for absent in (True, False):
-        tree = _bootstrap_tree(tmp_path / ("absent" if absent else "present"))
-        wheel, digest = _toy_wheel(tmp_path / ("w1" if absent else "w2"))
-        tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest)
-        if absent:
-            tree["env"]["CMRU_TEST_NO_TESTER_BASE"] = "1"
+def _bootstrap_with_tester_base(tmp_path, **env):
+    tree = _bootstrap_tree(tmp_path)
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest)
+    tree["env"].update(env)
+    result = _run_bootstrap(tree)
+    log = Path(tree["docker_log"])
+    commands = log.read_text(encoding="utf-8").splitlines() if log.exists() else []
+    base_builds = [i for i, line in enumerate(commands) if "-t tester-base:local" in line]
+    builder_builds = [i for i, line in enumerate(commands) if "-t wheel-builder:test" in line]
+    return tree, result, commands, base_builds, builder_builds
 
-        _run_bootstrap(tree)
 
-        commands = Path(tree["docker_log"]).read_text(encoding="utf-8").splitlines()
-        base_builds = [i for i, line in enumerate(commands) if "-t tester-base:local" in line]
-        builder_builds = [i for i, line in enumerate(commands) if "-t wheel-builder:test" in line]
-        assert builder_builds, commands
-        assert all("--pull" not in line for line in commands)
-        if absent:
-            assert base_builds and base_builds[0] < builder_builds[0], commands
-            assert Path(tree["tester_base_marker"]).is_file()
-        else:
-            assert base_builds == [], commands
+def test_bootstrap_builds_tester_base_first_when_it_is_absent(tmp_path):
+    """The wheel builder is FROM the local tester-base tag: absent, the script builds it (public
+    inputs) before the builder, with the docker-driver builder, no --pull, and the source-hash label."""
+    tree, _result, commands, base_builds, builder_builds = _bootstrap_with_tester_base(
+        tmp_path, CMRU_TEST_NO_TESTER_BASE="1",
+    )
+    assert builder_builds and base_builds and base_builds[0] < builder_builds[0], commands
+    assert all("--pull" not in line for line in commands)
+    assert any(f"TESTER_BASE_SOURCE_HASH={tree['env']['CMRU_TEST_TB_HASH']}" in line for line in commands)
+
+
+def test_bootstrap_reuses_a_matching_tester_base_without_rebuilding_it(tmp_path):
+    _tree, _result, commands, base_builds, builder_builds = _bootstrap_with_tester_base(tmp_path)
+    assert builder_builds and base_builds == [], commands
+
+
+def test_bootstrap_rebuilds_a_stale_tester_base(tmp_path):
+    """Same kind label, other source hash: built from an older tree, so it is rebuilt, not reused."""
+    _tree, result, commands, base_builds, builder_builds = _bootstrap_with_tester_base(
+        tmp_path, CMRU_TEST_TB_HASH="0" * 64,
+    )
+    assert base_builds and builder_builds and base_builds[0] < builder_builds[0], commands
+    assert "built from other tester-base sources" in result.stderr
+
+
+def test_bootstrap_refuses_a_foreign_image_tagged_tester_base_local(tmp_path):
+    for kind in ("", "something-else"):
+        _tree, result, commands, base_builds, builder_builds = _bootstrap_with_tester_base(
+            tmp_path / (kind or "unlabeled"), CMRU_TEST_TB_KIND=kind,
+        )
+        assert result.returncode == 2, result.stderr
+        assert "is not a tester-base build" in result.stderr
+        assert "docker rmi tester-base:local" in result.stderr
+        assert base_builds == [] and builder_builds == [], commands
+
+
+def test_bootstrap_names_a_missing_default_buildx_builder(tmp_path):
+    _tree, result, commands, base_builds, builder_builds = _bootstrap_with_tester_base(
+        tmp_path, CMRU_TEST_NO_DEFAULT_BUILDER="1",
+    )
+    assert result.returncode == 2
+    assert "buildx builder 'default'" in result.stderr and "docker buildx use default" in result.stderr
+    assert base_builds == [] and builder_builds == [], commands
 
 
 def test_bootstrap_runs_python_isolated_with_the_verified_released_wheel_and_commit_epoch(tmp_path):

@@ -74,6 +74,14 @@ SHELL ["/bin/sh", "-c"]
 # python:3.14-trixie already sets LANG=C.UTF-8; no en_US locale (T2).
 ENV LANG=C.UTF-8
 
+# Identity for the local bootstrap: `kind` says this IS a tester-base build; `source-hash` is the sha256
+# of this Dockerfile (its only build input, there is no COPY), supplied by cmru/build-initial-standalone.sh
+# so a stale local tag is rebuilt and a foreign one refused. A plain `docker build` leaves it empty, which
+# reads as stale, never as current.
+ARG TESTER_BASE_SOURCE_HASH
+LABEL org.vbpub.tester-base.kind="tester-base" \
+      org.vbpub.tester-base.source-hash="${TESTER_BASE_SOURCE_HASH}"
+
 LABEL org.opencontainers.image.title="tester-base" \
       org.opencontainers.image.description="Minimal gate base: python 3.14 + docker client + minisign + shellcheck" \
       org.opencontainers.image.source="https://github.com/volkb79-2/vbpub"

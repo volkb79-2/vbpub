@@ -274,12 +274,45 @@ if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
         echo "[ERROR] wheel-builder/Dockerfile declares no ARG WHEEL_BUILDER_BASE_IMAGE default" >&2
         exit 2
     }
-    if [[ "${builder_base}" == "tester-base:local" ]] && ! docker image inspect "${builder_base}" >/dev/null 2>&1; then
-        echo "[INFO] Building ${builder_base} from tester-base/Dockerfile (public upstream inputs only)" >&2
-        BUILDX_BUILDER=default docker buildx build --load \
-            --cgroup-parent "${cgroup_parent}" \
-            -t "${builder_base}" \
-            "${repo_root}/tester-base"
+    # A local-only tag needs the `docker` driver builder; say so instead of failing inside Docker.
+    docker buildx inspect default >/dev/null 2>&1 || {
+        echo "[ERROR] the buildx builder 'default' (docker driver) is not available; a local-only base tag (${builder_base})" >&2
+        echo "        is invisible to any other builder. Create it with: docker buildx use default" >&2
+        exit 2
+    }
+    if [[ "${builder_base}" == "tester-base:local" ]]; then
+        # Reuse an existing tester-base:local only when it is a tester-base build of THIS source: a
+        # kind label plus the sha256 of its only build input (tester-base/Dockerfile, no COPY). A stale
+        # build is rebuilt (docker's layer cache keeps that cheap); an image without the kind label is
+        # not ours and is refused rather than silently used as the builder's base.
+        tester_base_source_hash="$(git -C "${repo_root}" show HEAD:tester-base/Dockerfile | sha256sum | cut -d' ' -f1)"
+        [[ "${tester_base_source_hash}" =~ ^[0-9a-f]{64}$ ]] || {
+            echo "[ERROR] cannot hash tester-base/Dockerfile at HEAD" >&2
+            exit 2
+        }
+        build_tester_base=1
+        if docker image inspect "${builder_base}" >/dev/null 2>&1; then
+            tb_kind="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-base.kind"}}' "${builder_base}" 2>/dev/null || true)"
+            tb_hash="$(docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-base.source-hash"}}' "${builder_base}" 2>/dev/null || true)"
+            if [[ "${tb_kind}" != "tester-base" ]]; then
+                echo "[ERROR] ${builder_base} exists but is not a tester-base build (kind label '${tb_kind:-missing}'); refusing to use it as the builder's base" >&2
+                echo "        remove it by exact tag (docker rmi ${builder_base}) or build the right image: docker buildx build --load -t ${builder_base} tester-base/" >&2
+                exit 2
+            fi
+            if [[ "${tb_hash}" == "${tester_base_source_hash}" ]]; then
+                build_tester_base=0
+            else
+                echo "[INFO] ${builder_base} was built from other tester-base sources; rebuilding" >&2
+            fi
+        fi
+        if (( build_tester_base )); then
+            echo "[INFO] Building ${builder_base} from tester-base/Dockerfile (public upstream inputs only)" >&2
+            BUILDX_BUILDER=default docker buildx build --load \
+                --cgroup-parent "${cgroup_parent}" \
+                --build-arg "TESTER_BASE_SOURCE_HASH=${tester_base_source_hash}" \
+                -t "${builder_base}" \
+                "${repo_root}/tester-base"
+        fi
     fi
     echo "[INFO] Building ${builder_image} from wheel-builder/Dockerfile (image label is ${builder_kind:-missing})" >&2
     BUILDX_BUILDER=default docker buildx build --load \

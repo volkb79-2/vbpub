@@ -3665,9 +3665,67 @@ def test_the_tester_image_records_the_identity_of_the_base_it_was_built_on():
     assert 'LABEL org.vbpub.tester-unified.base-image-id="${TESTER_UNIFIED_BASE_IMAGE_ID}"' in text
     builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
     assert 'docker image inspect --format \'{{.Id}}\' "$base_ref"' in builder
-    assert "is not present locally and is not a digest reference" in builder
+    assert "has no registry to pull from" in builder and 'docker pull "$base_ref"' in builder
     assert 'build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE_ID=$expected_base_image_id")' in builder
     assert '{{index .Config.Labels "org.vbpub.tester-unified.base-image-id"}}' in builder
+
+
+def _canonical_image(name: str) -> str:
+    if name.startswith("docker.io/"):
+        return name
+    return "docker.io/library/" + name if "/" not in name else "docker.io/" + name
+
+
+def assert_tester_base_has_no_published_vbpub_input(root: Path) -> None:
+    """tester-base builds from public upstream inputs alone. The allowed upstream images are DERIVED from
+    the version targets tester-base/cmru.toml declares (the images `cmru versions` vets); every FROM must
+    be a literal, digest-pinned reference to one of them, with no ARG substitution, and no non-comment
+    line (FROM, COPY --from, curl) may name the vbpub namespace."""
+    declared = tomllib.loads((root / "tester-base" / "cmru.toml").read_text("utf-8"))
+    allowed = {
+        _canonical_image(target["oci"]["image"])
+        for target in declared.get("versions", {}).get("targets", {}).values()
+        if isinstance(target, dict) and "oci" in target
+    }
+    assert allowed, "tester-base/cmru.toml declares no upstream image targets to derive the allowed list from"
+    code = [
+        line for line in (root / "tester-base" / "Dockerfile").read_text("utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    ]
+    froms = [line for line in code if re.match(r"(?i)^FROM\s", line)]
+    assert len(froms) == 1, froms
+    match = re.fullmatch(r"FROM (?P<image>[^\s:@$]+):[^\s@$]+@sha256:[0-9a-f]{64}", froms[0])
+    assert match, f"tester-base FROM must be a literal digest-pinned reference: {froms[0]!r}"
+    assert _canonical_image(match.group("image")) in allowed, (match.group("image"), allowed)
+    logical = re.sub(r"\\\n", " ", "\n".join(code)).splitlines()
+    # a LABEL may point at the source repository (metadata); nothing else may name the vbpub namespace
+    assert [line for line in logical if "volkb79" in line.lower() and not line.lstrip().upper().startswith("LABEL")] == []
+
+
+def test_the_no_published_vbpub_image_check_can_fail(tmp_path):
+    """The invariant above goes RED for a vbpub FROM, an ARG-substituted FROM, a second FROM, an
+    undeclared upstream image, and a vbpub namespace in a download line."""
+    (tmp_path / "tester-base").mkdir()
+    (tmp_path / "tester-base" / "cmru.toml").write_text(
+        '[versions.targets."oci.python"]\n[versions.targets."oci.python".oci]\nimage = "docker.io/library/python"\n',
+        encoding="utf-8",
+    )
+    digest = "sha256:" + "a" * 64
+    good = f"FROM python:3.14@{digest}\nRUN echo ok\n"
+    dockerfile = tmp_path / "tester-base" / "Dockerfile"
+    dockerfile.write_text(good, encoding="utf-8")
+    assert_tester_base_has_no_published_vbpub_input(tmp_path)
+    for bad in (
+        f"FROM ghcr.io/volkb79-2/tester-base@{digest}\n",
+        f"FROM docker.io/other/python:3.14@{digest}\n",
+        f"ARG B=python:3.14@{digest}\nFROM ${{B}}\n",
+        good + f"FROM python:3.14@{digest}\n",
+        good + "RUN curl -fsSL https://github.com/volkb79-2/vbpub/releases/download/x/y\n",
+        "FROM python:3.14\n",
+    ):
+        dockerfile.write_text(bad, encoding="utf-8")
+        with pytest.raises(AssertionError):
+            assert_tester_base_has_no_published_vbpub_input(tmp_path)
 
 
 def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
@@ -3681,9 +3739,7 @@ def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():
     # vbpub registry path). Operator decision 2026-10-18: wheel-builder moves to tester-base.
     assert re.search(r"^ARG WHEEL_BUILDER_BASE_IMAGE=tester-base:local$", dockerfile, re.MULTILINE)
     assert "FROM ${WHEEL_BUILDER_BASE_IMAGE}" in dockerfile
-    tester_base = (REPO_ROOT / "tester-base" / "Dockerfile").read_text("utf-8")
-    base_froms = re.findall(r"^FROM (\S+)", tester_base, re.MULTILINE)
-    assert base_froms and not any("volkb79-2" in ref or ref.startswith("ghcr.io/") for ref in base_froms), base_froms
+    assert_tester_base_has_no_published_vbpub_input(REPO_ROOT)
     assert "apt-get install -y --no-install-recommends ca-certificates git passwd" in dockerfile
     assert "ghcr.io/volkb79-2/modern-debian-tools-python-debug" not in dockerfile
     for document in (readme, design, consumers):

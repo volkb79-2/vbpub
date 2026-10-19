@@ -126,18 +126,34 @@ printf '%s  %s\n' "$run_gate_sha256" "$wheel_stage/$run_gate_filename" \
 
 # The base is named by a reference that can be a mutable tag (tester-base:local). Record the identity
 # it resolved to at build time as a second label, so two images built on different content of the same
-# tag are distinguishable. A digest reference is its own identity; a local tag is resolved with
-# `docker image inspect`; anything else refuses (a base that is not present locally cannot be
-# identified before the build, and guessing would record a made-up value).
+# tag are distinguishable. A digest reference is its own identity; a local image is resolved with
+# `docker image inspect`; a registry reference that is not local is pulled explicitly and then identified;
+# a registry-less tag that is absent refuses with how to build it (guessing would record a made-up value).
 base_ref="${base_image:-$expected_base_image}"
 case "$base_ref" in
   *@sha256:*) expected_base_image_id="sha256:${base_ref##*@sha256:}" ;;
   *)
-    expected_base_image_id="$(docker image inspect --format '{{.Id}}' "$base_ref" 2>/dev/null)" || {
-      echo "cannot resolve the identity of base image $base_ref: it is not present locally and is not a digest reference" >&2
-      echo "build or pull it first (tester-base: docker build -t tester-base:local tester-base/)" >&2
-      exit 2
-    }
+    if ! expected_base_image_id="$(docker image inspect --format '{{.Id}}' "$base_ref" 2>/dev/null)"; then
+      if [[ "$base_ref" == */* ]]; then
+        # A registry reference (the explicit zero-release --base-image, a published tester-base digest
+        # tag): pull it explicitly, then identify what was pulled. The base is a named, explicit input,
+        # so this is not a silent fallback, and buildx then uses exactly the image identified here.
+        echo "base image $base_ref is not present locally; pulling it" >&2
+        docker pull "$base_ref" >&2 || {
+          echo "cannot pull base image $base_ref" >&2
+          exit 2
+        }
+        expected_base_image_id="$(docker image inspect --format '{{.Id}}' "$base_ref" 2>/dev/null)" || {
+          echo "cannot identify base image $base_ref after pulling it" >&2
+          exit 2
+        }
+      else
+        # A registry-less tag (tester-base:local) exists only if someone built it; there is nothing to pull.
+        echo "base image $base_ref is not present locally and has no registry to pull from" >&2
+        echo "build it first (tester-base: docker buildx build --load -t tester-base:local tester-base/, or run cmru/build-initial-standalone.sh)" >&2
+        exit 2
+      fi
+    fi
     ;;
 esac
 [[ "$expected_base_image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || {
