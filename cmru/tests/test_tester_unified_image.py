@@ -767,15 +767,57 @@ def test_tester_unified_has_no_systemctl_stub_and_installs_what_its_suites_run()
     assert re.search(r"^FROM docker\.io/library/node:26\.\d+\.\d+-trixie@sha256:[0-9a-f]{64} AS node-source$", code, re.MULTILINE)
 
 
+def host_environment_users(config_text: str) -> list[str]:
+    """Where a parsed run-gate config runs something in the root-run `host` environment: a lane's own
+    `environment`, the `[assay]` default environment lanes without one inherit, and `[assay.import]`."""
+    parsed = tomllib.loads(config_text)
+    users = []
+    for name, lane in (parsed.get("lanes") or {}).items():
+        if isinstance(lane, dict) and lane.get("environment") == "host":
+            users.append(f"lanes.{name}")
+    assay = parsed.get("assay") or {}
+    if isinstance(assay, dict):
+        if assay.get("environment") == "host":
+            users.append("assay.environment (inherited by every assay lane without its own)")
+        imported = assay.get("import")
+        if isinstance(imported, dict) and imported.get("environment") == "host":
+            users.append("assay.import.environment")
+    return users
+
+
+def test_the_host_user_scan_parses_toml_and_sees_every_spelling():
+    for text in (
+        '[lanes.a]\nkind="command"\nenvironment = "host"\n',
+        "[lanes.a]\nkind='command'\nenvironment='host'   # trailing comment\n",
+        '[lanes.a]\nkind = "command"\nargv = ["x"]\nenvironment="host"\n',
+        '[lanes]\na = { kind = "command", environment = "host" }\n',
+        '[assay]\nenvironment = "host"\n',
+        '[assay.import]\nenvironment = "host"\nlanes = "all"\n',
+    ):
+        assert host_environment_users(text), text
+    for text in (
+        '[lanes.a]\nkind = "command"\nenvironment = "tester-unified"\n',
+        '# environment = "host"\n[lanes.a]\nkind = "command"\nenvironment = "bare-host"\n',
+        '[lanes.a]\nkind = "command"\nenvironment = "tester-unified"\nargv = ["echo environment = \\"host\\""]\n',
+    ):
+        assert host_environment_users(text) == [], text
+
+
 def test_run_gate_host_environment_names_tester_base_and_no_lane_runs_there():
-    """D-002: tester-base runs as root with no identity, so no gate lane may use `host`."""
+    """D-002: tester-base runs as root with no identity, so no gate lane may use `host` - neither
+    directly, nor through the [assay] defaults lanes inherit, nor through a central lane (root config)."""
     declared = tomllib.loads((REPO_ROOT / "run-gate.root.toml").read_text("utf-8"))
     assert declared["environments"]["host"]["image"] == "tester-base:local"
-    users = []
-    for config in REPO_ROOT.glob("**/run-gate.toml"):
-        if ".worktrees" in config.parts or "node_modules" in config.parts:
-            continue
-        for line in config.read_text("utf-8").splitlines():
-            if re.match(r'^\s*environment\s*=\s*"host"\s*(#.*)?$', line):
-                users.append(str(config.relative_to(REPO_ROOT)))
-    assert users == [], users
+    configs = [REPO_ROOT / "run-gate.root.toml"]
+    configs += [
+        c for c in REPO_ROOT.glob("**/run-gate.toml")
+        # relative parts: the checkout itself usually lives under a `.worktrees/` directory
+        if not {".worktrees", "node_modules", "fixtures"} & set(c.relative_to(REPO_ROOT).parts)
+    ]
+    assert len(configs) > 20, f"the scan saw only {len(configs)} run-gate configs: it would pass vacuously"
+    users = {}
+    for config in configs:
+        found = host_environment_users(config.read_text("utf-8"))
+        if found:
+            users[str(config.relative_to(REPO_ROOT))] = found
+    assert users == {}, users

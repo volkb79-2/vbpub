@@ -6009,3 +6009,43 @@ Bump `__revision__`, update the consumer transcript.
 **Oracles.** A project with no `[environments.host].image` and no `$RUN_GATE_HOST_IMAGE` either
 refuses with a message naming both knobs, or resolves to the single declared tester-base digest; a
 grep over the tree finds no remaining MDT-cockpit image reference in run-gate code or SPEC.
+
+## RG-106 — environments have no `user` key; a root-run `host` environment (tester-base) can leave root-owned files in the bind-mounted worktree
+
+**Status:** OPEN (filed by mdt-cockpit MDTC-02 fix round 2, 2026-10-19, operator decision D-007; to be implemented
+in the release program's Run-Gate wave). CHANGES.md checked: no entry mentions an environment `user`. Sits next to
+RG-105 (the `DEFAULT_HOST_IMAGE` literal), which it completes.
+
+**Observed.** `tester-base` (the new minimal gate base) creates no user and so runs as root; `run-gate.root.toml`
+declares `[environments.host]` on it. The first full skip-diff run on that image failed lane after lane with
+`PermissionError: .../__pycache__/...pyc` — a `host` lane (`topos py-compile`, which runs `py_compile` over the
+changed files) had left root-owned `__pycache__` directories in the bind-mounted worktree that the uid-1003
+gate lanes could not then write (29 + 26 + 9 + 8 ... root-owned pycache dirs across `mdt-cockpit`, `pwmcp`,
+`scripts/debian-install-v2`, found with `find -user root`).
+
+**Measured in run-gate.py (rev 64, identical on main and in the rg55-p5 rev-64 worktrees; no other worktree
+touches it).**
+- `_validate_environment` accepts only `image, cgroup_slice, cgroup_slice_env, mode, container_name,
+  forward_env, resources, state_root` (run-gate.py:784). There is no `user` key a config can set.
+- A `user` is added in exactly one place: when `$RUN_GATE_HOST_IMAGE` is set, `resolve_environment` sets
+  `resolved["user"] = f"{os.getuid()}:{os.getgid()}"` (line 1822), and `docker run` then gets `--user` (lines
+  7034-7037, 11734-11744). So the DERIVATION exists (the invoker's uid:gid) — but only behind an environment
+  variable, not in config.
+- The old MDT-based `host` image ran as its own `vscode` (uid 1000, with passwd, group and HOME `/home/vscode`);
+  the worktree is owned by the invoker (uid 1003 here), so even that never matched the owner.
+- Lanes that use `host` today: `topos py-compile` and `plesk-mailbox-create smoke` (both only `py_compile`). MDTC-02
+  moved both onto `tester-unified` (which has the uid-1003 identity) and added a test (cmru
+  `test_tester_unified_image.py`) that no lane, `[assay]` default or central lane uses `host`.
+
+**Fix direction.** Add an environment key `user` whose value is either a literal `uid[:gid]` or the derived form
+`"invoker"` meaning `os.getuid():os.getgid()` (never a hard-coded uid with a source), pass `--user` for it on every
+container the environment starts (lane, probe, doctor), and refuse an environment whose image has no passwd entry for
+the resolved uid unless it declares what to do (the estate rule: the run-uid needs passwd, group, HOME and XDG —
+`tester-base` gives none). Then `[environments.host]` can say `user = "invoker"` together with an image that provides
+the identity, and RG-105 can move `DEFAULT_HOST_IMAGE` onto it. Bump `__revision__`, SPEC.md environment section,
+CONSUMERS.md.
+
+**Oracles.** (1) a config with `user = "invoker"` starts the container with `--user <getuid>:<getgid>`; (2) the same
+config without the key does not; (3) an unknown `user` value or a literal that is not `uid[:gid]` is rejected at
+load; (4) a lane that writes into the worktree through such an environment leaves files owned by the invoker;
+(5) an environment on an image with no passwd entry for the resolved uid is refused with the estate-rule message.
