@@ -650,10 +650,11 @@ def test_dockerignore_admits_every_file_the_offline_build_needs(path):
 @pytest.mark.parametrize("path", [
     "tester-unified/run",
     "tester-unified/Dockerfile",
-    # cli-extended is a wheel dependency: the tester image copies none of its
-    # source or build inputs (the src/cli_extended whitelist is nyxloomd's).
-    "libraries/cli-extended/pyproject.toml",
-    "libraries/cli-extended/README.md",
+    # cli-extended is a wheel dependency: the tester image copies none of its source or build inputs
+    # (asserted on the Dockerfile's COPY sources below). Its pyproject.toml and README.md are NOT in
+    # this list on purpose: nyxloomd's image builds the cli-extended wheel from monorepo source
+    # (NYX-CLIX, c6557bb79, 2026-10-07, after this test was written) and the repo-root .dockerignore
+    # whitelists them for it - see the nyxloom-need test below. Only its tests stay excluded.
     "libraries/cli-extended/tests/test_x.py",
     "libraries/worktree/tests/test_core.py",
     ".git/config",
@@ -697,6 +698,27 @@ def test_dockerfile_builds_cmru_from_the_build_requires_mode():
     assert match["paths"].split() == ["cmru/pyproject.toml"]
     wheel = re.search(r"pip wheel (?P<flags>[^\n]*\\\n[^\n]*)", code)
     assert "/src/cmru" in wheel["flags"]
+
+
+@pytest.mark.parametrize("path", [
+    "libraries/cli-extended/pyproject.toml",
+    "libraries/cli-extended/README.md",
+    "libraries/cli-extended/src/cli_extended/__init__.py",
+])
+def test_dockerignore_admits_the_cli_extended_wheel_build_inputs_for_nyxloomd(path):
+    """The whitelist is intended: nyxloomd builds the cli-extended wheel from these (NYX-CLIX). The
+    tester-unified image still copies none of them (test_every_dockerfile_copy_source_...)."""
+    assert _dockerignore_included(path), path
+
+
+def test_tester_unified_copies_no_cli_extended_source_whatever_the_dockerignore_admits():
+    sources = []
+    for line in _dockerfile_run_lines().splitlines():
+        parts = line.split()
+        if parts and parts[0] == "COPY" and not any(part.startswith("--from=") for part in parts):
+            sources.extend(parts[1:-1])
+    assert sources, "no COPY sources parsed"
+    assert [s for s in sources if "cli-extended" in s.replace("fetch-cli-extended.py", "")] == []
 
 
 def test_every_dockerfile_copy_source_is_admitted_by_the_dockerignore():
