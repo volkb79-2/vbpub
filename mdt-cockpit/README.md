@@ -829,7 +829,6 @@ host, with product assertions inside the guest:
   R2 generates and runs the full native mutation campaign for the current
   source, and resumes from the git-ignored `.assay/` progress stream after an
   interrupted session.
-<<<<<<< ours
 - `run-gate image-runtime` is the **runtime acceptance of the built images**:
   it starts real containers from the exact native and VS Code image refs it is given
   (`MDT_RUNTIME_IMAGE_NATIVE=<ref> MDT_RUNTIME_IMAGE_VSC=<ref>`; no default, never a
@@ -847,9 +846,6 @@ host, with product assertions inside the guest:
   image. A missing tool or unreachable registry is a failure, not a skip. `cmru release` runs it after
   the `release` lane. See the [placement note](docs/DESIGN-GUIDE.md#the-oci-push-test-runs-where-its-tools-are).
 - `run-gate vm-system` runs the MDT host setup acceptance in the shared
-=======
-- `run-gate vm-system` runs the MDT host setup acceptance in the shared
->>>>>>> theirs
   QEMU/TCG harness. The bare-host lane only drives the runner; its assertions
   execute inside the guest and verify systemd PID 1, cgroup v2, Docker,
   rendered slice units, daemon configuration, and the installed host check.
