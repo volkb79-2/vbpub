@@ -90,7 +90,9 @@ def host_tools_step() -> str:
                 part.rstrip().removesuffix("\\").strip() for part in pending)
             instructions.append(joined.removeprefix("RUN ").strip())
             pending = []
-    steps = [step for step in instructions if "apt-get install" in step]
+    # The Dockerfile also installs zsh and systemd in their own RUNs (MDTC-02 / INT-01); this test is
+    # about the host-tools step, the one that chooses packages by capability.
+    steps = [step for step in instructions if "apt-get install" in step and "packages=" in step]
     assert len(steps) == 1, steps
     return steps[0]
 

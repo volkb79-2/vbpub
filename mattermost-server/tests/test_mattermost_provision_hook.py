@@ -1021,7 +1021,11 @@ def test_fallback_does_not_drift_from_the_template():
     template = dict(pattern.findall(_COMPOSE_TEXT))
     fallback = dict(pattern.findall(_FALLBACK_TEXT))
 
-    exposed_only = {"MM_RATELIMITSETTINGS_VARYBYHEADER"}
+    # MM_CALLS_DEFAULT_ENABLED is emitted only inside the template's `calls.enabled` branch; this
+    # legacy fallback has the plugin framework (and so Calls) off by design, so it is template-only.
+    # MM_PLUGINSETTINGS_ENABLEREMOTEMARKETPLACE is NOT in this set: it is unconditional in the
+    # template and omitting it from the fallback silently left the remote marketplace at its default.
+    exposed_only = {"MM_RATELIMITSETTINGS_VARYBYHEADER", "MM_CALLS_DEFAULT_ENABLED"}
     literal = {k: v for k, v in template.items() if "{{" not in v}
 
     missing = sorted(set(literal) - set(fallback) - exposed_only)

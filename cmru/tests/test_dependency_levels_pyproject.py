@@ -182,9 +182,12 @@ class TestRealEstate:
         assert report.levels["cmru"] == 2
         assert report.levels["nyxloom"] == 1
         assert report.levels["modern-debian-tools-python-debug"] == max(report.levels.values()) == 3
+        assert report.levels["mdt-cockpit"] == 3
         assert all(report.levels[name] == 0 for name in (
-            "ciu", "assay", "topos", "cgroup-profiler", "pwmcp", "tls-edge",
+            "ciu", "assay", "topos", "cgroup-profiler", "tls-edge", "tester-base",
         ))
+        # pwmcp's client wheel requires cli-extended (PWMCP-02, CX-D1): a real wheel edge, so L1.
+        assert report.levels["pwmcp"] == 1
 
     def test_source_bootstrapped_release_controller_is_not_a_release_edge(self):
         forge = self._forge()
@@ -195,7 +198,7 @@ class TestRealEstate:
         # release.
         for project in (
             "ciu", "assay", "topos", "run-gate-project", "cgroup-profiler",
-            "pwmcp", "tls-edge",
+            "pwmcp", "tls-edge", "tester-base",
         ):
             assert "cmru" not in dependencies[project], project
         # CMRU's own release gate, conversely, requires the stable Run-Gate
@@ -287,6 +290,7 @@ def test_a_doc_whose_order_disagrees_with_the_graph_is_detected():
     assert swapped != text
     with pytest.raises(AssertionError):
         _check_doc(swapped)
-    dropped = text.replace("L3: modern-debian-tools-python-debug\n", "")
+    dropped = re.sub(r"(?m)^L3: .*\n", "", text)
+    assert dropped != text
     with pytest.raises(AssertionError):
         _check_doc(dropped)

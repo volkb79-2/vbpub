@@ -730,14 +730,35 @@ def test_the_tester_resource_inputs_reach_every_tester_image_build():
     values only from the environment. An inline prefix on one build leaves every later
     build (steps 3 and 4) refusing for missing configuration, so they must be exported
     before the first block that builds an image."""
-    blocks = _bash_blocks()
-    first_build = next(i for i, block in enumerate(blocks) if "tester-unified/build-image.sh" in block)
-    earlier = "\n".join(blocks[:first_build])
+    earlier = _text_before_first_image_build(_bash_blocks())
     for key in (
         "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
         "CMRU_TESTER_PIDS_LIMIT", "CMRU_TESTER_CGROUP_PROBE_IMAGE",
     ):
         assert re.search(rf"^export (?:\S+ )*{key}=", earlier, re.MULTILINE), key
+
+
+def _text_before_first_image_build(blocks: list[str]) -> str:
+    """Every guide line before the first line that INVOKES tester-unified/build-image.sh.
+
+    The earlier form took the first BLOCK that merely mentioned the script, so a comment in the
+    block that also holds the exports made `earlier` empty and the oracle fail on a correct guide
+    (the 6.2.0 candidate's false-positive bootstrap oracle). Comment lines never count as an
+    invocation, and the lines of the same block above the invocation do count as earlier.
+    """
+    lines = [line for block in blocks for line in block.splitlines()]
+    first = next(
+        i for i, line in enumerate(lines)
+        if "tester-unified/build-image.sh" in line and not line.lstrip().startswith("#")
+    )
+    return "\n".join(lines[:first])
+
+
+def test_the_build_order_oracle_ignores_comment_mentions_and_counts_same_block_exports():
+    comment_first = ["# run tester-unified/build-image.sh later\nexport CMRU_TESTER_MEMORY=1g\ntester-unified/build-image.sh"]
+    assert "export CMRU_TESTER_MEMORY=1g" in _text_before_first_image_build(comment_first)
+    exports_after = ["tester-unified/build-image.sh --tag x\nexport CMRU_TESTER_MEMORY=1g"]
+    assert "CMRU_TESTER_MEMORY" not in _text_before_first_image_build(exports_after)
 
 
 @_needs_repo

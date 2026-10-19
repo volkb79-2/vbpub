@@ -26,6 +26,9 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = REPO_ROOT / "tester-unified" / "gen-requirements.py"
+# The real Dockerfile's final stage. Stage 0 is the digest-pinned `node-source` stage (MDTC-02 D-004),
+# so the tester image is stage 1; fixtures below that spell "stage-0" are self-contained.
+TESTER_STAGE = "stage-1"
 DOCKERFILE = REPO_ROOT / "tester-unified" / "Dockerfile"
 RUN_GATE_WHEEL_VERSION_HELPER = REPO_ROOT / "tester-unified" / "run-gate-wheel-version.py"
 NYXLOOM_DOCKERFILE = REPO_ROOT / "nyxloom" / "nyxloomd" / "Dockerfile"
@@ -3544,11 +3547,11 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
     consumers = (REPO_ROOT / "tester-unified" / "docs" / "CONSUMERS.md").read_text("utf-8")
     bootstrap = (REPO_ROOT / "docs" / "BOOTSTRAP-FROM-ZERO.md").read_text("utf-8")
 
-    assert re.search(
-        r"^ARG TESTER_UNIFIED_BASE_IMAGE=ghcr\.io/volkb79-2/modern-debian-tools-python-debug-"
-        r"vsc-devcontainer:trixie-py3\.14-php8\.5-latest$",
-        dockerfile,
-        re.MULTILINE,
+    # MDTC-02: the default base is tester-base (the floating MDT cockpit image is no longer the
+    # gate environment); the zero-release path stays an explicit --base-image.
+    assert re.search(r"^ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local$", dockerfile, re.MULTILINE)
+    assert "modern-debian-tools-python-debug" not in "\n".join(
+        line for line in dockerfile.splitlines() if not line.lstrip().startswith("#")
     )
     assert "FROM ${TESTER_UNIFIED_BASE_IMAGE}" in dockerfile
     assert "docker-compose" in dockerfile and "docker compose version" in dockerfile
@@ -3648,7 +3651,7 @@ def test_tester_unified_venvs_are_cleared_before_creation():
 def test_dockerfile_copies_every_generator_project_to_its_expected_src_path():
     text = DOCKERFILE.read_text(encoding="utf-8")
     specs = _dockerfile_copy_specs_before_command(
-        text, "stage-0", r"gen-requirements.py --root /src",
+        text, TESTER_STAGE, r"gen-requirements.py --root /src",
     )
     for project_file, _extras in gen.PROJECTS:
         project = PurePosixPath(project_file).parts[0]
@@ -3717,14 +3720,14 @@ def test_dockerfile_copies_every_cmru_wheel_input_before_build():
     assert clean_index < min(source_copy_indices)
     _assert_dockerfile_wheel_build_output_is_installed(
         text,
-        stage="stage-0",
+        stage=TESTER_STAGE,
         build_run_body=CMRU_WHEEL_BUILD_BODY,
         install_run_body=CMRU_WHEEL_INSTALL_RUN_BODY,
         allowed_post_install_mutations=CMRU_POST_INSTALL_MUTATIONS,
     )
     specs = _dockerfile_copy_specs_before_command(
         text,
-        "stage-0",
+        TESTER_STAGE,
         CMRU_WHEEL_BUILD_COMMAND,
         expected_workdir="/",
         run_sensitive_sources=("cmru", "libraries/worktree"),
@@ -4049,7 +4052,7 @@ def test_tester_copy_oracle_rejects_excluding_all_cmru_modules():
         "RUN pip wheel /src/cmru\n"
     )
     specs = _dockerfile_copy_specs_before_command(
-        text, "stage-0", r"pip wheel[\s\S]*?/src/cmru",
+        text, TESTER_STAGE, r"pip wheel[\s\S]*?/src/cmru",
     )
     with pytest.raises(AssertionError, match="not copied from"):
         _assert_copy_spec_covers_path_at_destination(
@@ -4064,7 +4067,7 @@ def test_tester_cmru_and_worktree_package_source_trees_are_nonempty():
     dockerfile = DOCKERFILE.read_text(encoding="utf-8")
     specs = _dockerfile_copy_specs_before_command(
         dockerfile,
-        "stage-0",
+        TESTER_STAGE,
         CMRU_WHEEL_BUILD_COMMAND,
         expected_workdir="/",
         run_sensitive_sources=("cmru", "libraries/worktree"),

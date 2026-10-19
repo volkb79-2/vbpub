@@ -31,10 +31,10 @@ builder. No published vbpub image is needed.
 The checked-in level view must match the graph:
 
 ```project-order
-L0: cli-extended, cgroup-profiler, ciu, assay, topos, pwmcp, tls-edge
-L1: run-gate-project, nyxloom
+L0: cli-extended, cgroup-profiler, ciu, assay, topos, tls-edge, tester-base
+L1: run-gate-project, nyxloom, pwmcp
 L2: cmru
-L3: modern-debian-tools-python-debug
+L3: modern-debian-tools-python-debug, mdt-cockpit
 ```
 
 Within a level, `project_order` is the explicit order used by the release
