@@ -100,7 +100,10 @@ Once cmru's `versions` has the OCI fixes in `handoff/CMRU-GAPS-2026-10-19.md` (G
 records, G3 no 5000-tag refusal, G6 Docker credential store), `scripts/resolve-devcontainers-release.py`
 keeps only its devcontainers advisory (which devcontainers image release a base tag belongs to) and takes
 the tag/digest selection from `cmru versions check --json` instead of its own `fetch_registry_tags` /
-`select_latest_stable_tag` scanner. Until then the scanner is the design input for those cmru items.
+`select_latest_stable_tag` scanner. Until then the scanner is the design input for those cmru items. It also consumes the devcontainers OCI
+record as the `FROM` digest, with an equality test as `tester-base/tests/test_pins.py` does; the eight
+`oci.*` targets in `cmru.toml` are labelled ADVISORY until then, and `scripts/test_ai_cli_versions.py` fails
+if a build input consumes them while the label stands (change label, docs and test together).
 
 ## MDT-010 - aider returns to a vetted release
 

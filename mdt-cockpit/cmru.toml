@@ -892,6 +892,10 @@ version = "8.2.8"
 released_at = "2026-06-30T06:51:26Z"
 age_source = "pypi-upload-time"
 
+# ADVISORY: not consumed by the build (MDT-009). The base image is chosen by scripts/resolve-devcontainers-release.py
+# (a floating mcr devcontainers tag), so this record and its digest certify nothing about the cockpit's base
+# until MDT-009 makes the build read it (KNOWN_ISSUES_TODO_BACKLOG.md). Change this label, the other
+# ADVISORY labels, the docs and scripts/test_ai_cli_versions.py together with that change.
 [versions.targets."oci.python.311.bookworm"]
 mode = "single"
 constraint = "*"
@@ -915,6 +919,7 @@ age_source = "oci-image-created-fallback"
 tag = "3.11.16-bookworm"
 digest = "sha256:b99029c95d3d37fb1e4e76d287f7984373dca77c665885986e31b2c95260c13c"
 
+# ADVISORY: not consumed by the build (MDT-009).
 [versions.targets."oci.python.313.bookworm"]
 mode = "single"
 constraint = "*"
@@ -938,6 +943,7 @@ age_source = "oci-image-created-fallback"
 tag = "3.13.15-bookworm"
 digest = "sha256:227b6570d6ee07061ae6ca2eb04dedfb6d2b34045835f343065b9869e4d427ea"
 
+# ADVISORY: not consumed by the build (MDT-009).
 [versions.targets."oci.python.311.trixie"]
 mode = "single"
 constraint = "*"
@@ -961,6 +967,7 @@ age_source = "oci-image-created-fallback"
 tag = "3.11.16-trixie"
 digest = "sha256:70e8e937c1da72df1688e883a2108b0feff03381187fa78eca6d9b10df411320"
 
+# ADVISORY: not consumed by the build (MDT-009).
 [versions.targets."oci.python.313.trixie"]
 mode = "single"
 constraint = "*"
@@ -984,6 +991,7 @@ age_source = "oci-image-created-fallback"
 tag = "3.13.15-trixie"
 digest = "sha256:82c46c08c991d3d3ff10476ac5e386c2c28f27bbd3985a02c5e39fe99ab272eb"
 
+# ADVISORY: not consumed by the build (MDT-009).
 [versions.targets."oci.python.314.trixie"]
 mode = "single"
 constraint = "*"
@@ -1007,6 +1015,7 @@ age_source = "oci-image-created-fallback"
 tag = "3.14.7-trixie"
 digest = "sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e"
 
+# ADVISORY: not consumed by the build (MDT-009).
 [versions.targets."oci.devcontainers-python.311.trixie"]
 mode = "single"
 constraint = "*"
@@ -1030,6 +1039,7 @@ age_source = "oci-image-created-fallback"
 tag = "3.2.3-3.11-trixie"
 digest = "sha256:01f7fa973e78e9e106b347ebe9b4c85e46c7d67f839c21ba7ba4fd930a6518e1"
 
+# ADVISORY: not consumed by the build (MDT-009).
 [versions.targets."oci.devcontainers-python.313.trixie"]
 mode = "single"
 constraint = "*"
@@ -1053,6 +1063,7 @@ age_source = "oci-image-created-fallback"
 tag = "3.2.3-3.13-trixie"
 digest = "sha256:40c2785f2feb72a83bdf40bf052e1141d52b24bec60d4d5652eb27572d8df6b2"
 
+# ADVISORY: not consumed by the build (MDT-009).
 [versions.targets."oci.devcontainers-python.314.trixie"]
 mode = "single"
 constraint = "*"
