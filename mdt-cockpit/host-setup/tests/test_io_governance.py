@@ -630,7 +630,9 @@ class IocostCalibratePlausibilityTests(unittest.TestCase):
         values = {"RBW_MAX_BPS": "4287506096", "WBW_MAX_BPS": "2001630742", "RRANDIOPS": "94246",
                   "WRANDIOPS": "67748", "DEVICE_ROTATIONAL": "1"}
         want = shared.plausibility_problem(rbps=4287506096, wbps=2001630742, rrandiops=94246, wrandiops=67748,
-                                           rotational="1")
+                                           rotational="1",
+                                           names={"rbps": "RBW_MAX_BPS", "wbps": "WBW_MAX_BPS",
+                                                  "rrandiops": "RRANDIOPS", "wrandiops": "WRANDIOPS"})
         self.assertEqual(base.plausibility_problem(values), want)
         self.assertIsNotNone(want)
 
