@@ -56,28 +56,50 @@ USER root
 # upstream Python base (explicit --base-image) without a published vbpub image. Docker is a
 # client only; the launcher supplies the host socket when a lane needs it.
 #
-# Install only what the base lacks. The default tester-base ships Docker's own
-# `docker-ce-cli` WITHOUT the compose plugin (tester-base T2), so on it this step installs Debian's
-# `docker-compose` because `docker compose version` must answer (an unpinned Debian package; INT-01
-# D-006 is open on whether tester-base or this requirement should change); the MDT cockpit
-# image ships `docker-ce-cli` and `docker-compose-plugin`; Debian's `docker-cli` and
-# `docker-compose` own the same files (/usr/bin/docker and the compose
-# plugin), so installing them over it makes dpkg refuse the overwrite or, if
-# apt resolves the clash, silently swaps the gate image's Docker client. On
-# the upstream Python base neither exists and `docker-cli docker-compose` are
-# installed from Debian. Each is decided by the capability it provides, not by
-# a package name: `docker` on PATH, and `docker compose version` answering.
+# Install only what the base lacks. Docker's `docker-ce-cli` comes with tester-base and the MDT cockpit
+# image; Debian's `docker-cli` owns the same /usr/bin/docker, so installing it over them makes dpkg refuse
+# the overwrite or, if apt resolves the clash, silently swaps the gate image's Docker client. It is
+# therefore installed only when `docker` is absent from PATH (the upstream Python base), decided by the
+# capability it provides, not by a package name. Compose is a separate step below.
 RUN set -eu \
  && packages="ca-certificates curl git jq openssh-client util-linux" \
  && if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi \
- && if ! docker compose version >/dev/null 2>&1; then packages="$packages docker-compose"; fi \
  && apt-get update \
  && apt-get install -y --no-install-recommends $packages \
  && rm -rf /var/lib/apt/lists/* \
  && docker --version \
- && docker compose version \
  && git --version \
  && nsenter --version
+
+# Docker Compose (INT-01 D-006): real `docker compose` is needed by the suites (ciu has 16 test files that
+# drive it, plus topos, nyxloom, cmru and run-gate-project). tester-base keeps the plugin out (T2), so on it
+# this step installs Docker's OWN `docker-compose-plugin` package at an exact version, never Debian's
+# `docker-compose` (an unpinned, differently-built 2.26.1). The package is fetched from Docker's apt pool
+# by exact version and checked against a pinned sha256 per architecture, so it needs neither the base's
+# apt source nor a network-resolved "latest"; it only runs when `docker compose version` does not already
+# answer (the MDT cockpit base ships the plugin). Pin evidence (freshness rule, >= 14 days at adoption):
+# docker/compose v5.6.0 was published 2026-10-02T16:07:06Z (`gh api repos/docker/compose/releases/tags/v5.6.0`),
+# 17 days before this pin was taken on 2026-10-19; Docker's apt index serves it as 5.6.0-1~debian.13~trixie
+# (`apt-cache madison docker-compose-plugin` on tester-base). The sha256s are of the .deb files downloaded
+# from the URLs below. A bump is a reviewed edit of these three lines.
+ARG DOCKER_COMPOSE_PLUGIN_VERSION=5.6.0-1~debian.13~trixie
+ARG DOCKER_COMPOSE_PLUGIN_SHA256_AMD64=500327ad3ca6c52f6d142225c7e6830c46a27ff0348a2b2291f0a143d99872ac
+ARG DOCKER_COMPOSE_PLUGIN_SHA256_ARM64=f7b51c2e48afe340074285b6a10f72601e49c7a669100e6ff8b903c257cfc213
+# (`;` not `&&` between the commands: POSIX ignores `set -e` inside a compound command that is part of an
+# AND-OR list, which would let a failed checksum fall through to dpkg.)
+RUN set -eu; \
+    if ! docker compose version >/dev/null 2>&1; then \
+      case "$(dpkg --print-architecture)" in \
+        amd64) arch=amd64; sum="${DOCKER_COMPOSE_PLUGIN_SHA256_AMD64}" ;; \
+        arm64) arch=arm64; sum="${DOCKER_COMPOSE_PLUGIN_SHA256_ARM64}" ;; \
+        *) echo "unsupported architecture" >&2; exit 1 ;; \
+      esac; \
+      curl -fsSL -o /tmp/docker-compose-plugin.deb "https://download.docker.com/linux/debian/dists/trixie/pool/stable/${arch}/docker-compose-plugin_${DOCKER_COMPOSE_PLUGIN_VERSION}_${arch}.deb"; \
+      echo "${sum}  /tmp/docker-compose-plugin.deb" | sha256sum -c -; \
+      dpkg -i /tmp/docker-compose-plugin.deb; \
+      rm -f /tmp/docker-compose-plugin.deb; \
+    fi; \
+    docker compose version
 
 # Behaviour the old MDT cockpit base supplied implicitly, now explicit (MDTC-02 T8 skip-diff):
 #  * `zsh` (D-003): mdt-cockpit/scripts/test_path_hook.py tests the login hook under zsh. The test

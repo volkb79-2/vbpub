@@ -76,15 +76,12 @@ identify and re-reads the label after the build. Two images built on different c
 tag are therefore distinguishable.
 
 The Docker client is installed by capability, not unconditionally. Debian's
-`docker-cli` / `docker-compose` own the same files as Docker's `docker-ce-cli` /
-`docker-compose-plugin` that an MDT base ships, so installing them over an
-MDT base makes dpkg refuse the overwrite or, if apt resolved the clash, quietly
-swaps the gate's Docker client. The step therefore installs `docker-cli` only
-when `docker` is absent from PATH and `docker-compose` only when
-`docker compose version` does not answer, then verifies both. Both base
-variants are covered by an executable oracle
-(`run-gate-project/tests/test_tester_unified_base_variants.py`) that runs the
-Dockerfile's real RUN step against a dpkg-style ownership clash; building an
+`docker-cli` owns the same file as Docker's `docker-ce-cli` that tester-base and an MDT base ship,
+so installing it over them makes dpkg refuse the overwrite or, if apt resolved the clash, quietly
+swaps the gate's Docker client. The host-tools step therefore installs `docker-cli` only when
+`docker` is absent from PATH. Compose is a separate step (below). Every base variant is covered
+by an executable oracle (`run-gate-project/tests/test_tester_unified_base_variants.py`) that runs
+the Dockerfile's real RUN steps against shim tools and a dpkg-style ownership clash; building an
 image on each base remains a release-lane activity.
 
 ## Userland added on top of the base
@@ -108,10 +105,19 @@ not been booted with systemd`); tests must not rely on it (topos treats an unava
 one test that skips when `systemd-tmpfiles` is absent is `os_integration`-marked and deselected by every
 lane that runs its suite. The revert path is a dedicated probe image for the cgroup probes.
 
-The Docker compose layer: tester-base keeps the compose plugin out (T2), so on the default base the
-capability step installs Debian's `docker-compose` (2.26.1 when measured), an unpinned Debian package
-outside tester-base's version management. Whether tester-base should carry compose, or tester-unified
-should stop requiring it, is open (INT-01 D-006).
+The Docker compose layer (INT-01 D-006, decided): real `docker compose` is needed in this image (ciu has
+16 test files that drive it, plus topos, nyxloom, cmru and run-gate-project). tester-base keeps the plugin
+out (T2), so on it this image installs Docker's OWN `docker-compose-plugin` at an exact version, not
+Debian's `docker-compose` (an unpinned, differently built 2.26.1). The package is downloaded from Docker's
+apt pool by exact version and checked against a pinned sha256 per architecture before `dpkg -i`, so it needs
+neither the base's apt source nor a "latest" lookup, and a bump is a reviewed edit of the three
+`DOCKER_COMPOSE_PLUGIN_*` ARGs in the Dockerfile. Pin evidence under the 14-day freshness rule: docker/compose
+v5.6.0 was published 2026-10-02 (17 days before the 2026-10-19 pin) and Docker's apt index serves it as
+`5.6.0-1~debian.13~trixie`. The step only runs when `docker compose version` does not already answer (an MDT
+base ships the plugin) and the image build fails unless it does afterwards. The oracle
+`cmru/tests/test_tester_unified_image.py::test_compose_is_dockers_pinned_plugin_not_debians_package`
+refuses a floating or missing version, a missing sha256, any bare `docker-compose` package name and an apt
+install of the plugin; the shim test above executes the step, including the checksum-mismatch stop.
 
 The wheel supplies the command entrypoint; the bind-mounted checkout supplies
 lane configuration and judged project files. CIU's release gate also compares

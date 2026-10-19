@@ -47,10 +47,24 @@ CMRU_WHEEL_BUILD_BODY = (
 TESTER_HOST_TOOLS_RUN = (
     'set -eu && packages="ca-certificates curl git jq openssh-client util-linux" '
     '&& if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi '
-    '&& if ! docker compose version >/dev/null 2>&1; then packages="$packages docker-compose"; fi '
     "&& apt-get update && apt-get install -y --no-install-recommends $packages "
-    "&& rm -rf /var/lib/apt/lists/* && docker --version && docker compose version "
+    "&& rm -rf /var/lib/apt/lists/* && docker --version "
     "&& git --version && nsenter --version"
+)
+# Docker's OWN docker-compose-plugin at an exact version, checked against a pinned sha256 per
+# architecture (INT-01 D-006); never Debian's unpinned `docker-compose`. Runs before any wheel input.
+TESTER_COMPOSE_RUN = (
+    "set -eu; if ! docker compose version >/dev/null 2>&1; then "
+    'case "$(dpkg --print-architecture)" in '
+    'amd64) arch=amd64; sum="${DOCKER_COMPOSE_PLUGIN_SHA256_AMD64}" ;; '
+    'arm64) arch=arm64; sum="${DOCKER_COMPOSE_PLUGIN_SHA256_ARM64}" ;; '
+    '*) echo "unsupported architecture" >&2; exit 1 ;; esac; '
+    'curl -fsSL -o /tmp/docker-compose-plugin.deb '
+    '"https://download.docker.com/linux/debian/dists/trixie/pool/stable/${arch}/'
+    'docker-compose-plugin_${DOCKER_COMPOSE_PLUGIN_VERSION}_${arch}.deb"; '
+    'echo "${sum}  /tmp/docker-compose-plugin.deb" | sha256sum -c -; '
+    "dpkg -i /tmp/docker-compose-plugin.deb; rm -f /tmp/docker-compose-plugin.deb; fi; "
+    "docker compose version"
 )
 # Records the exact Run-Gate wheel identity in the image (readable by the release
 # lane). It writes only /etc and runs before any CMRU wheel input is copied.
@@ -239,6 +253,7 @@ TESTER_NODE_LINKS_RUN = (
 )
 CMRU_PRE_SENSITIVE_RUN_BODIES = (
     TESTER_HOST_TOOLS_RUN,
+    TESTER_COMPOSE_RUN,
     TESTER_ZSH_RUN,
     TESTER_SYSTEMCTL_RUN,
     TESTER_NODE_LINKS_RUN,
@@ -3597,8 +3612,8 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
         line for line in dockerfile.splitlines() if not line.lstrip().startswith("#")
     )
     assert "FROM ${TESTER_UNIFIED_BASE_IMAGE}" in dockerfile
-    assert "docker-compose" in dockerfile and "docker compose version" in dockerfile
-    assert "docker-cli docker-compose" in dockerfile
+    assert "docker compose version" in dockerfile
+    assert 'packages="$packages docker-cli"' in dockerfile
     assert '--base-image) base_image=${2:?}; shift 2 ;;' in builder
     assert 'build_args+=(--build-arg "TESTER_UNIFIED_BASE_IMAGE=$base_image")' in builder
     assert 'tester_gate_args+=(--image "$base_image")' in builder
@@ -3654,6 +3669,52 @@ def test_the_final_stage_labels_the_base_it_was_built_from():
     assert not any(instruction.startswith("ARG TESTER_UNIFIED_BASE_IMAGE=") for instruction in stage)
     builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
     assert '{{index .Config.Labels "org.vbpub.tester-unified.base-image"}}' in builder
+
+
+COMPOSE_PIN_RE = r"\d+\.\d+\.\d+-\d+~debian\.\d+~trixie"
+
+
+def assert_compose_is_pinned_and_not_debians(dockerfile_text: str) -> None:
+    """INT-01 D-006: compose is Docker's own docker-compose-plugin at an exact version with a pinned sha256
+    per architecture, verified before dpkg; Debian's unpinned `docker-compose` package is refused."""
+    code = [line for line in dockerfile_text.splitlines() if not line.lstrip().startswith("#")]
+    joined = " ".join(code)
+    version = re.search(rf"^ARG DOCKER_COMPOSE_PLUGIN_VERSION=({COMPOSE_PIN_RE})$", dockerfile_text, re.MULTILINE)
+    assert version, "DOCKER_COMPOSE_PLUGIN_VERSION must be an exact version, not floating or empty"
+    for arch in ("AMD64", "ARM64"):
+        assert re.search(rf"^ARG DOCKER_COMPOSE_PLUGIN_SHA256_{arch}=[0-9a-f]{{64}}$", dockerfile_text, re.MULTILINE), arch
+    # no apt install of Debian's package (or of any compose package by name), floating or not
+    assert not re.search(r"(?<![\w-])docker-compose(?![\w-])", joined), "Debian's docker-compose package is refused"
+    for command in re.findall(r"apt-get install[^;&|]*", joined):
+        assert "docker-compose-plugin" not in command, "install the plugin from the pinned, checksummed .deb"
+    assert "sha256sum -c -" in joined
+    assert joined.index("sha256sum -c -") < joined.index("dpkg -i /tmp/docker-compose-plugin.deb")
+    assert "docker-compose-plugin_${DOCKER_COMPOSE_PLUGIN_VERSION}_${arch}.deb" in joined
+    assert "docker compose version" in joined
+
+
+def test_compose_is_dockers_pinned_plugin_not_debians_package():
+    assert_compose_is_pinned_and_not_debians(DOCKERFILE.read_text(encoding="utf-8"))
+
+
+def test_the_compose_pin_check_can_fail():
+    good = DOCKERFILE.read_text(encoding="utf-8")
+    sha = "a" * 64
+    pinned_version = re.search(rf"^ARG DOCKER_COMPOSE_PLUGIN_VERSION=({COMPOSE_PIN_RE})$", good, re.MULTILINE).group(1)
+    assert_compose_is_pinned_and_not_debians(good)
+    bad_variants = {
+        "floating version": good.replace(f"ARG DOCKER_COMPOSE_PLUGIN_VERSION={pinned_version}", "ARG DOCKER_COMPOSE_PLUGIN_VERSION=latest"),
+        "empty version": good.replace(f"ARG DOCKER_COMPOSE_PLUGIN_VERSION={pinned_version}", "ARG DOCKER_COMPOSE_PLUGIN_VERSION="),
+        "short sha": re.sub(r"(ARG DOCKER_COMPOSE_PLUGIN_SHA256_AMD64=)[0-9a-f]{64}", r"\g<1>abc", good),
+        "debian package": good.replace('packages="$packages docker-cli"; fi', 'packages="$packages docker-cli docker-compose"; fi'),
+        "unpinned plugin from apt": good.replace("&& apt-get install -y --no-install-recommends $packages", "&& apt-get install -y --no-install-recommends $packages docker-compose-plugin"),
+        "no checksum before dpkg": good.replace('echo "${sum}  /tmp/docker-compose-plugin.deb" | sha256sum -c -; ', ""),
+    }
+    for label, text in bad_variants.items():
+        assert text != good, label
+        with pytest.raises(AssertionError):
+            assert_compose_is_pinned_and_not_debians(text)
+    del sha
 
 
 def test_the_tester_image_records_the_identity_of_the_base_it_was_built_on():

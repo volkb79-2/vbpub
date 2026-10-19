@@ -20,7 +20,7 @@ Consumers: `tester-unified` (`ARG TESTER_UNIFIED_BASE_IMAGE` + `FROM ${TESTER_UN
 name is a published interface that `build-image.sh` and Run-Gate's release preparation parse),
 `wheel-builder` (`ARG WHEEL_BUILDER_BASE_IMAGE`; both default to `tester-base:local`) and run-gate's
 `host` environment (`run-gate.root.toml`). Consumers add their own userland on top (tester-unified:
-zsh, node, the real `systemctl` client, Debian `docker-compose`); the `contract` lane asserts the
+zsh, node, the real `systemctl` client, Docker's pinned `docker-compose-plugin`); the `contract` lane asserts the
 negative list for tester-base only.
 
 ```bash

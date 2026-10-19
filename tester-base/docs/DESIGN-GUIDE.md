@@ -37,7 +37,7 @@ liability, not just a size problem:
 |---|---|
 | Keep building FROM the cockpit | floating tag, shadowing CLIs, 8 GB |
 | `python:3.14-slim` | drops gcc/g++/curl/openssh-client; the survey needs them, re-adding them reproduces the buildpack-deps layer by hand |
-| `docker-buildx-plugin`, `docker-compose-plugin` | no gate lane of tester-base uses them; buildx only appears in image-producing lanes, which run in the mdt-cockpit image. (tester-unified still installs Debian's `docker-compose` by capability, see below.) |
+| `docker-buildx-plugin`, `docker-compose-plugin` | no gate lane of tester-base uses them; buildx only appears in image-producing lanes, which run in the mdt-cockpit image. (tester-unified installs Docker's pinned `docker-compose-plugin` itself, see below.) |
 | `crane`, `regctl` | needed only by the OCI-push test, which moved to the mdt-cockpit `oci-push` lane |
 | `iproute2` (`tc`), `systemd-tmpfiles`, `fdisk`/`sfdisk` | tests that execute real low-level OS binaries run in the QEMU VM lane (`os_integration` marker), not in a container. tester-unified's `systemd` package (below) does put `systemd-tmpfiles` on its PATH; the one test that skips without it, `test_lt_mem.py`, is `os_integration`-marked and every lane that runs that suite deselects the marker, so nothing changes silently |
 | baking a user | see above |
@@ -45,9 +45,9 @@ liability, not just a size problem:
 ## Consumer additions (INT-01)
 The `contract` lane describes tester-base only. The consumer layer `tester-unified` adds, in its own
 Dockerfile and with its own tests: `zsh` and Node.js (MDTC-02 skip-diff), the **real `systemctl` client**
-(Debian's `systemd` package; D-001 still forbids a stub) and Debian `docker-compose` (installed because
-tester-unified's capability check requires `docker compose version` and T2 keeps the plugin out of the
-base). The `systemctl` client exists for the cgroup-profiler placement probe
+(Debian's `systemd` package; D-001 still forbids a stub) and Docker's own `docker-compose-plugin` at an
+exact, sha256-checked version (tester-unified's suites drive real `docker compose` and T2 keeps the plugin
+out of this base; see tester-unified's DESIGN-GUIDE for the pin evidence). The `systemctl` client exists for the cgroup-profiler placement probe
 (`scripts/cgroup-profiler/tools/gate.sh`, `lib/access.py` `_PLACEMENT_PROBE`), which runs
 `systemctl show <slice>` inside the image against the HOST system bus mounted read-only: with the bus
 socket and `/run/systemd/system` present it answers for the host; in a plain container it exits 1

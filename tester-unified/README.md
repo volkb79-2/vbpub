@@ -55,11 +55,12 @@ tester-unified/build-image.sh \
 ```
 
 The Dockerfile installs and checks its required host-facing tools on any base,
-installing only what the base lacks: tester-base carries Docker's `docker-ce-cli` but no
-compose plugin (tester-base T2), so on the default base this step installs Debian's `docker-compose`
-(an unpinned Debian package) because the step requires `docker compose version` to answer; an MDT
-base carries both `docker-ce-cli` and `docker-compose-plugin`, which are kept; the upstream Python
-base gets Debian's `docker-cli` and `docker-compose`. CMRU, Assay, project sources, and the exact Run-Gate wheel still come
+installing only what the base lacks. The Docker client is Docker's `docker-ce-cli` (tester-base, MDT
+base) or, only when `docker` is absent (the upstream Python base), Debian's `docker-cli`. Compose is
+always real `docker compose`: the MDT base ships Docker's plugin, which is kept; on any other base
+(tester-base keeps the plugin out, T2) Docker's own `docker-compose-plugin` is installed at an exact
+version from a pinned, sha256-checked package (never Debian's unpinned `docker-compose`), and the build
+fails unless `docker compose version` answers. CMRU, Assay, project sources, and the exact Run-Gate wheel still come
 from the selected vbpub checkout. Set the lane image to its immutable ID before
 running release gates:
 
