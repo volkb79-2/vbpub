@@ -87,7 +87,7 @@ class Driver(unittest.TestCase):
 
     def accept(self, tmp: str, target: str = "trixie-py314-php85", **kwargs) -> Path:
         root, env = self.make_build(tmp)
-        return lane.find_layout(root, target, git=self.fake_git(**kwargs), build_env=env, prefixes=["package-manifests-versioned"])
+        return lane.find_layout(root, target, git=self.fake_git(**kwargs), build_env=env, prefixes=["package-manifests-versioned", "CHANGES.md"])
 
     def test_a_layout_of_this_build_is_accepted_and_the_target_is_the_named_one(self) -> None:
         import tempfile
@@ -193,6 +193,41 @@ class Driver(unittest.TestCase):
         self.assertEqual(sorted(record["targets"]), ["trixie-py314-php85", "trixie-py314-php85-vsc"])
         self.assertEqual((record["build_date"], record["build_timestamp"]), ("20261019", "2026-10-19T00:00:00Z"))
         self.assertRegex(record["source_head"], r"^[0-9a-f]{40}$")
+
+    def test_the_allowed_generated_paths_mirror_cmrus_rule_including_the_changelog(self) -> None:
+        import tempfile
+
+        def prefixes(release: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                cfg = Path(tmp) / "cmru.toml"
+                cfg.write_text(f"[project.release]\ngit_tag = false\nbuild_step = \"b\"\n{release}\n", encoding="utf-8")
+                return lane.generated_prefixes(cfg)
+
+        self.assertEqual(prefixes('commit_generated = ["package-manifests-versioned"]'), ["package-manifests-versioned", "CHANGES.md"])
+        self.assertEqual(prefixes('commit_generated = ["a"]\nchangelog = "docs/HISTORY.md"'), ["a", "docs/HISTORY.md"])
+        self.assertEqual(prefixes('commit_generated = ["a"]\nchangelog = false'), ["a"])
+        self.assertEqual(prefixes(""), ["CHANGES.md"])
+        with self.assertRaises(SystemExit):
+            prefixes('changelog = "/abs/CHANGES.md"')
+        with self.assertRaises(SystemExit):
+            prefixes('changelog = true')
+
+    def test_the_real_project_config_allows_the_manifests_and_the_changelog(self) -> None:
+        allowed = lane.generated_prefixes()
+        self.assertIn("package-manifests-versioned", allowed)
+        self.assertIn("CHANGES.md", allowed)
+
+    def test_a_changelog_only_change_since_the_build_is_accepted_but_a_source_change_is_not(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, env = self.make_build(tmp)
+            # no explicit prefixes: the lane reads the project config itself
+            for changed in ("CHANGES.md\npackage-manifests-versioned/x.md\n", "package-manifests-versioned/x.md\n"):
+                layout = lane.find_layout(root, "trixie-py314-php85", git=self.fake_git(changed=changed), build_env=env)
+                self.assertEqual(layout.name, "trixie-py314-php85")
+            with self.assertRaises(SystemExit):
+                lane.find_layout(root, "trixie-py314-php85", git=self.fake_git(changed="CHANGES.md\nscripts/x.py\n"), build_env=env)
 
     def test_do_build_binds_the_layouts_after_a_successful_load_flow_build(self) -> None:
         source = (Path(lane.__file__).resolve().parents[1] / "build-push.py").read_text(encoding="utf-8")

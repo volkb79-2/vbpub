@@ -65,10 +65,22 @@ def _git(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=False)
 
 
-def generated_prefixes() -> list[str]:
-    """Project-relative paths the release is allowed to commit between the build and the gate."""
-    with (ROOT / "cmru.toml").open("rb") as handle:
-        return list(tomllib.load(handle)["project"]["release"].get("commit_generated", []))
+def generated_prefixes(config: Path | None = None) -> list[str]:
+    """Project-relative paths the release may commit between the build and the gate.
+
+    Mirrors cmru's own rule (`_commit_prepared_generated`, cli.py): the declared `commit_generated`
+    outputs PLUS the changelog - `[project.release] changelog` defaults to "CHANGES.md", a string names
+    another project-relative path, and `false` opts out. Everything is read from the project config.
+    """
+    with (config or ROOT / "cmru.toml").open("rb") as handle:
+        release = tomllib.load(handle)["project"]["release"]
+    allowed = list(release.get("commit_generated", []))
+    changelog = release.get("changelog", "CHANGES.md")
+    if changelog is not False:
+        if not isinstance(changelog, str) or not changelog.strip() or Path(changelog).is_absolute():
+            raise SystemExit(f"oci-push: project.release.changelog must be a project-relative path or false, got {changelog!r}")
+        allowed.append(changelog.strip())
+    return allowed
 
 
 def layout_digest(layout: Path) -> str:
