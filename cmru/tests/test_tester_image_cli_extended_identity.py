@@ -62,7 +62,10 @@ def _tree(tmp_path: Path):
         "#!/bin/sh\n"
         f'echo "$*" >> "{log}"\n'
         # A base that is absent until pulled (FAKE_BASE_ABSENT_UNTIL_PULL) or never present (FAKE_BASE_ABSENT):
-        'if [ "$1" = pull ]; then touch "$FAKE_PULLED_MARKER"; exit 0; fi\n'
+        'if [ "$1" = pull ]; then\n'
+        '  if [ -n "$FAKE_PULL_FAILS" ]; then echo "pull access denied" >&2; exit 1; fi\n'
+        '  touch "$FAKE_PULLED_MARKER"; exit 0\n'
+        'fi\n'
         'case "$*" in *"{{.Id}}"*)\n'
         '  if [ -n "$FAKE_BASE_ABSENT" ]; then exit 1; fi\n'
         '  if [ -n "$FAKE_BASE_ABSENT_UNTIL_PULL" ] && [ ! -f "$FAKE_PULLED_MARKER" ]; then exit 1; fi;;\n'
@@ -333,3 +336,15 @@ def test_a_registry_base_that_cannot_be_pulled_is_refused(tmp_path):
     )
     assert result.returncode == 2
     assert "cannot identify base image" in result.stderr
+
+
+def test_a_failed_pull_is_refused_with_its_own_message_and_no_build(tmp_path):
+    """The pull failure branch itself (not the post-pull identification): exit 2, "cannot pull base image"."""
+    result, log = _build(
+        tmp_path, "--base-image", UPSTREAM_BASE, label=PINNED_DIGEST, base_label=UPSTREAM_BASE,
+        env_extra={"FAKE_BASE_ABSENT_UNTIL_PULL": "1", "FAKE_PULL_FAILS": "1"},
+    )
+    assert result.returncode == 2
+    assert "cannot pull base image" in result.stderr
+    assert "cannot identify base image" not in result.stderr
+    assert not any(line.startswith("buildx build") for line in log.read_text(encoding="utf-8").splitlines())

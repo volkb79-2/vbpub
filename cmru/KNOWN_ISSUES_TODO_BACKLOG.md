@@ -2199,3 +2199,18 @@ prefix characters, untracked files at the matching tag, `HEAD` ahead of the tag,
 local tag, a moved or absent origin tag, an unreachable origin (failure, not absence),
 malformed origin advertisements, and a `--dry-run` with origin unreachable that makes no
 origin query and shows only the body command.
+
+### KI-85 — a non-OCI tester pin (the docker-compose-plugin .deb) has no `cmru versions` target, so nothing recomputes its age
+
+**Status:** open; severity: minor. Filed 2026-10-19 from the INT-01 review (A-22).
+
+**Observed:** `tester-unified/Dockerfile` pins Docker's `docker-compose-plugin` 5.6.0-1~debian.13~trixie by version
+and per-architecture sha256. The 14-day freshness rule is satisfied at adoption (docker/compose v5.6.0 published
+2026-10-02, pinned 2026-10-19) but the claim lives in a comment, measured on the GitHub release date, not on the
+availability of the Debian package in Docker's pool. Unlike the node image (`oci.node.26.trixie`, asserted equal by
+`tester-base/tests/test_pins.py`), nothing registers the compose pin as a `cmru versions` target, so no command
+recomputes its age or reports a newer eligible version.
+
+**Fix direction:** support a non-OCI, per-architecture package target in `cmru versions` (or an HTTP/apt-pool source),
+register the compose pin, and add its version to the pin test. Related: tester-base TB-05 (verify the sums against
+Docker's signed `Packages` index). Check CHANGES.md and the versions design before choosing the source type.

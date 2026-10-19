@@ -285,9 +285,11 @@ if [[ "${builder_kind}" != "python-wheel-builder" ]]; then
         # kind label plus the sha256 of its only build input (tester-base/Dockerfile, no COPY). A stale
         # build is rebuilt (docker's layer cache keeps that cheap); an image without the kind label is
         # not ours and is refused rather than silently used as the builder's base.
-        tester_base_source_hash="$(git -C "${repo_root}" show HEAD:tester-base/Dockerfile | sha256sum | cut -d' ' -f1)"
+        # the WORKING-TREE file: it is what the build context contains, so an uncommitted edit cannot
+        # be labelled with the hash of the committed bytes
+        tester_base_source_hash="$(sha256sum "${repo_root}/tester-base/Dockerfile" | cut -d' ' -f1)"
         [[ "${tester_base_source_hash}" =~ ^[0-9a-f]{64}$ ]] || {
-            echo "[ERROR] cannot hash tester-base/Dockerfile at HEAD" >&2
+            echo "[ERROR] cannot hash tester-base/Dockerfile" >&2
             exit 2
         }
         build_tester_base=1

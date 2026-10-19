@@ -351,6 +351,28 @@ def test_bootstrap_rebuilds_a_stale_tester_base(tmp_path):
     assert "built from other tester-base sources" in result.stderr
 
 
+def test_bootstrap_hashes_the_working_tree_tester_base_dockerfile_not_head(tmp_path):
+    """An uncommitted edit to tester-base/Dockerfile must not be labelled with the committed bytes' hash:
+    the tag carries HEAD's hash, the file being built differs, so the tag is stale and is rebuilt with the
+    hash of the file actually in the build context."""
+    tree = _bootstrap_tree(tmp_path)
+    dockerfile = Path(tree["repo_root"]) / "tester-base" / "Dockerfile"
+    head_hash = tree["env"]["CMRU_TEST_TB_HASH"]
+    dockerfile.write_text(dockerfile.read_text(encoding="utf-8") + "# uncommitted edit\n", encoding="utf-8")
+    working_hash = hashlib.sha256(dockerfile.read_bytes()).hexdigest()
+    assert working_hash != head_hash
+    wheel, digest = _toy_wheel(tmp_path / "release")
+    tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest)
+
+    _run_bootstrap(tree)
+
+    commands = Path(tree["docker_log"]).read_text(encoding="utf-8").splitlines()
+    builds = [line for line in commands if "-t tester-base:local" in line]
+    assert builds, "the tag labelled with HEAD's hash was reused for a Dockerfile it was not built from"
+    assert f"TESTER_BASE_SOURCE_HASH={working_hash}" in builds[0]
+    assert head_hash not in builds[0]
+
+
 def test_bootstrap_refuses_a_foreign_image_tagged_tester_base_local(tmp_path):
     for kind in ("", "something-else"):
         _tree, result, commands, base_builds, builder_builds = _bootstrap_with_tester_base(
