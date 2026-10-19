@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -86,6 +87,18 @@ LIMITS = (
 )
 
 
+# systemctl that is installed but cannot talk to a systemd manager. The texts are systemd's own, captured
+# from systemd 257 in a non-systemd container (stderr, exit status 1) and from the devcontainers "systemd
+# is not running in this container" shim (stdout, exit status 0, no properties). Matching the message is
+# deliberate: `systemctl show` answers an unknown unit with its own distinct text ("Unit x could not be
+# found."), which must stay "unit absent".
+_SYSTEMD_UNREACHABLE = re.compile(
+    r"System has not been booted with systemd|Failed to connect to (?:system )?(?:scope )?bus|"
+    r'"systemd" is not running in this container',
+    re.IGNORECASE,
+)
+
+
 def default_systemctl_show_runner(unit: str, properties: tuple[str, ...]) -> ShowResult:
     argv = ["systemctl", "show", unit]
     for prop in properties:
@@ -97,6 +110,9 @@ def default_systemctl_show_runner(unit: str, properties: tuple[str, ...]) -> Sho
         # unavailable, exactly as for a failing `systemctl show`. 127 is the shell's "command not found"
         # status; the collector degrades to "no governed properties" instead of crashing.
         return ShowResult(stdout="", stderr=f"systemctl is not available: {exc}", returncode=127, unavailable=True)
+    if _SYSTEMD_UNREACHABLE.search(proc.stderr or "") or _SYSTEMD_UNREACHABLE.search(proc.stdout or ""):
+        reason = (proc.stderr or proc.stdout).strip().splitlines()[0]
+        return ShowResult(stdout="", stderr=f"systemctl cannot reach systemd: {reason}", returncode=proc.returncode or 1, unavailable=True)
     return ShowResult(stdout=proc.stdout, stderr=proc.stderr, returncode=proc.returncode)
 
 

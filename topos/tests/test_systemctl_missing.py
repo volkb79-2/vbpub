@@ -115,3 +115,69 @@ def test_the_diagnostic_says_governance_is_unavailable_not_that_a_unit_is_absent
 
     assert match is not None and match.severity == "info"
     assert "unavailable" in match.message and "no drift is claimed" in match.message
+
+
+# ── a PRESENT systemctl that cannot reach a systemd manager is unavailable too (W4) ───────────────
+#
+# Real texts, captured 2026-10-19 by running `/bin/systemctl show docker.service -p MemoryMax` in a
+# non-systemd container (systemd 257, mdt-cockpit image) and in the devcontainer, where the
+# devcontainers feature installs a shim at /usr/local/bin/systemctl. Not invented.
+
+NOT_BOOTED_STDERR = (
+    "System has not been booted with systemd as init system (PID 1). Can't operate.\n"
+    "Failed to connect to system scope bus via local transport: Host is down\n"
+)
+DEVCONTAINER_SHIM_STDOUT = (
+    '\n"systemd" is not running in this container due to its overhead.\n'
+    'Use the "service" command to start services instead. e.g.: \n\nservice --status-all\n'
+)
+UNIT_UNKNOWN_STDERR = "Unit nosuch.service could not be found.\n"
+
+
+def _fake_systemctl(monkeypatch: pytest.MonkeyPatch, *, stdout: str, stderr: str, returncode: int) -> None:
+    monkeypatch.setattr(
+        subprocess, "run", lambda argv, **kw: subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=stderr)
+    )
+
+
+def test_systemctl_in_a_non_systemd_container_is_unavailable_not_unit_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_systemctl(monkeypatch, stdout="", stderr=NOT_BOOTED_STDERR, returncode=1)
+
+    result = default_systemctl_show_runner("docker.service", ("MemoryMax",))
+
+    assert result.unavailable is True and result.returncode == 1
+    assert "cannot reach systemd" in result.stderr and "System has not been booted with systemd" in result.stderr
+    view = origin._unit_view("docker.service", result)
+    assert (view.found, view.available) == (False, False)
+
+
+def test_the_bus_connection_failure_on_its_own_is_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    for text in ("Failed to connect to bus: No such file or directory\n", "Failed to connect to system bus: Permission denied\n"):
+        _fake_systemctl(monkeypatch, stdout="", stderr=text, returncode=1)
+        assert default_systemctl_show_runner("x.service", ("MemoryMax",)).unavailable is True, text
+
+
+def test_the_devcontainer_shim_that_exits_zero_is_unavailable_too(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_systemctl(monkeypatch, stdout=DEVCONTAINER_SHIM_STDOUT, stderr="", returncode=0)
+
+    result = default_systemctl_show_runner("x.service", ("MemoryMax",))
+
+    assert result.unavailable is True and result.returncode != 0 and result.stdout == ""
+
+
+def test_an_unknown_unit_on_a_working_systemd_stays_unit_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_systemctl(monkeypatch, stdout="", stderr=UNIT_UNKNOWN_STDERR, returncode=4)
+
+    result = default_systemctl_show_runner("nosuch.service", ("MemoryMax",))
+
+    assert result.unavailable is False and result.returncode == 4
+    view = origin._unit_view("nosuch.service", result)
+    assert (view.found, view.available) == (False, True)
+
+
+def test_a_working_systemctl_output_is_passed_through_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_systemctl(monkeypatch, stdout="MemoryMax=infinity\n", stderr="", returncode=0)
+
+    result = default_systemctl_show_runner("docker.service", ("MemoryMax",))
+
+    assert (result.unavailable, result.stdout, result.returncode) == (False, "MemoryMax=infinity\n", 0)
