@@ -183,8 +183,16 @@ verify the result without disrupting its session.
 
 ## Host-side Python environment
 
-Before running host-side Python commands or a `bare-host` gate controller from
-the devcontainer, activate the estate venv:
+MDT puts `/home/vscode/.venv/bin` ahead of system Python on the cockpit
+`PATH`, so bare `python3` and `pip` use the estate venv for host-side commands
+and `bare-host` controllers. `VIRTUAL_ENV` only indicates shell activation;
+check the selected interpreter with `command -v python3` when it matters. Gates
+still use their declared environment; `tester-unified` uses
+`/opt/tester-venv/bin/python`.
+
+On a cockpit whose `PATH` does not already put the venv first, activate the
+estate venv before running host-side Python commands or a `bare-host` gate
+controller:
 
 ```bash
 . /home/vscode/.venv/bin/activate
@@ -208,15 +216,6 @@ installed in `/home/vscode/.venv` (such as `cli-extended`).
 This applies to host-side orchestration and `bare-host` steps only. Test suites
 still run in their declared gate container; `tester-unified` uses
 `/opt/tester-venv/bin/python`, not the devcontainer's estate venv.
-
-## Host-side Python environment
-
-MDT puts `/home/vscode/.venv/bin` ahead of system Python on the cockpit
-`PATH`, so bare `python3` and `pip` use the estate venv for host-side commands
-and `bare-host` controllers. `VIRTUAL_ENV` only indicates shell activation;
-check the selected interpreter with `command -v python3` when it matters. Gates
-still use their declared environment; `tester-unified` uses
-`/opt/tester-venv/bin/python`.
 
 ## Host cgroup placement for spawned containers
 This host runs real production workloads (game servers, edge/site infra)
