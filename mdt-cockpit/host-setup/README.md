@@ -843,7 +843,7 @@ unit-file value (D-HS-01-1).
 baseline is normally absent or refused (implausible, stale after a kernel update), and the
 per-container caps (`WATCHER_IO_CAP_PCT`), the Docker-events watcher's caps and the per-scope
 `IOWeight=1`/`io.bfq.weight` deprioritisation of gate and BuildKit containers are applied only
-from a valid baseline, so on such a host they are INACTIVE. What remains, and is enough, is the
+from a valid baseline, so on such a host they are inactive. What remains, and is enough, is the
 slice level: the `dev.slice` pins, the per-tier `DEV_<TIER>_IO_*_MAX` caps and the slices' own
 `IOWeight` (`DEV_GATES_IO_WEIGHT`, `DEV_BUILDKITD_IO_WEIGHT`, rendered into the units). The
 per-scope `IOWeight=1` was deliberately NOT decoupled from the baseline: it is a relative
