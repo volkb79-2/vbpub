@@ -418,7 +418,7 @@ Settings guide also documents **System → Advanced Settings → Access →
 Configure**. See the official [Preferences guide](https://www.truenas.com/docs/scale/27/toptoolbar/settings/)
 and [Advanced Settings guide](https://www.truenas.com/docs/scale/27/systemsettings/advanced/advancedsettings/).
 
-The latest registered patch unit lane passed 149 tests plus 45 subtests. The
+The registered patch unit lane later passed 156 tests plus 45 subtests. The
 full unit lane last passed 362 tests plus 45 subtests before this UI-helper-only
 change and was not rerun. The clean registered Path A UI run passed dataset
 writes, zvol creation, container pool selection/creation, VM wizard submission
@@ -444,6 +444,29 @@ cache configuration, share-client access, VM guest boot, automatic remount
 through update, controlled reboot/update survival, and actual KVM selection
 remain open until direct evidence passes. See the [consumer instructions](CONSUMERS.md#run-pwmcp-ui-storage-acceptance)
 and [resume procedure](CONSUMERS.md#resume-a-partial-path-a-ui-run).
+
+### Preserving UI-created workloads for reboot and update checks
+
+The ordinary `live-ui` lane cleans up its objects even when they are useful as
+update fixtures. Migration acceptance opts into preservation and records a
+manifest containing the UI-created dataset, container and VM IDs, zvol paths,
+and hashes for data written to the filesystem and block devices. The
+networked tester mounts the checkout read-only, so the wrapper exports the
+manifest from tester temporary storage into the requested worktree artifact
+path before removing the tester. A separate `live-ui-workloads` lane uses the
+TrueNAS UI to submit container and VM Start/Stop actions, confirms their
+middleware state transitions, and rechecks the recorded data hashes. This
+separates workload creation evidence from lifecycle evidence and makes the
+same records available to controlled reboot and update gates. These checks
+establish record retention and service start/stop, not VM guest-OS boot.
+
+On 2026-10-19, a fresh patched v27 Path A guest passed UI creation and a
+separate workload cycle before and after a controlled v27 reboot. The second
+cycle observed the VM autostart, then completed UI Start/Stop for both records
+with the recorded filesystem and zvol hashes unchanged. This is the v27
+baseline only; the same manifest has not yet been carried through a v27-to-v28
+update and v28 patch reboot. The container has not yet been tested with the
+user probe filesystem mounted into it.
 
 ### Recover an interrupted live tester
 
@@ -696,7 +719,7 @@ Preferences, with a value of 300 seconds. Its post-run inventory found no
 probe datasets, containers, or VM records. See the
 [UI run](../artifacts/live-ui-v27-path-a-clean-20261019.log) and
 [post-run inventory](../artifacts/live-inspect-v27-path-a-clean-20261019-post-ui.log).
-The current patch unit lane passed with 149 tests and 45 subtests; the full
+The current patch unit lane passed with 156 tests and 45 subtests; the full
 unit lane last passed with 362 tests and 45 subtests before this UI-helper-only
 change and was not rerun. The cache exercise used a temporary file-backed
 target pool; a real second-disk target and TrueNAS UI/middleware cache-device
@@ -709,9 +732,9 @@ omit it. The Disks screen had no partition controls, the wizard reported no
 disks, and no pool was created. Evidence:
 [registered UI diagnostic](../artifacts/live-ui-v27-path-b-r1-after-cleanup-with-disks-screen-20261018.log)
 and [post-attempt inventory](../artifacts/live-inspect-v27-path-b-r1-after-disks-screen-20261018.log).
-The latest patch unit lane passed 149 tests and 45 subtests after the UI helper
+The latest patch unit lane passed 156 tests and 45 subtests after the UI helper
 update; its log is
-[here](../artifacts/unit-boot-pool-patch-v27-ui-session-timeout-20261019.log).
+[here](../artifacts/unit-boot-pool-patch-v27-progress-dialog-20261019.log).
 Local QEMU tests use a dedicated Docker runner under `$CGROUP_PARENT_DEV_BACKGROUND`,
 with detached testers in `$CGROUP_PARENT_DEV_GATES`; see the
 [patch investigation and evidence](../README.md).

@@ -64,6 +64,8 @@ forward_env = [
   "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT",
   "TRUENAS_TEST_RESUME_EXISTING_UI_DATASET",
   "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER",
+  "TRUENAS_TEST_PRESERVE_UI_WORKLOADS",
+  "TRUENAS_UI_WORKLOAD_MANIFEST",
   "PWMCP_WS_URL",
   "PWMCP_PLAYWRIGHT_VERSION",
 ]
@@ -110,7 +112,7 @@ environment = "networked-tester"
 argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_update.py"]
 budget = "90m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_REBOOT", "TRUENAS_TEST_ALLOW_UPDATE", "TRUENAS_UPDATE_EXPECTED_VERSION", "TRUENAS_UPDATE_ISO", "TRUENAS_UPDATE_METADATA"]
-description = "Install a verified TrueNAS update from read-only guest media, reboot, and verify user-data marker survival"
+description = "Install a verified TrueNAS update from read-only guest media, reboot, and verify the marker plus optional preserved UI workload records and data"
 
 [lanes.live-v27-patch]
 kind = "command"
@@ -147,10 +149,18 @@ description = "Reserve only the guarded Path B free-tail GPT partition so the re
 [lanes.live-ui]
 kind = "command"
 environment = "networked-tester"
-argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && \"$TESTER_VENV/bin/python\" live_ui.py"]
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src \"$TESTER_VENV/bin/python\" live_ui.py"]
 budget = "45m"
 required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
 description = "Use the managed PWMCP browser to create Path A/B storage and submit container, VM, and cache-device UI workflows; verify backing ZFS state"
+
+[lanes.live-ui-workloads]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && PYTHONPATH={worktree}/pwmcp/client/src \"$TESTER_VENV/bin/python\" live_ui_workloads.py"]
+budget = "45m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "TRUENAS_UI_WORKLOAD_MANIFEST", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
+description = "Start and stop preserved Path A container and VM through the TrueNAS UI, then verify their boot-pool data"
 
 [lanes.live-vdev-topology]
 kind = "command"

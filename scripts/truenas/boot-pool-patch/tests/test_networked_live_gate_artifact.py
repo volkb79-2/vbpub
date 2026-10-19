@@ -86,8 +86,8 @@ def test_live_lanes_use_a_capped_networked_exec_runner() -> None:
     assert environment["container_name"] == "truenas-live-acceptance-runner"
     for name in (
         "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
-        "live-path-b-provision", "live-path-b-partition", "live-ui", "live-vdev-topology",
-        "live-inspect",
+        "live-path-b-provision", "live-path-b-partition", "live-ui", "live-ui-workloads",
+        "live-vdev-topology", "live-inspect",
     ):
         lane = config["lanes"][name]
         assert lane["environment"] == "networked-tester"
@@ -99,6 +99,71 @@ def test_live_lanes_use_a_capped_networked_exec_runner() -> None:
     assert "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER" in config["environments"]["networked-tester"]["forward_env"]
     assert "live_vdev_topology.py" in " ".join(config["lanes"]["live-vdev-topology"]["argv"])
     assert config["lanes"]["live-vdev-topology"]["budget"] == "60m"
+
+
+def test_ui_workload_cycle_waits_for_true_nas_table_rows_after_login() -> None:
+    source = (PATCH_ROOT / "acceptance" / "live_ui_workloads.py").read_text()
+    assert 'text.first.wait_for(state="visible", timeout=120_000)' in source
+    assert 'r"^(?:play|play-circle)$"' in source
+    assert 'r"^(?:stop|stop-circle)$"' in source
+    assert "chevron-down" in source
+    assert "wait_for_rpc_request(page, requests, stop_method, previous)" in source
+    assert 'perform_ui_action(page, route, section, name, "Force Stop")' in source
+    assert "has no guest OS" in source
+    assert 'ui_action = "Power Off" if action == "Force Stop" else action' in source
+    assert 'elif dialogs.get_by_role("button").count() > 0:' in source
+    assert "if candidate.is_visible():" in source
+    assert "if len(visible) == 1 and visible[0].is_enabled():" in source
+    assert "visible snapshot={snapshot[:5000]!r}" in source
+
+
+def test_preserved_ui_manifest_is_exported_from_the_readonly_tester(tmp_path, monkeypatch) -> None:
+    runner = load_runner()
+    manifest = {"schema_version": 1, "profile": "path-a", "pool": "boot-pool"}
+    destination = tmp_path / "artifacts" / "ui-workloads.json"
+    calls: list[list[str]] = []
+
+    def fake_docker_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1:3] == ["exec", runner.TESTER_NAME]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if argv[1] == "cp":
+            Path(argv[-1]).write_text(json.dumps(manifest), encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected docker invocation: {argv!r}")
+
+    monkeypatch.setattr(runner, "docker_run", fake_docker_run)
+    assert runner.export_ui_workload_manifest("/tmp/manifest.json", destination, 0)
+    assert json.loads(destination.read_text(encoding="utf-8")) == manifest
+    assert [call[1] for call in calls] == ["exec", "cp"]
+
+
+def test_failed_ui_lane_without_manifest_does_not_create_host_artifact(tmp_path, monkeypatch) -> None:
+    runner = load_runner()
+    destination = tmp_path / "artifacts" / "ui-workloads.json"
+    monkeypatch.setattr(
+        runner,
+        "docker_run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr="missing"),
+    )
+    assert not runner.export_ui_workload_manifest("/tmp/missing.json", destination, 1)
+    assert not destination.exists()
+
+
+def test_successful_ui_lane_requires_exported_manifest(tmp_path, monkeypatch) -> None:
+    runner = load_runner()
+    destination = tmp_path / "artifacts" / "ui-workloads.json"
+    monkeypatch.setattr(
+        runner,
+        "docker_run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr="missing"),
+    )
+    try:
+        runner.export_ui_workload_manifest("/tmp/missing.json", destination, 0)
+    except runner.RunnerError as exc:
+        assert "did not produce" in str(exc)
+    else:
+        raise AssertionError("a passing preserved UI lane must export its manifest")
 
 
 def test_networked_runner_uses_gates_slice_and_small_verified_limits() -> None:
@@ -1008,6 +1073,13 @@ def test_live_update_requires_three_guards_and_verified_media_paths(tmp_path, mo
     assert selected["TRUENAS_TEST_ALLOW_UPDATE"] == "1"
     assert selected["TRUENAS_UPDATE_ISO"] == str(update_iso)
     assert selected["TRUENAS_UPDATE_METADATA"] == str(metadata)
+
+    workload_manifest = tmp_path / "ui-workloads.json"
+    workload_manifest.write_text("{}")
+    monkeypatch.setenv("TRUENAS_UI_WORKLOAD_MANIFEST", str(workload_manifest))
+    selected = runner.required_live_environment("live-update", "truenas-test", tmp_path)
+    assert selected["TRUENAS_UI_WORKLOAD_MANIFEST"] == str(workload_manifest)
+    monkeypatch.delenv("TRUENAS_UI_WORKLOAD_MANIFEST")
 
     monkeypatch.setenv("TRUENAS_TEST_ALLOW_UPDATE", "0")
     try:

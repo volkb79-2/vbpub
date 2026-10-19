@@ -14,6 +14,29 @@ tests, evidence, and follow-up notes stay under this directory.
   TrueNAS commit.
 - TrueNAS guest disks and logs are ignored artifacts beneath `artifacts/`.
 
+## Active successor task
+
+Continue from the detailed [successor prompt](successor-handoff-v27-path-a-v28-migration-20261019.md).
+It describes the current guest and manifest, v27 evidence, exact v28 update
+artifacts, ordered update/patch/reboot checks, PWMCP tester constraints, and
+deferred patch-level display research.
+
+The fresh Path A UI migration guest
+`truenas-v27-golden-ui-migration-20261019` is stopped. Its overlay and attached
+read-only v28 ISO remain in
+`artifacts/v27-golden-ui-migration-20261019/vm-state`; no managed TrueNAS guest
+container is running. The UI workload manifest is
+`artifacts/v27-golden-ui-migration-20261019/ui-workloads.json`. Before any
+further mutation, resume or replace the guest and pass registered read-only
+`live-inspect`. The most recent resumed guest did not produce a passing new
+inventory, so use the saved v27 logs only for their recorded runs.
+
+Fresh v27 Path A evidence now includes UI creation of the root/filesystem,
+zvols, container and VM record; UI Start/Stop actions for the container and a
+blank VM; root/data remount across a v27 reboot; and a second UI Start/Stop
+cycle after that reboot. See the task-specific evidence table in the successor
+prompt. No v27-to-v28 update has yet been run against this manifest.
+
 ## Live guest checkpoint (2026-10-19)
 
 The earlier Path A r4, Path B r1, and topology guests were retired through
@@ -32,7 +55,7 @@ Before any new mutation, inspect the selected managed guest and pass registered
 read-only `live-inspect`; historical gate results remain evidence only for the
 exact run that produced them.
 
-## Current checkpoint: fresh v27 Path B UI cannot select the reserved partition
+## Remaining Path B limitation: UI cannot select the reserved partition
 
 Fresh guest `truenas-v27-ui-b-fresh-r1-20261018` was restored from the golden
 base and patched with the registered `live-v27-patch` lane before Path B
@@ -295,7 +318,7 @@ alone did not prove survival.
 
 | Target | Passed evidence | Still open |
 |---|---|---|
-| v27 Path A | Registered live storage refuses destroy and snapshot attempts against an existing middleware-managed dataset and verifies survival; dataset/zvol, cache-vdev add/remove, TCG VM, persistent container data, share-record CRUD, cleanup; Path A reboot remount passed. The clean registered PWMCP UI run created/wrote a filesystem, created zvols, selected `boot-pool` for a container, and submitted a VM wizard with an existing boot-pool zvol. It also found Session Timeout in the account menu → Preferences, set to 300 seconds. | Auxiliary-vdev acceptance, including selecting boot-pool zvols as cache/log/special devices through the UI/API; a real second-disk cache target, TrueNAS UI/middleware cache configuration, automatic remount after update, retention of pre-existing data/container/VM objects through v27→v28 update and v28 patch reapplication, client-side NFS/SMB access, VM guest boot, and actual KVM selection remain open. |
+| v27 Path A | Registered live storage refuses destroy and snapshot attempts against an existing middleware-managed dataset and verifies survival; dataset/zvol, cache-vdev add/remove, TCG VM, persistent container data, share-record CRUD, cleanup; Path A reboot remount passed. Fresh registered PWMCP UI setup created/wrote a filesystem, created zvols, selected `boot-pool` for a container, and submitted a VM wizard with an existing boot-pool zvol. A separate UI workload lane started/stopped the container and blank VM before and after a controlled v27 reboot, checking the same filesystem/zvol hashes. The VM autostarted after reboot. Session Timeout was found under account menu → Preferences at 300 seconds. | Retention and natural post-update accessibility through v27→v28 and v28 patch/reboot remain open. The container test does not prove access to a user-mounted filesystem; the VM has no guest OS. Auxiliary-vdev role selection, real second-disk cache, client-side NFS/SMB access, guest boot, and actual live KVM selection remain open. |
 | v27 Path B | Registered partition-only lane reserved `/dev/vda4` on a fresh patched guest. After host recovery, the registered PWMCP lane reached the Disks screen and Pool Creation Wizard; `lsblk` sees `vda4`, but middleware and browser `disk.query` omit it. The Disks screen showed no partition controls, and the wizard reported no disks and submitted no pool creation. A post-attempt read-only inventory passed with `boot-pool` ONLINE and no probe/user data or `boot-disk-data`. | UI creation of `/dev/vda4` and `boot-disk-data`; fresh Path B UI storage checks; reboot/import and update survival; second-disk cache target; client-side shares, guest OS boot, and actual KVM selection remain open. |
 | v27 auxiliary-vdev topology | Registered diagnostic created sparse single-disk and RAIDZ1 target pools and UI-created boot-pool zvols. The UI showed Cache, Log, and Special steps but no boot-pool zvols; middleware refused all tested zvol device paths before ZFS attachment. Direct checks found both target pools ONLINE with empty auxiliary-role arrays, and cleanup passed. | OpenZFS attachment acceptance, API/UI selection, each role independently, identical-device reuse, partitioned devices, separate source pool, Path B source pool, SLOG writes, metadata allocation, import ordering, and physical-disk tests. |
 | v28 Path A | Guarded adapter install/replacement, live storage with existing-container destroy/snapshot refusal and survival, public clone refusal, and reboot/remount passed. The v27-to-v28 marker survived update, but data was mounted manually for verification. | Automatic remount through update; retention and continued operation of pre-existing container/VM records and data through update and v28 patch reapplication; full UI, client-side shares, guest OS boot, actual KVM selection, and second-disk cache target. |
@@ -324,26 +347,30 @@ pass these assertions.
 
 ## Next work
 
-1. Add a migration-retention acceptance on a clean patched v27 Path A guest.
-   Create a user dataset with a marker, a stopped container record with a
-   persistent dataset mount, and a stopped VM record with an attached zvol.
-   Update to v28, reapply the exact v28 patch, then verify the same records,
-   device assignments, mountpoints, and marker hashes through API/UI. Start
-   the container and VM after the patch and verify container data access and
-   QEMU TCG startup. Keep guest-OS boot, share-client access, and automatic
-   remount through update as separate checks.
-2. Preserve the fresh patched Path B guest `truenas-v27-ui-b-fresh-r1-20261018`
+1. Continue the v27 Path A to v28 migration from the detailed
+   [successor prompt](successor-handoff-v27-path-a-v28-migration-20261019.md).
+   Use the saved workload manifest if the stopped guest passes fresh
+   `live-inspect`; otherwise rebuild from the golden image, reapply the v27
+   patch, and create a new UI manifest. Report natural post-update behavior
+   separately from any mount repair, then apply v28, reboot, and repeat the
+   UI workload cycle and data checks.
+2. Verify whether the UI can mount the user filesystem into a container and
+   prove application-level read/write access. The current lifecycle test
+   checks the container record and backing dataset but not access to the
+   separate probe filesystem. Install a guest OS in the VM only in a separate
+   acceptance step; current UI evidence covers a blank VM and boot-pool zvol.
+3. Preserve the fresh patched Path B guest `truenas-v27-ui-b-fresh-r1-20261018`
    and its `/dev/vda4` partition. The latest registered UI run shows no
    partition controls on the Disks screen; the pool wizard still omits `vda4`
    and creates no pool. Investigate a supported UI route and preserve the
    baseline sequence: guarded partition-only lane first, then UI creation and
    registration of `boot-disk-data`. Never select `/dev/vda` or use
    `live-path-b-provision`.
-3. Before any future v28 Path B mutation, resume the saved state only
+4. Before any future v28 Path B mutation, resume the saved state only
    through `tcg_vm.py` and run registered read-only `live-inspect`. The
    existing v28 storage gate has direct pre/post ZFS checks for both destroy
    and snapshot refusals, but its current guest state still needs inspection.
-4. Implement the narrowly allowlisted vdev-device path in middleware and the
+5. Implement the narrowly allowlisted vdev-device path in middleware and the
    UI before another feature-acceptance run. On a fresh patched v27 guest,
    pass registered read-only inventory, then test cache, log, and special
    roles separately and in combinations through API and UI. Keep same-device

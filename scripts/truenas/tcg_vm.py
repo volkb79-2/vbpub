@@ -46,6 +46,7 @@ STATE_LABEL = "org.vbpub.truenas.state-dir-sha256"
 DEFAULT_SSH_PORT = 2222
 DEFAULT_HTTPS_PORT = 8443
 START_TIMEOUT_SECONDS = 20
+DOCKER_START_TIMEOUT_SECONDS = 120
 STOP_TIMEOUT_SECONDS = 120
 QMP_SOCKET_PATH_MAX_BYTES = 107
 MAX_MEMORY_PSI_SOME_AVG10 = 10.0
@@ -1319,8 +1320,8 @@ def _cmd_start(args: argparse.Namespace) -> int:
         image,
         "-eu", "-c", host_command_script(),
     ])
-    docker_run(create_argv)
     try:
+        docker_run(create_argv, timeout=DOCKER_START_TIMEOUT_SECONDS)
         verified: dict[str, Any] | None = None
         for _ in range(START_TIMEOUT_SECONDS * 4):
             item = docker_inspect(args.name)

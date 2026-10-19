@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import importlib
 import json
 from pathlib import Path
 import sys
@@ -74,6 +75,9 @@ def test_update_lane_is_guarded_uses_readonly_payload_and_reports_marker_surviva
     assert "without launching a second update" in design
     assert "docs/CONSUMERS.md" in readme
     assert "resume read-only polling" in consumers
+    assert "TRUENAS_UI_WORKLOAD_MANIFEST" in source
+    assert '"post-update-auto-mount"' in source
+    assert "verify_ui_workload_records(target, workload_manifest)" in source
 
 
 def test_resume_values_are_forwarded_to_the_registered_live_update_lane() -> None:
@@ -83,7 +87,103 @@ def test_resume_values_are_forwarded_to_the_registered_live_update_lane() -> Non
         "TRUENAS_UPDATE_JOB_ID",
         "TRUENAS_UPDATE_PROOF_DATASET",
         "TRUENAS_UPDATE_PROOF_SHA256",
+        "TRUENAS_UI_WORKLOAD_MANIFEST",
     } <= forwarded
+
+
+def test_manifest_data_inspection_does_not_mount_before_reporting_automatic_state(tmp_path) -> None:
+    load_script()
+    manifest_module = importlib.import_module("workload_manifest")
+    digest = "a" * 64
+    root = "boot-pool/user-data/ui-acceptance-20261019000000abcdef"
+    manifest = {
+        "schema_version": 1,
+        "target_version": "27.0.0-RC.1",
+        "profile": "path-a",
+        "pool": "boot-pool",
+        "filesystem": {
+            "dataset": root,
+            "mountpoint": f"/mnt/{root}",
+            "probe_file": f"/mnt/{root}/ui-disk-probe.bin",
+            "probe_bytes": 65_536,
+            "probe_sha256": digest,
+        },
+        "container": {
+            "name": "uiacceptance12345678",
+            "id": 1,
+            "pool": "boot-pool",
+            "dataset": "boot-pool/user-data/.truenas_containers/containers/uiacceptance12345678",
+        },
+        "vm": {
+            "name": "uiacceptancevm12345678",
+            "id": 2,
+            "pool": "boot-pool",
+            "zvol": f"{root}/vm-disk",
+            "device_path": f"/dev/zvol/{root}/vm-disk",
+        },
+        "zvols": {
+            key: {"dataset": f"{root}/{suffix}", "sha256": digest, "bytes": 65_536}
+            for key, suffix in (("vm_disk", "vm-disk"), ("cache_device", "cache-device"))
+        },
+    }
+    path = tmp_path / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    loaded = manifest_module.read_manifest(path)
+
+    class TargetStub:
+        def __init__(self) -> None:
+            self.commands: list[str] = []
+
+        def shell(self, command: str, *, timeout: int = 30) -> str:
+            self.commands.append(command)
+            if "zfs get -H -o value mounted" in command:
+                return "no"
+            if command.startswith("test -b "):
+                return ""
+            if command.startswith("dd if="):
+                return f"{digest}  -"
+            raise AssertionError(f"unexpected target command: {command!r}")
+
+    target = TargetStub()
+    assert not manifest_module.verify_data(target, loaded, stage="test-before-remount")
+    assert not any(command.startswith("zfs mount ") for command in target.commands)
+
+
+def test_container_record_uses_its_exact_dataset_when_pool_field_is_omitted() -> None:
+    load_script()
+    manifest_module = importlib.import_module("workload_manifest")
+    name = "uiacceptance12345678"
+    container_dataset = f"boot-pool/user-data/.truenas_containers/containers/{name}"
+    vm_name = "uiacceptancevm12345678"
+    vm_path = "/dev/zvol/boot-pool/user-data/ui-acceptance-20261019000000abcdef/vm-disk"
+    manifest = {
+        "container": {"id": 1, "name": name, "dataset": container_dataset},
+        "vm": {"id": 2, "name": vm_name, "device_path": vm_path},
+    }
+
+    class TargetStub:
+        def __init__(self, dataset: str) -> None:
+            self.dataset = dataset
+
+        def query(self, method, _filters, *, timeout):
+            assert timeout == 120
+            if method == "container.query":
+                return [{"id": 1, "name": name, "dataset": self.dataset}]
+            if method == "vm.query":
+                return [{"id": 2, "name": vm_name}]
+            if method == "vm.device.query":
+                return [{"attributes": {"path": vm_path}}]
+            raise AssertionError(f"unexpected query: {method!r}")
+
+    container_row, _ = manifest_module.verify_records(TargetStub(container_dataset), manifest)
+    assert "pool" not in container_row
+    with pytest.raises(manifest_module.RemoteError, match="container record dataset"):
+        manifest_module.verify_records(TargetStub("boot-pool/user-data/other"), manifest)
+
+
+def test_update_records_automatic_mount_before_manual_mount_repair() -> None:
+    source = SCRIPT.read_text()
+    assert source.index('report(\n        "post-update-auto-mount"') < source.index("mount_repair: list[str]")
 
 
 def test_resume_request_requires_job_and_matching_proof_values(monkeypatch) -> None:

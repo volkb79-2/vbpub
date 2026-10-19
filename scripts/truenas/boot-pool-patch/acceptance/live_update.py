@@ -19,6 +19,11 @@ import time
 import uuid
 
 from remote import RemoteError, Target
+from workload_manifest import (
+    read_manifest as read_ui_workload_manifest,
+    verify_data as verify_ui_workload_data,
+    verify_records as verify_ui_workload_records,
+)
 
 
 MEDIA_MOUNT = "/mnt/truenas-update-media"
@@ -222,6 +227,16 @@ def main() -> int:
     if not expected_before or not expected_after:
         raise RemoteError("both current and update target versions are required")
     resume_request = resume_request_from_environment()
+    workload_manifest_value = os.environ.get("TRUENAS_UI_WORKLOAD_MANIFEST", "").strip()
+    workload_manifest = (
+        read_ui_workload_manifest(Path(workload_manifest_value))
+        if workload_manifest_value else None
+    )
+    if workload_manifest is not None:
+        require(
+            workload_manifest.get("target_version") == expected_before,
+            "UI workload manifest was not created on the selected pre-update version",
+        )
 
     iso_path = Path(os.environ.get("TRUENAS_UPDATE_ISO", ""))
     metadata_path = Path(os.environ.get("TRUENAS_UPDATE_METADATA", ""))
@@ -257,6 +272,16 @@ def main() -> int:
         root_stat.get("source") == user_data_root and root_stat.get("dest") == root_mountpoint,
         f"Path A user-data root is not mounted as expected: {root_stat!r}",
     )
+    root_mounted_before = target.shell(
+        f"zfs get -H -o value mounted {shlex.quote(user_data_root)}"
+    )
+    require(root_mounted_before == "yes", "Path A user-data root is not mounted before the update")
+    if workload_manifest is not None:
+        verify_ui_workload_records(target, workload_manifest)
+        require(
+            verify_ui_workload_data(target, workload_manifest, stage="before-update"),
+            "manifest-backed UI filesystem is not mounted before the update",
+        )
 
     update_pool_free = int(target.shell("zfs get -Hp -o value available boot-pool"))
     required_free = int(metadata["manifest_size_bytes"])
@@ -356,18 +381,59 @@ def main() -> int:
     pool_health = target.shell("zpool status -x boot-pool")
     require("is healthy" in pool_health, f"boot-pool is unhealthy after update: {pool_health!r}")
 
+    root_mounted_after = target.shell(
+        f"zfs get -H -o value mounted {shlex.quote(user_data_root)}"
+    )
+    proof_mounted_after = target.shell(
+        f"zfs get -H -o value mounted {shlex.quote(probe_dataset)}"
+    )
+    workload_mounted_after = None
+    if workload_manifest is not None:
+        workload_dataset = workload_manifest["filesystem"]["dataset"]
+        workload_mounted_after = target.shell(
+            f"zfs get -H -o value mounted {shlex.quote(workload_dataset)}"
+        )
+        verify_ui_workload_records(target, workload_manifest)
+        verify_ui_workload_data(target, workload_manifest, stage="after-update-before-remount")
+    report(
+        "post-update-auto-mount",
+        f"root={root_mounted_after}; update-proof={proof_mounted_after}; "
+        f"ui-filesystem={workload_mounted_after if workload_mounted_after is not None else 'not-recorded'}",
+    )
+
+    mount_repair: list[str] = []
+    if root_mounted_after != "yes":
+        target.shell(f"zfs mount {shlex.quote(user_data_root)}")
+        mount_repair.append(user_data_root)
+    if workload_manifest is not None and workload_mounted_after != "yes":
+        mounted_now = target.shell(
+            f"zfs get -H -o value mounted {shlex.quote(workload_manifest['filesystem']['dataset'])}"
+        )
+        if mounted_now != "yes":
+            target.shell(f"zfs mount {shlex.quote(workload_manifest['filesystem']['dataset'])}")
+            mount_repair.append(workload_manifest["filesystem"]["dataset"])
+    if proof_mounted_after != "yes":
+        target.shell(f"zfs mount {shlex.quote(probe_dataset)}")
+        mount_repair.append(probe_dataset)
+    if workload_manifest is not None:
+        verify_ui_workload_records(target, workload_manifest)
+        require(
+            verify_ui_workload_data(target, workload_manifest, stage="after-update-after-remount"),
+            "manifest-backed UI filesystem remained unavailable after the recorded mount check",
+        )
     for dataset in (user_data_root, probe_dataset):
-        mounted = target.shell(f"zfs get -H -o value mounted {shlex.quote(dataset)}")
-        if mounted != "yes":
-            target.shell(f"zfs mount {shlex.quote(dataset)}")
         actual_mountpoint = target.shell(f"zfs get -H -o value mountpoint {shlex.quote(dataset)}")
-        require(actual_mountpoint.startswith(root_mountpoint), f"unexpected mountpoint for {dataset}: {actual_mountpoint!r}")
+        require(actual_mountpoint.startswith(root_mountpoint),
+                f"unexpected mountpoint for {dataset}: {actual_mountpoint!r}")
     after_hash = target.shell(f"sha256sum {shlex.quote(marker_path)}").split()[0]
     require(after_hash == marker_hash, f"user-data marker did not survive update: {after_hash} != {marker_hash}")
     report(
         "result",
         f"PASS update to {expected_after}; boot-pool is healthy and marker dataset "
-        f"{probe_dataset} survived with SHA-256 {after_hash}. The v28 mount adapter still needs reapplication.",
+        f"{probe_dataset} survived with SHA-256 {after_hash}; manual mount repairs={mount_repair!r}; "
+        f"UI workload records and their filesystem/zvol hashes "
+        f"{'survived' if workload_manifest is not None else 'were not included'}. "
+        f"The v28 mount adapter still needs reapplication.",
     )
     return 0
 

@@ -13,7 +13,7 @@ available.
 | Release | Evidence | Open acceptance |
 |---|---|---|
 | 25.10.4 / 25.10.7 | The retained 25.10.4 patch proposal dry-runs on 25.10.7. | Its reported UI flow failed; PWMCP reproduction remains pending. It does not apply to v27+. |
-| 27.0.0-RC.1 | Registered gates pass existing-container destroy/snapshot refusal and survival on Path A and B. A clean Path A UI run passed dataset writes, zvol creation, container pool selection/creation, VM wizard submission using an existing boot-pool zvol, and Cache-vdev use on a temporary file-backed pool. The same run found Session Timeout in the signed-in account menu → Preferences (300 seconds). Path B reserved `/dev/vda4`, but middleware and the UI omit it; the pool wizard submitted no creation. The topology diagnostic showed Cache/Log/Special UI steps, omitted the boot-pool zvols, and safely refused their API paths before ZFS attachment. | Path B UI partition/pool creation and downstream use; accepted auxiliary-vdev roles through middleware and UI, including existing-pool expansion; second-disk cache target; automatic remount and retention of pre-existing data/container/VM records through v27→v28 update and v28 patch reapplication; share-client access; VM guest boot; and actual KVM selection remain open. |
+| 27.0.0-RC.1 | Registered gates pass existing-container destroy/snapshot refusal and survival on Path A and B. Fresh Path A UI acceptance created/wrote a filesystem, created zvols, selected `boot-pool` for a container, and submitted a VM wizard using an existing boot-pool zvol. A separate UI workload gate started/stopped the container and blank VM; after a controlled v27 reboot it verified the root remounted, hashes persisted, the VM autostarted, and UI Start/Stop worked again. Session Timeout was visible in the signed-in account menu → Preferences (300 seconds). Path B reserved `/dev/vda4`, but middleware and the UI omit it; the pool wizard submitted no creation. The topology diagnostic showed Cache/Log/Special UI steps, omitted the boot-pool zvols, and safely refused their API paths before ZFS attachment. | Retention and natural post-update accessibility of these pre-existing Path A workloads through v27→v28 and v28 patch/reboot remain untested. The current container test does not prove a user filesystem mounted inside the container, and the VM has no guest OS. Path B UI partition/pool creation, accepted auxiliary-vdev roles through middleware/UI, existing-pool expansion, second-disk cache, share-client access, VM guest boot, and actual live KVM selection remain open. |
 | 28.0.0-MASTER+20261014-230204 | Exact target checks and guarded replacement passed. Path A and Path B provision/storage gates refuse destroy/snapshot against existing managed container data and verify survival. Path B provision passed on a reserved tail; Path A reboot/remount passed. A marker survived the v27-to-v28 update after manual mounting. | Path B reboot/import, automatic remount and retention of pre-existing data/container/VM records through update and v28 patch reapplication, full UI, share-client access, guest OS boot, actual KVM selection, and a real second-disk cache/import-order check remain open. |
 
 A read-only inventory after the original v28 Path B failure is saved at
@@ -68,15 +68,17 @@ paths before attachment.
 The registered UI lane created the Path A root and child filesystem, wrote
 data to that filesystem, created VM/cache zvols, selected `boot-pool` for a
 container and checked its ZFS backing, and submitted a VM using an existing
-boot-pool zvol. It did not start the VM through the UI, attach a user dataset
-to a container through the UI, grow a zvol through the UI, create shares, or
-test NFS/SMB clients. Auxiliary-vdev role selection is not accepted through
-the UI or middleware. Path B still cannot be created through the current UI.
+boot-pool zvol. The separate `live-ui-workloads` lane uses the UI to start and
+stop preserved container and VM records and checks their backing data after a
+reboot or update. It does not prove VM guest-OS boot. The UI lanes do not
+attach a user dataset to a container, grow a zvol, create shares, or test
+NFS/SMB clients. Auxiliary-vdev role selection is not accepted through the UI
+or middleware. Path B still cannot be created through the current UI.
 The latest clean run is
 [`live-ui-v27-path-a-clean-20261019.log`](artifacts/live-ui-v27-path-a-clean-20261019.log);
 see the [design guide](docs/DESIGN-GUIDE.md#pwmcp-storage-ui-acceptance) for
 the acceptance boundary and [consumer guide](docs/CONSUMERS.md#run-pwmcp-ui-storage-acceptance)
-for the gate workflow.
+for the `live-ui` and `live-ui-workloads` workflow.
 
 ## Project files
 

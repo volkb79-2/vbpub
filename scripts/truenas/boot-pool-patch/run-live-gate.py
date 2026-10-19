@@ -49,14 +49,15 @@ TESTER_CPU_CORES = 0.5
 TESTER_NANO_CPUS = 500_000_000
 TESTER_MEMORY_BYTES = 512 * 1024 * 1024
 TESTER_DOCKER_INSPECT_TIMEOUT_SECONDS = 30
+TESTER_DOCKER_START_TIMEOUT_SECONDS = 120
 RUNNER_LABEL = "org.vbpub.truenas.live-acceptance-run"
 TESTER_LATE_CREATE_GRACE_SECONDS = 180
 LIVE_LANES = frozenset({
     "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
     "live-path-b-provision", "live-path-b-partition", "live-ui", "live-vdev-topology",
-    "live-inspect",
+    "live-ui-workloads", "live-inspect",
 })
-UI_LANES = frozenset({"live-ui", "live-vdev-topology"})
+UI_LANES = frozenset({"live-ui", "live-ui-workloads", "live-vdev-topology"})
 LIVE_LANE_TIMEOUT_SECONDS = {
     "live-storage": 2400,
     "live-boot": 2400,
@@ -66,6 +67,7 @@ LIVE_LANE_TIMEOUT_SECONDS = {
     "live-path-b-provision": 900,
     "live-path-b-partition": 900,
     "live-ui": 2700,
+    "live-ui-workloads": 2700,
     "live-vdev-topology": 3600,
     "live-inspect": 900,
 }
@@ -289,6 +291,18 @@ def required_live_environment(
             except ValueError as exc:
                 raise RunnerError(f"{variable} must be inside this worktree: {resolved}") from exc
             update_paths[variable] = str(resolved)
+        workload_manifest = os.environ.get("TRUENAS_UI_WORKLOAD_MANIFEST", "")
+        if workload_manifest:
+            manifest_path = Path(workload_manifest).resolve(strict=True)
+            if not manifest_path.is_file():
+                raise RunnerError("TRUENAS_UI_WORKLOAD_MANIFEST must be a regular file")
+            try:
+                manifest_path.relative_to(worktree_root)
+            except ValueError as exc:
+                raise RunnerError(
+                    "TRUENAS_UI_WORKLOAD_MANIFEST must be inside this worktree"
+                ) from exc
+            update_paths["TRUENAS_UI_WORKLOAD_MANIFEST"] = str(manifest_path)
 
     ui_settings: dict[str, str] = {}
     if lane in UI_LANES:
@@ -323,6 +337,37 @@ def required_live_environment(
                 "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER requires Path A and "
                 "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT=1"
             )
+        preserve_ui_workloads = os.environ.get("TRUENAS_TEST_PRESERVE_UI_WORKLOADS", "")
+        if preserve_ui_workloads not in {"", "0", "1"}:
+            raise RunnerError("TRUENAS_TEST_PRESERVE_UI_WORKLOADS must be unset, 0, or 1")
+        if preserve_ui_workloads == "1" and profile != "path-a":
+            raise RunnerError("TRUENAS_TEST_PRESERVE_UI_WORKLOADS=1 is only supported for Path A")
+        if preserve_ui_workloads == "1" and lane != "live-ui":
+            raise RunnerError("TRUENAS_TEST_PRESERVE_UI_WORKLOADS=1 is only valid for live-ui")
+        workload_manifest = ""
+        manifest_value = os.environ.get("TRUENAS_UI_WORKLOAD_MANIFEST", "")
+        if preserve_ui_workloads == "1":
+            if not manifest_value:
+                raise RunnerError(
+                    "TRUENAS_UI_WORKLOAD_MANIFEST is required when preserving UI workloads"
+                )
+            manifest_path = Path(manifest_value).resolve()
+            try:
+                manifest_path.relative_to(worktree_root)
+            except ValueError as exc:
+                raise RunnerError("TRUENAS_UI_WORKLOAD_MANIFEST must be inside this worktree") from exc
+            if manifest_path.exists():
+                raise RunnerError("refusing to overwrite existing TRUENAS_UI_WORKLOAD_MANIFEST")
+            workload_manifest = str(manifest_path)
+        elif lane == "live-ui-workloads":
+            if not manifest_value:
+                raise RunnerError("TRUENAS_UI_WORKLOAD_MANIFEST is required for live-ui-workloads")
+            workload_manifest = repo_path_in_tester(manifest_value, worktree_root)
+        elif manifest_value and lane in UI_LANES:
+            raise RunnerError(
+                "TRUENAS_UI_WORKLOAD_MANIFEST is only valid for preserve-enabled live-ui "
+                "or live-ui-workloads"
+            )
         if lane == "live-vdev-topology" and any((resume_existing_ui_dataset, stale_container_cleanup)):
             raise RunnerError(
                 "live-vdev-topology can resume only the directly verified Path A UI root; "
@@ -347,6 +392,8 @@ def required_live_environment(
             "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT": resume_existing_root,
             "TRUENAS_TEST_RESUME_EXISTING_UI_DATASET": resume_existing_ui_dataset,
             "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER": stale_container_cleanup,
+            "TRUENAS_TEST_PRESERVE_UI_WORKLOADS": preserve_ui_workloads,
+            "TRUENAS_UI_WORKLOAD_MANIFEST": workload_manifest,
         }
 
     try:
@@ -601,6 +648,45 @@ def recover_stale_tester() -> str:
     return container_id
 
 
+def export_ui_workload_manifest(tester_path: str, host_path: Path, gate_status: int) -> bool:
+    """Copy the preserved UI manifest out before the read-only tester is removed."""
+    present = docker_run(
+        ["docker", "exec", TESTER_NAME, "test", "-f", tester_path],
+        check=False,
+        timeout=TESTER_DOCKER_INSPECT_TIMEOUT_SECONDS,
+    )
+    if present.returncode:
+        if gate_status == 0:
+            raise RunnerError("live-ui passed but did not produce its preserved workload manifest")
+        print("[manifest-export] no preserved workload manifest was produced", flush=True)
+        return False
+    if host_path.exists():
+        raise RunnerError(f"refusing to overwrite UI workload manifest: {host_path}")
+    host_path.parent.mkdir(parents=True, exist_ok=True)
+    copied = docker_run(
+        ["docker", "cp", f"{TESTER_NAME}:{tester_path}", str(host_path)],
+        check=False,
+        timeout=TESTER_DOCKER_START_TIMEOUT_SECONDS,
+    )
+    if copied.returncode:
+        detail = (copied.stderr or copied.stdout).strip()
+        raise RunnerError(f"could not export UI workload manifest: {detail}")
+    try:
+        manifest = json.loads(host_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RunnerError(f"exported UI workload manifest is unreadable: {type(exc).__name__}") from None
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != 1
+        or manifest.get("profile") != "path-a"
+        or manifest.get("pool") != "boot-pool"
+    ):
+        raise RunnerError("exported UI workload manifest does not identify Path A on boot-pool")
+    digest = hashlib.sha256(host_path.read_bytes()).hexdigest()
+    print(f"[manifest-export] {host_path} sha256={digest}", flush=True)
+    return True
+
+
 def run(args: argparse.Namespace) -> int:
     if args.lane not in LIVE_LANES:
         raise RunnerError(f"unsupported live lane {args.lane!r}; choose one of {sorted(LIVE_LANES)}")
@@ -611,6 +697,12 @@ def run(args: argparse.Namespace) -> int:
     child_env = required_live_environment(
         args.lane, args.vm_container, worktree_root, ui_port=ui_port,
     )
+    workload_manifest_export: tuple[Path, str] | None = None
+    if args.lane == "live-ui" and child_env.get("TRUENAS_TEST_PRESERVE_UI_WORKLOADS") == "1":
+        host_manifest = Path(os.environ["TRUENAS_UI_WORKLOAD_MANIFEST"]).resolve()
+        tester_manifest = f"/tmp/truenas-ui-workloads-{uuid.uuid4().hex}.json"
+        child_env["TRUENAS_UI_WORKLOAD_MANIFEST"] = tester_manifest
+        workload_manifest_export = (host_manifest, tester_manifest)
     config = run_gate_config(worktree_root)
     environment = config.get("environments", {}).get("networked-tester", {})
     if environment.get("mode") != "exec" or environment.get("container_name") != TESTER_NAME:
@@ -708,7 +800,7 @@ def run(args: argparse.Namespace) -> int:
     try:
         # Keep launch inside the cleanup scope: a Docker client error after
         # create/start must not leave an orphaned networked runner behind.
-        docker_run(argv)
+        docker_run(argv, timeout=TESTER_DOCKER_START_TIMEOUT_SECONDS)
         launch_completed = True
         placement = verify_tester_container(
             name=TESTER_NAME,
@@ -738,6 +830,10 @@ def run(args: argparse.Namespace) -> int:
             gate_argv.append("--allow-dirty")
         gate = subprocess.run(gate_argv, cwd=worktree_root, env=gate_env, check=False)
         run_status = gate.returncode
+        if workload_manifest_export is not None:
+            export_ui_workload_manifest(
+                workload_manifest_export[1], workload_manifest_export[0], run_status,
+            )
     finally:
         try:
             cleanup_owned_tester(

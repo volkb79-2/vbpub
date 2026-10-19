@@ -17,7 +17,7 @@ import uuid
 import tomllib
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import expect
-from playwright.sync_api import sync_playwright
+from pwmcp_client import BrowserLease, PwmcpError
 
 from remote import RemoteError, Target, flatten_datasets
 from ui_resume import (
@@ -36,11 +36,16 @@ def report(stage: str, detail: str) -> None:
     print(f"[{stage}] {detail}", flush=True)
 
 
-def connect_pwmcp(playwright, ws_url: str):
+def connect_pwmcp(ws_url: str) -> BrowserLease:
     """Retry only a pre-session WebSocket handshake reset during worker recycle."""
     for attempt in range(3):
         try:
-            return playwright.chromium.connect(ws_url, timeout=120_000)
+            return BrowserLease.connect(
+                ws_url=ws_url,
+                lease_seconds=3600,
+                label="truenas-live-ui",
+                timeout_ms=120_000,
+            )
         except PlaywrightError as exc:
             if "socket hang up" not in str(exc).lower() or attempt == 2:
                 raise
@@ -1217,7 +1222,7 @@ def assert_zvol_backing(target: Target, dataset: str, expected_size: int = 128 *
     return int(zfs_property(target, dataset, "used"))
 
 
-def allocate_zvol_probe(target: Target, dataset: str, *, marker: str) -> int:
+def allocate_zvol_probe(target: Target, dataset: str, *, marker: str) -> tuple[int, str]:
     device = f"/dev/zvol/{dataset}"
     target.run([
         "dd", "if=/dev/urandom", f"of={device}", "bs=4096", "count=16", "conv=notrunc", "status=none",
@@ -1230,7 +1235,7 @@ def allocate_zvol_probe(target: Target, dataset: str, *, marker: str) -> int:
             f"cannot verify data written to zvol {dataset}")
     used = int(zfs_property(target, dataset, "used"))
     require(used > 0, f"writing {marker} to {dataset} did not allocate ZFS space")
-    return used
+    return used, digest.split()[0]
 
 
 def ensure_select_value(page, dialog, label: str, value: str) -> None:
@@ -1407,12 +1412,21 @@ def fill_numeric_control(dialog, label: str, value: str) -> bool:
 
 def create_container_in_ui(
     page, base_url: str, *, pool: str, name: str, image_name: str, image_version: str,
+    autostart: bool = True,
 ) -> None:
     page.goto(base_url + "/ui/containers", wait_until="domcontentloaded", timeout=120_000)
     page.get_by_role("button", name="Create New Container", exact=True).click()
     dialog = page.get_by_role("dialog", name="Slide-in form", exact=True)
     dialog.wait_for(state="visible", timeout=120_000)
     record_dialog(page, dialog, "container-ui-form")
+    autostart_control = dialog.get_by_role("checkbox", name="Autostart", exact=True)
+    require(autostart_control.count() == 1 and autostart_control.is_visible(),
+            "container form does not expose one visible Autostart control")
+    if autostart_control.is_checked() != autostart:
+        autostart_control.set_checked(autostart)
+    require(autostart_control.is_checked() == autostart,
+            f"container UI Autostart control did not retain {autostart}")
+    report("container-ui-autostart", f"selected Autostart={autostart} through the UI")
     pool_selector = dialog.get_by_role("combobox", name="Pool", exact=True)
     pool_selector.wait_for(state="visible", timeout=60_000)
     require(
@@ -1615,6 +1629,18 @@ def main() -> int:
     profile = required_env("TRUENAS_STORAGE_PROFILE")
     if profile not in {"path-a", "path-b"}:
         raise RemoteError("TRUENAS_STORAGE_PROFILE must be path-a or path-b")
+    preserve_setting = os.environ.get("TRUENAS_TEST_PRESERVE_UI_WORKLOADS", "")
+    if preserve_setting not in {"", "0", "1"}:
+        raise RemoteError("TRUENAS_TEST_PRESERVE_UI_WORKLOADS must be unset, 0, or 1")
+    preserve_ui_workloads = preserve_setting == "1"
+    if preserve_ui_workloads and profile != "path-a":
+        raise RemoteError("TRUENAS_TEST_PRESERVE_UI_WORKLOADS=1 is only supported for Path A")
+    workload_manifest_path: Path | None = None
+    if preserve_ui_workloads:
+        manifest_value = required_env("TRUENAS_UI_WORKLOAD_MANIFEST")
+        workload_manifest_path = Path(manifest_value).resolve()
+        if workload_manifest_path.exists():
+            raise RemoteError(f"refusing to overwrite existing UI workload manifest: {workload_manifest_path}")
     resume_existing_root = os.environ.get("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT", "")
     if resume_existing_root not in {"", "1"}:
         raise RemoteError("TRUENAS_TEST_RESUME_EXISTING_UI_ROOT must be unset or 1")
@@ -1688,7 +1714,7 @@ def main() -> int:
     temporary_pool_name: str | None = None
     cache_attached = False
     cleanup_errors: list[str] = []
-    browser = None
+    preserve_created_workloads = False
     page = None
     ui_stage = "before-browser"
     image_name = "alpine:3.24:amd64:default"
@@ -1711,10 +1737,10 @@ def main() -> int:
     )
 
     try:
-        with sync_playwright() as playwright:
-            ui_stage = "connect-pwmcp"
-            report("browser", "connecting to PWMCP Playwright endpoint")
-            browser = connect_pwmcp(playwright, ws_url)
+        ui_stage = "connect-pwmcp"
+        report("browser", "connecting to PWMCP Playwright endpoint with a managed browser lease")
+        with connect_pwmcp(ws_url) as browser_lease:
+            browser = browser_lease.browser
             report("browser", "connected to PWMCP")
             context = browser.new_context(ignore_https_errors=True, viewport={"width": 1440, "height": 1000})
             page = context.new_page()
@@ -1795,8 +1821,12 @@ def main() -> int:
                 "dd", "if=/dev/urandom", f"of={probe_file}", "bs=4096", "count=16", "status=none",
             ], timeout=90)
             probe_bytes = int(target.run(["wc", "-c", probe_file]).split()[0])
+            probe_sha256 = target.shell(f"sha256sum {shlex.quote(probe_file)}").split()[0]
             dataset_used_after = assert_filesystem_backing(target, created_dataset, mountpoint)
-            require(probe_bytes == 65_536 and dataset_used_after > dataset_used_before,
+            require(
+                probe_bytes == 65_536
+                and re.fullmatch(r"[0-9a-f]{64}", probe_sha256) is not None
+                and dataset_used_after > dataset_used_before,
                     f"dataset write did not increase ZFS use: before={dataset_used_before}, "
                     f"after={dataset_used_after}, bytes={probe_bytes}")
             report(
@@ -1811,8 +1841,14 @@ def main() -> int:
             )
             require(wait_dataset(target, vm_zvol, present=True), f"UI-created VM zvol is missing: {vm_zvol}")
             vm_zvol_used = assert_zvol_backing(target, vm_zvol)
-            vm_zvol_used = allocate_zvol_probe(target, vm_zvol, marker="VM disk probe")
-            report("zvol-ui", f"created {vm_zvol}; 65536 bytes written; ZFS used={vm_zvol_used}")
+            vm_zvol_used, vm_zvol_sha256 = allocate_zvol_probe(
+                target, vm_zvol, marker="VM disk probe",
+            )
+            report(
+                "zvol-ui",
+                f"created {vm_zvol}; 65536 bytes written; SHA-256={vm_zvol_sha256}; "
+                f"ZFS used={vm_zvol_used}",
+            )
 
             ui_stage = "cache-zvol-create"
             cache_zvol = create_zvol_in_ui(
@@ -1822,55 +1858,65 @@ def main() -> int:
                     f"UI-created cache-device zvol is missing: {cache_zvol}")
             cache_zvol_used = assert_zvol_backing(target, cache_zvol)
             require(cache_zvol_used >= 0, f"invalid ZFS used value for {cache_zvol}: {cache_zvol_used}")
+            cache_zvol_used, cache_zvol_sha256 = allocate_zvol_probe(
+                target, cache_zvol, marker="cache-device zvol probe",
+            )
 
             ui_stage = "cache-vdev-use"
-            temporary_pool_name = f"patchcache{suffix[-10:]}"
-            temporary_pool_file = f"{mountpoint}/cache-target.img"
-            target.run(["truncate", "-s", "256M", temporary_pool_file], timeout=90)
-            target.shell(
-                "zpool create -f -o cachefile=none -o altroot=/mnt -O mountpoint=none "
-                f"{shlex.quote(temporary_pool_name)} {shlex.quote(temporary_pool_file)}",
-                timeout=120,
-            )
-            cache_device = f"/dev/zvol/{cache_zvol}"
-            target.shell(
-                f"zpool add {shlex.quote(temporary_pool_name)} cache {shlex.quote(cache_device)}",
-                timeout=120,
-            )
-            cache_attached = True
-            cache_status = target.shell(f"zpool status -P {shlex.quote(temporary_pool_name)}")
-            require(cache_device in cache_status and "cache" in cache_status.lower(),
-                    "temporary pool status does not show the UI-created zvol as a cache vdev")
-            cache_pool_health = target.shell(
-                f"zpool list -H -o health {shlex.quote(temporary_pool_name)}"
-            )
-            require(cache_pool_health == "ONLINE",
-                    f"temporary cache target pool health is {cache_pool_health!r}")
-            target.shell(
-                f"zpool remove {shlex.quote(temporary_pool_name)} {shlex.quote(cache_device)}",
-                timeout=120,
-            )
-            cache_attached = False
-            require(cache_device not in target.shell(f"zpool status -P {shlex.quote(temporary_pool_name)}"),
-                    "cache vdev removal did not remove the UI-created zvol")
-            cache_zvol_used = int(zfs_property(target, cache_zvol, "used"))
-            require(cache_zvol_used > 0, f"cache vdev writes did not allocate space on {cache_zvol}")
-            target.shell(f"zpool export {shlex.quote(temporary_pool_name)}", timeout=120)
-            remaining_pools = target.shell("zpool list -H -o name").splitlines()
-            require(temporary_pool_name not in remaining_pools,
-                    f"temporary cache pool {temporary_pool_name} remains imported")
-            report(
-                "cache-device",
-                f"UI-created {cache_zvol} stored ZFS data and served as a cache vdev for a "
-                f"temporary file-backed pool; add/status/remove/export passed (ZFS used={cache_zvol_used})",
-            )
-            temporary_pool_name = None
+            if preserve_ui_workloads:
+                report(
+                    "cache-device",
+                    f"UI-created {cache_zvol} and wrote a 65536-byte data probe with "
+                    f"SHA-256={cache_zvol_sha256}; skipped direct zpool role attachment in UI migration mode",
+                )
+            else:
+                temporary_pool_name = f"patchcache{suffix[-10:]}"
+                temporary_pool_file = f"{mountpoint}/cache-target.img"
+                target.run(["truncate", "-s", "256M", temporary_pool_file], timeout=90)
+                target.shell(
+                    "zpool create -f -o cachefile=none -o altroot=/mnt -O mountpoint=none "
+                    f"{shlex.quote(temporary_pool_name)} {shlex.quote(temporary_pool_file)}",
+                    timeout=120,
+                )
+                cache_device = f"/dev/zvol/{cache_zvol}"
+                target.shell(
+                    f"zpool add {shlex.quote(temporary_pool_name)} cache {shlex.quote(cache_device)}",
+                    timeout=120,
+                )
+                cache_attached = True
+                cache_status = target.shell(f"zpool status -P {shlex.quote(temporary_pool_name)}")
+                require(cache_device in cache_status and "cache" in cache_status.lower(),
+                        "temporary pool status does not show the UI-created zvol as a cache vdev")
+                cache_pool_health = target.shell(
+                    f"zpool list -H -o health {shlex.quote(temporary_pool_name)}"
+                )
+                require(cache_pool_health == "ONLINE",
+                        f"temporary cache target pool health is {cache_pool_health!r}")
+                target.shell(
+                    f"zpool remove {shlex.quote(temporary_pool_name)} {shlex.quote(cache_device)}",
+                    timeout=120,
+                )
+                cache_attached = False
+                require(cache_device not in target.shell(f"zpool status -P {shlex.quote(temporary_pool_name)}"),
+                        "cache vdev removal did not remove the UI-created zvol")
+                cache_zvol_used = int(zfs_property(target, cache_zvol, "used"))
+                require(cache_zvol_used > 0, f"cache vdev writes did not allocate space on {cache_zvol}")
+                target.shell(f"zpool export {shlex.quote(temporary_pool_name)}", timeout=120)
+                remaining_pools = target.shell("zpool list -H -o name").splitlines()
+                require(temporary_pool_name not in remaining_pools,
+                        f"temporary cache pool {temporary_pool_name} remains imported")
+                report(
+                    "cache-device",
+                    f"UI-created {cache_zvol} stored ZFS data and served as a cache vdev for a "
+                    f"temporary file-backed pool; add/status/remove/export passed (ZFS used={cache_zvol_used})",
+                )
+                temporary_pool_name = None
 
             ui_stage = "container-create"
             report("container-ui", f"submitting a container on pool {pool} using {image_name}")
             create_container_in_ui(
                 page, base_url, pool=pool, name=container_name, image_name=image_name,
-                image_version=image_version,
+                image_version=image_version, autostart=not preserve_ui_workloads,
             )
             submitted_container = rpc_object_for_name(
                 container_create_requests, "container.create", container_name,
@@ -1951,6 +1997,63 @@ def main() -> int:
                 f"zvol is on {pool} and uses {vm_zvol_used} bytes",
             )
 
+            if preserve_ui_workloads:
+                container_state = (container_row.get("status") or {}).get("state")
+                require(
+                    container_state != "RUNNING",
+                    f"UI-created container is running despite Autostart=false: {container_state!r}",
+                )
+                require(workload_manifest_path is not None,
+                        "migration mode has no UI workload manifest path")
+                manifest = {
+                    "schema_version": 1,
+                    "target_version": version,
+                    "profile": profile,
+                    "pool": pool,
+                    "filesystem": {
+                        "dataset": created_dataset,
+                        "mountpoint": mountpoint,
+                        "probe_file": probe_file,
+                        "probe_bytes": probe_bytes,
+                        "probe_sha256": probe_sha256,
+                    },
+                    "container": {
+                        "name": container_name,
+                        "id": container_id,
+                        "pool": pool,
+                        "state_before_reboot": container_state,
+                        "dataset": container_dataset,
+                        "image_dataset": image_dataset,
+                        "image_name": image_name,
+                        "image_version": image_version,
+                    },
+                    "vm": {
+                        "name": vm_name,
+                        "id": vm_id,
+                        "pool": pool,
+                        "zvol": vm_zvol,
+                        "device_path": f"/dev/zvol/{vm_zvol}",
+                    },
+                    "zvols": {
+                        "vm_disk": {"dataset": vm_zvol, "sha256": vm_zvol_sha256, "bytes": 65_536},
+                        "cache_device": {
+                            "dataset": cache_zvol,
+                            "sha256": cache_zvol_sha256,
+                            "bytes": 65_536,
+                        },
+                    },
+                }
+                workload_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+                workload_manifest_path.write_text(
+                    json.dumps(manifest, sort_keys=True, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                preserve_created_workloads = True
+                report(
+                    "migration-manifest",
+                    f"preserving UI-created dataset/container/VM/zvols; manifest={workload_manifest_path}",
+                )
+
             ui_stage = "shares-page"
             report("shares-ui", "opening SMB and NFS sections")
             page.goto(base_url + "/ui/sharing", wait_until="domcontentloaded", timeout=120_000)
@@ -1968,6 +2071,11 @@ def main() -> int:
             report("shares-ui", "SMB and NFS share pages/actions are available")
             context.close()
 
+    except PwmcpError as exc:
+        detail = str(exc).strip().replace("\n", " ")[-1600:]
+        raise RemoteError(
+            f"PWMCP browser lease failed during {ui_stage}: {type(exc).__name__}: {detail}"
+        ) from None
     except PlaywrightError as exc:
         detail = str(exc).strip().replace("\n", " ")[-1600:]
         raise RemoteError(
@@ -1975,12 +2083,7 @@ def main() -> int:
             f"{type(exc).__name__}: {detail}"
         ) from None
     finally:
-        if browser is not None:
-            try:
-                browser.close()
-            except PlaywrightError:
-                pass
-        if container_id is not None:
+        if container_id is not None and not preserve_created_workloads:
             try:
                 current = target.query("container.query", [["id", "=", container_id]], timeout=60)
                 if current and (current[0].get("status") or {}).get("state") == "RUNNING":
@@ -2004,7 +2107,7 @@ def main() -> int:
                     cleanup_errors.append(f"UI container dataset {container_dataset} remains after delete")
             except Exception as exc:
                 cleanup_errors.append(f"UI container {container_id}: {exc}")
-        if vm_id is not None:
+        if vm_id is not None and not preserve_created_workloads:
             try:
                 current = target.query("vm.query", [["id", "=", vm_id]], timeout=60)
                 if current and (current[0].get("status") or {}).get("state") == "RUNNING":
@@ -2031,7 +2134,7 @@ def main() -> int:
                     cleanup_errors.append(f"temporary cache pool {temporary_pool_name} remains imported")
             except Exception as exc:
                 cleanup_errors.append(f"temporary cache pool {temporary_pool_name}: {exc}")
-        if dataset_created:
+        if dataset_created and not preserve_created_workloads:
             try:
                 existing = flatten_datasets(target.query("pool.dataset.query", timeout=120))
                 if created_dataset in existing:
@@ -2051,6 +2154,8 @@ def main() -> int:
                 cleanup_errors.append(f"UI test dataset cleanup failed: {exc}")
         if cleanup_errors:
             report("cleanup-error", "; ".join(cleanup_errors))
+        if preserve_created_workloads:
+            report("cleanup", "retained the manifest-backed UI workload tree for migration acceptance")
 
     if cleanup_errors:
         raise RemoteError("cleanup failed: " + "; ".join(cleanup_errors))

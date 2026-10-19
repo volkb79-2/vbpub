@@ -3,9 +3,32 @@
 For the current release/path test matrix, active gate checkpoint, and exact
 resume instructions, see [`HANDOFF.md`](HANDOFF.md).
 
-## Current checkpoint: Path B UI cannot see the reserved partition; auxiliary zvols are refused
+## Current checkpoint: v27 Path A UI workloads pass reboot; v28 migration remains open
 
 ## Live validation status (2026-10-19)
+
+A fresh patched Path A guest from the golden ISO now has registered evidence for
+UI-created dataset/zvol/container/VM setup, UI container and blank-VM
+Start/Stop, and the same workload actions after a controlled v27 reboot. The
+root and child filesystem remounted, boot-pool remained healthy, and the
+recorded filesystem/zvol hashes were unchanged. Evidence:
+[`live-ui-v27-path-a-golden-ui-migration-20261019.log`](artifacts/live-ui-v27-path-a-golden-ui-migration-20261019.log),
+[`live-boot-v27-golden-ui-migration-20261019.log`](artifacts/live-boot-v27-golden-ui-migration-20261019.log),
+[`live-inspect-v27-golden-ui-migration-20261019-post-reboot.log`](artifacts/live-inspect-v27-golden-ui-migration-20261019-post-reboot.log),
+[`live-ui-workloads-v27-golden-ui-migration-20261019-post-reboot.log`](artifacts/live-ui-workloads-v27-golden-ui-migration-20261019-post-reboot.log).
+The manifest is
+[`ui-workloads.json`](artifacts/v27-golden-ui-migration-20261019/ui-workloads.json).
+These results do not prove guest OS boot or a separate user-data volume mounted
+inside the container. The v27-to-v28 update and v28 patch have not yet been
+tested with these records and hashes.
+
+The current managed VM is stopped with its overlay and read-only update ISO
+retained. It has not passed a new inventory after resume. Re-run registered
+read-only `live-inspect` before any mutation; replace it from the golden image
+and regenerate the manifest if the current guest is not reachable.
+
+The latest registered patch unit lane passed 156 tests + 45 subtests:
+[`unit-boot-pool-patch-v27-progress-dialog-20261019.log`](artifacts/unit-boot-pool-patch-v27-progress-dialog-20261019.log).
 
 The earlier Path A r4, Path B r1, and topology guests were retired through
 `tcg_vm.py`; their saved state directories remain as artifacts. A clean Path A
@@ -39,13 +62,13 @@ A post-attempt registered read-only inventory passed at
 This is not Path B UI acceptance: creation of `/dev/vda4`, creation and
 registration of `boot-disk-data`, and downstream storage checks remain open.
 
-The latest clean Path A PWMCP run passed the UI workflows above; root creation
-and its 2 GiB quota, exact mountpoint, `canmount=on`, and live mount had passed
-on this guest in the preceding registered UI setup. Cache-zvol add/status/
-remove was exercised on a temporary file-backed pool. The UI gate did not
-create shares, test NFS/SMB clients, start a VM through the UI, boot a guest
-OS, or use a real second-disk cache target. These v27 results do not establish
-retention of pre-existing workloads through v27→v28.
+The UI setup gate creates the root and its 2 GiB quota, exact mountpoint,
+`canmount=on`, and live mount; the separate workload gate starts and stops the
+container and blank VM through the UI. Cache-zvol add/status/remove was
+exercised on a temporary file-backed pool. The UI lanes have not created
+shares, tested NFS/SMB clients, booted a VM guest OS, attached the user probe
+filesystem inside the container, or used a real second-disk cache target.
+These v27 results do not establish retention through v27→v28.
 
 The registered v27 Path A `live-vdev-topology` diagnostic created seven UI
 zvols of 128 MiB, a 4 GiB sparse single-disk target, and a three-disk 1 GiB
@@ -74,7 +97,7 @@ See the release-pinned [pool service source](https://github.com/truenas/middlewa
 and its [create](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/pool_/pool.py#L526-L552)
 and [existing-pool update path](https://github.com/truenas/middleware/blob/d83c3bf89aa4226c8fd1ef25dd273bdf447eb777/src/middlewared/middlewared/plugins/pool_/pool.py#L711-L719).
 
-The latest registered patch unit lane passed 149 tests + 45 subtests:
+An earlier registered patch unit run passed 149 tests + 45 subtests:
 [`unit-boot-pool-patch-v27-ui-session-timeout-20261019.log`](artifacts/unit-boot-pool-patch-v27-ui-session-timeout-20261019.log).
 
 TrueNAS 27 sessions expire after the configured per-user idle duration, and
@@ -89,10 +112,12 @@ and [Advanced Settings guide](https://www.truenas.com/docs/scale/27/systemsettin
 
 Open checks:
 
-- [ ] Verify retention and continued use of a pre-existing Path A filesystem,
-  persistent container dataset/record, and VM record/zvol across a v27→v28
-  update and reapplying the exact v28 patch. The current update test manually
-  mounted a marker before hashing and had no pre-existing workload records.
+- [ ] Run manifest-backed update acceptance on the fresh v27 Path A workload
+  guest, then apply the exact v28 patch, reboot, and verify the same records,
+  VM zvol, mountpoints, filesystem/zvol hashes, and UI Start/Stop actions. The
+  update lane now reports the natural post-update mount state before manual
+  repair, but it has not yet run against these pre-existing UI-created records.
+  Do not claim automatic post-update access from a later manual remount.
 - [ ] Find a supported UI/API inventory path for Path B that lets the UI create
   `/dev/vda4` and then create/register `boot-disk-data`. Keep the guarded
   partition-only lane first in the baseline sequence; do not select `/dev/vda`
@@ -117,12 +142,10 @@ Open checks:
   automatic remount, share-client access, VM guest boot, actual KVM selection,
   physical fault tolerance, endurance, latency, and performance open until
   direct evidence closes each item.
-- [ ] Build a retention gate with UI-created Path A data, a persistent container,
-  and a VM record backed by a zvol; update v27 to v28, reapply the v28 patch,
-  then verify the same records, IDs, disks, mounts, and data through the API and
-  UI, and exercise container/VM restartability. Existing update evidence used
-  a standalone marker and manual mount, while post-update storage tests created
-  fresh objects.
+- [x] Add a manifest-backed retention path to `live-update` that checks UI
+  workload records and filesystem/zvol hashes before update and after reboot,
+  and reports the natural mount state before any manual repair. Live acceptance
+  against the preserved v27 UI-created workloads remains open.
 
 ## Earlier checkpoint: all four existing-container protection gates passed
 

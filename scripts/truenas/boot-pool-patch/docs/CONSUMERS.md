@@ -130,6 +130,26 @@ probe datasets, containers, or VM records. See the
 [post-run inventory](../artifacts/live-inspect-v27-path-a-clean-20261019-post-ui.log).
 This proves the tested UI actions, not retention through a v27→v28 update.
 
+For reboot and update acceptance, preserve the objects from `live-ui` by
+setting `TRUENAS_TEST_PRESERVE_UI_WORKLOADS=1` and a new
+`TRUENAS_UI_WORKLOAD_MANIFEST` path inside this worktree. The wrapper exports
+the manifest from its read-only tester before cleanup. Then run
+`live-ui-workloads` with the same manifest path. That lane submits Start and
+Stop for the recorded container and VM through the TrueNAS UI, requires the
+matching middleware requests and status transitions, and verifies the
+filesystem and both zvol hashes. It can be run again after a controlled
+reboot or update; the manifest identifies the original UI-created objects.
+
+```bash
+export TRUENAS_UI_WORKLOAD_MANIFEST="$PWD/boot-pool-patch/artifacts/path-a-ui-workloads.json"
+export TRUENAS_TEST_PRESERVE_UI_WORKLOADS=1
+/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui \
+  --vm-container truenas-v27-ui-a-fresh --allow-dirty
+unset TRUENAS_TEST_PRESERVE_UI_WORKLOADS
+/home/vscode/.venv/bin/python boot-pool-patch/run-live-gate.py live-ui-workloads \
+  --vm-container truenas-v27-ui-a-fresh --allow-dirty
+```
+
 On the tested TrueNAS 27.0.0-RC.1 UI, open the signed-in account menu and
 choose **Preferences**. The page shows **Session Timeout**; the registered UI
 check saw 300 seconds. This is a per-user idle timeout and activity resets it.
@@ -533,6 +553,7 @@ export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
 export TRUENAS_UPDATE_EXPECTED_VERSION='28.0.0-MASTER+20261014-230204'
 export TRUENAS_UPDATE_ISO="$PWD/boot-pool-patch/artifacts/TrueNAS-28.0.0-MASTER-20261014-230204.iso"
 export TRUENAS_UPDATE_METADATA="$PWD/boot-pool-patch/v28-nightly-20261014/update-artifact.json"
+export TRUENAS_UI_WORKLOAD_MANIFEST="$PWD/boot-pool-patch/artifacts/path-a-ui-workloads.json" # optional; emitted by preserve-enabled live-ui
 export TRUENAS_TEST_ALLOW_MUTATIONS=1
 export TRUENAS_TEST_ALLOW_UPDATE=1
 export TRUENAS_TEST_ALLOW_REBOOT=1
@@ -552,6 +573,15 @@ is therefore still unverified. The earlier interrupted job 65 reached 49%
 extraction and belongs only to its preserved old COW state; do not use it as a
 resume command. The complete successful log is
 [`live-update-v27-to-v28-20261017.log`](../artifacts/live-update-v27-to-v28-20261017.log).
+
+When `TRUENAS_UI_WORKLOAD_MANIFEST` is set, the gate also checks the original
+container/VM records and filesystem/zvol hashes before the update, after the
+reboot before mount repair, and after any repair. It reports the natural
+post-update mount state before changing it. A final PASS after manual repair
+proves stored data remains readable after repair; it does not prove natural
+automatic mounting or UI workload operation before repair. Continue with the
+ordered checks in the
+[successor prompt](../successor-handoff-v27-path-a-v28-migration-20261019.md).
 
 If a transport failure happens after `update.manual` starts, do not invoke the
 initial update again on that same COW state. Record the job ID, proof dataset,
