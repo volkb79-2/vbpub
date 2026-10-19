@@ -602,9 +602,45 @@ def do_build(ignore_new_releases: bool) -> None:
         sys.stderr.write(f"[ERROR] Build failed. Exit code: {exc.returncode}\n")
         raise SystemExit(exc.returncode) from None
 
+    if release_image_flow == "load":
+        write_layout_transaction(build_date, build_timestamp)
+
     # Post-build manifest extraction: copy the in-image canonical manifest
     # into package-manifests-versioned/ so the committed version matches.
     extract_manifests(build_date, env_vars)
+
+
+LAYOUT_TRANSACTION_FILE = "transaction.json"
+
+
+def write_layout_transaction(build_date: str, build_timestamp: str) -> Path:
+    """Bind the OCI layouts to THIS build (the oci-push lane refuses anything else).
+
+    Records, next to the layouts, the build date/timestamp (the same values saved in
+    .build-env.json), the source commit the build ran at and each layout's top index digest. A layout
+    left over from another build, another commit, or edited since cannot match all of them.
+    """
+    root = _oci_layout_dir()
+    targets: dict[str, str] = {}
+    for layout in sorted(p for p in root.glob("*") if (p / "oci-layout").is_file() and (p / "index.json").is_file()):
+        index = json.loads((layout / "index.json").read_text(encoding="utf-8"))
+        manifests = index.get("manifests") or []
+        if not manifests:
+            raise SystemExit(f"[ERROR] OCI layout {layout} has no manifests")
+        targets[layout.name] = manifests[0]["digest"]
+    if not targets:
+        raise SystemExit(f"[ERROR] The build left no OCI layout under {root}")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+    path = root / LAYOUT_TRANSACTION_FILE
+    path.write_text(
+        json.dumps(
+            {"build_date": build_date, "build_timestamp": build_timestamp, "source_head": head, "targets": targets},
+            indent=2, sort_keys=True,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    sys.stderr.write(f"[INFO] Bound {len(targets)} OCI layout(s) to this build: {path}\n")
+    return path
 
 
 _MANIFEST_PATH = "/usr/local/share/mdt-cockpit/manifest.md"

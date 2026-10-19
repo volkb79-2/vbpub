@@ -50,35 +50,165 @@ class Driver(unittest.TestCase):
         source = Path(lane.__file__).read_text(encoding="utf-8")
         self.assertNotIn("MDT_OCI_PUSH_IMAGE", source.split('"""', 2)[2])
 
-    def test_no_layout_means_no_image_was_built_and_the_lane_fails(self) -> None:
+    # ── V4: the layout is bound to THIS build and the target is explicit ──────────────────────────────
+
+    HEAD = "h" * 40
+    SOURCE = "s" * 40
+
+    def make_build(self, tmp: str, *, targets=("trixie-py314-php85", "trixie-py314-php85-vsc")) -> tuple[Path, Path]:
+        import json
+
+        import shutil
+
+        root = Path(tmp) / "oci-layouts"
+        shutil.rmtree(root, ignore_errors=True)
+        root.mkdir()
+        recorded = {}
+        for name in targets:
+            d = root / name
+            d.mkdir()
+            (d / "oci-layout").write_text("{}")
+            digest = "sha256:" + (name[-1] * 64 if name[-1].isalnum() else "0" * 64)
+            (d / "index.json").write_text(json.dumps({"manifests": [{"digest": digest}]}))
+            recorded[name] = digest
+        (root / "transaction.json").write_text(json.dumps(
+            {"build_date": "20261019", "build_timestamp": "2026-10-19T00:00:00Z", "source_head": self.SOURCE, "targets": recorded}))
+        env = Path(tmp) / "build-env.json"
+        env.write_text(json.dumps({"vars": {"BUILD_DATE": "20261019", "BUILD_TIMESTAMP": "2026-10-19T00:00:00Z"}}))
+        return root, env
+
+    def fake_git(self, *, ancestor: bool = True, changed: str = "package-manifests-versioned/x.md\n"):
+        def git(args: list[str]):
+            import subprocess
+
+            out = {"rev-parse": self.HEAD + "\n", "merge-base": "", "diff": changed}[args[0]]
+            return subprocess.CompletedProcess(args, 0 if (args[0] != "merge-base" or ancestor) else 1, stdout=out, stderr="")
+        return git
+
+    def accept(self, tmp: str, target: str = "trixie-py314-php85", **kwargs) -> Path:
+        root, env = self.make_build(tmp)
+        return lane.find_layout(root, target, git=self.fake_git(**kwargs), build_env=env, prefixes=["package-manifests-versioned"])
+
+    def test_a_layout_of_this_build_is_accepted_and_the_target_is_the_named_one(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(self.accept(tmp).name, "trixie-py314-php85")
+            self.assertEqual(self.accept(tmp, "trixie-py314-php85-vsc").name, "trixie-py314-php85-vsc")
+
+    def test_no_transaction_record_means_no_image_was_built_in_this_transaction(self) -> None:
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
             for root in (Path(tmp) / "missing", Path(tmp)):
                 with self.assertRaises(SystemExit) as ctx:
-                    lane.find_layout(root)
-                self.assertIn("no image was built", str(ctx.exception))
-            (Path(tmp) / "half").mkdir()
-            (Path(tmp) / "half" / "oci-layout").write_text("{}")  # no index.json: not a layout
-            with self.assertRaises(SystemExit):
-                lane.find_layout(Path(tmp))
+                    lane.find_layout(root, "trixie-py314-php85")
+                self.assertIn("no image was built in this transaction", str(ctx.exception))
 
-    def test_the_first_complete_layout_is_chosen_and_its_digest_read(self) -> None:
+    def test_the_target_is_required_and_must_have_been_built(self) -> None:
+        import tempfile
+
+        with self.assertRaises(SystemExit):
+            lane.parse_args([])
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as ctx:
+                self.accept(tmp, "trixie-py311")
+            self.assertIn("not in", str(ctx.exception))
+        import tomllib
+
+        argv = tomllib.loads((Path(lane.__file__).resolve().parents[1] / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["oci-push"]["argv"]
+        self.assertEqual(argv[-2:], ["--target", "trixie-py314-php85"])
+
+    def test_a_stray_layout_beside_the_build_is_ambiguous(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, env = self.make_build(tmp)
+            stray = root / "old-target"
+            stray.mkdir()
+            (stray / "oci-layout").write_text("{}")
+            with self.assertRaises(SystemExit) as ctx:
+                lane.find_layout(root, "trixie-py314-php85", git=self.fake_git(), build_env=env, prefixes=["package-manifests-versioned"])
+            self.assertIn("ambiguous", str(ctx.exception))
+
+    def test_a_layout_edited_after_the_build_is_refused(self) -> None:
         import json
         import tempfile
 
         with tempfile.TemporaryDirectory() as tmp:
-            for name, digest in (("trixie-py3.14-php8.5-vsc", "sha256:" + "b" * 64), ("trixie-py3.14-php8.5", "sha256:" + "a" * 64)):
-                d = Path(tmp) / name
-                d.mkdir()
-                (d / "oci-layout").write_text("{}")
-                (d / "index.json").write_text(json.dumps({"manifests": [{"digest": digest}]}))
-            chosen = lane.find_layout(Path(tmp))
-            self.assertEqual(chosen.name, "trixie-py3.14-php8.5")
-            self.assertEqual(lane.top_digest(chosen), "sha256:" + "a" * 64)
-            (chosen / "index.json").write_text(json.dumps({"manifests": []}))
+            root, env = self.make_build(tmp)
+            (root / "trixie-py314-php85" / "index.json").write_text(json.dumps({"manifests": [{"digest": "sha256:" + "f" * 64}]}))
+            with self.assertRaises(SystemExit) as ctx:
+                lane.find_layout(root, "trixie-py314-php85", git=self.fake_git(), build_env=env, prefixes=["package-manifests-versioned"])
+            self.assertIn("changed since the build", str(ctx.exception))
+
+    def test_a_saved_build_state_from_another_build_means_stale_layouts(self) -> None:
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root, env = self.make_build(tmp)
+            for key, value in (("BUILD_DATE", "20260101"), ("BUILD_TIMESTAMP", "2026-01-01T00:00:00Z")):
+                saved = json.loads(env.read_text())
+                saved["vars"][key] = value
+                env.write_text(json.dumps(saved))
+                with self.assertRaises(SystemExit) as ctx:
+                    lane.find_layout(root, "trixie-py314-php85", git=self.fake_git(), build_env=env, prefixes=["package-manifests-versioned"])
+                self.assertIn("stale layouts", str(ctx.exception))
+                saved["vars"][key] = {"BUILD_DATE": "20261019", "BUILD_TIMESTAMP": "2026-10-19T00:00:00Z"}[key]
+                env.write_text(json.dumps(saved))
+            env.unlink()
             with self.assertRaises(SystemExit):
-                lane.top_digest(chosen)
+                lane.find_layout(root, "trixie-py314-php85", git=self.fake_git(), build_env=env, prefixes=["package-manifests-versioned"])
+
+    def test_layouts_built_at_an_unrelated_commit_or_before_a_source_change_are_refused(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(SystemExit) as ctx:
+                self.accept(tmp, ancestor=False)
+            self.assertIn("not an ancestor", str(ctx.exception))
+            with self.assertRaises(SystemExit) as ctx:
+                self.accept(tmp, changed="scripts/test_local_dev.py\npackage-manifests-versioned/x.md\n")
+            self.assertIn("sources changed since the layouts were built", str(ctx.exception))
+
+    def test_build_push_writes_the_transaction_record_the_lane_reads(self) -> None:
+        import importlib.util
+        import json
+        import os
+        import tempfile
+
+        spec = importlib.util.spec_from_file_location("bp_under_test", Path(lane.__file__).resolve().parents[1] / "build-push.py")
+        bp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(bp)
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _env = self.make_build(tmp)
+            (root / "transaction.json").unlink()
+            os.environ["MDT_OCI_LAYOUT_DIR"] = str(root)
+            try:
+                path = bp.write_layout_transaction("20261019", "2026-10-19T00:00:00Z")
+            finally:
+                del os.environ["MDT_OCI_LAYOUT_DIR"]
+            record = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(sorted(record["targets"]), ["trixie-py314-php85", "trixie-py314-php85-vsc"])
+        self.assertEqual((record["build_date"], record["build_timestamp"]), ("20261019", "2026-10-19T00:00:00Z"))
+        self.assertRegex(record["source_head"], r"^[0-9a-f]{40}$")
+
+    def test_do_build_binds_the_layouts_after_a_successful_load_flow_build(self) -> None:
+        source = (Path(lane.__file__).resolve().parents[1] / "build-push.py").read_text(encoding="utf-8")
+        body = source[source.index("def do_build("):source.index("LAYOUT_TRANSACTION_FILE")]
+        self.assertIn('if release_image_flow == "load":\n        write_layout_transaction(build_date, build_timestamp)', body)
+        self.assertLess(body.index('run_step(config_path, "build")'), body.index("write_layout_transaction("))
+        self.assertLess(body.index("write_layout_transaction("), body.index("extract_manifests(build_date, env_vars)"))
+
+    def test_the_private_tag_and_container_are_removed_even_when_the_load_fails(self) -> None:
+        source = Path(lane.__file__).read_text(encoding="utf-8")
+        main = source[source.index("def main("):]
+        finally_block = main[main.index("    finally:"):]
+        self.assertIn('"docker", "rm", "-f", name', finally_block)
+        self.assertIn('"docker", "rmi", tag', finally_block)
+        self.assertNotIn("if imported", finally_block, "the tag is removed unconditionally")
+        self.assertLess(main.index("try:"), main.index("import_image(layout, tag)"), "the load runs inside the try")
 
     def test_the_export_is_platform_pinned_and_named_for_docker_load(self) -> None:
         argv = lane.export_argv(Path("/l"), "sha256:" + "a" * 64, "mdt-cockpit-oci-push:9")

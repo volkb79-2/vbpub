@@ -48,7 +48,7 @@ budget = "15m"
 [lanes.oci-push]
 kind = "command"
 environment = "bare-host"
-argv = ["python3", "scripts/run_oci_push_lane.py"]
+argv = ["python3", "scripts/run_oci_push_lane.py", "--target", "trixie-py314-php85"]
 clean_tree = true
 required_env = ["CGROUP_PARENT_DEV_GATES"]
 budget = "20m"

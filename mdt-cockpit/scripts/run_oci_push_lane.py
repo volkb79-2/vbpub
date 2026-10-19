@@ -5,10 +5,13 @@ The OCI-layout push test needs docker, buildx, crane and regctl, which tester-un
 ship and the mdt-cockpit image does. This driver runs on the bare host and runs the test inside
 THE IMAGE THE RELEASE JUST BUILT: nobody types a ref. In the shipped `RELEASE_IMAGE_FLOW=load` the
 `prepare` step leaves one OCI layout per bake target under `build/oci-layouts/` (the directory
-`build-push.py` itself resolves); this driver imports the first one into the local docker store
-under a private unique tag (`regctl image export | docker load`, because this daemon cannot load an
-OCI layout directly), runs the lane in it and removes that tag by exact name. If the release built
-no image there is nothing to test and the lane FAILS - it never falls back to another image.
+`build-push.py` itself resolves) plus `transaction.json`, which binds them to that build. The driver
+takes the layout of the target named by `--target` (explicit, no default), accepts it only when the
+binding proves it belongs to THIS build (recorded digest, saved build state, commit lineage, no stray
+layouts - see `find_layout`), imports it into the local docker store under a private unique tag
+(`regctl image export | docker load`, because this daemon cannot load an OCI layout directly), runs the
+lane in it and removes the container and that tag by exact name even when the load fails partway. A
+missing, stale or ambiguous layout makes the lane FAIL - it never falls back to another image.
 
 * the container is placed in the gate tier (`--cgroup-parent $CGROUP_PARENT_DEV_GATES`),
   `--init`, uniquely named and removed BY EXACT NAME;
@@ -19,11 +22,13 @@ no image there is nothing to test and the lane FAILS - it never falls back to an
 """
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -46,22 +51,75 @@ def require_gates(environ: dict[str, str]) -> str:
 
 def layout_root() -> Path:
     """The directory build-push.py writes the per-target OCI layouts to (its own resolution)."""
+    return _build_push()._oci_layout_dir()
+
+
+def _build_push():
     spec = importlib.util.spec_from_file_location("mdt_build_push", ROOT / "build-push.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module._oci_layout_dir()
+    return module
 
 
-def find_layout(root: Path) -> Path:
-    """The OCI layout of the image the release built; FAIL when it built none."""
-    layouts = sorted(p for p in root.glob("*") if (p / "oci-layout").is_file() and (p / "index.json").is_file()) if root.is_dir() else []
-    if not layouts:
+def _git(args: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=False)
+
+
+def generated_prefixes() -> list[str]:
+    """Project-relative paths the release is allowed to commit between the build and the gate."""
+    with (ROOT / "cmru.toml").open("rb") as handle:
+        return list(tomllib.load(handle)["project"]["release"].get("commit_generated", []))
+
+
+def layout_digest(layout: Path) -> str:
+    return top_digest(layout)
+
+
+def find_layout(root: Path, target: str, git=_git, build_env: Path | None = None, prefixes: list[str] | None = None) -> Path:
+    """The OCI layout of `target`, proven to belong to THIS build; anything else FAILS.
+
+    The release's `prepare` step leaves `transaction.json` beside the layouts (build-push.py). A layout is
+    accepted only when ALL of these hold: the manifest exists and names the target; the layout's top
+    digest equals the recorded one; no other layout sits beside it unrecorded (ambiguous or stale);
+    the saved build state (.build-env.json) carries the same BUILD_DATE and BUILD_TIMESTAMP; and the
+    commit the build ran at is an ancestor of HEAD with nothing but the declared generated paths
+    changed since.
+    """
+    manifest_path = root / "transaction.json"
+    if not manifest_path.is_file():
         raise SystemExit(
-            f"oci-push: no image was built in this transaction (no OCI layout under {root}). "
-            "The lane tests inside the image the release just built and has no fallback; run it "
-            "after the `prepare` step (`build-push.py --build`)."
+            f"oci-push: no image was built in this transaction (no {manifest_path}). The lane tests inside the "
+            "image the release just built and has no fallback; run it after the `prepare` step "
+            "(`build-push.py --build`)."
         )
-    return layouts[0]
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    recorded = manifest.get("targets") or {}
+    if target not in recorded:
+        raise SystemExit(f"oci-push: target {target!r} is not in {manifest_path} (built: {sorted(recorded)})")
+    present = sorted(p.name for p in root.glob("*") if (p / "oci-layout").is_file())
+    extra = [name for name in present if name not in recorded]
+    if extra:
+        raise SystemExit(f"oci-push: ambiguous layouts: {extra} sit beside the build's {sorted(recorded)} but are not part of it")
+    layout = root / target
+    if not (layout / "index.json").is_file():
+        raise SystemExit(f"oci-push: the recorded layout {layout} is missing")
+    if layout_digest(layout) != recorded[target]:
+        raise SystemExit(f"oci-push: {layout} changed since the build (digest {layout_digest(layout)} != recorded {recorded[target]})")
+    env_path = build_env or (ROOT / ".build-env.json")
+    saved = (json.loads(env_path.read_text(encoding="utf-8")).get("vars") or {}) if env_path.is_file() else {}
+    for key, field in (("BUILD_DATE", "build_date"), ("BUILD_TIMESTAMP", "build_timestamp")):
+        if saved.get(key) != manifest.get(field):
+            raise SystemExit(f"oci-push: the saved build state has {key}={saved.get(key)!r}, the layouts were built with {manifest.get(field)!r}: stale layouts")
+    head = git(["rev-parse", "HEAD"]).stdout.strip()
+    source = str(manifest.get("source_head", ""))
+    if git(["merge-base", "--is-ancestor", source, head]).returncode != 0:
+        raise SystemExit(f"oci-push: the layouts were built at {source}, which is not an ancestor of HEAD {head}")
+    changed = [line for line in git(["diff", "--name-only", "--relative", source, head, "--", "."]).stdout.splitlines() if line]
+    allowed = generated_prefixes() if prefixes is None else prefixes
+    foreign = [c for c in changed if not any(c == a or c.startswith(a.rstrip("/") + "/") for a in allowed)]
+    if foreign:
+        raise SystemExit(f"oci-push: sources changed since the layouts were built (not generated outputs): {foreign[:5]}")
+    return layout
 
 
 def top_digest(layout: Path) -> str:
@@ -98,18 +156,23 @@ def tracked_tar_argv() -> list[str]:
     return ["bash", "-c", "git ls-files -z -- mdt-cockpit | tar --null -T - -c"]
 
 
-def main() -> int:
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run the OCI-layout push tests inside the image this release built.")
+    parser.add_argument("--target", required=True, help="the bake target whose image the tests run in (explicit, no default)")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
     gates = require_gates(dict(os.environ))
-    layout = find_layout(layout_root())
+    layout = find_layout(layout_root(), args.target)
     tag = f"mdt-cockpit-oci-push:{os.getpid()}"
     name = f"mdt-cockpit-oci-push-{os.getpid()}"
     repo_root = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"], cwd=ROOT, capture_output=True, text=True, check=True
     ).stdout.strip()
-    imported = False
     try:
         import_image(layout, tag)
-        imported = True
         tar = subprocess.Popen(tracked_tar_argv(), cwd=repo_root, stdout=subprocess.PIPE)
         run = subprocess.run(docker_run_argv(tag, gates, name), stdin=tar.stdout, check=False)
         tar.stdout.close()
@@ -118,9 +181,9 @@ def main() -> int:
             return 1
         return run.returncode
     finally:
+        # always, even when `docker load` failed partway: remove the container and the private tag by exact name
         subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
-        if imported:
-            subprocess.run(["docker", "rmi", tag], capture_output=True, check=False)  # exact private tag
+        subprocess.run(["docker", "rmi", tag], capture_output=True, check=False)
 
 
 if __name__ == "__main__":

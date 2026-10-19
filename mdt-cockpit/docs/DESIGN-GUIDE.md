@@ -417,6 +417,16 @@ resolves). The driver exports the first with `regctl image export --name <privat
 name. With no layout the lane fails with "no image was built in this transaction": it never falls
 back to another image, and the `required_env` of the lane is only the gate tier.
 
+**The layout is bound to the build, and the target is explicit.** `build-push.py` writes
+`build/oci-layouts/transaction.json` after a successful load-flow build: the build date and timestamp
+(the same values saved in `.build-env.json`), the commit it ran at and each layout's top index digest.
+The lane names its target (`--target trixie-py314-php85`, no default) and accepts the layout only when
+all of these hold: the record names the target; the layout's digest equals the recorded one; no layout
+sits beside it unrecorded (ambiguous); `.build-env.json` carries the same date and timestamp; and the
+build commit is an ancestor of `HEAD` with nothing but the declared `commit_generated` paths changed
+since. A stale, edited or ambiguous layout fails the lane. The container and the private tag are
+removed by exact name even when `docker load` fails partway.
+
 ## Built-image acceptance is a separate test boundary
 
 Source tests in `tester-unified` cannot certify the image filesystem or its
