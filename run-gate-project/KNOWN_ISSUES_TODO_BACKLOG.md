@@ -6334,7 +6334,7 @@ Bump `__revision__`, update the consumer transcript.
 refuses with a message naming both knobs, or resolves to the single declared tester-base digest; a
 grep over the tree finds no remaining MDT-cockpit image reference in run-gate code or SPEC.
 
-**Numbering note (INT-01, 2026-10-19):** the parked `pending stop drops CGProfile session and kill evidence` item (park/stash@2) also used `RG-105`; this entry keeps `RG-105`/`RG-106` because it is the one merged. The parked item takes `RG-107` or later when it lands.
+**Numbering note (INT-01, 2026-10-19):** the parked `pending stop drops CGProfile session and kill evidence` item (park/stash@2) also used `RG-105`; this entry keeps `RG-105`/`RG-106` because it is the one merged. The parked item takes `RG-108` or later when it lands (`RG-107` is the assay-snapshot tag item below).
 
 ## RG-106 — environments have no `user` key; a root-run `host` environment (tester-base) can leave root-owned files in the bind-mounted worktree
 
@@ -6375,3 +6375,20 @@ CONSUMERS.md.
 config without the key does not; (3) an unknown `user` value or a literal that is not `uid[:gid]` is rejected at
 load; (4) a lane that writes into the worktree through such an environment leaves files owned by the invoker;
 (5) an environment on an image with no passwd entry for the resolved uid is refused with the estate-rule message.
+
+## RG-107 — `TestPointerLinkageEstate::test_cmru_release_body_uses_the_versioned_changelog` needs a local `run-gate-v*` tag, so the `assay-r1` lane fails in R0
+
+**Status:** OPEN (found by the INT-01 `assay-r1` run, 2026-10-19; severity: minor, lane-only). Pre-existing: the test,
+`tools/release_candidate.py` and `assay.toml` are byte-identical to `run-gate-v24.0.1` (`git diff run-gate-v24.0.1 HEAD`
+over them is empty).
+
+**Observed.** `assay-r1` runs `pytest tests` on assay's isolated snapshot of the resolved commit, which by design carries no
+refs or tags (assay DESIGN-GUIDE, "Snapshot refs and tags are intentionally not ..."). Once `CHANGES.md` has a dated
+`[24.0.0]` section the test calls `candidate._latest_release_tag()`, which lists local `run-gate-v*` tags and raises
+`NoStableReleaseTag`; it is the only failure of 2184 (`1 failed, 2183 passed, 2 skipped`). `selftest` passes the same test
+because it runs in the worktree where the tags exist. The INT-01 conflict-marker guard passed in the same run (it is not
+the cause).
+
+**Fix direction.** Make the test independent of ambient tags: build its own throwaway repository with a `run-gate-v24.0.0`
+tag (the pattern of the neighbouring `test_first_release_*` tests) instead of reading the checkout's, or skip with a stated
+reason when the checkout has no tags. A checked-in lane that is red for an environment reason hides real R0 failures.
