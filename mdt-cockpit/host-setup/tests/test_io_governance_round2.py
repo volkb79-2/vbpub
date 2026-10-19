@@ -38,7 +38,7 @@ class RotationalFlagFromConfigTests(unittest.TestCase):
     def _env(self, conf: Path | None):
         env = {k: v for k, v in os.environ.items() if k != "IO_BASELINE_ROTATIONAL_FLAG"}
         if conf is not None:
-            env["CONF"] = str(conf)
+            env["MDT_HOST_SETUP_CONF"] = str(conf)
         return mock.patch.dict(os.environ, env, clear=True)
 
     def test_without_the_flag_the_inflated_numbers_are_refused(self) -> None:
@@ -167,3 +167,40 @@ class CalibrateMissingModuleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FinalRoundTests(unittest.TestCase):
+    def _bash(self, script: str, **env: str) -> str:
+        lib = SCRIPTS / "mdt-container-io-caps.lib.sh"
+        return subprocess.run(["bash", "-c", f'log(){{ :; }}; . "{lib}"; {script}'], env={**os.environ, **env},
+                              text=True, stdout=subprocess.PIPE).stdout.strip()
+
+    def test_no_active_swap_is_not_reported_as_every_swap_disk_capped(self) -> None:
+        """H-15"""
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        head = "Filename Type Size Used Priority\n"
+        (d / "swaps").write_text(head)
+        self.assertEqual(self._bash("_mdt_active_swap_count", MDT_PROC_ROOT=str(d)), "0")
+        (d / "swaps").write_text(head + "/dev/zram0 partition 1 0 100\n")
+        self.assertEqual(self._bash("_mdt_active_swap_count", MDT_PROC_ROOT=str(d)), "0")
+        (d / "swaps").write_text(head + "/dev/vda6 partition 1 0 -2\n/dev/zram0 partition 1 0 100\n")
+        self.assertEqual(self._bash("_mdt_active_swap_count", MDT_PROC_ROOT=str(d)), "1")
+        check = (SCRIPTS / "check.sh").read_text()
+        self.assertIn("no active swap", check)
+        self.assertIn("_mdt_active_swap_count", check)
+
+    def test_pin_only_hosts_are_told_the_slice_level_caps_are_the_whole_protection(self) -> None:
+        """H-16"""
+        for path in (ROOT / "README.md", PROJECT / "docs" / "CONSUMERS.md"):
+            flat = " ".join(path.read_text().split())
+            self.assertIn("pin-only host", flat, path.name)
+            self.assertIn("IOWeight=1", flat, path.name)
+            self.assertIn("inactive", flat, path.name)
+            self.assertIn("slice-level caps", flat, path.name)
+
+    def test_the_baseline_tool_uses_a_specific_config_override_not_a_bare_conf(self) -> None:
+        """H-17: a generic CONF in an operator's shell must not redirect the baseline tool."""
+        src = (SCRIPTS / "mdt-io-baseline.py").read_text()
+        self.assertIn("MDT_HOST_SETUP_CONF", src)
+        self.assertNotIn('os.environ.get("CONF")', src)

@@ -453,6 +453,19 @@ _mdt_verify_io_max() {
   return 1
 }
 
+# _mdt_active_swap_count: number of active swap devices that have a disk behind
+# them (zram and other memory-backed devices do not count).
+_mdt_active_swap_count() {
+  local proc="${MDT_PROC_ROOT:-/proc}" dev rest n=0
+  [ -r "$proc/swaps" ] || { echo 0; return 0; }
+  while read -r dev rest; do
+    [ "$dev" = Filename ] && continue
+    case "$dev" in */zram*|*/ram[0-9]*) continue ;; esac
+    [ -n "$dev" ] && n=$((n + 1))
+  done < "$proc/swaps"
+  echo "$n"
+}
+
 # _mdt_uncapped_swap_devices: for every active swap device on a real disk,
 # prints "<swap-device> <maj:min-of-its-whole-disk>" when dev.slice's io.max
 # has no entry for that disk (swap-out is charged to the page's memcg, so a

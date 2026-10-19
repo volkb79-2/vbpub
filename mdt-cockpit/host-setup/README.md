@@ -839,6 +839,18 @@ not the protection (D-HS-01-3). The withdraw path re-asserts values because a
 `daemon-reload` after removing a runtime drop-in was measured NOT to re-apply the
 unit-file value (D-HS-01-1).
 
+**On a pin-only host the slice-level caps are the whole protection.** On a virtual disk the
+baseline is normally absent or refused (implausible, stale after a kernel update), and the
+per-container caps (`WATCHER_IO_CAP_PCT`), the Docker-events watcher's caps and the per-scope
+`IOWeight=1`/`io.bfq.weight` deprioritisation of gate and BuildKit containers are applied only
+from a valid baseline, so on such a host they are INACTIVE. What remains, and is enough, is the
+slice level: the `dev.slice` pins, the per-tier `DEV_<TIER>_IO_*_MAX` caps and the slices' own
+`IOWeight` (`DEV_GATES_IO_WEIGHT`, `DEV_BUILDKITD_IO_WEIGHT`, rendered into the units). The
+per-scope `IOWeight=1` was deliberately NOT decoupled from the baseline: it is a relative
+share on top of the slice weight, applying it needs the same per-scope sweep and clear path
+as the caps, and doing so would change the reconcile logic of a change whose purpose is to
+make the slice-level caps verifiable.
+
 The caps derived from it sit in a **60-80% band** of the measured ceiling:
 `DEV_IO_CAP_PCT=60` for the whole `dev.slice` estate (it bounds every
 governed child together — protects PRODUCTION from the tier, but not tier

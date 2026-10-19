@@ -219,6 +219,12 @@ systemctl is-failed mdt-dev-governance-reconcile.service     # expect: active (n
 sudo mdt-cgroup-io-limits.sh dev.slice --all --systemd       # limits, EFFECTIVE, drop-in paths
 ```
 
+On a pin-only host (no valid baseline, the normal state on a virtio disk) the per-container
+caps, the Docker-events watcher caps and the per-scope `IOWeight=1` deprioritisation of
+gate and BuildKit containers are inactive: they need a valid baseline. The slice-level caps
+(the `dev.slice` pins and the per-tier keys, plus the slices' own `IOWeight`) are the whole
+protection, and are enough.
+
 Upgrading an existing host: the 20 pin keys (`DEV_IO_*_MAX` and `DEV_<TIER>_IO_*_MAX`) and
 `IO_BASELINE_ROTATIONAL_FLAG` are **runtime-optional**: absent from an older
 `/etc/mdt/host-setup.env` they mean "not set", so a plain `sudo ./host-setup/install.sh`

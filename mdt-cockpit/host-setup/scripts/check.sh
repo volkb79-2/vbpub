@@ -228,8 +228,10 @@ if [ -d "$DEV_PATH" ]; then
         warn "UNCAPPED SWAP: $_sd lies on disk $_sm which has NO dev.slice io.max entry — a dev container that swaps can saturate it"
       fi
     done <<<"$_swap_uncapped"
-  elif [ -r "${MDT_PROC_ROOT:-/proc}/swaps" ]; then
+  elif [ "$(_mdt_active_swap_count)" -gt 0 ]; then
     ok "every active swap disk has a dev.slice io.max entry"
+  else
+    info "no active swap — nothing to cap (swap-IO coverage is moot)"
   fi
   printf '  %-14s %s\n' io.bfq.weight "$(cat "$DEV_PATH/io.bfq.weight" 2>/dev/null)"
   _cpu_quota_check dev.slice DEV_CPU_QUOTA

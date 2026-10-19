@@ -271,11 +271,11 @@ def _shared_plausibility():
 
 def rotational_flag_ignored() -> bool:
     """IO_BASELINE_ROTATIONAL_FLAG=ignore, from the environment or, failing that, from
-    host-setup.env (CONF, default /etc/mdt/host-setup.env): the same file the reconcile
+    host-setup.env (MDT_HOST_SETUP_CONF, default /etc/mdt/host-setup.env): the same file the reconcile
     reads, so the tool that WRITES the baseline and the service that READS it agree."""
     value = os.environ.get("IO_BASELINE_ROTATIONAL_FLAG")
     if value is None or value == "":
-        conf = Path(os.environ.get("CONF") or "/etc/mdt/host-setup.env")
+        conf = Path(os.environ.get("MDT_HOST_SETUP_CONF") or "/etc/mdt/host-setup.env")
         value = parse_env(conf).get("IO_BASELINE_ROTATIONAL_FLAG", "").strip().strip("\"'")
     return value == "ignore"
 
