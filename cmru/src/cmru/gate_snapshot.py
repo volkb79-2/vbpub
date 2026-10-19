@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath
-from typing import Iterator
+from typing import Iterator, Mapping
 
 
 _LANE_EVIDENCE_FILES = (
@@ -122,16 +122,27 @@ def _read_pointer_file(path: Path, *, label: str) -> str:
             os.close(descriptor)
 
 
-def _process_start_ticks(pid: int) -> str | None:
-    """Read Linux process start time so a recycled PID is not treated as live."""
+def _process_stat_fields(pid: int) -> list[str] | None:
+    """Fields 3.. of ``/proc/<pid>/stat`` (state first), or None when unreadable."""
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
     except OSError:
         return None
     # The command name (field 2) may contain spaces and parentheses; the last ")"
     # ends it, and field 3 (state) is then index zero.
-    fields = raw[raw.rfind(")") + 2:].split()
-    return fields[19] if len(fields) > 19 else None
+    return raw[raw.rfind(")") + 2:].split()
+
+
+def _process_start_ticks(pid: int) -> str | None:
+    """Read Linux process start time so a recycled PID is not treated as live."""
+    fields = _process_stat_fields(pid)
+    return fields[19] if fields is not None and len(fields) > 19 else None
+
+
+def _process_state(pid: int) -> str | None:
+    """The one-letter Linux process state (``Z`` = exited, not yet reaped)."""
+    fields = _process_stat_fields(pid)
+    return fields[0] if fields else None
 
 
 def _local_namespace_identity() -> str | None:
@@ -200,7 +211,11 @@ def gate_lease_state(lease, *, now: datetime | None = None) -> str:
     pid = int(fields[1])
     start_ticks = _process_start_ticks(pid)
     if start_ticks is not None:
-        return LEASE_LIVE if start_ticks == fields[2] else LEASE_DEAD
+        if start_ticks != fields[2]:
+            return LEASE_DEAD
+        # A zombie has exited and holds nothing; only its unreaped /proc entry
+        # remains (a container without an init can leave many behind).
+        return LEASE_DEAD if _process_state(pid) == "Z" else LEASE_LIVE
     if Path(f"/proc/{pid}").exists():
         return LEASE_INDETERMINATE  # present but unreadable: cannot judge
     return LEASE_DEAD
@@ -214,13 +229,33 @@ def _worktree_api():
     return worktree
 
 
-@contextlib.contextmanager
-def _host_git_policy() -> Iterator[None]:
-    """Run lifecycle Git without system/global config, hooks, or fsmonitor."""
-    raw_count = os.environ.get("GIT_CONFIG_COUNT", "0")
+#: Ambient variables that point Git at another repository, index, object store or
+#: ref namespace than the checkout CMRU pinned. The release gate's
+#: ``_hardened_git_environment`` clears the same repository-location set (a test
+#: keeps this a superset of it); ``GIT_NAMESPACE`` is the ref-namespace addition.
+_AMBIENT_REPOSITORY_ENV = (
+    "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE",
+)
+
+
+def _environment_config_count(environment: Mapping[str, str]) -> int:
+    raw_count = environment.get("GIT_CONFIG_COUNT", "0")
     if not raw_count.isdecimal():
         raise RuntimeError("GIT_CONFIG_COUNT is malformed; refusing gate snapshot Git")
-    index = int(raw_count)
+    return int(raw_count)
+
+
+@contextlib.contextmanager
+def _host_git_policy() -> Iterator[None]:
+    """Run lifecycle Git without system/global config, hooks, fsmonitor, or redirection.
+
+    Ambient repository-location variables are removed for the duration, so a
+    lifecycle call cannot be pointed at another repository, index or object
+    store. Ambient environment config entries (Run-Gate's ``safe.directory``,
+    a transport proxy) are kept and the hook/fsmonitor policy is appended.
+    """
+    index = _environment_config_count(os.environ)
     updates = {
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_GLOBAL": os.devnull,
@@ -231,8 +266,10 @@ def _host_git_policy() -> Iterator[None]:
         f"GIT_CONFIG_KEY_{index + 1}": "core.fsmonitor",
         f"GIT_CONFIG_VALUE_{index + 1}": "false",
     }
-    previous = {key: os.environ.get(key) for key in updates}
+    previous = {key: os.environ.get(key) for key in (*updates, *_AMBIENT_REPOSITORY_ENV)}
     try:
+        for key in _AMBIENT_REPOSITORY_ENV:
+            os.environ.pop(key, None)
         os.environ.update(updates)
         yield
     finally:
@@ -241,6 +278,57 @@ def _host_git_policy() -> Iterator[None]:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = value
+
+
+def _snapshot_git_environment(root: Path) -> dict[str, str]:
+    """The complete environment of one snapshot check against the pinned checkout.
+
+    ``GIT_DIR``/``GIT_WORK_TREE`` name the verified linked worktree on top of
+    :func:`_hardened_snapshot_environment`, so every check reads that checkout's
+    own HEAD, index, objects and refs.
+    """
+    admin, _common = _linked_git_context(root)
+    environment = _hardened_snapshot_environment()
+    environment["GIT_DIR"] = str(admin)
+    environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
+    return environment
+
+
+def _hardened_snapshot_environment() -> dict[str, str]:
+    """A snapshot Git environment built from scratch rather than inherited.
+
+    No ambient repository, index, object-store or ref-namespace redirection,
+    and no environment-injected config except ``safe.directory`` entries
+    (Run-Gate's ownership policy in a gate container, where global config is
+    disabled), followed by the host hook/fsmonitor policy.
+    """
+    ambient = os.environ
+    safe_directories = [
+        ("safe.directory", ambient.get(f"GIT_CONFIG_VALUE_{index}", ""))
+        for index in range(_environment_config_count(ambient))
+        if ambient.get(f"GIT_CONFIG_KEY_{index}", "").lower() == "safe.directory"
+    ]
+    environment = {
+        key: value for key, value in ambient.items()
+        if key not in _AMBIENT_REPOSITORY_ENV
+        and key != "GIT_CONFIG_PARAMETERS"
+        and not key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
+    }
+    entries = [
+        *safe_directories,
+        ("core.hooksPath", os.devnull),
+        ("core.fsmonitor", "false"),
+    ]
+    environment.update({
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_CONFIG_COUNT": str(len(entries)),
+    })
+    for index, (key, value) in enumerate(entries):
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
+    return environment
 
 
 @contextlib.contextmanager
@@ -262,15 +350,10 @@ def host_git_hooks_disabled(root: Path) -> Iterator[None]:
 
 
 def _git(root: Path, *args: str, input: bytes | None = None) -> subprocess.CompletedProcess:
-    admin, _common = _linked_git_context(root)
-    with _host_git_policy():
-        environment = os.environ.copy()
-        environment["GIT_DIR"] = str(admin)
-        environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
-        result = subprocess.run(
-            ["git", *args], cwd=root, env=environment, capture_output=True,
-            text=False, check=False, input=input,
-        )
+    result = subprocess.run(
+        ["git", *args], cwd=root, env=_snapshot_git_environment(root), capture_output=True,
+        text=False, check=False, input=input,
+    )
     if result.returncode:
         detail = (result.stderr or result.stdout).decode("utf-8", "replace").strip()
         raise RuntimeError(
@@ -348,7 +431,8 @@ def _verify_tracked_files_match_commit(root: Path, commit: str) -> None:
         elif raw_mode == b"160000" and object_type == b"commit":
             nested_result = subprocess.run(
                 ["git", "-C", str(path), "rev-parse", "HEAD"],
-                cwd=root, capture_output=True, text=True, check=False,
+                cwd=root, env=_hardened_snapshot_environment(),
+                capture_output=True, text=True, check=False,
             )
             if nested_result.returncode != 0:
                 raise RuntimeError(f"cannot inspect tracked snapshot submodule: {relative}")
@@ -429,19 +513,14 @@ def _anchor_ref_values(root: Path) -> dict[str, str]:
 
 
 def _git_is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
-    admin, _common = _linked_git_context(root)
-    environment = os.environ.copy()
-    environment["GIT_DIR"] = str(admin)
-    environment["GIT_WORK_TREE"] = str(root.resolve(strict=True))
-    with _host_git_policy():
-        result = subprocess.run(
-            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
-            cwd=root,
-            env=environment,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+        cwd=root,
+        env=_snapshot_git_environment(root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     if result.returncode == 0:
         return True
     if result.returncode == 1:
@@ -605,6 +684,10 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
     branch = f"cmru-gate-{identity}"
     manifest_anchors = None
     manifest_judge: dict[str, object] = {}
+    # Raised only once a retained snapshot is known to exist: a manifest left
+    # behind by a removed snapshot describes no checkout and must not refuse
+    # (or bind) the fresh gate that replaces it.
+    manifest_problem: str | None = None
     if (
         prior_manifest
         and prior_manifest.get("source_commit") == head
@@ -621,7 +704,7 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         ) and "refs/heads/main" in candidate:
             manifest_anchors = dict(sorted(candidate.items()))
         elif "anchor_refs" in prior_manifest:
-            raise RuntimeError("CMRU gate snapshot has invalid main/tag ref anchors")
+            manifest_problem = "CMRU gate snapshot has invalid main/tag ref anchors"
         candidate_judge = prior_manifest.get("run_gate_identity")
         candidate_keys = set(candidate_judge) if isinstance(candidate_judge, dict) else set()
         version = candidate_judge.get("version") if isinstance(candidate_judge, dict) else None
@@ -666,7 +749,7 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
         if stable_version and complete_identity:
             manifest_judge = dict(candidate_judge)
         else:
-            raise RuntimeError(
+            manifest_problem = manifest_problem or (
                 "existing CMRU gate snapshot has no trusted Run-Gate identity; "
                 "remove the retained snapshot with `cmru gate-snapshots --remove "
                 "--include-current` and start a fresh gate"
@@ -676,6 +759,11 @@ def open_gate_snapshot(source_root: Path) -> GateSnapshot:
     records = api.list_workspaces(common)
     record = next((item for item in records if item.worktree_path == target), None)
     created = record is None
+    if created:
+        manifest_anchors = None
+        manifest_judge = {}
+    elif manifest_problem is not None:
+        raise RuntimeError(manifest_problem)
     if created or not prior_manifest or prior_manifest.get("snapshot_branch") != branch:
         manifest_refs = None
     if record is None:

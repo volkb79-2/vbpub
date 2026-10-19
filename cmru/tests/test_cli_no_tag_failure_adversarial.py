@@ -4,6 +4,7 @@ from cmru import cli, transaction, version
 
 
 def test_sequential_tagged_release_fails_closed_when_no_tag_reaches_head(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", git_tag=True, build_step="build")
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: None)

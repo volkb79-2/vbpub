@@ -2424,7 +2424,7 @@ def test_github_tag_commit_lookup_resolves_tag_ref_and_handles_unverifiable_resu
 
     monkeypatch.setattr(client, "_request", found)
     assert client.get_tag_commit("alpha-v1.2.3") == SOURCE_COMMIT
-    assert requests == [("GET", "https://api.github.com/repos/owner/repo/commits/tags/alpha-v1.2.3")]
+    assert requests == [("GET", "https://api.github.com/repos/owner/repo/commits/alpha-v1.2.3")]
 
     monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: (404, ""))
     assert client.get_tag_commit("missing") is None

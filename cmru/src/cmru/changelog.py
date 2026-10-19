@@ -23,6 +23,7 @@ from cmru.release_notes import (
     ReleaseNotes,
     ReleaseNotesError,
     extract_release_section,
+    has_unclosed_html_comment_outside_code,
     html_comments_outside_fenced_code,
     html_comment_positions_outside_fenced_code,
     markdown_h2_headings,
@@ -95,6 +96,13 @@ def fold_unreleased_notes(markdown: str, version: str) -> str | None:
     span = unreleased_span(markdown) if notes else None
     if span is None:
         return None
+    if has_unclosed_html_comment_outside_code(markdown[span[0]:span[1]]):
+        # Moving the visible notes would delete the text after the opener from
+        # the changelog and the release body alike; refuse instead of guessing.
+        raise ReleaseNotesError(
+            "the [Unreleased] notes contain an HTML comment (`<!--`) that is not closed "
+            "before the section ends; close or remove it so no note is hidden or dropped"
+        )
     comments = "".join(
         f"{item}\n\n"
         for item in html_comments_outside_fenced_code(markdown[span[0]:span[1]])

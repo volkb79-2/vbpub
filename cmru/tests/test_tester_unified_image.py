@@ -1484,8 +1484,13 @@ def test_dockerfile_pins_the_released_asset_and_digest_by_default_and_latest_is_
     assert re.search(r'latest\) set -- --pointer-url "\$\{CLI_EXTENDED_POINTER_URL\}" '
                      r'--expect-sha256 "\$\{CLI_EXTENDED_WHEEL_SHA256\}" ;;', flat)
     # every mode verifies the wheel file actually installed against that digest
+    # `flat` has collapsed runs of spaces, so match the separator loosely here and pin the
+    # exact two-space `sha256sum -c` line format on the unflattened text just below.
     assert re.search(r'fi && set -- /tmp/cli-extended-release/cli_extended-\*\.whl && \[ "\$#" -eq 1 \] '
-                     r'&& \[ -f "\$1" \] && echo "\$\{CLI_EXTENDED_WHEEL_SHA256\}  \$1" \| sha256sum -c -', flat)
+                     r'&& \[ -f "\$1" \] && echo "\$\{CLI_EXTENDED_WHEEL_SHA256\}\s+\$1" \| sha256sum -c -', flat)
+    assert 'echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -\n\n' in text, (
+        "sha256sum -c reads `<digest><two spaces><file>`"
+    )
     assert re.search(r'^LABEL org\.vbpub\.cli-extended\.wheel-sha256="\$\{CLI_EXTENDED_WHEEL_SHA256\}"$',
                      text, re.MULTILINE)
     assert re.search(r'\*\) echo "[^"]*" >&2; exit 1 ;;', flat)
@@ -1556,6 +1561,72 @@ def test_dockerignore_admits_the_local_wheel_input_and_gitignore_keeps_wheels_ou
     assert _dockerignore_included("tester-unified/local-wheel/.gitkeep")
     ignore = (REPO_ROOT / ".gitignore").read_text("utf-8").splitlines()
     assert "tester-unified/local-wheel/*.whl" in ignore
+
+
+@pytest.mark.parametrize(("trove", "wheel_inputs"), [
+    ("cmru/nyxloom-trove", ("cmru/pyproject.toml", "cmru/src/cmru/cli.py")),
+    (
+        "scripts/cgroup-profiler/nyxloom-trove",
+        ("scripts/cgroup-profiler/pyproject.toml", "scripts/cgroup-profiler/cgprofile.py"),
+    ),
+], ids=["cmru", "cgroup-profiler"])
+def test_dockerignore_keeps_repository_only_trove_reports_out_of_the_wheel_source_tree(
+    trove, wheel_inputs,
+):
+    """A review report is evidence, not a wheel input: it must never reach /src/<project>.
+
+    Without the rule every new report under the trove lands in the COPYed wheel tree, so
+    persisting a review would fail the COPY-input accounting test until it was committed.
+    The wheel's real inputs stay in the context.
+    """
+    rules = _dockerignore_rules()
+    # A report that does not exist yet is excluded too: the rule is the directory, not a list.
+    assert not _dockerignore_included(f"{trove}/reports/a-review-not-written-yet.md", rules)
+    assert not _dockerignore_included(f"{trove}/nyxloom.toml", rules)
+    committed = [path for path in _git_tree_context_paths() if path.as_posix().startswith(f"{trove}/")]
+    assert committed, f"{trove} has no committed files; the rule would guard nothing"
+    assert not [path for path in committed if _dockerignore_included(path.as_posix(), rules)]
+    for wheel_input in wheel_inputs:
+        assert _dockerignore_included(wheel_input, rules), wheel_input
+
+
+_GENERATED_BUILD_OUTPUT_RULES = ("**/build", "**/dist", "**/*.egg-info")
+
+
+@pytest.mark.parametrize("generated", [
+    "cmru/build/lib/cmru/a_module_deleted_from_source.py",
+    "cmru/dist/cmru-0.0.0-py3-none-any.whl",
+    "cmru/cmru.egg-info/PKG-INFO",
+    "cmru/src/cmru.egg-info/SOURCES.txt",
+    "ciu/build/lib/ciu/stale.py",
+    "assay/dist/assay-0.0.0-py3-none-any.whl",
+    "scripts/cgroup-profiler/build/lib/cgprofile.py",
+])
+def test_dockerignore_keeps_local_build_output_out_of_the_wheel_source_trees(generated):
+    """Local wheel-build output must never reach a COPYed /src/<project> tree.
+
+    `pip wheel /src/<project>` builds in place, and setuptools reuses an existing
+    build/lib, so a stale module from a developer's earlier local build could be
+    packaged into the image's wheel even after it was deleted from source.
+    """
+    rules = _dockerignore_rules()
+    for rule in _GENERATED_BUILD_OUTPUT_RULES:
+        assert rule in [line.strip() for line in rules], rule
+    assert not _dockerignore_included(generated, rules)
+
+
+def test_dockerignore_build_output_rules_hide_no_committed_context_path():
+    """The generated-output rules exclude only generated output, never a tracked input."""
+    rules = _dockerignore_rules()
+    without = [line for line in rules if line.strip() not in _GENERATED_BUILD_OUTPUT_RULES]
+    assert len(without) == len(rules) - len(_GENERATED_BUILD_OUTPUT_RULES)
+    hidden = sorted(
+        path.as_posix() for path in _git_tree_context_paths()
+        if any(part in {"build", "dist"} or part.endswith(".egg-info") for part in path.parts)
+        and _dockerignore_included(path.as_posix(), without)
+        and not _dockerignore_included(path.as_posix(), rules)
+    )
+    assert not hidden, hidden
 
 
 def test_dockerfile_fetch_floor_equals_cmru_declared_floor():
@@ -3506,6 +3577,32 @@ def test_zero_release_image_base_and_cli_extended_source_are_explicit():
         value = declared_env[key]
         assert f"{key}={value}" in bootstrap or f"{key}='{value}'" in bootstrap, key
     assert f"docker pull {declared_env['CMRU_TESTER_CGROUP_PROBE_IMAGE']}" in bootstrap
+
+
+def test_the_final_stage_labels_the_base_it_was_built_from():
+    """``org.vbpub.tester-unified.base-image`` must carry the build-time base value.
+
+    A pre-FROM ``ARG`` is not visible inside the stage unless redeclared, so the
+    label must follow an in-stage ``ARG TESTER_UNIFIED_BASE_IMAGE`` with no
+    default of its own; otherwise it would record an empty or fixed value, and
+    ``build-image.sh`` / Run-Gate's release preparation would compare against it.
+    """
+    text = DOCKERFILE.read_text(encoding="utf-8")
+    # build-image.sh and Run-Gate both read the single default with one pattern.
+    defaults = re.findall(r"^ARG TESTER_UNIFIED_BASE_IMAGE=(.*)$", text, re.MULTILINE)
+    assert len(defaults) == 1 and defaults[0].strip(), defaults
+    instructions = _dockerfile_instructions_by_stage(text)
+    final = max(ordinal for ordinal, _selector, _index, _instruction in instructions)
+    stage = [instruction for ordinal, _s, _i, instruction in instructions if ordinal == final]
+    assert stage[0] == "FROM ${TESTER_UNIFIED_BASE_IMAGE}"
+    label = 'LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"'
+    assert stage.count(label) == 1
+    redeclared = [index for index, instruction in enumerate(stage) if instruction == "ARG TESTER_UNIFIED_BASE_IMAGE"]
+    assert redeclared and redeclared[0] < stage.index(label)
+    # Nothing in the stage rebinds the value the label records.
+    assert not any(instruction.startswith("ARG TESTER_UNIFIED_BASE_IMAGE=") for instruction in stage)
+    builder = (REPO_ROOT / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
+    assert '{{index .Config.Labels "org.vbpub.tester-unified.base-image"}}' in builder
 
 
 def test_wheel_builder_does_not_depend_on_a_published_vbpub_image():

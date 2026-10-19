@@ -17,6 +17,12 @@ PENDING = (
     "```sh\ntool migrate --yes\n```"
 )
 
+
+@pytest.fixture(autouse=True)
+def default_release_source_for_synthetic_transactions(monkeypatch):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
+
 DOCUMENT = f"""\
 # Changelog
 
@@ -181,6 +187,96 @@ def test_folding_moves_notes_into_the_candidate_version_and_clears_unreleased():
     assert f"{PENDING_NOTES_END}\n\n## [1.0.0]" in updated
     # idempotent: the candidate section already owns the notes
     assert changelog.fold_unreleased_notes(updated, "2.0.0") is None
+
+
+_INLINE_CODE_DOCUMENT = (
+    "# Changelog\n\n## [Unreleased]\n\n{notes}\n\n<!-- cmru: release history -->\n\n"
+    "## [2.0.0] - 2026-10-17\n<!-- cmru: generated -->\n- feat: x\n"
+)
+
+
+@pytest.mark.parametrize("notes", [
+    "- The marker `<!-- cmru: generated -->` is now documented.\n- second entry",
+    "- An unclosed opener such as `<!--` is literal text here.\n- second entry",
+    "- Quote ``<!-- a ` b -->`` with a double-backtick span.\n- second entry",
+    "- The history marker `<!-- cmru: release history -->` stays text.\n- second entry",
+], ids=["closed-comment", "unclosed-opener", "double-backtick", "history-marker"])
+def test_a_comment_quoted_in_inline_code_is_folded_verbatim_and_never_hoisted(notes):
+    """Inline code is text: a quoted comment marker must not blank or swallow notes."""
+    document = _INLINE_CODE_DOCUMENT.format(notes=notes)
+    assert release_notes.unreleased_body(document) == notes
+
+    updated = changelog.fold_unreleased_notes(document, "2.0.0")
+
+    assert updated is not None
+    assert release_notes.unreleased_body(updated) == ""
+    assert "## [Unreleased]\n\n<!-- cmru: release history -->" in updated
+    section = release_notes.extract_release_section(updated, "2.0.0", source="x").text
+    assert section.endswith(f"{PENDING_NOTES_BEGIN}\n{notes}\n{PENDING_NOTES_END}")
+
+
+@pytest.mark.parametrize(("notes", "comments", "body"), [
+    (
+        "- `<!--` real <!-- c --> tail",
+        ("<!-- c -->",), "- `<!--` real            tail",
+    ),
+    (
+        "- use `foo\nbar` <!-- keep me --> `baz`",
+        ("<!-- keep me -->",), "- use `foo\nbar`                  `baz`",
+    ),
+    (
+        "- literal \\` tick <!-- c --> and `x`",
+        ("<!-- c -->",), "- literal \\` tick            and `x`",
+    ),
+    (
+        "- a `span that\ncontinues <!-- quoted --> here` then",
+        (), "- a `span that\ncontinues <!-- quoted --> here` then",
+    ),
+    (
+        "- a `open\n\n<!-- real -->\n- b`",
+        ("<!-- real -->",), "- a `open\n\n             \n- b`",
+    ),
+    (
+        "```python\ns = '```x'\n<!-- fenced -->\n```\n- after",
+        (), "```python\ns = '```x'\n<!-- fenced -->\n```\n- after",
+    ),
+], ids=["quoted-opener-then-real", "two-line-span-then-real", "escaped-backtick",
+        "comment-inside-two-line-span", "blank-line-ends-span", "fence-opener-backticks"])
+def test_inline_code_follows_commonmark_spans_and_comments_are_exact(notes, comments, body):
+    """Comments are reported verbatim and only outside code; spans may continue
+    within their paragraph; an escaped backtick never opens a span."""
+    document = _INLINE_CODE_DOCUMENT.format(notes=notes)
+    unreleased = document[:document.index("<!-- cmru: release history -->")]
+    assert release_notes.html_comments_outside_fenced_code(unreleased) == comments
+    assert release_notes.unreleased_body(document) == body
+
+
+def test_a_span_across_three_lines_is_opaque_and_an_unclosed_final_backtick_is_literal():
+    three = "- a `span\nover three\nlines <!-- quoted --> x` <!-- real --> end"
+    assert release_notes.html_comments_outside_fenced_code(three) == ("<!-- real -->",)
+    # No closing run before the end of input: the backtick is literal text.
+    assert release_notes.html_comments_outside_fenced_code("x `open <!-- c -->") == ("<!-- c -->",)
+
+
+def test_an_unclosed_comment_is_masked_to_the_end_but_never_reported_as_a_comment():
+    assert release_notes.html_comments_outside_fenced_code("a <!-- never closed\nb") == ()
+    assert release_notes._mask_html_comments("a <!-- x\nb") == "a       \n "
+
+
+def test_an_unclosed_comment_in_pending_notes_refuses_the_fold_instead_of_dropping_notes():
+    document = DOCUMENT.replace(PENDING, "- kept note\n<!-- TODO\n- note after the opener")
+
+    with pytest.raises(ReleaseNotesError, match="not closed before the section ends"):
+        changelog.fold_unreleased_notes(document, "2.0.0")
+    assert release_notes.has_unclosed_html_comment_outside_code("a <!-- open\nb")
+    assert not release_notes.has_unclosed_html_comment_outside_code("a <!-- shut --> b")
+
+
+def test_an_unmatched_backtick_leaves_a_following_comment_a_real_comment():
+    document = _INLINE_CODE_DOCUMENT.format(notes="- a lone ` backtick <!-- hidden --> stays\n- second")
+    assert release_notes.html_comments_outside_fenced_code(document) == (
+        "<!-- hidden -->", "<!-- cmru: release history -->", "<!-- cmru: generated -->",
+    )
 
 
 def test_a_second_release_can_fold_notes_when_the_prior_version_has_fold_markers():

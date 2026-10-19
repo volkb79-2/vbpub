@@ -29,7 +29,11 @@ def installed_release_controller_identity() -> Mapping[str, str]:
 
     direct_url_text = installed.read_text("direct_url.json")
     if direct_url_text is None:
-        raise RuntimeError("CMRU release requires wheel provenance in direct_url.json")
+        raise RuntimeError(
+            "CMRU release requires wheel provenance in direct_url.json; pip records it "
+            "only for a direct requirement, so reinstall from the wheel file itself "
+            "(`pip install --no-deps --force-reinstall ./cmru-<version>-py3-none-any.whl`)"
+        )
     try:
         direct_url = json.loads(direct_url_text)
     except json.JSONDecodeError as exc:

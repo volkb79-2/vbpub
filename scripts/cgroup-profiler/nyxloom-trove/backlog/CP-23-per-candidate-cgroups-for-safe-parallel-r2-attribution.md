@@ -7,7 +7,7 @@ status: open
 type: "feature"
 component: "resource-observer"
 context_estimate: "large"
-provenance: "Claude Opus 5.5 high systems review, 2026-10-13; Assay B156/A-491 and B110 pilot constraints"
+provenance: "Claude Opus 5.5 high systems review, 2026-10-13; Assay B157/A-491 and B110 pilot constraints"
 filed_by: "vbpub maintenance"
 spec_owner: "cgroup-profiler resource observer"
 priority: 1

@@ -2,6 +2,7 @@ from cmru import cli, transaction, version
 
 
 def test_child_release_reports_nothing_built_when_sequential_result_is_empty(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", github_token="token")
     config = (
         tmp_path, {"demo": project}, ["demo"], ["demo"], ["demo"], "project-first", {},

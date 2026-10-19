@@ -16,6 +16,13 @@ import pytest
 from cmru import cli, transaction
 
 
+@pytest.fixture(autouse=True)
+def _default_source_mode_for_synthetic_workspaces(monkeypatch):
+    # These are default-mode edge tests using synthetic workspace objects.
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_: None)
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
+
+
 def test_local_tag_helpers_validate_git_object_ids_and_existence(monkeypatch, tmp_path):
     oid = "a" * 40
     original_local_git_tag_oid = cli.local_git_tag_oid

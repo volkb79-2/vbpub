@@ -263,9 +263,27 @@ marks it `+bootstrap.source`. The standalone wheel-builder uses Microsoft's
 upstream Python base, so this bootstrap does not depend on MDT's published
 image. The bootstrap verifies the builder image's dedicated label and
 rebuilds a missing or mismatched tag from this Dockerfile, rather than
-mistaking an unrelated local tag for the builder. In a checkout with no CMRU tag, the operator supplies a temporary local
-version for the bootstrap controller; that version is not a release tag or
-published artifact. The graph keeps actual package and release-gate prerequisites separate
+mistaking an unrelated local tag for the builder. The operator supplies a temporary local
+version (`0.0.0+bootstrap.source`) for the bootstrap controller whether or not the checkout has a CMRU tag;
+that version is not a release tag or published artifact. The wheel builder bind-mounts the
+LIVE working tree, but the script's identity is HEAD (its derived version and
+`SOURCE_DATE_EPOCH`), and this wheel becomes the controller of later releases. Building from an
+exact-OID snapshot would need a second source path through `wheel-build`; the smaller safe
+contract is a refusal: before any Docker invocation, the host probe included, the script
+requires that tracked edits, untracked files and Git-ignored files that setuptools would still
+package (it ignores `.gitignore` when packaging a source root) are absent under
+`cmru/pyproject.toml`, `cmru/src` and `libraries/worktree/src` and, only in source mode, the
+`cli-extended` library, and an unreadable Git state is a refusal rather than "clean". Unrelated
+dirt elsewhere in the checkout does not block it, and `wheel-build` itself is unchanged. The
+script builds and records the
+two wheels but installs nothing: the guide's first step installs them and puts the owning
+environment first on `PATH` before the first `cmru` command, so the procedure never relies on a
+script-installed wheel. Why the slice is proven first: systemd auto-creates an unlimited
+transient slice for any unknown name and Docker then starts the build there without complaint,
+so both the script and `cmru handler wheel-build` read the Docker host's systemd through the
+pinned probe image for the exact slice they pass to Docker (after proving the gates slice that
+hosts that probe), and refuse on an unloaded, typo'd, missing or unprobeable answer; there is no
+fallback slice and no unverified path. The graph keeps actual package and release-gate prerequisites separate
 from the source-built CMRU controller used to run other projects' release
 commands. See the [zero-release procedure](../../docs/BOOTSTRAP-FROM-ZERO.md).
 
@@ -352,6 +370,51 @@ record's path, branch, source, workspace ID, and base to match its routing
 environment. This preserves the older recovery path while making ownership
 explicit before execution.
 
+### A retry keeps its recorded version plan (D-001)
+
+A resumable release is one operator decision carried out in steps, so the version
+it ships must be the one that decision chose. Before this record existed, a resume
+recomputed the version from whatever flags the retry happened to carry. A run
+started with `--set-version 2.0.0` or `--minor` that failed before tagging and was
+resumed without the flag tagged a different version. Its curated notes then stayed
+folded under the never-released version, which is the class of mistake behind an
+estate incident in which a forgotten `--set-version` shipped a wrong major release.
+The controller decision is recorded as
+[D-001](../nyxloom-trove/decisions.md#d-001--a-release-retry-keeps-its-exact-version-plan).
+
+So a new transaction resolves each selected project's exact version with the
+invocation's flags before its first side effect (the scope record, candidate push,
+gate, tag, build or publish). It writes them once to `<token>.version-plan.json`,
+bound to the transaction branch and base commit, beside the other transaction
+records. Every retry reads that record and passes each project its recorded
+version, so the generated history, the folded notes and the tag all name it. The
+record is validated on read. A missing project, a foreign branch or base, a
+malformed document, or committed candidate evidence naming another version is a
+refusal, never a quiet return to recomputation; a default that substitutes for an
+authoritative fact is exactly what this record exists to remove.
+
+Alternatives rejected:
+
+- **Recording the flags and replaying them.** `--minor` replayed after a newer tag
+  appeared would compute a later version, and the decision forbids that.
+- **Requiring the operator to repeat the flag.** That is the forget-to-repeat
+  hazard itself.
+- **Letting an override on resume win.** That would retag a candidate whose
+  committed history and notes already name the first version.
+
+An override that selects the same version is accepted, because it states the same
+intent. A transaction created before the record existed has no stated intent. It
+resumes only when its committed release-history commit proves the version (exactly
+one new dated changelog section since the base); otherwise CMRU refuses before any
+side effect and the candidate is abandoned and released anew. External-version and
+no-tag projects record `null`: CMRU does not choose their version, and version
+flags are already refused for them.
+
+The plan is fixed for the whole run, so a later project in a multi-project run
+keeps its planned version even if an earlier project's promotion merges new
+`origin/main` commits under its paths. Preserving the chosen intent is the
+decision. A run that should pick up such commits is a new release.
+
 Cleanup freezes remote IDs and local build-record/worktree identities before
 confirmation. For a declared `steps.clean`, CMRU snapshots dirty paths
 immediately before running the step and commits only paths that become dirty
@@ -413,6 +476,27 @@ and lightweight tags compare by the commit they target) and refuses before any p
 when the tag is absent from origin, disagrees with it, or origin cannot be queried. An
 inaccessible origin is never read as "nothing released". The isolated `cmru release` flow
 names its commit explicitly and is unchanged.
+
+### Retrying a tagged OCI release body runs only the metadata handler
+
+An OCI release can push its image successfully and then fail while creating or updating the
+GitHub Release body. Replaying the full `push` step would rebuild and push the image again,
+which could replace the public version tag if its build inputs changed. `cmru publish
+--from-checkout --release-tag TAG` is the narrow retry: it requires one tagged project with a
+configured `oci-image-release` command, a clean checkout whose `HEAD` matches the explicit
+local tag, and—on a real run—the same peeled commit at origin. It passes that tag and commit
+as protected identity and executes only the validated final body handler, in the push step's
+declared environment (`env`, `env_command`, `required_env`) so it targets what the original
+release would have; the step's registry login and `clean_dirs` belong to the image push and are
+not repeated. An origin that cannot be reached or returns a malformed ref advertisement is a
+failure, never read as "tag absent". The handler again
+checks GitHub's tag and release target immediately before writing and reads the result back.
+`--dry-run` checks local identity and displays that single command without querying origin.
+
+The explicit tag prevents a fallback to whichever tag happens to be at `HEAD`; the clean
+checkout binds the configured command to the inspected source. The retry never builds or
+pushes an image, so it cannot silently replace the image whose version was already published.
+See the [pasteable consumer example](CONSUMERS.md#retry-a-tagged-oci-release-body).
 
 ## Git family is separate from CMRU root
 
@@ -882,6 +966,81 @@ bypasses snapshotting and should use a secret-free checkout. KI-64/65/73's maski
 restoration requirements are superseded by the exact-snapshot design tracked
 in KI-74; their original incidents remain in the backlog for history.
 
+## The bare-host gate controller runs in the installed CMRU environment (KI-81)
+
+`gate` and `gate-provisional` are `bare-host` lanes: the controller must reach the
+Docker daemon to start each `tester-unified` lane container itself, so it cannot itself
+run in one. Its command is `python3 -I -B .../run_release_gate.py`, and on a real host
+`python3` is simply whatever `PATH` names, for example the system interpreter, which has
+no `cli-extended`. The first exact-tip gate therefore passed its commit-binding preflight
+and then died with `No module named cli_extended` before running anything. The controller
+imports CMRU from the exact worktree source (that is the code being judged) but, like every
+CMRU consumer, takes the *declared third-party wheels* from an installed environment; it
+never vendors them or puts the library's source on a path (CX-D1, pinned by
+`tests/test_packaging_cli_extended.py`).
+
+The choices, and what was rejected:
+
+- **Derive the environment from CMRU, not from a path.** A release already requires a
+  non-editable installed `cmru` wheel, so the environment exists and CMRU knows it. Inside
+  `cmru release` CMRU states it: `run_project_step` hands every step the protected
+  `CMRU_INTERNAL_PYTHON`, the running cmru's own `sys.executable`. A console-script shebang
+  lookup cannot do this there, because the first `cmru` on a step's `PATH` is CMRU's bound
+  launcher, a `/bin/sh` wrapper that execs that interpreter: it names a shell, and reading
+  the wrapper's second line would couple the gate to a private file format. The variable
+  sits in the already reserved `CMRU_INTERNAL_` namespace, so project `[env]` cannot declare
+  it and it is applied after project and step environment. The controller honours it only
+  together with the protected `CMRU_RELEASE_GATE_COMMIT` that the same workflow sets for the
+  same step: an operator's stale shell variable must not choose the interpreter of a manual
+  run (the rule `CMRU_INTERNAL_BIN` already follows), and an unusable protected value is a
+  refusal, not a cue to search `PATH`. For a manual `run-gate gate-provisional` there is no
+  CMRU process to ask, so the installed `cmru` console script's shebang, which names the
+  environment the wheel was installed into, is read instead (with the parser already used to
+  identify Run-Gate); a `cmru` on `PATH` that is not a Python console script is refused with
+  an explanation. Rejected: writing the estate venv path in `run-gate.toml` (it is wrong on every
+  other host, which is the failure class that `AGENTS.md` calls a shadowing default);
+  vendoring `cli_extended` or adding its source to `sys.path` (a second copy that drifts
+  from the declared floor); falling back to a weaker import path (the gate would then judge
+  with different code than a release uses).
+- **The declared floor is checked from installed metadata, not from importability.** The
+  gate controller used to stop at `find_spec`, so a host that imported `cli_extended`
+  0.2.0 ran the protected gate under a wheel older than CMRU's declared `cli-extended>=0.3.0`.
+  It now reads each dependency's installed distribution version and tests it against the whole
+  declared requirement (`>=`, `>`, `<=`, `<`, `==`, `!=`, evaluated by a small stdlib ordering,
+  because nothing from the worktree or a dependency may be imported before the interpreter is
+  chosen; a specifier it cannot evaluate refuses instead of passing). An importable module with
+  no installed distribution metadata does not count. The authoritative interpreter is probed
+  for the same version before the switch, so a below-floor CMRU environment, or a below-floor
+  runtime-reported interpreter, is refused with the remedy instead of becoming the judge.
+- **Switch only when needed, once, and loudly.** If the start interpreter already
+  satisfies every declared requirement nothing changes, so a correctly set-up host and the
+  tester suite see no difference. Otherwise the controller probes the launcher's
+  interpreter for the same imports, prints which interpreter it is leaving and entering, and
+  starts the same script once more with the lane's own `-I -B` and the original arguments. A
+  one-shot marker, removed before any lane starts, turns a second failure into an error
+  instead of a loop. This is selection of the authoritative environment, not a degraded mode:
+  every outcome either runs the full gate or stops.
+- **Dependency names come from `pyproject.toml`.** The set to check is read from
+  `[project].dependencies` (distribution name normalised to its import name), so adding a
+  declared dependency needs no change to the script and the script names no library.
+  Reading that one file as data is the only worktree access before the source-integrity
+  check; the script itself is stdlib-only and starts again unchanged, so the property that
+  an untracked module beside it cannot run first still holds.
+- **Fail with the remedy, not a traceback.** A missing `cmru` launcher, an unusable
+  shebang, an interpreter that also lacks the dependency, or an unreadable declaration is a
+  `cmru-release-gate:` error (exit 1) naming the interpreter and launcher, and telling the
+  operator to install the released wheel with its dependencies and put that environment's
+  `bin` on `PATH`.
+- **Why not a Run-Gate feature.** Letting a lane declare its interpreter (a `{python}`
+  token or an `interpreter =` key) would be the principled long-term home, but it is a
+  public Run-Gate interface change with its own versioning, so it is recorded in KI-81 as a
+  decision for the operator rather than made here.
+
+None of this changes where tests run: the lane processes the controller starts are still
+`run-gate <lane>` containers in `tester-unified`, the secret and exact-snapshot boundaries
+above are untouched (the environment passes through unchanged), and the controller
+remains a cockpit-side orchestrator, never a place to execute the suite.
+
 ## Release bodies carry the version's curated notes
 
 A GitHub Release body used to be `<operator notes or "<prefix> <version>">` plus the
@@ -913,7 +1072,9 @@ The choices, and what was rejected:
   to its generated body, so the tag and body share one immutable notes source. A
   `--no-build` release, or an image push without `oci-image-release`, still carries the
   notes in the tagged changelog but has no GitHub Release body. There is no post-publish changelog commit that can fail
-  after a release is already public.
+  after a release is already public. Comment detection follows CommonMark code spans as well
+  as fences: a changelog that documents CMRU's own `<!-- cmru: ... -->` markers quotes them,
+  and blanking or hoisting a quoted marker would silently rewrite immutable notes.
   A failed gate or build leaves the candidate's staged section on its retained branch;
   the source branch remains unchanged. A failed publish also leaves source `[Unreleased]`
   unchanged, while the tagged candidate retains the exact notes sent to the publisher.
@@ -963,6 +1124,16 @@ project's own image push. The choices, and what was rejected:
   that already exists. Retries are therefore cheap: the only writes are one create or one
   name/body update, and no asset is ever listed, deleted or uploaded, so a retry cannot
   disturb an asset that happens to share a name with something a wheel handler uploads.
+- **The registry must be written explicitly.** `--image` is `<registry>/<repository>` and the
+  pull instruction repeats it verbatim, so the registry has to mean the same thing to CMRU
+  and to Docker. Docker treats the first path component as a registry only when it contains
+  a `.` or a `:port` or is exactly `localhost`; otherwise `registry/team` is a Docker Hub
+  namespace. CMRU applies that same test and refuses the ambiguous form with the fix
+  (`ghcr.io/<image>` or `docker.io/<image>`), instead of publishing an instruction that pulls a
+  different image than the one released. Accepted: `ghcr.io/volkb79-2/cgprofile`,
+  `registry.example.com/team/app`, `myhost:5000/app`, `127.0.0.1:5000/app`, `localhost/app`,
+  `localhost:5000/team/app`; the repository part is lower-case `a-z0-9` runs joined by `.`,
+  `_`, `__` or `-`. IPv6 bracket hosts are not accepted.
 - **The version comes from the protected tag, not from configuration.** `--image` is the
   repository only (`ghcr.io/acme/demo`), and `:<version>` is derived from
   `CMRU_RELEASE_TAG` (`<prefix>-v<version>`). A `--image` that already carries a tag or
@@ -984,13 +1155,36 @@ project's own image push. The choices, and what was rejected:
   commit; an existing one is updated in place after the same checks (and refused if it
   targets another commit).
 - **What the verification can and cannot promise (a deliberate limit).** For an EXISTING
-  release the handler re-fetches it and re-verifies its exact release ID, tag identity and
-  remote tag target immediately before the PATCH; if any changed, nothing is sent. GitHub
-  offers no conditional update and no way to make a tag check atomic with a release create,
-  so the create path has only the tag check before the write and the same read-back after
-  it. A change seen in that read-back is reported as `was written, but ...`, with the
-  release left in place and the instruction to inspect the release and the tag before any
-  retry. Rolling it back was rejected: deleting or reverting a Release the tag move may
+  release the handler re-fetches it and re-verifies its exact release ID, tag identity,
+  commit target (when `target_commitish` is a full SHA) and remote tag target immediately
+  before the PATCH; if any changed, nothing is sent. GitHub offers no conditional update and
+  no way to make a tag check atomic with a release create, so the protection that remains
+  is a read-back after EVERY write, create included: the release is fetched again and must
+  carry the positive ID the write returned, the exact tag and a body equal to the intended
+  body, and the remote tag must still resolve to the release commit. Trusting the write's
+  own response would let a release replaced right after the POST, or a body overwritten right
+  after the PATCH, be reported (and promoted) as published; the body comparison is what makes
+  "published" mean "the notes are what CMRU intended". Anything else (a different ID, tag or
+  body, a read-back that is missing, malformed, an HTTP error or unreachable) is reported
+  as `was written ...` or `WAS WRITTEN, but reading it back ... failed`, with the release
+  left in place and the instruction to inspect the release and the tag before any retry.
+  The read-back is by release ID (a create reads the ID its response returned; an update the
+  captured ID), because the by-tag read can see a different release than the one just written
+  and, right after a create, may not see it yet. A create therefore retries the ID read a
+  finite number of times (`READBACK_ATTEMPTS`, pauses injected in tests, no unbounded wait) and
+  reports "not yet visible" separately from "the tag now belongs to another release"; an update
+  reads an already-visible release once. A full-SHA `target_commitish` must equal the release
+  commit after both a create and a PATCH; a branch name is not a commit claim. **Anything that
+  happens after a POST or PATCH was sent is treated as possibly applied.** An HTTP error, a
+  transport failure, a malformed success body and a malformed record are not refusals and
+  do not invite a blind retry, because GitHub may have applied the write and then failed to
+  answer. The handler never resends: it reads the release back (by tag when a create returned no
+  usable ID), returns success only when the exact ID, tag, body and target are verified, and
+  otherwise says the outcome is unknown and not rolled back and tells the operator to inspect
+  the release and the tag before any retry. No normalization is applied to the body (it must
+  match byte for byte); whether real GitHub preserves every body byte is a live check, not
+  an assumption. A GitHub error body is not proof of non-application either, so none of these
+  claim the run changed nothing. Rolling it back was rejected: deleting or reverting a Release the tag move may
   already have made visible is a second, equally racy write that would also hide what the
   operator needs to see. So the workflow narrows the window and reports honestly; it does
   not claim to prevent every partial public publication.
@@ -998,8 +1192,13 @@ project's own image push. The choices, and what was rejected:
   step of a release, after the image is already public, so a configuration mistake found
   there is found too late. `cli._validated_oci_release_image` therefore checks the
   configured command before any `prepare` step, gate, tag or image push, for every project
-  the run will ship (not project by project, so a later project's mistake cannot surface
-  after an earlier one was published). `cmru release --dry-run` calls the same function.
+  the run selects (not project by project, so a later project's mistake cannot surface
+  after an earlier one was published). It is the first thing `_release_child` does, ahead of
+  a dry run's `external:`-version `prepare` step, which executes project code that may write
+  files: checking it only after that step, as an earlier version did, let a malformed handler
+  be found after a side effect. The check is pure configuration, so it needs no plan and
+  also covers a selected project that turns out unchanged. `cmru release --dry-run` calls
+  the same function.
   It refuses a malformed, duplicate, missing or unexpected `--prefix`/`--image`/`--cwd`; a
   prefix that is not the project's release prefix without `-v`; an `--image` with a tag or
   digest; an untagged project (no protected identity can exist); a push step whose
@@ -1119,6 +1318,52 @@ used to build the artifact; it merges `origin/main` into the candidate (bounded,
 when the new commits leave the project's own paths untouched, otherwise it stops (REL-04). The candidate branch and worktree remain available for inspection;
 success deletes the now-redundant branch. A version strategy that creates a mechanical version
 commit receives a second gate on that exact commit before publication.
+
+### Release from an origin-backed feature worktree (KI-82)
+
+The default release source remains `origin/main`. `cmru release --from-worktree` is the
+accepted extension for operators whose integration branch cannot yet be reconciled. It requires
+a clean, named non-main worktree branch and the same-named `origin/<branch>` at the exact same
+fetched commit. It refuses local-only or remote-only commits, detached HEAD, dirty paths, and
+selections spanning more than one Git family. The branch may diverge from local `main`; this
+mode does not fetch or compare with `origin/main`, push to it, move local `main`, or synchronize
+local `main`.
+
+CMRU's generated transaction branch remains separate from the caller's feature branch. Its
+same-named origin candidate is the durable PR branch. CMRU checks that this remote name is free
+before creating the transaction and uses expected-old-value push leases on later candidate
+updates. If the candidate no longer fast-forwards, CMRU stops and retains it for inspection; it
+does not rebase or force-update the branch. The shared workspace record marks feature-source mode
+as well as the source identity sidecar. The child checks both at startup and before candidate
+pushes, so a missing sidecar cannot fall back to default main promotion. It never pushes the
+caller's feature branch. Resume takes the source mode from the transaction record, not from the
+caller's flags: a resumed feature candidate re-applies `--from-worktree` automatically, so it can
+never be replayed as a default main promotion, and `--from-worktree --resume` naming a default
+candidate is refused for the same reason. A candidate that already published every selected
+project is refused on resume because no safe side effect remains to replay; its next step is the
+PR merge and `cmru abandon`. After publication, it retains the
+local candidate worktree and both candidate refs. A PR may be open or blocked while the release is
+already public; this is accepted because the artifact and tag bind to the gated candidate commit
+and do not wait for `main` integration. Keep that candidate and its evidence until integration is
+deliberate. A later fast-forward or merge commit preserves the tagged SHA in `main`'s ancestry;
+squash and rebase do not. `cmru abandon <candidate-branch>` can retire a completed feature
+candidate only after its exact final commit is present in `origin/main`; it removes the candidate
+refs and local transaction metadata while preserving the public release tags and assets. If a
+hosting service has already deleted the PR head after merge, retirement can still remove the local
+transaction after CMRU proves the exact final candidate commit is in fetched `origin/main` and
+rechecks the release tags. An absent branch by itself is not proof of a merge. Because
+`abandon` has no `--secret-file` (only `release` and `publish` accept it), run retirement from a
+checkout with origin credentials, usually the main checkout.
+
+Credential lookup follows the same separation. A linked worktree may not contain the ignored
+root `cmru.secret.toml` stored in the main checkout. CMRU can report a safely inferred path and
+an explicit way to select it, but must not silently consume another checkout's secret. The
+`--secret-file PATH` option of `release` (and of `publish`, for a tagged OCI release-body retry)
+authorizes the parent process to read that root secret;
+environment-token precedence and project secret overlays still apply. The existing private
+handoff keeps the resolved credential out of the isolated transaction worktree, child argv,
+environment, and logs. This behavior is implemented in the current candidate; stable
+availability waits for KI-82's registered gate and acceptance evidence.
 
 ## Release uses a wheel-bound controller
 

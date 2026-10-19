@@ -74,62 +74,150 @@ class MarkdownHeading:
     end: int
 
 
-def _mask_html_comments(markdown: str) -> str:
-    """Mask HTML comments outside fenced code while preserving offsets/newlines."""
+_PARAGRAPH_BREAK = re.compile(
+    r"^ {0,3}(?:$|#{1,6}(?:[ \t]|$)|>|[-+*][ \t]|[0-9]{1,9}[.)][ \t]|`{3,}|~{3,}|<!--)"
+)
+
+
+def _code_span_close(
+    lines: list[str], line_index: int, start: int, width: int,
+) -> tuple[int, int] | None:
+    """Where the inline code span opened by a *width*-backtick run ends, or ``None``.
+
+    CommonMark closes a code span with the next backtick run of exactly the
+    opening run's width, possibly on a later line of the same paragraph; with no
+    such run the opening backticks are literal text. A blank line or a line that
+    starts another block (heading, quote, list item, fence, HTML comment) ends
+    the paragraph.
+    """
+    closing = re.compile(rf"(?<!`)`{{{width}}}(?!`)")
+    for index in range(line_index, len(lines)):
+        if index > line_index and _PARAGRAPH_BREAK.match(lines[index].rstrip("\r\n")):
+            return None
+        found = closing.search(lines[index], start if index == line_index else 0)
+        if found is not None:
+            return index, found.end()
+    return None
+
+
+def _scan_html_comments(markdown: str) -> tuple[str, tuple[tuple[int, int, bool], ...]]:
+    """Mask HTML comments outside code, preserving offsets and newlines.
+
+    Returns the masked text and each comment's ``(start, end, closed)`` source
+    span. Fenced code blocks and inline code spans (including a span continued
+    on a later line of its paragraph) are opaque, and a backslash-escaped
+    backtick is literal: a quoted ``<!-- ... -->`` in a note is text, never a
+    comment to hoist or blank.
+    """
+    lines = markdown.splitlines(keepends=True)
     output: list[str] = []
+    spans: list[tuple[int, int, bool]] = []
     fence_char: str | None = None
     fence_length = 0
-    in_comment = False
-    for line in markdown.splitlines(keepends=True):
+    comment_start: int | None = None
+    offset = 0
+    line_index = 0
+    resume_at = 0
+    while line_index < len(lines):
+        line = lines[line_index]
         if fence_char is not None:
             output.append(line)
             content = line.rstrip("\r\n")
             if re.match(rf"^ {{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$", content):
                 fence_char = None
                 fence_length = 0
+            offset += len(line)
+            line_index += 1
+            continue
+
+        content = line.rstrip("\r\n")
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", content)
+        if (
+            comment_start is None and resume_at == 0 and opening is not None
+            and (opening.group(1)[0] != "`" or "`" not in opening.group(2))
+        ):
+            # A fence opener is not inline content: its backticks never open a span.
+            fence_char = opening.group(1)[0]
+            fence_length = len(opening.group(1))
+            output.append(line)
+            offset += len(line)
+            line_index += 1
             continue
 
         chars = list(line)
-        index = 0
+        index = resume_at
+        resume_at = 0
+        jump: tuple[int, int] | None = None
         while index < len(line):
-            if in_comment:
+            if comment_start is not None:
                 if line.startswith("-->", index):
                     chars[index:index + 3] = "   "
                     index += 3
-                    in_comment = False
+                    spans.append((comment_start, offset + index, True))
+                    comment_start = None
                     continue
                 if line[index] not in "\r\n":
                     chars[index] = " "
                 index += 1
                 continue
+            if line[index] == "`":
+                escapes = len(line[:index]) - len(line[:index].rstrip("\\"))
+                if escapes % 2:
+                    index += 1  # a backslash-escaped backtick is literal text
+                    continue
+                run_end = index
+                while run_end < len(line) and line[run_end] == "`":
+                    run_end += 1
+                close = _code_span_close(lines, line_index, run_end, run_end - index)
+                if close is None:
+                    index = run_end
+                elif close[0] == line_index:
+                    index = close[1]
+                else:
+                    jump = close
+                    break
+                continue
             if line.startswith("<!--", index):
                 chars[index:index + 4] = "    "
+                comment_start = offset + index
                 index += 4
-                in_comment = True
                 continue
             index += 1
 
         masked = "".join(chars)
         output.append(masked)
-        content = masked.rstrip("\r\n")
-        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", content)
-        if opening is not None:
-            marker = opening.group(1)
-            info = opening.group(2)
-            if marker[0] != "`" or "`" not in info:
-                fence_char = marker[0]
-                fence_length = len(marker)
-    return "".join(output)
+        offset += len(line)
+        line_index += 1
+        if jump is not None:
+            # The code span continues on later lines of this paragraph: they
+            # are opaque up to the closing run, where scanning resumes.
+            while line_index < jump[0]:
+                output.append(lines[line_index])
+                offset += len(lines[line_index])
+                line_index += 1
+            resume_at = jump[1]
+    if comment_start is not None:
+        spans.append((comment_start, len(markdown), False))
+    return "".join(output), tuple(spans)
+
+
+def _mask_html_comments(markdown: str) -> str:
+    """Mask HTML comments outside code while preserving offsets/newlines."""
+    return _scan_html_comments(markdown)[0]
 
 
 def html_comments_outside_fenced_code(markdown: str) -> tuple[str, ...]:
-    """Return actual HTML comments, excluding comment-like text in code fences."""
-    masked = _mask_html_comments(markdown)
+    """Return actual closed HTML comments, excluding comment-like text in code."""
     return tuple(
-        match.group(0)
-        for match in re.finditer(r"<!--.*?-->", markdown, re.DOTALL)
-        if masked[match.start():match.end()] != match.group(0)
+        markdown[start:end]
+        for start, end, closed in _scan_html_comments(markdown)[1]
+        if closed
     )
+
+
+def has_unclosed_html_comment_outside_code(markdown: str) -> bool:
+    """True when an HTML comment outside code does not close within ``markdown``."""
+    return any(not closed for _start, _end, closed in _scan_html_comments(markdown)[1])
 
 
 def html_comment_positions_outside_fenced_code(markdown: str, comment: str) -> tuple[int, ...]:

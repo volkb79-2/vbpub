@@ -198,6 +198,43 @@ def test_probe_timeout_removes_that_probe_by_exact_name(fake_docker, monkeypatch
     assert seen[0].startswith("cmru-probe-")
 
 
+@pytest.mark.parametrize(
+    ("rm_outcome", "residue"),
+    [
+        (SimpleNamespace(returncode=0, stderr=""), False),
+        # --rm (or a late daemon-side failure) already removed it.
+        (SimpleNamespace(returncode=1, stderr="Error response from daemon: No such container: x"), False),
+        # 2026-10-17 run-gate release: `docker start` hung daemon-side, the
+        # probe stayed in Created state and could not be removed.
+        (SimpleNamespace(returncode=1, stderr="Error response from daemon: removal already in progress"), True),
+        (subprocess.TimeoutExpired(["docker", "rm"], 60), True),
+    ],
+)
+def test_probe_timeout_reports_a_container_it_could_not_remove(monkeypatch, rm_outcome, residue):
+    """A timed-out probe is indeterminate, never a pass; when its exact-name
+    removal cannot be confirmed, the refusal names the container left behind."""
+    seen = []
+
+    def run(argv, **kwargs):
+        if argv[:2] == ["docker", "run"]:
+            seen.append(_name(argv))
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        assert argv[-1] == seen[0]  # cleanup only ever targets the exact probe name
+        if isinstance(rm_outcome, Exception):
+            raise rm_outcome  # a hung daemon hangs `docker stop` too
+        if argv[:3] == ["docker", "rm", "-f"]:
+            return rm_outcome
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(tester_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+    monkeypatch.setattr(tester_gate.subprocess, "run", run)
+    exists, note = tester_gate.check_slice_unit("dev-gates.slice", PROBE, "dev-gates.slice")
+    assert exists is False
+    assert "could not probe the Docker host for 'dev-gates.slice'" in note
+    assert "timed out after 30 seconds" in note
+    assert (f"probe container {seen[0]} could not be removed" in note) is residue
+
+
 def test_sigterm_stops_and_removes_the_gate_container_by_name(fake_docker, tmp_path):
     """Signal delivery: SIGTERM mid-gate turns into SystemExit, the docker CLI
     child is killed, and ``docker stop`` then ``docker rm -f`` run by EXACT

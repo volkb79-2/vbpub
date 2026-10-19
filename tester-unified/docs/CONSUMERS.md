@@ -41,7 +41,16 @@ tester-unified/build-image.sh \
 
 Every image carries an `org.vbpub.cli-extended.wheel-sha256` label naming the exact
 `cli-extended` wheel it installed, and `build-image.sh` fails if that label differs from the
-expected digest. After a real `cli-extended` release, rebuild with
+expected digest. Its `org.vbpub.tester-unified.base-image` label names the base the image
+was built FROM, and the builder likewise fails unless it equals `--base-image` (or the
+Dockerfile's default base when that flag is omitted):
+
+```bash
+docker image inspect --format '{{index .Config.Labels "org.vbpub.tester-unified.base-image"}}' \
+  tester-unified:bootstrap
+```
+
+After a real `cli-extended` release, rebuild with
 `--cli-extended-resolve latest --cli-extended-wheel-sha256 "$PUBLISHED_SHA256" --no-cache`
 (`latest` is refused without the published digest) or with `pinned` once the Dockerfile's
 pinned defaults name the released asset.

@@ -42,6 +42,7 @@ def _completed(stdout="", stderr="", returncode=0):
 
 
 def test_release_image_bootstrap_uses_only_explicit_overrides(monkeypatch, tmp_path):
+    _clear_image_overrides(monkeypatch)
     monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
     monkeypatch.setattr(
         release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project",
@@ -385,6 +386,7 @@ def test_source_bootstrap_replaces_its_own_previous_local_wheel(monkeypatch, tmp
 
 
 def test_release_image_bootstrap_passes_pinned_mode_through(monkeypatch, tmp_path):
+    _clear_image_overrides(monkeypatch)
     monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
     monkeypatch.setattr(release_candidate, "PROJECT_ROOT", tmp_path / "run-gate-project")
     monkeypatch.delenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", raising=False)
@@ -484,7 +486,28 @@ def test_image_cli_extended_label_must_be_a_digest(monkeypatch, labels, message)
         release_candidate._image_cli_extended_sha256("tester-unified:x")
 
 
-def _prepare_with_label(monkeypatch, tmp_path, *, mode, label):
+_IMAGE_OVERRIDE_ENV = (
+    "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE",
+    "RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE",
+    "RUN_GATE_TESTER_CLI_EXTENDED_SHA256",
+)
+UPSTREAM_BASE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
+
+
+def _clear_image_overrides(monkeypatch):
+    for name in _IMAGE_OVERRIDE_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _prepare_with_label(
+    monkeypatch, tmp_path, *, mode, label, base=None, base_label=None, calls=None,
+):
+    """`prepare` against fakes; the image reports `label` and `base_label`.
+
+    `base_label=None` reports the Dockerfile's default base. `calls`, when a
+    list, receives every subprocess argv in order.
+    """
+    _clear_image_overrides(monkeypatch)
     wheel = {"version": "24.0.0", "filename": "run_gate-24.0.0-py3-none-any.whl", "sha256": "a" * 64}
     monkeypatch.setattr(
         release_candidate, "prepared_release_version", lambda _path, **_kwargs: "24.0.0",
@@ -500,10 +523,23 @@ def _prepare_with_label(monkeypatch, tmp_path, *, mode, label):
     )
     monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
     monkeypatch.setattr(release_candidate, "_image_cli_extended_sha256", lambda _tag: label)
+    monkeypatch.setattr(
+        release_candidate, "_image_base_image",
+        lambda _tag: base_label or release_candidate._dockerfile_default_base_image(),
+    )
     monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", mode)
-    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", PUBLISHED)
+    if mode == "latest":
+        monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", PUBLISHED)
+    if base is not None:
+        monkeypatch.setenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", base)
     results = iter((_completed(), _completed(), _completed("sha256:" + "b" * 64)))
-    monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
+
+    def run(argv, *_args, **_kwargs):
+        if calls is not None:
+            calls.append(argv)
+        return next(results)
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", run)
     return release_candidate.prepare
 
 
@@ -528,6 +564,156 @@ def test_prepare_refuses_a_latest_image_that_kept_the_old_pinned_bytes(monkeypat
         prepare()
 
     assert not (tmp_path / "receipt.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "automatic"}, "must be source, pinned or latest"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "latest"},
+         "latest requires RUN_GATE_TESTER_CLI_EXTENDED_SHA256"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "latest",
+          "RUN_GATE_TESTER_CLI_EXTENDED_SHA256": "C" * 64},
+         "latest requires RUN_GATE_TESTER_CLI_EXTENDED_SHA256"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_SHA256": PUBLISHED}, "valid only with"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "pinned",
+          "RUN_GATE_TESTER_CLI_EXTENDED_SHA256": PUBLISHED}, "valid only with"),
+        ({"RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": "source",
+          "RUN_GATE_TESTER_CLI_EXTENDED_SHA256": PUBLISHED}, "valid only with"),
+        ({"RUN_GATE_TESTER_UNIFIED_BASE_IMAGE": "--privileged"}, "must be one image reference"),
+        ({"RUN_GATE_TESTER_UNIFIED_BASE_IMAGE": "python:3.14 --pull"},
+         "must be one image reference"),
+    ],
+    ids=[
+        "unknown-mode", "latest-without-digest", "latest-uppercase-digest",
+        "digest-with-default-mode", "digest-with-pinned", "digest-with-source",
+        "option-as-base", "two-words-as-base",
+    ],
+)
+def test_prepare_refuses_bad_image_overrides_before_any_build(monkeypatch, tmp_path, env, message):
+    """A refused override stops `prepare` before the Run-Gate wheel build, the
+    cli-extended source build, or the image build starts; no receipt exists.
+    A digest outside `latest` would be silently unused, so it is refused too."""
+    _clear_image_overrides(monkeypatch)
+    monkeypatch.setattr(
+        release_candidate, "prepared_release_version", lambda _path, **_kwargs: "24.0.0",
+    )
+    monkeypatch.setenv("CMRU_RELEASE_GATE_COMMIT", "1" * 40)
+    monkeypatch.setattr(
+        release_candidate, "_git", lambda *args: "1700000000" if args[0] == "log" else "1" * 40,
+    )
+    monkeypatch.setattr(release_candidate, "RECEIPT_PATH", tmp_path / "receipt.json")
+    monkeypatch.setattr(
+        release_candidate.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("no build may start after a refused override"),
+    )
+    monkeypatch.setattr(
+        release_candidate, "_build_cli_extended_source_wheel",
+        lambda: pytest.fail("no source wheel may be built after a refused override"),
+    )
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+        release_candidate.prepare()
+
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_prepare_passes_and_checks_a_requested_base_image(monkeypatch, tmp_path):
+    calls = []
+    prepare = _prepare_with_label(
+        monkeypatch, tmp_path, mode="pinned",
+        label=release_candidate._dockerfile_cli_extended_pin(),
+        base=UPSTREAM_BASE, base_label=UPSTREAM_BASE, calls=calls,
+    )
+
+    prepare()
+
+    build = calls[1]
+    assert build[0].endswith("tester-unified/build-image.sh")
+    assert build[build.index("--base-image") + 1] == UPSTREAM_BASE
+    assert (tmp_path / "receipt.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("base", "base_label"),
+    [(UPSTREAM_BASE, None), (None, UPSTREAM_BASE)],
+    ids=["requested-base-not-used", "default-base-not-used"],
+)
+def test_prepare_refuses_an_image_built_from_another_base(monkeypatch, tmp_path, base, base_label):
+    """The requested (or default) base must be the one the image records; an
+    unconsumed or renamed build argument would otherwise build another base."""
+    prepare = _prepare_with_label(
+        monkeypatch, tmp_path, mode="pinned",
+        label=release_candidate._dockerfile_cli_extended_pin(),
+        base=base, base_label=base_label,
+    )
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="was built from base"):
+        prepare()
+
+    assert not (tmp_path / "receipt.json").exists()
+
+
+def test_expected_base_image_follows_the_builder_command(monkeypatch, tmp_path):
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", tmp_path)
+    dockerfile = tmp_path / "tester-unified" / "Dockerfile"
+    dockerfile.parent.mkdir()
+    dockerfile.write_text(
+        "ARG TESTER_UNIFIED_BASE_IMAGE=registry.example/base:1\n"
+        "FROM ${TESTER_UNIFIED_BASE_IMAGE}\n",
+        encoding="utf-8",
+    )
+    assert release_candidate._expected_base_image(["b", "--tag", "t"]) == "registry.example/base:1"
+    assert release_candidate._expected_base_image(
+        ["b", "--base-image", UPSTREAM_BASE],
+    ) == UPSTREAM_BASE
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError, match="no default tester-unified base image",
+    ):
+        release_candidate._expected_base_image(["b"])
+
+
+@pytest.mark.parametrize(
+    ("labels", "message"),
+    [
+        ({}, "no valid org.vbpub.tester-unified.base-image label"),
+        ({"org.vbpub.tester-unified.base-image": ""}, "no valid org.vbpub.tester-unified"),
+        ({"org.vbpub.tester-unified.base-image": UPSTREAM_BASE}, None),
+    ],
+    ids=["unlabelled", "empty-label", "labelled"],
+)
+def test_image_base_label_must_be_an_image_reference(monkeypatch, labels, message):
+    monkeypatch.setattr(
+        release_candidate.subprocess, "run",
+        lambda *_args, **_kwargs: _completed(json.dumps(labels)),
+    )
+    if message is None:
+        assert release_candidate._image_base_image("tester-unified:x") == UPSTREAM_BASE
+        return
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message):
+        release_candidate._image_base_image("tester-unified:x")
+
+
+def test_real_dockerfile_and_builder_record_and_check_the_base_image():
+    """The shipped Dockerfile labels the base its stage was built FROM, and the
+    builder compares that label; the default the consumer expects is the
+    Dockerfile's own ARG default."""
+    root = TOOLS.parents[1]
+    lines = (root / "tester-unified" / "Dockerfile").read_text(encoding="utf-8").splitlines()
+    stage = lines[lines.index("FROM ${TESTER_UNIFIED_BASE_IMAGE}") + 1:]
+    label = 'LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"'
+    assert "ARG TESTER_UNIFIED_BASE_IMAGE" in stage[:stage.index(label)]
+    default = next(
+        line.split("=", 1)[1] for line in lines
+        if line.startswith("ARG TESTER_UNIFIED_BASE_IMAGE=")
+    )
+    assert release_candidate._dockerfile_default_base_image() == default
+    builder = (root / "tester-unified" / "build-image.sh").read_text(encoding="utf-8")
+    assert '"org.vbpub.tester-unified.base-image"' in builder
+    assert 'if [[ "$actual_base_image" != "$expected_base_image" ]]; then' in builder
 
 
 def test_prepared_release_version_uses_first_dated_stable_section(monkeypatch, tmp_path):
@@ -562,17 +748,218 @@ def test_prepared_release_version_refuses_a_heading_that_is_already_released(mon
         release_candidate.prepared_release_version(changes)
 
 
-def test_prepared_release_version_allows_an_explicit_first_release(monkeypatch, tmp_path):
-    changes = tmp_path / "CHANGES.md"
-    changes.write_text("## [24.0.0] - 2026-10-14\n\nFirst stable release.\n", encoding="utf-8")
-    monkeypatch.setattr(release_candidate, "_git", lambda *args: "")
+_TAG_OID = "e" * 40
+_COMMIT_OID = "d" * 40
+_LS_REMOTE_ARGV_TAIL = [
+    "ls-remote", "--exit-code", "--tags", "origin", "refs/tags/run-gate-v*",
+]
 
-    with pytest.raises(release_candidate.NoStableReleaseTag, match="no stable.*release tag"):
-        release_candidate.prepared_release_version(changes)
+
+def _ls_remote_lines(*tags):
+    """`git ls-remote --tags` output for annotated tags (tag object + peeled commit)."""
+    return "".join(
+        f"{_TAG_OID}\trefs/tags/{tag}\n{_COMMIT_OID}\trefs/tags/{tag}^{{}}\n" for tag in tags
+    )
+
+
+def _fake_origin(monkeypatch, *, local, returncode=0, stdout="", stderr="", raises=None):
+    """Local tags come from `_git`; origin's listing from the faked ls-remote.
+
+    Returns the list of ls-remote calls as ``(argv, env)`` pairs.
+    """
+    monkeypatch.setattr(
+        release_candidate, "_git", lambda *args: local if args[:2] == ("tag", "--list") else "",
+    )
+    calls = []
+
+    def run(argv, **kwargs):
+        assert argv[3:] == _LS_REMOTE_ARGV_TAIL, argv
+        calls.append((argv, kwargs.get("env")))
+        if raises is not None:
+            raise raises
+        return _completed(stdout=stdout, stderr=stderr, returncode=returncode)
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", run)
+    return calls
+
+
+def _changes(tmp_path, version="24.0.0"):
+    changes = tmp_path / "CHANGES.md"
+    changes.write_text(f"## [{version}] - 2026-10-14\n\nCandidate.\n", encoding="utf-8")
+    return changes
+
+
+@pytest.mark.parametrize(
+    "origin_stdout", ["", _ls_remote_lines("run-gate-v24.0.0-rc1")],
+    ids=["origin-has-no-run-gate-tag", "origin-has-only-a-prerelease"],
+)
+def test_first_release_is_accepted_only_when_origin_shows_no_stable_tag(
+    monkeypatch, tmp_path, origin_stdout,
+):
+    """The legitimate first release: local and origin both lack a stable tag,
+    and origin's answer is a complete listing (exit 2 = no matching ref)."""
+    changes = _changes(tmp_path)
+    calls = _fake_origin(
+        monkeypatch, local="", returncode=0 if origin_stdout else 2, stdout=origin_stdout,
+    )
 
     assert release_candidate.prepared_release_version(
         changes, allow_first_release=True,
     ) == "24.0.0"
+    assert len(calls) == 1
+    argv, env = calls[0]
+    assert argv[:3] == ["git", "-C", str(release_candidate.REPOSITORY_ROOT)]
+    assert env["GIT_TERMINAL_PROMPT"] == "0"
+
+
+def test_ordinary_version_check_reads_only_local_tags(monkeypatch, tmp_path):
+    """Without the release-transaction flag nothing queries origin (the gate
+    container's selftest calls this), and an empty local listing still refuses."""
+    changes = _changes(tmp_path)
+    monkeypatch.setattr(release_candidate, "_git", lambda *args: "")
+    monkeypatch.setattr(
+        release_candidate.subprocess, "run",
+        lambda *_args, **_kwargs: pytest.fail("the ordinary check must not query origin"),
+    )
+
+    with pytest.raises(release_candidate.NoStableReleaseTag, match="no stable.*release tag"):
+        release_candidate.prepared_release_version(changes)
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "raises", "message"),
+    [
+        (128, "", None, r"cannot read origin's run-gate-v\* release tags \(git ls-remote exited 128\)"),
+        (2, _ls_remote_lines("run-gate-v24.0.0"), None, r"git ls-remote exited 2"),
+        (0, "", None, "listed none"),
+        (0, "not a ref line\n", None, "listing is malformed at line 1"),
+        (0, f"{_COMMIT_OID}\trefs/tags/other-v1.0.0\n", None, "listing is malformed at line 1"),
+        (0, f"{_COMMIT_OID[:39]}\trefs/tags/run-gate-v24.0.0\n", None, "malformed at line 1"),
+        (None, "", release_candidate.subprocess.TimeoutExpired(["git"], 120),
+         "cannot read origin's run-gate-v"),
+        (None, "", FileNotFoundError("git"), "cannot read origin's run-gate-v"),
+    ],
+    ids=[
+        "origin-unreachable", "exit-2-with-refs", "success-without-refs", "garbage-line",
+        "foreign-namespace", "short-object-id", "timeout", "git-missing",
+    ],
+)
+def test_first_release_refuses_an_indeterminate_origin_inventory(
+    monkeypatch, tmp_path, returncode, stdout, raises, message,
+):
+    """No local stable tag plus an origin listing that could not be fully read
+    is not a first release; it is refused, never treated as empty."""
+    changes = _changes(tmp_path)
+    _fake_origin(
+        monkeypatch, local="", returncode=returncode, stdout=stdout,
+        stderr="fatal: unable to access origin", raises=raises,
+    )
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match=message) as error:
+        release_candidate.prepared_release_version(changes, allow_first_release=True)
+    assert not isinstance(error.value, release_candidate.NoStableReleaseTag)
+
+
+@pytest.mark.parametrize(
+    ("local", "origin", "newest_local"),
+    [
+        ("", ("run-gate-v23.10.0", "run-gate-v24.0.0"), "none"),
+        ("run-gate-v24.0.0-rc1", ("run-gate-v24.0.0",), "none"),
+        ("run-gate-v23.10.0", ("run-gate-v23.10.0", "run-gate-v24.0.0"), "run-gate-v23.10.0"),
+    ],
+    ids=["clone-without-tags", "only-a-local-prerelease", "stale-older-tags"],
+)
+def test_release_transaction_refuses_a_checkout_missing_origin_release_tags(
+    monkeypatch, tmp_path, local, origin, newest_local,
+):
+    """Local enumeration succeeded, but origin has a newer stable release: the
+    checkout is stale. Neither a first release nor a version check against the
+    older local tag may pass."""
+    changes = _changes(tmp_path, "24.0.1")
+    _fake_origin(monkeypatch, local=local, stdout=_ls_remote_lines(*origin))
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match=(
+            rf"origin has stable release tag run-gate-v24\.0\.0 but this checkout's newest "
+            rf"is {re.escape(newest_local)}; fetch the release tags"
+        ),
+    ):
+        release_candidate.prepared_release_version(changes, allow_first_release=True)
+
+
+def test_release_transaction_keeps_the_version_newer_refusal(monkeypatch, tmp_path):
+    origin = _ls_remote_lines("run-gate-v23.10.0", "run-gate-v24.0.0")
+    _fake_origin(monkeypatch, local="run-gate-v23.10.0\nrun-gate-v24.0.0", stdout=origin)
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="not newer than"):
+        release_candidate.prepared_release_version(
+            _changes(tmp_path, "24.0.0"), allow_first_release=True,
+        )
+    assert release_candidate.prepared_release_version(
+        _changes(tmp_path, "24.0.1"), allow_first_release=True,
+    ) == "24.0.1"
+
+
+def test_release_transaction_refuses_a_failed_local_tag_listing(monkeypatch, tmp_path):
+    """A failing `git tag --list` is a refusal, not an empty local inventory."""
+    changes = _changes(tmp_path)
+
+    def run(argv, **_kwargs):
+        assert "ls-remote" not in argv, "origin must not be consulted after a local failure"
+        return _completed(stderr="fatal: not a git repository", returncode=128)
+
+    monkeypatch.setattr(release_candidate.subprocess, "run", run)
+
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError, match=r"git tag --list run-gate-v\* failed \(128\)",
+    ) as error:
+        release_candidate.prepared_release_version(changes, allow_first_release=True)
+    assert not isinstance(error.value, release_candidate.NoStableReleaseTag)
+
+
+def test_release_baseline_reads_the_real_origin_of_a_tagless_clone(monkeypatch, tmp_path):
+    """Real Git, real ls-remote: a clone made with --no-tags lists no local tag
+    successfully, while its origin carries a release. That is refused until
+    the tags are fetched; a genuinely untagged origin is a first release."""
+    import subprocess
+
+    def git(*args, cwd=tmp_path):
+        return subprocess.run(
+            ["git", "-c", "user.email=test@example.invalid", "-c", "user.name=test",
+             "-c", "init.defaultBranch=main", "-C", str(cwd), *args],
+            check=True, capture_output=True, text=True,
+        ).stdout
+
+    def published(name, *tags):
+        work = tmp_path / f"{name}-work"
+        work.mkdir()
+        git("init", "-q", cwd=work)
+        (work / "run_gate.py").write_text("released = True\n", encoding="utf-8")
+        git("add", "run_gate.py", cwd=work)
+        git("commit", "-q", "-m", "release", cwd=work)
+        for tag in tags:
+            git("tag", "-a", tag, "-m", tag, cwd=work)
+        origin = tmp_path / f"{name}.git"
+        git("clone", "-q", "--bare", str(work), str(origin))
+        clone = tmp_path / f"{name}-clone"
+        git("clone", "-q", "--no-tags", str(origin), str(clone))
+        return clone
+
+    released = published("released", "run-gate-v23.10.0", "run-gate-v24.0.0")
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", released)
+    assert git("tag", "--list", cwd=released) == ""
+    with pytest.raises(
+        release_candidate.ReleaseCandidateError,
+        match="origin has stable release tag run-gate-v24.0.0 but this checkout's newest is none",
+    ):
+        release_candidate._release_baseline()
+    git("fetch", "-q", "--tags", "origin", cwd=released)
+    assert release_candidate._release_baseline() == ("run-gate-v24.0.0", "24.0.0")
+
+    first = published("first")
+    monkeypatch.setattr(release_candidate, "REPOSITORY_ROOT", first)
+    assert release_candidate._release_baseline() is None
 
 
 def test_prepared_release_version_refuses_unreleased_only_changelog(tmp_path):
@@ -1037,6 +1424,11 @@ def test_prepare_records_the_exact_wheel_and_tester_image(monkeypatch, tmp_path,
         release_candidate, "_image_cli_extended_sha256",
         lambda _tag: release_candidate._dockerfile_cli_extended_pin(),
     )
+    monkeypatch.setattr(
+        release_candidate, "_image_base_image",
+        lambda _tag: release_candidate._dockerfile_default_base_image(),
+    )
+    _clear_image_overrides(monkeypatch)
     results = iter((_completed(), _completed(), _completed(image_id)))
     monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
 
@@ -1105,6 +1497,11 @@ def test_prepare_refuses_mismatched_build_and_image(
         release_candidate, "_image_cli_extended_sha256",
         lambda _tag: release_candidate._dockerfile_cli_extended_pin(),
     )
+    monkeypatch.setattr(
+        release_candidate, "_image_base_image",
+        lambda _tag: release_candidate._dockerfile_default_base_image(),
+    )
+    _clear_image_overrides(monkeypatch)
     results = iter((_completed(), _completed(), image_result))
     monkeypatch.setattr(release_candidate.subprocess, "run", lambda *_args, **_kwargs: next(results))
 

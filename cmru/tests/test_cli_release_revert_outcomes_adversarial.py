@@ -8,6 +8,8 @@ from cmru import cli, transaction
 
 @pytest.fixture(autouse=True)
 def fake_release_preflight(monkeypatch):
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _projects: root)
     monkeypatch.setattr(
         cli.transaction,
         "project_git_family_groups",

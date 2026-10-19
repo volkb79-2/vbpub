@@ -172,6 +172,8 @@ def test_removed_backup_marker_creates_its_scope_directory(tmp_path):
 
 
 def test_abandon_uses_explicit_return_code_handling_for_all_remote_mutations(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
     branch = "cmru-release-20260927_120000-alpha-ab12cd"
     ref = f"refs/heads/{branch}"
     oid = "a" * 40
@@ -464,6 +466,8 @@ def test_invalid_registered_invocations_render_usage(monkeypatch, tmp_path, caps
 def test_abandon_refuses_an_unverifiable_base_commit(
     monkeypatch, tmp_path, capsys, base_commit,
 ):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
     workspace = _abandon_workspace(tmp_path, base_commit=base_commit)
     _install_abandon_facts(monkeypatch, tmp_path, workspace, progress="b" * 40)
     monkeypatch.setattr(
@@ -500,6 +504,8 @@ def test_abandon_preserves_remote_inspection_error_detail(monkeypatch, tmp_path,
 
 
 def test_abandon_preview_lists_the_remote_candidate_ref(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
     workspace = _abandon_workspace(tmp_path)
     _install_abandon_facts(monkeypatch, tmp_path, workspace)
     monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_: True)

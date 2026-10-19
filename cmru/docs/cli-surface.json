@@ -2411,7 +2411,25 @@
       "shape": {
         "argument_id": "argument:route:entrypoint:cmru/publish/target"
       },
-      "signature": "sha256:a628ef2ded83465e953e661b33650d81a332729e0f03faaac5d52a7d68b28de0"
+      "signature": "sha256:aa0a6511b6675ae96978a6ec63cf95628f94778386b50262ff27205684e5c698"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/publish/constraint-requires/1",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:cmru/publish/--release-tag",
+        "option:route:entrypoint:cmru/publish/--from-checkout"
+      ],
+      "route_id": "route:entrypoint:cmru/publish",
+      "shape": {
+        "any_of": [
+          "--from-checkout"
+        ],
+        "kind": "requires",
+        "option": "--release-tag",
+        "reason": "--release-tag needs --from-checkout"
+      },
+      "signature": "sha256:0244ddb0617d46889c7c390e0116433961187a35f0b93821d504a7e7fb6e9f7c"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/exclusive-conflict/publish-source/option:route:entrypoint:cmru/publish/--build-output/option:route:entrypoint:cmru/publish/--from-checkout",
@@ -2428,7 +2446,7 @@
           "option:route:entrypoint:cmru/publish/--from-checkout"
         ]
       },
-      "signature": "sha256:6420543219fa8a902d86afe556b0ca6a1f1a756bcfb8285e2b1ec580c8fbc350"
+      "signature": "sha256:90564a384721de2b771ed7c3ad991ed944c4757848af310b8b7630c2488cbe7b"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/exclusive-member/publish-source/option:route:entrypoint:cmru/publish/--build-output",
@@ -2442,7 +2460,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:cmru/publish/--build-output"
       },
-      "signature": "sha256:bbec8719a27c757dee3ad8aae54cfce629eab9fc216c51c8695ff9a9dc4140b7"
+      "signature": "sha256:cbde6eeead50070a7ccebbc118b2b2f312bff0dfb72a3fc4a92d519aa96a5b95"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/exclusive-member/publish-source/option:route:entrypoint:cmru/publish/--from-checkout",
@@ -2456,7 +2474,7 @@
         "required": true,
         "selected_option": "option:route:entrypoint:cmru/publish/--from-checkout"
       },
-      "signature": "sha256:502961bd2678c4fe805042b0ce0a1fcac9c3f056f35e3607d16af48f3ebe4bb0"
+      "signature": "sha256:5e2f69d0520001244359981c7d85ec96d70dcb195c3c612d94efcc95b5197bd2"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/minimum",
@@ -2487,7 +2505,7 @@
         },
         "required_options": []
       },
-      "signature": "sha256:887176dfaf822f43f06e290f6fdd0f96816e28d05fb25f7e01958b0e773e436f"
+      "signature": "sha256:073117d248cb44f76e65a5bcf981dcffc41c6112b8fc007f015f81f81533d15a"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--build-output/--build-output",
@@ -2500,7 +2518,7 @@
         "option_id": "option:route:entrypoint:cmru/publish/--build-output",
         "spelling": "--build-output"
       },
-      "signature": "sha256:e2f60f895d9ea7d78a4d92bc80a215feb4beb7e3362bb6d7121fcb1c9ba5fa6f"
+      "signature": "sha256:4e1856f496a03d58611396d4f20558a878b3d73a8e8b0bf9beca82978c529ccc"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--config/--config",
@@ -2513,7 +2531,7 @@
         "option_id": "option:route:entrypoint:cmru/publish/--config",
         "spelling": "--config"
       },
-      "signature": "sha256:6b59ce704cc07699117b384accd280be183e3bbf6ea1a879c45a97cf472fb7d3"
+      "signature": "sha256:395fe94ab3a16d5851f9b44f5396a8f30553f9a7576ec8a66f3fdf999b006ceb"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--debug-raw/--debug-raw",
@@ -2526,7 +2544,7 @@
         "option_id": "option:route:entrypoint:cmru/publish/--debug-raw",
         "spelling": "--debug-raw"
       },
-      "signature": "sha256:310f963b796126326a9a7fa58433ab40dcec744a2470f03d4432b81016c6eef8"
+      "signature": "sha256:040334b0613b860094b0ec149ff5733c686a73e880057abcfbbeae6a0d58a415"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--dry-run/--dry-run",
@@ -2539,7 +2557,7 @@
         "option_id": "option:route:entrypoint:cmru/publish/--dry-run",
         "spelling": "--dry-run"
       },
-      "signature": "sha256:027a0bc4b14a49b9a19766632974b774569633f1324b7726888b216d31de5a76"
+      "signature": "sha256:8b435e6f162c3d81cd3450ff1471b3ab7982877574f7db7b9dda58272d21ca47"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--from-checkout/--from-checkout",
@@ -2552,7 +2570,7 @@
         "option_id": "option:route:entrypoint:cmru/publish/--from-checkout",
         "spelling": "--from-checkout"
       },
-      "signature": "sha256:98e7c2da63a05c99838fa18eaa793773812d206e9ae407080922eb7d2b4dcbc8"
+      "signature": "sha256:d554f9254c644596c9087dbcddc9d3fafb5c111a50aa9b4dc53da85a1f83ec20"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--log-append/--log-append",
@@ -2565,7 +2583,7 @@
         "option_id": "option:route:entrypoint:cmru/publish/--log-append",
         "spelling": "--log-append"
       },
-      "signature": "sha256:29ed9eceb4b95c9f78874993b5d276671c0c8d07a8e948fdb393c960d6d2d17f"
+      "signature": "sha256:eb384aa8b8e63c3158f6be5a4d84599d9768722c94c972e0e4865a379c6343b1"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--log-prefix-time-short/--log-prefix-time-short",
@@ -2578,7 +2596,33 @@
         "option_id": "option:route:entrypoint:cmru/publish/--log-prefix-time-short",
         "spelling": "--log-prefix-time-short"
       },
-      "signature": "sha256:ff8660256801353a35dce86879662ad5e3ae643a2506394f1c1a35cc1ec52cc8"
+      "signature": "sha256:4f779154e47d6b6b0140a335d880b736b48e16574fdc3dd5639204aa3e65e11a"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--release-tag/--release-tag",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/publish/--release-tag"
+      ],
+      "route_id": "route:entrypoint:cmru/publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/publish/--release-tag",
+        "spelling": "--release-tag"
+      },
+      "signature": "sha256:30a44245776fdebea3037702d7eb868d1afa2b10cf8deecf9721476050fb50f3"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--secret-file/--secret-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/publish/--secret-file"
+      ],
+      "route_id": "route:entrypoint:cmru/publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/publish/--secret-file",
+        "spelling": "--secret-file"
+      },
+      "signature": "sha256:4974c39e78b38e0bfce6beaadd7810aeb6be1d23f0dee83351f539cd3249cc19"
     },
     {
       "id": "case:route:entrypoint:cmru/publish/option-spelling/option:route:entrypoint:cmru/publish/--show-run-details/--show-run-details",
@@ -2591,7 +2635,7 @@
         "option_id": "option:route:entrypoint:cmru/publish/--show-run-details",
         "spelling": "--show-run-details"
       },
-      "signature": "sha256:6648947d72f1c97663f5029bb8da597b367f5c8160a8c5c841e6e5bc5a582b10"
+      "signature": "sha256:c06e0ea4bee4cfdf678d8dd2baad6067c5caf3029ea54a18d6547488fc307823"
     },
     {
       "id": "case:route:entrypoint:cmru/release/argument-shape/argument:route:entrypoint:cmru/release/target",
@@ -2706,6 +2750,7 @@
         "option:route:entrypoint:cmru/release/--minor",
         "option:route:entrypoint:cmru/release/--major",
         "option:route:entrypoint:cmru/release/--no-build",
+        "option:route:entrypoint:cmru/release/--from-worktree",
         "option:route:entrypoint:cmru/release/--allow-uncommitted",
         "option:route:entrypoint:cmru/release/--allow-tag-ahead-of-head",
         "option:route:entrypoint:cmru/release/--allow-stale-tool-deps",
@@ -2719,6 +2764,7 @@
           "option:route:entrypoint:cmru/release/--minor",
           "option:route:entrypoint:cmru/release/--major",
           "option:route:entrypoint:cmru/release/--no-build",
+          "option:route:entrypoint:cmru/release/--from-worktree",
           "option:route:entrypoint:cmru/release/--allow-uncommitted",
           "option:route:entrypoint:cmru/release/--allow-tag-ahead-of-head",
           "option:route:entrypoint:cmru/release/--allow-stale-tool-deps",
@@ -2730,7 +2776,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:3c52cb65002d40abe9f65b09e0bcf67e615e3c5ecbf4dca34640fef7c7798d32"
+      "signature": "sha256:54f16141b6e58ff69c89bcb56c705f54a01460354c366dc9df84b8a8dffc3b35"
     },
     {
       "id": "case:route:entrypoint:cmru/release/option-choice/option:route:entrypoint:cmru/release/--discard/6f1976ed2d",
@@ -2876,6 +2922,19 @@
       "signature": "sha256:744d23a236fa5c8077b43feb90608b2f4398893b53d4ff82c26974f1d15b3211"
     },
     {
+      "id": "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--from-worktree/--from-worktree",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/release/--from-worktree"
+      ],
+      "route_id": "route:entrypoint:cmru/release",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/release/--from-worktree",
+        "spelling": "--from-worktree"
+      },
+      "signature": "sha256:2df5379436e091627593dfcf5605a0d8907007aadce9afa2db0a4f7589273544"
+    },
+    {
       "id": "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--log-append/--log-append",
       "kind": "option-spelling",
       "members": [
@@ -2965,6 +3024,19 @@
         "spelling": "--resume"
       },
       "signature": "sha256:da99e87e89f9016490b56bc7592d67b7c0f5c8b988a093cd3982c4409078913f"
+    },
+    {
+      "id": "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--secret-file/--secret-file",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/release/--secret-file"
+      ],
+      "route_id": "route:entrypoint:cmru/release",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/release/--secret-file",
+        "spelling": "--secret-file"
+      },
+      "signature": "sha256:2503c0ec2e0019b1f6261c95f62da31e8ab2b243987521c28a2ccbea8e5b1ed3"
     },
     {
       "id": "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--set-version/--set-version",
@@ -5352,7 +5424,7 @@
       "confirmation": true,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "Inspect and discard retained local release transactions (no argument) or one retained build or release worktree (BRANCH or PATH). Removes the exact CMRU backup branch, worktree, in-worktree logs/artifacts, and transaction sidecars; it refuses release transactions with publication or promotion evidence. A cmru-release-* BRANCH that exists only on origin (no local worktree) is retired only when every commit is already on origin/main; otherwise it is withheld (exit 4).",
+      "description": "Inspect and discard retained local release transactions (no argument) or one retained build or release worktree (BRANCH or PATH). Removes the exact CMRU candidate branch if present, worktree, in-worktree logs/artifacts, and transaction sidecars. Published candidates are withheld except a completed feature-source release whose exact final commit is already in origin/main; if its origin branch is absent, that exact ancestry must still be verified. Retirement preserves public tags and assets. A cmru-release-* BRANCH that exists only on origin is retired only when every commit is already on origin/main; otherwise it is withheld (exit 4).",
       "group": "MAINTENANCE",
       "id": "route:entrypoint:cmru/abandon",
       "kind": "invocation",
@@ -5396,7 +5468,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Inspect and discard retained local release transactions (no argument) or one retained build or release worktree (BRANCH or PATH). Removes the exact CMRU backup branch, worktree, in-worktree logs/artifacts, and transaction sidecars; it refuses release transactions with publication or promotion evidence. A cmru-release-* BRANCH that exists only on origin (no local worktree) is retired only when every commit is already on origin/main; otherwise it is withheld (exit 4). [mutating; dry-run]",
+      "summary": "Inspect and discard retained local release transactions (no argument) or one retained build or release worktree (BRANCH or PATH). Removes the exact CMRU candidate branch if present, worktree, in-worktree logs/artifacts, and transaction sidecars. Published candidates are withheld except a completed feature-source release whose exact final commit is already in origin/main; if its origin branch is absent, that exact ancestry must still be verified. Retirement preserves public tags and assets. A cmru-release-* BRANCH that exists only on origin is retired only when every commit is already on origin/main; otherwise it is withheld (exit 4). [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -10354,7 +10426,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "publish whatever the CALLER'S checkout currently holds (not isolated, not verified)",
+          "description": "publish from the CALLER'S checkout (not isolated); --release-tag enables a tag-verified OCI release-body retry",
           "dest": "from_checkout",
           "effective_default": false,
           "exclusive_group": "publish-source",
@@ -10372,6 +10444,87 @@
           "parser_kwargs": {
             "action": "store_true",
             "default": false
+          },
+          "parser_path": [
+            "publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--release-tag",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "retry only the configured OCI GitHub Release body for this explicit tag; requires --from-checkout",
+          "dest": "release_tag",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--release-tag"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/publish/--release-tag",
+          "kind": "option",
+          "metavar": "TAG",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "cmru.cli._non_empty"
+            }
+          },
+          "parser_path": [
+            "publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "cmru.cli._non_empty"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--secret-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "explicit root cmru.secret.toml path for this publish; another worktree's file is never read automatically",
+          "dest": "secret_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--secret-file"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/publish/--secret-file",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
           },
           "parser_path": [
             "publish"
@@ -10520,16 +10673,26 @@
         "--version"
       ],
       "confirmation": false,
-      "constraints": [],
+      "constraints": [
+        {
+          "any_of": [
+            "--from-checkout"
+          ],
+          "kind": "requires",
+          "option": "--release-tag",
+          "reason": "--release-tag needs --from-checkout"
+        }
+      ],
       "delegated_metadata": [],
-      "description": "Run the project publish step from a verified retained build (--build-output) or, explicitly, from the caller's checkout (--from-checkout).",
+      "description": "Run a project's publish step from a verified retained build (--build-output) or from the caller's checkout (--from-checkout); --release-tag retries only a configured OCI GitHub Release body.",
       "group": "MODIFICATION",
       "id": "route:entrypoint:cmru/publish",
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [
         "option:route:entrypoint:cmru/publish/--build-output.type",
-        "option:route:entrypoint:cmru/publish/--log-prefix-time-short.action"
+        "option:route:entrypoint:cmru/publish/--log-prefix-time-short.action",
+        "option:route:entrypoint:cmru/publish/--release-tag.type"
       ],
       "parser_configured_by_callback": false,
       "parser_settings": [
@@ -10567,7 +10730,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Run the project publish step from a verified retained build (--build-output) or, explicitly, from the caller's checkout (--from-checkout). [mutating; dry-run]",
+      "summary": "Run a project's publish step from a verified retained build (--build-output) or from the caller's checkout (--from-checkout); --release-tag retries only a configured OCI GitHub Release body. [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -10811,6 +10974,83 @@
           "type": null
         },
         {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--from-worktree",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "release the clean checked-out feature branch when origin/<branch> has the exact same commit; retain the generated origin candidate branch for a PR",
+          "dest": "from_worktree",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--from-worktree"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/release/--from-worktree",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true",
+            "default": false
+          },
+          "parser_path": [
+            "release"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--secret-file",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "explicit root cmru.secret.toml path for this release; another worktree's file is never read automatically",
+          "dest": "secret_file",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--secret-file"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/release/--secret-file",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "release"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
           "canonical": "--config",
@@ -10894,7 +11134,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "allow local edits to be omitted from the origin/main snapshot",
+          "description": "allow default origin/main release to omit project edits (not valid for feature-source release or resume)",
           "dest": "allow_uncommitted",
           "effective_default": false,
           "exclusive_group": null,
@@ -11137,7 +11377,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "git ref the local-ahead guard compares against (the snapshot is always origin/main)",
+          "description": "git ref the default-mode local-ahead guard compares against (snapshot is origin/main)",
           "dest": "ahead_check_ref",
           "effective_default": null,
           "exclusive_group": null,
@@ -11226,7 +11466,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "Release selected projects from an isolated origin/main snapshot.",
+      "description": "Release selected projects from an isolated origin/main snapshot, or with --from-worktree from a clean feature branch already pushed to its same-named origin branch.",
       "group": "MIXED OPERATIONS",
       "id": "route:entrypoint:cmru/release",
       "kind": "invocation",
@@ -11270,7 +11510,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Release selected projects from an isolated origin/main snapshot. [mutating; dry-run]",
+      "summary": "Release selected projects from an isolated origin/main snapshot, or with --from-worktree from a clean feature branch already pushed to its same-named origin branch. [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

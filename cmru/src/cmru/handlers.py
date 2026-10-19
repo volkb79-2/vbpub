@@ -328,13 +328,16 @@ def _configured_env_value(cwd: Path, name: str) -> str:
             f"{config_path}: strict CMRU config loader returned no project registry"
         )
     matches: list[tuple[int, str]] = []
-    for name, path in forge.orchestration.project_configs.items():
+    # The loop variable must not be ``name``: that is the env key being looked up, and
+    # shadowing it made the final lookup search for a PROJECT id and return "" for every
+    # declared value (the wheel-build builder image and cgroup-probe inputs).
+    for project_id, path in forge.orchestration.project_configs.items():
         project_root = path.resolve().parent
         try:
             cwd.relative_to(project_root)
         except ValueError:
             continue
-        matches.append((len(project_root.parts), name))
+        matches.append((len(project_root.parts), project_id))
     if not matches:
         raise ValueError(
             f"{cwd} is not inside a project registered by {config_path}"

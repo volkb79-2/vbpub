@@ -31,6 +31,9 @@ def _config(tmp_path, projects):
 
 
 def _common_patches(monkeypatch, tmp_path, projects):
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "backup_was_pushed", lambda *_args: False)
+    monkeypatch.setattr(cli.transaction, "read_release_results", lambda *_args: {})
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: _config(tmp_path, projects))
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
@@ -44,6 +47,7 @@ def _common_patches(monkeypatch, tmp_path, projects):
     )
     monkeypatch.setattr(cli, "require_project_publish_credentials", lambda *a, **k: None)
     monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _p: root)
+    monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli.transaction, "clear_plan_refused", lambda *a, **k: None)
     monkeypatch.setattr(cli, "_current_git_root", lambda: tmp_path)
     monkeypatch.setattr(cli, "_project_git_tag_policy_at_snapshot", lambda *a, **k: False)

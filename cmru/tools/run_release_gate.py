@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import fcntl
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -55,6 +56,13 @@ _GATE_CODE_ROOTS = (
 _CODE_SUFFIXES = {".py", ".pyc", ".pyo", ".so", ".pyd"}
 _HASH_CHUNK = 200
 _RUN_GATE_EXECUTABLE_ENV = "_CMRU_RUN_GATE_EXECUTABLE"
+# One-shot marker for the controller's interpreter switch (_ensure_gate_environment).
+_GATE_REEXEC_ENV = "_CMRU_RELEASE_GATE_REEXEC"
+# Protected values CMRU's release runtime gives a project step. This script cannot import
+# cmru before it has chosen its interpreter, so it spells the names; tests pin them to
+# transaction.INTERNAL_PYTHON_ENV and the CMRU_RELEASE_GATE_COMMIT that cli.py injects.
+_INTERNAL_PYTHON_ENV = "CMRU_INTERNAL_PYTHON"
+_GATE_COMMIT_ENV = "CMRU_RELEASE_GATE_COMMIT"
 
 
 class GateInterrupted(SystemExit):
@@ -99,38 +107,320 @@ def _load_components():
     return assay_git, prepare_assay_baseline
 
 
-def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
-    """Require and identify the stable Run-Gate judge used by this gate."""
-    executable = shutil.which("run-gate")
+def _installed_launcher(name: str) -> tuple[str, Path, list[str]]:
+    """Resolve an installed console script and the Python interpreter it runs under.
+
+    Returns ``(executable, resolved launcher path, interpreter argv)``. The
+    interpreter is read from the launcher's own shebang, so it is whatever
+    environment the wheel was actually installed into, never a path written
+    down in this repository. Every failure is a ``RuntimeError`` naming the
+    launcher; nothing is guessed.
+    """
+    executable = shutil.which(name)
     if executable is None:
-        raise RuntimeError("the registered CMRU gate requires the installed run-gate CLI")
+        raise RuntimeError(f"the registered CMRU gate requires the installed {name} CLI")
     command = Path(executable).resolve(strict=True)
     try:
         with command.open(encoding="utf-8") as stream:
             first_line = stream.readline().strip()
     except (OSError, UnicodeError) as exc:
-        raise RuntimeError(f"cannot read the installed run-gate launcher: {command}: {exc}") from exc
+        raise RuntimeError(f"cannot read the installed {name} launcher: {command}: {exc}") from exc
     if not first_line.startswith("#!"):
-        raise RuntimeError(f"installed run-gate launcher has no Python shebang: {command}")
+        raise RuntimeError(f"installed {name} launcher has no Python shebang: {command}")
     interpreter = shlex.split(first_line[2:])
     if not interpreter:
-        raise RuntimeError(f"installed run-gate launcher has an empty Python shebang: {command}")
+        raise RuntimeError(f"installed {name} launcher has an empty Python shebang: {command}")
     if interpreter[0] == "/usr/bin/env":
         if len(interpreter) < 2 or interpreter[1].startswith("-"):
-            raise RuntimeError(f"installed run-gate launcher has an unsupported env shebang: {command}")
+            raise RuntimeError(f"installed {name} launcher has an unsupported env shebang: {command}")
         resolved = shutil.which(interpreter[1])
         if resolved is None:
             raise RuntimeError(
-                f"cannot resolve the Python interpreter named by run-gate: {interpreter[1]}"
+                f"cannot resolve the Python interpreter named by {name}: {interpreter[1]}"
             )
         interpreter = [resolved, *interpreter[2:]]
     elif not Path(interpreter[0]).is_absolute():
-        raise RuntimeError(f"installed run-gate launcher has a non-absolute interpreter: {command}")
+        raise RuntimeError(f"installed {name} launcher has a non-absolute interpreter: {command}")
+    return executable, command, interpreter
 
+
+def _declared_dependencies() -> list[tuple[str, str]]:
+    """``(requirement, import name)`` for each dependency in CMRU's own ``pyproject.toml``.
+
+    The import name is the distribution name normalised the way the wheel's
+    top-level package is spelled (``-``/``.`` to ``_``), which is exact for every
+    dependency CMRU declares. Deriving the set from the declaration means a
+    dependency added later is covered without editing this script.
+    """
+    path = PROJECT_ROOT / "pyproject.toml"
+    try:
+        requirements = tomllib.loads(path.read_text(encoding="utf-8"))["project"]["dependencies"]
+        declared = []
+        for requirement in requirements:
+            name = re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement.strip())
+            if name is None:
+                raise ValueError(f"unparseable requirement {requirement!r}")
+            declared.append((requirement, re.sub(r"[-.]+", "_", name.group(0)).lower()))
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise RuntimeError(
+            f"cannot read CMRU's declared dependencies from {path}: {exc}"
+        ) from exc
+    return declared
+
+
+_VERSION_PATTERN = re.compile(
+    r"(?P<release>[0-9]+(?:\.[0-9]+)*)"
+    r"(?:(?P<pre>a|b|rc)(?P<pre_n>[0-9]+)|\.?(?P<dev>dev)(?P<dev_n>[0-9]+)|\.?(?P<post>post)(?P<post_n>[0-9]+))?"
+    r"(?:\+[A-Za-z0-9.]+)?\Z"
+)
+_SPECIFIER_PATTERN = re.compile(r"\s*(>=|<=|==|!=|>|<)\s*([0-9A-Za-z.+]+)\s*\Z")
+_PHASE_RANK = {"dev": 0, "a": 1, "b": 2, "rc": 3, None: 4, "post": 5}
+
+
+def _version_key(version: str) -> tuple[tuple[int, ...], int, int]:
+    """Order a PEP 440 release/pre/dev/post version without third-party code.
+
+    This controller starts under ``-I`` before anything from the worktree (or a
+    dependency such as ``packaging``) can be imported, so it carries the small
+    ordering it needs. A local segment (``+bootstrap.source``) never changes the
+    order. A version it cannot parse is an error, never "satisfied".
+    """
+    match = _VERSION_PATTERN.match(version.strip())
+    if match is None:
+        raise ValueError(f"unparseable version {version!r}")
+    release = [int(part) for part in match["release"].split(".")]
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+    if match["pre"]:
+        return tuple(release), _PHASE_RANK[match["pre"]], int(match["pre_n"])
+    if match["dev"]:
+        return tuple(release), _PHASE_RANK["dev"], int(match["dev_n"])
+    if match["post"]:
+        return tuple(release), _PHASE_RANK["post"], int(match["post_n"])
+    return tuple(release), _PHASE_RANK[None], 0
+
+
+def _requirement_distribution(requirement: str) -> tuple[str, list[tuple[str, str]]]:
+    """``(distribution name, [(operator, version), ...])`` of one declared requirement."""
+    match = re.match(r"([A-Za-z0-9][A-Za-z0-9._-]*)\s*(?:\[[^\]]*\])?\s*(.*)\Z", requirement.strip())
+    if match is None:
+        raise RuntimeError(f"unparseable requirement {requirement!r}")
+    clauses = []
+    for clause in filter(None, (part.strip() for part in match.group(2).split(","))):
+        parsed = _SPECIFIER_PATTERN.match(clause)
+        if parsed is None:
+            raise RuntimeError(
+                f"requirement {requirement!r} uses a specifier this controller cannot "
+                f"evaluate ({clause!r}); it supports >=, >, <=, <, == and != on plain versions"
+            )
+        clauses.append((parsed.group(1), parsed.group(2)))
+    return match.group(1), clauses
+
+
+def _requirement_satisfied(requirement: str, installed: str) -> bool:
+    """Whether *installed* meets every clause of *requirement* (no clause: any version)."""
+    _name, clauses = _requirement_distribution(requirement)
+    try:
+        have = _version_key(installed)
+        wanted = [(operator, _version_key(bound)) for operator, bound in clauses]
+    except ValueError:
+        return False
+    checks = {
+        ">=": lambda a, b: a >= b, ">": lambda a, b: a > b,
+        "<=": lambda a, b: a <= b, "<": lambda a, b: a < b,
+        "==": lambda a, b: a == b, "!=": lambda a, b: a != b,
+    }
+    return all(checks[operator](have, bound) for operator, bound in wanted)
+
+
+def _installed_version(distribution: str) -> str | None:
+    """The installed distribution's metadata version, or None when it is not installed."""
+    import importlib.metadata
+
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _authoritative_interpreter() -> tuple[list[str], str]:
+    """The interpreter of the CMRU environment, and a phrase saying where it came from.
+
+    Inside the protected release workflow CMRU states the fact itself: it hands every
+    project step ``CMRU_INTERNAL_PYTHON``, the ``sys.executable`` of the running
+    ``cmru`` (``transaction.INTERNAL_PYTHON_ENV``; a test pins the spelling). During a
+    release the ``cmru`` first on PATH is CMRU's own bound launcher, a ``/bin/sh``
+    wrapper that execs that interpreter, so reading its shebang would name the shell,
+    not an environment. The value is honoured only together with the protected
+    ``CMRU_RELEASE_GATE_COMMIT`` (set by the same release workflow for the same step), so a
+    stale variable in an operator's shell cannot choose the interpreter of a manual run.
+    An unusable protected value is a refusal, never a reason to look elsewhere.
+
+    Anywhere else (a direct ``run-gate gate-provisional``) the installed ``cmru``
+    console script's shebang names the environment it was installed into; a launcher
+    that is not a Python console script is refused with that explanation.
+    """
+    runtime = os.environ.get(_INTERNAL_PYTHON_ENV, "").strip()
+    if runtime and os.environ.get(_GATE_COMMIT_ENV, "").strip():
+        if not os.path.isabs(runtime) or not os.path.isfile(runtime) or not os.access(runtime, os.X_OK):
+            raise RuntimeError(
+                f"{_INTERNAL_PYTHON_ENV}={runtime!r}, provided by the CMRU release runtime, "
+                "is not an absolute path to an executable file; the release runtime must "
+                "report its own interpreter"
+            )
+        return [runtime], f"provided by the CMRU release runtime ({_INTERNAL_PYTHON_ENV})"
+    _executable, launcher, interpreter = _installed_launcher("cmru")
+    if "python" not in Path(interpreter[0]).name.lower():
+        raise RuntimeError(
+            f"the cmru launcher {launcher} is not a Python console script (its shebang runs "
+            f"{interpreter[0]}), so it names no Python environment; inside `cmru release` "
+            f"CMRU supplies the interpreter itself ({_INTERNAL_PYTHON_ENV}), and for a manual "
+            "run the estate environment's own `cmru` must come first on PATH"
+        )
+    return interpreter, f"named by the installed cmru launcher {launcher}"
+
+
+def _ensure_gate_environment(argv: list[str]) -> None:
+    """Run this controller under the interpreter that holds CMRU's declared dependencies.
+
+    The registered ``gate`` lanes are ``bare-host`` and start ``python3 -I -B
+    run_release_gate.py``; ``python3`` there is whatever the host PATH names,
+    which need not be the environment the CMRU wheel and its declared
+    third-party dependencies (``cli-extended``) were installed into. The
+    controller imports CMRU from the exact worktree source and needs only those
+    *declared* wheels from the installed environment, so when this interpreter
+    cannot import them, or imports one whose INSTALLED distribution version does
+    not satisfy the declared requirement (a host with an older ``cli-extended``
+    0.2.0 against ``cli-extended>=0.3.0``), the controller is re-executed ONCE
+    under the CMRU
+    environment's interpreter (see :func:`_authoritative_interpreter`: the
+    interpreter CMRU's release runtime reports for itself, or, for a manual
+    run, the one named by the installed ``cmru`` console script): the
+    environment ``cmru release`` itself requires. Nothing is vendored, no path
+    is hardcoded, and the switch is announced on stderr.
+
+    This runs before anything from the worktree is imported (stdlib only; the
+    only worktree file read is ``pyproject.toml``, as data, to learn the
+    declared dependency names), so the ``-I -B`` ordering that keeps an
+    untracked module from running ahead of the source-integrity check is
+    preserved: the same script, with the same flags, simply starts again. A
+    missing launcher, an interpreter that still cannot import the
+    dependencies or still carries a below-floor version (the authoritative
+    interpreter is probed for the installed version before the switch), or a
+    second failure after the switch is a loud
+    ``RuntimeError`` with the remedy, never a degraded run.
+    """
+    already_switched = os.environ.pop(_GATE_REEXEC_ENV, None) is not None
+    declared = _declared_dependencies()
+    problems: list[str] = []
+    absent: list[tuple[str, str]] = []
+    for requirement, module in declared:
+        distribution, _clauses = _requirement_distribution(requirement)
+        try:
+            importable = importlib.util.find_spec(module) is not None
+        except (ImportError, ValueError):
+            importable = False
+        if not importable:
+            problems.append(f"cannot import {module}")
+            absent.append((requirement, module))
+            continue
+        # Importable is not the declared floor: the INSTALLED distribution's own
+        # metadata version must satisfy the whole declared requirement.
+        installed = _installed_version(distribution)
+        if installed is None:
+            problems.append(
+                f"imports {module} but has no installed {distribution} distribution metadata"
+            )
+            absent.append((requirement, module))
+        elif not _requirement_satisfied(requirement, installed):
+            problems.append(
+                f"has {distribution} {installed} installed, which does not satisfy {requirement}"
+            )
+            absent.append((requirement, module))
+    if not absent:
+        return
+    missing = ", ".join(module for _requirement, module in absent)
+    found = "; ".join(problems)
+    remedy = (
+        "Install the released cmru wheel together with its declared dependencies "
+        f"({', '.join(requirement for requirement, _module in absent)}) into the estate "
+        "Python environment (`pip install --no-index --find-links <wheelhouse> cmru`, see "
+        "the CMRU README 'Install') and put that environment's bin directory on PATH "
+        "before running `run-gate gate` or `run-gate gate-provisional`"
+    )
+    if already_switched:
+        raise RuntimeError(
+            f"the interpreter chosen as the CMRU environment's ({sys.executable}) "
+            f"still fails the declared dependencies: {found}. {remedy}"
+        )
+    try:
+        interpreter, origin = _authoritative_interpreter()
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"this interpreter ({sys.executable}) {found}, and no authoritative CMRU "
+            f"environment could be determined: {exc}. {remedy}"
+        ) from exc
+    shown = " ".join(interpreter)
+    # The authoritative interpreter must meet the SAME declaration: it imports the
+    # dependency and reports the installed distribution version, which is checked here.
+    probe_code = "; ".join(
+        ["import importlib.metadata as _metadata"]
+        + [f"import {module}" for _requirement, module in absent]
+        + [
+            f"print({_requirement_distribution(requirement)[0]!r} + '=' + "
+            f"_metadata.version({_requirement_distribution(requirement)[0]!r}))"
+            for requirement, _module in absent
+        ]
+    )
+    try:
+        probe = subprocess.run(
+            [*interpreter, "-I", "-B", "-c", probe_code],
+            capture_output=True, text=True, check=False, timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"cannot run the interpreter {shown} {origin}: {exc}. {remedy}"
+        ) from exc
+    if probe.returncode != 0:
+        detail = (probe.stderr.strip().splitlines() or ["no diagnostic output"])[-1]
+        raise RuntimeError(
+            f"the interpreter {shown} {origin} cannot import {missing} either "
+            f"({detail}). {remedy}"
+        )
+    reported = dict(
+        line.split("=", 1) for line in probe.stdout.splitlines() if "=" in line
+    )
+    for requirement, _module in absent:
+        distribution = _requirement_distribution(requirement)[0]
+        version = reported.get(distribution)
+        if version is None or not _requirement_satisfied(requirement, version):
+            raise RuntimeError(
+                f"the interpreter {shown} {origin} has {distribution} "
+                f"{version or '(no reported version)'} installed, which does not satisfy "
+                f"{requirement}. {remedy}"
+            )
+    print(
+        f"cmru-release-gate: {sys.executable} {found}; running the "
+        f"controller under the installed CMRU environment's interpreter "
+        f"{shown} ({origin})",
+        file=sys.stderr, flush=True,
+    )
+    os.environ[_GATE_REEXEC_ENV] = "1"
+    os.execv(
+        interpreter[0],
+        [*interpreter, "-I", "-B", str(Path(__file__).resolve()), *argv],
+    )
+
+
+def _check_run_gate_identity(repo_root: Path) -> dict[str, object]:
+    """Require and identify the stable Run-Gate judge used by this gate."""
+    executable, command, interpreter = _installed_launcher("run-gate")
     try:
         cli_version_result = subprocess.run(
             [executable, "--version"],
             cwd=repo_root / "cmru",
+            # The launcher is not verified yet: never hand it publisher tokens.
+            env=_lane_environment(),
             capture_output=True,
             text=True,
             check=False,
@@ -547,7 +837,9 @@ def _preflight_assay_source(repo_root: Path) -> None:
         raise RuntimeError(f"Assay source preflight is missing or unsafe: {script}")
     try:
         result = subprocess.run(
-            [sys.executable, str(script), "--assay-source", str(assay_source)],
+            # Isolated like the controller itself (-I -B): PYTHONPATH or a
+            # user-site module must not shadow anything the check imports.
+            [sys.executable, "-I", "-B", str(script), "--assay-source", str(assay_source)],
             cwd=repo_root,
             check=False,
             capture_output=True,
@@ -956,9 +1248,10 @@ def _run_snapshot_lane(
             lane_environment[_RUN_GATE_EXECUTABLE_ENV] = executable_path
         image_id = expected_identity.get("tester_image_id")
         if isinstance(image_id, str):
-            # Run-Gate accepts the configured image through this explicit
-            # override. Pin to the inspected image ID so a mutable tag cannot
-            # change which judge image a later lane starts.
+            # Run-Gate reads this override only for an environment that declares
+            # `image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"` (here: cmru-mutation;
+            # the root tester-unified declaration lands with the Run-Gate wave).
+            # Elsewhere the image-ID recheck around each lane detects a retag.
             lane_environment["RUN_GATE_TESTER_UNIFIED_IMAGE"] = image_id
     # Refresh the host manifest FIRST: prepare_lane seeds the lane's copy from
     # it, and the live-snapshot check accepts only a manifest this recent.
@@ -1260,4 +1553,9 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    try:
+        _ensure_gate_environment(sys.argv[1:])
+    except RuntimeError as exc:
+        print(f"cmru-release-gate: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
     raise SystemExit(main())

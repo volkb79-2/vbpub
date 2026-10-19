@@ -48,7 +48,19 @@ requires CMRU's protected `CMRU_RELEASE_GATE_COMMIT` and verifies that it
 matches the selected checkout, so a dated heading alone cannot stamp a stable
 version onto an unrelated or manually prepared tree. For a first release, no
 prior stable tag exists; the protected CMRU transaction may use its prepared
-version as the initial stable identity. It then
+version as the initial stable identity. An empty local `git tag` listing is not
+evidence of that: a clone made without tags lists nothing successfully. Inside
+the transaction, preparation also reads origin with
+`git ls-remote --exit-code --tags origin 'refs/tags/run-gate-v*'`. Only exit 2,
+where origin answered with no matching ref, or a fully parsed listing with no
+stable tag proves a first release. Preparation refuses three states:
+- origin cannot be read, or its listing is malformed;
+- origin has a stable tag this checkout lacks;
+- the checkout's newest local tag is older than origin's.
+
+CMRU's own release-plan check compares tags under its own suffix-tolerant
+ordering and passes the gate only its commit, so Run-Gate reads origin itself
+rather than relying on that. Preparation then
 builds that wheel through CMRU's wheel builder and builds a uniquely tagged
 `tester-unified` image from those exact wheel bytes. The selftest selects that
 tag through `image_env`, leaving the shared `:local` tag alone. Before pytest,
@@ -59,6 +71,15 @@ the same candidate commit and refuses to publish if its version, filename,
 digest, or tester image identity differs. This connects the bytes that ran in
 the gate to the bytes attached to the release rather than treating matching
 version strings as artifact identity.
+
+The same rule covers the tester image's other inputs. Preparation validates the
+base and `cli-extended` overrides before it builds anything. After the build, it
+compares the image's base and `cli-extended` digest labels with the values the
+builder was asked to use. `latest` follows a mutable pointer, so it is accepted
+only with the published digest. A digest supplied for any other mode is refused
+rather than ignored: an unused fact that looks like a pin is a silent wrong
+answer. A label check, not the build command alone, is the evidence, because
+Buildx only warns about an unconsumed build argument.
 
 The receipt is stored under the candidate's ignored `.assay/` directory and
 names the exact commit, wheel, and image. A normal local `run-gate selftest`

@@ -9,12 +9,15 @@ stale tester-image pin cannot silently keep the old cli-extended bytes.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import textwrap
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -277,6 +280,61 @@ def test_an_unreadable_or_malformed_pointer_is_a_refusal_not_no_release(tmp_path
     assert result.stderr.startswith("cli-extended-release-identity:")
 
 
+@pytest.mark.parametrize(("version", "url"), [
+    ("1; touch PWNED", OLD_URL),
+    ("0.3.0", OLD_URL.replace("cli_extended-0.3.0", "cli_extended-0.3.0$(touch PWNED)")),
+    ("0.3.0", OLD_URL.replace("cli-extended-v0.3.0/", "cli-extended-v0.3.0/../../x/")),
+    ("0.3.0", OLD_URL.replace("cli-extended-v0.3.0", "cli-extended-v0.4.0")),
+    ("0.4.0", OLD_URL),
+    (None, OLD_URL),
+], ids=["version-command", "url-command", "url-traversal", "tag-mismatch", "version-mismatch", "no-version"])
+def test_a_hostile_or_inconsistent_pointer_is_refused_before_anything_reaches_eval(
+    tmp_path, version, url,
+):
+    """The guide `eval`s this output, so a replaced pointer must never inject shell."""
+    _dockerfile(tmp_path / "Dockerfile", OLD_URL, OLD_PIN_SHA)
+    document = {"asset": "x.whl", "sha256": NEW_SHA, "url": url}
+    if version is not None:
+        document["version"] = version
+    (tmp_path / "latest.json").write_text(json.dumps(document), encoding="utf-8")
+
+    result = _identity(
+        "--released-sha256", NEW_SHA, "--dockerfile", str(tmp_path / "Dockerfile"),
+        "--pointer-file", str(tmp_path / "latest.json"),
+    )
+
+    assert result.returncode == 2, result.stdout
+    assert result.stdout == ""
+    assert "cli-extended-release-identity:" in result.stderr
+
+
+def test_the_identity_output_is_safe_to_eval(tmp_path):
+    _dockerfile(tmp_path / "Dockerfile", OLD_URL, OLD_PIN_SHA)
+    _pointer(tmp_path / "latest.json", NEW_SHA, OLD_URL)
+    result = _identity(
+        "--released-sha256", NEW_SHA, "--dockerfile", str(tmp_path / "Dockerfile"),
+        "--pointer-file", str(tmp_path / "latest.json"),
+    )
+    assert result.returncode == 0, result.stderr
+
+    evaluated = subprocess.run(
+        ["bash", "-c", 'eval "$1"; printf "%s\\n" "$CLI_EXTENDED_RELEASED_URL" "$CLI_EXTENDED_RESOLVE"', "_", result.stdout],
+        capture_output=True, text=True, check=True,
+    ).stdout.splitlines()
+    assert evaluated == [OLD_URL, "latest"]
+
+
+def test_a_malformed_dockerfile_pin_is_refused(tmp_path):
+    _dockerfile(tmp_path / "Dockerfile", OLD_URL, "a$(id)b")
+    _pointer(tmp_path / "latest.json", NEW_SHA, OLD_URL)
+    result = _identity(
+        "--released-sha256", NEW_SHA, "--dockerfile", str(tmp_path / "Dockerfile"),
+        "--pointer-file", str(tmp_path / "latest.json"),
+    )
+    assert result.returncode == 2
+    assert "pinned CLI_EXTENDED_WHEEL_SHA256" in result.stderr
+
+
 @pytest.mark.skipif(not DOCKERFILE.is_file(), reason="tester-unified absent (isolated canary tree)")
 def test_the_real_dockerfile_pin_is_readable_by_the_check(tmp_path):
     text = DOCKERFILE.read_text(encoding="utf-8")
@@ -323,17 +381,30 @@ def _step_three_tree(tmp_path: Path, pin_sha: str, pointer_sha: str) -> tuple[Pa
     return root, env, log
 
 
-def _run_step_three_identity_block(root: Path, env: dict[str, str], released: str) -> subprocess.CompletedProcess[str]:
+def _release_log(released: str) -> str:
+    """What `cmru release cli-extended` leaves in the root audit log (quiet push step)."""
+    return (
+        "[INFO] CLI-EXTENDED_WHEEL_ASSET_URL=https://example.invalid/cli_extended-0.3.0-py3-none-any.whl\n"
+        f"[INFO] CLI-EXTENDED_WHEEL_SHA256={released}\n"
+        f"[INFO] CLI-EXTENDED_WHEEL_SHA256_URL=https://example.invalid/{released}.sha256\n"
+    )
+
+
+def _run_step_three_identity_block(
+    root: Path, env: dict[str, str], released: str, log_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run step 3's identity block with the digest READ from the release log, as documented."""
     blocks = _step_blocks(3)
     block = next(item for item in blocks if "cli_extended_release_identity.py" in item)
     needle = "--dockerfile tester-unified/Dockerfile"
     assert block.count(needle) == 2  # the pre-build check and the post-build re-check
     block = block.replace(needle, needle + " --pointer-file latest.json")
-    block = block.replace(
-        "CLI_EXTENDED_RELEASED_SHA256='<CLI-EXTENDED_WHEEL_SHA256 value from cmru.release.log>'",
-        f"CLI_EXTENDED_RELEASED_SHA256='{released}'",
+    # The digest is never typed: no placeholder is left for the operator to fill in.
+    assert re.search(r"<[^>\n]+>", block) is None, block
+    assert "CLI_EXTENDED_RELEASED_SHA256='" not in block
+    (root / "cmru.release.log").write_text(
+        _release_log(released) if log_text is None else log_text, encoding="utf-8",
     )
-    assert released in block
     return subprocess.run(
         ["bash", "-c", "set -euo pipefail\n" + block], cwd=root, env=env,
         capture_output=True, text=True, check=False,
@@ -390,6 +461,45 @@ def test_step_three_pinned_mode_passes_no_digest_flag_when_the_pin_is_current(tm
 
 
 @_needs_repo
+def test_every_run_gate_tester_input_the_guide_passes_is_read_by_run_gate_source():
+    """A `RUN_GATE_TESTER_*` value the guide exports must reach real Run-Gate code.
+
+    Run-Gate ignores an unknown environment variable, so a guide that names an
+    input no Run-Gate source reads is a pasteable step that cannot fail. The
+    consumer is Run-Gate 24.0.1's ``tools/release_candidate.py``; the step-4
+    tests below also prove each value is one that consumer accepts.
+    """
+    text = GUIDE.read_text(encoding="utf-8")
+    named = set(re.findall(r"\b(RUN_GATE_TESTER_[A-Z0-9_]+)=", text))
+    assert named, "the guide passes no RUN_GATE_TESTER_* input; update this oracle"
+    sources = [
+        path for path in (REPO_ROOT / "run-gate-project").rglob("*.py")
+        if "tests" not in path.relative_to(REPO_ROOT / "run-gate-project").parts
+    ]
+    # Count a name only where code can read it: a quoted string literal, not a comment.
+    read = {
+        name for name in named
+        if any(
+            re.search(rf"""(["']){name}\1""", path.read_text(encoding="utf-8", errors="replace"))
+            for path in sources
+        )
+    }
+    # The guide pins each release's image through the environment the root
+    # `tester-unified` declares as `image_env`; the CGProfile and Run-Gate gate
+    # lanes run there, so a CMRU-only `cmru-mutation` declaration does not count.
+    root_config = REPO_ROOT / "run-gate.root.toml"
+    assert root_config.is_file(), "the estate root Run-Gate config is missing"
+    root = tomllib.loads(root_config.read_text(encoding="utf-8"))
+    image_env = root.get("environments", {}).get("tester-unified", {}).get("image_env")
+    if isinstance(image_env, str):
+        read.add(image_env)
+    assert named <= read, (
+        "the from-zero guide passes Run-Gate inputs that no Run-Gate source reads: "
+        + ", ".join(sorted(named - read))
+    )
+
+
+@_needs_repo
 def test_the_guide_names_the_log_interface_and_the_exact_cgroup_inputs():
     text = GUIDE.read_text(encoding="utf-8")
     flat = " ".join(text.split())
@@ -405,3 +515,328 @@ def test_the_guide_names_the_log_interface_and_the_exact_cgroup_inputs():
     )
     assert "RUN_GATE_TESTER_UNIFIED_IMAGE=" in cgprofile.split("cmru release cgroup-profiler")[0]
     assert "RUN_GATE_TESTER_CLI_EXTENDED_SHA256=" in cgprofile
+
+
+# --- step 4: the guide's tester inputs are exactly what Run-Gate's release tooling accepts ---
+
+UPSTREAM_BASE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
+RELEASE_CANDIDATE = REPO_ROOT / "run-gate-project" / "tools" / "release_candidate.py"
+STEP_FOUR_IMAGE = "sha256:" + "e" * 64
+TESTER_INPUTS = (
+    "RUN_GATE_TESTER_UNIFIED_IMAGE", "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE",
+    "RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "RUN_GATE_TESTER_CLI_EXTENDED_SHA256",
+)
+
+_needs_run_gate_tools = pytest.mark.skipif(
+    not (GUIDE.is_file() and RELEASE_CANDIDATE.is_file()),
+    reason="repository-root guide or Run-Gate release tooling absent (isolated canary tree)",
+)
+
+
+def _run_gate_release_candidate():
+    """Run-Gate's own release tooling from this checkout: the real consumer."""
+    spec = importlib.util.spec_from_file_location(
+        "_run_gate_release_candidate_for_cmru_guide", RELEASE_CANDIDATE,
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _run_step_four(tmp_path: Path, **variables: str) -> tuple[subprocess.CompletedProcess[str], list[dict]]:
+    """Run step 4's release block with a recording ``cmru`` and a fixed image ID."""
+    (block,) = [item for item in _step_blocks(4) if "cmru release run-gate-project" in item]
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    calls = tmp_path / "cmru.calls"
+    (fake_bin / "cmru").write_text(
+        "#!/bin/sh\n"
+        'printf "CALL %s\\n" "$*" >> "$CMRU_CALLS"\n'
+        'env | grep "^RUN_GATE_TESTER_" | sort >> "$CMRU_CALLS"\n'
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    (fake_bin / "docker").write_text(f'#!/bin/sh\necho "{STEP_FOUR_IMAGE}"\n', encoding="utf-8")
+    for name in ("cmru", "docker"):
+        (fake_bin / name).chmod(0o755)
+    # A clean environment: no ambient RUN_GATE_TESTER_* value can reach a release.
+    env = {"PATH": f"{fake_bin}:/usr/bin:/bin", "HOME": str(tmp_path), "CMRU_CALLS": str(calls), **variables}
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + block], cwd=tmp_path, env=env,
+        capture_output=True, text=True, check=False,
+    )
+    records: list[dict] = []
+    for line in calls.read_text(encoding="utf-8").splitlines() if calls.exists() else ():
+        if line.startswith("CALL "):
+            records.append({"argv": line[len("CALL "):], "env": {}})
+        else:
+            name, _, value = line.partition("=")
+            records[-1]["env"][name] = value
+    return result, records
+
+
+@_needs_run_gate_tools
+@pytest.mark.parametrize("resolve", ["pinned", "latest"])
+def test_step_four_gives_run_gate_exactly_the_tester_inputs_its_release_tooling_accepts(
+    tmp_path, monkeypatch, resolve,
+):
+    result, calls = _run_step_four(
+        tmp_path, CLI_EXTENDED_RESOLVE=resolve, CLI_EXTENDED_RELEASED_SHA256=NEW_SHA,
+    )
+
+    assert result.returncode == 0, result.stderr
+    cgprofile, run_gate = calls
+    # CGProfile's release builds no tester image: it gets the image and nothing that
+    # would be silently ignored.
+    assert cgprofile["argv"] == "release cgroup-profiler --set-version 1.0.0"
+    assert cgprofile["env"] == {"RUN_GATE_TESTER_UNIFIED_IMAGE": STEP_FOUR_IMAGE}
+    assert run_gate["argv"].startswith("release run-gate-project --set-version ")
+    expected = {
+        "RUN_GATE_TESTER_UNIFIED_BASE_IMAGE": UPSTREAM_BASE,
+        "RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE": resolve,
+    }
+    if resolve == "latest":
+        expected["RUN_GATE_TESTER_CLI_EXTENDED_SHA256"] = NEW_SHA
+    assert run_gate["env"] == expected
+
+    # The real Run-Gate consumer accepts exactly these values and builds from them.
+    release_candidate = _run_gate_release_candidate()
+    for name in TESTER_INPUTS:
+        monkeypatch.delenv(name, raising=False)
+    for name, value in run_gate["env"].items():
+        monkeypatch.setenv(name, value)
+    options = release_candidate._tester_image_options()
+    assert options == (UPSTREAM_BASE, resolve, NEW_SHA if resolve == "latest" else "")
+    command = release_candidate._tester_image_build_command("tester-unified:guide", options)
+    assert command[command.index("--base-image") + 1] == UPSTREAM_BASE
+    assert command[command.index("--cli-extended-resolve") + 1] == resolve
+    assert release_candidate._expected_base_image(command) == UPSTREAM_BASE
+    if resolve == "latest":
+        assert command[command.index("--cli-extended-wheel-sha256") + 1] == NEW_SHA
+        assert release_candidate._expected_cli_extended_sha256(command) == NEW_SHA
+    else:
+        assert "--cli-extended-wheel-sha256" not in command
+        # pinned: the image must carry the Dockerfile's own pinned wheel digest
+        pin = re.search(r"^ARG CLI_EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$", DOCKERFILE.read_text("utf-8"), re.MULTILINE)
+        assert release_candidate._expected_cli_extended_sha256(command) == pin.group(1)
+
+
+@_needs_run_gate_tools
+def test_run_gate_refuses_a_digest_outside_latest_so_the_guide_must_not_pass_one(monkeypatch):
+    """Control: the oracle above can go red. Run-Gate refuses the published digest with
+    `pinned`, which the identity check reports once the Dockerfile pin is current."""
+    release_candidate = _run_gate_release_candidate()
+    for name in TESTER_INPUTS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RUN_GATE_TESTER_UNIFIED_BASE_IMAGE", UPSTREAM_BASE)
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE", "pinned")
+    monkeypatch.setenv("RUN_GATE_TESTER_CLI_EXTENDED_SHA256", NEW_SHA)
+
+    with pytest.raises(release_candidate.ReleaseCandidateError, match="valid only with"):
+        release_candidate._tester_image_options()
+
+
+@_needs_run_gate_tools
+@pytest.mark.parametrize("variables", [
+    {},
+    {"CLI_EXTENDED_RESOLVE": "latest"},
+], ids=["no-step-three-mode", "latest-without-the-published-digest"])
+def test_step_four_never_starts_the_run_gate_release_without_its_step_three_inputs(tmp_path, variables):
+    result, calls = _run_step_four(tmp_path, **variables)
+
+    assert result.returncode != 0
+    assert not any(call["argv"].startswith("release run-gate-project") for call in calls)
+
+
+@_needs_repo
+def test_one_upstream_base_is_named_for_every_zero_release_tester_image():
+    commands = "\n".join(_bash_blocks())
+    named = re.findall(r"--base-image (\S+)", commands)
+    named += re.findall(r"RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=(\S+)", commands)
+    # step 2's bootstrap image, step 3's and step 4's rebuilds, and Run-Gate's own rebuild
+    assert len(named) >= 4 and set(named) == {UPSTREAM_BASE}, named
+    # ... and it is not the Dockerfile's default, so the base label tells them apart.
+    if DOCKERFILE.is_file():
+        default = re.search(
+            r"^ARG TESTER_UNIFIED_BASE_IMAGE=(\S+)$", DOCKERFILE.read_text("utf-8"), re.MULTILINE,
+        ).group(1)
+        assert default != UPSTREAM_BASE
+
+
+@_needs_repo
+@pytest.mark.parametrize(
+    "log_text",
+    [
+        "",
+        "[INFO] nothing about cli-extended here\n",
+        f"[INFO] CLI-EXTENDED_WHEEL_SHA256={NEW_SHA}\n[INFO] CLI-EXTENDED_WHEEL_SHA256={OLD_PIN_SHA}\n",
+        "[INFO] CLI-EXTENDED_WHEEL_SHA256=" + "B" * 64 + "\n",
+    ],
+    ids=["empty-log", "no-identity-line", "two-different-digests", "not-lowercase-hex"],
+)
+def test_step_three_refuses_a_release_log_that_does_not_name_exactly_one_digest(tmp_path, log_text):
+    root, env, log = _step_three_tree(tmp_path, pin_sha=OLD_PIN_SHA, pointer_sha=NEW_SHA)
+
+    result = _run_step_three_identity_block(root, env, NEW_SHA, log_text=log_text)
+
+    assert result.returncode != 0
+    assert not log.exists()  # the image build was never reached with a guessed digest
+
+
+# --- the guide itself is a contract: fences, ordering, versions and the first cmru command ---
+
+def _fenced(text: str) -> list[tuple[str, str]]:
+    """Every fenced block as ``(info string, dedented body)``, in document order."""
+    return [
+        (info, textwrap.dedent(body))
+        for info, body in re.findall(r"^[ ]*```(\S*)\n(.*?)^[ ]*```[ ]*$", text, re.DOTALL | re.MULTILINE)
+    ]
+
+
+def _bash_blocks() -> list[str]:
+    return [body for info, body in _fenced(GUIDE.read_text(encoding="utf-8")) if info == "bash"]
+
+
+@_needs_repo
+def test_every_fence_of_the_guide_is_closed_and_every_shell_block_parses():
+    text = GUIDE.read_text(encoding="utf-8")
+    fence_lines = [line for line in text.splitlines() if line.strip().startswith("```")]
+    assert len(fence_lines) % 2 == 0, "an unclosed or stray code fence"
+    assert len(fence_lines) == 2 * len(_fenced(text))
+    blocks = _bash_blocks()
+    assert len(blocks) >= 8  # a fence regex that silently finds nothing must not pass
+    for block in blocks:
+        parsed = subprocess.run(["bash", "-n"], input=block, capture_output=True, text=True, check=False)
+        assert parsed.returncode == 0, f"{parsed.stderr}\n{block}"
+
+
+@_needs_repo
+def test_no_shell_block_has_a_doubled_dangling_or_placeholder_line():
+    for block in _bash_blocks():
+        lines = block.splitlines()
+        for number, line in enumerate(lines):
+            # A doubled backslash ends the command instead of continuing it (the next line then
+            # runs as a separate, failing command).
+            assert not re.search(r"\\\\\s*$", line), line
+            if line.rstrip().endswith("\\"):
+                assert number + 1 < len(lines) and lines[number + 1].strip(), f"dangling continuation: {line}"
+        # An operator-fill-in marker such as <value from the log> is not pasteable.
+        assert not re.search(r"<[A-Za-z][^<>\n]* [^<>\n]*>", block), block
+
+
+@_needs_repo
+def test_the_tester_resource_inputs_reach_every_tester_image_build():
+    """build-image.sh starts with the tester-gate host-slice preflight, which reads these
+    values only from the environment. An inline prefix on one build leaves every later
+    build (steps 3 and 4) refusing for missing configuration, so they must be exported
+    before the first block that builds an image."""
+    blocks = _bash_blocks()
+    first_build = next(i for i, block in enumerate(blocks) if "tester-unified/build-image.sh" in block)
+    earlier = "\n".join(blocks[:first_build])
+    for key in (
+        "CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS",
+        "CMRU_TESTER_PIDS_LIMIT", "CMRU_TESTER_CGROUP_PROBE_IMAGE",
+    ):
+        assert re.search(rf"^export (?:\S+ )*{key}=", earlier, re.MULTILINE), key
+
+
+@_needs_repo
+def test_the_controller_is_installed_and_on_path_before_the_first_cmru_command():
+    commands: list[str] = []
+    for block in _bash_blocks():
+        commands.extend(block.splitlines())
+    first_cmru = next(i for i, line in enumerate(commands) if re.search(r"(?<![\w./-])cmru\s", line))
+    install = next(i for i, line in enumerate(commands) if "pip install --no-index" in line)
+    # The first build script prints install commands only; the guide runs them itself, and
+    # puts the environment that now owns `cmru` first on PATH AFTER installing and before use.
+    path_after_install = [
+        i for i, line in enumerate(commands) if line.startswith("export PATH=") and install < i < first_cmru
+    ]
+    assert install < first_cmru and path_after_install
+    assert commands[first_cmru].strip() == "cmru --version"
+    assert "bootstrap-artifacts.env" in "\n".join(commands[:install])
+
+
+def _fake_docker_path(tmp_path: Path) -> tuple[str, Path]:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    log = tmp_path / "docker.log"
+    docker = fake_bin / "docker"
+    docker.write_text(f'#!/bin/sh\necho "docker $*" >> "{log}"\n', encoding="utf-8")
+    docker.chmod(0o755)
+    return f"{fake_bin}:/usr/bin:/bin", log
+
+
+@_needs_repo
+@pytest.mark.parametrize("missing", [None, "CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_GATES", "ESTATE_PYTHON"])
+def test_the_setup_block_derives_the_checkout_and_refuses_before_pulling_when_an_input_is_missing(
+    tmp_path, missing,
+):
+    setup = next(block for block in _bash_blocks() if "git rev-parse --show-toplevel" in block)
+    assert setup.index("docker pull") > setup.index("ESTATE_PYTHON")  # nothing is pulled before the checks
+    repo = tmp_path / "checkout"
+    (repo / "docs").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    python = tmp_path / "venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/bin/sh\n", encoding="utf-8")
+    python.chmod(0o755)
+    path, log = _fake_docker_path(tmp_path)
+    env = {
+        "PATH": path, "HOME": str(tmp_path), "ESTATE_PYTHON": str(python),
+        "CGROUP_PARENT_DEV_BACKGROUND": "background.slice", "CGROUP_PARENT_DEV_GATES": "gates.slice",
+    }
+    if missing:
+        env.pop(missing)
+
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + setup + '\nprintf "%s\\n" "$PWD" "$PATH"\n'],
+        cwd=repo / "docs", env=env, capture_output=True, text=True, check=False,
+    )
+
+    if missing:
+        assert result.returncode != 0 and missing in result.stderr
+        assert not log.exists()  # no Docker call with an unproven environment
+    else:
+        assert result.returncode == 0, result.stderr
+        pwd, new_path = result.stdout.splitlines()[-2:]
+        assert Path(pwd).resolve() == repo.resolve()  # the root is derived from git, from a subdirectory
+        assert new_path.split(":")[0] == str(python.parent)
+        assert "docker pull debian@sha256:" in log.read_text(encoding="utf-8")
+
+
+@_needs_repo
+def test_the_release_commands_follow_the_declared_graph_and_one_set_of_versions():
+    releases: list[tuple[str, str]] = []
+    for block in _bash_blocks():
+        releases += re.findall(r"cmru release (\S+) --set-version (\S+)", block)
+    order = [project for project, _ in releases]
+    versions = dict(releases)
+    assert order == ["cli-extended", "cgroup-profiler", "run-gate-project", "cmru"]
+    declared = tomllib.loads((REPO_ROOT / "cmru.orchestration.toml").read_text(encoding="utf-8"))
+    for index, project in enumerate(order):
+        providers = declared["orchestration"]["project"][project]["depends_on"]
+        # Every declared provider that the guide releases is released before its consumer ...
+        assert all(order.index(provider) < index for provider in providers if provider in order), project
+    # ... and CMRU's own providers (runtime wheel and gate Run-Gate) are both released first.
+    assert set(declared["orchestration"]["project"]["cmru"]["depends_on"]) <= set(order[:-1])
+    # The first cli-extended version must satisfy CMRU's declared floor, which the prose names.
+    pyproject = (PROJECT_DIR / "pyproject.toml").read_text(encoding="utf-8")
+    floor = re.search(r'"cli-extended>=([0-9][0-9.]*)"', pyproject).group(1)
+    assert tuple(map(int, versions["cli-extended"].split("."))) >= tuple(map(int, floor.split(".")))
+    assert f"`cli-extended>={floor}`" in GUIDE.read_text(encoding="utf-8")
+    # Run-Gate is named by ONE version in the wheel build, the retained-wheel glob and the release.
+    text = GUIDE.read_text(encoding="utf-8")
+    named = set(re.findall(r"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=(\S+)", text))
+    named |= set(re.findall(r"run_gate-([0-9][0-9.]*)-\*\.whl", text))
+    named.add(versions["run-gate-project"])
+    assert len(named) == 1, named
+    # ... and it is not behind what the project's own changelog says was already released.
+    changes = REPO_ROOT / "run-gate-project" / "CHANGES.md"
+    if changes.is_file():
+        released = [
+            tuple(map(int, found.split(".")))
+            for found in re.findall(r"(?m)^## \[(\d+\.\d+\.\d+)\]", changes.read_text("utf-8"))
+        ]
+        (run_gate_version,) = named
+        assert tuple(map(int, run_gate_version.split("."))) >= max(released)

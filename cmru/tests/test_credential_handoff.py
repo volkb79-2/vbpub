@@ -419,6 +419,11 @@ def release_launcher(monkeypatch, tmp_path):
     The caller's checkout holds real-looking secret files; the release worktree
     is a real directory, so a stray copy into it is observable.
     """
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(transaction, "backup_was_pushed", lambda *_args: False)
+    monkeypatch.setattr(transaction, "read_release_results", lambda *_args: {})
+    monkeypatch.setattr(transaction, "source_git_root_for_projects", lambda root, _projects: root)
+    monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None)
     (tmp_path / "demo").mkdir()
     (tmp_path / "cmru.secret.toml").write_text(_secret_toml(FILE_TOKEN), encoding="utf-8")
     (tmp_path / "demo" / "cmru.secret.toml").write_text(

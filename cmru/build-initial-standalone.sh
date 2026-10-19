@@ -177,6 +177,51 @@ printf 'Metadata-Version: 2.1\nName: cmru\nVersion: %s\n' "${cmru_version}" > "$
 printf 'bootstrap\n' > "${cmru_dist_info}/INSTALLER"
 : > "${cmru_dist_info}/RECORD"
 
+# SOURCE BINDING (before any Docker invocation, the host probe included). The wheel
+# builder bind-mounts the LIVE working tree, but this script claims the identity of
+# HEAD: the version is derived from HEAD's tags and SOURCE_DATE_EPOCH is HEAD's commit
+# time. This wheel becomes the controller of later releases, so it may only be built
+# from exactly the committed bytes. Refuse when any file that goes into a wheel built
+# here differs from HEAD: tracked edits, untracked files, and ignored files that
+# setuptools would still package (it ignores .gitignore when packaging a source root).
+# The relevant inputs are cmru's pyproject and package sources, the worktree library it
+# carries, and, in source mode only, the cli-extended library built here. An unreadable
+# Git state is a refusal too, never "clean".
+source_binding_paths=(cmru/pyproject.toml cmru/src libraries/worktree/src)
+source_binding_roots=(cmru/src libraries/worktree/src)
+for optional in cmru/setup.py cmru/setup.cfg cmru/MANIFEST.in; do
+    if [[ -e "${repo_root}/${optional}" ]]; then
+        source_binding_paths+=("${optional}")
+    fi
+done
+if [[ "${cli_extended_mode}" == "source" ]]; then
+    source_binding_paths+=(libraries/cli-extended/pyproject.toml libraries/cli-extended/README.md libraries/cli-extended/src)
+    source_binding_roots+=(libraries/cli-extended/src)
+fi
+source_binding_fail() {
+    echo "[ERROR] refusing to build the bootstrap wheel: its source is not exactly the committed HEAD ($(git -C "${repo_root}" rev-parse --short HEAD 2>/dev/null || echo unknown))." >&2
+    echo "        This wheel becomes the controller of later releases, so it may not be built from" >&2
+    echo "        uncommitted bytes under a committed identity. $1" >&2
+    echo "        Commit, stash or remove these paths (nothing was built and no Docker command ran):" >&2
+    printf '%s\n' "$2" | head -n 20 | sed 's/^/          /' >&2
+    exit 2
+}
+source_binding_changes="$(git -C "${repo_root}" status --porcelain=v1 --untracked-files=all -- "${source_binding_paths[@]}")" || {
+    echo "[ERROR] cannot read the Git state of ${repo_root}; refusing to build the bootstrap wheel from unverifiable source" >&2
+    exit 2
+}
+if [[ -n "${source_binding_changes}" ]]; then
+    source_binding_fail "Tracked edits or untracked files differ from HEAD." "${source_binding_changes}"
+fi
+source_binding_ignored="$(git -C "${repo_root}" ls-files --others --ignored --exclude-standard -- "${source_binding_roots[@]}")" || {
+    echo "[ERROR] cannot list ignored files under the wheel source roots; refusing to build the bootstrap wheel" >&2
+    exit 2
+}
+source_binding_ignored="$(printf '%s\n' "${source_binding_ignored}" | grep -Ev '(^$|(^|/)__pycache__/|\.py[co]$|\.egg-info/)' || true)"
+if [[ -n "${source_binding_ignored}" ]]; then
+    source_binding_fail "Git-ignored files under a wheel source root would still be packaged." "${source_binding_ignored}"
+fi
+
 # Host placement is proven BEFORE any Docker/Buildx workload starts. systemd
 # auto-vivifies an unlimited transient slice for a typo'd name and Docker then
 # starts the build there without complaint. This is CMRU's own host-side probe
@@ -331,7 +376,9 @@ echo "[INFO] Exact artifact paths and digests: ${identity_file}" >&2
 echo "" >&2
 echo "[INFO] cmru requires cli-extended (a release asset, never on PyPI): install both" >&2
 echo "       wheels offline, cli-extended first, into the Python environment you select" >&2
-echo "       (no cmru command exists until this is done):" >&2
+echo "       (this script installs nothing; no cmru command exists until you do this):" >&2
 echo "       . ${identity_file}" >&2
 echo "       <python-of-the-chosen-environment> -m pip install --no-index --no-deps \\" >&2
 echo "           \"\$BOOTSTRAP_CLI_EXTENDED_WHEEL\" \"\$BOOTSTRAP_CMRU_WHEEL\"" >&2
+echo "       then put that environment's bin directory first on PATH" >&2
+echo "       (docs/BOOTSTRAP-FROM-ZERO.md step 1 has the complete, verified block)." >&2

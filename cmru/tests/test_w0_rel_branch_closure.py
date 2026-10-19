@@ -319,6 +319,11 @@ def test_symlink_resolution_never_loops_on_an_empty_pending_path(monkeypatch, tm
 
 @pytest.fixture
 def launcher_env(monkeypatch):
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(cli.transaction, "backup_was_pushed", lambda *_args: False)
+    monkeypatch.setattr(cli.transaction, "read_release_results", lambda *_args: {})
+    monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _projects: root)
+    monkeypatch.setattr(cli, "_configure_native_release_logging", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         cli.transaction, "project_git_family_groups",
         lambda root, projects: {root: list(projects)},

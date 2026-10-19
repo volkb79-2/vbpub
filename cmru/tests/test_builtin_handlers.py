@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from cmru import cli, handlers, release
+from tests.test_dependency_levels_pyproject import _estate_complete
 
 
 # ─── reusable wheel glue (cmru.release) ──────────────────────────────────────
@@ -109,6 +110,13 @@ def test_check_build_prerequisites_requires_explicit_builder_image(monkeypatch):
     assert exc.value.code == exit_codes.PREREQ_MISSING
 
 
+# Loading the root orchestration parses every registered project config, so this
+# runs only where the whole estate is present (the full-checkout coverage lane);
+# the disposable canary/mutation fixture carries just part of it. The synthetic
+# resolver test below runs everywhere.
+@pytest.mark.skipif(
+    not _estate_complete(), reason="estate projects absent (isolated canary tree)",
+)
 def test_wheel_build_resolves_registered_builder_image_from_cmr_config(monkeypatch):
     repo_root = Path(__file__).resolve().parents[2]
     config_path = repo_root / "cmru.orchestration.toml"
@@ -274,6 +282,8 @@ def test_cmd_wheel_build_container_mode_mounts_the_git_common_dir_too(tmp_path, 
     project.mkdir()
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
     monkeypatch.setenv(handlers._DOCKER_CGROUP_PARENT_ENV, "dev-background.slice")
+    # The host-slice proof starts a privileged probe container; tests/test_wheel_build_placement.py covers it.
+    monkeypatch.setattr(handlers, "require_installed_cgroup_parent", lambda *_a: None)
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
     monkeypatch.setattr(
@@ -302,6 +312,8 @@ def _git_run(cwd, *args):
 def _wheel_build_argv(project, monkeypatch):
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
     monkeypatch.setenv(handlers._DOCKER_CGROUP_PARENT_ENV, "dev-background.slice")
+    # The host-slice proof starts a privileged probe container; tests/test_wheel_build_placement.py covers it.
+    monkeypatch.setattr(handlers, "require_installed_cgroup_parent", lambda *_a: None)
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
     calls = []
     real_run = subprocess.run

@@ -12,7 +12,7 @@ argv = [
 ]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-# The 2026-10-05 rate was measured with multiple workers. B156 now serializes
+# The 2026-10-05 rate was measured with multiple workers. B157 now serializes
 # native R2 so event-counter deltas remain attributable. Re-measure this large
 # campaign with a bounded pilot before treating the 12-hour gate window as a
 # completion estimate. B144 tracks covering-test ordering that may reduce its

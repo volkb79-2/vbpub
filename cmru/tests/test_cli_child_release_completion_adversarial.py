@@ -20,6 +20,7 @@ def _config(tmp_path):
     ],
 )
 def test_child_release_persists_scope_pushes_backup_and_reports_completion(monkeypatch, tmp_path, capsys, no_build, released, message):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     config = _config(tmp_path)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)

@@ -36,12 +36,14 @@ class _Docker:
     def __init__(
         self, systemctl_stdout: str = "", *, probe_error: Exception | None = None,
         parent_stdout: str = LOADED, parent_error: Exception | None = None,
+        rm_returncode: int = 0,
     ):
         self.calls: list[list[str]] = []
         self.systemctl_stdout = systemctl_stdout
         self.probe_error = probe_error
         self.parent_stdout = parent_stdout
         self.parent_error = parent_error
+        self.rm_returncode = rm_returncode
 
     def __call__(self, argv, **_kwargs):
         argv = list(argv)
@@ -55,6 +57,8 @@ class _Docker:
             if self.probe_error is not None:
                 raise self.probe_error
             return SimpleNamespace(returncode=0, stdout=self.systemctl_stdout, stderr="")
+        if argv[:3] == ["docker", "rm", "-f"]:
+            return SimpleNamespace(returncode=self.rm_returncode, stdout="", stderr="busy")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     @property
@@ -208,3 +212,137 @@ def test_an_unverified_probe_parent_refuses_naming_the_gates_input_and_starts_no
     assert (project / "dist" / "stale-1.0.0-py3-none-any.whl").exists()  # output preserved
     message = capsys.readouterr().err
     assert "CMRU_TESTER_CGROUP_PARENT" in message and PROBE_PARENT in message and named in message
+
+
+def test_a_hung_gates_probe_refuses_and_names_the_container_it_left(
+    project, monkeypatch, capsys,
+):
+    """The 2026-10-17 run-gate release shape: the gates-tier self-check probe
+    timed out daemon-side and its container could not be removed. The build
+    is refused (indeterminate is never certified), nothing is built or
+    deleted, and the refusal names the residual probe container."""
+    docker = _Docker(
+        LOADED, parent_error=subprocess.TimeoutExpired("docker", 30), rm_returncode=1,
+    )
+    monkeypatch.setattr(subprocess, "run", docker)
+
+    with pytest.raises(SystemExit) as refused:
+        _run(project)
+
+    assert refused.value.code == exit_codes.PREREQ_MISSING
+    assert docker.builder_runs == [] and len(docker.probes) == 1
+    assert (project / "dist" / "stale-1.0.0-py3-none-any.whl").exists()
+    probe_name = docker.probes[0][docker.probes[0].index("--name") + 1]
+    assert ["docker", "rm", "-f", probe_name] in docker.calls
+    message = capsys.readouterr().err
+    assert "could not probe" in message and "timed out" in message
+    assert f"probe container {probe_name} could not be removed" in message
+
+
+def test_probe_inputs_declared_only_in_the_enclosing_config_are_found_and_used(
+    tmp_path, monkeypatch,
+):
+    """No environment value: both inputs come from the registered project's [env].
+
+    The regression this pins: the config lookup used to return "" for every declared
+    value (its loop variable shadowed the key), so a correctly declared estate refused
+    with "is required" while the same values in the environment worked.
+    """
+    from tests.test_cli_dispatch import _valid_config
+
+    _valid_config(
+        tmp_path,
+        project_append=(
+            "\n[env]\n"
+            f'CMRU_TESTER_CGROUP_PROBE_IMAGE = "{PROBE_IMAGE}"\n'
+            f'CMRU_TESTER_CGROUP_PARENT = "{PROBE_PARENT}"\n'
+        ),
+    )
+    for name in ("CMRU_TESTER_CGROUP_PROBE_IMAGE", "CMRU_TESTER_CGROUP_PARENT"):
+        monkeypatch.delenv(name, raising=False)
+    nested = tmp_path / "alpha" / "src"
+    nested.mkdir(parents=True)
+    docker = _Docker("LoadState=loaded\nFragmentPath=/etc/systemd/system/dev-background.slice\n")
+    monkeypatch.setattr(subprocess, "run", docker)
+    monkeypatch.setattr(handlers.shutil, "which", lambda _name: "/usr/bin/docker")
+
+    handlers.require_installed_cgroup_parent(BUILD_SLICE, nested)  # must not refuse
+
+    self_check, probe = docker.probes
+    assert self_check[self_check.index("show") + 1] == PROBE_PARENT
+    assert PROBE_IMAGE in probe and probe[probe.index("show") + 1] == BUILD_SLICE
+    assert "--cgroup-parent=dev-gates.slice" in probe
+
+
+def _config_declaring(tmp_path, value: str) -> Path:
+    """A registered project whose own [env] declares CMRU_TESTER_CGROUP_PARENT; returns a nested cwd."""
+    from tests.test_cli_dispatch import _valid_config
+
+    _valid_config(
+        tmp_path, project_append=f'\n[env]\nCMRU_TESTER_CGROUP_PARENT = "{value}"\n',
+    )
+    nested = tmp_path / "alpha" / "src"
+    nested.mkdir(parents=True)
+    return nested
+
+
+def test_a_declared_input_with_no_environment_value_is_read_from_the_enclosing_config(
+    tmp_path, monkeypatch,
+):
+    """The env key is ABSENT and the config value is PRESENT: the config answers (handlers.py:411)."""
+    nested = _config_declaring(tmp_path, " from-config.slice ")
+    monkeypatch.delenv("CMRU_TESTER_CGROUP_PARENT", raising=False)
+
+    assert handlers._declared_input(nested, "CMRU_TESTER_CGROUP_PARENT") == "from-config.slice"
+
+
+@pytest.mark.parametrize(
+    ("environment_value", "expected"),
+    [(" from-env.slice ", "from-env.slice"), ("", "")],
+    ids=["explicit-value-wins", "explicit-empty-value-still-wins"],
+)
+def test_a_declared_input_set_in_the_environment_wins_over_the_config(
+    tmp_path, monkeypatch, environment_value, expected,
+):
+    """Precedence is unchanged: a PRESENT env key answers (stripped), even empty, without reading config."""
+    nested = _config_declaring(tmp_path, "from-config.slice")
+    monkeypatch.setenv("CMRU_TESTER_CGROUP_PARENT", environment_value)
+    monkeypatch.setattr(
+        handlers, "_configured_env_value",
+        lambda *_a: pytest.fail("the config must not be read when the environment declares the key"),
+    )
+
+    assert handlers._declared_input(nested, "CMRU_TESTER_CGROUP_PARENT") == expected
+
+
+def test_a_gates_tier_declared_from_an_unset_variable_refuses_before_any_container(
+    project, tmp_path, monkeypatch, capsys,
+):
+    """The estate declares ``CMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"``.
+
+    With the variable unset there is no value to probe from and none is invented: the
+    config load itself refuses, naming the variable, before ANY docker call, and nothing
+    already built is deleted.
+    """
+    from tests.test_cli_dispatch import _valid_config
+
+    _valid_config(
+        tmp_path,
+        project_append='\n[env]\nCMRU_TESTER_CGROUP_PARENT = "${CGROUP_PARENT_DEV_GATES}"\n',
+    )
+    alpha = tmp_path / "alpha"
+    (alpha / "dist").mkdir()
+    stale = alpha / "dist" / "stale-1.0.0-py3-none-any.whl"
+    stale.write_bytes(b"stale")
+    monkeypatch.delenv("CMRU_TESTER_CGROUP_PARENT")
+    monkeypatch.delenv("CGROUP_PARENT_DEV_GATES", raising=False)
+    docker = _Docker(LOADED)
+    monkeypatch.setattr(subprocess, "run", docker)
+
+    with pytest.raises(SystemExit) as refused:
+        _run(alpha)
+
+    assert refused.value.code == exit_codes.CONFIG_ERROR
+    assert docker.calls == []
+    assert stale.exists()
+    assert "CGROUP_PARENT_DEV_GATES" in capsys.readouterr().err

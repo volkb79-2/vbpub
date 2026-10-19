@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from cmru import cli, version
+from cmru import cli, transaction, version
 
 
 def test_dry_run_prepares_external_version_before_plan(monkeypatch, tmp_path, capsys):
@@ -36,12 +36,22 @@ def test_dry_run_prepares_external_version_before_plan(monkeypatch, tmp_path, ca
     config_path = tmp_path / "cmru.orchestration.toml"
     events: list[str] = []
     monkeypatch.setattr(cli, "_resolve_config", lambda _: config_path)
+    monkeypatch.setattr(
+        cli, "resolve_invocation_context",
+        lambda *_args, **_kwargs: SimpleNamespace(project_name=None, scope="estate"),
+    )
     # This test is about preparation ordering, not invocation-context discovery.
     # The mocked config loader supplies the project set, so keep scope selection
     # within that same test boundary rather than asking the filesystem to load the
     # deliberately nonexistent temporary config.
     monkeypatch.setattr(cli, "_select_projects", lambda *_args: ["pwmcp"])
     monkeypatch.setattr(cli, "load_config", lambda _: loaded)
+    monkeypatch.setattr(cli.transaction, "source_git_root_for_projects", lambda root, _projects: root)
+    monkeypatch.setattr(cli.transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "_transaction_workspace_from_env",
+        lambda root: transaction.ReleaseWorkspace(root, root, "cmru-release-child", "a" * 40),
+    )
     monkeypatch.setattr(cli, "apply_release_env", lambda *_: None)
     monkeypatch.setattr(cli, "apply_project_release_env", lambda *_: None)
     def prepare(*_args):

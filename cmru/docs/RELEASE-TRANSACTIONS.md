@@ -1,7 +1,7 @@
 # Isolated release transactions
 
 `cmru release` is intentionally safe to start from a busy developer checkout.
-It does not build, tag, or publish from that checkout. Instead it takes a
+It does not build, tag, or publish from that checkout. By default it takes a
 committed snapshot of `origin/main` and performs all release work in a private
 `cmru-release-<YYYYMMDD_HHMMSS>-<scope>-<workspace-id>` worktree (SPEC S-CLI.5b; flat,
 so the branch name and its `.worktrees/` directory name are identical) — one
@@ -9,6 +9,15 @@ project **at a time**, each project's own cycle running to completion before
 the next project starts (see "Transaction order" below).
 
 ## Operator contract
+
+The default origin/main source checks below apply when `--from-worktree` is
+omitted. The alternate `cmru release --from-worktree` mode uses a clean named
+non-main branch only when its same-named `origin/<branch>` is already at the
+exact same commit. It does not update local or remote `main`, and retains the
+generated origin candidate as a PR branch after publication. The release may
+be public while that PR is still open or blocked; merge or fast-forward while
+preserving the tagged SHA. See the [feature-worktree consumer flow](CONSUMERS.md#release-from-a-pushed-feature-worktree)
+for the full invocation and credential instructions.
 
 Use the ordinary entry point. It creates/overwrites `cmru.release.log`; do not
 wrap it in `tee` yourself:
@@ -60,14 +69,20 @@ releasing CMRU itself. This keeps the dependency order usable while ensuring
 the CMRU release is judged with the public Run-Gate artifact. The gate hashes
 the published wheel bytes, checks the installed wheel's recorded source digest,
 and verifies the selected image's version and wheel-digest labels before each
-lane. It pins the lane to the inspected image ID so a mutable tag cannot select
-a different image. Never run the
+lane, and re-inspects the image ID around every lane. It also exports the
+inspected image ID as `RUN_GATE_TESTER_UNIFIED_IMAGE`; that pins a lane only
+where its environment declares `image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"`.
+At this candidate only CMRU's `cmru-mutation` environment does; the root
+`tester-unified` declaration arrives with the Run-Gate wave (`cd673fecd`), and
+until then the other lanes resolve the configured tag and a retag is detected
+by the image-ID recheck rather than prevented. Never run the
 bootstrap through an editable checkout: uncommitted files and whichever source
 tree happens to be mounted are not release evidence.
 
 ### Run-Gate compatibility bootstrap before CGProfile
 
-The current root `run-gate.root.toml` declares `image_env`, which is supported
+The Run-Gate wave's root `run-gate.root.toml` declares `image_env` on
+`tester-unified` (`cd673fecd`; not yet in this CMRU candidate), which is supported
 by the Run-Gate source in this wave but is rejected by the previously published
 Run-Gate wheel. A CGProfile-first release therefore needs a temporary local
 Run-Gate bootstrap after the reviewed source commit has reached
@@ -87,6 +102,13 @@ tester-unified/build-image.sh \
   --tag tester-unified:run-gate-bootstrap
 docker image inspect --format '{{.Id}}' tester-unified:run-gate-bootstrap
 ```
+
+That block builds the image from the Dockerfile's pinned default `cli-extended`
+asset, so it is for an estate where that release exists with those bytes. With
+no first-party release at all, follow
+[`docs/BOOTSTRAP-FROM-ZERO.md`](../../docs/BOOTSTRAP-FROM-ZERO.md) steps 2 to 4
+instead: they build the image from the exact just-built `cli-extended` wheel
+and its SHA-256, then rebuild it from the published bytes after that release.
 
 Install the one wheel identified by that output into the estate venv, verify
 `run-gate --version`, and set `RUN_GATE_TESTER_UNIFIED_IMAGE` to the inspected
@@ -178,6 +200,16 @@ the corrected branch tip, then ships that candidate commit:
 ```bash
 cmru release <project> --resume /path/reported/by/cmru
 ```
+
+The resume keeps the exact version the first attempt chose (D-001). Before its first side
+effect, a new transaction records each project's resolved version in
+`<token>.version-plan.json` beside its other transaction records, bound to the transaction
+branch and base commit. A run started with `--minor` or `--set-version X` therefore resumes as
+that same version without repeating the flag. A flag that would select a different version
+refuses with exit 4 before the candidate, a tag, or a publication changes. A candidate created
+before this record existed resumes only when its committed release-history commit proves the
+version (one new dated changelog section since the base); otherwise CMRU refuses and the
+candidate must be abandoned and released anew.
 
 Do not copy generated files back into the caller's dirty checkout. A successful
 transaction removes the ephemeral branch/worktree, but retains its project logs, declared
@@ -326,11 +358,11 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
   post-publish changelog commit is needed. The project's configured
   changelog path remains excluded from change detection. This replaces the KI-30 refusal;
   a comment-only body is still just an empty section.
-- **Regenerating a stale generated section overwrites hand edits inside it.** When project
-  commits landed after a generated section's `source-end` cursor (for example on `--resume`
-  of a candidate that was prepared earlier), the section is rebuilt in place from the project
-  commit range. Anything edited by hand inside that section is lost; keep hand-written prose
-  outside `<!-- cmru: generated -->` sections. A current section stays byte-identical. cmru's
+- **Regenerating a stale generated section refuses over hand edits inside it (KI-68).** When
+  project commits landed after a generated section's `source-end` cursor (for example on
+  `--resume` of a candidate that was prepared earlier), the section is rebuilt in place from
+  the project commit range, and a hand edit inside it makes that rebuild refuse (below); keep
+  hand-written prose outside `<!-- cmru: generated -->` sections. A current section stays byte-identical. cmru's
   own `file:` version-bump commit (`chore: bump <prefix> to <version>`) is not project work
   and never makes a section stale, so a resumed `file:` release re-tags the same commit.
   **Hand-curating a pending generated section** (text inside it, such as a summary block or a
@@ -353,9 +385,9 @@ GitHub Release body is published by `cmru handler oci-image-release --prefix <pr
 `push` step, after the image push. It runs at the ordinary publication point of the order
 above, so its preconditions are facts CMRU has already established by then.
 
-**Checked before any side effect.** In the release child, right after the plan names the
-projects to ship and before the tool-dependency check, any `prepare` step, any gate, any
-tag or any image push, CMRU validates the configured command of EVERY project it will ship
+**Checked before any side effect.** At the very start of the release child, before a dry
+run's `external:`-version `prepare` step, the plan, the tool-dependency check, any gate, any
+tag or any image push, CMRU validates the configured command of EVERY selected project
 with one function (`_validated_oci_release_image`); `cmru release --dry-run` calls it too
 and refuses identically, leaving the changelog bytes unchanged, and each project's
 preparation repeats it before running its `prepare` step. An invalid command is a typed
@@ -381,13 +413,21 @@ At the handler, the remaining preconditions are:
    Any absent, malformed or mismatched value refuses; it never creates, moves or deletes a
    Git ref. A missing Release is created under that tag and commit; an existing one has
    only its name and body rewritten, after it is re-fetched and its exact release ID, tag
-   identity and remote tag target are verified again immediately before the PATCH (a change
-   there sends nothing and refuses). No asset is listed, deleted or uploaded. After the
-   write it reads the release (for an update) and the remote tag back. GitHub offers no
-   conditional update and cannot make the tag check atomic with a create, so a change seen
-   only in that read-back is reported as `was written, but ...`: the release may stay in
-   place with the new body, nothing is rolled back, and it must be inspected before any
-   retry.
+   identity, commit target and remote tag target are verified again immediately before the
+   PATCH (a change there sends nothing and refuses). No asset is listed, deleted or
+   uploaded. After EVERY write (create or update) it reads the release and the remote tag
+   back: the release must have the returned positive ID, the exact tag and a body equal to
+   the intended body, and the tag must still be at the release commit. GitHub offers no
+   conditional update and cannot make the tag check atomic with a create, so a difference,
+   a missing or malformed read-back, or an unreachable one is reported as `was written, but
+   ...` / `WAS WRITTEN, but reading it back ... failed`: the release may stay in place with
+   the new (or someone else's) body, nothing is rolled back, the run is not reported as
+   published, and it must be inspected before any retry. The read-back is by release ID with a
+   finite number of retries after a create (not yet visible is not "replaced"), also checks a
+   full-SHA `target_commitish`, and after any POST/PATCH that was sent an HTTP error, a transport
+   failure or a malformed success body or record is read back rather than treated as a refusal:
+   success only when the exact ID, tag, body and target verify, otherwise `has an UNKNOWN outcome`,
+   nothing resent, nothing rolled back, inspect the release and the tag before any retry.
 3. It is publication: once the `push` step has begun, a failure follows
    [Post-publication recovery](#post-publication-recovery) and never rolls the tag back.
    The handler itself is idempotent: running it again for the same tag and commit only
@@ -620,7 +660,7 @@ The following release gates are now declared through `cmru tester-gate`:
 | Project | Current state | Required follow-up |
 |---|---|---|
 | ciu | Full pytest coverage floor | `run-ciu-tests.py` |
-| cmru | Contract-2 resource observation on every ephemeral gate lane; current 6.2.0 candidate uses the KI-79 provisional R2 deferral | `run-gate gate` for full R2; `run-gate gate-provisional` records an approved deferral only |
+| cmru | Contract-2 resource observation on the native-R2 `mutation` and `assay-first-release-r2` lanes only (other lanes declare memory/PID limits without event evidence, KI-77); current 6.2.0 candidate uses the KI-79 provisional R2 deferral (`cmru release cmru --minor`) | `run-gate gate` for full R2; `run-gate gate-provisional` records an approved deferral only |
 | nyxloom | Full unit/contract suite | `pytest tests -q` |
 | MDT | Source-first release-flow and OCI-staging contracts | focused `unittest` modules |
 | pwmcp | Resolver and builder contracts | `pytest tests -q` |

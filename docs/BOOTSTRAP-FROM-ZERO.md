@@ -76,6 +76,22 @@ transient slice. Tester-gate deliberately runs the configured privileged probe
 image with `--pull=never`, so pull its exact digest before the first build:
 
 ```bash
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+: "${ESTATE_PYTHON:?set ESTATE_PYTHON to the Python that will own the release CLI}"
+: "${CGROUP_PARENT_DEV_BACKGROUND:?set the governed build parent slice}"
+: "${CGROUP_PARENT_DEV_GATES:?set the governed gate parent slice}"
+test -x "$ESTATE_PYTHON" || {
+  echo "ESTATE_PYTHON is not executable: $ESTATE_PYTHON" >&2
+  exit 2
+}
+export PATH="$(dirname "$ESTATE_PYTHON"):$PATH"
+# Every tester-unified/build-image.sh run (steps 2-4) starts with the tester-gate
+# host-slice preflight, which reads these from the environment, not from
+# cmru.orchestration.toml; the values are that file's declared tester defaults.
+export CMRU_TESTER_MEMORY=1g CMRU_TESTER_MEMORY_SWAP=16g CMRU_TESTER_CPUS=2.5
+export CMRU_TESTER_PIDS_LIMIT=4096
+export CMRU_TESTER_CGROUP_PROBE_IMAGE='debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132'
 docker pull debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 ```
 
@@ -97,7 +113,7 @@ supplies the whole-source line-and-branch qualification.
    printf '%s  %s\n' \
      "$BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256" "$BOOTSTRAP_CLI_EXTENDED_WHEEL" \
      "$BOOTSTRAP_CMRU_WHEEL_SHA256" "$BOOTSTRAP_CMRU_WHEEL" | sha256sum -c -
-   "${ESTATE_PYTHON:?set ESTATE_PYTHON to the Python that will own the cmru command}" \
+   "${ESTATE_PYTHON:?set ESTATE_PYTHON to the Python that will own the release CLI}" \
      -m pip install --no-index --no-deps --force-reinstall \
      "$BOOTSTRAP_CLI_EXTENDED_WHEEL" "$BOOTSTRAP_CMRU_WHEEL"
    export PATH="$(dirname "$ESTATE_PYTHON"):$PATH"
@@ -124,17 +140,17 @@ supplies the whole-source line-and-branch qualification.
    `cli_extended-*.whl` produced above into the git-ignored
    `tester-unified/local-wheel/`. Build the Run-Gate wheel from the selected
    commit using the planned stable version (the example is for the current
-   24.0.0 candidate); its path is derived from what the build produced. The
+   24.0.1 release); its path is derived from what the build produced. The
    handler needs the build parent from the prerequisites
    (`$CGROUP_PARENT_DEV_BACKGROUND` or `CMRU_DOCKER_CGROUP_PARENT`):
 
    ```bash
    mkdir -p tester-unified/local-wheel
    cp "$BOOTSTRAP_CLI_EXTENDED_WHEEL" tester-unified/local-wheel/
-   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.0.0 \
+   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.0.1 \
      cmru handler wheel-build --cwd run-gate-project
    shopt -s nullglob
-   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-24.0.0-*.whl)
+   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-24.0.1-*.whl)
    test "${#run_gate_wheels[@]}" -eq 1
    RUN_GATE_CANDIDATE_WHEEL="${run_gate_wheels[0]}"
    CMRU_TESTER_MEMORY=1g \
@@ -157,7 +173,11 @@ supplies the whole-source line-and-branch qualification.
    image it builds carries `org.vbpub.cli-extended.wheel-sha256`, the digest of
    the exact `cli-extended` wheel installed (here the source wheel's
    `$BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256`); it re-reads that label after the
-   build and fails on a difference. The
+   build and fails on a difference. It likewise records the base the image was
+   built FROM as `org.vbpub.tester-unified.base-image` and fails unless that
+   label equals `--base-image` (or the Dockerfile's default base when the flag
+   is omitted), so a build argument the Dockerfile did not consume cannot
+   silently produce an MDT-based image. The
    explicit upstream base is also used for the builder's unprivileged CMRU
    preflight, so this step does not require a pre-existing
    `tester-unified:local` image. The privileged host-systemd slice probe still
@@ -203,7 +223,14 @@ supplies the whole-source line-and-branch qualification.
    Dockerfile's current pin:
 
    ```bash
-   CLI_EXTENDED_RELEASED_SHA256='<CLI-EXTENDED_WHEEL_SHA256 value from cmru.release.log>'
+   mapfile -t released_digests < <(
+     sed -nE 's/^\[INFO\] CLI-EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$/\1/p' cmru.release.log
+   )
+   if [ "${#released_digests[@]}" -ne 1 ]; then
+     echo "Expected exactly one CLI-EXTENDED_WHEEL_SHA256 in cmru.release.log" >&2
+     exit 2
+   fi
+   CLI_EXTENDED_RELEASED_SHA256="${released_digests[0]}"
    unset CLI_EXTENDED_RESOLVE
    identity="$(python3 cmru/tools/cli_extended_release_identity.py \
      --released-sha256 "$CLI_EXTENDED_RELEASED_SHA256" \
@@ -247,23 +274,34 @@ supplies the whole-source line-and-branch qualification.
    the Run-Gate release, its CMRU gate rebuilds the candidate wheel and tester
    image from the exact release transaction checkout; pass the resolve mode
    from step 3 through `RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE` (a stale pin must
-   not make that rebuild reinstall the old bytes), and use the upstream base
-   explicitly. In `latest` mode Run-Gate's release tooling also requires the
-   published digest (`RUN_GATE_TESTER_CLI_EXTENDED_SHA256`), refuses to build
-   without it, and inspects the built image's
-   `org.vbpub.cli-extended.wheel-sha256` label before the gate may use the
-   image. Do not switch back to the source bootstrap wheel. Each command pins
-   its own image, so it is correct to run them from different shells:
+   not make that rebuild reinstall the old bytes), and name the upstream base
+   explicitly through `RUN_GATE_TESTER_UNIFIED_BASE_IMAGE`. In `latest` mode
+   Run-Gate's release tooling also requires the published digest
+   (`RUN_GATE_TESTER_CLI_EXTENDED_SHA256`) and refuses to build without it; in
+   any other mode it refuses that digest, because nothing would use it, so the
+   block below passes it only with `latest`. After the build it inspects the
+   image's `org.vbpub.cli-extended.wheel-sha256` and
+   `org.vbpub.tester-unified.base-image` labels before the gate may use the
+   image. Those three `RUN_GATE_TESTER_*` inputs are read by Run-Gate 24.0.1's
+   `run-gate-project/tools/release_candidate.py`; Run-Gate 24.0.0 and older
+   ignore them without an error, so release Run-Gate from this checkout's
+   source. Only the Run-Gate release rebuilds a tester image, so the CGProfile
+   release receives the image alone. Do not switch back to the source
+   bootstrap wheel. The CGProfile command pins its image, and the Run-Gate
+   release gate builds and pins its own, so it is correct to run them from
+   different shells:
 
    ```bash
    RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:cli-extended-released)" \
-   RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE="${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}" \
-   RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}" \
      cmru release cgroup-profiler --set-version 1.0.0
-   RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE="${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}" \
-   RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}" \
-   RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie \
-     cmru release run-gate-project --set-version 24.0.0
+   run_gate_tester_env=(
+     RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie
+     RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE="${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}"
+   )
+   if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then
+     run_gate_tester_env+=(RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}")
+   fi
+   env "${run_gate_tester_env[@]}" cmru release run-gate-project --set-version 24.0.1
    ```
 
    The first Run-Gate release publishes the artifact that CMRU's own release
@@ -275,7 +313,15 @@ supplies the whole-source line-and-branch qualification.
    runtime wheel:
 
    ```bash
-   RUN_GATE_RELEASE_WHEEL='<exact wheel path from cmru.release.log>'
+   mapfile -t run_gate_wheels < <(
+     find run-gate-project/artifacts -type f \
+       -path '*/dist/run_gate-24.0.1-*.whl' -print
+   )
+   if [ "${#run_gate_wheels[@]}" -ne 1 ]; then
+     echo "Expected exactly one retained Run-Gate 24.0.1 wheel" >&2
+     exit 2
+   fi
+   RUN_GATE_RELEASE_WHEEL="${run_gate_wheels[0]}"
    "$ESTATE_PYTHON" -m pip install --force-reinstall --no-deps "$RUN_GATE_RELEASE_WHEEL"
    cx_resolve=(--cli-extended-resolve "${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}")
    if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then

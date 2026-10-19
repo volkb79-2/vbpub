@@ -37,6 +37,7 @@ def test_cleanup_prefixed_project_with_no_deletions_skips_commit(monkeypatch, tm
 
 
 def test_sequential_no_tag_no_build_skips_build_and_checkpoints(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     project = cli.ProjectConfig("demo", {}, {}, prefix="demo-v", git_tag=True)
     workspace = transaction.ReleaseWorkspace(tmp_path, tmp_path / "child", "cmru/release/x", "a" * 40)
     monkeypatch.setattr(transaction, "write_release_progress", lambda *args: None)
@@ -122,6 +123,7 @@ def test_status_without_project_delegates_all_ordered_projects(monkeypatch, tmp_
 
 
 def test_release_dry_run_without_project_filters_detected_projects(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     config = _config(tmp_path)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)
@@ -141,6 +143,9 @@ def test_release_dry_run_without_project_filters_detected_projects(monkeypatch, 
 
 
 def test_release_dry_run_project_filter_applies_to_detected_projects(monkeypatch, tmp_path):
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
     config = _config(tmp_path)
     monkeypatch.setattr(cli, "_resolve_config", lambda _: tmp_path / "cmru.toml")
     monkeypatch.setattr(cli, "load_config", lambda _: config)

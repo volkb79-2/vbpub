@@ -92,7 +92,7 @@ def test_config_orchestration_requires_declared_projects_and_dependencies_in_ord
         return config.ProjectS2Config(name, None, f"{name}-v", [], None, None, None, {}, project_root=path.parent), github, targets
 
     monkeypatch.setattr(config, "_parse_project_document", fake_project)
-    monkeypatch.setattr(config, "_load_repository_secrets", lambda *args: (None, {}))
+    monkeypatch.setattr(config, "_load_repository_secrets", lambda *args, **_kwargs: (None, {}))
     path = tmp_path / "cmru.orchestration.toml"
 
     def run(order, entries):
@@ -178,7 +178,7 @@ def test_config_orchestration_rejects_resolved_symlink_escape_and_accepts_earlie
         return config.ProjectS2Config(name, None, f"{name}-v", [], None, None, None, {}, project_root=path.parent), github, targets
 
     monkeypatch.setattr(config, "_parse_project_document", fake_project)
-    monkeypatch.setattr(config, "_load_repository_secrets", lambda *args: (None, {}))
+    monkeypatch.setattr(config, "_load_repository_secrets", lambda *args, **_kwargs: (None, {}))
     outside = tmp_path.parent / (tmp_path.name + "-outside-demo")
     outside.mkdir()
     (outside / "cmru.toml").write_text("placeholder", encoding="utf-8")

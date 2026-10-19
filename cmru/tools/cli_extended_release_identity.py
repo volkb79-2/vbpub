@@ -14,14 +14,16 @@ check compares three identities and prints the build mode that is safe:
 
 The pointer disagreeing with the published digest (stale, replaced, or
 unreachable) is a refusal, never "nothing released yet". Output is
-``KEY=value`` lines, so a shell can ``eval`` or ``source`` it. Stdlib only: it
-runs on a host that has no CMRU installed yet.
+``KEY=value`` lines, so a shell can ``eval`` or ``source`` it: every value is
+validated against its exact shape and shell-quoted, because the pointer is
+remote data. Stdlib only: it runs on a host that has no CMRU installed yet.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import re
+import shlex
 import sys
 import urllib.error
 import urllib.parse
@@ -31,6 +33,14 @@ from pathlib import Path
 ALLOWED_URL_PREFIX = "https://github.com/volkb79-2/vbpub/releases/download/"
 POINTER_URL = ALLOWED_URL_PREFIX + "cli-extended-latest/latest.json"
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_RELEASE_VERSION = r"[0-9]+(?:\.[0-9]+)*"
+#: The only asset shape a cli-extended release publishes; nothing else is
+#: trusted enough to reach a shell, even quoted.
+_WHEEL_URL = re.compile(
+    re.escape(ALLOWED_URL_PREFIX)
+    + rf"cli-extended-v(?P<tag>{_RELEASE_VERSION})/"
+    + rf"cli_extended-(?P<version>{_RELEASE_VERSION})-py3-none-any\.whl"
+)
 
 
 class IdentityError(SystemExit):
@@ -92,11 +102,25 @@ def resolve(
         )
     if not pointer_url.startswith(ALLOWED_URL_PREFIX):
         raise IdentityError(f"pointer url {pointer_url!r} is outside {ALLOWED_URL_PREFIX}")
+    wheel = _WHEEL_URL.fullmatch(pointer_url)
+    if wheel is None or wheel.group("tag") != wheel.group("version"):
+        raise IdentityError(
+            f"pointer url {pointer_url!r} is not a cli-extended release wheel URL "
+            f"({ALLOWED_URL_PREFIX}cli-extended-v<version>/cli_extended-<version>-py3-none-any.whl)"
+        )
+    pointer_version = pointer.get("version")
+    if pointer_version != wheel.group("version"):
+        raise IdentityError(
+            f"the release pointer version {pointer_version!r} does not name its wheel "
+            f"version {wheel.group('version')!r}"
+        )
+    if not _SHA256.fullmatch(pin_sha256):
+        raise IdentityError("the Dockerfile's pinned CLI_EXTENDED_WHEEL_SHA256 is not 64 lowercase hex digits")
     pin_current = pin_sha256 == released_sha256 and pin_url == pointer_url
     return {
         "CLI_EXTENDED_RELEASED_SHA256": released_sha256,
         "CLI_EXTENDED_RELEASED_URL": pointer_url,
-        "CLI_EXTENDED_RELEASED_VERSION": str(pointer.get("version", "")),
+        "CLI_EXTENDED_RELEASED_VERSION": pointer_version,
         "CLI_EXTENDED_DOCKERFILE_PIN_SHA256": pin_sha256,
         "CLI_EXTENDED_DOCKERFILE_PIN": "current" if pin_current else "stale",
         # `pinned` is safe only when the embedded pin IS the released asset.
@@ -117,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
     pin_url, pin_sha = _dockerfile_pin(args.dockerfile)
     pointer = _read_pointer(args.pointer_file, args.pointer_url)
     for key, value in resolve(args.released_sha256, pointer, pin_url, pin_sha).items():
-        print(f"{key}={value}")
+        print(f"{key}={shlex.quote(value)}")
     return 0
 
 

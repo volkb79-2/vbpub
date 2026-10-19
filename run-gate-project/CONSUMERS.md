@@ -2014,6 +2014,18 @@ against a candidate receipt before pytest runs. CMRU rebuilds the release wheel
 after tagging and refuses publication if its digest does not match that
 receipt. Keep the package, wheel, and image steps inside this release workflow
 so the gate and published asset refer to the same candidate commit and bytes.
+Preparation also checks the transaction checkout's release tags against
+origin. When it refuses because this checkout's newest tag is older than
+origin's, fetch the tags and retry:
+
+```bash
+git fetch --tags origin
+cmru release run-gate-project --set-version 24.0.1 --from-worktree
+```
+
+A first stable release is accepted only when origin shows no stable
+`run-gate-vX.Y.Z` tag. If origin cannot be read, that is a refusal, not a
+first release.
 See the [design rationale](docs/DESIGN-GUIDE.md#the-release-gate-tests-the-published-wheel)
 and [tester image build procedure](../tester-unified/README.md).
 
@@ -2040,6 +2052,11 @@ it also requires `RUN_GATE_TESTER_CLI_EXTENDED_SHA256` to be the published wheel
 refuses to build without it, passes it to `tester-unified/build-image.sh`, and, before the gate
 may use the image, requires its `org.vbpub.cli-extended.wheel-sha256` label to equal the
 expected digest (the supplied digest for `source`/`latest`, the Dockerfile pin otherwise).
+`RUN_GATE_TESTER_CLI_EXTENDED_SHA256` is refused with any other mode, where it would be
+silently unused. Preparation also requires the image's `org.vbpub.tester-unified.base-image`
+label to equal `RUN_GATE_TESTER_UNIFIED_BASE_IMAGE` (or the Dockerfile's default base when it
+is unset). A malformed base reference, an unknown mode, or a missing or misplaced digest is
+refused before any wheel or image build starts.
 
 
 ## Anti-goals (read before extending)

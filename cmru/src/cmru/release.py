@@ -20,10 +20,12 @@ installing anything — they just add ``cmru/src`` to ``sys.path``.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -37,6 +39,17 @@ from cmru.release_notes import ReleaseNotes, compose_release_body
 API_BASE = "https://api.github.com"
 
 _FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+#: After a CREATE, GitHub may not serve the new release at once. Reads by release ID are
+#: attempted this many times (finite, never unbounded), pausing between attempts; an
+#: update reads an already-visible release once. Pausing goes through :func:`_pause` so
+#: a test injects it and never waits.
+READBACK_ATTEMPTS = 5
+_READBACK_PAUSES = (1.0, 2.0, 4.0, 8.0)
+
+
+def _pause(seconds: float) -> None:
+    time.sleep(seconds)
 
 
 # ─── version helpers ─────────────────────────────────────────────────────────
@@ -119,16 +132,27 @@ class GitHubReleases:
 
     # releases ------------------------------------------------------------------
     def get_release_by_tag(self, tag: str) -> Optional[Dict[str, Any]]:
-        status, body = self._request("GET", self._repo_url(f"/releases/tags/{tag}"))
+        status, body = self._request(
+            "GET", self._repo_url(f"/releases/tags/{quote(tag, safe='')}"),
+        )
         if status == 404:
             return None
         if status >= 400:
             self._fail(f"fetch release {tag}", status, body)
         return json.loads(body)
 
+    def get_release(self, release_id: int) -> Optional[Dict[str, Any]]:
+        """Read one release by its numeric ID (None when GitHub does not serve it)."""
+        status, body = self._request("GET", self._repo_url(f"/releases/{release_id}"))
+        if status == 404:
+            return None
+        if status >= 400:
+            self._fail(f"fetch release {release_id}", status, body)
+        return json.loads(body)
+
     def get_tag_commit(self, tag: str) -> Optional[str]:
         """Resolve an existing lightweight or annotated Git tag to its commit."""
-        commit_ref = quote(f"tags/{tag}", safe="/")
+        commit_ref = quote(tag, safe="")
         status, body = self._request("GET", self._repo_url(f"/commits/{commit_ref}"))
         if status == 404:
             return None
@@ -203,8 +227,15 @@ class GitHubReleases:
 
     def _verified_existing_release(
         self, tag: str, expected_release_id: int, expected_tag_commit: str,
+        *, expected_target_commit: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Recheck the exact release object and tag target before a retained mutation."""
+        """Recheck the exact release object and tag target before a retained mutation.
+
+        ``expected_target_commit`` additionally refuses a release whose
+        ``target_commitish`` is a full commit SHA other than that commit (a branch
+        name or an absent field is not a commit claim and is not compared). Callers
+        that have no such commit leave it unset and are unchanged.
+        """
         release = self.get_release_by_tag(tag)
         if release is None:
             _die(f"refusing to update GitHub Release {tag}: the captured release is no longer available")
@@ -218,6 +249,16 @@ class GitHubReleases:
             )
         if release.get("tag_name") != tag:
             _die(f"refusing to update GitHub Release {tag}: the returned tag identity is malformed")
+        if expected_target_commit is not None:
+            target = release.get("target_commitish")
+            if (
+                isinstance(target, str) and _FULL_SHA.fullmatch(target)
+                and target != expected_target_commit
+            ):
+                _die(
+                    f"refusing to update GitHub Release {tag}: it now targets commit "
+                    f"{target}, not the release commit {expected_target_commit}"
+                )
         current_commit = self.get_tag_commit(tag)
         if current_commit != expected_tag_commit:
             _die(
@@ -309,14 +350,30 @@ class GitHubReleases:
         existing asset, whatever its name.
 
         What is and is not guaranteed. An EXISTING release is re-fetched and its
-        exact ID, tag identity and remote tag target are re-verified immediately
-        before the PATCH, so a change detected there refuses with no mutation.
-        GitHub offers no conditional update and no way to make the tag check
-        atomic with a release CREATE, so for a create (and for a PATCH racing a
-        change in that last instant) the only protection is the read-back after
-        the write. A tag or release change found there is reported, but the
-        write is NOT undone: the release may be left in place with the new body
-        and must be inspected before any retry. Nothing here rolls anything back.
+        exact ID, tag identity, commit target (when it is a full SHA) and remote
+        tag target are re-verified immediately before the PATCH, so a change
+        detected there refuses with no mutation. GitHub offers no conditional
+        update and no way to make the tag check atomic with a release CREATE, so
+        the protection is the read-back after EVERY write.
+
+        Once a POST or PATCH has been SENT, nothing about it is assumed. An HTTP
+        error, a transport failure, a malformed success body or a malformed record
+        all mean the write MAY have been applied, so none of them is reported as a
+        clean refusal and none invites a blind retry; CMRU never resends the POST
+        or PATCH. Instead the release is read back: by its returned ID, or by the
+        captured release ID for an update, or by tag when a create returned no
+        usable ID. A create's read by ID is attempted a finite number of times
+        (:data:`READBACK_ATTEMPTS`), because GitHub may not serve a just-created
+        release at once; "not yet visible" is a different finding from "the tag
+        now belongs to another release". The record must carry the exact ID (when
+        one is known), tag and body, a full-SHA ``target_commitish`` may only be
+        ``tag_commit`` (a branch name is not a commit claim), and the remote tag must
+        still resolve to ``tag_commit``. If all of that holds the publication is
+        reported, even when the write's own response was unusable; otherwise the
+        error says the outcome is unknown or that the release WAS WRITTEN, that
+        nothing was rolled back, and that the release and the tag must be inspected
+        before any retry. A run is never reported as successful on the strength of
+        the write's own response alone.
         """
         if not isinstance(tag_commit, str) or not _FULL_SHA.fullmatch(tag_commit):
             _die(
@@ -337,80 +394,182 @@ class GitHubReleases:
             )
         existing = self.get_release_by_tag(tag)
         if existing is None:
-            created = self.create_release(tag, title, notes, target_commitish=tag_commit)
-            release_id = self._release_record_id(tag, created, written=True)
-            release = created
-            recheck_release = False  # a just-created release may not be readable by tag yet
-        else:
-            release_id = self._release_record_id(tag, existing)
-            target = existing.get("target_commitish")
-            if isinstance(target, str) and _FULL_SHA.fullmatch(target) and target != tag_commit:
-                _die(
-                    f"refusing to update GitHub Release {tag}: it targets commit "
-                    f"{target}, not the release commit {tag_commit}"
-                )
-            # Re-fetch and verify the exact captured release ID, tag identity and
-            # remote tag target IMMEDIATELY before the only mutation. A change
-            # found here refuses with no PATCH sent.
-            self._verified_existing_release(tag, release_id, tag_commit)
-            release = self.update_release(release_id, title, notes)
-            recheck_release = True
-        self._verify_after_write(tag, release_id, tag_commit, recheck_release=recheck_release)
-        return release
+            record, cause = self._send_write(
+                "POST", "/releases",
+                {"tag_name": tag, "name": title, "body": notes, "target_commitish": tag_commit},
+            )
+            response_id = None
+            if cause is None:
+                response_id = self._usable_response_id(tag, record)
+                if response_id is None:
+                    cause = "the success response is not a valid release record for this tag"
+            return self._confirm_write(
+                tag, tag_commit, notes, release_id=response_id, cause=cause,
+                attempts=READBACK_ATTEMPTS,
+            )
+        release_id = self._release_record_id(tag, existing)
+        target = existing.get("target_commitish")
+        if isinstance(target, str) and _FULL_SHA.fullmatch(target) and target != tag_commit:
+            _die(
+                f"refusing to update GitHub Release {tag}: it targets commit "
+                f"{target}, not the release commit {tag_commit}"
+            )
+        # Re-fetch and verify the exact captured release ID, tag identity,
+        # commit target and remote tag target IMMEDIATELY before the only
+        # mutation. A change found here refuses with no PATCH sent.
+        self._verified_existing_release(
+            tag, release_id, tag_commit, expected_target_commit=tag_commit,
+        )
+        record, cause = self._send_write(
+            "PATCH", f"/releases/{release_id}", {"name": title, "body": notes},
+        )
+        if cause is None and self._usable_response_id(tag, record, expected=release_id) is None:
+            cause = "the success response is not the captured release's record"
+        return self._confirm_write(
+            tag, tag_commit, notes, release_id=release_id, cause=cause, attempts=1,
+        )
 
-    def _verify_after_write(
-        self, tag: str, release_id: int, tag_commit: str, *, recheck_release: bool,
-    ) -> None:
-        """Read the release identity and tag back AFTER the write; report, never undo.
+    def _send_write(
+        self, method: str, suffix: str, payload: Dict[str, Any],
+    ) -> tuple[Any, Optional[str]]:
+        """Send ONE mutation and classify what came back; never raise, never resend.
 
-        A failure here means the release already carries the new body. The error
-        says so, and that nothing was rolled back, so an operator inspects the
-        release before retrying instead of assuming the run changed nothing.
+        Returns ``(decoded response, None)`` for a decodable success status, or
+        ``(None, cause)`` for anything else. Every ``cause`` means the request WAS
+        sent, so the write may have been applied: the caller must read back before
+        saying anything about the outcome.
         """
-        problem = None
+        data = json.dumps(payload).encode()
         try:
-            if recheck_release:
-                after = self.get_release_by_tag(tag)
-                if not isinstance(after, dict):
-                    problem = "the release can no longer be read back by its tag"
-                elif after.get("id") != release_id or type(after.get("id")) is not int:
-                    problem = (
-                        f"its release ID is now {after.get('id')!r}, not {release_id}"
+            status, body = self._request(
+                method, self._repo_url(suffix), data=data, content_type="application/json",
+            )
+        except (OSError, http.client.HTTPException, ValueError) as exc:
+            return None, f"the request failed in transit ({exc!r})"
+        if status >= 400:
+            excerpt = body.strip().replace("\n", " ")[:200]
+            return None, f"GitHub answered HTTP {status}" + (f" ({excerpt})" if excerpt else "")
+        try:
+            return json.loads(body), None
+        except ValueError:
+            return None, "the success response was not valid JSON"
+
+    @staticmethod
+    def _usable_response_id(tag: str, record: Any, *, expected: Optional[int] = None) -> Optional[int]:
+        """The positive integer ID of a write's response record, or None if unusable."""
+        if not isinstance(record, dict):
+            return None
+        release_id = record.get("id")
+        if type(release_id) is not int or release_id <= 0:
+            return None
+        if record.get("tag_name") != tag:
+            return None
+        if expected is not None and release_id != expected:
+            return None
+        return release_id
+
+    def _confirm_write(
+        self, tag: str, tag_commit: str, notes: str, *, release_id: Optional[int],
+        cause: Optional[str], attempts: int,
+    ) -> Dict[str, Any]:
+        """Read the release and tag back AFTER a sent write; return the record, or report.
+
+        ``release_id`` is the ID to read by (a create's usable response ID, or an
+        update's captured ID); None means read by tag. ``cause`` is why the write's own
+        response cannot be trusted (None when it was a usable success). The write is
+        never repeated, whatever the read-back finds.
+        """
+        problems: list[str] = []
+        after: Any = None
+        read_failure: Optional[str] = None
+        try:
+            for attempt in range(attempts):
+                after = (
+                    self.get_release(release_id) if release_id is not None
+                    else self.get_release_by_tag(tag)
+                )
+                if after is not None:
+                    break
+                if attempt + 1 < attempts:
+                    _pause(_READBACK_PAUSES[min(attempt, len(_READBACK_PAUSES) - 1)])
+            if after is None:
+                # Not served: say whether the TAG now belongs to another release (a
+                # replacement) or simply nothing is visible (yet). Never conflate them.
+                other = self.get_release_by_tag(tag) if release_id is not None else None
+                other_id = other.get("id") if isinstance(other, dict) else None
+                if release_id is not None and type(other_id) is int and other_id != release_id:
+                    problems.append(f"its release ID is now {other_id!r}, not {release_id}")
+                elif release_id is not None:
+                    problems.append(
+                        f"release {release_id} was not visible after {attempts} read(s) "
+                        "(not yet visible, or removed)"
                     )
-                elif after.get("tag_name") != tag:
-                    problem = f"it now reports tag {after.get('tag_name')!r}"
-            if problem is None:
-                final_commit = self.get_tag_commit(tag)
-                if final_commit != tag_commit:
-                    problem = (
-                        f"the remote tag now points at {final_commit!r}, "
-                        f"not the release commit {tag_commit}"
+                else:
+                    problems.append(f"no release for the tag was visible after {attempts} read(s)")
+            elif not isinstance(after, dict):
+                problems.append("the release read-back is missing or malformed")
+            else:
+                found_id = after.get("id")
+                if release_id is not None:
+                    if type(found_id) is not int or found_id != release_id:
+                        problems.append(f"its release ID is now {found_id!r}, not {release_id}")
+                elif type(found_id) is not int or found_id <= 0:
+                    problems.append(f"its release ID is malformed ({found_id!r})")
+                if after.get("tag_name") != tag:
+                    problems.append(f"it now reports tag {after.get('tag_name')!r}")
+                if after.get("body") != notes:
+                    problems.append("its body is not the intended body (it was changed or replaced)")
+                target = after.get("target_commitish")
+                if isinstance(target, str) and _FULL_SHA.fullmatch(target) and target != tag_commit:
+                    problems.append(
+                        f"it now targets commit {target}, not the release commit {tag_commit}"
                     )
-        except SystemExit:
+            final_commit = self.get_tag_commit(tag)
+            if final_commit != tag_commit:
+                problems.append(
+                    f"the remote tag now points at {final_commit!r}, "
+                    f"not the release commit {tag_commit}"
+                )
+        except (SystemExit, OSError, http.client.HTTPException, ValueError) as exc:
+            # SystemExit: a GitHub error already printed by ``_fail``. OSError/ValueError:
+            # a transport failure or an undecodable response that nothing else catches.
+            read_failure = "" if isinstance(exc, SystemExit) else f" ({exc!r})"
+        if cause is None:
+            if read_failure is not None:
+                _die(
+                    f"GitHub Release {tag} WAS WRITTEN, but reading it back to verify it failed"
+                    f"{read_failure}. The write was NOT rolled back and its outcome is unverified: "
+                    "inspect the release and the tag before any retry"
+                )
+            if problems:
+                _die(
+                    f"GitHub Release {tag} was written, but {'; '.join(problems)}. The write was "
+                    "NOT rolled back and the release may not carry the intended body: inspect "
+                    "the release and the tag before any retry"
+                )
+            return after
+        # The write was sent but its answer cannot be trusted: only the read-back can say.
+        if read_failure is None and not problems:
             print(
-                f"[ERROR] GitHub Release {tag} WAS WRITTEN before this read-back failed; "
-                "nothing was rolled back. Inspect the release and the tag before any retry",
+                f"[WARN] the write to GitHub Release {tag} got no usable answer ({cause}), but "
+                "reading the release back verified its exact ID, tag, body and target and the "
+                "remote tag; it was NOT resent",
                 file=sys.stderr,
             )
-            raise
-        if problem is not None:
-            _die(
-                f"GitHub Release {tag} was written, but {problem}. The write was NOT "
-                "rolled back and the release may carry the new body: inspect the release "
-                "and the tag before any retry"
-            )
-
-    def _release_record_id(self, tag: str, release: Any, *, written: bool = False) -> int:
-        """The positive integer ID of a release record that carries ``tag`` exactly.
-
-        ``written`` marks a record returned by a create that already happened, so a
-        malformed answer is reported as a release that exists, not as a refusal.
-        """
-        lead = (
-            f"GitHub Release {tag} was written (not rolled back; inspect it before any "
-            "retry), but"
-            if written else f"refusing to publish GitHub Release {tag}:"
+            return after
+        finding = (
+            f"reading it back failed{read_failure}" if read_failure is not None
+            else f"the read-back found that {'; '.join(problems)}"
         )
+        _die(
+            f"the write to GitHub Release {tag} has an UNKNOWN outcome: {cause}. The release "
+            f"MAY OR MAY NOT have been written and nothing was rolled back; {finding}. CMRU "
+            "never resends a create or an update: inspect the release and the tag before any retry"
+        )
+
+    def _release_record_id(self, tag: str, release: Any) -> int:
+        """The positive integer ID of an EXISTING release record that carries ``tag`` exactly."""
+        lead = f"refusing to publish GitHub Release {tag}:"
         if not isinstance(release, dict):
             _die(f"{lead} the returned record is malformed")
         release_id = release.get("id")
@@ -491,6 +650,17 @@ def validate_oci_image_repository(image: str) -> str:
     the release version, never from configuration). Raises ``ValueError`` naming
     the problem. The publisher, the release-plan validator and the dry-run
     preview all call this, so none can accept a reference another refuses.
+
+    Accepted syntax: the first ``/``-separated component is an EXPLICIT registry,
+    by the same rule Docker applies when it reads a reference: it contains a
+    ``.`` (``ghcr.io``, ``registry.example.com``), or a ``:port``
+    (``myhost:5000``, ``localhost:5000``), or is exactly ``localhost``. Anything
+    else (``registry/team``, ``myorg/app``) would be read by Docker as a Docker
+    Hub namespace, so the generated ``docker pull`` would target a different
+    registry than the one written: it is refused, and Docker Hub must be spelled
+    ``docker.io/<namespace>/<name>``. What follows is one or more lower-case
+    repository path components (``a-z0-9`` separated by ``.``, ``_``, ``__`` or
+    ``-``). IPv6 bracket hosts are not accepted.
     """
     if not isinstance(image, str) or not image or image != image.strip():
         raise ValueError("--image must be a non-empty repository reference")
@@ -513,6 +683,15 @@ def validate_oci_image_repository(image: str) -> str:
         _IMAGE_PATH_PART.fullmatch(part) for part in parts[1:]
     ):
         raise ValueError(f"--image {image!r} is not a valid <registry>/<repository> reference")
+    registry_name, _colon, _port = parts[0].partition(":")
+    if "." not in registry_name and not _port and registry_name != "localhost":
+        raise ValueError(
+            f"--image {image!r}: its first component {parts[0]!r} has no '.' or ':port' and "
+            "is not 'localhost', so Docker would read it as a Docker Hub namespace, not a "
+            "registry, and `docker pull` would fetch a different image than the one "
+            f"released. Write the registry explicitly (for example ghcr.io/{image}, or "
+            f"docker.io/{image} for Docker Hub)"
+        )
     return image
 
 

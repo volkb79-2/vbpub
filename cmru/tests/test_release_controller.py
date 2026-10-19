@@ -410,6 +410,12 @@ def test_release_child_accepts_candidate_source_loaded_by_transaction_pythonpath
         transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV,
         identity["distribution_sha256"],
     )
+    # The child now requires explicit transaction provenance before accepting
+    # a candidate-source module from PYTHONPATH; this fixture models that
+    # narrow handoff without a registered shared-worktree record.
+    monkeypatch.setenv(transaction.BRANCH_ENV, "cmru-release-test")
+    monkeypatch.setenv(transaction.BASE_ENV, "a" * 40)
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_args: None)
     candidate_source = tmp_path / "cmru" / "src"
     candidate_module = candidate_source / "cmru" / "cli.py"
     candidate_module.parent.mkdir(parents=True)
