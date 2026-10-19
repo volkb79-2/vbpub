@@ -135,7 +135,7 @@ class VmLaneBudgetTests(unittest.TestCase):
         lane = (ROOT / "tests" / "run-vm-acceptance.sh").read_text()
         body = lane[lane.index("cleanup() {"):lane.index("trap cleanup EXIT")]
         self.assertIn("vm-dump-diagnostics.sh", body)
-        self.assertLess(body.index("vm-dump-diagnostics.sh"), body.index('"destroy"') if '"destroy"' in body else body.index("destroy"))
+        self.assertLess(body.index("vm-dump-diagnostics.sh"), body.index('destroy "$RUN"'))
         self.assertIn("rc=$?", body)
         # no reliance on a guest-side trap surviving a killed ssh session
         self.assertNotIn("trap 'rc=", lane.replace(body, ""))
