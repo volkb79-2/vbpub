@@ -1,5 +1,9 @@
 # Post-CMRU estate release plan
 
+> **[retired command, INT-01 B-07]** This 2026-09 plan names `run-gate.py` and `<project>/run-gate.py <lane>` in
+> present tense. Run-Gate 24 retired those copied scripts and symlinks: use the installed `run-gate <lane>` CLI
+> from the project directory. The text below is kept as the dated record.
+
 Status: execution in progress, updated 2026-09-20 UTC. CMRU v5.4.1 is
 released and installed; the reviewed run-gate and estate CLI changes are
 merged, the local Debian/NetCup integration is in a CIU worktree, and the
