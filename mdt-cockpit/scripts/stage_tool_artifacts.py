@@ -1656,7 +1656,10 @@ def _vetted_ai_cli_versions(load=_load_version_records, now: datetime | None = N
         if waived:
             vetted[f"{prefix}_WAIVED"] = "true"
     if install_enabled("INSTALL_AIDER"):
-        vetted.update(_aider_main_pin())
+        # `now` is forwarded so one injected clock governs the record-age check and the aider window. The
+        # window is read from the estate file rather than derived from the records' own cutoff because
+        # the records are absent when aider is the only enabled tool.
+        vetted.update(_aider_main_pin(now=now))
     return vetted
 
 

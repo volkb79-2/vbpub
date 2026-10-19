@@ -187,6 +187,18 @@ class DoctorHubLoginNoticeTests(HostEscapeCliTests):
         self.assertIn("invalid credsStore name", result.stderr)
         self.assertNotIn("touch", result.stderr + result.stdout, "the raw config value is never echoed")
 
+    def test_the_invalid_name_message_states_the_accepted_pattern(self) -> None:
+        result = self.doctor({"credsStore": "pass word"})
+        self.assertIn("allowed: letters, digits, _ . -, at most 64 characters", result.stderr)
+        self.assertNotIn("pass word", result.stderr)
+
+    def test_the_64_character_boundary_is_valid_and_65_is_not(self) -> None:
+        ok = self.doctor({"credsStore": "a" * 64})
+        self.assertNotIn("invalid credsStore name", ok.stderr)
+        self.assertIn("cannot confirm a Docker Hub login", ok.stderr)  # valid name, helper absent
+        bad = self.doctor({"credsStore": "a" * 65})
+        self.assertIn("invalid credsStore name", bad.stderr)
+
     def test_an_overlong_or_odd_store_name_is_reported_without_being_echoed(self) -> None:
         for name in ("a" * 65, "x\u001b[31my", "pass word"):
             result = self.doctor({"credsStore": name})

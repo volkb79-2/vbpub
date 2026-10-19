@@ -434,6 +434,21 @@ def _pin(tmp_path: Path, before: str) -> Path:
     return path
 
 
+def test_the_injected_clock_reaches_the_aider_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One clock: _vetted_ai_cli_versions forwards `now` to the aider window check (it used to apply
+    the injected clock to the record age only and the real clock to the window)."""
+    seen = {}
+
+    def spy(path=None, now=None, window_days=None):
+        seen["now"] = now
+        return dict(AIDER_PIN)
+
+    monkeypatch.setattr(stage, "_aider_main_pin", spy)
+    clock = datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc)
+    stage._vetted_ai_cli_versions(lambda: fake_version_records(VETTED), now=clock)
+    assert seen["now"] == clock
+
+
 def test_the_estate_window_is_read_from_the_orchestration_config() -> None:
     assert stage._estate_window_days() == 14
 
@@ -447,9 +462,9 @@ def test_deps_before_must_be_at_least_the_window_old(tmp_path: Path) -> None:
         ("yesterday", (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")),
         ("the future", (now + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")),
     ):
-        with pytest.raises(stage.StageError, match="float inside the window"):
+        with pytest.raises(stage.StageError, match="float inside the window") as caught:
             stage._aider_main_pin(_pin(tmp_path, before), now=now, window_days=14)
-        assert label
+        assert before in str(caught.value), label  # the refusal names the offending date
 
 
 def test_the_window_comes_from_the_estate_not_a_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

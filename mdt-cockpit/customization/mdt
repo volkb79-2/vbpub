@@ -155,7 +155,8 @@ usage_error() {
 # Anonymous Docker Hub pulls are limited to 100/hour per IP, shared by every session on this host.
 # Docker's standard credential store is the ONE holder of the login, so this only checks that an entry
 # exists - through the config's `auths`, `credHelpers` and `credsStore` KEYS. It never prints or reads an
-# `auth` value, never runs a credential helper and never fails: absence is a notice, not an error.
+# `auth` value and never fails: absence is a notice, not an error. For a `credsStore` it runs ONLY the
+# helper's `list` verb (server URLs and usernames; the output is never printed) - never `get`, which returns the secret.
 mdt_hub_login_notice() {
     local config="${DOCKER_CONFIG:-${HOME:-}/.docker}/config.json" state
     state=$(python3 -I - "$config" <<'PY' 2>/dev/null
@@ -197,7 +198,7 @@ print("absent")
 PY
     )
     if [[ "$state" == invalid ]]; then
-        echo "[mdt doctor] notice: ${config} has an invalid credsStore name; cannot confirm a Docker Hub login. Anonymous Docker Hub pulls are limited to 100/hour per IP; see docs/CONSUMERS.md \"Docker Hub login\"." >&2
+        echo "[mdt doctor] notice: ${config} has an invalid credsStore name (allowed: letters, digits, _ . -, at most 64 characters); cannot confirm a Docker Hub login. Anonymous Docker Hub pulls are limited to 100/hour per IP; see docs/CONSUMERS.md \"Docker Hub login\"." >&2
     elif [[ "$state" == unknown:* ]]; then
         echo "[mdt doctor] notice: a credential store (${state#unknown:}) is configured in ${config}; cannot confirm a Docker Hub login without querying it (docker-credential-${state#unknown:} list is unavailable here). Anonymous Docker Hub pulls are limited to 100/hour per IP; see docs/CONSUMERS.md \"Docker Hub login\"." >&2
     elif [[ "$state" != "present" ]]; then
