@@ -25,15 +25,17 @@ git_tag = true
 build_step = "build"
 artifact_dirs = []
 
-# ONE build (R1): `prepare` builds the release target - tagged tester-base:local AND the registry
-# names - and records its image id; the contract lane tests that image; `build` re-verifies that every
-# release tag still is the tested id; `push` is `docker push` of those same tags (never a rebuild) and
-# asserts the registry serves the pushed digest. The `oci-image-*` handlers are not used: they log in
-# to the registry even for a local build and bake-push rebuilds.
+# ONE build (R1), versioned late (V1). cmru runs prepare -> gate -> (VERSION written, committed,
+# tagged) -> build_step -> push, so `prepare` cannot know the release version. It builds the image as
+# tester-base:local and records its id; the gate tests that image; `build` (the first step after the
+# version exists) reads VERSION, re-verifies the id and gives the SAME image its registry names with
+# `docker tag`; `push` logs in with the step's credentials (stdin, isolated config), refuses an
+# existing version tag, pushes :latest and then :<VERSION> last, and checks the served digests.
+# The `oci-image-*` handlers are not used (see handoff/CMRU-GAPS-2026-10-19.md).
 [steps.prepare]
 quiet = true
 commands = [
-  { label = "tester-base: build the release image once", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "tester-base-release", "--load"], cwd = "." },
+  { label = "tester-base: build the image once (tester-base:local)", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "tester-base-local", "--load"], cwd = "." },
   { label = "tester-base: record the tested image id", argv = ["python3", "scripts/release_image.py", "record"], cwd = "." },
 ]
 
@@ -46,14 +48,14 @@ commands = [
 [steps.build]
 quiet = true
 commands = [
-  { label = "tester-base: verify the release tags are the tested image", argv = ["python3", "scripts/release_image.py", "verify"], cwd = "." },
+  { label = "tester-base: give the tested image its version and latest names", argv = ["python3", "scripts/release_image.py", "tag"], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
 commands = [
-  { label = "tester-base: push the tested image and verify the served digest", argv = ["python3", "scripts/release_image.py", "push"], cwd = "." },
+  { label = "tester-base: log in, push the tested image, verify the served digests", argv = ["python3", "scripts/release_image.py", "push"], cwd = "." },
 ]
 
 [versions]

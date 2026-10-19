@@ -52,8 +52,11 @@ The `FROM` digest is the one `cmru versions resolve tester-base` records under t
 window (see the DESIGN-GUIDE "Version pins").
 
 ## Releasing
-`cmru release` builds the image ONCE, tests that image, and pushes it: see the DESIGN-GUIDE "One build,
-one image". Nobody types a ref or a digest.
+`cmru release` runs the steps in `cmru.toml`: build once, test that image, then (after cmru wrote the
+new `VERSION`) tag and push it. Nobody types a ref, a version or a digest, and the push step needs
+`GITHUB_USERNAME` and `GITHUB_PUSH_PAT` in its environment (cmru's `required_env`); without them it
+refuses before any registry call. See the DESIGN-GUIDE "One build, one image" for the order and for what a
+failed push leaves behind.
 
 ## When a gate needs another tool
 First ask which side owns it. A real low-level OS binary: mark the test `os_integration` and run

@@ -43,11 +43,29 @@ liability, not just a size problem:
 ## One build, one image
 A release that built twice - once for the `contract` lane, once for the push, each from floating
 inputs (`apt-get update`, a registry index) - published something nobody had tested. The release is
-now ONE build: `docker buildx bake tester-base-release --load` tags it `tester-base:local` and the
-registry names together, `scripts/release_image.py record` stores its image id, the `contract` lane
-tests `tester-base:local`, `verify` re-checks that every release tag is still that id, and `push` is
-`docker push` of those very tags (a push never rebuilds) followed by a check that the registry serves
-the digest that was pushed. `docker-ce-cli` is pinned to an exact recorded version for the same reason.
+now ONE build, and the version is applied late because cmru's order is prepare -> gate -> (VERSION
+written, committed, tagged) -> build step -> push:
+
+1. `prepare` builds `tester-base:local` once and `release_image.py record` stores its image id. Nothing
+   versioned exists yet, so nothing here knows a version.
+2. The `contract` lane tests `tester-base:local`.
+3. The `build` step is the first one after cmru wrote `VERSION`: `release_image.py tag` reads it (it
+   FAILS when the file is absent or not `x.y.z` - there is no default anywhere), re-checks that
+   `tester-base:local` is still the recorded id, `docker tag`s that same image `:<VERSION>` and
+   `:latest`, and re-verifies the ids after tagging.
+4. `push` authenticates with the step's own credentials (`GITHUB_USERNAME` / `GITHUB_PUSH_PAT`, the PAT on
+   stdin into an isolated docker config, never on argv, never from ambient credentials), refuses a
+   version tag that already exists in the registry (only a definite "not found" counts as free; an
+   auth or network error aborts), pushes `:latest` and then `:<VERSION>` LAST, and requires that the
+   registry serves the digest that was pushed.
+
+**Partial publish.** `:latest` is a moving alias; the immutable `:<VERSION>` is the commit point of a
+release. If a push fails after `:latest` moved, `:latest` already points at the new, tested image and
+`:<VERSION>` does not exist yet; nothing else changed, and re-running `push` is safe (same image, same
+digests). A failure before `:latest` leaves the registry untouched.
+
+`docker-ce-cli` is pinned to an exact recorded version for the same reason. The cmru handlers
+`oci-image-build` / `oci-image-push` are not used; see `mdt-cockpit/handoff/CMRU-GAPS-2026-10-19.md`.
 
 ## Version pins
 - **Base digest.** `python:3.14-trixie@sha256:...` in the Dockerfile `FROM` is the digest
