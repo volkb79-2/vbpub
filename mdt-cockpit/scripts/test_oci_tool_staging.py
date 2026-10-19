@@ -27,6 +27,24 @@ resolver = importlib.util.module_from_spec(_resolver_spec)
 _resolver_spec.loader.exec_module(resolver)
 
 
+import pytest as _pytest  # noqa: E402
+
+
+def fake_version_records(versions: dict[str, str] | None = None, resolved_at: str | None = None) -> dict:
+    """The `[versions.targets]` tables as cmru.toml records them after `cmru versions resolve`."""
+    from datetime import datetime, timezone
+
+    versions = versions or {"npm.copilot": "1.0.92-4", "npm.openclaw": "2026.9.8", "npm.claudelink": "1.6.1"}
+    stamp = resolved_at or datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {t: {"mode": "single", "constraint": "*", "resolved": {"version": v, "resolved_at": stamp}} for t, v in versions.items()}
+
+
+@_pytest.fixture(autouse=True)
+def _records_from_memory(monkeypatch: "_pytest.MonkeyPatch") -> None:
+    """Staging tests use an in-memory, fresh record; the committed cmru.toml has its own tests."""
+    monkeypatch.setattr(staging, "_load_version_records", lambda path=None: fake_version_records())
+
+
 class OciToolStagingTests(unittest.TestCase):
     def test_base_image_pull_failure_preserves_bounded_docker_diagnostic(self) -> None:
         failed = subprocess.CompletedProcess(

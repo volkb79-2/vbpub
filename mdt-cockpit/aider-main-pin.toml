@@ -1,0 +1,14 @@
+# aider is the one AI CLI that is NOT installed from a vetted release (MDTC-03 decision).
+#
+# The newest aider release inside the 14-day window (aider-chat 0.86.2) declares `Requires-Python <3.13`
+# and cannot be installed into this image's Python 3.14 venv; Python 3.14 support exists only on upstream
+# `main` (PR #4899). So the image installs an exact COMMIT of `main` - never `@main`, never `latest`.
+#
+# Bump = pick a new commit of https://github.com/Aider-AI/aider on `main`, set `commit` and the `version`
+# that commit's build reports (`pip show aider-chat` after the install; the installer fails when they differ).
+#
+# EXIT CONDITION: delete this file, declare `pypi.aider-chat` in cmru.toml and let `cmru versions` vet it as
+# soon as an aider release supports Python 3.14 (a release whose `Requires-Python` admits 3.14).
+commit = "5dc9490bb35f9729ef2c95d00a19ccd30c26339c"
+version = "0.86.3.dev53+g5dc9490bb"
+exit_condition = "until an aider release supports Python 3.14"

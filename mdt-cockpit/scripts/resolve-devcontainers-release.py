@@ -1136,11 +1136,8 @@ def build_runtime_custom_tooling_map(
     install_claude = install_enabled("INSTALL_CLAUDE_CODE")
     install_codex = install_enabled("INSTALL_CODEX")
 
-    aider_requested = str(
-        resolved_versions.get("AIDER_VER") or (os.getenv("AIDER_VERSION") or "latest")
-    ).strip() or "latest"
     if install_aider:
-        aider_display = str(resolved_versions.get("AIDER_VER") or aider_requested).strip()
+        aider_display = str(resolved_versions.get("AIDER_VER") or "unknown").strip()
     else:
         aider_display = "not-installed"
 

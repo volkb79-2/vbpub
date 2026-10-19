@@ -303,11 +303,6 @@ variable "ANTIGRAVITY_VERSION" {
   default = "latest"
 }
 
-// Version pin for Aider; "main" tracks upstream main unless callers override it.
-variable "AIDER_VERSION" {
-  default = "main"
-}
-
 // Version pin for OpenCode; "latest" resolves at staging time for reproducibility control.
 variable "OPENCODE_VERSION" {
   default = "latest"
@@ -555,7 +550,6 @@ target "base" {
     CODEX_VERSION = "${CODEX_VERSION}"
     CLAUDE_CODE_VERSION = "${CLAUDE_CODE_VERSION}"
     ANTIGRAVITY_VERSION = "${ANTIGRAVITY_VERSION}"
-    AIDER_VERSION = "${AIDER_VERSION}"
     NVIM_VER = "${NVIM_VER}"
     NVCHAD_VER = "${NVCHAD_VER}"
     INSTALL_CODEX = "${INSTALL_CODEX}"

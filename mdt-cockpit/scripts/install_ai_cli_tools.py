@@ -11,6 +11,7 @@ import argparse
 from mdt_cli import MdtArgumentParser
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -137,6 +138,14 @@ def install_binaries_from_archive(archive: Path, *pairs: tuple[str, Path]) -> No
             copy_binary(extracted_binary, destination)
 
 
+# An exact release number: starts with a digit, no spaces, no URL/ref forms - so neither `latest` nor `main`
+# nor a git ref can be installed in place of a recorded version.
+VERSION_SHAPE = re.compile(r"[0-9][0-9A-Za-z.+_\-]*")
+
+
+COMMIT_SHAPE = re.compile(r"[0-9a-f]{40}")
+
+
 def staged_version(variable: str, label: str) -> str:
     """The exact version staging resolved and recorded in tool-versions.env.
 
@@ -144,7 +153,7 @@ def staged_version(variable: str, label: str) -> str:
     `@latest`, so the image would ship a version nothing recorded.
     """
     version = env_value(variable)
-    if not version or version == "latest":
+    if not VERSION_SHAPE.fullmatch(version):
         raise InstallerError(
             f"{variable} is not set to a concrete version (the staged, recorded value from "
             f"tool-versions.env); refusing to install {label} @latest"
@@ -210,7 +219,7 @@ def install_openclaw() -> None:
         log("INFO", "INSTALL_OPENCLAW=false; skipping OpenClaw")
         return
 
-    version = env_value("OPENCLAW_VER", "OPENCLAW_VERSION", default="latest")
+    version = staged_version("OPENCLAW_VER", "OpenClaw")
     require_command("npm", "npm is required to install OpenClaw")
     run_command(["npm", "install", "-g", f"openclaw@{version}"])
 
@@ -220,7 +229,7 @@ def install_copilot() -> None:
         log("INFO", "INSTALL_COPILOT=false; skipping GitHub Copilot CLI")
         return
 
-    version = env_value("COPILOT_VER", "COPILOT_VERSION", default="latest")
+    version = staged_version("COPILOT_VER", "GitHub Copilot CLI")
     require_command("npm", "npm is required to install GitHub Copilot CLI")
     run_command(["npm", "install", "-g", f"@github/copilot@{version}"])
 
@@ -230,7 +239,7 @@ def install_claudelink() -> None:
         log("INFO", "INSTALL_CLAUDELINK=false; skipping ClaudeLink")
         return
 
-    version = env_value("CLAUDELINK_VER", "CLAUDELINK_VERSION", default="latest")
+    version = staged_version("CLAUDELINK_VER", "ClaudeLink")
     require_command("npm", "npm is required to install ClaudeLink")
     run_command(["npm", "install", "-g", f"claudelink@{version}"])
 
@@ -250,13 +259,15 @@ def install_aider(ctx: InstallerContext) -> None:
         log("INFO", "INSTALL_AIDER=false; skipping Aider")
         return
 
-    version = env_value("AIDER_VER", "AIDER_VERSION", default="main")
-    if version == "main":
-        spec = "aider-chat @ git+https://github.com/Aider-AI/aider.git@main"
-    elif version == "latest":
-        spec = "aider-chat"
-    else:
-        spec = f"aider-chat=={version}"
+    # The documented exception (aider-main-pin.toml): an exact COMMIT of upstream main, never `@main`.
+    version = staged_version("AIDER_VER", "Aider")
+    commit = env_value("AIDER_COMMIT")
+    if not COMMIT_SHAPE.fullmatch(commit):
+        raise InstallerError(
+            f"AIDER_COMMIT must be a full 40-hex commit sha staged from aider-main-pin.toml (got {commit!r}); "
+            "refusing to install an unpinned aider main"
+        )
+    spec = f"aider-chat @ git+https://github.com/Aider-AI/aider.git@{commit}"
 
     run_command(
         [
@@ -269,6 +280,20 @@ def install_aider(ctx: InstallerContext) -> None:
             spec,
         ]
     )
+    installed = installed_pip_version(ctx.venv_python, "aider-chat")
+    if installed != version:
+        raise InstallerError(
+            f"aider commit {commit} built version {installed!r}, but aider-main-pin.toml records {version!r}; "
+            "update the recorded version (the pin file is the record the image manifest shows)"
+        )
+
+
+def installed_pip_version(python: Path, package: str) -> str:
+    proc = subprocess.run([str(python), "-m", "pip", "show", package], capture_output=True, text=True, check=False)
+    for line in proc.stdout.splitlines():
+        if line.startswith("Version:"):
+            return line.split(":", 1)[1].strip()
+    raise InstallerError(f"cannot read the installed version of {package}: {proc.stderr.strip()[:200]}")
 
 
 def opencode_platform_package() -> str:

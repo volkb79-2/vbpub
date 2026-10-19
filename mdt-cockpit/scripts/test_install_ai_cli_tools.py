@@ -349,6 +349,9 @@ class TestEnvValue:
 
 
 def test_stage_resolves_opencode_from_npm_package(monkeypatch: pytest.MonkeyPatch) -> None:
+    from test_oci_tool_staging import fake_version_records
+
+    monkeypatch.setattr(stage, "_load_version_records", lambda path=None: fake_version_records())
     npm_calls: list[tuple[str | None, str]] = []
 
     def fake_npm(requested: str | None, package_name: str) -> str:

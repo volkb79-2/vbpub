@@ -1529,22 +1529,110 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     return records
 
 
-def _resolve_versions() -> dict[str, str]:
-    aider_requested = (os.getenv("AIDER_VERSION") or "latest").strip() or "latest"
-    if aider_requested == "main":
-        aider_version = "main"
-    else:
-        aider_version = _resolve_pypi_version(aider_requested, "aider-chat")
+# copilot, openclaw and claudelink are NOT user-updatable the way the R16 tools are, so they obey the
+# estate's 14-day rule, and the rule is enforced by `cmru versions`, not by a resolver of our own: the
+# newest version at least `age_window_days` old is recorded by `cmru versions resolve` in
+# cmru.toml and read back here through `cmru versions check`.
+AI_CLI_PROJECT = PROJECT_ROOT
+AI_CLI_TARGETS = {
+    "COPILOT_VER": ("npm.copilot", "INSTALL_COPILOT", "COPILOT_VERSION"),
+    "OPENCLAW_VER": ("npm.openclaw", "INSTALL_OPENCLAW", "OPENCLAW_VERSION"),
+    "CLAUDELINK_VER": ("npm.claudelink", "INSTALL_CLAUDELINK", "CLAUDELINK_VERSION"),
+}
+# aider is the documented exception: an exact commit of upstream main (aider-main-pin.toml), because its
+# newest vetted release cannot run on this image's Python 3.14.
+AIDER_PIN_FILE = PROJECT_ROOT / "aider-main-pin.toml"
+AIDER_ENV_PINS = ("AIDER_VERSION", "AIDER_COMMIT")
+# A record older than two age windows (2 x 14 days) is stale: the rule exists so that a newly published
+# release is not adopted before it has aged; a record left to rot defeats the other half (picking up fixes).
+RECORD_MAX_AGE_DAYS = 28
+RESOLVE_ADVICE = (
+    "run `cmru versions resolve` in mdt-cockpit and commit the result "
+    "(cmru.toml, package-lock.json, constraints/, versions/)"
+)
 
+
+def _load_version_records(path: Path | None = None) -> dict[str, dict]:
+    """The `[versions.targets]` tables of cmru.toml (the committed record; no network, no registry)."""
+    import tomllib
+
+    path = path or AI_CLI_PROJECT / "cmru.toml"
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))["versions"]["targets"]
+    except (OSError, ValueError, KeyError) as exc:
+        raise StageError(f"cannot read the version records in {path}: {exc}; {RESOLVE_ADVICE}") from exc
+
+
+def _record_age_days(resolved_at: object, now: datetime | None = None) -> float:
+    try:
+        stamp = datetime.strptime(str(resolved_at), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise StageError(f"unreadable resolved_at {resolved_at!r} in a cmru version record; {RESOLVE_ADVICE}") from exc
+    return ((now or datetime.now(timezone.utc)) - stamp).total_seconds() / 86400
+
+
+def _aider_main_pin(path: Path | None = None) -> dict[str, str]:
+    """{AIDER_COMMIT, AIDER_VER} from the tracked pin file; an unpinned or malformed file fails staging."""
+    import tomllib
+
+    path = path or AIDER_PIN_FILE
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise StageError(f"aider needs {path.name} (an exact commit of aider main): {exc}") from exc
+    commit, version = data.get("commit"), data.get("version")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise StageError(f"{path.name}: `commit` must be a full 40-hex commit sha, never a branch like `main`")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9][0-9A-Za-z.+_\-]*", version) or commit[:9] not in version:
+        raise StageError(f"{path.name}: `version` must be the version that commit builds (it carries `g{commit[:9]}`)")
+    return {"AIDER_COMMIT": commit, "AIDER_VER": version}
+
+
+def _vetted_ai_cli_versions(load=_load_version_records, now: datetime | None = None) -> dict[str, str]:
+    """{COPILOT_VER: ..., ...} read from the committed `cmru versions` record; any other state fails staging.
+
+    Staging reads the record OFFLINE (`cmru versions check` queries every target of the project, including
+    rate-limited OCI registries, so a build would fail on an unrelated 429). `missing`, `unresolved` (no
+    `resolved` table) and `stale` (older than RECORD_MAX_AGE_DAYS) all fail with a message naming
+    `cmru versions resolve`; whether a newer version is already eligible is `cmru versions check`'s job.
+    Environment pins are refused, not ignored: cmru's own override (`version` + `reason` on the target) is the
+    one reasoned way to pin.
+    """
+    names = [env_name for _t, _i, env_name in AI_CLI_TARGETS.values()] + list(AIDER_ENV_PINS)
+    pins = sorted(name for name in names if (os.getenv(name) or "").strip())
+    if pins:
+        raise StageError(
+            f"{', '.join(pins)} cannot pin a version any more: copilot, openclaw and claudelink are vetted by "
+            "`cmru versions` (aider is pinned in aider-main-pin.toml). Set `version = \"<x>\"` and a "
+            f"`reason = \"<why>\"` on the target in cmru.toml (cmru's reasoned override), then {RESOLVE_ADVICE}"
+        )
+    records = load()
+    vetted: dict[str, str] = {}
+    for env_key, (target, install_switch, _env_name) in AI_CLI_TARGETS.items():
+        if not install_enabled(install_switch):
+            continue
+        declaration = records.get(target)
+        if not isinstance(declaration, dict):
+            raise StageError(f"cmru.toml declares no version target {target!r}; declare it, then {RESOLVE_ADVICE}")
+        resolved = declaration.get("resolved")
+        version = resolved.get("version") if isinstance(resolved, dict) else None
+        if not isinstance(version, str) or not version:
+            raise StageError(f"{target} is unresolved (no recorded version): {RESOLVE_ADVICE}")
+        age = _record_age_days(resolved.get("resolved_at"), now)
+        if age > RECORD_MAX_AGE_DAYS:
+            raise StageError(f"{target} was resolved {age:.0f} days ago (limit {RECORD_MAX_AGE_DAYS}): {RESOLVE_ADVICE}")
+        vetted[env_key] = version
+    if install_enabled("INSTALL_AIDER"):
+        vetted.update(_aider_main_pin())
+    return vetted
+
+
+def _resolve_versions() -> dict[str, str]:
     resolved = {
         "CODEX_VER": _resolve_codex_version(os.getenv("CODEX_VERSION")),
         "ANTIGRAVITY_VER": (os.getenv("ANTIGRAVITY_VERSION") or "latest").strip() or "latest",
-        "AIDER_VER": aider_version,
         "REASONIX_VER": _resolve_pinned_npm_version(os.getenv("REASONIX_VERSION"), "reasonix", "REASONIX_VERSION"),
-        "OPENCLAW_VER": _resolve_npm_version(os.getenv("OPENCLAW_VERSION"), "openclaw"),
-        "COPILOT_VER": _resolve_npm_version(os.getenv("COPILOT_VERSION"), "@github/copilot"),
         "OPENCODE_VER": _resolve_pinned_npm_version(os.getenv("OPENCODE_VERSION"), "opencode-ai", "OPENCODE_VERSION"),
-        "CLAUDELINK_VER": _resolve_npm_version(os.getenv("CLAUDELINK_VERSION"), "claudelink"),
         "PI_VER": _resolve_pinned_npm_version(os.getenv("PI_VERSION"), "@earendil-works/pi-coding-agent", "PI_VERSION"),
         "DTOP_VER": _resolve_version(os.getenv("DTOP_VERSION"), "amir20/dtop"),
         "LAZYDOCKER_VER": _resolve_version(os.getenv("LAZYDOCKER_VERSION"), "jesseduffield/lazydocker"),
@@ -1577,6 +1665,7 @@ def _resolve_versions() -> dict[str, str]:
         "VAULT_VER": _resolve_version(os.getenv("VAULT_VERSION"), "hashicorp/vault"),
     }
 
+    resolved.update(_vetted_ai_cli_versions())
     if install_enabled("INSTALL_CLAUDE_CODE"):
         resolved["CLAUDE_CODE_VER"] = _resolve_claude_code_version(os.getenv("CLAUDE_CODE_VERSION"))
     else:
