@@ -17,7 +17,10 @@ budget = "30m"
 
 [lanes.py-compile]
 kind = "command"
-environment = "host"
+# tester-unified, not `host`: this lane writes __pycache__ into the bind-mounted worktree, so it must
+# run as the worktree owner with a full identity (passwd, group, HOME, XDG). The `host` environment
+# is tester-base, which runs as root and has no user (MDTC-02 D-002).
+environment = "tester-unified"
 # P96: fail-closed NUL-delimited argv over changed .py files; no changes → OK.
 argv = ["bash", "-c", "cd {worktree} && set -o pipefail && git diff --name-only -z main...HEAD -- '*.py' | xargs -0 -r python3 -m py_compile && echo 'py-compile: OK' || { rc=$?; echo \"py-compile: FAILED (exit $rc)\" 1>&2; exit $rc; }"]
 budget = "2m"

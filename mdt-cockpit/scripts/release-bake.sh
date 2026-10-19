@@ -1,0 +1,279 @@
+#!/usr/bin/env bash
+# Governed release build/export wrapper for mdt-cockpit.
+
+set -euo pipefail
+
+ACTION="${1:-}"
+FLOW="${RELEASE_IMAGE_FLOW:?RELEASE_IMAGE_FLOW must be set by release configuration}"
+
+ts() { date -u +"%Y-%m-%dT%H:%M:%SZ"; }
+run_low_priority() {
+    if command -v ionice >/dev/null 2>&1; then
+        ionice -c3 nice -n 19 "$@"
+    else
+        nice -n 19 "$@"
+    fi
+}
+
+oci_layout_bake() {
+    # Single-build, checksum-identical alternative to `--load` + a later,
+    # independent `registry_bake()`: the same bytes built here are what
+    # build-push.py's digest-verified `crane push` later publishes — no
+    # second build, no drift between what was reviewed/manifested and what
+    # actually reaches the registry.
+    : "${IMAGE_COMPRESSION:?IMAGE_COMPRESSION must be configured}"
+    : "${IMAGE_COMPRESSION_LEVEL:?IMAGE_COMPRESSION_LEVEL must be configured}"
+    : "${IMAGE_FORCE_COMPRESSION:?IMAGE_FORCE_COMPRESSION must be configured}"
+    : "${IMAGE_OCI_MEDIA_TYPES:?IMAGE_OCI_MEDIA_TYPES must be configured}"
+    : "${IMAGE_PROVENANCE_MODE:?IMAGE_PROVENANCE_MODE must be configured}"
+    : "${IMAGE_SBOM:?IMAGE_SBOM must be configured}"
+    [[ "${IMAGE_SBOM}" == "true" || "${IMAGE_SBOM}" == "false" ]] || {
+        echo "[ERROR] IMAGE_SBOM must be true or false." >&2
+        return 2
+    }
+
+    configure_cache_args
+    rm -rf "${OCI_LAYOUT_DIR}"
+    mkdir -p "${OCI_LAYOUT_DIR}"
+
+    local bake_json target output safe
+    local -a targets bake_args
+    bake_json="$(docker buildx bake -f docker-bake.hcl all --print)"
+    mapfile -t targets < <(jq -r '.group.all.targets[]?' <<<"${bake_json}")
+    [[ "${#targets[@]}" -gt 0 ]] || {
+        echo "[ERROR] Bake group 'all' contains no targets." >&2
+        return 1
+    }
+
+    output="type=oci,compression=${IMAGE_COMPRESSION},compression-level=${IMAGE_COMPRESSION_LEVEL},force-compression=${IMAGE_FORCE_COMPRESSION},oci-mediatypes=${IMAGE_OCI_MEDIA_TYPES}"
+    # One target per bake invocation, not the whole "all" group in one shot: the
+    # group's targets share large swaths of identical layer content (same base,
+    # same staged-tool RUN steps), and baking them together makes BuildKit write
+    # the same content-addressed layer from two concurrent solves into the same
+    # governed builder's content store at once. Under host memory/IO pressure the
+    # loser's write blocks on the winner's lock long enough to trip the builder's
+    # health check and get killed mid-write ("ref layer-... locked for Ns...
+    # unavailable" -> "context canceled" -> EOF). Serializing avoids the race;
+    # the second target reuses shared layers from the persistent remote cache.
+    for target in "${targets[@]}"; do
+        safe="${target//[^A-Za-z0-9._-]/_}"
+        bake_args=(docker buildx bake -f docker-bake.hcl "${target}")
+        bake_args+=(--set "${target}.output=${output},dest=${OCI_LAYOUT_DIR}/${safe}.tar")
+        bake_args+=(--set "${target}.attest=type=provenance,mode=${IMAGE_PROVENANCE_MODE}")
+        if [[ "${IMAGE_SBOM}" == "true" ]]; then
+            bake_args+=(--set "${target}.attest+=type=sbom")
+        fi
+        echo "[INFO] [oci-layout] governed single-build bake start (${target}) $(ts)"
+        run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
+        echo "[INFO] [oci-layout] governed single-build bake end (${target}) $(ts)"
+    done
+
+    for target in "${targets[@]}"; do
+        safe="${target//[^A-Za-z0-9._-]/_}"
+        rm -rf "${OCI_LAYOUT_DIR}/${safe}"
+        mkdir -p "${OCI_LAYOUT_DIR}/${safe}"
+        tar -xf "${OCI_LAYOUT_DIR}/${safe}.tar" -C "${OCI_LAYOUT_DIR}/${safe}"
+        rm -f "${OCI_LAYOUT_DIR}/${safe}.tar"
+    done
+}
+
+local_dev_bake() {
+    # Explicit local-dev build (build-push.py --build --local-dev): build the
+    # selected targets from verified local artifacts and LOAD them into the local
+    # Docker daemon under local-only tags. Nothing is exported to a registry or an
+    # OCI layout, so nothing here can be published; the image also carries the
+    # net.volkb79.mdt.build-mode=local-dev label that every publish path refuses.
+    : "${MDT_BAKE_TARGETS:?MDT_BAKE_TARGETS must list the targets to build}"
+    : "${MDT_LOCAL_DEV_STAGING:?MDT_LOCAL_DEV_STAGING must name the verified artifact directory}"
+    [[ -f "${MDT_LOCAL_DEV_STAGING}/provenance.json" ]] || {
+        echo "[ERROR] ${MDT_LOCAL_DEV_STAGING}/provenance.json is missing; stage the local artifacts first." >&2
+        return 1
+    }
+
+    local target tag
+    local -a targets bake_args tags
+    IFS=',' read -r -a targets <<<"${MDT_BAKE_TARGETS}"
+    for target in "${targets[@]}"; do
+        # docker-bake.hcl emits only -dev- tags when MDT_BUILD_MODE=local-dev;
+        # re-check here, because these are the tags the image will carry.
+        mapfile -t tags < <(docker buildx bake -f docker-bake.hcl "${target}" --print \
+            | jq -r --arg t "${target}" '.target[$t].tags[]?')
+        [[ "${#tags[@]}" -gt 0 ]] || {
+            echo "[ERROR] Target '${target}' has no tags." >&2
+            return 1
+        }
+        for tag in "${tags[@]}"; do
+            [[ "${tag##*:}" == *-dev-* ]] || {
+                echo "[ERROR] '${tag}' is not a local-dev tag; refusing to build it." >&2
+                return 1
+            }
+        done
+        # One target per invocation, as in the release flows (shared layers).
+        bake_args=(docker buildx bake -f docker-bake.hcl "${target}" --load --provenance=false --sbom=false)
+        bake_args+=(--set "${target}.contexts.mdt-local-dev=${MDT_LOCAL_DEV_STAGING}")
+        echo "[INFO] [local-dev] bake start (${target}: ${tags[*]}) $(ts)"
+        run_low_priority "${bake_args[@]}"
+        echo "[INFO] [local-dev] bake end (${target}) $(ts)"
+    done
+}
+
+registry_bake() {
+    : "${IMAGE_COMPRESSION:?IMAGE_COMPRESSION must be configured}"
+    : "${IMAGE_COMPRESSION_LEVEL:?IMAGE_COMPRESSION_LEVEL must be configured}"
+    : "${IMAGE_FORCE_COMPRESSION:?IMAGE_FORCE_COMPRESSION must be configured}"
+    : "${IMAGE_OCI_MEDIA_TYPES:?IMAGE_OCI_MEDIA_TYPES must be configured}"
+    : "${IMAGE_PROVENANCE_MODE:?IMAGE_PROVENANCE_MODE must be configured}"
+    : "${IMAGE_SBOM:?IMAGE_SBOM must be configured}"
+    [[ "${IMAGE_SBOM}" == "true" || "${IMAGE_SBOM}" == "false" ]] || {
+        echo "[ERROR] IMAGE_SBOM must be true or false." >&2
+        return 2
+    }
+
+    configure_cache_args
+    local bake_json target output
+    local -a targets bake_args
+    bake_json="$(docker buildx bake -f docker-bake.hcl all --print)"
+    mapfile -t targets < <(jq -r '.group.all.targets[]?' <<<"${bake_json}")
+    [[ "${#targets[@]}" -gt 0 ]] || {
+        echo "[ERROR] Bake group 'all' contains no targets." >&2
+        return 1
+    }
+
+    output="type=registry,compression=${IMAGE_COMPRESSION},compression-level=${IMAGE_COMPRESSION_LEVEL},force-compression=${IMAGE_FORCE_COMPRESSION},oci-mediatypes=${IMAGE_OCI_MEDIA_TYPES}"
+    # See oci_layout_bake(): one target per invocation to avoid concurrent-solve
+    # content-store lock races on layers shared between the group's targets.
+    for target in "${targets[@]}"; do
+        bake_args=(docker buildx bake -f docker-bake.hcl "${target}")
+        bake_args+=(--set "${target}.output=${output}")
+        bake_args+=(--set "${target}.attest=type=provenance,mode=${IMAGE_PROVENANCE_MODE}")
+        if [[ "${IMAGE_SBOM}" == "true" ]]; then
+            bake_args+=(--set "${target}.attest+=type=sbom")
+        fi
+        run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
+    done
+}
+
+if [[ "${ACTION}" != "build" && "${ACTION}" != "push" ]]; then
+    echo "[ERROR] Usage: $0 <build|push>" >&2
+    exit 2
+fi
+
+# The build mode decides the flow, never the other way round. cmru applies the
+# project's [env] (RELEASE_IMAGE_FLOW = "load") over the caller's environment, so
+# an explicit local-dev build is recognised by MDT_BUILD_MODE, which cmru does not
+# manage, and is forced onto the one flow that can never publish. The reverse -
+# the local-dev flow without the local-dev mode - is refused.
+BUILD_MODE="${MDT_BUILD_MODE:-release}"
+if [[ "${BUILD_MODE}" == "local-dev" ]]; then
+    if [[ "${ACTION}" != "build" ]]; then
+        echo "[ERROR] MDT_BUILD_MODE=local-dev has no ${ACTION} step: a local-dev image is never published." >&2
+        exit 2
+    fi
+    FLOW="local-dev"
+elif [[ "${FLOW}" == "local-dev" ]]; then
+    echo "[ERROR] RELEASE_IMAGE_FLOW=local-dev requires MDT_BUILD_MODE=local-dev (build-push.py --build --local-dev)." >&2
+    exit 2
+fi
+
+bash scripts/ensure-release-builder.sh
+
+OCI_LAYOUT_DIR="${MDT_OCI_LAYOUT_DIR:-build/oci-layouts}"
+
+configure_cache_args() {
+    # The managed remote owns a persistent cache volume. A type=local cache
+    # exporter streams the entire cache through the client-visible Docker API
+    # after the OCI tarball has completed; large exports can hit the same EOF
+    # boundary as any other long client stream. Keep the release path on the
+    # remote cache and do not add a second client-visible cache transfer.
+    CACHE_ARGS=()
+    echo "[INFO] Using persistent mdt-buildkitd cache; local client cache export disabled"
+}
+
+case "${FLOW}" in
+    load)
+        # Do not use a short-circuit test as the branch's final command:
+        # with `set -e`, a successful build action would otherwise return the
+        # false status of `[[ "$ACTION" == push ]]` to the caller.
+        if [[ "${ACTION}" == "build" ]]; then
+            oci_layout_bake
+        else
+            echo "[INFO] RELEASE_IMAGE_FLOW=load: invoking build-push.py --push for" \
+                 "the digest-verified OCI-layout publication."
+            # CMRU's post-gate push step enters here.  Use exec so the
+            # publisher's status is the release step's status; a successful
+            # informational message must never stand in for publication.
+            exec python3 build-push.py --push
+        fi
+        ;;
+    local-dev)
+        if [[ "${ACTION}" != "build" ]]; then
+            echo "[ERROR] RELEASE_IMAGE_FLOW=local-dev has no ${ACTION} step: a local-dev image is never published." >&2
+            exit 2
+        fi
+        local_dev_bake
+        ;;
+    push)
+        if [[ "${ACTION}" == "build" ]]; then
+            registry_bake
+        else
+            echo "[INFO] RELEASE_IMAGE_FLOW=push: already-published-during-build" \
+                 "terminal state; no second registry push is attempted."
+        fi
+        ;;
+    repack)
+        if [[ "${ACTION}" == "push" ]]; then
+            echo "[INFO] RELEASE_IMAGE_FLOW=repack: already-published-during-build" \
+                 "terminal state; no second registry push is attempted."
+            exit 0
+        fi
+
+        : "${REPACK_WORK_DIR:?REPACK_WORK_DIR must be configured}"
+        configure_cache_args
+        rm -rf "${REPACK_WORK_DIR}"
+        mkdir -p "${REPACK_WORK_DIR}"
+
+        bake_json="$(docker buildx bake -f docker-bake.hcl all --print)"
+        mapfile -t targets < <(jq -r '.group.all.targets[]?' <<<"${bake_json}")
+        [[ "${#targets[@]}" -gt 0 ]] || {
+            echo "[ERROR] Bake group 'all' contains no targets." >&2
+            exit 1
+        }
+
+        # See oci_layout_bake(): one target per invocation to avoid concurrent-solve
+        # content-store lock races on layers shared between the group's targets.
+        echo "[INFO] [repack] governed OCI-layout bake start $(ts)"
+        for target in "${targets[@]}"; do
+            safe="${target//[^A-Za-z0-9._-]/_}"
+            bake_args=(docker buildx bake -f docker-bake.hcl "${target}")
+            bake_args+=(--set "${target}.output=type=oci,dest=${REPACK_WORK_DIR}/src-${safe}.tar")
+            run_low_priority "${bake_args[@]}" "${CACHE_ARGS[@]}"
+        done
+        echo "[INFO] [repack] governed OCI-layout bake end $(ts)"
+
+        for target in "${targets[@]}"; do
+            safe="${target//[^A-Za-z0-9._-]/_}"
+            mkdir -p "${REPACK_WORK_DIR}/src-${safe}"
+            tar -xf "${REPACK_WORK_DIR}/src-${safe}.tar" -C "${REPACK_WORK_DIR}/src-${safe}"
+            rm -f "${REPACK_WORK_DIR}/src-${safe}.tar"
+
+            # BuildKit emits one index descriptor per output tag. They can all
+            # reference the same image manifest; docker-repack otherwise treats
+            # those aliases as separate images and merges the same filesystem
+            # repeatedly. Publication tags come from Bake below, so retain one
+            # descriptor per digest/platform here.
+            index="${REPACK_WORK_DIR}/src-${safe}/index.json"
+            tmp_index="${index}.tmp"
+            jq '.manifests |= unique_by([.digest, (.platform.os // ""), (.platform.architecture // ""), (.platform.variant // "")])' \
+                "${index}" >"${tmp_index}"
+            mv "${tmp_index}" "${index}"
+        done
+
+        echo "[INFO] [repack] bounded repack start $(ts)"
+        run_low_priority bash scripts/release-repack.sh
+        echo "[INFO] [repack] bounded repack end $(ts)"
+        ;;
+    *)
+        echo "[ERROR] Unsupported RELEASE_IMAGE_FLOW=${FLOW}. Use load, push, repack, or (explicit local-dev builds only) local-dev." >&2
+        exit 2
+        ;;
+esac

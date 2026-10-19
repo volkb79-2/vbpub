@@ -1,0 +1,20 @@
+# mdt host-setup — active policy against accidental Buildx BuildKit workers.
+# The watcher uses Docker events plus Docker inspect; it does not infer
+# identity from a name alone. A stream/inspect failure exits non-zero so
+# systemd restarts it instead of silently treating an unknown container as
+# approved. The periodic host-slices sweep remains an independent backstop.
+[Unit]
+Description=mdt host-setup — guard accidental Buildx BuildKit containers
+Documentation=file:/etc/mdt/host-setup.env
+After=docker.service mdt-buildkitd.service
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/mdt-buildkit-guard.py --config /etc/mdt/host-setup.env --docker /usr/bin/docker
+Restart=always
+RestartSec=5
+EnvironmentFile=/etc/mdt/host-setup.env
+
+[Install]
+WantedBy=multi-user.target

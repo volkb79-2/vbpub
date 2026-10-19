@@ -22,6 +22,12 @@
 # Build from the REPO ROOT so the (bind-mounted-at-runtime) project sources would be
 # in context if ever needed — today nothing is COPY'd from it, so the build is fast:
 #   docker build -f wheel-builder/Dockerfile -t wheel-builder:local /workspaces/vbpub
+#
+# BASE: the upstream Python devcontainer image, so the zero-release bootstrap needs no vbpub
+# image (reviewed invariant, test_wheel_builder_does_not_depend_on_a_published_vbpub_image).
+# MDTC-02 moved tester-unified to tester-base; moving this builder too is an open decision
+# (INT-01 D-001): its default would become `tester-base:local` once tester-base is a bootstrap
+# step. The base stays one declared ARG so that switch is a one-line change.
 ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie
 FROM ${WHEEL_BUILDER_BASE_IMAGE}
 

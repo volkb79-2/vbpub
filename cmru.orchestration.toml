@@ -27,14 +27,17 @@ registry = ["ghcr.io"]
 #   nyxloom <- cli-extended  (declared release order)
 #   pwmcp <- cli-extended  (declared release order)
 #   tls-edge <- none  (declared release order)
-#   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, topos, nyxloom  (declared release order)
+#   modern-debian-tools-python-debug <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
 #     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
+#   mdt-cockpit <- cli-extended, ciu, cmru, pwmcp, topos, nyxloom  (declared release order)
+#     consumes first-party wheels: cli-extended, ciu, cmru, topos, nyxloom
+#   tester-base <- none  (declared release order)
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
-#   L0: cli-extended, cgroup-profiler, ciu, assay, topos, tls-edge
+#   L0: cli-extended, cgroup-profiler, ciu, assay, topos, tls-edge, tester-base
 #   L1: run-gate-project, nyxloom, pwmcp
 #   L2: cmru
-#   L3: modern-debian-tools-python-debug
+#   L3: modern-debian-tools-python-debug, mdt-cockpit
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
@@ -44,7 +47,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "tls-edge", "modern-debian-tools-python-debug"]
+project_order = ["cli-extended", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "tls-edge", "modern-debian-tools-python-debug", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -180,6 +183,18 @@ config = "modern-debian-tools-python-debug/cmru.toml"
 # (pip/wheels.list stages it). PWMCP is also released first so the image can install
 # its exact CIU root and client CLI through the generated CMRU get.py.
 depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
+
+[orchestration.project.mdt-cockpit]
+config = "mdt-cockpit/cmru.toml"
+# The fork uses the same first-party CIU and CLI tooling in its image.
+depends_on = ["cli-extended", "ciu", "cmru", "pwmcp", "topos", "nyxloom"]
+
+# Leaf image project (python:3.14-trixie digest + docker client + minisign + shellcheck): no
+# first-party dependency. cmru is its release tooling, an installed tool and not a build edge
+# (the same rule the generated graph applies to every other project).
+[orchestration.project.tester-base]
+config = "tester-base/cmru.toml"
+depends_on = []
 
 [orchestration.project.pwmcp]
 config = "pwmcp/cmru.toml"

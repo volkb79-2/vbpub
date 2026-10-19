@@ -1,0 +1,43 @@
+# Local-dev artifact manifest for `./build-push.py --build --local-dev <this file>`.
+#
+# Copy to `local-dev-artifacts.toml` (git-ignored) and list ONLY the artifacts you
+# want built from local files instead of their releases. The build is explicit and
+# fail-closed: every entry is verified before anything is built, and an entry that
+# is unknown, missing, unreadable, mis-named, or whose sha256 differs refuses the
+# build and names the entry. Artifacts you do not list still come from their
+# releases, exactly as in a release build.
+#
+# Known names: every package in pip/wheels.list (cli-extended, ciu, cmru, topos,
+# nyxloom), plus the PWMCP installer and bundle consumed by
+# scripts/install_pwmcp_instance.py:
+#   pwmcp-installer  the generated get.py       (version = the pinned PWMCP release)
+#   pwmcp-bundle     the release .tar.xz bundle (version = the pinned PWMCP release)
+#
+# Each entry: name, absolute path, sha256 of that file (`sha256sum <path>`), and the
+# version it must be. For a wheel the version must equal the version in the wheel's
+# file name; for PWMCP it must equal `release` in pwmcp/pwmcp.contract.json.
+#
+# The resulting image is loaded into your local Docker daemon as
+#   <debian>-py<python>[-<flavor>]-dev-<YYYYMMDD>[-<n>]   (plus a floating  ...-dev-latest)
+# is labelled net.volkb79.mdt.build-mode=local-dev with every artifact recorded
+# (net.volkb79.mdt.local-artifacts and the image manifest), and can never be pushed.
+
+schema_version = 1
+
+[[artifact]]
+name = "ciu"
+path = "/absolute/path/to/ciu-7.11.0-py3-none-any.whl"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+version = "7.11.0"
+
+[[artifact]]
+name = "pwmcp-bundle"
+path = "/absolute/path/to/pwmcp-1.64.0-r2.tar.xz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+version = "1.64.0-r2"
+
+[[artifact]]
+name = "pwmcp-installer"
+path = "/absolute/path/to/pwmcp/get.py"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+version = "1.64.0-r2"

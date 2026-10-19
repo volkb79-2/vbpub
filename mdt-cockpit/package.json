@@ -1,0 +1,14 @@
+{
+  "name": "mdt-cockpit-ai-cli-tools",
+  "private": true,
+  "dependencies": {
+    "@github/copilot": "1.0.92-4",
+    "openclaw": "2026.9.8",
+    "claudelink": "1.6.1"
+  },
+  "overrides": {
+    "@github/copilot": "1.0.92-4",
+    "openclaw": "2026.9.8",
+    "claudelink": "1.6.1"
+  }
+}

@@ -1,0 +1,1148 @@
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+# Privileged sidecar: digest-pinned, started --pull=never (must be local).
+# `docker image inspect --format '{{index .RepoDigests 0}}' docker:dind`, 2026-10-05.
+CMRU_TESTER_DIND_IMAGE = "docker@sha256:5efed980cba3fc126cf54e21a5a6ff8849d05b6e0623d6e7612f48e9cd6cd17e"
+# Required DinD limits (nested containers draw on these, separate from the workload's).
+CMRU_TESTER_DIND_MEMORY = "2g"
+CMRU_TESTER_DIND_CPUS = "1.5"
+CMRU_TESTER_DIND_PIDS_LIMIT = "2048"
+RELEASE_IMAGE_FLOW = "load"
+IMAGE_COMPRESSION = "zstd"
+IMAGE_COMPRESSION_LEVEL = "3"
+IMAGE_FORCE_COMPRESSION = "false"
+IMAGE_OCI_MEDIA_TYPES = "true"
+IMAGE_PROVENANCE_MODE = "max"
+IMAGE_SBOM = "true"
+BUILDX_BUILDER = "mdt-managed"
+BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
+REPACK_WORK_DIR = "build/repack"
+REPACK_TARGET_SIZE = "2GB"
+REPACK_COMPRESSION_LEVEL = "9"
+REPACK_JOBS = "1"
+REPACK_CONCURRENCY = "2"
+REPACK_VMEM_KB = "unlimited"
+REPACK_KEEP_FAILED = "true"
+DOCKER_REPACK_LOG = "warn"
+OCI_VENDOR = "Volker Badziong"
+OCI_DESCRIPTION = "mdt-cockpit image family. Includes curated Debian/Python tooling and CIU-focused workflow tools."
+OCI_DESCRIPTION_BASE = "mdt-cockpit base image."
+OCI_DESCRIPTION_VSC = "mdt-cockpit VS Code devcontainer image."
+
+[build_metadata]
+date_env = "BUILD_DATE"
+date_format = "%Y%m%d"
+
+[project]
+id = "mdt-cockpit"
+description = "Curated Debian and Python development/debug container images."
+template_revision = 4
+prefix = "mdt-cockpit-v"
+artifacts = ["oci-image"]
+
+[project.version]
+strategy = "none"
+bump = "conventional"
+
+[project.release]
+git_tag = false
+build_step = "prepare"
+commit_generated = ["package-manifests-versioned"]
+artifact_dirs = ["package-manifests-versioned"]
+
+[steps.prepare]
+quiet = true
+commands = [
+  { label = "mdt-cockpit: private build and manifest extraction", argv = ["python3", "build-push.py", "--build"], cwd = "." },
+]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "mdt-cockpit: run-gate release lane", argv = ["run-gate", "release"], cwd = "." },
+  { label = "mdt-cockpit: run-gate oci-push lane (runs in the image this release just built)", argv = ["run-gate", "oci-push"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+no_cache_env = "BUILD_NO_CACHE"
+bake_set_prefix = "base.args."
+bake_set_vars = ["AWSCLI_VERSION", "B2_VERSION", "BACKPORTS_URI", "BAT_VERSION", "CRANE_VERSION", "REGCTL_VERSION", "CODEX_VERSION", "CLAUDE_CODE_VERSION", "ANTIGRAVITY_VERSION", "REASONIX_VERSION", "OPENCODE_VERSION", "INSTALL_CODEX", "INSTALL_CLAUDE_CODE", "INSTALL_ANTIGRAVITY", "INSTALL_AIDER", "INSTALL_REASONIX", "INSTALL_OPENCLAW", "INSTALL_OPENCODE", "NODE_MAJOR", "ENABLE_KSM_OPTIN", "DELTA_VERSION", "GH_VERSION", "GRPCURL_VERSION", "LNAV_VERSION", "CONSUL_VERSION", "FD_VERSION", "FZF_VERSION", "POSTGRESQL_CLIENT_VERSION", "REDIS_TOOLS_VERSION", "RIPGREP_VERSION", "RGA_VERSION", "SHELLCHECK_VERSION", "VAULT_VERSION", "YQ_VERSION", "NVIM_VER", "NVCHAD_VER", "GITHUB_USERNAME", "GITHUB_REPO", "PWMCP_VERSION", "PWMCP_GETPY_URL", "PWMCP_GETPY_SHA256", "PWMCP_CONTRACT_URL", "PWMCP_CONTRACT_SHA256", "CIU_WHEEL_TAG", "CIU_WHEEL_ASSET_NAME", "CIU_INSTALL_REQUIRED", "OCI_TITLE", "OCI_DESCRIPTION", "OCI_DESCRIPTION_BASE", "OCI_DESCRIPTION_VSC", "OCI_SOURCE", "OCI_DOCUMENTATION", "OCI_URL", "OCI_LICENSES", "OCI_VENDOR", "OCI_VERSION", "OCI_REVISION", "OCI_CREATED", "BUILD_TIMESTAMP", "DEVCONTAINERS_RELEASE_STABLE", "DEVCONTAINERS_RELEASE_DEV", "DEVCONTAINERS_VERSION_STABLE", "DEVCONTAINERS_VERSION_DEV", "DEVCONTAINERS_BASE_DYNAMIC_LATEST", "DEVCONTAINERS_DYNAMIC_LATEST_TAG", "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON", "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN"]
+commands = [
+  { label = "mdt-cockpit: build images", argv = ["bash", "scripts/release-bake.sh", "build"], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+bake_set_prefix = "base.args."
+bake_set_vars = ["AWSCLI_VERSION", "B2_VERSION", "BACKPORTS_URI", "BAT_VERSION", "CRANE_VERSION", "REGCTL_VERSION", "CODEX_VERSION", "CLAUDE_CODE_VERSION", "ANTIGRAVITY_VERSION", "REASONIX_VERSION", "OPENCODE_VERSION", "INSTALL_CODEX", "INSTALL_CLAUDE_CODE", "INSTALL_ANTIGRAVITY", "INSTALL_AIDER", "INSTALL_REASONIX", "INSTALL_OPENCLAW", "INSTALL_OPENCODE", "NODE_MAJOR", "ENABLE_KSM_OPTIN", "DELTA_VERSION", "GH_VERSION", "GRPCURL_VERSION", "LNAV_VERSION", "CONSUL_VERSION", "FD_VERSION", "FZF_VERSION", "POSTGRESQL_CLIENT_VERSION", "REDIS_TOOLS_VERSION", "RIPGREP_VERSION", "RGA_VERSION", "SHELLCHECK_VERSION", "VAULT_VERSION", "YQ_VERSION", "NVIM_VER", "NVCHAD_VER", "GITHUB_USERNAME", "GITHUB_REPO", "PWMCP_VERSION", "PWMCP_GETPY_URL", "PWMCP_GETPY_SHA256", "PWMCP_CONTRACT_URL", "PWMCP_CONTRACT_SHA256", "CIU_WHEEL_TAG", "CIU_WHEEL_ASSET_NAME", "CIU_INSTALL_REQUIRED", "OCI_TITLE", "OCI_DESCRIPTION", "OCI_DESCRIPTION_BASE", "OCI_DESCRIPTION_VSC", "OCI_SOURCE", "OCI_DOCUMENTATION", "OCI_URL", "OCI_LICENSES", "OCI_VENDOR", "OCI_VERSION", "OCI_REVISION", "OCI_CREATED", "BUILD_TIMESTAMP", "DEVCONTAINERS_RELEASE_STABLE", "DEVCONTAINERS_RELEASE_DEV", "DEVCONTAINERS_VERSION_STABLE", "DEVCONTAINERS_VERSION_DEV", "DEVCONTAINERS_BASE_DYNAMIC_LATEST", "DEVCONTAINERS_DYNAMIC_LATEST_TAG", "DEVCONTAINERS_DYNAMIC_LATEST_PYTHON", "DEVCONTAINERS_DYNAMIC_LATEST_DEBIAN"]
+required_env = ["GITHUB_USERNAME", "GITHUB_PUSH_PAT"]
+commands = [
+  { label = "mdt-cockpit: push images", argv = ["bash", "scripts/release-bake.sh", "push"], cwd = "." },
+]
+
+[versions]
+
+[versions.discovery]
+requirements_files = ["requirements/toolkit.txt"]
+
+[versions.targets]
+
+[versions.targets."pypi.debugpy"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.debugpy".pypi]
+name = "debugpy"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.debugpy".resolved]
+version = "1.8.22"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.debugpy".resolved.sources]
+
+[versions.targets."pypi.debugpy".resolved.sources.pypi]
+version = "1.8.22"
+released_at = "2026-09-15T21:44:54Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.ipdb"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.ipdb".pypi]
+name = "ipdb"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.ipdb".resolved]
+version = "0.13.13"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.ipdb".resolved.sources]
+
+[versions.targets."pypi.ipdb".resolved.sources.pypi]
+version = "0.13.13"
+released_at = "2023-03-09T15:40:57Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.ipython"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.ipython".pypi]
+name = "ipython"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.ipython".resolved]
+version = "9.17.1"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.ipython".resolved.sources]
+
+[versions.targets."pypi.ipython".resolved.sources.pypi]
+version = "9.17.1"
+released_at = "2026-09-01T08:29:32Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.ruff"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.ruff".pypi]
+name = "ruff"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.ruff".resolved]
+version = "0.16.10"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.ruff".resolved.sources]
+
+[versions.targets."pypi.ruff".resolved.sources.pypi]
+version = "0.16.10"
+released_at = "2026-10-01T18:03:21Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.mypy"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.mypy".pypi]
+name = "mypy"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.mypy".resolved]
+version = "2.4.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.mypy".resolved.sources]
+
+[versions.targets."pypi.mypy".resolved.sources.pypi]
+version = "2.4.0"
+released_at = "2026-10-01T20:40:39Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pytest"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest".pypi]
+name = "pytest"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest".resolved]
+version = "9.1.1"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pytest".resolved.sources]
+
+[versions.targets."pypi.pytest".resolved.sources.pypi]
+version = "9.1.1"
+released_at = "2026-06-19T10:58:32Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pytest-asyncio"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest-asyncio".pypi]
+name = "pytest-asyncio"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest-asyncio".resolved]
+version = "1.4.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pytest-asyncio".resolved.sources]
+
+[versions.targets."pypi.pytest-asyncio".resolved.sources.pypi]
+version = "1.4.0"
+released_at = "2026-05-26T09:56:04Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pytest-cov"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest-cov".pypi]
+name = "pytest-cov"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest-cov".resolved]
+version = "7.1.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pytest-cov".resolved.sources]
+
+[versions.targets."pypi.pytest-cov".resolved.sources.pypi]
+version = "7.1.0"
+released_at = "2026-03-21T20:11:16Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pytest-mock"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest-mock".pypi]
+name = "pytest-mock"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest-mock".resolved]
+version = "3.16.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pytest-mock".resolved.sources]
+
+[versions.targets."pypi.pytest-mock".resolved.sources.pypi]
+version = "3.16.0"
+released_at = "2026-09-27T14:57:55Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pytest-xdist"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pytest-xdist".pypi]
+name = "pytest-xdist"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pytest-xdist".resolved]
+version = "3.8.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pytest-xdist".resolved.sources]
+
+[versions.targets."pypi.pytest-xdist".resolved.sources.pypi]
+version = "3.8.0"
+released_at = "2025-07-01T13:30:59Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.coverage"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.coverage".pypi]
+name = "coverage"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.coverage".resolved]
+version = "7.16.2"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.coverage".resolved.sources]
+
+[versions.targets."pypi.coverage".resolved.sources.pypi]
+version = "7.16.2"
+released_at = "2026-09-27T12:29:01Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.build"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.build".pypi]
+name = "build"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.build".resolved]
+version = "1.6.1"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.build".resolved.sources]
+
+[versions.targets."pypi.build".resolved.sources.pypi]
+version = "1.6.1"
+released_at = "2026-09-10T07:56:00Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.twine"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.twine".pypi]
+name = "twine"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.twine".resolved]
+version = "7.0.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.twine".resolved.sources]
+
+[versions.targets."pypi.twine".resolved.sources.pypi]
+version = "7.0.0"
+released_at = "2026-07-27T15:59:00Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.setuptools-scm"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.setuptools-scm".pypi]
+name = "setuptools-scm"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.setuptools-scm".resolved]
+version = "10.3.4"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.setuptools-scm".resolved.sources]
+
+[versions.targets."pypi.setuptools-scm".resolved.sources.pypi]
+version = "10.3.4"
+released_at = "2026-09-23T19:21:42Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.check-wheel-contents"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.check-wheel-contents".pypi]
+name = "check-wheel-contents"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.check-wheel-contents".resolved]
+version = "0.6.3"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.check-wheel-contents".resolved.sources]
+
+[versions.targets."pypi.check-wheel-contents".resolved.sources.pypi]
+version = "0.6.3"
+released_at = "2025-08-02T14:01:45Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pip-audit"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pip-audit".pypi]
+name = "pip-audit"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pip-audit".resolved]
+version = "2.10.1"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pip-audit".resolved.sources]
+
+[versions.targets."pypi.pip-audit".resolved.sources.pypi]
+version = "2.10.1"
+released_at = "2026-06-10T22:17:01Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pre-commit"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pre-commit".pypi]
+name = "pre-commit"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pre-commit".resolved]
+version = "4.6.2"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pre-commit".resolved.sources]
+
+[versions.targets."pypi.pre-commit".resolved.sources.pypi]
+version = "4.6.2"
+released_at = "2026-08-10T22:07:18Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.uv"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.uv".pypi]
+name = "uv"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.uv".resolved]
+version = "0.12.23"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.uv".resolved.sources]
+
+[versions.targets."pypi.uv".resolved.sources.pypi]
+version = "0.12.23"
+released_at = "2026-10-03T17:33:01Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.tox"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.tox".pypi]
+name = "tox"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.tox".resolved]
+version = "4.64.8"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.tox".resolved.sources]
+
+[versions.targets."pypi.tox".resolved.sources.pypi]
+version = "4.64.8"
+released_at = "2026-10-03T23:39:00Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.requests"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.requests".pypi]
+name = "requests"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.requests".resolved]
+version = "2.34.2"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.requests".resolved.sources]
+
+[versions.targets."pypi.requests".resolved.sources.pypi]
+version = "2.34.2"
+released_at = "2026-05-14T19:25:27Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.httpx"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.httpx".pypi]
+name = "httpx"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.httpx".resolved]
+version = "0.28.1"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.httpx".resolved.sources]
+
+[versions.targets."pypi.httpx".resolved.sources.pypi]
+version = "0.28.1"
+released_at = "2024-12-06T15:37:23Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.aiohttp"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.aiohttp".pypi]
+name = "aiohttp"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.aiohttp".resolved]
+version = "3.14.3"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.aiohttp".resolved.sources]
+
+[versions.targets."pypi.aiohttp".resolved.sources.pypi]
+version = "3.14.3"
+released_at = "2026-07-23T01:57:27Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.boto3"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.boto3".pypi]
+name = "boto3"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.boto3".resolved]
+version = "1.43.108"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.boto3".resolved.sources]
+
+[versions.targets."pypi.boto3".resolved.sources.pypi]
+version = "1.43.108"
+released_at = "2026-10-02T19:32:25Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.asyncpg"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.asyncpg".pypi]
+name = "asyncpg"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.asyncpg".resolved]
+version = "0.31.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.asyncpg".resolved.sources]
+
+[versions.targets."pypi.asyncpg".resolved.sources.pypi]
+version = "0.31.0"
+released_at = "2025-11-24T23:27:00Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.redis"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.redis".pypi]
+name = "redis"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.redis".resolved]
+version = "8.1.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.redis".resolved.sources]
+
+[versions.targets."pypi.redis".resolved.sources.pypi]
+version = "8.1.0"
+released_at = "2026-07-30T08:51:00Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.hvac"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.hvac".pypi]
+name = "hvac"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.hvac".resolved]
+version = "2.4.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.hvac".resolved.sources]
+
+[versions.targets."pypi.hvac".resolved.sources.pypi]
+version = "2.4.0"
+released_at = "2025-10-30T12:57:47Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.sqlalchemy"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.sqlalchemy".pypi]
+name = "sqlalchemy"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.sqlalchemy".resolved]
+version = "2.1.3"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.sqlalchemy".resolved.sources]
+
+[versions.targets."pypi.sqlalchemy".resolved.sources.pypi]
+version = "2.1.3"
+released_at = "2026-10-03T02:56:54Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.dnspython"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.dnspython".pypi]
+name = "dnspython"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.dnspython".resolved]
+version = "2.8.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.dnspython".resolved.sources]
+
+[versions.targets."pypi.dnspython".resolved.sources.pypi]
+version = "2.8.0"
+released_at = "2025-09-07T18:58:00Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.websockets"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.websockets".pypi]
+name = "websockets"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.websockets".resolved]
+version = "17.2"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.websockets".resolved.sources]
+
+[versions.targets."pypi.websockets".resolved.sources.pypi]
+version = "17.2"
+released_at = "2026-10-03T14:56:53Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pydantic"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pydantic".pypi]
+name = "pydantic"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pydantic".resolved]
+version = "2.13.5"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pydantic".resolved.sources]
+
+[versions.targets."pypi.pydantic".resolved.sources.pypi]
+version = "2.13.5"
+released_at = "2026-08-28T14:04:00Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pydantic-settings"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pydantic-settings".pypi]
+name = "pydantic-settings"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pydantic-settings".resolved]
+version = "2.15.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pydantic-settings".resolved.sources]
+
+[versions.targets."pypi.pydantic-settings".resolved.sources.pypi]
+version = "2.15.0"
+released_at = "2026-08-07T09:24:57Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.structlog"]
+mode = "single"
+constraint = "<27"
+
+[versions.targets."pypi.structlog".pypi]
+name = "structlog"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.structlog".resolved]
+version = "26.1.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.structlog".resolved.sources]
+
+[versions.targets."pypi.structlog".resolved.sources.pypi]
+version = "26.1.0"
+released_at = "2026-06-06T07:33:39Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pyyaml"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.pyyaml".pypi]
+name = "pyyaml"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pyyaml".resolved]
+version = "6.0.3"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pyyaml".resolved.sources]
+
+[versions.targets."pypi.pyyaml".resolved.sources.pypi]
+version = "6.0.3"
+released_at = "2025-09-29T20:27:46Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.jsonschema"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.jsonschema".pypi]
+name = "jsonschema"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.jsonschema".resolved]
+version = "4.26.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.jsonschema".resolved.sources]
+
+[versions.targets."pypi.jsonschema".resolved.sources.pypi]
+version = "4.26.0"
+released_at = "2026-01-07T13:41:07Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.jinja2"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.jinja2".pypi]
+name = "jinja2"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.jinja2".resolved]
+version = "3.1.6"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.jinja2".resolved.sources]
+
+[versions.targets."pypi.jinja2".resolved.sources.pypi]
+version = "3.1.6"
+released_at = "2025-03-05T20:05:02Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.tomli-w"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.tomli-w".pypi]
+name = "tomli-w"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.tomli-w".resolved]
+version = "1.2.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.tomli-w".resolved.sources]
+
+[versions.targets."pypi.tomli-w".resolved.sources.pypi]
+version = "1.2.0"
+released_at = "2025-01-15T12:07:24Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.click"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.click".pypi]
+name = "click"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.click".resolved]
+version = "8.5.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.click".resolved.sources]
+
+[versions.targets."pypi.click".resolved.sources.pypi]
+version = "8.5.0"
+released_at = "2026-08-26T13:33:14Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.rich"]
+mode = "single"
+constraint = ">=15.0.0"
+
+[versions.targets."pypi.rich".pypi]
+name = "rich"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.rich".resolved]
+version = "15.0.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.rich".resolved.sources]
+
+[versions.targets."pypi.rich".resolved.sources.pypi]
+version = "15.0.0"
+released_at = "2026-04-12T08:24:02Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.pygments"]
+mode = "single"
+constraint = ">=2.21.0"
+
+[versions.targets."pypi.pygments".pypi]
+name = "pygments"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.pygments".resolved]
+version = "2.21.0"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.pygments".resolved.sources]
+
+[versions.targets."pypi.pygments".resolved.sources.pypi]
+version = "2.21.0"
+released_at = "2026-08-17T08:02:48Z"
+age_source = "pypi-upload-time"
+
+[versions.targets."pypi.textual"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."pypi.textual".pypi]
+name = "textual"
+registry = "https://pypi.org"
+
+[versions.targets."pypi.textual".resolved]
+version = "8.2.8"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."pypi.textual".resolved.sources]
+
+[versions.targets."pypi.textual".resolved.sources.pypi]
+version = "8.2.8"
+released_at = "2026-06-30T06:51:26Z"
+age_source = "pypi-upload-time"
+
+# ADVISORY: not consumed by the build (MDT-013). The base image is chosen by scripts/resolve-devcontainers-release.py
+# (a floating mcr devcontainers tag), so this record and its digest certify nothing about the cockpit's base
+# until MDT-013 makes the build read it (KNOWN_ISSUES_TODO_BACKLOG.md). Change this label, the other
+# ADVISORY labels, the docs and scripts/test_ai_cli_versions.py together with that change.
+[versions.targets."oci.python.311.bookworm"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.311.bookworm".oci]
+image = "docker.io/library/python"
+tag = "3.11.16-bookworm"
+selection = "rolling"
+
+[versions.targets."oci.python.311.bookworm".resolved]
+version = "3.11.16-bookworm"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."oci.python.311.bookworm".resolved.sources]
+
+[versions.targets."oci.python.311.bookworm".resolved.sources.oci]
+version = "3.11.16-bookworm"
+released_at = "2026-09-19T15:29:40Z"
+age_source = "oci-image-created-fallback"
+tag = "3.11.16-bookworm"
+digest = "sha256:b99029c95d3d37fb1e4e76d287f7984373dca77c665885986e31b2c95260c13c"
+
+# ADVISORY: not consumed by the build (MDT-013).
+[versions.targets."oci.python.313.bookworm"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.313.bookworm".oci]
+image = "docker.io/library/python"
+tag = "3.13.15-bookworm"
+selection = "rolling"
+
+[versions.targets."oci.python.313.bookworm".resolved]
+version = "3.13.15-bookworm"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."oci.python.313.bookworm".resolved.sources]
+
+[versions.targets."oci.python.313.bookworm".resolved.sources.oci]
+version = "3.13.15-bookworm"
+released_at = "2026-09-19T14:49:59Z"
+age_source = "oci-image-created-fallback"
+tag = "3.13.15-bookworm"
+digest = "sha256:227b6570d6ee07061ae6ca2eb04dedfb6d2b34045835f343065b9869e4d427ea"
+
+# ADVISORY: not consumed by the build (MDT-013).
+[versions.targets."oci.python.311.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.311.trixie".oci]
+image = "docker.io/library/python"
+tag = "3.11.16-trixie"
+selection = "rolling"
+
+[versions.targets."oci.python.311.trixie".resolved]
+version = "3.11.16-trixie"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."oci.python.311.trixie".resolved.sources]
+
+[versions.targets."oci.python.311.trixie".resolved.sources.oci]
+version = "3.11.16-trixie"
+released_at = "2026-09-19T15:25:01Z"
+age_source = "oci-image-created-fallback"
+tag = "3.11.16-trixie"
+digest = "sha256:70e8e937c1da72df1688e883a2108b0feff03381187fa78eca6d9b10df411320"
+
+# ADVISORY: not consumed by the build (MDT-013).
+[versions.targets."oci.python.313.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.313.trixie".oci]
+image = "docker.io/library/python"
+tag = "3.13.15-trixie"
+selection = "rolling"
+
+[versions.targets."oci.python.313.trixie".resolved]
+version = "3.13.15-trixie"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."oci.python.313.trixie".resolved.sources]
+
+[versions.targets."oci.python.313.trixie".resolved.sources.oci]
+version = "3.13.15-trixie"
+released_at = "2026-09-19T14:16:41Z"
+age_source = "oci-image-created-fallback"
+tag = "3.13.15-trixie"
+digest = "sha256:82c46c08c991d3d3ff10476ac5e386c2c28f27bbd3985a02c5e39fe99ab272eb"
+
+# ADVISORY: not consumed by the build (MDT-013).
+[versions.targets."oci.python.314.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.python.314.trixie".oci]
+image = "docker.io/library/python"
+tag = "3.14.7-trixie"
+selection = "rolling"
+
+[versions.targets."oci.python.314.trixie".resolved]
+version = "3.14.7-trixie"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."oci.python.314.trixie".resolved.sources]
+
+[versions.targets."oci.python.314.trixie".resolved.sources.oci]
+version = "3.14.7-trixie"
+released_at = "2026-09-19T13:55:46Z"
+age_source = "oci-image-created-fallback"
+tag = "3.14.7-trixie"
+digest = "sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e"
+
+# ADVISORY: not consumed by the build (MDT-013).
+[versions.targets."oci.devcontainers-python.311.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.devcontainers-python.311.trixie".oci]
+image = "mcr.microsoft.com/devcontainers/python"
+tag = "3.2.3-3.11-trixie"
+selection = "rolling"
+
+[versions.targets."oci.devcontainers-python.311.trixie".resolved]
+version = "3.2.3-3.11-trixie"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."oci.devcontainers-python.311.trixie".resolved.sources]
+
+[versions.targets."oci.devcontainers-python.311.trixie".resolved.sources.oci]
+version = "3.2.3-3.11-trixie"
+released_at = "2026-09-10T13:02:26Z"
+age_source = "oci-image-created-fallback"
+tag = "3.2.3-3.11-trixie"
+digest = "sha256:01f7fa973e78e9e106b347ebe9b4c85e46c7d67f839c21ba7ba4fd930a6518e1"
+
+# ADVISORY: not consumed by the build (MDT-013).
+[versions.targets."oci.devcontainers-python.313.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.devcontainers-python.313.trixie".oci]
+image = "mcr.microsoft.com/devcontainers/python"
+tag = "3.2.3-3.13-trixie"
+selection = "rolling"
+
+[versions.targets."oci.devcontainers-python.313.trixie".resolved]
+version = "3.2.3-3.13-trixie"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."oci.devcontainers-python.313.trixie".resolved.sources]
+
+[versions.targets."oci.devcontainers-python.313.trixie".resolved.sources.oci]
+version = "3.2.3-3.13-trixie"
+released_at = "2026-09-10T13:33:49Z"
+age_source = "oci-image-created-fallback"
+tag = "3.2.3-3.13-trixie"
+digest = "sha256:40c2785f2feb72a83bdf40bf052e1141d52b24bec60d4d5652eb27572d8df6b2"
+
+# ADVISORY: not consumed by the build (MDT-013).
+[versions.targets."oci.devcontainers-python.314.trixie"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."oci.devcontainers-python.314.trixie".oci]
+image = "mcr.microsoft.com/devcontainers/python"
+tag = "3.2.3-3.14-trixie"
+selection = "rolling"
+
+[versions.targets."oci.devcontainers-python.314.trixie".resolved]
+version = "3.2.3-3.14-trixie"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."oci.devcontainers-python.314.trixie".resolved.sources]
+
+[versions.targets."oci.devcontainers-python.314.trixie".resolved.sources.oci]
+version = "3.2.3-3.14-trixie"
+released_at = "2026-09-10T13:10:58Z"
+age_source = "oci-image-created-fallback"
+tag = "3.2.3-3.14-trixie"
+digest = "sha256:3b3c45535947751e9dfcd513ef5bee858d221844f55e278e92d1cd8f5b1f2972"
+
+[versions.targets."npm.copilot"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."npm.copilot".npm]
+name = "@github/copilot"
+registry = "https://registry.npmjs.org"
+
+[versions.targets."npm.copilot".resolved]
+version = "1.0.92-4"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."npm.copilot".resolved.sources]
+
+[versions.targets."npm.copilot".resolved.sources.npm]
+version = "1.0.92-4"
+released_at = "2026-10-04T19:32:46Z"
+age_source = "npm-registry-time"
+
+[versions.targets."npm.openclaw"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."npm.openclaw".npm]
+name = "openclaw"
+registry = "https://registry.npmjs.org"
+
+[versions.targets."npm.openclaw".resolved]
+version = "2026.9.8"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."npm.openclaw".resolved.sources]
+
+[versions.targets."npm.openclaw".resolved.sources.npm]
+version = "2026.9.8"
+released_at = "2026-10-03T02:08:46Z"
+age_source = "npm-registry-time"
+
+[versions.targets."npm.claudelink"]
+mode = "single"
+constraint = "*"
+
+[versions.targets."npm.claudelink".npm]
+name = "claudelink"
+registry = "https://registry.npmjs.org"
+
+[versions.targets."npm.claudelink".resolved]
+version = "1.6.1"
+resolved_at = "2026-10-19T01:54:29Z"
+age_cutoff = "2026-10-05T01:54:29Z"
+
+[versions.targets."npm.claudelink".resolved.sources]
+
+[versions.targets."npm.claudelink".resolved.sources.npm]
+version = "1.6.1"
+released_at = "2026-07-30T03:44:30Z"
+age_source = "npm-registry-time"

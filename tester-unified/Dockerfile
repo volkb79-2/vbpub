@@ -16,11 +16,29 @@
 #
 # Build from the repo root using `tester-unified/build-image.sh`; it supplies
 # the exact Run-Gate wheel as a named build context and verifies its version
-# and digest during the image build. The default base is the published MDT
-# cockpit image; a zero-release bootstrap may explicitly use the upstream
-# Python devcontainer base, which has no vbpub release dependency.
-# The repo-root .dockerignore whitelists the project sources in this context.
-ARG TESTER_UNIFIED_BASE_IMAGE=ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+# and digest during the image build. The repo-root .dockerignore whitelists the
+# project sources in this context.
+#
+# BASE (MDTC-02, T3/T5): tester-base, the minimal gate base (python:3.14-trixie +
+# docker client + minisign + shellcheck), NOT the 8 GB MDT cockpit image, whose floating
+# `latest` changed the gate environment without a commit. Until the first CMRU release of
+# tester-base exists the default is the locally built `tester-base:local`
+# (`docker build -t tester-base:local tester-base/`); the controller switches the default
+# to the published `ghcr.io/volkb79-2/tester-base@sha256:...` after release. There is no
+# other fallback: a missing base is a build failure. The build argument keeps the name
+# TESTER_UNIFIED_BASE_IMAGE: build-image.sh and Run-Gate's release preparation (published in
+# run-gate 24.0.1) parse this ARG's default and compare the recorded label with the requested
+# base, so the name is a published interface. The image's PATH is its own venv first, then
+# the base's PATH - nothing of the MDT cockpit PATH is relied on.
+ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local
+
+# Node.js for the suites that execute it (pwmcp's runtime gateway). The official node image,
+# major 26 (the cockpit's NODE_MAJOR; the major is the deliberate manual pin), pinned by digest.
+# The tag and digest are the ones `cmru versions resolve tester-base` records for target
+# `oci.node.26.trixie` under the 14-day age window (tester-base/versions/oci-images.json; the target
+# lives in tester-base/cmru.toml because tester-unified has no cmru project); a test asserts equality.
+FROM docker.io/library/node:26.9.0-trixie@sha256:fa271c47a5d81dc321f4a45be01362f5b3de7559edc7e76b8c4089be1e50d866 AS node-source
+
 FROM ${TESTER_UNIFIED_BASE_IMAGE}
 # Record the base reference this stage was built FROM. build-image.sh and the
 # Run-Gate release preparation compare it with the requested base, so a
@@ -31,11 +49,12 @@ LABEL org.vbpub.tester-unified.base-image="${TESTER_UNIFIED_BASE_IMAGE}"
 USER root
 
 # Keep host-facing tools explicit so the zero-release build can use the
-# upstream Python base without inheriting a published vbpub image. Docker is a
+# upstream Python base (explicit --base-image) without a published vbpub image. Docker is a
 # client only; the launcher supplies the host socket when a lane needs it.
 #
-# Install only what the base lacks. The MDT base already ships Docker's own
-# `docker-ce-cli` and `docker-compose-plugin`; Debian's `docker-cli` and
+# Install only what the base lacks. The default tester-base ships Docker's own
+# `docker-ce-cli` (without the compose plugin, tester-base T2) and the MDT cockpit
+# image ships `docker-ce-cli` and `docker-compose-plugin`; Debian's `docker-cli` and
 # `docker-compose` own the same files (/usr/bin/docker and the compose
 # plugin), so installing them over it makes dpkg refuse the overwrite or, if
 # apt resolves the clash, silently swaps the gate image's Docker client. On
@@ -300,8 +319,8 @@ PY
 # the base image has no /etc/passwd entry for and no writable HOME. Provide
 # BOTH: a passwd entry (pwd.getpwuid(1003) — topos daemon-status calls it) AND a
 # writable HOME with XDG dirs, so suites that read/write $HOME/.config or
-# $HOME/.cache (e.g. topos config/record) don't hit PermissionError on the
-# image's root-owned /home/vscode. A gate must give the run-uid a real HOME.
+# $HOME/.cache (e.g. topos config/record) don't hit PermissionError on a
+# root-owned or absent home. A gate must give the run-uid a real HOME.
 RUN if getent group 1003 >/dev/null; then \
       test "$(getent group 1003 | cut -d: -f1)" != docker; \
     else \
@@ -313,6 +332,24 @@ RUN if getent group 1003 >/dev/null; then \
  && mkdir -p /home/tester/.config /home/tester/.cache /home/tester/.local/state \
  && chown -R 1003:1003 /home/tester \
  && chown -R 1003:1003 /opt/tester-venv
+
+# Behaviour the old MDT cockpit base supplied implicitly, now explicit (MDTC-02 T8 skip-diff):
+#  * `zsh` (D-003): mdt-cockpit/scripts/test_path_hook.py tests the login hook under zsh. The test
+#    FAILS (MDT_REQUIRE_SHELLS=1 in the smoke lane) when zsh is absent instead of silently not
+#    collecting its cases. It is a userland package this image's suites need, so it lives here and
+#    not in the minimal tester-base (T2).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends zsh \
+ && rm -rf /var/lib/apt/lists/*
+#  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
+#    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
+#    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.
+#    corepack is NOT copied: the node 26 image no longer ships it (measured: `corepack: not found`).
+COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+ && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+ && node --version && npm --version && npx --version
 
 USER 1003
 ENV PATH=/opt/tester-venv/bin:${PATH} \

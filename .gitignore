@@ -79,6 +79,16 @@ share/python-wheels/
 
 # Build environment state (resolver output)
 modern-debian-tools-python-debug/.build-env.json
+mdt-cockpit/.build-env.json
+# mdt-cockpit explicit local-dev build mode (build-push.py --build --local-dev):
+# the operator's manifest of local artifacts, its saved build state, and the
+# per-entry manifest pages a local-dev build generates are never repository content.
+mdt-cockpit/local-dev-artifacts.toml
+mdt-cockpit/.build-env.local-dev.json
+mdt-cockpit/package-manifests-versioned/*/*-dev-*.md
+!mdt-cockpit/pip/wheels/
+!mdt-cockpit/pip/wheels/.gitignore
+!mdt-cockpit/pip/wheels/.gitkeep
 *.egg-info/
 .installed.cfg
 *.egg

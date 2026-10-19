@@ -47,7 +47,7 @@ run_with_timeout 10m "$HERE/run-vm-harness.sh" wait "$RUN"
 run_with_timeout 10m "$HERE/run-vm-harness.sh" ssh "$RUN" -- \
     'sudo DEBIAN_FRONTEND=noninteractive apt-get update &&
      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-       python3 python3-pytest util-linux fdisk udev systemd rsync'
+       python3 python3-pytest util-linux fdisk udev systemd rsync procps'
 
 # run-vm-harness.sh executes vmctl inside the persistent runner container.
 # The project is mounted read-only at /source; do not pass the cockpit/
@@ -66,15 +66,24 @@ run_with_timeout 15m "$HERE/run-vm-harness.sh" ssh "$RUN" -- \
          qemu|kvm) ;;
          *) echo \"VM precondition failed: expected qemu/kvm, got \${vm_type:-none}\" >&2; exit 1 ;;
      esac
-     for tool in sfdisk blockdev partx losetup mkswap swapon swapoff; do
+     for tool in sfdisk blockdev partx losetup mkswap swapon swapoff systemd-tmpfiles sysctl; do
          command -v \"\$tool\" >/dev/null || { echo \"VM precondition failed: missing \$tool\" >&2; exit 1; }
      done
      cd '$GUEST_SRC'
-     sudo env VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST=1 \
+     # VBPUB_REQUIRE_OS_INTEGRATION=1: in this lane a SKIP of an os_integration test is a
+     # failure (MDTC-02 T7); gate containers deselect those tests instead.
+     sudo env VBPUB_ALLOW_VM_GLOBAL_SWAP_TEST=1 VBPUB_REQUIRE_OS_INTEGRATION=1 \
        PYTHONPATH='$GUEST_SRC' python3 -m pytest \
+       -p debian_install_v2.tests.os_integration_plugin \
        debian_install_v2/tests/test_inuse_partition_editor.py \
        debian_install_v2/tests/test_inuse_partition_editor_r1.py -q \
        --junitxml=/tmp/debian-install-v2-r1.xml
+     sudo env VBPUB_REQUIRE_OS_INTEGRATION=1 \
+       PYTHONPATH='$GUEST_SRC' python3 -m pytest \
+       -p debian_install_v2.tests.os_integration_plugin \
+       debian_install_v2/tests/test_lt_mem.py \
+       debian_install_v2/tests/test_io_benchmark.py -q -m os_integration \
+       --junitxml=/tmp/debian-install-v2-os.xml
      python3 - <<'PY'
 import xml.etree.ElementTree as ET
 
@@ -93,4 +102,17 @@ for name in sorted(expected & cases.keys()):
 if missing or bad:
     raise SystemExit(f'VM lane did not prove both real tests: missing={missing}, not-passed={bad}')
 print('verified: both VM-only real loop/swap tests passed')
+
+expected_os = {
+    'test_real_systemd_tmpfiles_applies_w_bang_only_with_boot',
+    'test_bounded_run_returns_output_and_exit_status',
+}
+root = ET.parse('/tmp/debian-install-v2-os.xml').getroot()
+cases = {case.get('name'): case for case in root.iter('testcase')}
+missing = sorted(expected_os - cases.keys())
+bad = [n for n in sorted(expected_os & cases.keys())
+       if any(cases[n].find(tag) is not None for tag in ('failure', 'error', 'skipped'))]
+if missing or bad:
+    raise SystemExit(f'VM lane did not prove the os_integration tests: missing={missing}, not-passed={bad}')
+print('verified: the real systemd-tmpfiles and sysctl tests passed')
 PY"

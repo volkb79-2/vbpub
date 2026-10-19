@@ -34,7 +34,10 @@ cpus = "3"
 # `bare-host` is the explicit subprocess mode.
 [environments.host]
 mode = "ephemeral"
-image = "ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest"
+# tester-base (MDTC-02, T3): the minimal gate base, built from tester-base/ in this repo.
+# Until its first CMRU release this is the local tag; the controller switches it to the
+# published ghcr.io/volkb79-2/tester-base@sha256:... digest after release. No other fallback.
+image = "tester-base:local"
 
 [environments.bare-host]
 mode = "host"

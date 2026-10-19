@@ -1,0 +1,13 @@
+# AI CLI tools installed by the debug cockpit image.
+# Format: tool|mode, where mode is "root", "npm-image", "user", or "venv".
+# Comments after '#' are ignored.
+aider|venv
+reasonix|npm-image
+openclaw|npm-image
+codex|npm-image
+claude|npm-image
+antigravity|root
+copilot|npm-image
+opencode|npm-image
+claudelink|npm-image
+pi|npm-image

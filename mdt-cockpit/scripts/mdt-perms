@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# mdt-perms — enforce the `mdt` group ownership contract on image-managed trees.
+#
+# Contract (docs/DESIGN-GUIDE.md "The mdt group"): beneath /opt/mdt and /srv every
+# entry (symlinks excluded) is group `mdt`; every directory is setgid with
+# group rwx; every regular file is group-readable AND group-writable (a 0600 file would
+# otherwise become 0620 and be unreadable to a remapped uid that is not its owner).
+#
+#   mdt-perms check PATH...   report every violating entry, exit 1 if any
+#   mdt-perms fix PATH...     repair ONLY the violating entries, then check
+#
+# `fix` is for content created by the RUN that calls it. Its predicates select
+# offenders only, so a tree that already satisfies the contract is not touched at
+# all — on overlayfs even a no-op chgrp/chmod copies the file up into a new layer,
+# so an unconditional recursive pass over earlier-layer content would double the
+# image. Never replace the predicates by a blanket `chgrp -R` / `chmod -R`.
+set -euo pipefail
+
+# Fixed on purpose: an ambient variable must not be able to change which group the
+# shipped binary enforces (tests substitute this line in a COPY of the script).
+GROUP="mdt"
+
+usage() {
+    echo "usage: mdt-perms {check|fix} PATH..." >&2
+    exit 2
+}
+
+[ "$#" -ge 2 ] || usage
+# A group that does not exist makes `find -group` fail, and a failure inside the checks
+# must never read as "no violations".
+getent group "$GROUP" >/dev/null || { echo "mdt-perms: group '${GROUP}' does not exist" >&2; exit 2; }
+action="$1"
+shift
+
+# Violation predicates (find expressions), one per class of the contract.
+violations() {
+    local root
+    for root in "$@"; do
+        [ -e "$root" ] || { echo "mdt-perms: no such path: $root" >&2; return 2; }
+        find "$root" ! -type l ! -group "$GROUP" -printf 'group %p (%g)\n' || return 2
+        find "$root" -type d \( ! -perm -2000 -o ! -perm -0070 \) -printf 'dir-mode %p (%m)\n' || return 2
+        find "$root" -type f \( ! -perm -0040 -o ! -perm -0020 \) -printf 'file-mode %p (%m)\n' || return 2
+    done
+}
+
+case "$action" in
+    check)
+        found="$(violations "$@")" || exit 2
+        if [ -n "$found" ]; then
+            count="$(printf '%s\n' "$found" | wc -l)"
+            echo "mdt-perms: ${count} violation(s) of the ${GROUP} group contract:" >&2
+            printf '%s\n' "$found" | head -n 20 >&2
+            exit 1
+        fi
+        ;;
+    fix)
+        for root in "$@"; do
+            [ -e "$root" ] || { echo "mdt-perms: no such path: $root" >&2; exit 2; }
+            find "$root" ! -type l ! -group "$GROUP" -exec chgrp -h "$GROUP" {} +
+            find "$root" -type d \( ! -perm -2000 -o ! -perm -0070 \) -exec chmod g+rwxs {} +
+            find "$root" -type f \( ! -perm -0040 -o ! -perm -0020 \) -exec chmod g+rw {} +
+        done
+        "$0" check "$@"
+        ;;
+    *)
+        usage
+        ;;
+esac

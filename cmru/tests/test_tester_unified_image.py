@@ -3417,6 +3417,11 @@ def test_every_nyxloom_dockerfile_copy_source_is_admitted_by_its_dockerignore():
     "nyxloom/tests/test_workflow.py",
     "assay/tests/test_smoke.py",
     "ciu/tests/test_cli.py",
+    # cli-extended is a wheel dependency: the tester image copies none of its source or build inputs
+    # (asserted on the Dockerfile's COPY sources below). Its pyproject.toml and README.md are NOT in
+    # this list on purpose: nyxloomd's image builds the cli-extended wheel from monorepo source
+    # (NYX-CLIX, c6557bb79, 2026-10-07, after this test was written) and the repo-root .dockerignore
+    # whitelists them for it - see the nyxloom-need test below. Only its tests stay excluded.
     "libraries/cli-extended/tests/test_x.py",
     "libraries/worktree/tests/test_core.py",
     ".git/config",
@@ -4120,6 +4125,27 @@ def test_source_modules_outside_the_selected_package_do_not_make_it_nonempty(tmp
     assert _wheel_python_modules(package_root) == []
 
 
+@pytest.mark.parametrize("path", [
+    "libraries/cli-extended/pyproject.toml",
+    "libraries/cli-extended/README.md",
+    "libraries/cli-extended/src/cli_extended/__init__.py",
+])
+def test_dockerignore_admits_the_cli_extended_wheel_build_inputs_for_nyxloomd(path):
+    """The whitelist is intended: nyxloomd builds the cli-extended wheel from these (NYX-CLIX). The
+    tester-unified image still copies none of them (test_every_dockerfile_copy_source_...)."""
+    assert _dockerignore_included(path), path
+
+
+def test_tester_unified_copies_no_cli_extended_source_whatever_the_dockerignore_admits():
+    sources = []
+    for line in _dockerfile_run_lines().splitlines():
+        parts = line.split()
+        if parts and parts[0] == "COPY" and not any(part.startswith("--from=") for part in parts):
+            sources.extend(parts[1:-1])
+    assert sources, "no COPY sources parsed"
+    assert [s for s in sources if "cli-extended" in s.replace("fetch-cli-extended.py", "")] == []
+
+
 def test_every_dockerfile_copy_source_is_admitted_by_the_dockerignore():
     """Every COPY source resolves to context entries after ignore and exclude rules."""
     specs = _dockerfile_copy_specs()
@@ -4130,3 +4156,122 @@ def test_every_dockerfile_copy_source_is_admitted_by_the_dockerignore():
         source = spec[0]
         assert _copy_source_context_entries(spec), source
         assert not _copy_source_overlaps_cli_extended(source), source
+
+
+# --- MDTC-02: the image is built FROM tester-base, not the MDT cockpit image ------------------
+
+WHEEL_BUILDER = REPO_ROOT / "wheel-builder" / "Dockerfile"
+# Anything that names the MDT cockpit image family or its filesystem layout, outside comments (R7).
+MDT_MARKERS = ("modern-debian-tools", "/opt/mdt", "mdt-cockpit", "/home/vscode")
+
+
+def _code_lines(dockerfile):
+    return [line for line in dockerfile.read_text("utf-8").splitlines() if not line.lstrip().startswith("#")]
+
+
+def test_tester_unified_is_built_from_tester_base_with_no_other_fallback():
+    """The base ARG keeps its published name (build-image.sh and Run-Gate 24.0.1's release preparation
+    parse `ARG TESTER_UNIFIED_BASE_IMAGE=` and compare the recorded label); only its default moved."""
+    text = DOCKERFILE.read_text("utf-8")
+    assert re.search(r"^ARG TESTER_UNIFIED_BASE_IMAGE=tester-base:local$", text, re.MULTILINE)
+    froms = re.findall(r"^FROM (\S+)", text, re.MULTILINE)
+    # the only other FROM allowed is tester-unified's digest-pinned node stage (D-004)
+    assert [f for f in froms if not f.startswith("docker.io/library/node:")] == ["${TESTER_UNIFIED_BASE_IMAGE}"], froms
+    assert re.search(r'^LABEL org\.vbpub\.tester-unified\.base-image="\$\{TESTER_UNIFIED_BASE_IMAGE\}"$', text, re.MULTILINE)
+
+
+def test_wheel_builder_base_stays_a_declared_arg_with_no_published_vbpub_image():
+    """INT-01 D-001 interim: wheel-builder keeps the reviewed upstream default (the zero-release
+    bootstrap needs no vbpub image); switching it to tester-base is an open decision."""
+    text = WHEEL_BUILDER.read_text("utf-8")
+    assert re.search(r"^ARG WHEEL_BUILDER_BASE_IMAGE=\S+$", text, re.MULTILINE)
+    assert re.findall(r"^FROM (\S+)", text, re.MULTILINE) == ["${WHEEL_BUILDER_BASE_IMAGE}"]
+
+
+@pytest.mark.parametrize("dockerfile", [DOCKERFILE, WHEEL_BUILDER])
+@pytest.mark.parametrize("marker", MDT_MARKERS)
+def test_no_gate_image_instruction_names_the_mdt_cockpit_image_or_layout(dockerfile, marker):
+    offenders = [line for line in _code_lines(dockerfile) if marker in line]
+    assert offenders == [], offenders
+
+
+def test_the_no_mdt_check_can_fail():
+    """The check above is only worth something if its scan sees a violation."""
+    sample = "FROM x\n# /home/vscode is fine in a comment\nRUN ls /home/vscode\n"
+    lines = [line for line in sample.splitlines() if not line.lstrip().startswith("#")]
+    assert [line for line in lines if "/home/vscode" in line] == ["RUN ls /home/vscode"]
+
+
+def test_tester_unified_path_is_its_own_venv_then_the_base_path():
+    text = DOCKERFILE.read_text("utf-8")
+    assert re.search(r"^ENV PATH=/opt/tester-venv/bin:\$\{PATH\}(?: \\)?$", text, re.MULTILINE)
+
+
+def test_tester_unified_has_no_systemctl_stub_and_installs_what_its_suites_run():
+    """D-001: no fake systemd (topos handles a missing systemctl itself). D-003: zsh. D-004: node,
+    npm and npx copied from the digest-pinned official node image (node 26 ships no corepack)."""
+    code = "\n".join(_code_lines(DOCKERFILE))
+    assert "systemctl" not in code
+    assert "apt-get install -y --no-install-recommends zsh" in code
+    assert "nodejs" not in code, "Debian's nodejs is too old; node comes from the official image"
+    for source in ("/usr/local/bin/node", "/usr/local/lib/node_modules"):
+        assert f"COPY --from=node-source {source} {source}" in code
+    for tool in ("npm", "npx"):
+        assert f"/usr/local/bin/{tool}" in code
+    assert re.search(r"^FROM docker\.io/library/node:26\.\d+\.\d+-trixie@sha256:[0-9a-f]{64} AS node-source$", code, re.MULTILINE)
+
+
+def host_environment_users(config_text: str) -> list[str]:
+    """Where a parsed run-gate config runs something in the root-run `host` environment: a lane's own
+    `environment`, the `[assay]` default environment lanes without one inherit, and `[assay.import]`."""
+    parsed = tomllib.loads(config_text)
+    users = []
+    for name, lane in (parsed.get("lanes") or {}).items():
+        if isinstance(lane, dict) and lane.get("environment") == "host":
+            users.append(f"lanes.{name}")
+    assay = parsed.get("assay") or {}
+    if isinstance(assay, dict):
+        if assay.get("environment") == "host":
+            users.append("assay.environment (inherited by every assay lane without its own)")
+        imported = assay.get("import")
+        if isinstance(imported, dict) and imported.get("environment") == "host":
+            users.append("assay.import.environment")
+    return users
+
+
+def test_the_host_user_scan_parses_toml_and_sees_every_spelling():
+    for text in (
+        '[lanes.a]\nkind="command"\nenvironment = "host"\n',
+        "[lanes.a]\nkind='command'\nenvironment='host'   # trailing comment\n",
+        '[lanes.a]\nkind = "command"\nargv = ["x"]\nenvironment="host"\n',
+        '[lanes]\na = { kind = "command", environment = "host" }\n',
+        '[assay]\nenvironment = "host"\n',
+        '[assay.import]\nenvironment = "host"\nlanes = "all"\n',
+    ):
+        assert host_environment_users(text), text
+    for text in (
+        '[lanes.a]\nkind = "command"\nenvironment = "tester-unified"\n',
+        '# environment = "host"\n[lanes.a]\nkind = "command"\nenvironment = "bare-host"\n',
+        '[lanes.a]\nkind = "command"\nenvironment = "tester-unified"\nargv = ["echo environment = \\"host\\""]\n',
+    ):
+        assert host_environment_users(text) == [], text
+
+
+def test_run_gate_host_environment_names_tester_base_and_no_lane_runs_there():
+    """D-002: tester-base runs as root with no identity, so no gate lane may use `host` - neither
+    directly, nor through the [assay] defaults lanes inherit, nor through a central lane (root config)."""
+    declared = tomllib.loads((REPO_ROOT / "run-gate.root.toml").read_text("utf-8"))
+    assert declared["environments"]["host"]["image"] == "tester-base:local"
+    configs = [REPO_ROOT / "run-gate.root.toml"]
+    configs += [
+        c for c in REPO_ROOT.glob("**/run-gate.toml")
+        # relative parts: the checkout itself usually lives under a `.worktrees/` directory
+        if not {".worktrees", "node_modules", "fixtures"} & set(c.relative_to(REPO_ROOT).parts)
+    ]
+    assert len(configs) > 20, f"the scan saw only {len(configs)} run-gate configs: it would pass vacuously"
+    users = {}
+    for config in configs:
+        found = host_environment_users(config.read_text("utf-8"))
+        if found:
+            users[str(config.relative_to(REPO_ROOT))] = found
+    assert users == {}, users

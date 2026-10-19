@@ -3,15 +3,37 @@
 `tester-unified` is the vbpub gate environment. The devcontainer is only the
 cockpit used to launch it; pytest and the actual gate command run in the image.
 
-Build the Run-Gate wheel from the same checkout first, then use the supported
-image builder to install those exact wheel bytes into the image. The wheel
-version and SHA-256 are checked during the build, and CIU's source-match
-preflight verifies that the installed wheel modules match the selected
-checkout.
+The image is built FROM `tester-base` (the minimal gate base: `python:3.14-trixie` +
+docker client + minisign + shellcheck; see `tester-base/README.md`), through
+`ARG TESTER_UNIFIED_BASE_IMAGE` (default `tester-base:local` until tester-base has a CMRU
+release; no other fallback). The argument keeps the name Run-Gate 24.0.1's release
+preparation parses. It no longer derives from the MDT cockpit image, so a cockpit release
+cannot change the gate environment and none of the cockpit's baked release CLIs sit on PATH.
+This image adds the `/opt/tester-venv` closure, the uid-1003 identity and the git foreground
+maintenance config; its `PATH` is `/opt/tester-venv/bin:` followed by the base's own.
 
-The default base is the published MDT devcontainer image. When no vbpub image
-has been released yet, `--base-image` selects the upstream Python devcontainer
-so the gate image has no first-party image dependency:
+Three things the old cockpit base supplied implicitly are now explicit in this image (the
+[skip-diff section of the tester-base design guide](../tester-base/docs/DESIGN-GUIDE.md#what-the-skip-diff-found-mdtc-02-t8-and-where-each-answer-lives)
+has the evidence): `zsh` (the mdt-cockpit login-hook tests exercise it and FAIL, rather than lose their
+zsh cases, when `MDT_REQUIRE_SHELLS=1` and it is absent), Node.js with npm and npx (copied
+from the digest-pinned official `node:26.x-trixie` image; pwmcp's runtime-gateway tests run `node`), and
+the uid-1003 identity. There is deliberately no fake `systemctl`: topos now handles a missing one itself.
+
+Build the Run-Gate wheel from the same checkout first, then build the base and use the
+supported image builder to install those exact wheel bytes into the image. The wheel
+version and SHA-256 are checked during the build, and CIU's source-match preflight verifies
+that the installed wheel modules match the selected checkout. Build the base from the
+repository root:
+
+```bash
+docker buildx build --load -t tester-base:local tester-base/
+# a local-only base needs the docker-driver builder (a remote builder cannot see the local store)
+```
+
+Then build the image with `build-image.sh` as shown below. When no vbpub image has been released yet and a different base is wanted, `--base-image`
+selects it explicitly (for example the upstream Python devcontainer, which has no vbpub
+dependency at all); the chosen reference is recorded in the
+`org.vbpub.tester-unified.base-image` label and compared by the builder:
 
 ```bash
 SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
@@ -26,10 +48,11 @@ tester-unified/build-image.sh \
   --tag tester-unified:bootstrap
 ```
 
-The Dockerfile installs and checks its required host-facing tools on either
-base, installing only what the base lacks: the MDT base already carries Docker's
-`docker-ce-cli` and `docker-compose-plugin` and keeps them, while the upstream
-Python base gets Debian's `docker-cli` and `docker-compose`. CMRU, Assay, project sources, and the exact Run-Gate wheel still come
+The Dockerfile installs and checks its required host-facing tools on any base,
+installing only what the base lacks: tester-base carries Docker's `docker-ce-cli`
+(no compose plugin) and an MDT base carries both `docker-ce-cli` and
+`docker-compose-plugin`, which are kept; the upstream Python base gets Debian's
+`docker-cli` and `docker-compose`. CMRU, Assay, project sources, and the exact Run-Gate wheel still come
 from the selected vbpub checkout. Set the lane image to its immutable ID before
 running release gates:
 
