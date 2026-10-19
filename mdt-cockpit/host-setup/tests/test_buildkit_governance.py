@@ -411,7 +411,7 @@ class BuildKitGovernanceTests(unittest.TestCase):
             target.write_bytes(b"x")
             baseline = root / "baseline.env"
             baseline.write_text(
-                "SCHEMA_VERSION=2\n"
+                "SCHEMA_VERSION=3\n"
                 f"KERNEL_RELEASE={os.uname().release}\n"
                 "MEASURE_METHOD=iocost-coef-gen\nMEASURED_AT=now\n"
                 "RIOPS_MAX=1000\nWIOPS_MAX=1000\nRBW_MAX_BPS=1000000\nWBW_MAX_BPS=1000000\n"
@@ -476,7 +476,12 @@ esac
             systemctl.write_text("#!/usr/bin/env bash\nexit 0\n")
             systemctl.chmod(0o755)
             env = os.environ.copy()
+            # the identity/plausibility checker must exist: its absence is not a pass
+            checker = fake_bin / "baseline-ok"
+            checker.write_text("#!/usr/bin/env bash\nexit 0\n")
+            checker.chmod(0o755)
             env.update({
+                "MDT_IO_BASELINE_PY": str(checker),
                 "CONF": str(config),
                 "FAKE_DOCKER_LOG": str(docker_log),
                 "PATH": f"{fake_bin}:/usr/bin:/bin",
