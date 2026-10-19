@@ -214,15 +214,15 @@ RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends zsh \
  && rm -rf /var/lib/apt/lists/*
-#  * Node.js + npm + npx + corepack (D-004) from the official node image (stage `node-source` above,
+#  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
 #    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
 #    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.
+#    corepack is NOT copied: the node 26 image no longer ships it (measured: `corepack: not found`).
 COPY --from=node-source /usr/local/bin/node /usr/local/bin/node
 COPY --from=node-source /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
- && ln -s ../lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack \
- && node --version && npm --version && npx --version && corepack --version
+ && node --version && npm --version && npx --version
 
 USER 1003
 ENV HOME=/home/tester \

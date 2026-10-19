@@ -14,7 +14,7 @@ maintenance config; its `PATH` is `/opt/tester-venv/bin:` followed by the base's
 Three things the old cockpit base supplied implicitly are now explicit in this image (the
 [skip-diff section of the tester-base design guide](../tester-base/docs/DESIGN-GUIDE.md#what-the-skip-diff-found-mdtc-02-t8-and-where-each-answer-lives)
 has the evidence): `zsh` (the mdt-cockpit login-hook tests exercise it and FAIL, rather than lose their
-zsh cases, when `MDT_REQUIRE_SHELLS=1` and it is absent), Node.js with npm, npx and corepack (copied
+zsh cases, when `MDT_REQUIRE_SHELLS=1` and it is absent), Node.js with npm and npx (copied
 from the digest-pinned official `node:26.x-trixie` image; pwmcp's runtime-gateway tests run `node`), and
 the uid-1003 identity. There is deliberately no fake `systemctl`: topos now handles a missing one itself.
 

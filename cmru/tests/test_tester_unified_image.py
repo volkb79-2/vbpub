@@ -754,14 +754,14 @@ def test_tester_unified_path_is_its_own_venv_then_the_base_path():
 
 def test_tester_unified_has_no_systemctl_stub_and_installs_what_its_suites_run():
     """D-001: no fake systemd (topos handles a missing systemctl itself). D-003: zsh. D-004: node,
-    npm, npx and corepack copied from the digest-pinned official node image."""
+    npm and npx copied from the digest-pinned official node image (node 26 ships no corepack)."""
     code = "\n".join(_code_lines(DOCKERFILE))
     assert "systemctl" not in code
     assert "apt-get install -y --no-install-recommends zsh" in code
     assert "nodejs" not in code, "Debian's nodejs is too old; node comes from the official image"
     for source in ("/usr/local/bin/node", "/usr/local/lib/node_modules"):
         assert f"COPY --from=node-source {source} {source}" in code
-    for tool in ("npm", "npx", "corepack"):
+    for tool in ("npm", "npx"):
         assert f"/usr/local/bin/{tool}" in code
     assert re.search(r"^FROM docker\.io/library/node:26\.\d+\.\d+-trixie@sha256:[0-9a-f]{64} AS node-source$", code, re.MULTILINE)
 
