@@ -705,7 +705,8 @@ def test_every_dockerfile_copy_source_is_admitted_by_the_dockerignore():
     sources = []
     for line in _dockerfile_run_lines().splitlines():
         parts = line.split()
-        if parts and parts[0] == "COPY":
+        if parts and parts[0] == "COPY" and not any(part.startswith("--from=") for part in parts):
+            # `COPY --from=<stage>` reads another build stage (the node stage), not the build context
             sources.extend(part.rstrip("/") for part in parts[1:-1])
     assert "tester-unified/fetch-cli-extended.py" in sources
     for source in sources:
