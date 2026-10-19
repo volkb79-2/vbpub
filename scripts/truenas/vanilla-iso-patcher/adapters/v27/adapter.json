@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "v27",
+  "release_version": "27.0.0-RC.1",
+  "experimental": true,
+  "source_bundle": "scripts/truenas/boot-pool-patch/v27 plus scripts/truenas/boot-pool-patch/shared",
+  "target_hash_manifest": "targets.sha256",
+  "patches": [
+    "middleware.patch",
+    "storage.patch",
+    "libvirt.patch",
+    "boot-mount.patch"
+  ],
+  "helper_files": {
+    "virtualization_support.py": "middlewared/plugins/vm/virtualization_support.py",
+    "boot_pool_user_data.py": "middlewared/plugins/boot_pool_user_data.py"
+  }
+}

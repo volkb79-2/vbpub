@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "v28-nightly-20261014",
+  "release_version": "28.0.0-MASTER+20261014-230204",
+  "experimental": true,
+  "source_bundle": "scripts/truenas/boot-pool-patch/v28-nightly-20261014 plus scripts/truenas/boot-pool-patch/shared",
+  "target_hash_manifest": "targets.sha256",
+  "patches": [
+    "middleware.patch",
+    "storage.patch",
+    "boot-mount.patch"
+  ],
+  "helper_files": {
+    "virtualization_support.py": "middlewared/plugins/vm/virtualization_support.py",
+    "boot_pool_user_data.py": "middlewared/plugins/boot_pool_user_data.py",
+    "boot_pool_mount.py": "middlewared/plugins/pool_/boot_pool_mount.py"
+  }
+}

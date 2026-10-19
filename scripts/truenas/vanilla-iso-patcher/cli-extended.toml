@@ -1,0 +1,9 @@
+schema_version = 1
+
+[[clis]]
+id = "truenas-vanilla-iso"
+factory = "truenas-vanilla-iso.py:build_cli"
+review = "cli-review.toml"
+manifest = "cli-surface.json"
+spec = "CLI-SPEC.md"
+findings = "cli-review-findings.toml"

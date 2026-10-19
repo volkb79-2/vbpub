@@ -1,0 +1,169 @@
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+forward_env = [
+  "CGROUP_PARENT_DEV_BACKGROUND",
+  "TRUENAS_TEST_HOST",
+  "TRUENAS_TEST_PORT",
+  "TRUENAS_TEST_KEY",
+  "TRUENAS_TEST_KNOWN_HOSTS",
+  "TRUENAS_TEST_USER",
+  "TRUENAS_STORAGE_PROFILE",
+  "TRUENAS_EXPECTED_VERSION",
+  "TRUENAS_TEST_ALLOW_MUTATIONS",
+  "TRUENAS_TEST_ALLOW_REBOOT",
+  "TRUENAS_TEST_CACHE_TARGET",
+  "TRUENAS_DISK_DEVICE",
+  "TRUENAS_BOOT_POOL_PARTITION",
+  "TRUENAS_MINIMUM_FREE_BYTES",
+  "TRUENAS_TEST_ALLOW_DISK_PROVISION",
+]
+
+[environments.networked-tester]
+mode = "exec"
+image = "tester-unified:local"
+container_name = "truenas-live-acceptance-runner"
+forward_env = [
+  "TRUENAS_TEST_HOST",
+  "TRUENAS_TEST_PORT",
+  "TRUENAS_TEST_KEY",
+  "TRUENAS_TEST_KNOWN_HOSTS",
+  "TRUENAS_TEST_USER",
+  "TRUENAS_STORAGE_PROFILE",
+  "TRUENAS_EXPECTED_VERSION",
+  "TRUENAS_TEST_ALLOW_MUTATIONS",
+  "TRUENAS_TEST_ALLOW_REBOOT",
+  "TRUENAS_TEST_CACHE_TARGET",
+  "TRUENAS_TEST_ALLOW_UPDATE",
+  "TRUENAS_UPDATE_EXPECTED_VERSION",
+  "TRUENAS_UPDATE_ISO",
+  "TRUENAS_UPDATE_METADATA",
+  "TRUENAS_UPDATE_JOB_ID",
+  "TRUENAS_UPDATE_PROOF_DATASET",
+  "TRUENAS_UPDATE_PROOF_SHA256",
+  "TRUENAS_V28_PATCH_ACTION",
+  "TRUENAS_TEST_ALLOW_PATCH_REPLACE",
+  "TRUENAS_V28_EXPECTED_PRIOR_BUNDLE_SHA256",
+  "TRUENAS_V27_PATCH_BUNDLE",
+  "TRUENAS_V27_PATCH_BUNDLE_SHA256",
+  "TRUENAS_V27_PATCH_ACTION",
+  "TRUENAS_TEST_ALLOW_PATCH_REPAIR",
+  "TRUENAS_V27_PRIOR_PATCH_BUNDLE",
+  "TRUENAS_V27_EXPECTED_PRIOR_BUNDLE_SHA256",
+  "TRUENAS_V27_EXPECTED_PRIOR_DATASET_SHA256",
+  "TRUENAS_V27_EXPECTED_PRIOR_DATASET_INFO_SHA256",
+  "TRUENAS_DISK_DEVICE",
+  "TRUENAS_BOOT_POOL_PARTITION",
+  "TRUENAS_MINIMUM_FREE_BYTES",
+  "TRUENAS_TEST_ALLOW_DISK_PROVISION",
+  "TRUENAS_UI_URL",
+  "TRUENAS_UI_SECRET_FILE",
+  "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT",
+  "TRUENAS_TEST_RESUME_EXISTING_UI_DATASET",
+  "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER",
+  "PWMCP_WS_URL",
+  "PWMCP_PLAYWRIGHT_VERSION",
+]
+
+[lanes.unit]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && \"$TESTER_VENV/bin/python\" -m pytest tests/ boot-pool-patch/tests/ golden-iso/tests/ vanilla-iso-patcher/tests/ -q"]
+budget = "3m"
+description = "TrueNAS client, restore, boot-pool policy and vanilla ISO patcher unit tests"
+
+[lanes.unit.resources]
+memory = "256m"
+
+[lanes.unit-boot-pool-patch]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && \"$TESTER_VENV/bin/python\" -m pytest boot-pool-patch/tests/ -q"]
+budget = "3m"
+description = "Boot-pool patch policy, adapter artifacts, and live-gate contract tests"
+
+[lanes.unit-boot-pool-patch.resources]
+memory = "256m"
+
+[lanes.live-storage]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_storage.py"]
+budget = "35m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS"]
+description = "Live API, datasets, zvol, VM TCG, container and share acceptance on a disposable TrueNAS VM"
+
+[lanes.live-boot]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_boot.py"]
+budget = "35m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_REBOOT"]
+description = "Verify boot-pool user-data root and child mount persistence across a controlled TrueNAS reboot"
+
+[lanes.live-update]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_update.py"]
+budget = "90m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_REBOOT", "TRUENAS_TEST_ALLOW_UPDATE", "TRUENAS_UPDATE_EXPECTED_VERSION", "TRUENAS_UPDATE_ISO", "TRUENAS_UPDATE_METADATA"]
+description = "Install a verified TrueNAS update from read-only guest media, reboot, and verify user-data marker survival"
+
+[lanes.live-v27-patch]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_v27_patch.py"]
+budget = "40m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_V27_PATCH_BUNDLE", "TRUENAS_V27_PATCH_BUNDLE_SHA256"]
+description = "Fingerprint and install the v27 relaxation patch on a fresh guest, or run one digest-bound repair for the guarded Path A root or zvol form"
+
+[lanes.live-v28-patch]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_v28_patch.py"]
+budget = "25m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS"]
+description = "Hash-verify, transactionally apply, and API-check the exact TrueNAS 28 nightly adapter on a disposable Path A or Path B guest"
+
+[lanes.live-path-b-provision]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_path_b_provision.py"]
+budget = "20m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_DISK_PROVISION", "TRUENAS_DISK_DEVICE", "TRUENAS_BOOT_POOL_PARTITION"]
+description = "Create and middleware-register Path B only on an explicitly selected disposable TrueNAS boot-disk tail; repeat to verify idempotency"
+
+[lanes.live-path-b-partition]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_path_b_partition.py"]
+budget = "20m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_TEST_ALLOW_DISK_PROVISION", "TRUENAS_DISK_DEVICE", "TRUENAS_BOOT_POOL_PARTITION"]
+description = "Reserve only the guarded Path B free-tail GPT partition so the registered UI lane creates the ZFS pool"
+
+[lanes.live-ui]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && \"$TESTER_VENV/bin/python\" live_ui.py"]
+budget = "45m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
+description = "Use the managed PWMCP browser to create Path A/B storage and submit container, VM, and cache-device UI workflows; verify backing ZFS state"
+
+[lanes.live-vdev-topology]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" -m pip install --disable-pip-version-check -r requirements-live-ui.txt && \"$TESTER_VENV/bin/python\" live_vdev_topology.py"]
+budget = "60m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL", "PWMCP_PLAYWRIGHT_VERSION"]
+description = "Create auxiliary-vdev zvols in the TrueNAS UI, then test API cache, log, and special vdevs on sparse single-disk and RAIDZ1 pools"
+
+[lanes.live-inspect]
+kind = "command"
+environment = "networked-tester"
+argv = ["bash", "-c", "cd {worktree}/scripts/truenas/boot-pool-patch/acceptance && \"$TESTER_VENV/bin/python\" live_inspect.py"]
+budget = "15m"
+required_env = ["TRUENAS_TEST_HOST", "TRUENAS_TEST_PORT", "TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_STORAGE_PROFILE", "TRUENAS_EXPECTED_VERSION"]
+description = "Read-only inventory of TrueNAS datasets, container and VM records, snapshots, and pool health"

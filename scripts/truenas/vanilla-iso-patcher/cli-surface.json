@@ -1,0 +1,1713 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/browse/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/browse",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:c5eab464375755d1f1698f6e500988af3dbb43c4e48b19144749c7352cff685e"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/browse/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/browse",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/browse/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:62af500497216bdac5a7bee86d8809f5ccfc3c18f44fedf440a3fe1daf12ec00"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--family/--family",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/browse/--family"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/browse",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/browse/--family",
+        "spelling": "--family"
+      },
+      "signature": "sha256:95d45604bd972e5dd8f7db38dc2bee657e3cc73a4f03aebcb6eb73c18f00e403"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/browse/--json"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/browse",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/browse/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:0661be098cf15d8e2f4ee692ae918e3010cfddf708e0b19df86447194fae063c"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--output/--output",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/browse/--output"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/browse",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/browse/--output",
+        "spelling": "--output"
+      },
+      "signature": "sha256:95ca4a84b68bd89f36fd1062317536fe21b367817253cf315b7a767b7bf89290"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--version-prefix/--version-prefix",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/browse/--version-prefix"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/browse",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/browse/--version-prefix",
+        "spelling": "--version-prefix"
+      },
+      "signature": "sha256:f45d8530bcf1119c061e9001fbbf6a13b023f1e99cc00e412a712d9469b9a3f9"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/browse/--yes"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/browse",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/browse/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:877b9babc23e8f0ee9f02c558a646543567e29f088fd6646dba19b43c65391d6"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/constraint-choice/4",
+      "kind": "constraint-choice",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--flavor"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "kind": "requires-choice",
+        "option": "--post-install-action",
+        "reason": "post-install actions apply only to unattended installer flavors",
+        "target": "--flavor",
+        "values": [
+          "unattended",
+          "unattended-relaxed"
+        ]
+      },
+      "signature": "sha256:d8aa44f2b46cd2359617c75cce5efc68d46d3187acf2b2b2bfa950d4a77507e7"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/constraint-conflict/2",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--expected-input-sha256"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--upstream-version",
+          "--expected-input-sha256"
+        ],
+        "reason": "the published checksum is fetched for upstream releases"
+      },
+      "signature": "sha256:d7c77d7d618e79be427eedbeaee1c7d8bfc366055e6d1b73a12e76c806badd60"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/constraint-conflict/3",
+      "kind": "constraint-conflict",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--family"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "kind": "conflicts",
+        "options": [
+          "--input-iso",
+          "--family"
+        ],
+        "reason": "a local ISO has no upstream family selector"
+      },
+      "signature": "sha256:a75196d2bd00b608f87a477e69fccdac4d1a02dc882cc722b300457ad749385a"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/constraint-requires/1",
+      "kind": "constraint-requires",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--expected-input-sha256"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "any_of": [
+          "--expected-input-sha256"
+        ],
+        "kind": "requires",
+        "option": "--input-iso",
+        "reason": "local ISO input must be checksum-pinned"
+      },
+      "signature": "sha256:085c15127c95662363448b329c7701f46a2c5cb29287f276496003f68a78a6f2"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/exclusive-conflict/source/option:route:entrypoint:truenas-vanilla-iso/create/--input-iso/option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version",
+      "kind": "exclusive-conflict",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "group_id": "source",
+        "options": [
+          "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso",
+          "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version"
+        ]
+      },
+      "signature": "sha256:fb2db3e3f826bbb3b8a5a0e1c508cddca7fb4a10a2ea3d9793f6a98a83d84e75"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/exclusive-member/source/option:route:entrypoint:truenas-vanilla-iso/create/--input-iso",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "group_id": "source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso"
+      },
+      "signature": "sha256:eb12307c6e90ce2beef6585cd8f8d26c3d3b25afa627e363f4a7747af31a330d"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/exclusive-member/source/option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version",
+      "kind": "exclusive-member",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "group_id": "source",
+        "required": true,
+        "selected_option": "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version"
+      },
+      "signature": "sha256:99b755d8c65230e6f2b717673d5dff66a2b74458e6e8417f76ae278ce42c5c6c"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--output-iso",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--delta-output",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--boot-pool-size-gib",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {
+          "source": [
+            "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version",
+            "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso"
+          ]
+        },
+        "required_options": [
+          "option:route:entrypoint:truenas-vanilla-iso/create/--output-iso",
+          "option:route:entrypoint:truenas-vanilla-iso/create/--delta-output",
+          "option:route:entrypoint:truenas-vanilla-iso/create/--boot-pool-size-gib"
+        ]
+      },
+      "signature": "sha256:8f0cb63778a7f67b6f7bca8c2309d604c4aeb01a949279adfe8ce321c201d6f3"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/63cfe87f5b",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--flavor"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "choice": "bounded",
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--flavor"
+      },
+      "signature": "sha256:efd0bf527109d8ec8e6513f0f5664b94c76b3a6727b30ef8f985c016ba6d6d35"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/7a1f5b90d5",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--flavor"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "choice": "unattended-relaxed",
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--flavor"
+      },
+      "signature": "sha256:d1a85b165e403f8ff938f4a951513fc37a8bc8ef5fb44219b2021665d2e2f586"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/7e6acacda8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--flavor"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "choice": "unattended",
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--flavor"
+      },
+      "signature": "sha256:bf23364162c8b5302ffff83694da94dfd9791fad812cd69e4c23c44bdf196d80"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action/ddf5c2fb70",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "choice": "poweroff",
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action"
+      },
+      "signature": "sha256:1d1588c758300f6e8c24b41f533f230ce5a6a01f5f4f268448a0d996a0d8fd12"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action/ebda7e3fc2",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "choice": "reboot",
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action"
+      },
+      "signature": "sha256:d3b1743bd740813774909337cfbeb50ce897a2f2f7a7b96e96536d638c7e02d8"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--boot-pool-size-gib/--boot-pool-size-gib",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--boot-pool-size-gib"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--boot-pool-size-gib",
+        "spelling": "--boot-pool-size-gib"
+      },
+      "signature": "sha256:4d66632faf9e27683ac43bddad56479fb3d6e9b0ea814d5e07d7d5cce995eb7a"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:b1be091ff3db06e659f8a433f7850f590f42599f96bbaacced7b1ea1e03a1b7e"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--delta-output/--delta-output",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--delta-output"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--delta-output",
+        "spelling": "--delta-output"
+      },
+      "signature": "sha256:73ececfdb7267bf1f69525d8c567b3911653794f18be154ad8c579c6ea4502d5"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--expected-input-sha256/--expected-input-sha256",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--expected-input-sha256"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--expected-input-sha256",
+        "spelling": "--expected-input-sha256"
+      },
+      "signature": "sha256:aedf9ff1f8df5efaf6253bfec1daa75934bce6b81f2427936056b59581684431"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--family/--family",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--family"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--family",
+        "spelling": "--family"
+      },
+      "signature": "sha256:12b69b3c9073c05df91ecf308f9df271ee4dc6d226e77e879456f200aa80957e"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/--flavor",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--flavor"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--flavor",
+        "spelling": "--flavor"
+      },
+      "signature": "sha256:2a3b252ffbc0ae39b4902dacc04892cd3a5658dc42a1e4918d675996cfd5c48e"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--input-iso/--input-iso",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso",
+        "spelling": "--input-iso"
+      },
+      "signature": "sha256:f79d08621b5b1544545c13575b626690b5755ef6b1c0a82580e72051ecec6428"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--json"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:1a4a03809e306447f983128938b093e0c079ce772de5b152463af45868d393b6"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--output-iso/--output-iso",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--output-iso"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--output-iso",
+        "spelling": "--output-iso"
+      },
+      "signature": "sha256:6fe2e210ff4a58c25ee2b40b3c0d4974d013ed3b95d2607ac94893fd13e5ec47"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action/--post-install-action",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action",
+        "spelling": "--post-install-action"
+      },
+      "signature": "sha256:8f12c74e1bed0df6d4885968d8e936c74d0f29cc326a9f0271be9b07c7ced99f"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version/--upstream-version",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version",
+        "spelling": "--upstream-version"
+      },
+      "signature": "sha256:665d4b0e1f79cb2933b7d8e2bf4e6684f2cf16945f1b86208b673b3d5cdde8b6"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--xdelta/--xdelta",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--xdelta"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--xdelta",
+        "spelling": "--xdelta"
+      },
+      "signature": "sha256:3770854559dce7fee2a32075621c9a44183b00fcfbe8f507705eb8a12f08ab4c"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--yes"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/create",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/create/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:24990bd5cf4049b678bedf6cdfddfec95d921738f8542a12ea85419fb50eea07"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/download/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/download/--upstream-version",
+        "option:route:entrypoint:truenas-vanilla-iso/download/--output"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/download",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:truenas-vanilla-iso/download/--upstream-version",
+          "option:route:entrypoint:truenas-vanilla-iso/download/--output"
+        ]
+      },
+      "signature": "sha256:9219ddd6c2b757e2d665188bd66dd5322ed36c1e724ced076274ecbfddc9fcb0"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/download/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/download",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/download/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:7ab26d2e5824e2a281a775585dfb0be353e47d3f8b058ccb34c2a35b336e28f4"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--family/--family",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/download/--family"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/download",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/download/--family",
+        "spelling": "--family"
+      },
+      "signature": "sha256:80f96d2aa9caa5ea086f09f559cdaa5ac21187e6aab3615b96a8393888f08f84"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/download/--json"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/download",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/download/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:963688569e35943a3db4bc8c2d10255745415a8c1996a83cbadebacbeed1f25e"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--output/--output",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/download/--output"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/download",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/download/--output",
+        "spelling": "--output"
+      },
+      "signature": "sha256:682a6f3f4f346a5e70f1a7e533da1154c4a85d4bf7af434e04c0bdb8c626479f"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--upstream-version/--upstream-version",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/download/--upstream-version"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/download",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/download/--upstream-version",
+        "spelling": "--upstream-version"
+      },
+      "signature": "sha256:692bffd9ad85e2325e0123c4d20ecdcfcc3ee98c74d153a792531122ab861424"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/download/--yes"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/download",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/download/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:33d9f03055d1c905f62f8f4ca40b16391d27f6792ef5e67e76c46eaf5a93bb51"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/releases/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/releases",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:afcf8abe90754a4852d66c10201a6883fef6850fe0aa41b7d75643148edc93d4"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/releases/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/releases",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/releases/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:b06abd874f5764878fd49deb8dd07bdbb276d52af75a499026812b823c55db88"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--family/--family",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/releases/--family"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/releases",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/releases/--family",
+        "spelling": "--family"
+      },
+      "signature": "sha256:03d36e6ba9c1aa807f8c91cc86a9177a3ec894b107f9fe229b981f7a6236a51b"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/releases/--json"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/releases",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/releases/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:17695f7dd84c39f99b2369e1b1ecc1623be43a2ce7d54f3306f93b8e48cffe74"
+    },
+    {
+      "id": "case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--version-prefix/--version-prefix",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:truenas-vanilla-iso/releases/--version-prefix"
+      ],
+      "route_id": "route:entrypoint:truenas-vanilla-iso/releases",
+      "shape": {
+        "option_id": "option:route:entrypoint:truenas-vanilla-iso/releases/--version-prefix",
+        "spelling": "--version-prefix"
+      },
+      "signature": "sha256:1d9d36105ae9a551cf5e482260af1d22ecad6ef641948b5f5d70afd2be377772"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "truenas-vanilla-iso",
+    "display_name": "TRUENAS VANILLA ISO PATCHER",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:truenas-vanilla-iso",
+    "long_name": "TrueNAS bounded and unattended installer ISO generator",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "truenas-vanilla-iso",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--family",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "restrict interactive selection to one release family",
+          "dest": "family",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--family"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/browse/--family",
+          "kind": "option",
+          "metavar": "FAMILY",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "browse"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--version-prefix",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "restrict version choices to this prefix",
+          "dest": "version_prefix",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--version-prefix"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/browse/--version-prefix",
+          "kind": "option",
+          "metavar": "PREFIX",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "browse"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--output",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "destination path for the downloaded ISO",
+          "dest": "output",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--output"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/browse/--output",
+          "kind": "option",
+          "metavar": "ISO",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "cli._path"
+            }
+          },
+          "parser_path": [
+            "browse"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "cli._path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "interactively select an upstream release and download its verified ISO",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:truenas-vanilla-iso/browse",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:truenas-vanilla-iso/browse/--output.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "browse"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "browse"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "interactively select an upstream release and download its verified ISO [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--upstream-version",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "exact upstream installer subversion to download and patch",
+          "dest": "upstream_version",
+          "effective_default": null,
+          "exclusive_group": "source",
+          "exclusive_required": true,
+          "flags": [
+            "--upstream-version"
+          ],
+          "help_group": "SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version",
+          "kind": "option",
+          "metavar": "VERSION",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--input-iso",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "local vanilla installer ISO to patch",
+          "dest": "input_iso",
+          "effective_default": null,
+          "exclusive_group": "source",
+          "exclusive_required": true,
+          "flags": [
+            "--input-iso"
+          ],
+          "help_group": "SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso",
+          "kind": "option",
+          "metavar": "ISO",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "cli._path"
+            }
+          },
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "cli._path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--family",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "upstream release family when the version is ambiguous",
+          "dest": "family",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--family"
+          ],
+          "help_group": "SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--family",
+          "kind": "option",
+          "metavar": "FAMILY",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--expected-input-sha256",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "required trusted SHA-256 for a locally supplied ISO",
+          "dest": "expected_input_sha256",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--expected-input-sha256"
+          ],
+          "help_group": "SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--expected-input-sha256",
+          "kind": "option",
+          "metavar": "SHA256",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--output-iso",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "path for the patched installer ISO",
+          "dest": "output_iso",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--output-iso"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--output-iso",
+          "kind": "option",
+          "metavar": "ISO",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "cli._path"
+            }
+          },
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "cli._path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--delta-output",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "path for the xdelta VCDIFF patch",
+          "dest": "delta_output",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--delta-output"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--delta-output",
+          "kind": "option",
+          "metavar": "VCDIFF",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "cli._path"
+            }
+          },
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "cli._path"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--boot-pool-size-gib",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "explicit partition-3 size in GiB (16–1024)",
+          "dest": "boot_pool_size_gib",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--boot-pool-size-gib"
+          ],
+          "help_group": "PATCH",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--boot-pool-size-gib",
+          "kind": "option",
+          "metavar": "GIB",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "cli._boot_pool_size"
+            }
+          },
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "cli._boot_pool_size"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--flavor",
+          "choices": [
+            "bounded",
+            "unattended",
+            "unattended-relaxed"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "ISO behavior: bounded (default), unattended, or experimental unattended-relaxed",
+          "dest": "flavor",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--flavor"
+          ],
+          "help_group": "PATCH",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--flavor",
+          "kind": "option",
+          "metavar": "FLAVOR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "bounded",
+              "unattended",
+              "unattended-relaxed"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--post-install-action",
+          "choices": [
+            "reboot",
+            "poweroff"
+          ],
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "After a successful unattended install, reboot (default) or power off; poweroff supports provider-side ISO-detach handoff",
+          "dest": "post_install_action",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--post-install-action"
+          ],
+          "help_group": "PATCH",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action",
+          "kind": "option",
+          "metavar": "ACTION",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "choices": [
+              "reboot",
+              "poweroff"
+            ],
+            "default": null
+          },
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--xdelta",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "xdelta3 3.x executable; defaults to xdelta3 on PATH",
+          "dest": "xdelta",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--xdelta"
+          ],
+          "help_group": "TOOLS",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/create/--xdelta",
+          "kind": "option",
+          "metavar": "PATH",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "cli._path"
+            }
+          },
+          "parser_path": [
+            "create"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "cli._path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [
+        {
+          "any_of": [
+            "--expected-input-sha256"
+          ],
+          "kind": "requires",
+          "option": "--input-iso",
+          "reason": "local ISO input must be checksum-pinned"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--upstream-version",
+            "--expected-input-sha256"
+          ],
+          "reason": "the published checksum is fetched for upstream releases"
+        },
+        {
+          "kind": "conflicts",
+          "options": [
+            "--input-iso",
+            "--family"
+          ],
+          "reason": "a local ISO has no upstream family selector"
+        },
+        {
+          "kind": "requires-choice",
+          "option": "--post-install-action",
+          "reason": "post-install actions apply only to unattended installer flavors",
+          "target": "--flavor",
+          "values": [
+            "unattended",
+            "unattended-relaxed"
+          ]
+        }
+      ],
+      "delegated_metadata": [],
+      "description": "create bounded, unattended, or experimental unattended-relaxed installer media, a verified xdelta VCDIFF patch, and its Windows manifest",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:truenas-vanilla-iso/create",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:truenas-vanilla-iso/create/--boot-pool-size-gib.type",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--delta-output.type",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--input-iso.type",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--output-iso.type",
+        "option:route:entrypoint:truenas-vanilla-iso/create/--xdelta.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "create"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "create"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "create bounded, unattended, or experimental unattended-relaxed installer media, a verified xdelta VCDIFF patch, and its Windows manifest [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--upstream-version",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "exact installer subversion to download",
+          "dest": "upstream_version",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--upstream-version"
+          ],
+          "help_group": "SELECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/download/--upstream-version",
+          "kind": "option",
+          "metavar": "VERSION",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "download"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--family",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "release family when the version is ambiguous",
+          "dest": "family",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--family"
+          ],
+          "help_group": "SELECTION",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/download/--family",
+          "kind": "option",
+          "metavar": "FAMILY",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "download"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--output",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "destination path for the downloaded ISO",
+          "dest": "output",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--output"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/download/--output",
+          "kind": "option",
+          "metavar": "ISO",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true,
+            "type": {
+              "callable": "cli._path"
+            }
+          },
+          "parser_path": [
+            "download"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": {
+            "callable": "cli._path"
+          }
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "download an exact upstream version after verifying its published SHA-256",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:truenas-vanilla-iso/download",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [
+        "option:route:entrypoint:truenas-vanilla-iso/download/--output.type"
+      ],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "download"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "download"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "download an exact upstream version after verifying its published SHA-256 [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--family",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "limit results to one upstream release family",
+          "dest": "family",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--family"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/releases/--family",
+          "kind": "option",
+          "metavar": "FAMILY",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "releases"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--version-prefix",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "limit results to versions beginning with this text",
+          "dest": "version_prefix",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--version-prefix"
+          ],
+          "help_group": "FILTERS",
+          "hidden": false,
+          "id": "option:route:entrypoint:truenas-vanilla-iso/releases/--version-prefix",
+          "kind": "option",
+          "metavar": "PREFIX",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "releases"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "list upstream installer ISOs with published SHA-256 sidecar links",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:truenas-vanilla-iso/releases",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "releases"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "releases"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "list upstream installer ISOs with published SHA-256 sidecar links",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

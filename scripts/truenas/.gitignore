@@ -1,0 +1,6 @@
+.env
+truenas.toml
+.venv/
+.vm/
+__pycache__/
+*.py[cod]

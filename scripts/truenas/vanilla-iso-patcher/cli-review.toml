@@ -1,0 +1,592 @@
+schema_version = 1
+cli_id = "truenas-vanilla-iso"
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/browse/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c5eab464375755d1f1698f6e500988af3dbb43c4e48b19144749c7352cff685e"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["browse"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/browse/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:62af500497216bdac5a7bee86d8809f5ccfc3c18f44fedf440a3fe1daf12ec00"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["browse", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--family/--family"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:95d45604bd972e5dd8f7db38dc2bee657e3cc73a4f03aebcb6eb73c18f00e403"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["browse", "--family", "TrueNAS-28-Nightlies"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--family/--family]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0661be098cf15d8e2f4ee692ae918e3010cfddf708e0b19df86447194fae063c"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["browse", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--json/--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--output/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:95ca4a84b68bd89f36fd1062317536fe21b367817253cf315b7a767b7bf89290"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["browse", "--output", "./TrueNAS.iso"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--output/--output]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--version-prefix/--version-prefix"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f45d8530bcf1119c061e9001fbbf6a13b023f1e99cc00e412a712d9469b9a3f9"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["browse", "--version-prefix", "28.0"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--version-prefix/--version-prefix]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:877b9babc23e8f0ee9f02c558a646543567e29f088fd6646dba19b43c65391d6"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["browse", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/browse/option-spelling/option:route:entrypoint:truenas-vanilla-iso/browse/--yes/--yes]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/constraint-conflict/2"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:d7c77d7d618e79be427eedbeaee1c7d8bfc366055e6d1b73a12e76c806badd60"
+rationale = "This source-option combination is invalid and must fail before download, extraction, or output creation."
+invocation = ["create", "--upstream-version", "27.0.0-RC.1", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Refuses during argument parsing or create preflight; no download, extraction, or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/constraint-conflict/2]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/constraint-conflict/3"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:a75196d2bd00b608f87a477e69fccdac4d1a02dc882cc722b300457ad749385a"
+rationale = "This source-option combination is invalid and must fail before download, extraction, or output creation."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--family", "TrueNAS-27-RC"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Refuses during argument parsing or create preflight; no download, extraction, or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/constraint-conflict/3]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/constraint-requires/1"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:085c15127c95662363448b329c7701f46a2c5cb29287f276496003f68a78a6f2"
+rationale = "This source-option combination is invalid and must fail before download, extraction, or output creation."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Refuses during argument parsing or create preflight; no download, extraction, or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/constraint-requires/1]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/constraint-requires/4"
+state = "retired"
+retirement_reason = "Redundant with the required source group and the conflict between --input-iso and --family; both invalid forms remain covered."
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/exclusive-conflict/source/option:route:entrypoint:truenas-vanilla-iso/create/--input-iso/option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:fb2db3e3f826bbb3b8a5a0e1c508cddca7fb4a10a2ea3d9793f6a98a83d84e75"
+rationale = "This source-option combination is invalid and must fail before download, extraction, or output creation."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--upstream-version", "27.0.0-RC.1"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Refuses during argument parsing or create preflight; no download, extraction, or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/exclusive-conflict/source/option:route:entrypoint:truenas-vanilla-iso/create/--input-iso/option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/exclusive-member/source/option:route:entrypoint:truenas-vanilla-iso/create/--input-iso"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:eb12307c6e90ce2beef6585cd8f8d26c3d3b25afa627e363f4a7747af31a330d"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/exclusive-member/source/option:route:entrypoint:truenas-vanilla-iso/create/--input-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/exclusive-member/source/option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:99b755d8c65230e6f2b717673d5dff66a2b74458e6e8417f76ae278ce42c5c6c"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--upstream-version", "27.0.0-RC.1", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/exclusive-member/source/option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8f0cb63778a7f67b6f7bca8c2309d604c4aeb01a949279adfe8ce321c201d6f3"
+rationale = "Omitting --flavor preserves the regular bounded installer as the safe default."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/63cfe87f5b"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:efd0bf527109d8ec8e6513f0f5664b94c76b3a6727b30ef8f985c016ba6d6d35"
+rationale = "bounded keeps the standard interactive TrueNAS installer flow."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./bounded.iso", "--delta-output", "./bounded.vcdiff", "--boot-pool-size-gib", "16", "--flavor", "bounded"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the selected flavor only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/63cfe87f5b]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/7a1f5b90d5"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d1a85b165e403f8ff938f4a951513fc37a8bc8ef5fb44219b2021665d2e2f586"
+rationale = "unattended-relaxed is an explicit experimental choice for the two pinned v27/v28 releases."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./relaxed.iso", "--delta-output", "./relaxed.vcdiff", "--boot-pool-size-gib", "16", "--flavor", "unattended-relaxed"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the selected flavor only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/7a1f5b90d5]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/7e6acacda8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bf23364162c8b5302ffff83694da94dfd9791fad812cd69e4c23c44bdf196d80"
+rationale = "unattended is the explicit destructive one-disk or matching-pair installation choice."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./unattended.iso", "--delta-output", "./unattended.vcdiff", "--boot-pool-size-gib", "16", "--flavor", "unattended"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the selected flavor only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/7e6acacda8]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/--flavor"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2a3b252ffbc0ae39b4902dacc04892cd3a5658dc42a1e4918d675996cfd5c48e"
+rationale = "--flavor is the public selector for bounded, unattended, and unattended-relaxed ISO behavior."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./unattended.iso", "--delta-output", "./unattended.vcdiff", "--boot-pool-size-gib", "16", "--flavor", "unattended"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented option only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--flavor/--flavor]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--boot-pool-size-gib/--boot-pool-size-gib"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4d66632faf9e27683ac43bddad56479fb3d6e9b0ea814d5e07d7d5cce995eb7a"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--boot-pool-size-gib/--boot-pool-size-gib]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b1be091ff3db06e659f8a433f7850f590f42599f96bbaacced7b1ea1e03a1b7e"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--delta-output/--delta-output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:73ececfdb7267bf1f69525d8c567b3911653794f18be154ad8c579c6ea4502d5"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--delta-output/--delta-output]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--expected-input-sha256/--expected-input-sha256"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:aedf9ff1f8df5efaf6253bfec1daa75934bce6b81f2427936056b59581684431"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--expected-input-sha256/--expected-input-sha256]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--family/--family"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:12b69b3c9073c05df91ecf308f9df271ee4dc6d226e77e879456f200aa80957e"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--upstream-version", "27.0.0-RC.1", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--family", "TrueNAS-27-RC"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--family/--family]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--input-iso/--input-iso"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f79d08621b5b1544545c13575b626690b5755ef6b1c0a82580e72051ecec6428"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--input-iso/--input-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1a4a03809e306447f983128938b093e0c079ce772de5b152463af45868d393b6"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--json/--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--output-iso/--output-iso"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6fe2e210ff4a58c25ee2b40b3c0d4974d013ed3b95d2607ac94893fd13e5ec47"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--output-iso/--output-iso]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version/--upstream-version"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:665d4b0e1f79cb2933b7d8e2bf4e6684f2cf16945f1b86208b673b3d5cdde8b6"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--upstream-version", "27.0.0-RC.1", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--upstream-version/--upstream-version]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--xdelta/--xdelta"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3770854559dce7fee2a32075621c9a44183b00fcfbe8f507705eb8a12f08ab4c"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--xdelta", "/usr/bin/xdelta3"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--xdelta/--xdelta]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:24990bd5cf4049b678bedf6cdfddfec95d921738f8542a12ea85419fb50eea07"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--yes/--yes]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/download/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9219ddd6c2b757e2d665188bd66dd5322ed36c1e724ced076274ecbfddc9fcb0"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["download", "--upstream-version", "27.0.0-RC.1", "--output", "./TrueNAS.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/download/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7ab26d2e5824e2a281a775585dfb0be353e47d3f8b058ccb34c2a35b336e28f4"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["download", "--upstream-version", "27.0.0-RC.1", "--output", "./TrueNAS.iso", "--yes", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--family/--family"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:80f96d2aa9caa5ea086f09f559cdaa5ac21187e6aab3615b96a8393888f08f84"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["download", "--upstream-version", "27.0.0-RC.1", "--output", "./TrueNAS.iso", "--yes", "--family", "TrueNAS-27-RC"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--family/--family]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:963688569e35943a3db4bc8c2d10255745415a8c1996a83cbadebacbeed1f25e"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["download", "--upstream-version", "27.0.0-RC.1", "--output", "./TrueNAS.iso", "--yes", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--json/--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--output/--output"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:682a6f3f4f346a5e70f1a7e533da1154c4a85d4bf7af434e04c0bdb8c626479f"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["download", "--upstream-version", "27.0.0-RC.1", "--output", "./TrueNAS.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--output/--output]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--upstream-version/--upstream-version"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:692bffd9ad85e2325e0123c4d20ecdcfcc3ee98c74d153a792531122ab861424"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["download", "--upstream-version", "27.0.0-RC.1", "--output", "./TrueNAS.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--upstream-version/--upstream-version]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:33d9f03055d1c905f62f8f4ca40b16391d27f6792ef5e67e76c46eaf5a93bb51"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["download", "--upstream-version", "27.0.0-RC.1", "--output", "./TrueNAS.iso", "--yes"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/download/option-spelling/option:route:entrypoint:truenas-vanilla-iso/download/--yes/--yes]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/releases/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:afcf8abe90754a4852d66c10201a6883fef6850fe0aa41b7d75643148edc93d4"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["releases"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/releases/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b06abd874f5764878fd49deb8dd07bdbb276d52af75a499026812b823c55db88"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["releases", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--family/--family"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:03d36e6ba9c1aa807f8c91cc86a9177a3ec894b107f9fe229b981f7a6236a51b"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["releases", "--family", "TrueNAS-28-Nightlies"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--family/--family]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:17695f7dd84c39f99b2369e1b1ecc1623be43a2ce7d54f3306f93b8e48cffe74"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["releases", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--json/--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--version-prefix/--version-prefix"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1d9d36105ae9a551cf5e482260af1d22ecad6ef641948b5f5d70afd2be377772"
+rationale = "This route or option spelling is part of the documented TrueNAS ISO patcher interface."
+invocation = ["releases", "--version-prefix", "28.0"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the documented CLI route and options only; the handler does not run and no upstream request or output file is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/releases/option-spelling/option:route:entrypoint:truenas-vanilla-iso/releases/--version-prefix/--version-prefix]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action/--post-install-action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8f12c74e1bed0df6d4885968d8e936c74d0f29cc326a9f0271be9b07c7ced99f"
+rationale = "The poweroff post-install choice is part of the unattended ISO workflow; poweroff enables provider-side ISO removal before disk boot."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--flavor", "unattended-relaxed", "--post-install-action", "poweroff"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the requested flavor and post-install action; no ISO is read and no output is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-spelling/option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action/--post-install-action]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action/ddf5c2fb70"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1d1588c758300f6e8c24b41f533f230ce5a6a01f5f4f268448a0d996a0d8fd12"
+rationale = "The poweroff post-install choice is part of the unattended ISO workflow; poweroff enables provider-side ISO removal before disk boot."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--flavor", "unattended-relaxed", "--post-install-action", "poweroff"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the requested flavor and post-install action; no ISO is read and no output is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action/ddf5c2fb70]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action/ebda7e3fc2"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d3b1743bd740813774909337cfbeb50ce897a2f2f7a7b96e96536d638c7e02d8"
+rationale = "The reboot post-install choice is part of the unattended ISO workflow; poweroff enables provider-side ISO removal before disk boot."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--flavor", "unattended-relaxed", "--post-install-action", "reboot"]
+expected_exit_status = 0
+expected_stdout_contains = ""
+expected_stderr_contains = ""
+effects = ["Parses the requested flavor and post-install action; no ISO is read and no output is created."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/option-choice/option:route:entrypoint:truenas-vanilla-iso/create/--post-install-action/ebda7e3fc2]"]
+
+[[cases]]
+id = "case:route:entrypoint:truenas-vanilla-iso/create/constraint-choice/4"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:d8aa44f2b46cd2359617c75cce5efc68d46d3187acf2b2b2bfa950d4a77507e7"
+rationale = "The post-install action is meaningful only with an unattended flavor; reject the incomplete choice before reading or creating ISO files."
+invocation = ["create", "--input-iso", "./TrueNAS.iso", "--expected-input-sha256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--output-iso", "./patched.iso", "--delta-output", "./patched.vcdiff", "--boot-pool-size-gib", "16", "--post-install-action", "poweroff"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "post-install actions apply only to unattended installer flavors"
+effects = ["The declared CLI constraint refuses before the builder reads the input ISO or creates output files."]
+test_ids = ["tests/test_cli_surface_cases.py::test_reviewed_surface_case[case:route:entrypoint:truenas-vanilla-iso/create/constraint-choice/4]"]

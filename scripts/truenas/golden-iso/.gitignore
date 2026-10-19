@@ -1,0 +1,15 @@
+# Large VM artifacts and credentials stay local.
+artifacts/
+vm/
+__pycache__/
+*.py[cod]
+*.iso
+*.qcow2
+*.raw
+*.fd
+*.sock
+*.pid
+*.log
+*.key
+*.pub
+password*
