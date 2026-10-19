@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -126,10 +127,60 @@ class DoctorHubLoginNoticeTests(HostEscapeCliTests):
             ("auths index.docker.io/v1", {"auths": {"https://index.docker.io/v1/": {"auth": self.SECRET}}}),
             ("auths docker.io", {"auths": {"docker.io": {"auth": self.SECRET}}}),
             ("credHelpers", {"credHelpers": {"docker.io": "desktop"}}),
-            ("credsStore", {"credsStore": "pass", "auths": {}}),
         ):
             with self.subTest(label):
                 result = self.doctor(config)
                 self.assertNotIn(self.NOTICE, result.stderr)
                 self.assertEqual(result.returncode, 0)
                 self.assertNotIn(self.SECRET, result.stdout + result.stderr)
+
+    def helper(self, listing: str, exit_code: int = 0) -> Path:
+        """A fake docker-credential-fake on PATH; it logs every verb it is called with."""
+        self.helper_log = Path(self.temp.name) / "helper.log"
+        self.helper_log.unlink(missing_ok=True)
+        script = self.bin / "docker-credential-fake"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$1\" >> \"$HELPER_LOG\"\n"
+            f"[ \"$1\" = list ] && printf '%s' '{listing}'\n"
+            f"exit {exit_code}\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        self.env["HELPER_LOG"] = str(self.helper_log)
+        return script
+
+    def test_a_credsStore_is_asked_for_its_server_list_only(self) -> None:
+        user = "someone-private-username"
+        self.helper(json.dumps({"https://index.docker.io/v1/": user, "ghcr.io": user}))
+        result = self.doctor({"credsStore": "fake"})
+        self.assertNotIn(self.NOTICE, result.stderr)
+        self.assertNotIn("cannot confirm", result.stderr)
+        self.assertEqual(self.helper_log.read_text().split(), ["list"], "never `get`: that returns the secret")
+        self.assertNotIn(user, result.stdout + result.stderr)
+
+    def test_a_credsStore_without_a_hub_entry_gets_the_normal_notice(self) -> None:
+        self.helper(json.dumps({"ghcr.io": "someone-private-username"}))
+        result = self.doctor({"credsStore": "fake"})
+        self.assertIn(self.NOTICE, result.stderr)
+        self.assertEqual(result.returncode, 0)
+        self.assertNotIn("someone-private-username", result.stdout + result.stderr)
+
+    def test_a_missing_or_failing_helper_is_cannot_confirm_not_a_failure_and_not_silence(self) -> None:
+        (self.bin / "docker-credential-fake").unlink(missing_ok=True)
+        absent = self.doctor({"credsStore": "fake"})
+        self.assertIn("cannot confirm a Docker Hub login", absent.stderr)
+        self.assertEqual(absent.returncode, 0)
+        self.helper("{}", exit_code=1)
+        failing = self.doctor({"credsStore": "fake"})
+        self.assertIn("cannot confirm a Docker Hub login", failing.stderr)
+        self.assertEqual(failing.returncode, 0)
+        garbage = self.helper("not json")
+        self.assertIn("cannot confirm a Docker Hub login", self.doctor({"credsStore": "fake"}).stderr)
+        self.assertEqual(garbage.name, "docker-credential-fake")
+
+    def test_a_hostile_store_name_is_never_executed(self) -> None:
+        marker = Path(self.temp.name) / "pwned"
+        result = self.doctor({"credsStore": f"x; touch {marker}"})
+        self.assertFalse(marker.exists())
+        self.assertIn("cannot confirm a Docker Hub login", result.stderr)

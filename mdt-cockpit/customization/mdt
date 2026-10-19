@@ -128,7 +128,7 @@ Usage:
   mdt doctor [--check-only]
 
 First prints a non-fatal notice when no docker.io login exists in Docker's credential config
-(presence only, via the `auths`/`credHelpers`/`credsStore` keys; no secret is read or printed).
+(presence only: the `auths`/`credHelpers`/`credsStore` keys, and a store's `list` verb; no secret is read or printed).
 
 Check the host cgroup2 mount for MDT's required flags. By default, remount the
 host cgroup2 filesystem to restore missing flags. `--check-only` reports a
@@ -171,13 +171,31 @@ except (OSError, ValueError):
 auths = config.get("auths") if isinstance(config, dict) else None
 helpers = config.get("credHelpers") if isinstance(config, dict) else None
 store = config.get("credsStore") if isinstance(config, dict) else None
-found = (isinstance(auths, dict) and bool(HUB & set(auths))) \
-    or (isinstance(helpers, dict) and bool(HUB & set(helpers))) \
-    or (isinstance(store, str) and bool(store))
-print("present" if found else "absent")
+if (isinstance(auths, dict) and HUB & set(auths)) or (isinstance(helpers, dict) and HUB & set(helpers)):
+    print("present")
+    raise SystemExit(0)
+if isinstance(store, str) and store:
+    # A credential store can hold any registry: ask it which server URLs it knows (`list` returns URLs and
+    # usernames only). Never `get` (that returns the secret), never print the usernames; an absent or failing
+    # helper means "cannot confirm", not "no login".
+    import re, shutil, subprocess
+    helper = "docker-credential-" + store
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", store) or not shutil.which(helper):
+        print("unknown:" + store)
+        raise SystemExit(0)
+    try:
+        listing = json.loads(subprocess.run([helper, "list"], capture_output=True, text=True, timeout=10, check=True).stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        print("unknown:" + store)
+        raise SystemExit(0)
+    print("present" if isinstance(listing, dict) and HUB & set(listing) else "absent")
+    raise SystemExit(0)
+print("absent")
 PY
     )
-    if [[ "$state" != "present" ]]; then
+    if [[ "$state" == unknown:* ]]; then
+        echo "[mdt doctor] notice: a credential store (${state#unknown:}) is configured in ${config}; cannot confirm a Docker Hub login without querying it (docker-credential-${state#unknown:} list is unavailable here). Anonymous Docker Hub pulls are limited to 100/hour per IP; see docs/CONSUMERS.md \"Docker Hub login\"." >&2
+    elif [[ "$state" != "present" ]]; then
         echo "[mdt doctor] notice: no docker.io login found in ${config} - anonymous Docker Hub pulls are limited to 100/hour per IP, shared by every session on this host. Log in once: docker login docker.io --username <user> --password-stdin (read-only access token; see docs/CONSUMERS.md \"Docker Hub login\")." >&2
     fi
     return 0
