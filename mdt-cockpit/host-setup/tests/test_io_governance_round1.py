@@ -88,6 +88,10 @@ class DocsAndUnitsTests(unittest.TestCase):
         self.assertIn("--failed", dump)
         pull = (ROOT / "tests" / "vm-install-with-diagnostics.sh").read_text()
         self.assertRegex(pull, r"timeout \d+ docker pull")
+        # the script cd's into host-setup/, so install.sh must be run relative to THAT
+        # (the first real vm-system run failed with "host-setup/install.sh: No such file")
+        self.assertRegex(pull, r"(?m)^exec bash \./install\.sh")
+        self.assertNotIn("exec bash host-setup/install.sh", pull)
 
     def test_vm_recovery_step_sets_a_different_value_before_the_target(self) -> None:
         vm = (ROOT / "tests" / "vm-governance-acceptance.sh").read_text()

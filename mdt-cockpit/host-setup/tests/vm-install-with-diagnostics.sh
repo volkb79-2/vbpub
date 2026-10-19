@@ -17,4 +17,4 @@ if ! timeout 900 docker pull "$image"; then
     echo "vm-install: pre-pull of $image failed or timed out (network, registry, or TCG slowness)" >&2
     exit 1
 fi
-exec bash host-setup/install.sh
+exec bash ./install.sh   # cwd is host-setup/ (see the cd above)
