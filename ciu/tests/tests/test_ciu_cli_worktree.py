@@ -20,6 +20,43 @@ def _patch_repo_root(monkeypatch, tmp_path):
 
 
 class TestWorktreeCreateDispatch:
+    def test_selected_ciu_root_resolves_from_cwd_or_explicit_target(
+        self, tmp_path, capsys
+    ):
+        git_root = tmp_path / "mono"
+        nested = git_root / "component"
+        nested.mkdir(parents=True)
+        unrelated = git_root / "other"
+        unrelated.mkdir()
+        mistyped_child = nested / "source"
+        mistyped_child.mkdir()
+        (nested / "ciu.global.defaults.toml.j2").write_text(
+            "[ciu]\n", encoding="utf-8"
+        )
+
+        assert cli._resolve_worktree_ciu_root_cli(
+            git_root, None, nested / "src"
+        ) == nested
+        assert cli._resolve_worktree_ciu_root_cli(
+            git_root, git_root, nested
+        ) == nested
+        (git_root / "ciu.global.defaults.toml.j2").write_text(
+            "[ciu]\n", encoding="utf-8"
+        )
+        assert cli._resolve_worktree_ciu_root_cli(
+            git_root, git_root, nested
+        ) == nested
+        assert cli._resolve_worktree_ciu_root_cli(
+            git_root, git_root, git_root
+        ) == git_root
+        with pytest.raises(SystemExit) as exc:
+            cli._resolve_worktree_ciu_root_cli(git_root, unrelated, nested)
+        assert exc.value.code == 2
+        assert "neither a CIU root nor the Git-family root" in capsys.readouterr().err
+        with pytest.raises(SystemExit) as exc:
+            cli._resolve_worktree_ciu_root_cli(git_root, mistyped_child, nested)
+        assert exc.value.code == 2
+
     def test_forwards_all_options(self, monkeypatch, capsys):
         seen = {}
 
@@ -28,6 +65,7 @@ class TestWorktreeCreateDispatch:
             name,
             *,
             base,
+            profile,
             worktree_dir,
             display_name,
             prefix,
@@ -43,6 +81,7 @@ class TestWorktreeCreateDispatch:
                 repo_root=repo_root,
                 name=name,
                 base=base,
+                profile=profile,
                 worktree_dir=worktree_dir,
                 display_name=display_name,
                 prefix=prefix,
@@ -63,6 +102,8 @@ class TestWorktreeCreateDispatch:
                 "mypkg",
                 "--base",
                 "develop",
+                "--profile",
+                "core,db",
                 "--worktree-dir",
                 ".wt",
                 "--name",
@@ -74,6 +115,7 @@ class TestWorktreeCreateDispatch:
             "repo_root": seen["repo_root"],
             "name": "mypkg",
             "base": "develop",
+            "profile": "core,db",
             "worktree_dir": ".wt",
             "display_name": "display",
             "prefix": None,
@@ -111,6 +153,7 @@ class TestWorktreeCreateSharedInfraDispatch:
             name,
             *,
             base,
+            profile,
             worktree_dir,
             display_name,
             prefix,
@@ -124,6 +167,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         ):
             seen.update(
                 shared_infra=shared_infra,
+                profile=profile,
                 shared_infra_services=shared_infra_services,
                 shared_infra_ref_projects=shared_infra_ref_projects,
                 shared_infra_ref_services=shared_infra_ref_services,
@@ -148,6 +192,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         assert code == 0
         assert seen == {
             "shared_infra": "primary",
+            "profile": None,
             "shared_infra_services": "api,worker",
             "shared_infra_ref_projects": "idp-dev-idp,vault-dev-vault",
             "shared_infra_ref_services": "vault,secrets=vault",
@@ -162,6 +207,7 @@ class TestWorktreeCreateSharedInfraDispatch:
             name,
             *,
             base,
+            profile,
             worktree_dir,
             display_name,
             prefix,
@@ -175,6 +221,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         ):
             seen.update(
                 shared_infra=shared_infra,
+                profile=profile,
                 shared_infra_services=shared_infra_services,
                 shared_infra_ref_projects=shared_infra_ref_projects,
                 shared_infra_ref_services=shared_infra_ref_services,
@@ -185,6 +232,7 @@ class TestWorktreeCreateSharedInfraDispatch:
         cli._worktree(["create", "mypkg"])
         assert seen == {
             "shared_infra": None,
+            "profile": None,
             "shared_infra_services": None,
             "shared_infra_ref_projects": None,
             "shared_infra_ref_services": None,
@@ -437,6 +485,197 @@ class TestManagedLifecycleDispatch:
         assert seen["logical_name"] == "task-one"
         assert seen["path"] == "/tmp/existing"
 
+    def test_profile_flag_forwards_on_create_ensure_and_adopt(
+        self, monkeypatch
+    ):
+        seen = {}
+
+        def fake_lifecycle(repo_root, logical_name, **kwargs):
+            seen.update(kwargs)
+            return _ready_record()
+
+        for verb in ("create", "ensure"):
+            monkeypatch.setattr(wt_mod, verb, fake_lifecycle)
+            assert cli._worktree([verb, "task-one", "--profile", "core,db"]) == 0
+            assert seen["profile"] == "core,db"
+            seen.clear()
+
+        def fake_adopt(repo_root, logical_name, path, **kwargs):
+            seen.update(kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "adopt", fake_adopt)
+        assert cli._worktree([
+            "adopt", "task-one", "/tmp/existing", "--profile", "core,db"
+        ]) == 0
+        assert seen["profile"] == "core,db"
+
+    def test_create_ensure_and_adopt_use_the_selected_nested_ciu_root(
+        self, monkeypatch
+    ):
+        git_root = Path("/tmp/mono")
+        nested_root = git_root / "component"
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_git_root_cli", lambda *_a: git_root
+        )
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_ciu_root_cli", lambda *_a: nested_root
+        )
+        seen = {}
+
+        def fake_lifecycle(root, logical_name, **kwargs):
+            seen.update(root=root, logical_name=logical_name, kwargs=kwargs)
+            return _ready_record()
+
+        for verb in ("create", "ensure"):
+            seen.clear()
+            monkeypatch.setattr(wt_mod, verb, fake_lifecycle)
+            assert cli._worktree([verb, "nested-task", "--profile", "core"]) == 0
+            assert seen["root"] == nested_root
+
+        seen.clear()
+
+        def fake_adopt(root, logical_name, path, **kwargs):
+            seen.update(root=root, logical_name=logical_name, path=path, kwargs=kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "adopt", fake_adopt)
+        assert cli._worktree([
+            "adopt", "nested-task", "/tmp/existing", "--profile", "core"
+        ]) == 0
+        assert seen["root"] == nested_root
+
+    def test_nested_root_lifecycle_verbs_keep_the_selected_root(
+        self, monkeypatch
+    ):
+        git_root = Path("/tmp/mono")
+        nested_root = git_root / "component"
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_git_root_cli", lambda *_a: git_root
+        )
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_ciu_root_cli", lambda *_a: nested_root
+        )
+        calls = []
+
+        def record_root(name):
+            def capture(root, *_args, **_kwargs):
+                calls.append((name, root))
+                return _ready_record()
+            return capture
+
+        def document_root(name):
+            def capture(root, *_args, **_kwargs):
+                calls.append((name, root))
+                return {"status": "ready"}
+            return capture
+
+        monkeypatch.setattr(wt_mod, "create", record_root("create"))
+        monkeypatch.setattr(wt_mod, "ensure", record_root("ensure"))
+        monkeypatch.setattr(wt_mod, "adopt", record_root("adopt"))
+        monkeypatch.setattr(
+            wt_mod, "up_instance",
+            lambda root, *_a, **_kw: (calls.append(("up", root)) or 0),
+        )
+        assert cli._worktree([
+            "create", "nested-task", "--profile", "core", "--up"
+        ]) == 0
+        assert cli._worktree(["ensure", "nested-task"]) == 0
+        assert cli._worktree(["adopt", "nested-adopt", "/tmp/target"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "inspect_instance", document_root("inspect")
+        )
+        assert cli._worktree(["inspect", "nested-task", "--json"]) == 0
+        assert cli._worktree(["up", "nested-task"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "apply_lease", record_root("lease")
+        )
+        assert cli._worktree(["lease", "nested-task", "--perpetual"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "remove_document",
+            lambda root, *_a, **_kw: (calls.append(("rm", root)) or {"removed": True}),
+        )
+        assert cli._worktree(["rm", "nested-task", "--json"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "list_instances", document_root("list")
+        )
+        assert cli._worktree(["list", "--json"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "branch_hygiene", document_root("branches")
+        )
+        assert cli._worktree(["branches", "--json"]) == 0
+        monkeypatch.setattr(
+            wt_mod, "reap_groups", document_root("reap")
+        )
+        assert cli._worktree(["reap", "--json"]) == 0
+
+        monkeypatch.setattr(
+            wt_mod, "exec_instance",
+            lambda root, *_a, **_kw: (calls.append(("exec", root)) or 0),
+        )
+        assert cli._worktree(["exec", "nested-task", "--", "true"]) == 0
+
+        assert calls == [
+            ("create", nested_root), ("up", nested_root),
+            ("ensure", nested_root), ("adopt", nested_root),
+            ("inspect", nested_root), ("up", nested_root),
+            ("lease", nested_root), ("rm", nested_root),
+            ("list", nested_root), ("branches", nested_root),
+            ("reap", nested_root), ("exec", nested_root),
+        ]
+
+    def test_overlay_options_refuse_without_a_selected_ciu_root(
+        self, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_git_root_cli", lambda *_a: Path("/tmp/mono")
+        )
+        monkeypatch.setattr(cli, "_resolve_worktree_ciu_root_cli", lambda *_a: None)
+        monkeypatch.setattr(
+            wt_mod, "create",
+            lambda *_a, **_kw: pytest.fail("allocation must not run without a CIU root"),
+        )
+
+        assert cli._worktree(["create", "rootless", "--profile", "core"]) == 2
+        assert "require a selected CIU root" in capsys.readouterr().err
+
+    def test_existing_network_claim_flag_forwards_only_to_supported_verbs(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_git_root_cli", lambda *_a: Path("/tmp/mono")
+        )
+        monkeypatch.setattr(
+            cli, "_resolve_worktree_ciu_root_cli", lambda *_a: Path("/tmp/mono/ciu")
+        )
+        seen = {}
+
+        def fake_ensure(_root, _name, **kwargs):
+            seen.update(kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "ensure", fake_ensure)
+        assert cli._worktree([
+            "ensure", "legacy", "--adopt-existing-network"
+        ]) == 0
+        assert seen["adopt_existing_network"] is True
+
+        def fake_adopt(_root, _name, _path, **kwargs):
+            seen.clear()
+            seen.update(kwargs)
+            return _ready_record()
+
+        monkeypatch.setattr(wt_mod, "adopt", fake_adopt)
+        assert cli._worktree([
+            "adopt", "legacy", "/tmp/existing", "--adopt-existing-network"
+        ]) == 0
+        assert seen["adopt_existing_network"] is True
+
     @pytest.mark.parametrize("verb", ["create", "ensure"])
     def test_ref_services_flag_forwards_on_create_and_ensure(
         self, monkeypatch, verb
@@ -594,3 +833,27 @@ def test_identity_only_env_generation_writes_facts_without_bootstrap(
     )
     assert cli._env_generate(["--identity-only"]) == 0
     assert seen == {"root": tmp_path, "generated": tmp_path / "ciu.env"}
+
+
+def test_env_generate_does_not_offer_allocation_lock_bypass(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SystemExit):
+        cli._env_generate(["--allocation-lock-held"])
+
+
+def test_explicit_env_generate_returns_nonzero_on_managed_network_refusal(
+    tmp_path, monkeypatch, capsys
+):
+    from ciu import deploy, workspace_env
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        deploy,
+        "action_generate_env",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            workspace_env.ManagedRuntimeVerificationError("foreign network owner")
+        ),
+    )
+
+    assert cli._env_generate([]) == 1
+    assert "[ERROR] foreign network owner" in capsys.readouterr().err

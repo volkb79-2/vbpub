@@ -1182,6 +1182,97 @@ effects = ["Presentation only; refuses on the unset REGISTRY (exit 1)."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-push/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6eb6ae0febad975ab7ec783b4c69b9bd2b60c7badab5a812b1bfd89e5b0b34c1"
+rationale = "--prefix, --image and --cwd are required; the handler publishes only the GitHub Release body of an already-pushed image and runs only with the protected release identity that `cmru release` supplies."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent protected release identity before any GitHub request, git read or file access."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--cwd/--cwd"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f97818cdb3932586a994519f61bcf4fb986a305ed182ad934ec755f33905f1a6"
+rationale = "--cwd PATH is the project tree whose changelog the tagged section is read from."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent release identity; the directory is not read and nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--cwd/--cwd]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c4e95062f13c9b061721cef79f77864b137c3e4ba9c59eb80f6603868695efa7"
+rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir", "--debug-raw"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the warning, then refuses (exit 4) on the absent release identity; nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6413057a010a7a42ed3bf7b7ffbff6c7e1a4326b6d954e7323ac073de6b09af5"
+rationale = "--dry-run shows the accepted inputs without reading the release identity, the changelog or calling GitHub; `cmru release --dry-run` previews the complete body."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "[DRY RUN] Would run cmru handler oci-image-release"
+expected_stderr_contains = ""
+effects = ["Prints the inputs only; no GitHub request, no git or file read, nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--image/--image"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:41ed428c2a0b29f48ed872438b08560a00d47ea802bbd73d1aa6c4d8e22e92b7"
+rationale = "--image REPOSITORY is the registry repository with no tag and no digest; the image tag is derived from the protected release tag. Its shape is validated after the release identity, so a bad value is pinned by the handler's own tests."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent release identity; nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--image/--image]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:39f95273b7ee378691ce3c2c85311b55d9a1850bdbd81409939d4d6bde825ed7"
+rationale = "Consumer-global presentation option; output only."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir", "--log-prefix-time-short"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Presentation only; refuses (exit 4) on the absent release identity."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/handler/oci-image-release/option-spelling/option:route:entrypoint:cmru/handler/oci-image-release/--prefix/--prefix"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7319803f511614ef428e515475f40ecc6030f9ce1378a589641ca897704e452b"
+rationale = "--prefix PREFIX is the release prefix without -v; the protected release tag must be <prefix>-v<version>. A mismatch is refused after the identity is present, so it is pinned by the handler's own tests."
+invocation = ["handler", "oci-image-release", "--prefix", "demo", "--image", "ghcr.io/example/demo", "--cwd", "missing-dir"]
+expected_exit_status = 4
+expected_stdout_contains = ""
+expected_stderr_contains = "CMRU_RELEASE_TAG and CMRU_RELEASE_COMMIT not set"
+effects = ["Refuses (exit 4) on the absent release identity; nothing is published."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/oci-image-release/option-spelling/--prefix/--prefix]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/handler/tarball-publish/exclusive-conflict/version-source/option:route:entrypoint:cmru/handler/tarball-publish/--version-env/option:route:entrypoint:cmru/handler/tarball-publish/--version-file"
 state = "active"
 decision = "refuse"
@@ -1420,12 +1511,12 @@ id = "case:route:entrypoint:cmru/handler/wheel-build/minimum"
 state = "active"
 decision = "accept"
 reviewed_signature = "sha256:9695dac128fad7bbfb146ee9e6e57d0f3ddda1c5f55bc52184868c7d77350dbd"
-rationale = "--cwd PATH is the only required input; the builder image comes from CMRU_WHEEL_BUILDER_IMAGE."
+rationale = "--cwd PATH identifies the project; the builder image comes from the explicit environment or enclosing CMRU configuration."
 invocation = ["handler", "wheel-build", "--cwd", "missing-dir"]
 expected_exit_status = 3
 expected_stdout_contains = ""
 expected_stderr_contains = "CMRU_WHEEL_BUILDER_IMAGE is required"
-effects = ["Refuses on the undeclared builder image (exit 3); no container is started."]
+effects = ["Refuses when neither environment nor enclosing CMRU configuration declares the builder image (exit 3); no container is started."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[handler/wheel-build/minimum]"]
 
 [[cases]]
@@ -3910,6 +4001,110 @@ expected_stdout_contains = ""
 expected_stderr_contains = "must run inside the repository"
 effects = ["Presentation only; refuses outside a repository (exit 2); read-only."]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[worktrees/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/constraint-requires/1"
+state = "active"
+decision = "refuse"
+reviewed_signature = "sha256:3dce113e4996da6a18620fd46158f1fdcd5eaa0eb0f786564e1818dc1d8679ba"
+rationale = "A removal preview is only meaningful with --remove: --dry-run alone is refused instead of silently listing."
+invocation = ["gate-snapshots", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--dry-run requires --remove"
+effects = ["Refused as a usage error (exit 2) before any repository is inspected; nothing is read or removed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/constraint-requires/1]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:20bcdc64fa444fae97e819f3e401c79eef76a9328fff6527e9efdc9dd3bffccd"
+rationale = "Bare `gate-snapshots` is the read-only listing of retained release-gate snapshots; --remove is the opt-in mutation (mixed-operations verb)."
+invocation = ["gate-snapshots"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:75c06b800556d5a6bfd73a9f03ebee5a5bff0a8f3fb8b5cc079bc7198b97c5b1"
+rationale = "Library control: --debug-raw lifts diagnostic redaction and warns."
+invocation = ["gate-snapshots", "--debug-raw"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the warning, then refuses outside a repository (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--debug-raw/--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3dc2bd586aae61a337d5b093f7af6940e9257668530e2a182df87806fe5a9c99"
+rationale = "--dry-run (with --remove) previews which snapshots would be removed without removing anything."
+invocation = ["gate-snapshots", "--remove", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); nothing is removed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--dry-run/--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--include-current/--include-current"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:58b898866c1da1ddeba5aebd89ae8a5440ebb8bf9ca6452c820ea11453d4b097"
+rationale = "--include-current widens what counts as removable to a snapshot whose source is still at its commit (it can then no longer resume); lease and source-observability refusals still apply."
+invocation = ["gate-snapshots", "--include-current"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); read-only without --remove."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--include-current/--include-current]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:432476a85d9fc7871020f496a0654ad9d404062aa46bcbbfc9c690ceabc957d8"
+rationale = "--json emits machine-readable gate-snapshot reports (a genuine output mode, not a mutation selector)."
+invocation = ["gate-snapshots", "--json"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--json/--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--log-prefix-time-short/--log-prefix-time-short"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e0b686d58dd2da8b97e7eb3a562768409ed85634138c32202f78e164b2070f26"
+rationale = "Consumer-global presentation option; output only."
+invocation = ["gate-snapshots", "--log-prefix-time-short"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Presentation only; refuses outside a repository (exit 2); read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--log-prefix-time-short/--log-prefix-time-short]"]
+
+[[cases]]
+id = "case:route:entrypoint:cmru/gate-snapshots/option-spelling/option:route:entrypoint:cmru/gate-snapshots/--remove/--remove"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9a41a4adf8c6bcbc03156cade9e767325eb1221c2fc4e4df26d25ae1cf9ddcfc"
+rationale = "--remove is the opt-in deletion of every snapshot judged removable; each is re-judged from fresh facts and a live or unprovable one is kept."
+invocation = ["gate-snapshots", "--remove"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "must run inside the repository"
+effects = ["Outside a git repository it refuses (exit 2) before anything is removed."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[gate-snapshots/option-spelling/--remove/--remove]"]
 
 [[cases]]
 id = "case:route:entrypoint:cmru/skills/check/exclusive-conflict/target/option:route:entrypoint:cmru/skills/check/--dest/option:route:entrypoint:cmru/skills/check/--harness"

@@ -1,7 +1,7 @@
 {
   "ok": true,
   "contract": 1,
-  "cgprofile": "1.1.0",
+  "cgprofile": "1.0.0",
   "daemon": {
     "name": "cgprofile-host-daemon",
     "started_at": "2026-09-12T10:15:00Z",
@@ -18,5 +18,10 @@
       "allow_uids": [],
       "peer_cred": true
     }
+  },
+  "resource_observer": {
+    "contract": 2,
+    "path": "/run/cgprofile/observer/resource-observer.sock",
+    "listening": true
   }
 }

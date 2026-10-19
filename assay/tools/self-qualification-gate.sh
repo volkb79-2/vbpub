@@ -121,7 +121,7 @@ run_b110_pilot_inner() {
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
     --output b110-pilot-plan.json -- \
     timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
-      "$assay_bin" plan self-qualification --file assay.toml
+      "$assay_bin" plan self-qualification --json --file assay.toml
   pilot_plan_status=$?
   set -e
   if (( pilot_plan_status != 0 )); then
@@ -166,7 +166,7 @@ run_b110_pilot_inner() {
     --output b110-pilot-summary.json --stderr b110-pilot-run.log -- \
     timeout --verbose --signal=TERM --kill-after=30s "${pilot_run_timeout_s}s" \
       "$assay_bin" run self-qualification --file assay.toml \
-      --candidates-file "$assay_state_root/b110-pilot-candidates.txt" --pilot-jobs 3 --cold-witness --resume \
+      --candidates-file "$assay_state_root/b110-pilot-candidates.txt" --pilot-jobs 1 --cold-witness --resume \
       --state-dir "$assay_state_root/b110-pilot-state" --progress "$assay_state_root/progress-b110-pilot.jsonl" \
       --r2-manifest "$assay_state_root/r2-manifest-b110-pilot.txt" \
       --campaign-deadline "$pilot_deadline"
@@ -267,7 +267,10 @@ run_analysis_r2_pilot() {
   local pilot_plan_status pilot_selection_status checker_status pilot_init_status
   local campaign_remaining_after_run_s pilot_run_timeout_s pilot_run_started_s
   local pilot_checker_stdout pilot_attestation_sha256
-  local state_dir=.assay/analysis-r2-pilot-state
+  # Keep resume records separate for each exact source revision. A fixed path
+  # would make a new pilot collide with the previous
+  # commit's PILOT-STATE sentinel; the old records remain available for audit.
+  local state_dir=.assay/analysis-r2-pilot-state-${source_commit:0:12}
   local plan_path=.assay/analysis-r2-pilot-plan.json
   local candidates_path=.assay/analysis-r2-pilot-candidates.txt
   local selection_path=.assay/analysis-r2-pilot-selection.json
@@ -317,7 +320,7 @@ run_analysis_r2_pilot() {
   fi
   set +e
   timeout --verbose --signal=TERM --kill-after=30s "${pilot_step_budget_s}s" \
-    "$assay_bin" plan analysis-r2 --file assay.toml --cold-witness > "$plan_path"
+    "$assay_bin" plan analysis-r2 --json --file assay.toml --cold-witness > "$plan_path"
   pilot_plan_status=$?
   set -e
   if (( pilot_plan_status != 0 )); then
@@ -451,7 +454,7 @@ run_b110_screen() {
     --expected-assay-device "$ASSAY_B110_ASSAY_STATE_DEVICE" \
     --expected-assay-inode "$ASSAY_B110_ASSAY_STATE_INODE" \
     --output b110-screen-plan.json -- \
-    "$assay_bin" plan self-qualification --file assay.toml \
+    "$assay_bin" plan self-qualification --json --file assay.toml \
     || { plan_status=$?; echo "B110_SCREEN_PLANNING_FAILED=1" >&2; return "$plan_status"; }
   set +e
   python3 "$project/tools/b110_pilot_safe_output.py" \
@@ -585,7 +588,7 @@ source_epoch="$(assay_git -C "$scratch/source" log -1 --format=%ct "$source_comm
   || die "cannot derive SOURCE_DATE_EPOCH from selected commit $source_commit"
 
 # S1 (B123): the full lane needs the registered tester-unified gate to have passed
-# at this exact commit and tree. `./run-gate.py tester-unified` writes this receipt
+# at this exact commit and tree. `run-gate tester-unified` writes this receipt
 # only after a green run; the preflight lane does not require it (CD9).
 receipt="$project/.assay/registered-gate/tester-unified.json"
 if [[ "$requested_lane" == "self-qualification" ]]; then
@@ -595,7 +598,7 @@ if [[ "$requested_lane" == "self-qualification" ]]; then
     --tester-unified-receipt "$receipt" \
     --expected-commit "$source_commit" \
     --expected-tree "$source_tree" \
-    || die "no registered tester-unified pass at $source_commit; run ./run-gate.py tester-unified first"
+    || die "no registered tester-unified pass at $source_commit; run run-gate tester-unified first"
 fi
 
 distribution="$project/gate/distribution"
@@ -807,7 +810,7 @@ run_and_verify_lane() {
 
   if [[ "$expected_rigor" == *R2* ]]; then
     echo "B105_PHASE=assay-plan-$lane"
-    "$assay_bin" plan "$lane" --file assay.toml > "$plan_path" || return 2
+    "$assay_bin" plan "$lane" --json --file assay.toml > "$plan_path" || return 2
     plan_args=(--plan-json "$plan_path")
   fi
 

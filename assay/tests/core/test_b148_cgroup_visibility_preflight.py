@@ -1,4 +1,4 @@
-"""B148: native R2 needs a visible cgroup hierarchy before R0 starts."""
+"""B148: native R2 needs a visible cgroup hierarchy; preserve independent R0."""
 
 from __future__ import annotations
 
@@ -13,12 +13,28 @@ from conftest import GitRepo
 from assay import cli, mutation, resource_limits
 from assay.cli import main
 from assay.config import load_lane_file
-from assay.errors import AssayError, Outcome, ReasonCode
 from assay.verify import verify_document
 
 
-def _native_lane(repo: GitRepo, marker: Path, *, max_mutants: int = 50) -> Path:
+def _native_lane(
+    repo: GitRepo,
+    marker: Path,
+    *,
+    max_mutants: int = 50,
+    include_r3: bool = False,
+) -> Path:
     repo.write(".gitignore", "__pycache__/\n.pytest_cache/\n")
+    repo.write(
+        "tests/conftest.py",
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\n",
+    )
+    repo.write(
+        "tests/test_mod.py",
+        "import sys\nfrom pathlib import Path\n"
+        "sys.path.insert(0, str(Path(__file__).parents[1] / 'src'))\n"
+        "from mod import f, g\n\ndef test_f():\n    assert f(1)\n"
+        "\ndef test_g():\n    assert g(1)\n",
+    )
     repo.write("src/mod.py", "def f(x):\n    return 0\n\ndef g(y):\n    return 0\n")
     base = repo.commit_all("seed source")
     repo.write(
@@ -26,12 +42,14 @@ def _native_lane(repo: GitRepo, marker: Path, *, max_mutants: int = 50) -> Path:
         "def f(x):\n    return x > 0\n\ndef g(y):\n    return y > 0\n",
     )
     repo.commit_all("add native mutation candidates")
-    argv = json.dumps(
-        [
-            sys.executable,
-            "-c",
-            f"from pathlib import Path; Path({str(marker)!r}).touch()",
-        ]
+    argv = json.dumps([sys.executable, "-m", "pytest", "tests", "-q"])
+    rigor = ["R0", "R2", "R3"] if include_r3 else ["R0", "R2"]
+    canary = (
+        "\n[lanes.package.judge.canary]\n"
+        'mechanism = "import-break"\n'
+        'target = "src/mod.py"\n'
+        if include_r3
+        else ""
     )
     path = repo.write(
         "assay.toml",
@@ -40,7 +58,7 @@ schema_version = 2
 
 [lanes.package]
 scope = "S1"
-rigor = ["R0", "R2"]
+rigor = {json.dumps(rigor)}
 enforcement = "gate"
 argv = {argv}
 env = {{}}
@@ -60,6 +78,7 @@ base = "{base}"
 jobs = 1
 max_mutants = {max_mutants}
 operators = ["python:compare-swap"]
+{canary}
 """,
     )
     repo.commit_all("declare native R2 lane")
@@ -75,9 +94,16 @@ def _unavailable(monkeypatch) -> None:
         ),
     )
 
+    def refuse_resource_sample(**_kwargs):
+        raise resource_limits.ResourceLimitObservationError(
+            "fixture hides the cgroup ancestor"
+        )
+
+    monkeypatch.setattr(mutation, "read_candidate_resource_counters", refuse_resource_sample)
+
 
 def test_preflight_passes_explicit_observer_setting(monkeypatch):
-    observer_path = "/run/cgprofile/resource-observer.sock"
+    observer_path = "/run/cgprofile-observer/resource-observer.sock"
     monkeypatch.setenv("ASSAY_RESOURCE_OBSERVER_SOCKET", observer_path)
     calls = []
     capability = resource_limits.ResourceObservationCapability(available=True)
@@ -97,11 +123,11 @@ def _run(argv: list[str]) -> tuple[int, str, str]:
     return code, out.getvalue(), err.getvalue()
 
 
-def test_selected_native_candidates_refuse_before_r0_when_cgroup_is_hidden(
+def test_selected_native_candidates_preserve_r0_when_cgroup_is_hidden(
     git_repo: GitRepo, tmp_path: Path, monkeypatch
 ):
     marker = tmp_path / "r0-ran"
-    lane = _native_lane(git_repo, marker)
+    lane = _native_lane(git_repo, marker, include_r3=True)
     _unavailable(monkeypatch)
 
     code, out, err = _run(
@@ -109,14 +135,17 @@ def test_selected_native_candidates_refuse_before_r0_when_cgroup_is_hidden(
     )
 
     document = json.loads(out)
-    assert code == 3
-    assert document["outcome"] == "NO_MEASUREMENT"
-    assert document["reason_code"] == "CGROUP_OBSERVATION_UNAVAILABLE"
-    assert all(claim["status"] == "NO_MEASUREMENT" for claim in document["claims"])
+    claims = {claim["rigor"]: claim for claim in document["claims"]}
+    assert code == 3, (
+        f"reason={document.get('reason_code')} claims={claims!r} stderr={err}"
+    )
+    assert marker.exists()
+    assert claims["R0"]["status"] == "PASS"
+    assert claims["R2"]["status"] == "NO_MEASUREMENT"
+    assert claims["R2"]["reason_code"] == "CGROUP_OBSERVATION_UNAVAILABLE"
+    assert claims["R3"]["status"] == "PASS"
     assert verify_document(document) == []
-    assert not marker.exists()
-    assert "complete cgroup v2 ancestor hierarchy" in err
-    assert "configure the runner" in err
+    assert "CGROUP_OBSERVATION_UNAVAILABLE" in err
 
 
 def test_plan_reports_selected_candidate_visibility_without_refusing(
@@ -126,7 +155,7 @@ def test_plan_reports_selected_candidate_visibility_without_refusing(
     _unavailable(monkeypatch)
     out, err = io.StringIO(), io.StringIO()
 
-    code = main(["plan", "package", "--file", str(lane)], stdout=out, stderr=err)
+    code = main(["plan", "--json", "package", "--file", str(lane)], stdout=out, stderr=err)
 
     payload = json.loads(out.getvalue())
     assert code == 0
@@ -158,6 +187,7 @@ def test_empty_selected_shard_does_not_trigger_cgroup_refusal(
     plan_code = main(
         [
             "plan",
+            "--json",
             "package",
             "--file",
             str(lane),
@@ -199,7 +229,7 @@ def test_over_limit_inventory_keeps_mutant_limit_refusal_after_r0(
     _unavailable(monkeypatch)
     plan_out, plan_err = io.StringIO(), io.StringIO()
     plan_code = main(
-        ["plan", "package", "--file", str(lane)],
+        ["plan", "--json", "package", "--file", str(lane)],
         stdout=plan_out,
         stderr=plan_err,
     )
@@ -234,7 +264,7 @@ def test_unsupported_native_discovery_does_not_claim_candidates(
     )
     plan_out, plan_err = io.StringIO(), io.StringIO()
     plan_code = main(
-        ["plan", "package", "--file", str(lane)],
+        ["plan", "--json", "package", "--file", str(lane)],
         stdout=plan_out,
         stderr=plan_err,
     )
@@ -254,88 +284,3 @@ def test_unsupported_native_discovery_does_not_claim_candidates(
     assert document["reason_code"] == "MUTATION_UNSUPPORTED"
     assert "CGROUP_OBSERVATION_UNAVAILABLE" not in err
     assert "CGROUP_OBSERVATION_UNAVAILABLE" not in out
-
-
-@pytest.mark.parametrize(
-    ("discovery_outcome", "discovery_reason", "expected_outcome", "expected_reason"),
-    [
-        (
-            Outcome.ERROR,
-            ReasonCode.GIT_FAILED,
-            Outcome.ERROR,
-            ReasonCode.GIT_FAILED,
-        ),
-        (
-            Outcome.ERROR,
-            ReasonCode.MUTATION_DISCOVERY_FAILED,
-            Outcome.NO_MEASUREMENT,
-            ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
-        ),
-    ],
-)
-def test_failed_discovery_stops_before_r0_without_a_false_empty_plan(
-    git_repo: GitRepo,
-    tmp_path: Path,
-    monkeypatch,
-    discovery_outcome: Outcome,
-    discovery_reason: ReasonCode,
-    expected_outcome: Outcome,
-    expected_reason: ReasonCode,
-):
-    marker = tmp_path / "r0-ran"
-    lane = _native_lane(git_repo, marker)
-    _unavailable(monkeypatch)
-
-    def fail_discovery(*_args, **_kwargs):
-        raise AssayError(
-            "fixture could not inspect candidate source",
-            outcome=discovery_outcome,
-            reason_code=discovery_reason,
-        )
-
-    monkeypatch.setattr(cli, "_discover_plan_jobs", fail_discovery)
-    code, out, err = _run(
-        ["run", "package", "--file", str(lane), "--verdict-json", "-"]
-    )
-
-    document = json.loads(out)
-    assert code == expected_outcome.exit_code
-    assert document["outcome"] == expected_outcome.value
-    assert document["reason_code"] == expected_reason.value
-    assert all(
-        claim["reason_code"] == expected_reason.value for claim in document["claims"]
-    )
-    assert all(
-        "fixture could not inspect candidate source" in claim["detail"]
-        for claim in document["claims"]
-    )
-    assert not marker.exists()
-    assert expected_reason.value in err
-
-
-def test_shard_selection_timeout_writes_the_reserved_verdict(
-    git_repo: GitRepo, tmp_path: Path, monkeypatch
-):
-    marker = tmp_path / "r0-ran"
-    lane = _native_lane(git_repo, marker)
-    _unavailable(monkeypatch)
-
-    def timeout_selection(*_args, **_kwargs):
-        raise AssayError(
-            "fixture lane deadline expired during shard selection",
-            outcome=Outcome.BUDGET_EXCEEDED,
-            reason_code=ReasonCode.LANE_TIMEOUT,
-        )
-
-    monkeypatch.setattr(cli, "_select_plan_jobs", timeout_selection)
-    code, out, err = _run(
-        ["run", "package", "--file", str(lane), "--verdict-json", "-"]
-    )
-
-    document = json.loads(out)
-    assert code == Outcome.BUDGET_EXCEEDED.exit_code
-    assert document["outcome"] == Outcome.BUDGET_EXCEEDED.value
-    assert document["reason_code"] == ReasonCode.LANE_TIMEOUT.value
-    assert verify_document(document) == []
-    assert not marker.exists()
-    assert "fixture lane deadline expired during shard selection" in err

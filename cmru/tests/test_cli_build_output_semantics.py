@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import hashlib
+from html.parser import HTMLParser
 import json
 import os
+import re
 import tomllib
 import venv
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
+from markdown_it import MarkdownIt
 import pytest
 
 from cmru import cli, handlers, release, runner, transaction
@@ -609,6 +613,1405 @@ def test_build_output_publication_passes_protected_record_context_to_push_step(
         "CMRU_BUILD_SOURCE_COMMIT": SOURCE_COMMIT,
         "CMRU_BUILD_SOURCE_DATE": record["manifest"]["source_commit_date"],
     }
+
+
+_GFM_MARKDOWN = MarkdownIt("gfm-like", {"html": True})
+_NON_PROSE_HTML_TAGS = {
+    "code", "del", "kbd", "noscript", "pre", "s", "samp", "script", "style",
+    "strike", "svg", "table", "template", "textarea", "title", "xmp", "iframe", "noembed", "noframes",
+}
+_HTML_BLOCK_TAGS = {
+    "address", "article", "aside", "blockquote", "div", "dl", "fieldset",
+    "dd", "details", "dt", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
+    "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p",
+    "section", "summary", "ul",
+}
+_HTML_HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+_VOID_HTML_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
+}
+_OMITTED_MARKER = "\ufffc"
+_HTML_BLOCK_SEPARATOR = "\ufdd0"
+
+
+@dataclass
+class _HTMLStackEntry:
+    tag: str
+    suppressed: bool
+    closed_details: bool = False
+    visible_summary_owner: _HTMLStackEntry | None = None
+    details_summary_seen: bool = False
+    source_code_container: bool = False
+
+
+class _NonProseHTMLTracker(HTMLParser):
+    """Track visible and non-prose HTML elements across Markdown tokens."""
+
+    def __init__(
+        self,
+        *,
+        include_headings: bool = False,
+        include_source_code_claims: bool = False,
+    ):
+        super().__init__(convert_charrefs=True)
+        self.stack: list[_HTMLStackEntry] = []
+        self.capture_data = False
+        self.include_headings = include_headings
+        self.include_source_code_claims = include_source_code_claims
+        self.heading_depth = 0
+        self.visible_chunks: list[str] = []
+
+    @property
+    def suppresses(self) -> bool:
+        for index, element in enumerate(self.stack):
+            if not element.suppressed:
+                continue
+            if element.closed_details and any(
+                child.visible_summary_owner is element
+                for child in self.stack[index + 1:]
+            ):
+                continue
+            return True
+        return False
+
+    @property
+    def suppresses_source_code_claims(self) -> bool:
+        for index, element in enumerate(self.stack):
+            if not element.suppressed or element.source_code_container:
+                continue
+            if element.closed_details and any(
+                child.visible_summary_owner is element
+                for child in self.stack[index + 1:]
+            ):
+                continue
+            return True
+        return False
+
+    @property
+    def captures_source_code_claims(self) -> bool:
+        return (
+            self.include_source_code_claims
+            and any(element.source_code_container for element in self.stack)
+            and not self.suppresses_source_code_claims
+        )
+
+    def handle_starttag(self, tag, attrs):
+        hidden = any(name and name.lower() == "hidden" for name, _value in attrs)
+        is_open = any(name and name.lower() == "open" for name, _value in attrs)
+        closed_details = tag == "details" and not is_open and not hidden
+        suppressed = tag in _NON_PROSE_HTML_TAGS or hidden or closed_details
+        source_code_container = (
+            tag in {"code", "kbd", "pre", "samp"}
+            and not hidden
+            and not closed_details
+        )
+        if tag in _HTML_HEADING_TAGS:
+            self.heading_depth += 1
+        visible_summary_owner = None
+        if tag == "summary" and self.stack and self.stack[-1].tag == "details":
+            details = self.stack[-1]
+            if not details.details_summary_seen:
+                visible_summary_owner = details
+            details.details_summary_seen = True
+        if self.capture_data and tag in _HTML_BLOCK_TAGS:
+            self.visible_chunks.append(_HTML_BLOCK_SEPARATOR)
+        if self.capture_data and tag == "img":
+            self.visible_chunks.append(_OMITTED_MARKER)
+        if self.capture_data and suppressed:
+            self.visible_chunks.append(_OMITTED_MARKER)
+        elif self.capture_data and tag == "br":
+            self.visible_chunks.append(" ")
+        elif self.capture_data and tag == "hr":
+            self.visible_chunks.append(_HTML_BLOCK_SEPARATOR)
+        if tag not in _VOID_HTML_TAGS:
+            self.stack.append(
+                _HTMLStackEntry(
+                    tag,
+                    suppressed,
+                    closed_details,
+                    visible_summary_owner,
+                    source_code_container=source_code_container,
+                )
+            )
+
+    def handle_endtag(self, tag):
+        was_suppressed = self.suppresses
+        matching = [
+            index for index, element in enumerate(self.stack) if element.tag == tag
+        ]
+        if matching:
+            del self.stack[matching[-1]:]
+            if tag in _HTML_HEADING_TAGS:
+                self.heading_depth = max(0, self.heading_depth - 1)
+        if self.capture_data and tag in _HTML_BLOCK_TAGS:
+            self.visible_chunks.append(_HTML_BLOCK_SEPARATOR)
+        if self.capture_data and was_suppressed and not self.suppresses:
+            self.visible_chunks.append(_OMITTED_MARKER)
+
+    def handle_startendtag(self, tag, attrs):
+        # In HTML, the slash does not self-close non-void elements such as
+        # <code/> or <pre/>; the browser keeps their contents in that element.
+        if tag in _VOID_HTML_TAGS:
+            hidden = any(name and name.lower() == "hidden" for name, _value in attrs)
+            if self.capture_data and (tag == "img" or hidden):
+                self.visible_chunks.append(_OMITTED_MARKER)
+            elif self.capture_data and tag == "br":
+                self.visible_chunks.append(" ")
+            elif self.capture_data and tag == "hr":
+                self.visible_chunks.append(_HTML_BLOCK_SEPARATOR)
+            return
+        self.handle_starttag(tag, attrs)
+
+    def handle_data(self, data):
+        if not self.capture_data:
+            return
+        if self.suppresses:
+            if (
+                self.include_source_code_claims
+                and any(element.source_code_container for element in self.stack)
+                and not self.suppresses_source_code_claims
+            ):
+                self.visible_chunks.append(data)
+            else:
+                self.visible_chunks.append(_OMITTED_MARKER)
+        elif self.heading_depth and not self.include_headings:
+            self.visible_chunks.append(_OMITTED_MARKER)
+        else:
+            self.visible_chunks.append(data)
+
+    def handle_comment(self, _data):
+        if self.capture_data:
+            self.visible_chunks.append(_OMITTED_MARKER)
+
+    def handle_decl(self, _decl):
+        if self.capture_data:
+            self.visible_chunks.append(_OMITTED_MARKER)
+
+    def unknown_decl(self, _data):
+        if self.capture_data:
+            self.visible_chunks.append(_OMITTED_MARKER)
+
+    def take_visible_text(self) -> str:
+        text = "".join(self.visible_chunks)
+        self.visible_chunks.clear()
+        return text
+
+
+def _markdown_prose_blocks(
+    text: str,
+    *,
+    include_headings: bool = False,
+    include_tables: bool = False,
+    include_source_code_claims: bool = False,
+) -> list[str]:
+    """Return visible prose and optionally source claims in inline code."""
+    tokens = _GFM_MARKDOWN.parse(text)
+    blocks: list[str] = []
+    table_depth = 0
+    table_row_cells: list[str] | None = None
+    non_prose_html = _NonProseHTMLTracker(
+        include_headings=include_headings,
+        include_source_code_claims=include_source_code_claims,
+    )
+    for index, token in enumerate(tokens):
+        if token.type == "html_block":
+            non_prose_html.capture_data = True
+            non_prose_html.feed(token.content)
+            non_prose_html.capture_data = False
+            for raw_block in non_prose_html.take_visible_text().split(_HTML_BLOCK_SEPARATOR):
+                visible_html = " ".join(raw_block.split())
+                if visible_html:
+                    blocks.append(visible_html)
+            continue
+        if token.type == "table_open":
+            table_depth += 1
+            continue
+        if token.type == "table_close":
+            table_depth -= 1
+            continue
+        if include_tables and table_depth and token.type == "tr_open":
+            table_row_cells = []
+            continue
+        if include_tables and table_depth and token.type == "tr_close":
+            if table_row_cells:
+                blocks.append(" | ".join(table_row_cells))
+            table_row_cells = None
+            continue
+        if token.type != "inline" or index == 0:
+            continue
+        previous_type = tokens[index - 1].type
+        if table_depth:
+            if not include_tables or previous_type not in {"th_open", "td_open"}:
+                continue
+        elif previous_type != "paragraph_open" and not (
+            include_headings and previous_type == "heading_open"
+        ):
+            continue
+        visible: list[str] = []
+        strikethrough_depth = 0
+        for child in token.children or ():
+            if child.type == "s_open":
+                strikethrough_depth += 1
+                visible.append(_OMITTED_MARKER)
+                continue
+            if child.type == "s_close":
+                strikethrough_depth = max(0, strikethrough_depth - 1)
+                visible.append(_OMITTED_MARKER)
+                continue
+            if child.type == "html_inline":
+                was_capturing = non_prose_html.capture_data
+                non_prose_html.capture_data = True
+                non_prose_html.feed(child.content)
+                inline_html = non_prose_html.take_visible_text()
+                if strikethrough_depth:
+                    non_prose_html.capture_data = was_capturing
+                    continue
+                html_blocks = inline_html.split(_HTML_BLOCK_SEPARATOR)
+                if len(html_blocks) == 1:
+                    visible.append(inline_html)
+                else:
+                    visible.append(html_blocks[0])
+                    current = " ".join("".join(visible).split())
+                    if current:
+                        blocks.append(current)
+                    visible = []
+                    for html_block in html_blocks[1:-1]:
+                        current = " ".join(html_block.split())
+                        if current:
+                            blocks.append(current)
+                    visible.append(html_blocks[-1])
+                non_prose_html.capture_data = was_capturing
+                continue
+            if strikethrough_depth:
+                continue
+            if non_prose_html.suppresses and not (
+                non_prose_html.captures_source_code_claims
+                and child.type in {"text", "text_special", "softbreak", "hardbreak"}
+            ):
+                continue
+            if child.type in {"text", "text_special", "softbreak", "hardbreak"}:
+                # Markdown-it has already decoded character references. Decoding
+                # text_special again would turn a literal `&#32;` into a space
+                # and let encoded non-matching text satisfy the prose oracle.
+                visible.append(child.content if child.type in {"text", "text_special"} else " ")
+            elif child.type == "code_inline":
+                # These identifiers can carry the source of a release claim,
+                # including when documentation formats them as inline code.
+                source_references = re.findall(
+                    r"\b(?:CMRU_RELEASE_(?:COMMIT|TAG)|HEAD|origin/main|main|trunk)\b|[=|]",
+                    child.content,
+                    flags=re.IGNORECASE,
+                )
+                if include_source_code_claims and source_references:
+                    visible.append(child.content)
+                elif source_references:
+                    visible.append(" ".join(source_references))
+                else:
+                    # Omitted inline code can narrow a claim between
+                    # surrounding words. Preserve a boundary rather than
+                    # concatenating them.
+                    visible.append(_OMITTED_MARKER)
+            elif child.type == "image":
+                # Alt text is not prose for this assertion, but it must not
+                # make words on either side appear adjacent.
+                visible.append(_OMITTED_MARKER)
+        rendered = "".join(visible)
+        if table_depth:
+            if include_tables and table_row_cells is not None:
+                table_row_cells.append(rendered)
+        else:
+            blocks.append(rendered)
+    return blocks
+
+
+def test_markdown_wrapped_lines_join_but_paragraphs_remain_separate():
+    wrapped = _markdown_prose_blocks("The phrase clears\nambient values here.")
+    separated = _markdown_prose_blocks("The phrase clears\n\nambient values here.")
+    assert any("clears ambient values" in paragraph for paragraph in wrapped)
+    assert not any("clears ambient values" in paragraph for paragraph in separated)
+
+
+def test_markdown_assertion_blocks_do_not_cross_list_items_or_code_fences():
+    separate_items = _markdown_prose_blocks(
+        "- CMRU_RELEASE_COMMIT and CMRU_RELEASE_TAG\n"
+        "- clears ambient values\n"
+        "- not an authentication token"
+    )
+    separate_headings = _markdown_prose_blocks(
+        "# CMRU_RELEASE_COMMIT and CMRU_RELEASE_TAG\n"
+        "# clears ambient values\n"
+        "# not an authentication token"
+    )
+    setext_heading = _markdown_prose_blocks(
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n---"
+    )
+    multiline_setext_heading = _markdown_prose_blocks(
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\ncontinued title\n---"
+    )
+    code_only = _markdown_prose_blocks(
+        "````text\n```python\nCMRU_RELEASE_COMMIT CMRU_RELEASE_TAG "
+        "clears ambient values; not an authentication token\n````"
+    )
+    table_only = _markdown_prose_blocks(
+        "CMRU_RELEASE_COMMIT | CMRU_RELEASE_TAG | clears ambient values\n"
+        "--- | --- | ---\n"
+        "not an authentication token | explanatory data | table data"
+    )
+    tab_indented_code = _markdown_prose_blocks(
+        "\tCMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    indented_code = _markdown_prose_blocks(
+        "    CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    list_continuation = _markdown_prose_blocks(
+        "- CMRU_RELEASE_COMMIT and CMRU_RELEASE_TAG\n"
+        "    clears ambient values; not an authentication token"
+    )
+    list_fenced_code = _markdown_prose_blocks(
+        "- release identity\n"
+        "    ```text\n"
+        "    CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n"
+        "    ```"
+    )
+    details_only = _markdown_prose_blocks(
+        "<details><summary>"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+        "</summary><p>Details</p></details>"
+    )
+    hanging_indentation = _markdown_prose_blocks(
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values;\n"
+        "    not an authentication token"
+    )
+    inline_html = _markdown_prose_blocks(
+        "<span>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token</span>"
+    )
+    type7_html_inside_paragraph = _markdown_prose_blocks(
+        "A paragraph starts\n"
+        "<Warning>\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    prose_after_comment = _markdown_prose_blocks(
+        "<!-- hidden CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token -->\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    required = (
+        "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG", "clears ambient values",
+        "not an authentication token",
+    )
+    assert not any(all(item in block for item in required) for block in separate_items)
+    assert not any(all(item in block for item in required) for block in separate_headings)
+    assert not any(all(item in block for item in required) for block in setext_heading)
+    assert not any(all(item in block for item in required) for block in multiline_setext_heading)
+    assert not any(all(item in block for item in required) for block in code_only)
+    assert not any(all(item in block for item in required) for block in list_fenced_code)
+    assert not any(all(item in block for item in required) for block in table_only)
+    assert not any(all(item in block for item in required) for block in tab_indented_code)
+    assert not any(all(item in block for item in required) for block in indented_code)
+    assert any(all(item in block for item in required) for block in details_only)
+    assert any(all(item in block for item in required) for block in hanging_indentation)
+    assert any(all(item in block for item in required) for block in inline_html)
+    assert any(all(item in block for item in required) for block in type7_html_inside_paragraph)
+    assert any(all(item in block for item in required) for block in list_continuation)
+    assert any(all(item in block for item in required) for block in prose_after_comment)
+
+
+def test_markdown_table_single_cell_rows_and_raw_html_are_not_prose():
+    required = (
+        "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG", "clears ambient values",
+        "not an authentication token",
+    )
+    single_cell_table_row = _markdown_prose_blocks(
+        "| name |\n| --- |\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    raw_html = _markdown_prose_blocks(
+        "<pre>\n\nCMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n</pre>\n"
+        "<script>\n\nCMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n</script>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    custom_html_tag = _markdown_prose_blocks(
+        "<Warning>\n"
+        "\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</Warning>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    standard_html_container = _markdown_prose_blocks(
+        "<div>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</div>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    html_block_content_after_blank = _markdown_prose_blocks(
+        "<div>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</div>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    html_close_without_blank = _markdown_prose_blocks(
+        "<div>\n"
+        "</div>\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    malformed_table = _markdown_prose_blocks(
+        "| CMRU_RELEASE_COMMIT | CMRU_RELEASE_TAG | clears ambient values |\n"
+        "| --- | --- |\n"
+        "not an authentication token"
+    )
+    pipe_prefixed_prose = _markdown_prose_blocks(
+        "| CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    commented_html_closer = _markdown_prose_blocks(
+        "<details>\n"
+        "<!-- </details> -->\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</details>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    commented_html_opening = _markdown_prose_blocks(
+        "<details><!-- comment starts on the opening line\n"
+        "-->\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</details>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    commented_tag_before_container = _markdown_prose_blocks(
+        "<!-- padding </div> --> <div>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</div>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    assert sum(all(item in block for item in required) for block in single_cell_table_row) == 1
+    assert sum(all(item in block for item in required) for block in raw_html) == 1
+    assert sum(all(item in block for item in required) for block in custom_html_tag) == 2
+    assert sum(all(item in block for item in required) for block in standard_html_container) == 2
+    assert sum(
+        all(item in block for item in required) for block in html_block_content_after_blank
+    ) == 2
+    assert sum(all(item in block for item in required) for block in html_close_without_blank) == 2
+    assert any(all(item in block for item in required) for block in malformed_table)
+    assert any(all(item in block for item in required) for block in pipe_prefixed_prose)
+    assert sum(all(item in block for item in required) for block in commented_html_closer) == 1
+    assert sum(
+        all(item in block for item in required) for block in commented_html_opening
+    ) == 1
+    assert sum(
+        all(item in block for item in required)
+        for block in commented_tag_before_container
+    ) == 2
+
+
+def test_markdown_list_headings_fences_and_code_comments_keep_their_context():
+    required = (
+        "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG", "clears ambient values",
+        "not an authentication token",
+    )
+    nested_heading = _markdown_prose_blocks(
+        "- item\n"
+        "    # CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    nested_setext_heading = _markdown_prose_blocks(
+        "- item\n"
+        "    CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n"
+        "    ---"
+    )
+    inline_list_heading = _markdown_prose_blocks(
+        "- # CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    inline_list_fence = _markdown_prose_blocks(
+        "- ~~~text\n"
+        "  CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n"
+        "  ~~~"
+    )
+    prose_after_nested_fence = _markdown_prose_blocks(
+        "- item\n"
+        "    ```text\n"
+        "    hidden code\n"
+        "    ```\n"
+        "    CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    prose_after_nested_fence_and_blank = _markdown_prose_blocks(
+        "- item\n"
+        "    ```text\n"
+        "    hidden code\n"
+        "    ```\n\n"
+        "    CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    prose_after_code_comment = _markdown_prose_blocks(
+        "```text\n"
+        "<!-- this is code, not a document comment\n"
+        "```\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    prose_after_indented_code_comment = _markdown_prose_blocks(
+        "    <!-- this is indented code, not a document comment\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    prose_after_lazy_blockquote = _markdown_prose_blocks(
+        "> quoted preface\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    prose_after_indented_comment_close = _markdown_prose_blocks(
+        "<!-- hidden comment\n"
+        "    -->\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    assert not any(all(item in block for item in required) for block in nested_heading)
+    assert not any(all(item in block for item in required) for block in nested_setext_heading)
+    assert not any(all(item in block for item in required) for block in inline_list_heading)
+    assert not any(all(item in block for item in required) for block in inline_list_fence)
+    assert any(all(item in block for item in required) for block in prose_after_nested_fence)
+    assert any(all(item in block for item in required) for block in prose_after_nested_fence_and_blank)
+    assert any(all(item in block for item in required) for block in prose_after_code_comment)
+    assert any(all(item in block for item in required) for block in prose_after_indented_code_comment)
+    assert sum(all(item in block for item in required) for block in prose_after_lazy_blockquote) == 2
+    assert any(
+        all(item in block for item in required)
+        for block in prose_after_indented_comment_close
+    )
+
+
+def test_markdown_inline_code_spans_do_not_satisfy_prose_assertion():
+    required = (
+        "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG", "clears ambient values",
+        "not an authentication token",
+    )
+    inline = _markdown_prose_blocks(
+        "`CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token`"
+    )
+    multiline_inline = _markdown_prose_blocks(
+        "`CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears\n"
+        "ambient values; not an authentication token`"
+    )
+    prose_with_inline_code = _markdown_prose_blocks(
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token; see `example`"
+    )
+    prose_with_identifier_references = _markdown_prose_blocks(
+        "`CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` clear the release; "
+        "CMRU clears ambient values and this pair is not an authentication token"
+    )
+    assert not any(all(item in block for item in required) for block in inline)
+    assert not any(all(item in block for item in required) for block in multiline_inline)
+    assert any(all(item in block for item in required) for block in prose_with_inline_code)
+    assert any(
+        all(item in block for item in required)
+        for block in prose_with_identifier_references
+    )
+
+
+def test_markdown_prose_oracle_uses_visible_gfm_paragraph_text():
+    required = (
+        "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG", "clears ambient values",
+        "not an authentication token",
+    )
+
+    def contains_required_prose(source):
+        return any(
+            all(item in block for item in required)
+            for block in _markdown_prose_blocks(source)
+        )
+
+    attribute_only = (
+        'See <span title="CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient '
+        'values; not an authentication token"></span>.'
+    )
+    image_alt_only = (
+        "![CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token](identity.png)"
+    )
+    link_definition_only = (
+        '[identity]: /release "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears '
+        'ambient values; not an authentication token"'
+    )
+    nested_table_only = (
+        "- | name |\n"
+        "  | --- |\n"
+        "  | CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token |"
+    )
+    raw_pre_only = (
+        "<pre\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</pre>"
+    )
+    cdata_only = (
+        "<![CDATA[\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n"
+        "]]>"
+    )
+    custom_html_with_quoted_gt = (
+        '<Warning title="a>b">\n'
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    invalid_fence = (
+        "```lang`bad\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    emphasis = (
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears *ambient* values; "
+        "not an authentication token"
+    )
+    blockquote = (
+        "> CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    entity_spaced = (
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears&#32;ambient values; "
+        "not an authentication token"
+    )
+    double_encoded_entity = (
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears&amp;#32;ambient values; "
+        "not an authentication token"
+    )
+    script_content = (
+        "Intro <script>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token</script>"
+    )
+    script_content_across_paragraphs = (
+        "Intro <script>opening\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</script> closing"
+    )
+    script_content_closed_in_html_block = (
+        "Intro <script>opening\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</script>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    html_code_elements = tuple(
+        f"Intro <{tag}>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        f"not an authentication token</{tag}>"
+        for tag in (
+            "code", "kbd", "pre", "samp", "textarea", "xmp", "iframe",
+            "noembed", "noframes",
+        )
+    )
+    standalone_code_block = (
+        "<code>\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token\n\n"
+        "</code>"
+    )
+    commented_code_close = (
+        "Intro <code>opening\n\n"
+        "<!-- </code> -->\n\n"
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    self_closing_code = (
+        "Intro <code/>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token"
+    )
+    hidden_html = (
+        "Intro <span hidden>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient "
+        "values; not an authentication token</span>"
+    )
+    hidden_nested_html = (
+        "Intro <span hidden><span>hidden content</span>CMRU_RELEASE_COMMIT "
+        "CMRU_RELEASE_TAG clears ambient values; not an authentication token</span>"
+    )
+    raw_html_image_bridge = (
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears"
+        '<img src="claim.png"> ambient values; not an authentication token'
+    )
+    visible_html_block = (
+        "<p>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token</p>"
+    )
+    hidden_html_block = (
+        "<p hidden>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token</p>"
+    )
+    raw_html_split_paragraphs = (
+        "<p>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG</p>\n"
+        "<p>clears ambient values; not an authentication token</p>"
+    )
+    raw_html_table_claim = (
+        "<table><tr><td>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient "
+        "values; not an authentication token</td></tr></table>"
+    )
+    separate_html_details = (
+        "<details><summary>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG</summary></details>"
+        "<details><summary>clears ambient values; not an authentication token</summary></details>"
+    )
+    closed_details_body_claim = (
+        "<details><summary>More</summary><p>CMRU_RELEASE_COMMIT "
+        "CMRU_RELEASE_TAG clears ambient values; not an authentication token</p></details>"
+    )
+    later_details_summary_claim = (
+        "<details><summary>More</summary><summary>CMRU_RELEASE_COMMIT "
+        "CMRU_RELEASE_TAG clears ambient values; not an authentication token</summary></details>"
+    )
+    nested_details_summary_claim = (
+        "<details><div><summary>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears "
+        "ambient values; not an authentication token</summary></div></details>"
+    )
+    nested_details_descendant_summary_claim = (
+        "<details><summary>More</summary><details><summary>CMRU_RELEASE_COMMIT "
+        "CMRU_RELEASE_TAG clears ambient values; not an authentication token"
+        "</summary></details></details>"
+    )
+    visible_details_summary_claim = (
+        "<details><summary>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient "
+        "values; not an authentication token</summary><p>Details</p></details>"
+    )
+    open_details_body_claim = (
+        "<details open><summary>More</summary><p>CMRU_RELEASE_COMMIT "
+        "CMRU_RELEASE_TAG clears ambient values; not an authentication token</p></details>"
+    )
+    svg_text_only = (
+        "<svg><text>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token</text></svg>"
+    )
+    html_retracted_claim = (
+        "<del>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token</del>"
+    )
+    html_struck_claim = (
+        "<strike>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token</strike>"
+    )
+    separate_html_definition_terms = (
+        "<dl><dt>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG</dt>"
+        "<dd>clears ambient values; not an authentication token</dd></dl>"
+    )
+    prose_after_hidden_void = (
+        "Intro <img hidden>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient "
+        "values; not an authentication token"
+    )
+    inline_code_bridge = _markdown_prose_blocks(
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears` only selected` ambient values; "
+        "not an authentication token"
+    )
+    inline_image_bridge = _markdown_prose_blocks(
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears"
+        "![only selected](claim.png) ambient values; not an authentication token"
+    )
+    inline_comment_bridge = _markdown_prose_blocks(
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears"
+        "<!-- only selected --> ambient values; not an authentication token"
+    )
+    visible_html_inline = (
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears <span>ambient</span> values; "
+        "not an authentication token"
+    )
+    inline_html_split_paragraphs = _markdown_prose_blocks(
+        "Intro <p>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG</p>"
+        "<p>clears ambient values; not an authentication token</p>"
+    )
+    strikethrough_claim = (
+        "~~CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears ambient values; "
+        "not an authentication token~~"
+    )
+    visible_html_break_inline = (
+        "CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears<br>ambient values; "
+        "not an authentication token"
+    )
+    visible_html_break_block = (
+        "<p>CMRU_RELEASE_COMMIT CMRU_RELEASE_TAG clears<br>ambient values; "
+        "not an authentication token</p>"
+    )
+
+    assert not contains_required_prose(attribute_only)
+    assert not contains_required_prose(image_alt_only)
+    assert not contains_required_prose(link_definition_only)
+    assert not contains_required_prose(nested_table_only)
+    assert not contains_required_prose(raw_pre_only)
+    assert not contains_required_prose(cdata_only)
+    assert contains_required_prose(custom_html_with_quoted_gt)
+    assert contains_required_prose(invalid_fence)
+    assert contains_required_prose(emphasis)
+    assert contains_required_prose(blockquote)
+    assert contains_required_prose(entity_spaced)
+    assert not contains_required_prose(double_encoded_entity)
+    assert not contains_required_prose(script_content)
+    assert not contains_required_prose(script_content_across_paragraphs)
+    assert contains_required_prose(script_content_closed_in_html_block)
+    assert all(not contains_required_prose(source) for source in html_code_elements)
+    assert not contains_required_prose(standalone_code_block)
+    assert not contains_required_prose(commented_code_close)
+    assert not contains_required_prose(self_closing_code)
+    assert not contains_required_prose(hidden_html)
+    assert not contains_required_prose(hidden_nested_html)
+    assert not contains_required_prose(raw_html_image_bridge)
+    assert contains_required_prose(prose_after_hidden_void)
+    assert contains_required_prose(visible_html_block)
+    assert not contains_required_prose(hidden_html_block)
+    assert not contains_required_prose(raw_html_split_paragraphs)
+    assert not contains_required_prose(raw_html_table_claim)
+    assert not contains_required_prose(separate_html_details)
+    assert not contains_required_prose(closed_details_body_claim)
+    assert not contains_required_prose(later_details_summary_claim)
+    assert not contains_required_prose(nested_details_summary_claim)
+    assert not contains_required_prose(nested_details_descendant_summary_claim)
+    assert contains_required_prose(visible_details_summary_claim)
+    assert contains_required_prose(open_details_body_claim)
+    assert not contains_required_prose(svg_text_only)
+    assert not contains_required_prose(html_retracted_claim)
+    assert not contains_required_prose(html_struck_claim)
+    assert not contains_required_prose(separate_html_definition_terms)
+    assert not contains_required_prose(strikethrough_claim)
+    assert not any("clears ambient values" in block for block in inline_code_bridge)
+    assert not any("clears ambient values" in block for block in inline_image_bridge)
+    assert not contains_required_prose("\n".join(inline_comment_bridge))
+    assert not any(
+        all(item in block for item in required)
+        for block in inline_html_split_paragraphs
+    )
+    assert contains_required_prose(visible_html_inline)
+    assert contains_required_prose(visible_html_break_inline)
+    assert contains_required_prose(visible_html_break_block)
+
+
+_TAGGED_RELEASE_IDENTITY_CONTRACT = (
+    "For tagged release artifact steps, CMRU supplies CMRU_RELEASE_COMMIT as the "
+    "exact gated candidate commit and CMRU_RELEASE_TAG as its tag. It clears both "
+    "ambient values from every other project step, and project and step configuration "
+    "cannot override these protected values. The pair is source-consistency metadata, "
+    "not an authentication token or proof of CMRU provenance."
+)
+
+
+_BAD_RELEASE_SOURCE = (
+    r"(?:the\s+)?(?:(?:current\s+)?(?:HEAD(?:\s+of\s+origin/main)?|"
+    r"origin/main|main|trunk))"
+    r"(?:\s+(?:tip|head|commit|branch))?"
+    r"(?:\s+at\s+build\s+time)?\b"
+)
+_SOURCE_RELATION = (
+    r"(?:\|\s*(?:=\s*)?|=\s*|\b(?:is based on|comes directly from|comes from|"
+    r"built from|sourced from|is sourced from|is|equals|uses|points? to|"
+    r"tracks|identifies|contains|comes)\s+)"
+)
+_TAGGED_RELEASE_MAIN_SOURCE = re.compile(
+    rf"\btagged releases?\b[^.!?]{{0,100}}"
+    rf"(?P<action>\b(?:use|take|set\s+to|point(?:s)?\s+to|derive\s+from|"
+    rf"build\s+from|source\s+from))\s+(?:the\s+)?(?P<source>{_BAD_RELEASE_SOURCE})",
+    re.IGNORECASE,
+)
+_RELEASE_SOURCE_MAIN = re.compile(
+    rf"\b(?:release|artifact|build)(?:\s+\w+){{0,2}}\s+"
+    rf"(?:source|commit|revision)\s*(?P<relation>{_SOURCE_RELATION})"
+    rf"(?P<source>{_BAD_RELEASE_SOURCE})",
+    re.IGNORECASE,
+)
+_CMRU_COMMIT_MAIN_SOURCE = re.compile(
+    rf"\bCMRU_RELEASE_COMMIT\s*(?P<relation>{_SOURCE_RELATION})"
+    rf"(?P<source>{_BAD_RELEASE_SOURCE})",
+    re.IGNORECASE,
+)
+_MAIN_IS_CMRU_COMMIT = re.compile(
+    rf"(?P<source>{_BAD_RELEASE_SOURCE})\s*(?P<relation>"
+    rf"(?:\|\s*(?:=\s*)?|=\s*|\b(?:is|equals|sets?)\s+(?:the\s+)?))"
+    rf"CMRU_RELEASE_COMMIT\b",
+    re.IGNORECASE,
+)
+_NEGATED_RELATION = re.compile(
+    r"(?:\b(?:do|does|did|must|should|can|could|would)\s+not|"
+    r"\b(?:don['’]t|doesn['’]t|didn['’]t|can['’]t|couldn['’]t|"
+    r"wouldn['’]t|shouldn['’]t|mustn['’]t|never|avoid|not))\s*$",
+    re.IGNORECASE,
+)
+_NEGATED_SOURCE_CLAIM = re.compile(
+    r"\b(?:do\s+not|does\s+not|did\s+not|must\s+not|should\s+not|"
+    r"cannot|can['’]t|don['’]t|doesn['’]t|didn['’]t|never)\s+"
+    r"(?:use|set|assign|define|map|base|build|source|take|select|choose|"
+    r"treat|equate|claim|state|assert)\s+(?:the\s+)?$",
+    re.IGNORECASE,
+)
+_VERIFIED_HEAD_SOURCE = re.compile(
+    r"^\s*(?:after|if|when|once|provided that)\s+"
+    r"(?:(?:verifying|checking|confirming)(?:\s+that)?\s+)?"
+    r"HEAD\s*(?:equals|matches|is identical to|==)\s*"
+    r"CMRU_RELEASE_COMMIT\b",
+    re.IGNORECASE,
+)
+_VERIFIED_HEAD_IDENTITY = re.compile(
+    r"\b(?:after|if|when|once|provided that)\s+"
+    r"(?:(?:verifying|checking|confirming)(?:\s+that)?\s+)?"
+    r"HEAD\s*(?:equals|matches|is identical to|==)\s*"
+    r"CMRU_RELEASE_COMMIT\b",
+    re.IGNORECASE,
+)
+
+
+def _relation_is_negated(block: str, relation_start: int) -> bool:
+    prefix = block[max(0, relation_start - 60):relation_start]
+    return _NEGATED_RELATION.search(prefix) is not None
+
+
+def _source_claim_is_negated(
+    block: str,
+    claim_start: int,
+    relation_start: int,
+) -> bool:
+    if _relation_is_negated(block, relation_start):
+        return True
+    prefix = block[max(0, claim_start - 80):claim_start]
+    return _NEGATED_SOURCE_CLAIM.search(prefix) is not None
+
+
+def _has_tagged_release_identity_contradiction(block: str) -> bool:
+    contradiction_patterns = (
+        re.compile(r"\b(?:do|does) not clear ambient values\b", re.IGNORECASE),
+        re.compile(
+            r"\bproject and step configuration can override these protected values\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:clears ambient values|not an authentication token)\b"
+            r"[^.!?]{0,60}\bis obsolete\b",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\b(?:they|these values|the pair)\s+(?:is|are) an authentication token\b",
+            re.IGNORECASE,
+        ),
+    )
+    if any(pattern.search(block) for pattern in contradiction_patterns):
+        return True
+
+    for match in _TAGGED_RELEASE_MAIN_SOURCE.finditer(block):
+        if _relation_is_negated(block, match.start("action")):
+            continue
+        source = match.group("source").strip().casefold()
+        if source.startswith("the "):
+            source = source[4:]
+        if source == "head" and _VERIFIED_HEAD_SOURCE.search(
+            block[match.end():match.end() + 120],
+        ):
+            continue
+        return True
+
+    for pattern in (_RELEASE_SOURCE_MAIN, _CMRU_COMMIT_MAIN_SOURCE):
+        for match in pattern.finditer(block):
+            if _source_claim_is_negated(
+                block,
+                match.start(),
+                match.start("relation"),
+            ):
+                continue
+            source = match.group("source").strip().casefold()
+            if source.startswith("the "):
+                source = source[4:]
+            trailing_text = block[match.end():match.end() + 120]
+            if source == "head" and _VERIFIED_HEAD_SOURCE.search(trailing_text):
+                continue
+            return True
+
+    for match in _MAIN_IS_CMRU_COMMIT.finditer(block):
+        if _source_claim_is_negated(
+            block,
+            match.start(),
+            match.start("relation"),
+        ):
+            continue
+        if match.group("source").strip().casefold() == "head" and any(
+            checked.start() <= match.start("source")
+            and checked.end() >= match.end()
+            for checked in _VERIFIED_HEAD_IDENTITY.finditer(block)
+        ):
+            continue
+        return True
+    return False
+
+
+def _has_tagged_release_identity_contract(
+    paragraphs: list[str],
+    *,
+    visible_blocks: list[str] | None = None,
+) -> bool:
+    visible_blocks = paragraphs if visible_blocks is None else visible_blocks
+    def contradicts(block: str) -> bool:
+        return _has_tagged_release_identity_contradiction(block)
+
+    return (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT in paragraphs
+        and not any(contradicts(block) for block in visible_blocks)
+    )
+
+
+def test_tagged_release_identity_is_documented_for_adopters_and_maintainers():
+    root = Path(__file__).resolve().parents[1]
+    documents = (
+        root / "README.md",
+        root / "docs" / "DESIGN-GUIDE.md",
+        root / "docs" / "CONSUMERS.md",
+    )
+    for path in documents:
+        text = path.read_text(encoding="utf-8")
+        paragraphs = _markdown_prose_blocks(text)
+        visible_blocks = _markdown_prose_blocks(
+            text,
+            include_headings=True,
+            include_tables=True,
+            include_source_code_claims=True,
+        )
+        assert _has_tagged_release_identity_contract(
+            paragraphs, visible_blocks=visible_blocks,
+        ), path
+
+    contradictory_paragraph = _markdown_prose_blocks(
+        "CMRU_RELEASE_COMMIT and CMRU_RELEASE_TAG do not clear ambient values. "
+        "‘clears ambient values’ is obsolete. They are an authentication token; "
+        "‘not an authentication token’ is obsolete."
+    )
+    legacy_phrases = (
+        "CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG", "clears ambient values",
+        "not an authentication token",
+    )
+    assert any(
+        all(phrase in paragraph for phrase in legacy_phrases)
+        for paragraph in contradictory_paragraph
+    )
+    assert not _has_tagged_release_identity_contract(contradictory_paragraph)
+    assert not _has_tagged_release_identity_contract([
+        _TAGGED_RELEASE_IDENTITY_CONTRACT,
+        *contradictory_paragraph,
+    ])
+    current_main_headline = (
+        "CMRU_RELEASE_COMMIT is the current main tip, not the gated candidate."
+    )
+    assert not _has_tagged_release_identity_contract([
+        _TAGGED_RELEASE_IDENTITY_CONTRACT,
+        current_main_headline,
+    ])
+    independent_of_main = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nCMRU_RELEASE_COMMIT is independent of the current origin/main tip."
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(independent_of_main),
+    )
+    accurate_negated_guidance = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nFor tagged releases, do not use the current origin/main tip."
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(accurate_negated_guidance),
+    )
+    colloquial_negated_guidance = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nFor tagged releases, don't use the current main tip."
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(colloquial_negated_guidance),
+    )
+    denied_commit_equivalence = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nCMRU_RELEASE_COMMIT never equals HEAD."
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(denied_commit_equivalence),
+    )
+    verified_commit_equivalence = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nCMRU_RELEASE_COMMIT is HEAD after verifying HEAD equals "
+        "CMRU_RELEASE_COMMIT."
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(verified_commit_equivalence),
+    )
+    verified_tagged_head_source = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nFor tagged releases, use HEAD after verifying HEAD equals "
+        "CMRU_RELEASE_COMMIT."
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(verified_tagged_head_source),
+    )
+    verified_head_guidance = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nThe release build source is HEAD after verifying HEAD equals "
+        "CMRU_RELEASE_COMMIT."
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(verified_head_guidance),
+    )
+    if_verified_head_guidance = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nThe release build source is HEAD if HEAD equals CMRU_RELEASE_COMMIT."
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(if_verified_head_guidance),
+    )
+    unverified_head_source = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nThe release source = HEAD."
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(unverified_head_source),
+    )
+    unrelated_main_source_and_check = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nThe release source is origin/main; after verifying HEAD equals "
+        "CMRU_RELEASE_COMMIT, continue."
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(unrelated_main_source_and_check),
+    )
+    alternate_release_guidance = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nFor tagged releases, use the current main tip."
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(alternate_release_guidance),
+        visible_blocks=_markdown_prose_blocks(
+            alternate_release_guidance, include_headings=True, include_tables=True,
+        ),
+    )
+    table_contradiction = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n| Name | Meaning |\n| --- | --- |\n"
+        + "| CMRU_RELEASE_COMMIT | current main tip, not gated candidate |"
+    )
+    table_visible_blocks = _markdown_prose_blocks(
+        table_contradiction, include_headings=True, include_tables=True,
+    )
+    assert any("current main tip" in block for block in table_visible_blocks)
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(table_contradiction),
+        visible_blocks=table_visible_blocks,
+    )
+    accurate_table = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n| Name | Meaning |\n| --- | --- |\n"
+        + "| CMRU_RELEASE_COMMIT | exact gated candidate SHA |"
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(accurate_table),
+        visible_blocks=_markdown_prose_blocks(
+            accurate_table, include_headings=True, include_tables=True,
+        ),
+    )
+    wrong_head_table = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n| Name | Meaning |\n| --- | --- |\n"
+        + "| CMRU_RELEASE_COMMIT | HEAD of origin/main at build time |"
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(wrong_head_table),
+        visible_blocks=_markdown_prose_blocks(
+            wrong_head_table, include_headings=True, include_tables=True,
+        ),
+    )
+    assignment_contradiction = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nCMRU_RELEASE_COMMIT = origin/main"
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(assignment_contradiction),
+    )
+    code_source_contradiction = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nThe release source is `origin/main`."
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(code_source_contradiction),
+    )
+    backticked_assignment_contradiction = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nThe incorrect mapping is `CMRU_RELEASE_COMMIT=origin/main`."
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(
+            backticked_assignment_contradiction,
+            include_source_code_claims=True,
+        ),
+    )
+    explicitly_negated_assignment = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nDo not use `CMRU_RELEASE_COMMIT=origin/main`."
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(explicitly_negated_assignment),
+        visible_blocks=_markdown_prose_blocks(
+            explicitly_negated_assignment,
+            include_source_code_claims=True,
+        ),
+    )
+    backticked_word_relation_contradiction = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\nThe incorrect mapping is `CMRU_RELEASE_COMMIT is origin/main`."
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(
+            backticked_word_relation_contradiction,
+            include_source_code_claims=True,
+        ),
+    )
+    html_code_source_contradiction = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n<code>CMRU_RELEASE_COMMIT is origin/main</code>"
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(
+            html_code_source_contradiction,
+            include_source_code_claims=True,
+        ),
+    )
+    hidden_html_code_source = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n<code hidden>CMRU_RELEASE_COMMIT is origin/main</code>"
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(hidden_html_code_source),
+        visible_blocks=_markdown_prose_blocks(
+            hidden_html_code_source,
+            include_headings=True,
+            include_tables=True,
+            include_source_code_claims=True,
+        ),
+    )
+    assignment_table_contradiction = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n| Name | Meaning |\n| --- | --- |\n"
+        + "| CMRU_RELEASE_COMMIT | = `HEAD` |"
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(assignment_table_contradiction),
+        visible_blocks=_markdown_prose_blocks(
+            assignment_table_contradiction, include_headings=True, include_tables=True,
+        ),
+    )
+    verified_head_table = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n| Release build source | HEAD if HEAD equals CMRU_RELEASE_COMMIT |"
+    )
+    assert _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(verified_head_table),
+        visible_blocks=_markdown_prose_blocks(
+            verified_head_table, include_headings=True, include_tables=True,
+        ),
+    )
+    generic_main_source_table = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n| Release build source | HEAD of origin/main at build time |"
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(generic_main_source_table),
+        visible_blocks=_markdown_prose_blocks(
+            generic_main_source_table, include_headings=True, include_tables=True,
+        ),
+    )
+
+    contradictory_heading_document = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n# CMRU_RELEASE_COMMIT and CMRU_RELEASE_TAG do not clear ambient values."
+    )
+    paragraphs = _markdown_prose_blocks(contradictory_heading_document)
+    visible_blocks = _markdown_prose_blocks(
+        contradictory_heading_document, include_headings=True, include_tables=True,
+        include_source_code_claims=True,
+    )
+    assert _TAGGED_RELEASE_IDENTITY_CONTRACT in paragraphs
+    assert any("do not clear ambient values" in block for block in visible_blocks)
+    assert not _has_tagged_release_identity_contract(
+        paragraphs, visible_blocks=visible_blocks,
+    )
+
+    contradictory_override_heading = (
+        _TAGGED_RELEASE_IDENTITY_CONTRACT
+        + "\n\n## Project and step configuration can override these protected values."
+    )
+    paragraphs = _markdown_prose_blocks(contradictory_override_heading)
+    visible_blocks = _markdown_prose_blocks(
+        contradictory_override_heading, include_headings=True, include_tables=True,
+        include_source_code_claims=True,
+    )
+    assert any("override these protected values" in block for block in visible_blocks)
+    assert not _has_tagged_release_identity_contract(
+        paragraphs, visible_blocks=visible_blocks,
+    )
+
+    html_heading_only = f"<h2>{_TAGGED_RELEASE_IDENTITY_CONTRACT}</h2>"
+    assert _TAGGED_RELEASE_IDENTITY_CONTRACT not in _markdown_prose_blocks(
+        html_heading_only,
+    )
+    assert _TAGGED_RELEASE_IDENTITY_CONTRACT in _markdown_prose_blocks(
+        html_heading_only, include_headings=True,
+    )
+    assert not _has_tagged_release_identity_contract(
+        _markdown_prose_blocks(html_heading_only),
+        visible_blocks=_markdown_prose_blocks(
+            html_heading_only,
+            include_headings=True,
+            include_tables=True,
+            include_source_code_claims=True,
+        ),
+    )
+
+
+def test_tagged_release_identity_docs_link_and_consumer_check_resolve():
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    design_guide = (root / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (root / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    heading = "Tagged artifact identity binds builds to CMRU's candidate"
+    anchor = "tagged-artifact-identity-binds-builds-to-cmrus-candidate"
+    assert f"### {heading}" in design_guide
+    assert f"docs/DESIGN-GUIDE.md#{anchor}" in readme
+    assert 'head=$(git rev-parse --verify \'HEAD^{commit}\')' in consumers
+    assert (
+        'tag_commit=$(git rev-parse --verify '
+        '"refs/tags/${CMRU_RELEASE_TAG}^{commit}")'
+    ) in consumers
+    assert 'test "$head" = "$CMRU_RELEASE_COMMIT"' in consumers
+    assert 'test "$tag_commit" = "$CMRU_RELEASE_COMMIT"' in consumers
 
 
 def test_builtin_publish_handlers_select_only_inventoried_retained_bytes(
@@ -1570,12 +2973,22 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
     step = _step(
         "build",
         [{"label": "build", "argv": ["cmru", "tester-gate"], "cwd": "."}],
-        step_env={"CMRU_INTERNAL_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
+        step_env={
+            "CMRU_INTERNAL_BIN": "/wrong/step",
+            "CMRU_RELEASE_COMMIT": "wrong-step-commit",
+            "CMRU_RELEASE_TAG": "wrong-step-tag",
+            "PATH": "/wrong/step/bin",
+        },
         quiet=True,
     )
     project = SimpleNamespace(
         name="alpha", cwd="alpha", project_root=tmp_path / "alpha",
-        env={"CMRU_INTERNAL_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value"},
+        env={
+            "CMRU_INTERNAL_BIN": "/wrong/project",
+            "CMRU_RELEASE_COMMIT": "wrong-project-commit",
+            "CMRU_RELEASE_TAG": "wrong-project-tag",
+            "GITHUB_PUSH_PAT": "declared-value",
+        },
         runtime_kind="none", build_metadata={}, github_token="resolved-token",
         runner_steps={"build": step},
     )
@@ -1591,30 +3004,84 @@ def test_run_project_step_protects_bound_cmru_environment(monkeypatch, tmp_path)
     captured = {}
     monkeypatch.setattr(cli, "execute_step", lambda _step, _root, _logs, **kwargs: captured.update(kwargs))
 
-    cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
+    release_identity = {
+        "CMRU_RELEASE_COMMIT": SOURCE_COMMIT,
+        "CMRU_RELEASE_TAG": "alpha-v1.2.3",
+    }
+    cli.run_project_step(
+        project, "build", tmp_path, tmp_path / "logs", protected_env=release_identity,
+    )
 
     assert captured["extra_env"] == {
-        "CMRU_INTERNAL_BIN": "/wrong/project", "GITHUB_PUSH_PAT": "declared-value",
+        "CMRU_INTERNAL_BIN": "/wrong/project",
+        "CMRU_RELEASE_COMMIT": "wrong-project-commit",
+        "CMRU_RELEASE_TAG": "wrong-project-tag",
+        "GITHUB_PUSH_PAT": "declared-value",
     }
     assert captured["protected_env"]["CMRU_INTERNAL_BIN"] == str(launcher_directory[0] / "cmru")
     assert captured["protected_env"]["GITHUB_PUSH_PAT"] == "resolved-token"
+    assert captured["protected_env"]["CMRU_RELEASE_COMMIT"] == SOURCE_COMMIT
+    assert captured["protected_env"]["CMRU_RELEASE_TAG"] == "alpha-v1.2.3"
     assert captured["path_prefixes"] == (launcher_directory[0],)
+
+
+def test_run_project_step_clears_ambient_release_identity_from_ordinary_steps(
+    monkeypatch, tmp_path,
+):
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", "stale-shell-commit")
+    monkeypatch.setenv("CMRU_RELEASE_TAG", "stale-shell-tag")
+    project = SimpleNamespace(
+        name="alpha", cwd="alpha", project_root=tmp_path / "alpha",
+        env={}, runtime_kind="none", build_metadata={}, github_token=None,
+        runner_steps={"build": _step(
+            "build", [{"label": "build", "argv": ["build"], "cwd": "."}], quiet=True,
+        )},
+    )
+    monkeypatch.setattr(cli, "_create_bound_cmru_launcher", lambda directory: directory / "cmru")
+    captured = {}
+    monkeypatch.setattr(cli, "execute_step", lambda _step, _root, _logs, **kwargs: captured.update(kwargs))
+
+    cli.run_project_step(project, "build", tmp_path, tmp_path / "logs")
+
+    assert captured["protected_env"]["CMRU_RELEASE_COMMIT"] is None
+    assert captured["protected_env"]["CMRU_RELEASE_TAG"] is None
+    assert os.environ["CMRU_RELEASE_COMMIT"] == "stale-shell-commit"
+    assert os.environ["CMRU_RELEASE_TAG"] == "stale-shell-tag"
 
 
 def test_runner_reapplies_runtime_binding_after_project_environment_commands(
     monkeypatch, tmp_path,
 ):
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", "stale-shell-commit")
+    monkeypatch.setenv("CMRU_RELEASE_TAG", "stale-shell-tag")
     step = _step(
         "build",
         [{"label": "check", "argv": ["cmru", "version"], "cwd": "."}],
-        step_env={"CMRU_INTERNAL_BIN": "/wrong/step", "PATH": "/wrong/step/bin"},
+        step_env={
+            "CMRU_INTERNAL_BIN": "/wrong/step",
+            "PATH": "/wrong/step/bin",
+            "CMRU_RELEASE_COMMIT": "wrong-step-commit",
+            "CMRU_RELEASE_TAG": "wrong-step-tag",
+        },
         env_command=["./set-env"],
         quiet=True,
     )
+
+    helper_environment = {}
+
+    def set_environment(*_args):
+        helper_environment.update(os.environ)
+        os.environ.update({
+            "CMRU_INTERNAL_BIN": "/wrong/env-command",
+            "PATH": "/wrong/env-command/bin",
+            "CMRU_RELEASE_COMMIT": "env-command-commit",
+            "CMRU_RELEASE_TAG": "env-command-tag",
+        })
+
     monkeypatch.setattr(
         runner,
         "apply_env_command",
-        lambda *_args: os.environ.update({"CMRU_INTERNAL_BIN": "/wrong/env-command", "PATH": "/wrong/env-command/bin"}),
+        set_environment,
     )
     monkeypatch.setattr(runner, "maybe_login_multi", lambda *_args: None)
     captured = []
@@ -1632,7 +3099,11 @@ def test_runner_reapplies_runtime_binding_after_project_environment_commands(
         tmp_path,
         tmp_path / "logs",
         extra_env={"PATH": "/wrong/project", "CMRU_INTERNAL_BIN": "/wrong/project/cmru"},
-        protected_env={"CMRU_INTERNAL_BIN": "/bound/cmru"},
+        protected_env={
+            "CMRU_INTERNAL_BIN": "/bound/cmru",
+            "CMRU_RELEASE_COMMIT": None,
+            "CMRU_RELEASE_TAG": None,
+        },
         path_prefixes=(Path("/bound"),),
     )
 
@@ -1640,3 +3111,61 @@ def test_runner_reapplies_runtime_binding_after_project_environment_commands(
     assert argv == ["cmru", "version"]
     assert command_env["CMRU_INTERNAL_BIN"] == "/bound/cmru"
     assert command_env["PATH"].split(":", 1)[0] == "/bound"
+    assert "CMRU_RELEASE_COMMIT" not in command_env
+    assert "CMRU_RELEASE_TAG" not in command_env
+    assert "CMRU_RELEASE_COMMIT" not in helper_environment
+    assert "CMRU_RELEASE_TAG" not in helper_environment
+
+
+def test_tagged_artifact_release_identity_reaches_environment_helper(
+    monkeypatch, tmp_path,
+):
+    candidate_commit = "a" * 40
+    candidate_tag = "alpha-v1.2.3"
+    monkeypatch.setenv("CMRU_RELEASE_COMMIT", "stale-shell-commit")
+    monkeypatch.setenv("CMRU_RELEASE_TAG", "stale-shell-tag")
+    step = _step(
+        "build",
+        [{"label": "check", "argv": ["build"], "cwd": "."}],
+        step_env={
+            "CMRU_RELEASE_COMMIT": "wrong-step-commit",
+            "CMRU_RELEASE_TAG": "wrong-step-tag",
+        },
+        env_command=["./set-env"],
+        quiet=True,
+    )
+    helper_environment = {}
+    command_environment = {}
+
+    def set_environment(*_args):
+        helper_environment.update(os.environ)
+        os.environ.update({
+            "CMRU_RELEASE_COMMIT": "wrong-helper-commit",
+            "CMRU_RELEASE_TAG": "wrong-helper-tag",
+        })
+
+    monkeypatch.setattr(runner, "apply_env_command", set_environment)
+    monkeypatch.setattr(runner, "maybe_login_multi", lambda *_args: None)
+    monkeypatch.setattr(
+        runner,
+        "run_command",
+        lambda *_args, **_kwargs: (
+            command_environment.update(os.environ)
+            or runner.CommandResult(elapsed_seconds=0, evidence=None)
+        ),
+    )
+
+    runner.execute_step(
+        step,
+        tmp_path,
+        tmp_path / "logs",
+        protected_env={
+            "CMRU_RELEASE_COMMIT": candidate_commit,
+            "CMRU_RELEASE_TAG": candidate_tag,
+        },
+    )
+
+    assert helper_environment["CMRU_RELEASE_COMMIT"] == candidate_commit
+    assert helper_environment["CMRU_RELEASE_TAG"] == candidate_tag
+    assert command_environment["CMRU_RELEASE_COMMIT"] == candidate_commit
+    assert command_environment["CMRU_RELEASE_TAG"] == candidate_tag

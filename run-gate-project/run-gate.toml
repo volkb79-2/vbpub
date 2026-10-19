@@ -1,9 +1,9 @@
 # =============================================================================
-# run-gate-project's own gate lanes — parsed ONLY by run-gate.py (one parser,
+# run-gate-project's own gate lanes — parsed ONLY by the installed run-gate CLI (one parser,
 # D-110). This file declares the lane only.
 #
 # The selftest lane IS the release gate: cmru.toml [steps.run-tests] runs
-# `./run-gate.py selftest`, so a release cannot be tagged or published unless
+# `run-gate selftest`, so a release cannot be tagged or published unless
 # this passes. Dogfooding by design — run-gate gates itself through its own
 # machinery.
 #
@@ -22,21 +22,29 @@
 # that bind AF_UNIX sockets use their own short /tmp fixture, because pytest
 # resolves basetemp symlinks and the checkout path can exceed sun_path.
 #
-# Coverage discipline (2026-08-24 decision): the release lane enforces DIFF
-# coverage at 100% (topos/nyxloom estate pattern, vendored thin gate in
-# tools/coverage_gate.py): every executable line added or changed since the
-# merge-base with main must be covered, same-commit. It does not claim a
+# Coverage discipline: the release lane enforces DIFF coverage at 100%
+# (topos/nyxloom estate pattern, vendored thin gate in tools/coverage_gate.py):
+# every executable line added or changed since the newest reachable stable
+# run-gate-vX.Y.Z tag must be covered, same-commit. If this is the first stable
+# release and no such tag exists, the diff check reports an explicit SKIPPED;
+# Run-Gate's source qualification is supplied by its separately run R0/R1
+# campaign before merge. A present but unreachable stable tag remains an error.
+# This release baseline stays
+# fixed after merge, unlike merge-base(main, HEAD), which becomes HEAD once the
+# candidate is merged and can hide the very changes the release is meant to
+# judge. It does not claim a
 # whole-project 100% floor; the broader line-and-branch `assay-r1` lane is a
 # separate, explicitly invoked judge.
 #
-# --source is scoped to run-gate.py ALONE (not the whole project directory),
+# --source is scoped to run_gate.py ALONE (not the whole project directory),
 # mirroring topos's own `--source topos/src/topos`: the gate never measures
 # itself (tools/coverage_gate.py is vendored infrastructure, outside the
 # scope it enforces, exactly like topos/tools/coverage_gate.py sits outside
 # topos/src/topos) or the test suite (a test's own "coverage" of itself is
 # not a meaningful check). Both --source and --coverage-json are plain
-# "run-gate.py"/"coverage.json" (no "run-gate-project/" prefix): the tool
-# invokes `git diff --relative ...`, which reports paths relative to CWD.
+# "run_gate.py"/"coverage.json" (no "run-gate-project/" prefix): the tool
+# invokes rename-aware `git diff --relative ...` from CWD, then filters parsed
+# paths to --source; unrelated project files stay outside the denominator.
 # The selftest command explicitly enters the effective project dir before
 # pytest and coverage_gate.py run, so the bare filename is what git reports,
 # not a repo-root-relative path.
@@ -46,7 +54,7 @@ schema_version = 1
 [lanes.selftest]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && trap 'status=$?; if [ -n \"$RUN_GATE_TMP\" ]; then rm -rf \"$RUN_GATE_TMP\"; fi; exit \"$status\"' EXIT && RUN_GATE_ABS=\"$(realpath \"$RUN_GATE_TMP\")\" && GIT_CEILING_DIRECTORIES=\"$RUN_GATE_ABS\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp \"$RUN_GATE_ABS\" --cov=. --cov-branch --cov-report=json:coverage.json && /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base main --coverage-json coverage.json --source run-gate.py"]
+argv = ["bash", "-c", "cd {worktree}/run-gate-project && mkdir -p .run-gate/ && if [[ -n \"${RUN_GATE_RELEASE_WHEEL_RECEIPT:-}\" ]]; then /opt/tester-venv/bin/python tools/release_candidate.py verify-running --receipt \"$RUN_GATE_RELEASE_WHEEL_RECEIPT\"; fi && RUN_GATE_TMP=$(mktemp -d .run-gate/selftest.XXXXXX) && trap 'status=$?; if [ -n \"$RUN_GATE_TMP\" ]; then rm -rf \"$RUN_GATE_TMP\"; fi; exit \"$status\"' EXIT && RUN_GATE_ABS=\"$(realpath \"$RUN_GATE_TMP\")\" && GIT_CEILING_DIRECTORIES=\"$RUN_GATE_ABS\" /opt/tester-venv/bin/python -m pytest tests -q --basetemp \"$RUN_GATE_ABS\" --cov=. --cov-branch --cov-report=json:coverage.json && /opt/tester-venv/bin/python tools/coverage_gate.py --repo . --base latest-release-tag --allow-first-release --coverage-json coverage.json --source run_gate.py"]
 budget = "20m"
 artifacts = ["coverage.json"]       # disclosed after every run (RG-10)
 
@@ -57,13 +65,13 @@ cpus = "3"
 
 # =============================================================================
 # RG-55 wave, package P2, C2: assay lanes (D-11). `selftest` above stays the
-# vendored, standalone gate (zero-install, `--source run-gate.py` only,
-# unrelated to whether assay is even reachable); these lanes are the SECOND,
+# direct pytest and diff-coverage gate, without depending on Assay; these
+# lanes are the SECOND,
 # stricter judge, same reasoning cmru/scripts-cgroup-profiler already apply
 # in this repo. Judged scope is DELIBERATELY WIDER than selftest's:
 # `assay.toml`'s `source_roots = ["."]` (RW-8, run-gate-WAVE-RG55-
 # CONTROLLER-LOG.md) judges `tools/coverage_gate.py` too, not just
-# run-gate.py — a changed line there must be covered by
+# run-gate — a changed line there must be covered by
 # tests/test_coverage_gate.py, exactly what "100% on every changed line"
 # means for this project once real judgment (not just diff-coverage) is in
 # the loop. `tests/` is excluded automatically by assay's own
@@ -86,12 +94,16 @@ environment = "tester-unified"
 clean_tree = true
 budget = "30m"
 
+[lanes.assay-r1.resources]
+memory = "2g"
+memory_swap = "16g"
+
 # Mutation (R2). Run in tester-unified with its private cgroup namespace;
 # the observer-only cgprofile socket supplies the hidden host ancestry needed
 # by Assay B145 without exposing the daemon control socket or using
-# --cgroupns=host. Assay runs two isolated mutant workers and Docker caps this
-# container at 3 CPUs, below dev-gates.slice's 5-CPU ceiling. The shared
-# tester cgroup makes Assay's resource-event windows serial (jobs = 1).
+# --cgroupns=host. Assay runs one candidate at a time and Docker caps this
+# container at 3 CPUs, below dev-gates.slice's 5-CPU ceiling. The shared tester
+# cgroup makes Assay's resource-event windows serial (jobs = 1).
 #
 # RW-23b (round-1 review S1): NO `stall_timeout` here. `stall_timeout`
 # (RG-36/R-40c) bounds SILENCE via `ProgressWatch`/`LogStreamWatch`, both of
@@ -115,6 +127,8 @@ clean_tree = true
 budget = "4h"
 
 [lanes.assay-r2.resources]
+memory = "2g"
+pids = 8192
 cpus = "3"
 
 # R3: proves the gate REJECTS known-bad code (`tools/canary-run.sh`, including
@@ -127,6 +141,10 @@ kind = "command"
 environment = "tester-unified"
 argv = ["bash", "-c", "cd {worktree}/run-gate-project && exec tools/canary-run.sh"]
 budget = "15m"
+
+[lanes.assay-r3.resources]
+memory = "1g"
+memory_swap = "16g"
 
 # The implementation/release gate for THIS project's assay lanes: proves
 # selftest AND the r1/r3 pair together. r2 (mutation, up to 4h) is
@@ -142,6 +160,6 @@ environment = "bare-host"
 # assay-r1 delegates its comparison base. Carry the conjunction's resolved
 # base into that sub-invocation so `--base REF gate-full` is honored instead
 # of being refused before the sub-lane can run (RG-26).
-argv = ["bash", "-c", "./run-gate.py selftest && ./run-gate.py --base {base} assay-r1 && ./run-gate.py assay-r3"]
+argv = ["bash", "-c", "run-gate selftest && run-gate --base {base} assay-r1 && run-gate assay-r3"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
 budget = "1h"

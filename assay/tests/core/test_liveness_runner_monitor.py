@@ -322,7 +322,7 @@ def test_external_memory_stalls_do_not_expire_a_progressing_candidate(
     result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=600.0)
     assert result.returncode == 0
     assert clock.t >= 101.0
-    assert proc.waited is True  # normal process-group cleanup still ran.
+    assert proc.waited is False  # poll already reaped the completed leader.
 
 
 def test_pressure_only_candidate_is_incomplete_at_budget_not_classified_hung(
@@ -891,7 +891,7 @@ def test_xdist_session_finishes_do_not_hang_a_progressing_candidate(
     result = runner(("pytest", "-n", "2", "-q"), env={}, cwd=cwd, timeout=600.0)
     assert result.returncode == 0
     assert clock.t == 203.0
-    assert proc.waited  # normal completion still cleans the candidate group.
+    assert proc.waited is False  # poll already reaped the completed leader.
     events = [json.loads(line)["event"] for line in events_path.read_text().splitlines()]
     assert events.count("session_start") == 3
     assert events.count("session_finish") == 3
@@ -944,7 +944,7 @@ def test_xdist_worker_finish_is_ignored_until_owner_finishes(
     # the old finish-only branch and kill at t=31, long before the owner
     # finish and normal process exit.
     assert clock.t == 70.0
-    assert proc.waited  # normal completion still cleans the candidate group.
+    assert proc.waited is False  # poll already reaped the completed leader.
 
 
 # --------------------------------------------------------------------------
@@ -952,15 +952,13 @@ def test_xdist_worker_finish_is_ignored_until_owner_finishes(
 # --------------------------------------------------------------------------
 
 
-def test_normal_completion_cleans_descendants_after_leader_exits(
+def test_normal_completion_does_not_signal_reaped_process_group(
     tmp_path: Path,
 ) -> None:
-    """A clean leader exit must not leave its process group in the gate.
+    """A reaped numeric PGID must not be signaled after normal completion.
 
-    ``poll()`` reaps the candidate before the runner gets here. The old
-    cleanup path then could not call ``getpgid`` and left a still-running
-    child behind, which accumulated across R2 candidates until the container
-    hit its PID ceiling.
+    The runner uses subreaper descendant enumeration after leader exit; it
+    does not risk signaling an unrelated process if the old PGID is reused.
     """
     clock = _FakeClock()
     proc = _ScriptedProc(pid=4246, returncode=0)  # already "exited".
@@ -975,17 +973,17 @@ def test_normal_completion_cleans_descendants_after_leader_exits(
     result = runner(("pytest", "-q"), env={}, cwd=cwd, timeout=60.0)
     assert isinstance(result, subprocess.CompletedProcess)
     assert result.returncode == 0
-    assert killed == [(4246, liveness.signal.SIGKILL)]
-    assert proc.waited
+    assert killed == []
+    assert proc.waited is False  # the leader was already reaped by poll().
 
 
-def test_normal_completion_really_kills_a_real_descendant(
+def test_normal_completion_with_real_descendant_is_recorded_as_crashed(
     tmp_path: Path,
 ) -> None:
-    """Exercise the process-group cleanup against a real orphaned child.
+    """A candidate that leaves a child has no trustworthy functional result.
 
-    The leader exits successfully after starting ``sleep``. The runner must
-    still signal the original session/process group after reaping that leader.
+    The runner kills and reaps the child after the leader exits and attaches
+    evidence so the mutation classifier records this attempt as crashed.
     """
     pid_file = tmp_path / "descendant.pid"
     cwd = tmp_path / "candidate"
@@ -1019,15 +1017,74 @@ def test_normal_completion_really_kills_a_real_descendant(
             cwd=cwd,
             timeout=10.0,
         )
-        assert result.returncode == 0
+        evidence = result.process_tree_evidence
+        assert evidence["outliving_descendants"] >= 1
+        assert evidence["descendants_signalled"] >= 1
+        assert evidence["clean"] is True
         descendant_pid = int(pid_file.read_text(encoding="ascii"))
         deadline = time.monotonic() + 5.0
-        while still_running(descendant_pid) and time.monotonic() < deadline:
+        while Path(f"/proc/{descendant_pid}").exists() and time.monotonic() < deadline:
             time.sleep(0.01)
-        assert not still_running(descendant_pid), "normal completion leaked its child"
+        assert not Path(f"/proc/{descendant_pid}").exists(), (
+            "Assay must reap, not merely kill, a detached candidate descendant"
+        )
     finally:
         if descendant_pid is not None and still_running(descendant_pid):
             os.kill(descendant_pid, liveness.signal.SIGKILL)
+
+
+def test_normal_completion_records_and_reaps_a_setsid_descendant(tmp_path: Path) -> None:
+    pid_file = tmp_path / "setsid-descendant.pid"
+    cwd = tmp_path / "candidate"
+    cwd.mkdir()
+    script = (
+        "import subprocess,sys; "
+        "child=subprocess.Popen(['/bin/sleep','300'],start_new_session=True); "
+        "open(sys.argv[1],'w',encoding='ascii').write(str(child.pid))"
+    )
+    runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "events",
+        expect_next_event_within_s=10.0,
+        poll_interval_s=0.01,
+        resource_reader=lambda pid: _clear_resource_snapshot(),
+    )
+    result = runner(
+        (sys.executable, "-c", script, str(pid_file)),
+        env=os.environ.copy(),
+        cwd=cwd,
+        timeout=10.0,
+    )
+    assert result.process_tree_evidence["outliving_descendants"] >= 1
+    assert result.process_tree_evidence["clean"] is True
+    descendant_pid = int(pid_file.read_text(encoding="ascii"))
+    assert not Path(f"/proc/{descendant_pid}").exists()
+
+
+def test_timeout_reaps_a_setsid_descendant_before_r2_returns(tmp_path: Path) -> None:
+    pid_file = tmp_path / "timeout-setsid-descendant.pid"
+    cwd = tmp_path / "candidate"
+    cwd.mkdir()
+    script = (
+        "import subprocess,sys,time; "
+        "child=subprocess.Popen(['/bin/sleep','300'],start_new_session=True); "
+        "open(sys.argv[1],'w',encoding='ascii').write(str(child.pid)); "
+        "time.sleep(30)"
+    )
+    runner = liveness.LivenessRunner(
+        events_dir=tmp_path / "events",
+        expect_next_event_within_s=60.0,
+        poll_interval_s=0.01,
+        resource_reader=lambda pid: _clear_resource_snapshot(),
+    )
+    with pytest.raises(subprocess.TimeoutExpired):
+        runner(
+            (sys.executable, "-c", script, str(pid_file)),
+            env=os.environ.copy(),
+            cwd=cwd,
+            timeout=0.5,
+        )
+    descendant_pid = int(pid_file.read_text(encoding="ascii"))
+    assert not Path(f"/proc/{descendant_pid}").exists()
 
 
 # --------------------------------------------------------------------------

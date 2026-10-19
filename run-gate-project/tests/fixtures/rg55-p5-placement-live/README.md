@@ -18,7 +18,7 @@ short placement checks independent of host-wide DAMON_STAT mode; cgroup
 placement/readback remains enabled.
 
 Because the fixture lives below the repository, invoke the candidate script
-with `sys.argv[0]` set to this directory's `run-gate.py` path (the launcher
+with `sys.argv[0]` set to the installed `run-gate` command path (the launcher
 uses that path to discover `run-gate.toml`). The controller records the
 container identity, outcome, placement record, body-marker result, and daemon
 session cleanup in the RG-55 P5 report.

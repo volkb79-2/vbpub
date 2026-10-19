@@ -17,6 +17,7 @@ from worktree import (
     list_git_worktrees,
     physical_path,
     read_record,
+    remove_orphan_workspace,
     remove_workspace,
     release_lease,
     workspace_id_for_path,
@@ -332,6 +333,215 @@ def test_allocate_resume_lease_and_remove(repository: Path, tmp_path: Path) -> N
     remove_workspace(context)
     assert not target.exists()
     assert not context.record_path.exists()
+
+
+def test_remove_orphan_workspace_uses_another_checkout_in_the_same_git_family(
+    repository: Path, tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-worktree"
+    _git(repository, "worktree", "add", "--quiet", "-b", "orphan-source", str(source), "HEAD")
+    target = tmp_path / "orphan-target"
+    context = create_workspace(
+        source,
+        target,
+        branch="workspace/orphan-target",
+        purpose="test-orphan-cleanup",
+    )
+    record = read_record(context.record_path)
+
+    _git(repository, "worktree", "remove", "--force", str(source))
+    remove_orphan_workspace(record, executor_git_root=repository)
+
+    assert not target.exists()
+    assert not context.record_path.exists()
+    branch = subprocess.run(
+        ["git", "show-ref", "--verify", "refs/heads/workspace/orphan-target"],
+        cwd=repository, capture_output=True, text=True, check=False,
+    )
+    # `show-ref --verify` exits 1 on older Git and 128 on newer: only "not a valid ref" matters.
+    assert branch.returncode != 0 and "not a valid ref" in branch.stderr
+
+
+def test_remove_orphan_workspace_refuses_when_source_exists_or_lease_is_live(
+    repository: Path, tmp_path: Path,
+) -> None:
+    source = tmp_path / "source-worktree"
+    _git(repository, "worktree", "add", "--quiet", "-b", "live-source", str(source), "HEAD")
+    target = tmp_path / "orphan-target"
+    context = create_workspace(
+        source,
+        target,
+        branch="workspace/live-orphan-target",
+        purpose="test-orphan-cleanup",
+    )
+    with pytest.raises(core.WorkspaceError, match="recorded source checkout still exists"):
+        remove_orphan_workspace(context, executor_git_root=repository)
+
+    _git(repository, "worktree", "remove", "--force", str(source))
+    leased = acquire_lease(context, holder="live-owner", ttl=timedelta(minutes=5))
+    with pytest.raises(core.WorkspaceError, match="active lease"):
+        remove_orphan_workspace(leased, executor_git_root=repository)
+    assert target.is_dir()
+    release_lease(leased)
+    remove_orphan_workspace(context, executor_git_root=repository)
+
+
+def _orphan_target(repository: Path, tmp_path: Path, name: str):
+    source = tmp_path / f"{name}-source"
+    _git(repository, "worktree", "add", "--quiet", "-b", f"{name}-source", str(source), "HEAD")
+    context = create_workspace(
+        source, tmp_path / f"{name}-target", branch=f"workspace/{name}",
+        purpose="test-orphan-cleanup",
+    )
+    return source, context
+
+
+def test_remove_orphan_workspace_removes_when_git_reports_source_prunable(
+    repository: Path, tmp_path: Path,
+) -> None:
+    source, context = _orphan_target(repository, tmp_path, "prunable")
+    shutil.rmtree(source)  # still registered, but Git reports it prunable
+
+    remove_orphan_workspace(context, executor_git_root=repository)
+
+    assert not context.worktree_path.exists()
+    assert not context.record_path.exists()
+
+
+def _gone_source(repository: Path, tmp_path: Path, name: str):
+    source, context = _orphan_target(repository, tmp_path, name)
+    _git(repository, "worktree", "remove", "--force", str(source))
+    return context
+
+
+def test_remove_orphan_workspace_refuses_an_unusable_or_foreign_executor(
+    repository: Path, tmp_path: Path,
+) -> None:
+    context = _gone_source(repository, tmp_path, "executor")
+    with pytest.raises(core.WorkspaceError, match="executor is not a directory"):
+        remove_orphan_workspace(context, executor_git_root=tmp_path / "absent")
+    other = tmp_path / "other-family"
+    other.mkdir()
+    _git(other, "init", "-b", "main")
+    _git(
+        other, "-c", "user.email=t@example.invalid", "-c", "user.name=t",
+        "commit", "--allow-empty", "-m", "other family",
+    )
+    with pytest.raises(core.WorkspaceError, match="different Git family"):
+        remove_orphan_workspace(context, executor_git_root=other)
+    assert context.worktree_path.is_dir() and context.record_path.exists()
+
+
+def test_remove_orphan_workspace_refuses_a_missing_or_mismatched_checkout(
+    repository: Path, tmp_path: Path,
+) -> None:
+    context = _gone_source(repository, tmp_path, "mismatch")
+    record = read_record(context.record_path)
+    core.write_record(core.replace(record, branch="workspace/not-this-one"))
+    with pytest.raises(core.WorkspaceError, match="does not match record"):
+        remove_orphan_workspace(context, executor_git_root=repository)
+    core.write_record(record)
+    shutil.rmtree(context.worktree_path)
+    with pytest.raises(core.WorkspaceError, match="checkout is missing"):
+        remove_orphan_workspace(context, executor_git_root=repository)
+
+
+def test_remove_orphan_workspace_reports_failed_git_removal_and_branch_deletion(
+    repository: Path, tmp_path: Path,
+) -> None:
+    locked = _gone_source(repository, tmp_path, "locked-target")
+    _git(repository, "worktree", "lock", str(locked.worktree_path))
+    with pytest.raises(
+        core.WorkspaceError, match=r"git worktree remove failed \(\d+\): (fatal|error): .*locked working tree",
+    ):
+        remove_orphan_workspace(locked, executor_git_root=repository)
+    assert locked.worktree_path.is_dir()
+
+    stuck = _gone_source(repository, tmp_path, "stuck-branch")
+    lock_file = repository / ".git" / "refs" / "heads" / "workspace" / "stuck-branch.lock"
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_file.write_text("", encoding="utf-8")
+    with pytest.raises(
+        core.WorkspaceError,
+        match=r"git branch -D workspace/stuck-branch failed \(\d+\): (fatal|error): .*(cannot lock ref|Unable to create)",
+    ):
+        remove_orphan_workspace(stuck, executor_git_root=repository)
+
+
+def test_remove_orphan_workspace_refuses_each_independent_checkout_mismatch(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _gone_source(repository, tmp_path, "independent")
+    real = core.discover_git_context
+    wrong_common = tmp_path / "somewhere-else" / ".git"
+
+    def skewed(field: str):
+        def discover(path):
+            top, common, branch, head = real(path)
+            if core.canonical_path(path) == context.worktree_path:
+                if field == "top":
+                    top = top / "elsewhere"
+                elif field == "common":
+                    common = wrong_common
+                else:
+                    branch = "another-branch"
+            return top, common, branch, head
+        return discover
+
+    for field in ("top", "common", "branch"):
+        monkeypatch.setattr(core, "discover_git_context", skewed(field))
+        with pytest.raises(core.WorkspaceError, match="does not match record"):
+            remove_orphan_workspace(context, executor_git_root=repository)
+        assert context.worktree_path.is_dir()
+
+
+def test_remove_orphan_workspace_refuses_a_source_git_still_treats_as_live(
+    repository: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _gone_source(repository, tmp_path, "live-entry")
+    record = read_record(context.record_path)
+    real = core.list_git_worktrees
+
+    def listed(locked: bool, prunable: bool):
+        def inventory(path):
+            entries = real(path)
+            entry = core.GitWorktree(
+                path=record.source_git_root, head="0" * 40, branch="x",
+                is_primary=False, is_prunable=prunable, is_locked=locked,
+            )
+            return [*entries, entry]
+        return inventory
+
+    # Registered, unlocked, and NOT prunable (a live checkout we merely cannot see),
+    # and registered AND locked even though Git also reports it prunable: both refuse.
+    for locked, prunable in ((False, False), (True, True)):
+        monkeypatch.setattr(core, "list_git_worktrees", listed(locked, prunable))
+        with pytest.raises(core.WorkspaceError, match="still registered with Git"):
+            remove_orphan_workspace(context, executor_git_root=repository)
+    monkeypatch.setattr(core, "list_git_worktrees", listed(False, True))
+    remove_orphan_workspace(context, executor_git_root=repository)  # unlocked + prunable: removed
+    assert not context.worktree_path.exists()
+
+
+def test_remove_orphan_workspace_can_keep_the_branch(repository: Path, tmp_path: Path) -> None:
+    context = _gone_source(repository, tmp_path, "keep-branch")
+    remove_orphan_workspace(context, executor_git_root=repository, delete_branch=False)
+    assert not context.worktree_path.exists()
+    assert _git(repository, "branch", "--list", "workspace/keep-branch")
+
+
+def test_remove_orphan_workspace_refuses_a_locked_registered_source(
+    repository: Path, tmp_path: Path,
+) -> None:
+    source, context = _orphan_target(repository, tmp_path, "locked")
+    _git(repository, "worktree", "lock", str(source))
+    shutil.rmtree(source)
+
+    with pytest.raises(core.WorkspaceError, match="still registered with Git"):
+        remove_orphan_workspace(context, executor_git_root=repository)
+
+    assert context.worktree_path.is_dir()
+    assert context.record_path.exists()
 
 
 def test_explicit_identity_path_is_durable_and_rechecked(repository: Path, tmp_path: Path) -> None:

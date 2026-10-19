@@ -1,31 +1,89 @@
-# Changelog — run-gate
+# Changelog — Run-Gate
 
-All notable changes to `run-gate.py` and its estate adoption are recorded
-here. The in-file `__revision__` is the drift marker: estate sweeps compare
-it, and any consumer holding a COPY (not a symlink) must re-copy when it
-moves. Normative behavior lives in SPEC.md; entry-by-entry rationale lives in
+Changes to the Run-Gate wheel and its estate adoption are recorded here.
+Release SemVer from the installed wheel is the public tool identity. Historical
+`__revision__` values and persisted `revision` fields are provenance only; they
+do not track consumer copies or define upgrade floors. Normative behavior
+lives in SPEC.md; entry-by-entry rationale lives in
 KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
-### Added
-- feat(run-gate): allow native Assay and explicitly opted-in tester-unified command lanes to query cgprofile's observer-only socket for private-cgroup-namespace R2, mounting only that socket read-only and granting its observed GID (RG-89, rev 58)
-- feat(run-gate): restore the RG-55 P5 profiler client surface: validated `auto`/`exec`/`socket` carriers, one streaming watch per session, and persisted watch/placement evidence (RG-55/P5, rev 62)
-- fix(run-gate): hold requested exec/bare-host placement behind a token-bearing ready/continue wrapper; refuse before body entry on explicit refusal or invalid read-back, preserving the R-36h fallback only when no placement result is available (RG-55/P5, rev 63)
+### Breaking Changes
+- **24.0.0:** consumer scripts and symlinks are retired. Install the `run-gate`
+  wheel and invoke its console command from the project directory containing
+  `run-gate.toml`; `run-gate --version` is the public compatibility identity.
+  Integer revisions and persisted revision fields remain only as provenance.
 
 ### Changed
-- maintenance(run-gate): refresh the tracked lane-footprint manifest and consumer transcript from current daemon-backed histories; keep the short-lived assay-r3 memory peak unknown when profiling cannot attach
-- feat(run-gate): request/read back daemon placement for daemon-backed lanes and apply bounded gates-slice admission without turning load or profiler failures into lane verdicts (RG-55 P5)
-
-### Fixed
-- fix(run-gate): reject nonzero profiler carrier exits, malformed success fields, foreign or malformed watch verdicts, and placement leaves outside this lane's verified gates-slice scope before they can certify a session or release its body (RG-55/P5, rev 64)
-- fix(run-gate): let a healthy daemon watch alone decide liveness, reconcile a terminal verified kill from the stopped session summary, and use report policy for a shared-scope lane without placement (P5 final review, rev 62)
-- fix(run-gate): serialize the observer-backed native R2 lane so a shared tester-cgroup limit event cannot be assigned to the wrong mutant
-- fix(run-gate): scope Assay progress to the latest `run` record, calculate resumed rates from run-local events, and suppress ETAs without a trustworthy current-run `pending_total` (RG-90, rev 60)
-- fix(run-gate): tolerate `damon.hot_bytes: null` in footprint disclosure so a valid unavailable-DAMON summary is preserved instead of reported as a profiling-cleanup crash (RG-88, rev 56)
-- fix(run-gate): run tester-unified selftest and canary lanes from the selected worktree's project directory, not the image's unset/default working directory
-- fix(run-gate): derive assay pytest temp and Git ceiling paths from the verified state mount, and create the default state root for fresh bare-host lanes (RG-85)
-- fix(run-gate): use calibrated, PSI-paused in-process liveness only when the daemon watch is unavailable; a profiler stall takes only the lane's declared stall path (RG-55 P5)
+- Documentation: state that the installed SemVer wheel is the only supported
+  Run-Gate consumer; copied `run-gate.py` scripts are retired.
+- Fix: require Assay's verdict exit code to be a non-boolean integer matching
+  both the runner status and the closed outcome table, preventing a stale or
+  inconsistent PASS artifact from certifying a failed process (RG-95).
+- Fix: detect source renames before filtering the selftest diff-coverage scope,
+  so replacing the retired compatibility symlink measures changed content
+  instead of treating the whole wheel module as new (RG-96).
+- Fix: name unreadable or undecodable Python files in `--check-env` and mark
+  the scan `INCOMPLETE`, so skipped source cannot appear as a clean sweep
+  (RG-97).
+- Fix: include unreadable source directories and environment-resolution
+  failures in the incomplete scan result, rather than silently reporting a
+  clean environment check.
+- Fix: recognize retired `run-gate.py` invocations when they use relative,
+  worktree-prefixed, or absolute paths, so pointer validation cannot certify a
+  call to a removed script.
+- Fix: anchor the release coverage floor to the newest reachable stable
+  Run-Gate release tag, so merging a candidate to `main` cannot collapse the
+  judged source diff to zero.
+- Fix: build and receipt the exact candidate wheel before the release gate,
+  verify the running tester image contains those bytes, and refuse publication
+  if CMRU's post-tag wheel build differs.
+- Fix: refuse a release gate when its dated changelog version is not newer than
+  the latest Run-Gate release tag, so a prior release cannot be rebuilt under
+  its old version outside the release transaction.
+- Add: allow container environments to select a per-invocation image through
+  `image_env`; the Run-Gate release test uses a candidate-specific image tag
+  and checks that the installed wheel modules and CLI match the candidate.
+- Fix: give the R1 and R3 tester containers explicit memory and swap ceilings,
+  so gate admission accounts for their use and Docker applies per-container bounds.
+- Fix (behavior change): the Assay judge no longer inherits the state-root
+  path as `TMPDIR` when that root is inside the judged worktree, so the default
+  in-repo `.run-gate` root works for snapshot-isolated R1-R3 lanes instead of
+  ERRORing before R0 on Assay's scratch rule (RG-98). The path is exported as
+  `RUN_GATE_TMPDIR` (always) and as `TMPDIR` only for a root outside the judged
+  worktree. A lane whose test command relied on `TMPDIR` from `env_passthrough`
+  with an in-worktree root now maps `RUN_GATE_TMPDIR` in `assay.toml`
+  (`TMPDIR = "required-env:RUN_GATE_TMPDIR"` under `[lanes.<n>.infrastructure]`;
+  CONSUMERS). The interim preflight refusal and its judge-inventory probe are
+  removed.
+- Fix: inject Git `safe.directory` only through `GIT_CONFIG_COUNT`, appended at
+  the count the lane's environment already carries instead of overwriting index
+  0, with no global config file, lock file, or mutual-exclusion mechanism
+  (RG-99). Supported Git floor 2.38: an older `git` is refused at lane start-up
+  with exit 2 naming the floor, and a non-integer `GIT_CONFIG_COUNT` is
+  refused rather than clobbered. Lanes no longer pin `GIT_CONFIG_GLOBAL`. Live
+  concurrent exec-mode acceptance remains open.
+- Fix: help, `--list` and an omitted lane never resolve imported Assay
+  inventory; `doctor`, `--check-env`, and `history` / `footprint` over every
+  lane (including `footprint --write`) do, and refuse with the runner remedy
+  when the judge is unavailable instead of reporting a clean result or writing
+  a manifest without the imported lanes (RG-100).
+- Docs/fix: correct the `bare-host` mode contract; the undefined-environment
+  refusal now names the exact declaration for `bare-host` and for `host`, and a
+  `migrate-modes` command that the loader accepts (the central config for an
+  inherited lane); `migrate-modes` also materializes names referenced only by
+  `[assay]` / `[assay.import]` (RG-101).
+- Fix: `doctor` no longer crashes with `KeyError: 'environment'` on a
+  `kind = "sequence"` lane; it reports each member with its environment facts
+  and names malformed members, and `--check-env` skips the sequence itself
+  (RG-103).
+- Fix: the tester image installs Debian `docker-cli` / `docker-compose` only
+  when the base lacks a Docker client or compose plugin, so the MDT base's
+  `docker-ce-cli` / `docker-compose-plugin` are no longer overwritten or
+  rejected by dpkg; both bases are covered by an executable oracle.
+- Docs: fix the doubled backslash in the CONSUMERS zero-release bootstrap
+  example.
 
 <!-- cmru: release history -->
 

@@ -783,6 +783,20 @@ _RESERVED_CREDENTIAL_ENV = frozenset({
 _RESERVED_CMRU_INTERNAL_ENV = frozenset({
     "CMRU_INTERNAL_RELEASE_PREFLIGHT_FD",
     "CMRU_RELEASE_PREFLIGHT_SNAPSHOT",
+    # The release launcher binds its installed controller to the child before
+    # any project gate can run; project config may not forge that identity.
+    "CMRU_RELEASE_CONTROLLER_VERSION",
+    "CMRU_RELEASE_CONTROLLER_WHEEL_SHA256",
+    "CMRU_RELEASE_CONTROLLER_FILES_SHA256",
+    "CMRU_RELEASE_GATE_COMMIT",
+    # Exact tagged candidate identity injected only into release artifact and
+    # publisher steps; project env must not be able to shadow the source CMRU
+    # already gated and tagged.
+    "CMRU_RELEASE_COMMIT",
+    "CMRU_RELEASE_TAG",
+    # Where a publisher reads the curated notes for the version it releases
+    # (KI-75); a project cannot redirect its own release notes.
+    "CMRU_RELEASE_NOTES_SOURCE",
 })
 #: The whole ``CMRU_INTERNAL_`` namespace is cmru's own launch/log state
 #: (``CMRU_INTERNAL_BIN``, ``..._RUN_LOG``, ...): a project ``[env]`` may declare none of it.
@@ -812,7 +826,7 @@ def _scalar_env(
             )
         if reject_credentials and is_reserved_internal_env(key):
             _error(
-                f"{where}.{key} is reserved for CMRU internal launch state and "
+                f"{where}.{key} is reserved for CMRU-managed protected context and "
                 "cannot be declared in project or orchestration configuration"
             )
         result[key] = _expand_env_reference(str(value), where, key)

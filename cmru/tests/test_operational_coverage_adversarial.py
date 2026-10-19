@@ -91,7 +91,7 @@ def test_changelog_rejects_external_strategy_without_variable(tmp_path, monkeypa
         name="demo", cwd="demo", prefix="demo-v", git_tag=True,
         version=SimpleNamespace(strategy="external:"),
     )
-    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a: [("demo", None, "demo-v1.0.0", "patch")])
+    monkeypatch.setattr(changelog, "detect_changed_projects", lambda *a, **_k: [("demo", None, "demo-v1.0.0", "patch")])
     with pytest.raises(RuntimeError, match="no variable name"):
         changelog._project_release_plan(tmp_path, project)
 

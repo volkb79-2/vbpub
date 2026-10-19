@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import re
+import tomllib
 from pathlib import Path
 from typing import Dict, Iterable, List
+
+import pytest
 
 import cgprofile as cg
 from lib import serve, summary
@@ -61,7 +64,127 @@ def test_every_closed_consumer_vocabulary_is_documented():
         assert re.search(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9_-])", text)
 
 
+def test_run_gate_consumer_identity_is_documented_for_all_adopters():
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8")
+        assert "installed Run-Gate wheel" in text, path
+        assert "SemVer" in text, path
+    assert "run-gate --version" in (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+
+
 def test_package_contract_mirrors_canonical_contract_byte_for_byte():
     canonical = ROOT.parents[1] / "run-gate-project" / "nyxloom-trove" / "RG55-INTERFACE-CONTRACT.md"
     local = ROOT / "docs" / "RG55-INTERFACE-CONTRACT.md"
     assert local.read_bytes() == canonical.read_bytes()
+
+
+_OBSERVER_ENV = (
+    "schema_version = 1\n"
+    "[environments.tester-unified]\n"
+    'mode = "ephemeral"\n'
+    'image = "tester-unified:local"\n\n'
+)
+
+
+def _native_r2_lane_example() -> str:
+    text = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    blocks = [
+        body
+        for body in re.findall(r"```toml\s*\n(.*?)```", text, flags=re.DOTALL)
+        if 'resource_observer = "cgprofile"' in body
+    ]
+    assert len(blocks) == 1, "expected exactly one published native-R2 lane example"
+    return blocks[0]
+
+
+def _load_with_shipped_run_gate(tmp_path: Path, lane_text: str) -> None:
+    # The installed Run-Gate wheel is part of the tester-unified closure; import
+    # it for real so a missing wheel fails loudly rather than skipping the check.
+    import run_gate
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "run-gate.toml").write_text(_OBSERVER_ENV + lane_text, encoding="utf-8")
+    run_gate.load_config(project)
+
+
+def test_published_native_r2_lane_example_loads_with_shipped_run_gate(tmp_path):
+    example = _native_r2_lane_example()
+    assert 'memory = "2g"' in example and "pids = 8192" in example
+    _load_with_shipped_run_gate(tmp_path, example)
+
+
+@pytest.mark.parametrize("missing", [r'memory = "2g"\n', r"pids = 8192\n"])
+def test_shipped_run_gate_rejects_the_example_without_either_resource_ceiling(
+    tmp_path, missing
+):
+    import run_gate
+
+    example = _native_r2_lane_example()
+    mutated = re.sub(missing, "", example, count=1)
+    assert mutated != example, "the example no longer declares the ceiling under test"
+    with pytest.raises(run_gate.GateError, match="requires explicit resources.memory and resources.pids"):
+        _load_with_shipped_run_gate(tmp_path, mutated)
+
+
+def test_release_gate_is_r0_r1_and_r3_only_and_complete_gate_includes_r2():
+    cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    argvs = [c["argv"] for c in cmru["steps"]["run-tests"]["commands"]]
+    assert argvs == [["run-gate", "r0-r1"], ["run-gate", "r3"]]
+    lanes = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
+    assert "r2" in lanes["gate"]["argv"][-1]
+    assert lanes["r2"]["budget"] == "24h"
+
+
+def test_every_release_surface_states_there_is_no_full_source_r2_verdict():
+    surfaces = (
+        ROOT / "CHANGES.md",
+        ROOT / "cmru.toml",
+        ROOT / "run-gate.toml",
+        *DOCS,
+    )
+    for path in surfaces:
+        flat = re.sub(r"\s+", " ", re.sub(r"\n\s*#", "\n", path.read_text(encoding="utf-8"))).lower()
+        assert "no completed full-source r2 verdict" in flat, path
+
+
+def _flat(path: Path) -> str:
+    return " ".join(path.read_text(encoding="utf-8").split())
+
+
+def test_the_registered_github_release_body_is_documented_in_every_adopter_document():
+    """The docs describe the REAL registered push step: its handler, image, prefix and order."""
+    config = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    commands = config["steps"]["push"]["commands"]
+    handler = commands[-1]["argv"]  # the handler must be the LAST push command
+    assert handler[:3] == ["cmru", "handler", "oci-image-release"]
+    assert any(c["argv"][-2:] == ["build-push.py", "--push"] or c["argv"][-1] == "--push"
+               for c in commands[:-1]), "the image push must precede the handler"
+    prefix, image = handler[handler.index("--prefix") + 1], handler[handler.index("--image") + 1]
+    assert (prefix, image) == ("cgprofile", "ghcr.io/volkb79-2/cgprofile")
+    pasteable = f"cmru handler oci-image-release --prefix {prefix} --image {image} --cwd ."
+
+    readme, design, consumers = (_flat(path) for path in DOCS)
+    design_anchor = "the-github-release-body-for-the-published-image"
+    preview_anchor = "preview-the-github-release-body"
+    assert design_anchor in _anchors(DOCS[1]) and preview_anchor in _anchors(DOCS[2])
+
+    # README (what): the feature, its position, the preview, and the two links.
+    assert "GitHub Release body" in readme and "cmru handler oci-image-release" in readme
+    assert "last command" in readme and "after `build-push.py --push`" in readme
+    assert f"docker pull {image}:<version>" in readme and "`cmru release --dry-run`" in readme
+    assert f"docs/DESIGN-GUIDE.md#{design_anchor}" in readme
+    assert f"docs/CONSUMERS.md#{preview_anchor}" in readme
+
+    # DESIGN-GUIDE (why): the order is the contract, plus the before/after verification limits.
+    assert pasteable in design and "in this order" in design and "the last command" in design
+    assert "before any prepare step, gate, tag or image push" in design
+    assert "was written and not rolled back" in design and "exactly the intended body" in design
+    assert "not a second source of truth" in design
+
+    # CONSUMERS (how): a pasteable preview and the ordering rule.
+    assert "cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0 --dry-run" in consumers
+    assert "----- begin release body -----" in consumers and "----- end release body -----" in consumers
+    assert f"docker pull {image}:1.0.0" in consumers and pasteable in consumers
+    assert "last command of `[steps.push]`" in consumers and "after the image push" in consumers
+    assert "inspect the `cgprofile-v<version>` release and its tag before retrying" in consumers

@@ -103,11 +103,25 @@ SPEC §9.
 | RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | FIXED by RG-87 (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36; recurred 2026-10-06 22:51) |
 | RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55; PID 1 and low-pids live acceptance PASS; registered selftest pending; contaminated R2 outcomes discarded) |
 | RG-85 | assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it) | Minor | FIXED in RG-55 candidate: derive both pytest/Git paths from the verified state root, create the default root before fresh container or bare-host lanes |
-| RG-86 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | IN PROGRESS (RG-NARROW; implemented, awaiting independent review) |
+| RG-86 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | FIXED IN CANDIDATE rev 67; exact registered gate pending |
 | RG-87 | `shim_dir_of` returned the first WRITABLE `$PATH` entry, so a test run outside tester-unified replaced the operator's real `~/.local/bin/assay` with a PASS-fabricating fake (2026-10-06 22:51 recurrence of RG-83); shims now live only in private per-test dirs prepended to PATH, plus a session guard that fails on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` | Major | FIXED (package `run-gate-shimleak`, same untagged 23.10.0 release; also closes RG-83) |
 | RG-88 | footprint disclosure assumes `damon.hot_bytes` is an object; a valid unavailable-DAMON summary with `hot_bytes: null` raises during cleanup formatting, discards otherwise valid profile resources, and emits `profiling cleanup crashed` while leaving the lane verdict unchanged | Minor | IN PROGRESS (rev 56; reproduced by RG-55 cgroup-profiler r0-r1 on 2026-10-07; formatter guard and regression test are in the candidate; final package acceptance and release pending) |
-| RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | OPEN (filed 2026-10-07 after Assay 8.0.0 B145 preflight stopped RG-55 R2 with zero candidates; preserve private cgroup namespace) |
+| RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | IN PROGRESS (read-only observer socket shipped in source rev 58; rev 66 adds contract-2/path/listener preflight and arbitrary ephemeral-environment support; exact release gates pending) |
 | RG-90 | Run-Gate reads append-only Assay progress across invocation boundaries: an old candidate can appear current, and resumed campaign indexes paired with a reset elapsed clock can produce a false rate/ETA | Minor | FIXED (rev 60: latest-run fencing, run-local rates, and no ETA without a trustworthy current-run `pending_total`; regression tests cover legacy and current-run shapes) |
+| RG-91 | Run-Gate's cgprofile control and watch clients pretty-print JSON to a newline-delimited socket, so the daemon reads only `{` and refuses the request | Major | FIXED in candidate rev 65; byte-at-a-time newline-framing regressions cover control and watch requests; exact gate and release pending |
+| RG-92 | cgroup observer unavailability maps Assay's pre-candidate `NO_MEASUREMENT` to a product FAIL; observer group validation reads the devcontainer's potentially unrelated `docker` name | Major | FIXED in the contract-2 candidate; reason-specific ERROR mapping and host numeric GID check are implemented, exact gate pending |
+| RG-93 | the shared Git directory stays read-write for tester commits, letting a container plant a common hook that a later host commit executes and alter host `info/exclude` | Major | FIXED IN CANDIDATE rev 67; focused mount tests pass; registered real-container test pending |
+| RG-94 | Run-Gate still presents its internal source revision as the consumer compatibility identity although supported consumers install the wheel | Major | IMPLEMENTED in the SemVer candidate; exact gates, independent review, and release pending |
+| RG-95 | Run-Gate can accept Assay PASS without checking the artifact exit code against the runner's raw status | Major | IMPLEMENTED in the integrated candidate; exact gates, live Assay acceptance, independent review, and release pending |
+| RG-96 | selftest diff coverage treats a symlink-to-module migration as a full-file addition | Major | FIXED IN CANDIDATE; registered coverage gate and independent reviews pending |
+| RG-97 | `--check-env` silently treats unreadable or undecodable Python sources as a complete scan | Minor | IMPLEMENTED in the integrated candidate; exact gates, independent review, and release pending |
+| RG-98 | RG-85 regression: `TMPDIR=<state_root>` is exported to the Assay judge process itself, so with the default in-repo `.run-gate` root Assay's isolation scratch root lands inside `repo_top` and every snapshot-isolated Assay lane ERRORs (`scratch_root must be outside repo_top`) | Major | FIXED IN CANDIDATE (contract (a), supersedes the interim refusal): an in-worktree state root is exported only as `RUN_GATE_TMPDIR`, never as the judge's `TMPDIR`, so the default root reaches R0 for snapshot-isolated lanes; consumer-style fixture added; registered gate pending |
+| RG-99 | concurrent lanes in one exec container race on the fixed `/tmp/run-gate-gitconfig` (`git config --global --replace-all` lock), and the loser is reported as a product FAIL (exit 255) instead of a setup ERROR | Major | OPEN for live exec acceptance only: lock-free `GIT_CONFIG_COUNT` injection appends at the existing count, enforces a Git 2.38 floor, and is tested against Git's real ownership check (`GIT_TEST_ASSUME_DIFFERENT_OWNER=1`); two concurrent `docker exec` lanes in one live runner and the registered gate pending. The preferred consumer model is one lane per CIU `run --rm` container from the existing service declaration (CIU-141, v7); RG-102 tracks Run-Gate integration. Secrets stay with CIU; v8 can build its gate environment on the same lifecycle primitive |
+| RG-100 | `[assay.import]` is resolved eagerly: with the runner down, `--list`, host-only lanes and docs lanes all ERROR (`import could not read the judge inventory`) | Minor | FIXED IN CANDIDATE: help, `--list` and an omitted lane never probe; `doctor`, `--check-env`, and `history`/`footprint` over all lanes resolve imports and refuse (no clean report, no partial manifest) when the judge is unavailable; behavioral tests for both; full gate pending |
+| RG-101 | SPEC.md:126 still calls `bare-host` a built-in name while SPEC.md:263 and RG-78 make it an ordinary name needing `mode = "host"`; the load refusal does not name `run-gate migrate-modes` | Minor | FIXED IN CANDIDATE: SPEC terms contradiction resolved; the refusal names the declaration and a `migrate-modes` command the loader accepts (round-trip tested), for `bare-host` and `host`, targeting the central config for inherited lanes; full gate pending |
+| RG-102 | Run-Gate raw Docker ephemeral launch duplicates CIU service identity and cannot preserve CIU-rendered network/secrets/mounts/cgroup/user or hand the exact one-shot container identity to the RG-89 observer | Medium | OPEN — after the current release wave, integrate with CIU-141's v7 `ciu run`; structured container-ID and observer lifecycle handoff required |
+| RG-103 | `run-gate doctor` crashes with `KeyError: 'environment'` when the config declares a `kind = "sequence"` lane: the per-lane environment pass calls `resolve_environment`, which reads `lane["environment"]`, a key R-07/RG-74 forbid on sequences | Major | FIXED IN CANDIDATE (filed 2026-10-15, dstdns P242): `doctor` walks sequence members and reports each member's environment facts, names malformed members, and `--check-env` skips the sequence; behavioral tests; registered gate pending |
+| RG-104 | The observer-unavailable rollup rejects Assay's own pre-R0 refusal: Assay (B148/A-484) refuses the whole lane before R0 and stamps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on every requested rigor, but `_observer_unavailable_rollup` accepts the reason only on an R2 claim, so a correct environment refusal surfaces as ERROR `invalid-assay-observer-refusal-claim` (a malformed-verdict reason) | Minor | SUPERSEDED by Assay A-494/A-496 (filed 2026-10-15, dstdns P242 under the 24.0.0 candidate). A-494 replaced the pre-R0 whole-lane refusal with an R2-only one: completed R0/R1 claims and the independent R3 claim are kept, and `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` is stamped on R2 alone, which `_observer_unavailable_rollup` already accepts; A-496 sets the verdict-v16 floor at Assay 10.0.0, which CONSUMERS requires. The all-rigors shape is no longer produced, so no production change; `test_observer_refusal_follows_assay_a494_r2_only_shape` pins R0/R1 PASS + R2 refusal + R3 PASS and refuses the old shape. |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -466,8 +480,8 @@ normalized) and both preflight rehearsals.
 **Enhancement, 2026-08-22 (consumer-UX review).** Recompose existing checks
 into `./run-gate.py doctor`: docker present; slice resolvable (var or
 declared) + LoadState where systemd reachable; physical-path derivability
-from mountinfo; git identity/safe.directory writability; referenced images
-exist locally. One command turns four first-contact failure classes into a
+from mountinfo; git identity/worktree resolution; referenced images exist
+locally. One command turns four first-contact failure classes into a
 preflight a newcomer runs once. All inputs already implemented — pure
 recomposition, stdlib only.
 
@@ -476,7 +490,7 @@ recomposition, stdlib only.
 docker present; per-environment slice resolution + LoadState where systemd
 reachable (distinct envs deduplicated); git worktree resolution; mountinfo
 derivability (bare-host view = WARN naming `$RUN_GATE_MOUNT_ALIAS`, per
-RG-3); `/tmp` writability for GIT_CONFIG_GLOBAL; referenced images present
+RG-3); referenced images present
 locally (advisory WARN — a missing image may legitimately pull). Doctor
 runs nothing and must itself survive a broken host: a preflight that
 tracebacks on exactly the machine that needs it defeats its purpose, so an
@@ -1129,6 +1143,10 @@ as `test_safe_directory_write_survives_preexisting_entries`, which
 pre-populates the real isolated gitconfig with two entries and runs the built
 inner command as a live subprocess (fails pre-fix with "cannot overwrite
 multiple values", passes after).
+
+RG-99 later replaced this historical file-based implementation for current
+Run-Gate inner commands with `GIT_CONFIG_COUNT` injection. The current path
+creates no global config, lock file, or mutual exclusion.
 
 ## RG-23 — exec-mode's hardcoded env-forward allowlist was dropped with no consumer migration; unmigrated consumers silently stop forwarding `RUN_LIVE_TESTS`/`MOCK_MODE`
 
@@ -1893,8 +1911,8 @@ is a host lane; an assay-judged sibling would look exactly like this).
 unconditionally, so such a lane died with a `KeyError('argv')` traceback —
 `R-04` names a traceback for a config/usage error a defect outright. It now
 builds the same assay inner the two container runners build
-(`build_assay_inner`), whose `GIT_CONFIG_GLOBAL` isolation (`R-19a`) keeps
-the `safe.directory` write out of the operator's own git config. SPEC `R-19`
+(`build_assay_inner`), whose `GIT_CONFIG_COUNT` injection (`R-19a`) does not
+write the operator's Git config. SPEC `R-19`
 amended. Covered by `TestComparisonBasePassthrough::
 test_host_assay_lane_probes_locally_without_docker`, which drives a host
 assay lane end to end with docker never invoked.
@@ -5382,6 +5400,47 @@ this entry is not marked FIXED until that work lands.
 
 **Amendment 2 (2026-10-03, dstdns D-666; reviewed against SPEC-V8 draft.11; still not built):** the premise of Observed is corrected, not the contract. Judging every worktree inside main's one persistent runner ("Mode A") is the **retired** mode (D-647 #2), and the worktree-owned runner is not "a full Mode-B ciu stack ... a stack (vault, consul, redis, postgres) per worktree": it is **one stack**, the project's `tools/test-runner`, started in the worktree with `ciu up --dir tools/test-runner` (shared image, zero rebuild; dstdns GUIDE §3.4), whose cost is an idle container (D-666's resource note); and the lane `cd {worktree}` and the `REPO_ROOT` pin in `gate-slot.sh` were Mode A's defences. This entry's contract (an `ephemeral` environment whose image is derived per checkout, `image_from`) therefore stays as the **stackless** alternative for hermetic lanes — it lets a worktree change its runtime without starting any container of its own — and is no longer the route out of Mode A. The decision that a judged worktree resolves **its own** runner, never main's, is RG-79's. Everything in Amendment 1 (own-path mount plus the git common directory, S16.4.6, S16.4.9, S16.11.6) is current in draft.11; the v8.2 split (remote deployment) does not touch it.
 
+**Amendment 3 (2026-10-13, Assay B167 migration design):** for native R2
+lanes that need the worktree's database or other stack services, the preferred
+target is still an ephemeral lane container, attached to the CIU network of
+the selected worktree. A continuously running test-runner container is not
+required just to reuse its image or reach those services. Extend this entry's
+ephemeral contract with an optional network fact derived from the judged
+worktree's rendered CIU configuration (the same authority CIU uses for
+`deploy.network_name`); never resolve it from the invoking checkout. Run-Gate
+starts one independently identified container per lane invocation and passes
+the selected network to Docker. The CIU Compose project still owns the
+services and network; Run-Gate's ephemeral test container is not a Compose
+service and does not need the Compose project name as its container name.
+Multiple containers from the same image may run concurrently, subject to
+host gate admission and lane-level locks for shared mutable services. Assay
+resume state remains on an explicit host bind mount and does not come from a
+prior container's writable layer.
+
+**Additional contract and oracles:** `--dry-run` names the selected worktree's
+network source; a live lane in worktree W1 joins W1's network even when the
+invoking checkout or another worktree declares a different network; a missing
+or unresolved configured network refuses before launch. Two concurrent
+ephemeral lanes from the same image receive distinct Docker identities and
+both can reach the intended worktree network. A shared database is isolated
+per lane or serialized by a declared shared-resource lock. A fresh-container
+retry resumes from the same declared Assay state mount.
+
+**Amendment 4 (2026-10-13, CIU v8 lifecycle clarification):** after the v8
+merge, `ciu gate` is the consumer-facing lane command and owns container
+creation, the selected worktree's network, evidence collection, and cleanup.
+`ciu up` owns the selected CIU worktree instance's declared service stack; it
+does not start duplicate lane runners. CIU assigns a run-scoped identity, so
+parallel gate runs from one worktree can use the same declared image and
+network without a separate worktree per lane. A separate CIU worktree is for
+independent checkout configuration or a genuinely separate service stack,
+not for Docker name uniqueness. Consumers must not hand-roll `docker run`;
+until cutover they use the registered `run-gate` command. The lane container
+must have no relied-upon persistent local state: only explicitly declared
+state such as Assay resume data survives its cleanup. Database/service state
+is governed independently through per-lane isolation, reset, or a shared
+resource lock.
+
 ## RG-74 — the post-merge trunk base and the composite-member base are consumer scripts, not run-gate derivations
 
 **Provenance:** dstdns tooling-boundary pass, 2026-10-03. run-gate rev 46.
@@ -5909,10 +5968,12 @@ cleanup exception.
 
 ## RG-89 — native Assay R2 has no trusted ancestor-counter view in the private-cgroup test environment
 
-**Status:** OPEN, filed 2026-10-07 after the RG-55 Run-Gate rev 56 candidate's
-Assay 8.0.0 R2 attempt stopped before candidate execution. Severity Major:
-without a supported observer path, registered native mutation lanes return
-`ERROR/EXEC_FAILED` before judging any mutants.
+**Status:** IN PROGRESS. The read-only observer socket shipped in source
+revision 58; exact registered gates and release are pending. Filed 2026-10-07
+after the RG-55 Run-Gate rev 56 candidate's Assay 8.0.0 R2 attempt stopped
+before candidate execution. Severity Major: without a supported observer
+path, registered native mutation lanes return `ERROR/EXEC_FAILED` before
+judging any mutants.
 
 **Observed.** Assay B145 intentionally refuses native R2 when the cgroup
 namespace hides process ancestors, because it cannot soundly observe
@@ -5944,6 +6005,12 @@ counters still refuse before mutation. A real candidate resource-limit event
 is classified as infrastructure, never `killed`; unrelated sibling activity
 cannot produce a candidate kill or survivor. No gate/test container joins the
 host cgroup namespace or receives an unbounded host-process view.
+
+Run-Gate must also query cgprofile's version before launching an opted-in lane
+and refuse as infrastructure unless the control response advertises observer
+contract 2, the configured socket path, and `listening = true`. The observer
+option is valid for any resolved `mode = "ephemeral"` environment, not only
+the environment named `tester-unified`.
 
 ## RG-90 — append-only Assay progress leaks the previous run's candidate into the current status
 
@@ -5985,3 +6052,260 @@ low run-relative elapsed time reports rate and ETA from current-run candidate
 events and pending work. Same-run movement, re-attach silence, torn-line
 handling, malformed/missing current-run `pending_total`, and legacy streams
 without headers continue to pass.
+
+## RG-91 — cgprofile control requests violate newline-delimited socket framing
+
+**Status:** FIXED in source revision 65 in the current release candidate;
+byte-at-a-time framing regressions pass, with the exact registered gate and
+release pending.
+
+**Observed.** The daemon dispatches a request at its first newline. Both the
+control client and the streaming watch client sent indented JSON, so the first
+line was only `{` and the daemon rejected a valid request as `bad-argument`.
+The existing socket test read to EOF, which did not exercise the daemon's
+newline framing.
+
+**Fix and oracle.** Both clients now send compact single-line JSON followed by
+one newline. The socket fixture reads one byte at a time and dispatches at the
+first newline; control and watch tests assert the received line is complete
+valid JSON. The default auto transport may otherwise hide the control failure
+by falling back to Docker exec, but an explicit socket transport still fails.
+
+## RG-92 — cgroup observer unavailability is mapped to a product FAIL
+
+**Status: FIXED IN THE CONTRACT-2 CANDIDATE; exact registered gate pending.**
+
+Assay's `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` means native R2 could
+not start because its required resource counters were unavailable. Run-Gate
+previously mapped every Assay `NO_MEASUREMENT` to FAIL, so a missing observer or
+hidden hierarchy looked like a product regression.
+
+**Fix:** validate the claim and evidence arrays before mapping the R2 refusal.
+If every other claim and evidence entry passed, map it to infrastructure
+`ERROR`. Preserve `BUDGET_EXCEEDED` when another result has that status, and
+preserve product `FAIL` when another result is `FAIL`, `INCONCLUSIVE`, or a
+different `NO_MEASUREMENT`. Malformed arrays or records map to `ERROR`; the raw
+Assay outcome and reason remain in the result. The observer launch guard
+derives the host Docker GID from the root-owned `/run/cgprofile` control
+directory's numeric group instead of the devcontainer's possibly unrelated
+`docker` group-name entry, and refuses if the source is not root-owned, has a
+non-root group, and mode `0770`.
+
+**Oracle:** reason-specific tests prove an isolated R2 observer refusal maps
+to ERROR, independent R1/R3 failures and evidence failures remain FAIL, a
+budget stop remains `BUDGET_EXCEEDED`, and malformed records map to ERROR;
+`EMPTY_COVERAGE` remains FAIL. Observer tests cover a matching Docker group,
+an unavailable or unsafe group source, and a dedicated observer GID. README,
+DESIGN-GUIDE, CONSUMERS and SPEC state the mapping; the exact registered
+`selftest` and observer lanes provide integration evidence.
+
+## RG-93 — tester can plant a shared Git hook for a later host commit
+
+**Status:** FIXED IN CANDIDATE rev 67; focused mount tests pass; registered real-container lane pending. Severity High: a gate could execute tester-controlled code later on the host.
+
+**Observed.** RG-86 intentionally keeps the shared Git directory read-write so lanes can write objects and commit. Sanitized, read-only config overlays did not protect `<common>/hooks`, however. A tester could write `post-commit` there; a later host `git commit` in that worktree would execute it. The same mount left `<common>/info` writable, allowing changes to host `info/exclude`.
+
+**Fix.** For linked and opted-in plain-checkout ephemeral lanes, Run-Gate overlays the common `hooks/` directory with a private empty read-only directory and mounts the real common `info/` directory read-only at both physical and namespace paths. Missing, symlinked, or non-directory paths fail before launch. The common Git directory remains read-write for in-lane Git behavior. CMRU also disables local hooks around its host-side mutation-baseline Git calls.
+
+**Oracles.** Mount tests require both dual-path overlays and read-only flags. The registered real-container test plants a host `post-commit` hook, proves the in-container commit cannot run or replace it or edit `info/exclude`, then checks that a subsequent host commit still runs the original hook unchanged. The exact-tree Run-Gate gate and independent review remain release requirements.
+
+## RG-94 — public compatibility identity is an internal revision number
+
+**Status: IMPLEMENTED in the Run-Gate SemVer candidate; exact gates, independent review, and release pending.**
+
+**Observed.** Run-Gate's supported distribution is a wheel with a console
+entrypoint, but the public `--version` output, help banner, lane banners,
+consumer docs, and CMRU judge floor still use or describe `rev N`. The
+revision number originated as a drift marker for copied `run-gate.py` files.
+That copied-script contract is no longer supported, so it has no consumer
+compatibility value and cannot be compared consistently with SemVer-based
+tool releases.
+
+**Decision.** Public consumers use the installed Run-Gate wheel and its
+SemVer distribution version. The release that removes the source-script
+consumer contract is a major release. Internal revision fields may remain in
+historical records where they describe the record writer or stored schema;
+they must not be presented or checked as the installed-tool version or a
+consumer upgrade floor.
+
+**Fix.** Make the installed console CLI the supported entrypoint, read its
+version from installed distribution metadata, and fail clearly when the
+wheel metadata is absent or invalid. Migrate active consumer lane/release
+commands and docs from `./run-gate.py` to `run-gate`, remove estate consumer
+symlinks, install and assert the released wheel in tester-unified, and change
+consumer floors to SemVer. Keep schema/provenance revision fields only where
+their existing record compatibility contract needs them. Update the root
+agent instructions, Buildkite generator, pointer validation, and all three
+user docs (README, DESIGN-GUIDE, CONSUMERS) in the same change.
+
+**Oracles.** A fresh project with only `run-gate.toml` can invoke the
+installed CLI from its project directory; `run-gate --version`, help,
+argument errors, and lane banners identify the same installed SemVer. Missing
+or malformed distribution metadata fails closed. Active estate configs and
+release steps contain no script pointer; `validate-pointers` reports legacy
+script references. The tester image proves its installed Run-Gate artifact
+and version. Config examples parse, public CLI examples use the wheel, and
+docs cross-links resolve. The exact registered selftest, full gate, canary,
+and release workflow pass at the reviewed candidate commit.
+
+## RG-95 — Run-Gate can accept Assay PASS without checking the verdict exit code against the runner
+
+**Status: IMPLEMENTED in the integrated candidate; exact gates, live Assay acceptance, independent review, and release pending.**
+
+Severity: Major (a false PASS can certify a lane whose process failed). Type: bugfix. Filed 2026-10-13 from the B108 xhigh design review.
+
+**Observed.** `assay_lane_result()` mapped the Assay `outcome` to the gate verdict and retained the raw runner status, but ignored the verdict artifact's top-level `exit_code`. The regression test `test_assay_outcomes_follow_the_closed_table_and_retain_raw_outcome` passed raw status `1` together with outcome `PASS` and expected gate PASS. The artifact and process therefore could disagree while run-gate certified success.
+
+**Required contract.** Require a non-boolean integer Assay verdict `exit_code`; compare it with the raw status returned by the lane process; and require the code to match Assay's closed outcome table (PASS 0, FAIL 1, ERROR 2, NO_MEASUREMENT 3, BUDGET_EXCEEDED 4, INCONCLUSIVE 5). Missing or malformed runner/artifact status, raw/artifact mismatch, or outcome/code mismatch returns infrastructure ERROR. Preserve the raw runner code, Assay outcome and reason in the result. Keep the existing NO_MEASUREMENT observer-refusal rollup only after these integrity checks pass. Apply the rule to source-backed and artifact-backed Assay identity modes.
+
+**Oracles.** (1) Each closed outcome with its matching raw and artifact code preserves the current gate mapping. (2) PASS with runner code 1 and artifact code 0 returns ERROR and retains raw 1. (3) A raw/artifact match of 1 with outcome PASS returns ERROR because the outcome/code pair is invalid. (4) FAIL with runner code 0 and artifact code 1 returns ERROR. (5) Missing, boolean, or malformed artifact codes return ERROR. (6) Source and artifact identity checks and the observer-refusal rollup remain intact after valid exit agreement. A controlled regression that ignores the raw/artifact comparison must fail the existing false-PASS oracle.
+
+**Release evidence.** README, DESIGN-GUIDE, CONSUMERS and SPEC document the comparison. The registered Run-Gate selftest and a live Assay-lane acceptance on the exact release commit are required before marking fixed.
+
+## RG-96 — selftest diff coverage treats a symlink-to-module migration as a full-file addition
+
+**Status: FIXED IN CANDIDATE; registered coverage gate and independent reviews pending.**
+
+**Observed.** The selftest diff-coverage helper passed `--source run_gate.py`
+as a Git pathspec before Git performed rename detection. During the wheel-only
+migration, `run_gate.py` changed from a symlink to the old `run-gate.py` script
+into the full module, while the old script was retired. Git therefore could
+not match the deleted source to its replacement and counted the entire module
+as newly added. That made the 100% changed-line gate refuse the candidate even
+though the actual source delta was much smaller.
+
+**Fix.** Compare the project-relative working-tree diff with rewrite and
+rename detection enabled, then apply the existing source-prefix filter to the
+parsed file paths. Keep the dirty-tree line-number behavior: the diff must
+still describe the exact bytes measured by the same run's coverage report.
+
+**Oracles.** A temporary Git repository starts with a regular `run-gate.py`
+and a `run_gate.py` symlink, then replaces them with a mostly unchanged
+`run_gate.py` module plus an unrelated source edit. The helper reports only
+the new module lines and the unrelated file separately; `evaluate()` counts
+only the selected module. Existing dirty-tree line-number coverage remains.
+The registered selftest must show 100% coverage of changed executable lines
+and branches on the exact candidate tree.
+
+## RG-97 — `--check-env` silently treats unreadable Python sources as a complete scan
+
+**Status: IMPLEMENTED in the integrated candidate; exact gates, independent review, and release pending.**
+
+Severity: Minor. Type: bugfix. Found while closing Run-Gate R1 changed-line
+coverage on 2026-10-14.
+
+**Observed.** `cmd_check_env()` skipped a Python source when `Path.read_text()`
+raised `OSError`, then could print `0 uncovered reference(s)`. A source file
+that could not be read or decoded was therefore indistinguishable from a file
+with no environment reads. That output claimed a complete scan while omitting
+part of its input.
+
+**Required contract.** Name each unreadable or undecodable Python file and
+report the overall scan as `INCOMPLETE`, including the number of skipped
+files. Preserve the existing advisory behavior and exit status; this heuristic
+does not become a lane refusal. Parsing errors retain their existing named
+line-regex fallback.
+
+**Oracles.** A direct `cmd_check_env()` case with a read failure names the
+relative file, marks the summary incomplete, reports any readable uncovered
+reference once, and remains exit 0. A clean direct scan reports zero without
+`ADVISORY ONLY` or `INCOMPLETE`. A decoding failure follows the same incomplete
+path. Existing toolchain failures still determine the command's exit status.
+
+**Documentation.** Keep README, DESIGN-GUIDE, CONSUMERS, SPEC, and CHANGES
+aligned on the incomplete-scan status and its advisory exit behavior.
+
+## RG-98 — RG-85 regression: the Assay judge inherits `TMPDIR=<state_root>`, so an in-repo state root puts Assay's isolation scratch inside `repo_top`
+
+**Status:** FIXED IN CANDIDATE with contract (a), superseding the interim preflight refusal (contract (b)), which two independent reviews held against the release: it made the default configuration a refusal, probed the judge on every run, and printed a remedy (`state_root`) that the loader rejects for `mode = "host"`. In-worktree state roots are now exported to the judge only as `RUN_GATE_TMPDIR`; `TMPDIR` is exported only for an out-of-worktree root. Consumer-style fixture (default root + snapshot-isolating judge reaches R0, with a control that errors under the old shape) added; the registered gate remains. Filed 2026-10-15 from the dstdns deep review (`dstdns@305d8519`, from-scratch measurement campaign). Observed with run-gate 24.0.0, the unreleased candidate wheel built from `.worktrees/tool-release-wave-fixes-20261014`. Severity Major: every snapshot-isolated Assay lane of a consumer that keeps the default in-repo `.run-gate` root ERRORs before R0.
+
+**Observed.** dstdns lane `assay-dlq` (and 35 other R0/R1 lanes) ERROR in about 3 s. The inner argv run-gate builds ends with:
+
+```
+TMPDIR=/workspaces/dstdns/.run-gate GIT_CEILING_DIRECTORIES=/workspaces/dstdns/.run-gate \
+  python3 tools/assay/assay-7.2.0.pyz run durable_dlq --file assay.toml ... --state-dir /workspaces/dstdns/.run-gate/assay-state
+```
+
+Assay's `default_scratch_root()` (`assay/src/assay/runner.py:376`) is `tempfile.TemporaryDirectory(prefix="assay-p23-")`, so it follows `TMPDIR` into `/workspaces/dstdns/.run-gate/`. `IsolationSpec.__post_init__` (`assay/src/assay/isolation.py:209-210`, same check in 7.2.0 and on assay main) then raises `ValueError: scratch_root must be outside repo_top`. The verdict file is never written and run-gate reports `verdict ERROR ... assay verdict unavailable`. The same lanes passed in dstdns's last green composite (D-671, run-gate 23.x, before RG-85).
+
+**Why run-gate owns it.** RG-85's fix was meant to direct pytest's temporary files and the Git ceiling at the verified state mount. It exports both onto the judge's own process, which also governs Assay's own scratch allocation. Assay's rule that scratch must be outside the repository is a deliberate isolation invariant (a snapshot must not see its own scratch), not a defect.
+
+**Proposed contract.** Either (a) the state-root-derived `TMPDIR`/`GIT_CEILING_DIRECTORIES` reach only the lane's pytest child (via the Assay lane env / passthrough RG-85 already requires), never the judge process; or (b) preflight refuses, before any `docker exec`, when the resolved state root is inside the judged repository for a lane whose judge isolates, with a remedy naming a durable mount outside the worktree. A silent ERROR from inside Assay is never the outcome.
+
+**Oracles.** With the selected contract (b), an isolating lane plus the default in-repo root returns NOT_RUN/`state-mount` with the external-mount remedy before the lane command; an R0-only lane with the same root remains allowed, and an isolating lane with an external root reaches its normal R0 path. RG-85's pytest-temp and Git-ceiling checks remain covered. A fixture configured with an external root reaches R0 without the observed scratch-root ERROR.
+
+**SPEC owner.** R-19a / the Assay inner-argv construction (`build_assay_inner`), R-49 (state mount). Related: RG-85 (this regresses its fix), RG-49.
+
+## RG-99 — concurrent lanes in one exec container race on the fixed `/tmp/run-gate-gitconfig`
+
+**Status:** OPEN for live exec-mode acceptance only. Lock-free `GIT_CONFIG_COUNT` injection now appends at the existing count (no overwrite of index 0), enforces and documents a Git 2.38 floor (refusing older Git by name), and is verified against Git's real ownership check (`GIT_TEST_ASSUME_DIFFERENT_OWNER=1`), not a string match. Two concurrent `docker exec` lanes in one live runner and the registered gate remain. Filed 2026-10-15 from the dstdns deep review (run-gate 24.0.0 candidate), amended on vbpub main at `974dc9ac4` to enforce one user per test container and prohibit config files, lock files, and mutual-exclusion mechanisms. Severity Major: a setup collision becomes a false product FAIL.
+
+**Observed.** dstdns launched `test-runner` and `schema` at the same second into the same persistent exec runner (`dstdns-<id>-test-runner`). Both inner argvs run `export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig && git config --global --replace-all safe.directory '*'`. Git takes `/tmp/run-gate-gitconfig.lock` exclusively; the loser prints `error: could not lock config file /tmp/run-gate-gitconfig: File exists`, `set -e` stops the lane, and run-gate reports `verdict FAIL; exit_code 255` after 2 s. RG-80 admission explicitly permits more than one gate per daemon, and consumers with one exec runner per worktree run several lanes in it.
+
+**Why run-gate owns it.** The inner argv and this side-channel file are run-gate's (introduced by RG-22's `--replace-all` fix). RG-22 itself recorded the lock-free alternative.
+
+**Contract.** Inject `safe.directory` through `GIT_CONFIG_COUNT=1`, `GIT_CONFIG_KEY_0=safe.directory`, `GIT_CONFIG_VALUE_0=*`. Use no config file, no lock file, and no mutual exclusion. A test container has one user. Run-Gate does not isolate arbitrary global Git writes performed by lane bodies.
+
+**Oracles.** Run two actual `docker exec` lane commands concurrently in the same single-user runner container. Both must observe `safe.directory=*` and reach their bodies, with no `/tmp/run-gate-gitconfig*` file or lock. Include command and Assay inner builders. The focused regression and registered Run-Gate gate must pass before closing this entry.
+
+**SPEC owner.** R-19a (Git isolation), R-78 closed result table. Related: RG-22.
+
+**Amendment (2026-10-15, dstdns operator direction).** The consumer-side remedy is **one user per test container**, with one lane invocation per container. The preferred v7 path is `ciu run <stack>[:<service>] -- ARGV`: CIU starts a fresh `docker compose run --rm` container from the existing rendered test-runner service. The service already declares its user, network, CIU-rendered secrets, mounts and cgroup placement; no duplicate container description or v8 instance binding is required. This removes the shared-`/tmp` collision, PID-1 zombie accumulation (RG-84 class), and cross-lane leftovers by construction. CIU-141 tracks the lifecycle verb; RG-102 tracks Run-Gate's adapter.
+
+This entry stays OPEN because exec mode remains supported and any concurrent exec consumer still hits it. The lock-free `GIT_CONFIG_COUNT` injection is still the right exec-mode fix; no lock file, no mutual exclusion.
+
+**Lifecycle and package boundary (2026-10-15 operator direction).** This backports to CIU v7: `ciu run` reuses the exact service definition already used by `ciu up`, so network attachment, secrets, mounts, cgroup parent and user remain in CIU's rendered configuration. It does not require v8's cross-instance bindings, byte-budget admission, LaneResult/evidence model or gate doctor. The v8 gate environment should build on the same v7 lifecycle primitive rather than introduce a second launch path.
+
+Run-Gate continues to own its inner argv, state-root checks, deadlines, verdict mapping and evidence. For RG-89/R2, CIU must return the exact container ID through a structured launch event before the lane command finishes; Run-Gate needs that identity to start and stop cgprofile's observer session. Do not scrape output or rediscover the container by substring. The observer-only socket must be available through the CIU-rendered service or a narrowly typed one-shot attachment, with its read-only mount and observed GID preserved; deciding and testing that seam is part of RG-102/CIU-141.
+
+**Release plan.** Keep CIU-141 and RG-102 out of the current release candidate: they add a cross-tool launch lifecycle and an observer handoff, beyond the current package's lock-free exec fix and RG-98/100/101 fixes. After the current release wave, package CIU-141 as the v7 primitive, then land and release the Run-Gate RG-102 adapter. This still delivers the dstdns one-lane-per-container model before v8 and lets v8 reuse it.
+
+## RG-100 — `[assay.import]` is resolved eagerly, so a stopped runner breaks `--list` and host-only lanes
+
+**Status:** FIXED IN CANDIDATE; registered gate remains. Filed 2026-10-15 (dstdns deep review, auditor C04 F12). Severity Minor. The first fix left `doctor`, `history` and `footprint` unresolved (a false clean `doctor`, a `footprint --write` that dropped imported lanes) and let `--list` still probe; the final contract is in SPEC R-49.
+
+**Observed.** With the dstdns cutover branch's config (which declares `[assay.import] environment = "test-runner"`) and the runner container absent, `run-gate run-gate-docs --dry-run` (a host-only lane) returned ERROR: `[assay] import could not read the judge inventory`. `run-gate --list` fails the same way.
+
+**Proposed contract.** Resolve the import only when an imported lane or a sequence that references one is selected, or when `--check-env` needs the full set. Listing, help, and unrelated local lanes must not depend on the judge; `--list` reports known import names as unresolved on stderr, without changing its three-column stdout. Selecting an imported lane with the runner down refuses with a remedy.
+
+**Oracles.** Runner absent: a host lane's `--dry-run` succeeds; `--list` exits 0 and marks imports unresolved; selecting an imported lane refuses with the remedy. An eager implementation fails the first two.
+
+**SPEC owner.** R-49 (`[assay.import]`, RG-76).
+
+## RG-101 — SPEC still calls `bare-host` built-in; the load refusal does not name the migration
+
+**Status:** FIXED IN CANDIDATE; registered gate remains. The SPEC terms contradiction is resolved, the refusal covers legacy `host` as well as `bare-host`, and its remedy is round-trip tested against the shipped loader (central config targeted for inherited lanes; `[assay]`/`[assay.import]` references materialized). Filed 2026-10-15 (dstdns deep review). Severity Minor.
+
+**Observed.** `SPEC.md:126-127` says "`host` and `bare-host` are both built-in names (never definable)". `SPEC.md:263` and RG-78 (CHANGES 23.10.0) say `bare-host` is an ordinary name that must be declared `mode = "host"`. dstdns's seven `bare-host` lanes, including its composite `gate`, ERROR at load with `environment 'bare-host' is not defined in .../run-gate.toml (no central run-gate.root.toml exists)`, which does not mention `run-gate migrate-modes`.
+
+**Proposed contract.** Correct SPEC.md:126-127. The undefined-environment refusal for the name `bare-host` names `run-gate migrate-modes PATH` and the one-table fix `[environments.bare-host] mode = "host"`.
+
+**Oracles.** A doc test asserts SPEC.md makes no built-in claim for `bare-host`; an error-text test requires the migration hint for that name.
+
+**SPEC owner.** R-07 / R-78.
+
+## RG-102 — Run-Gate should delegate CIU-backed ephemeral lanes to `ciu run`
+
+**Status:** OPEN — coordinated follow-up package after the current release wave. Severity: Medium. Type: feature. SPEC owners: Run-Gate R-07/R-19a/RG-89 environment-launch contract; CIU S10.8/S8 owns one-shot Compose lifecycle. Depends on CIU-141. Related: RG-89, RG-99, CIU-113/118/141.
+
+**Observed.** Run-Gate's current `mode = "ephemeral"` starts a raw Docker container from an image. That is appropriate for independent environments, but a CIU-managed test-runner already has the complete service declaration: instance network, CIU-rendered secrets, mounts, cgroup parent and user. Starting it outside CIU either duplicates those settings in Run-Gate configuration or bypasses CIU's authority. Keeping the service persistently `up` solely for `docker exec` recreates the shared `/tmp`, process-reaping and cross-lane-leftover risks of RG-99.
+
+**Required contract.** Add an explicit CIU-backed ephemeral launch selection that names the exact CIU root/stack/service and invokes `ciu run` once per lane. Do not copy the service's Compose definition into Run-Gate, run raw Docker for that selected environment, or fall back to a persistent `exec` container. CIU owns service resolution, networks, secrets, mounts, cgroup placement, user and one-shot lifecycle. Run-Gate owns the lane argv, admission/deadline, Assay state-root preflight, raw verdict handling, evidence and cgprofile observer session. The adapter must receive structured lifecycle records on a dedicated machine-readable channel, never lane stdout/stderr: first the exact container ID when known, then the raw command status and cleanup result. CIU must retain enough lifecycle state for terminal status collection and observer shutdown; automatic removal must not race away the result. A detached launch alone does not guarantee the observer starts before a fast lane exits, so specify and test that ordering with an immediate-exit command. If R2 requires measurement from the lane's first instruction, the protocol must include and verify a readiness barrier before releasing lane argv. The `resource_observer = "cgprofile"` path must preserve its read-only socket, observed GID, private cgroup namespace and observer session lifecycle without parsing command output; determine whether the observer socket is part of the rendered service or a narrowly typed transient attachment and test that contract with CIU.
+
+**Oracles.** (1) A Run-Gate lane starts when its declared CIU service is not already running and uses the exact selected instance's service definition. (2) Two concurrent lanes receive distinct container IDs, each use one container/user, and both see the declared network, secrets, mounts and cgroup placement. (3) A missing or ambiguous CIU service and an unready CIU instance refuse before the lane body with an actionable CIU remedy; there is no raw-Docker or persistent-exec fallback. (4) Command and Assay lanes preserve argv, TTY, exit status, budget, timeout cleanup and state-root behavior. (5) R2 receives the exact container ID over the lifecycle channel, starts/stops cgprofile against that ID, and preserves its observer-only access controls. (6) A very short lane proves observer startup ordering and terminal-status collection cannot race with lane exit or container cleanup; test a readiness barrier if first-instruction sampling is required. (7) Success, failure, timeout and interruption leave no one-shot container behind. The registered Run-Gate gate and one live CIU+Run-Gate+cgprofile acceptance must pass.
+
+**File list.** `run_gate.py`, lane schema/loader and launch adapter; Run-Gate README, DESIGN-GUIDE, CONSUMERS, SPEC, CHANGES and this backlog; CIU launch-event contract and focused integration tests; `scripts/cgroup-profiler/docs/RG55-INTERFACE-CONTRACT.md` only if its target identity contract must change. Keep CIU-141 as the v7 primitive and make the Run-Gate adapter a later package; do not combine either with the current release candidate.
+
+## RG-103 — `run-gate doctor` crashes on any config that declares a `kind = "sequence"` lane
+
+**Status:** FIXED IN CANDIDATE; registered gate remains. `doctor` walks sequence members (transitively) and reports each with its environment facts; malformed members (missing, environment-less, cyclic, empty, unresolvable environment) are named `[FAIL]`s; `--check-env` skips the sequence. Filed 2026-10-15 from dstdns package P242 (consumer cutover to native sequences), with the run-gate 24.0.0 candidate wheel. Severity Major: every consumer that adopts RG-74 native sequences loses `doctor`, the documented pre-flight before debugging a gate.
+
+**Observed.** In the dstdns cutover worktree, whose `[lanes.gate]` is `kind = "sequence"` with no `environment` (R-07/RG-74 forbid one on a sequence), `run-gate doctor --worktree "$PWD"` passed its first four checks (docker, ticket image, published admission count, slice) and then died: `KeyError: 'environment'` in `resolve_environment` (`run_gate.py`: `name = lane["environment"]`), called from `cmd_doctor`'s per-lane environment pass (`resolve_environment(lanes[name], ...)` at about line 8746 of the installed 24.0.0 module). `sequence_environments()` already handles sequences correctly by visiting members; the doctor pass does not use it.
+
+**Why run-gate owns it.** The configuration is valid by run-gate's own validator; a traceback for a legal declaration is the RG-28 class.
+
+**Proposed contract.** The doctor's per-lane environment pass skips sequence lanes (or resolves them through `sequence_environments()`), and reports per member. No traceback for any config that `--list` accepts.
+
+**Oracles.** A fixture config with a sequence lane whose members use two environments: `doctor` exits with its normal summary and checks both member environments once; the current implementation raises `KeyError` (controlled wrong implementation). A property test: every config accepted by the loader runs `doctor` without an uncaught exception.
+
+**SPEC owner.** R-07, RG-74 (sequences), the doctor contract (RG-64). Related: RG-28.

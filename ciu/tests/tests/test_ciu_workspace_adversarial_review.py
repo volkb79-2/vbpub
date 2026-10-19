@@ -411,6 +411,9 @@ def test_machine_facts_reader_returns_empty_when_table_is_absent(monkeypatch, tm
 def test_generate_env_does_not_swallow_git_failure_in_a_git_checkout(monkeypatch, tmp_path):
     (tmp_path / ".git").mkdir()
     monkeypatch.setattr(workspace_env, "_detect_physical_repo_root", lambda _root: tmp_path)
+    # This oracle is about Git error propagation; Docker identity is an
+    # unrelated host fact and is absent in tester-unified.
+    monkeypatch.setattr(workspace_env, "_detect_docker_gid", lambda: "999")
     monkeypatch.setattr(
         workspace,
         "_shared",
@@ -883,6 +886,9 @@ def test_ensure_does_not_reset_a_checkout_after_fork_point_was_recorded(
         _record(tmp_path, state="recovery-required"),
         fork_point_sha="a" * 40,
         recovery_status="env-generation-failed",
+        schema_version=3,
+        initial_overlay=None,
+        overlay_intent_known=True,
     )
     calls = {}
     monkeypatch.setattr(worktree, "_allocation_lock", lambda _root: nullcontext())

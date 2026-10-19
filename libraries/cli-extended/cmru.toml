@@ -11,9 +11,10 @@
 # then install tool wheels with `--no-index --find-links <cache>`.
 #
 # Versioning: setuptools-scm derives the version from the `cli-extended-v*`
-# tag this config's strategy mints. The FIRST release has no prior tag and
-# must pass `--set-version 0.2.0` (bare semver, no prefix). The library stays
-# on 0.x until every planned adoption has landed (CX-D4).
+# tag this config's strategy mints. A zero-release estate's first stable wheel
+# must pass `--set-version 0.3.0` (bare semver, no prefix): that is the current
+# minimum declared by CMRU and satisfies its real runtime dependency. The
+# library stays on 0.x until every planned adoption has landed (CX-D4).
 # =============================================================================
 schema_version = 1
 
@@ -47,8 +48,8 @@ evidence_paths = ["coverage.json"]
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "cli-extended: r0-r1 (unit + 100% line/branch coverage + docs)", argv = ["./run-gate.py", "r0-r1"], cwd = "." },
-  { label = "cli-extended: r3 (canary rejection)", argv = ["./run-gate.py", "r3"], cwd = "." },
+  { label = "cli-extended: r0-r1 (unit + 100% line/branch coverage + docs)", argv = ["run-gate", "r0-r1"], cwd = "." },
+  { label = "cli-extended: r3 (canary rejection)", argv = ["run-gate", "r3"], cwd = "." },
 ]
 
 [steps.build]

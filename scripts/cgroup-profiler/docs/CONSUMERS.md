@@ -28,18 +28,83 @@ cmru status cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
 cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0
 ```
 
-The first 1.0.0 release uses an explicit override because there is no prior
-cgprofile tag. CMRU creates the release tag
-before image build. `build-push.py` reads that exact tag to set the OCI
-tag/label and embedded runtime version, so CMRU releases need no manual
-`CGPROFILE_VERSION` export. An untagged local `--build` uses `0.0.0-dev`; a
-manual `--push` needs an exact release tag or a validated `CGPROFILE_VERSION`
-override.
+The first 1.0.0 release passes CMRU an explicit `--set-version 1.0.0` because
+there is no prior cgprofile tag. CMRU passes the protected
+`CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_TAG` to its build and push steps.
+`build-push.py` verifies that the checkout's `HEAD` and local tag both point at
+that commit, then builds from a temporary worktree at the same commit. The OCI
+tag, image label, and embedded runtime version all derive from that checked
+identity, so CMRU releases need no manual `CGPROFILE_VERSION` export. An
+untagged local `--build` uses `0.0.0-dev` and the checked checkout revision; a
+`--push` without CMRU's protected identity refuses before registry login. The
+pair binds the source to a commit and tag; it is not an authentication token
+or proof of CMRU provenance. Use `cmru release` for publication and do not
+hand-write the pair.
+
+For a local source build, use the identity-resolving wrapper. It supplies both
+the development version and the Git revision from one checked source state,
+requires the cgprofile and sibling DAMON source contexts to be clean, builds
+from a temporary worktree at that commit, and loads only the `cgprofile:local`
+image. Commit or clean changes in either context before building. Run from
+`scripts/cgroup-profiler`:
+
+```bash
+python3 build-push.py --build
+```
+
+The Bake file has literal development version and tag values, but no Git
+revision fallback. A bare `docker buildx bake` refuses before package
+installation because the Dockerfile requires both identity fields. Use the
+wrapper for local builds; use `cmru release` for publication.
 
 The local `cgprofile:local` tag is a build-only alias. CMRU's publish step
 selects the separate `cgprofile-release` Bake target, which contains only the
 versioned `ghcr.io/volkb79-2/cgprofile:<version>` tag; it does not publish the
 unqualified local alias to Docker Hub.
+
+The managed Compose file declares `create_host_path: false` for required host
+binds. If `/run/cgprofile` is missing, CIU refuses a missing source rather
+than creating an empty directory; host setup must also provision the observer
+subdirectory before the contract-2 listener can start.
+
+### Preview the GitHub Release body
+
+A CMRU release also publishes the GitHub Release body for `cgprofile-v<version>`: the pull
+instruction, then that version's dated section of `CHANGES.md` (pending `[Unreleased]` and
+`### Migration` notes are folded into it in the release candidate). Preview the exact text
+before releasing, from the repository root:
+
+```bash
+cmru release cgroup-profiler --config cmru.orchestration.toml --set-version 1.0.0 --dry-run
+```
+
+The preview prints the complete body between `----- begin release body -----` and
+`----- end release body -----`, beginning with:
+
+```text
+**Image:** `ghcr.io/volkb79-2/cgprofile:1.0.0`
+
+Pull: `docker pull ghcr.io/volkb79-2/cgprofile:1.0.0`
+
+## [1.0.0] - <date>
+```
+
+It uses the same builder as the release, leaves `CHANGES.md` unchanged, and has no artifact
+name or SHA256 because CGProfile uploads no asset. The body is written by the last command of
+`[steps.push]` in `cmru.toml`, which must stay after the image push:
+
+```text
+build-push.py --push                      # pushes ghcr.io/volkb79-2/cgprofile:<version>
+cmru handler oci-image-release --prefix cgprofile --image ghcr.io/volkb79-2/cgprofile --cwd .
+```
+
+Do not add a command after it or reorder them: CMRU refuses a release (and the dry run) before
+any prepare step, gate, tag or image push when the handler is malformed, not last, names a
+prefix other than `cgprofile`, or gives an image without an explicit registry. Never run the
+handler by hand; it needs the protected release identity that only `cmru release` supplies.
+If a release reports that the GitHub Release "was written" but could not be verified, the
+image is already published: inspect the `cgprofile-v<version>` release and its tag before
+retrying (see the [design note](DESIGN-GUIDE.md#the-github-release-body-for-the-published-image)).
 
 ## One-shot collector behavior
 
@@ -61,9 +126,12 @@ waiting or racing; ordinary profiling proceeds.
 
 ## Deploy a published daemon image with CIU
 
-The default CIU image coordinates intentionally select the local development
-image. To deploy the combined RG-55 v1.0.0 daemon release, put this complete
-override in the tracked sparse `ciu.toml.j2` at the cgprofile CIU root:
+Run this after `cmru release cgroup-profiler --set-version 1.0.0` has
+completed and the GHCR manifest is available. Before that first publication,
+leave the tracked sparse `ciu.toml.j2` without an image table; CIU then uses
+the local `cgprofile:local` development default for pre-release checks.
+After publication, commit this sparse override to pin the exact released
+image:
 
 ```toml
 [cgprofile.image]
@@ -76,16 +144,32 @@ tag = "1.0.0"
 The complete coordinates resolve to `ghcr.io/volkb79-2/cgprofile:1.0.0`;
 changing only `tag` while leaving the default empty registry and namespace
 would still select a local image. Use the normal CIU bring-up and verify the
-runtime identity before attaching consumers:
+runtime identity before attaching consumers. Run this from
+`scripts/cgroup-profiler/`:
 
 ```bash
-ciu up --dir .
+ciu up --profile host
 docker exec cgprofile-host-daemon cgprofile ctl version --json
+release_commit=$(git rev-parse --verify 'refs/tags/cgprofile-v1.0.0^{commit}')
+daemon_image_id=$(docker inspect cgprofile-host-daemon --format '{{.Image}}')
+image_revision=$(docker image inspect "$daemon_image_id" \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')
+test "$image_revision" = "$release_commit"
 ```
 
-The version in the response must match the pinned image. For local development,
-leave the sparse override empty and use `python3 build-push.py --build`; that
-path loads only `cgprofile:local` and does not publish it.
+The version in the response must match the pin, and the running image's source
+revision label must match the peeled release tag. For a candidate deployment,
+compare the label with that candidate's commit instead. For local development
+after the release pin has been committed, temporarily clear the
+`[cgprofile.image]` table in `ciu.toml.j2`. From `scripts/cgroup-profiler/`,
+build the local image before starting CIU; that path loads only
+`cgprofile:local` and does not publish it. Restore the published-image table
+before committing a deployment change:
+
+```bash
+python3 build-push.py --build
+ciu up --dir .
+```
 
 ## Daemon adoption
 
@@ -96,13 +180,21 @@ see [`DESIGN-GUIDE.md`](DESIGN-GUIDE.md#daemon-safety-and-placement).
 
 ## Start the host daemon
 
-From this directory, build the image and start the one host-scoped daemon:
+This recipe starts the local development image. Use it only while
+`ciu.toml.j2` has no `[cgprofile.image]` release override; if that pin is
+committed, `ciu up` selects the pinned GHCR image instead. Clear the table as
+described above before starting a local development image. From this
+directory, build and start the one host-scoped daemon:
 
 ```bash
 python3 build-push.py --build
-ciu up --dir .
+ciu up --profile host
 docker exec cgprofile-host-daemon cgprofile ctl version --json
 ```
+
+Use `ciu down --profile host` to stop this singleton before a restart. The
+named profile selects the project-root stack for both lifecycle verbs, so
+operators do not need a raw Docker restart or a destructive `--reset`.
 
 The shipped daemon alone uses the host PID namespace so DAMON sysfs can
 resolve host `pid_target` values. It keeps a private cgroup namespace and
@@ -201,7 +293,13 @@ refusal, not permission to rely on Docker's default parent.
 
 Assay B145 refuses to classify native R2 candidates when private cgroup
 namespaces hide an enforcing ancestor. With a cgprofile daemon that implements
-contract §9 and a Run-Gate build that supports RG-89, opt the lane in:
+resource-observer contract 2 and a Run-Gate build that supports RG-89, opt the lane in.
+The host cgroup2 mount must not use `pids_localevents`; cgprofile refuses that
+mode because its fork-failure counter identifies the cgroup where a failed fork
+was attempted, not the ancestor whose `pids.max` blocked it. A refusal means the
+lane has no trustworthy pids-event attribution on that host. `memory_localevents`
+is supported and appears in the observer scope metadata; candidate-local memory
+events require the candidate cgroup to have no child cgroups.
 
 ```toml
 [lanes.assay-r2]
@@ -209,7 +307,15 @@ kind = "assay"
 assay_lane = "r2"
 environment = "tester-unified"
 resource_observer = "cgprofile"
+
+[lanes.assay-r2.resources]
+memory = "2g"
+pids = 8192
 ```
+
+Both ceilings are required: Run-Gate refuses to load an observer-backed lane
+without an explicit `resources.memory` and `resources.pids`, because candidate
+memory and PID limit events are only attributable against a declared ceiling.
 
 For native R2 in a tester container shared by Assay workers, serialize
 candidate windows in that lane's `assay.toml`:
@@ -229,18 +335,18 @@ If the observer refuses because the peer threads have different capability
 states, resolve that peer configuration; the counter query will not guess
 which thread state applies.
 
-The existing host `/run/cgprofile` directory bind is sufficient for the
-devcontainer to see the daemon-created socket; no second host mount or new
-host-setup unit is needed. Host-setup must create this directory first;
-Compose refuses a missing source rather than silently creating an empty host
-directory. The upgraded daemon creates
-`/run/cgprofile/resource-observer.sock` beside `ctl.sock`. At gate launch,
-Run-Gate validates that fixed host path and mounts only the observer socket
-read-only into `tester-unified`, adds its observed GID, and sets
-`ASSAY_RESOURCE_OBSERVER_SOCKET` inside the container. A missing daemon/socket
-or unsafe ownership/mode is an infrastructure refusal, never a silent
-fallback. The selected container retains private PID, cgroup, and network
-namespaces; do not mount `ctl.sock` or the Docker socket for this feature.
+Host setup provisions `/run/cgprofile/observer` as root-owned mode `0751` in
+the dedicated `cgprofile-observer` group. The daemon owns only the socket entry
+inside this persistent directory. Run-Gate validates the directory and socket,
+then bind-mounts the directory read-only into `tester-unified`. The directory
+bind lets an already-running container see a new socket after daemon restart;
+binding the socket file would pin the old inode. Run-Gate grants only the
+dedicated observer GID and sets `ASSAY_RESOURCE_OBSERVER_SOCKET` inside the
+container. Observer-backed lanes also declare per-container memory and PID
+ceilings and refuse arbitrary extra mounts. A missing daemon/socket or unsafe
+ownership/mode is an infrastructure refusal, never a silent fallback. The
+selected container retains private PID, cgroup, and network namespaces; do not
+mount `ctl.sock` or the Docker socket for this feature.
 The observer accepts one newline-terminated JSON request of at most 4096 bytes
 including the newline and applies a five-second absolute deadline. Consumers
 must send one complete line; oversized or incomplete requests are not
@@ -250,8 +356,14 @@ Assay uses its local B145 reader first and contacts the observer only when the
 local view specifically proves that ancestors are hidden. The daemon derives
 the peer's cgroup from `SO_PEERCRED` plus the supplied native TID, limits
 queries to the configured gates slice, and returns only that peer's ancestry
-counters. Any incomplete identity or ambiguous shared-ancestor event remains
-`ERROR/EXEC_FAILED`, not a candidate kill/survivor. See the
+counters. The observer requires contract 2. A contract-1 request receives an
+explicit unsupported-contract refusal, so deploy cgroup-profiler 1.0.0 or
+later before enabling this lane. The daemon's separate control socket remains
+contract 1.
+Any incomplete identity
+or ambiguous shared-ancestor local event remains `ERROR/EXEC_FAILED`, not a
+candidate kill/survivor. A hierarchical-only change from a sibling does not
+invalidate the candidate. See the
 [`observer protocol`](PROTOCOL.md#8-native-r2-resource-observer-rg-89) and
 [`design rationale`](DESIGN-GUIDE.md#native-r2-resource-observation-is-data-only-not-a-broker).
 
@@ -291,9 +403,18 @@ The version response has the current wire shape:
     "damon_default": "on",
     "sessions_live": 0,
     "max_sessions": 16
+  },
+  "resource_observer": {
+    "contract": 2,
+    "path": "/run/cgprofile/observer/resource-observer.sock",
+    "listening": true
   }
 }
 ```
+
+Check `resource_observer.contract` and `listening` before running an opted-in
+native R2 gate. The field describes the separate observer endpoint; it does
+not change the control protocol's `contract: 1`.
 
 The version response's `daemon.damon: "available"` only means the library
 and admin sysfs interface are visible; it does not prove that the kernel will
@@ -397,6 +518,10 @@ then ask the daemon to profile it. Generate a fresh token per lane attempt and
 pass it through the lane as `RUN_GATE_PROFILE_SESSION`; the token makes a
 retry-safe `(container_id, token)` start idempotent. The `meta` object is
 required and its `kind` is either `command` or `assay`.
+
+Use the installed Run-Gate wheel, not a copied project-local `run-gate.py`
+script. Check the installed SemVer with `run-gate --version` before adopting a
+lane; see [Run-Gate's wheel contract](../../../run-gate-project/CONSUMERS.md#distribution-installed-wheel-and-semver).
 
 The following is a minimal shell-shaped integration. Replace the image,
 command, and metadata values for the consuming project:
@@ -517,17 +642,24 @@ pre-wave comparison commit below. From the attached candidate worktree,
 pass that commit explicitly to both registered entrypoints:
 
 ```bash
-P1_BASE=e5e9b95c5ac8be3452c93f1066f9436347f862fd
-./run-gate.py --base "$P1_BASE" --dry-run r2
-./run-gate.py --base "$P1_BASE" r2
-./run-gate.py --base "$P1_BASE" gate
+P1_BASE=eb3af770eb16362cff4c39388193c0180c2d370c
+run-gate --base "$P1_BASE" --dry-run r2
+run-gate --base "$P1_BASE" r2
+run-gate --base "$P1_BASE" gate
 ```
 
 Run these from `scripts/cgroup-profiler/`. The dry run shows the expanded
 `--request-base` argument without starting the judged lane. Before the long
 R2 run, inspect Assay's plan for the exact commit/tree and the intended
 source candidates. The `gate` lane passes the same base to its nested `r2`.
-R2 and the full gate are release checks; their results belong to the exact
-tree they judge. Run-gate can derive a different base when `--base` is
-omitted, so an omitted flag is not the P1 acceptance command. The rationale
-is in the [design guide](DESIGN-GUIDE.md#mutation-comparison-base).
+The composite is the complete Run-Gate lane: `r0-r1`, the 24-hour `r2`, then
+`r3`, and its result belongs to the exact tree it judges. CMRU's release gate
+(`cmru.toml` `steps.run-tests`) is narrower: it runs `run-gate r0-r1` and
+`run-gate r3` only and never runs R2. The operator's release policy allows the
+long full-source R2 campaign to be deferred, so **the initial 1.0.0 release
+has no completed full-source R2 verdict**; a release does not claim one. Run
+`run-gate --base "$P1_BASE" gate` when that evidence is wanted; see
+[release qualification](DESIGN-GUIDE.md#release-qualification-and-the-full-r2-gate).
+Run-gate can derive a different base when `--base` is omitted, so an omitted
+flag is not the P1 acceptance command. The rationale is in the
+[design guide](DESIGN-GUIDE.md#mutation-comparison-base).

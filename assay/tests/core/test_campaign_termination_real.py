@@ -52,13 +52,22 @@ def _read_candidate(pid_file: Path, assay: subprocess.Popen[str]) -> tuple[int, 
     raise AssertionError("candidate process did not publish its pid before the failsafe")
 
 
-def _seed_r2_repo(repo: GitRepo, pid_file: Path) -> Path:
+def _seed_r2_repo(
+    repo: GitRepo,
+    pid_file: Path,
+    *,
+    liveness_enabled: bool = True,
+    baseline_pid_file: Path | None = None,
+) -> Path:
     repo.write(".gitignore", ".assay/\n__pycache__/\n.pytest_cache/\n")
     repo.write("pkg/mod.py", "def guard(x):\n    return True\n")
     base = repo.commit_all("seed Python package")
     repo.write("pkg/mod.py", "def guard(x):\n    return x <= 0\n")
     repo.commit_all("add one compare-swap site")
     marker = repr(str(pid_file))
+    baseline_marker = repr(
+        None if baseline_pid_file is None else str(baseline_pid_file)
+    )
     repo.write(
         "tests/test_guard.py",
         "from pathlib import Path\n"
@@ -66,6 +75,14 @@ def _seed_r2_repo(repo: GitRepo, pid_file: Path) -> Path:
         "from pkg.mod import guard\n\n"
         "def test_guard():\n"
         "    if guard(0):\n"
+        f"        baseline_marker = {baseline_marker}\n"
+        "        if baseline_marker is not None:\n"
+        "            stat = Path('/proc/self/stat').read_text(encoding='ascii')\n"
+        "            start_time = stat.rsplit(')', 1)[1].split()[19]\n"
+        "            Path(baseline_marker).write_text(f'{os.getpid()} {start_time}', encoding='ascii')\n"
+        "            parent = os.getppid()\n"
+        "            while os.getppid() == parent:\n"
+        "                pass\n"
         "        return\n"
         "    stat = Path('/proc/self/stat').read_text(encoding='ascii')\n"
         "    start_time = stat.rsplit(')', 1)[1].split()[19]\n"
@@ -103,7 +120,7 @@ jobs = 1
 max_mutants = 1
 operators = ["python:compare-swap"]
 budget_per_candidate = "600s"
-liveness = true
+liveness = {str(liveness_enabled).lower()}
 """,
     )
     repo.commit_all("declare the R2 lane")
@@ -142,13 +159,19 @@ def _start_assay(repo: GitRepo, config: Path, verdict: Path, state_dir: Path):
 
 
 @pytest.mark.parametrize("signal_group", [False, True], ids=["sigterm-pid", "timeout-group"])
+@pytest.mark.parametrize(
+    "liveness_enabled", [True, False], ids=["liveness", "no-liveness"]
+)
 def test_sigterm_leaves_r2_candidate_unclassified_and_dead(
     git_repo: GitRepo,
     tmp_path: Path,
     signal_group: bool,
+    liveness_enabled: bool,
 ):
     pid_file = tmp_path / "candidate.pid"
-    config = _seed_r2_repo(git_repo, pid_file)
+    config = _seed_r2_repo(
+        git_repo, pid_file, liveness_enabled=liveness_enabled
+    )
     verdict_path = tmp_path / "verdict.json"
     state_dir = tmp_path / "mutation-state"
     assay, assay_group = _start_assay(git_repo, config, verdict_path, state_dir)
@@ -192,5 +215,52 @@ def test_sigterm_leaves_r2_candidate_unclassified_and_dead(
             if current is not None and current[1] == candidate_start:
                 try:
                     os.killpg(candidate_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+def test_sigterm_during_r2_baseline_writes_incomplete_verdict_and_stops(
+    git_repo: GitRepo,
+    tmp_path: Path,
+):
+    baseline_pid_file = tmp_path / "baseline.pid"
+    candidate_pid_file = tmp_path / "candidate.pid"
+    config = _seed_r2_repo(
+        git_repo,
+        candidate_pid_file,
+        liveness_enabled=False,
+        baseline_pid_file=baseline_pid_file,
+    )
+    verdict_path = tmp_path / "verdict.json"
+    state_dir = tmp_path / "mutation-state"
+    assay, assay_group = _start_assay(git_repo, config, verdict_path, state_dir)
+    baseline_pid: int | None = None
+    baseline_start: str | None = None
+    try:
+        baseline_pid, baseline_start = _read_candidate(baseline_pid_file, assay)
+        os.kill(assay.pid, signal.SIGTERM)
+        stdout, stderr = assay.communicate(timeout=120)
+        assert assay.returncode == Outcome.BUDGET_EXCEEDED.exit_code, (
+            f"stdout:\n{stdout}\nstderr:\n{stderr}"
+        )
+
+        verdict = json.loads(verdict_path.read_text(encoding="utf-8"))
+        assert verdict["outcome"] == Outcome.BUDGET_EXCEEDED.value
+        assert verdict["reason_code"] == ReasonCode.LANE_TIMEOUT.value
+        r2 = next(claim for claim in verdict["claims"] if claim["rigor"] == "R2")
+        assert r2["status"] == Outcome.BUDGET_EXCEEDED.value
+        assert "mutation" not in r2
+        assert list(state_dir.glob("*.json")) == []
+        after = _proc_identity(baseline_pid)
+        assert after is None or after[0] == "Z" or after[1] != baseline_start
+    finally:
+        if assay.poll() is None:
+            os.killpg(assay_group, signal.SIGKILL)
+            assay.wait(timeout=10)
+        if baseline_pid is not None and baseline_start is not None:
+            current = _proc_identity(baseline_pid)
+            if current is not None and current[1] == baseline_start:
+                try:
+                    os.killpg(baseline_pid, signal.SIGKILL)
                 except ProcessLookupError:
                     pass

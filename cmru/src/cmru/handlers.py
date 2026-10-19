@@ -19,22 +19,121 @@ import fnmatch
 import glob
 import hashlib
 import os
+import re
 import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Optional
+from typing import NoReturn, Optional
 
+from cmru import exit_codes
 from cmru.release import (
     GitHubReleases,
+    build_oci_image_release_body,
     find_artifact,
     find_built_wheel,
+    is_release_version,
     publish_versioned,
     read_wheel_version,
     validate_latest_release,
 )
+from cmru.release_notes import (
+    NO_NOTES,
+    ReleaseNotes,
+    ReleaseNotesError,
+    declared_source,
+    load_release_notes,
+)
+
+
+def _notes_kwargs(release_notes: Optional[ReleaseNotes]) -> dict:
+    """A project without curated notes publishes through the unchanged call shape."""
+    return {} if release_notes is None else {"release_notes": release_notes}
+
+
+def _curated_release_notes(
+    cwd: Path, prefix: str, version: str, build_output: Optional[dict],
+) -> Optional[ReleaseNotes]:
+    """Resolve the curated section a release body must carry, before any network call.
+
+    A release version REQUIRES its exact section when the project declares a
+    changelog; a refusal here happens before authentication or upload, so a
+    missing or malformed section can never publish a notes-less body. The text
+    is read from the commit the artifact was built from (the tagged candidate
+    or retained build source). An explicit ``publish --from-checkout`` resolves
+    that source from the matching local release tag instead of mutable files.
+    """
+    if not is_release_version(version):
+        return None  # a dev build publishes no immutable release body
+    try:
+        declaration = declared_source()
+        if declaration == NO_NOTES:
+            return None
+        commit = os.environ.get("CMRU_RELEASE_COMMIT") or (
+            build_output["manifest"]["source_commit"] if build_output else None
+        )
+        expected_tag = f"{prefix}-v{version}"
+        declared_tag = os.environ.get("CMRU_RELEASE_TAG")
+        if declared_tag and declared_tag != expected_tag:
+            raise ReleaseNotesError(
+                f"CMRU_RELEASE_TAG={declared_tag!r} does not match {expected_tag!r}"
+            )
+        if commit is None:
+            tagged = subprocess.run(
+                ["git", "rev-parse", f"{expected_tag}^{{commit}}"],
+                cwd=cwd, capture_output=True, text=True, check=False,
+            )
+            if tagged.returncode:
+                detail = tagged.stderr.strip() or "tag is absent from this checkout"
+                raise ReleaseNotesError(
+                    f"cannot bind release notes to {expected_tag}: {detail}"
+                )
+            commit = tagged.stdout.strip()
+            # The notes are about to be bound to a LOCAL tag. Prove it is the
+            # published tag, not a same-named hand-made one.
+            _require_local_tag_is_published_tag(cwd, expected_tag)
+        return load_release_notes(cwd, declaration, version, commit=commit)
+    except ReleaseNotesError as exc:
+        print(f"[ERROR] release notes: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.REFUSED) from None
+
+
+def _require_local_tag_is_published_tag(cwd: Path, tag: str) -> None:
+    """Refuse unless origin's *tag* points at the very commit the local one does.
+
+    ``publish --from-checkout`` resolves release prose from a local tag, so a
+    local tag that merely shares the published name (moved, re-created, or
+    never pushed) would put another commit's notes into an immutable release
+    body. This reuses CMRU's exact origin comparison
+    (:func:`cmru.version._tag_pushed_to_origin`: one ``ls-remote`` over the
+    direct and peeled refs, so annotated and lightweight tags both compare by
+    the commit they target) with the same repository credential the publish
+    itself uses. A tag absent from origin, a disagreement, and an origin that
+    cannot be queried are three distinct refusals; none is read as "nothing
+    published yet".
+    """
+    from cmru.git_auth import GitHubGitAuth
+    from cmru.version import _tag_pushed_to_origin
+
+    auth = GitHubGitAuth(
+        owner=_require_env("GITHUB_USERNAME"),
+        repo=_require_env("GITHUB_REPO"),
+        token=_require_env("GITHUB_PUSH_PAT"),
+    )
+    try:
+        published = _tag_pushed_to_origin(cwd, tag, git_auth=auth)
+    except (RuntimeError, OSError) as exc:
+        raise ReleaseNotesError(
+            f"cannot bind release notes to {tag}: the local tag could not be "
+            f"verified as the published one: {exc}"
+        ) from exc
+    if not published:
+        raise ReleaseNotesError(
+            f"cannot bind release notes to {tag}: origin has no {tag!r} tag, so the "
+            "local tag is not the published release tag; push the reviewed tag first"
+        )
 
 
 def _require_env(name: str) -> str:
@@ -105,12 +204,17 @@ def _publish_versioned_artifacts(
     notes: Optional[str],
     extra_assets: Optional[list[Path]],
     build_output: Optional[dict],
+    release_notes: Optional[ReleaseNotes] = None,
 ) -> dict:
     """Publish selected files, isolating retained records from publisher byproducts."""
+    # A project that declares no curated notes publishes exactly the generated
+    # body, so the keystone is called without the argument.
+    curated = _notes_kwargs(release_notes)
     if build_output is None:
         return publish_versioned(
             gh, prefix=prefix, version=version, asset_path=asset_path,
             notes=notes, extra_assets=extra_assets, latest_pointer=True,
+            **curated,
         )
 
     # The keystone writes checksum sidecars and latest.json beside its inputs.
@@ -135,6 +239,7 @@ def _publish_versioned_artifacts(
             notes=notes, extra_assets=staged_extras or None, latest_pointer=True,
             require_existing_targets=True, latest_pointer_recreate=False,
             expected_tag_commit=build_output["manifest"]["source_commit"],
+            **curated,
         )
 
 
@@ -182,17 +287,82 @@ _WHEEL_BUILDER_IMAGE_ENV = "CMRU_WHEEL_BUILDER_IMAGE"
 _DOCKER_CGROUP_PARENT_ENV = "CMRU_DOCKER_CGROUP_PARENT"
 
 
-def _check_build_prerequisites() -> None:
+def _configured_wheel_builder_image(cwd: Path) -> str:
+    """Read the wheel-builder image from CMRU config enclosing *cwd*."""
+    return _configured_env_value(cwd, _WHEEL_BUILDER_IMAGE_ENV)
+
+
+def _configured_env_value(cwd: Path, name: str) -> str:
+    """Read one ``[env]`` value from the CMRU config enclosing *cwd*.
+
+    A direct handler invocation does not run through the release-step
+    environment injector. For registered estate projects, the nearest
+    orchestration document is authoritative; for a standalone project, its
+    own ``cmru.toml`` is authoritative. No value is invented here.
+    """
+    from cmru.config import (
+        ORCHESTRATION_CONFIG_FILENAME,
+        PROJECT_CONFIG_FILENAME,
+        load_forge_config,
+    )
+
+    ancestors = (cwd, *cwd.parents)
+    orchestration_path = next(
+        (directory / ORCHESTRATION_CONFIG_FILENAME for directory in ancestors
+         if (directory / ORCHESTRATION_CONFIG_FILENAME).exists()),
+        None,
+    )
+    project_path = next(
+        (directory / PROJECT_CONFIG_FILENAME for directory in ancestors
+         if (directory / PROJECT_CONFIG_FILENAME).exists()),
+        None,
+    )
+    config_path = orchestration_path or project_path
+    if config_path is None:
+        return ""
+
+    forge = load_forge_config(config_path)
+    values = dict(forge.env)
+    if forge.orchestration is None:
+        raise RuntimeError(
+            f"{config_path}: strict CMRU config loader returned no project registry"
+        )
+    matches: list[tuple[int, str]] = []
+    for name, path in forge.orchestration.project_configs.items():
+        project_root = path.resolve().parent
+        try:
+            cwd.relative_to(project_root)
+        except ValueError:
+            continue
+        matches.append((len(project_root.parts), name))
+    if not matches:
+        raise ValueError(
+            f"{cwd} is not inside a project registered by {config_path}"
+        )
+    project_name = max(matches, key=lambda item: item[0])[1]
+    values.update(forge.projects[project_name].env)
+
+    return str(values.get(name, "") or "").strip()
+
+
+def _resolve_wheel_builder_image(cwd: Path | None = None) -> str:
+    if _WHEEL_BUILDER_IMAGE_ENV in os.environ:
+        return os.environ[_WHEEL_BUILDER_IMAGE_ENV].strip()
+    return _configured_wheel_builder_image(cwd) if cwd is not None else ""
+
+
+def _check_build_prerequisites(cwd: Path | None = None) -> str:
     """Check the wheel-build path is usable before `cmd_wheel_build` invokes it.
     Exit 3 (PREREQ_MISSING) with an actionable message if not, rather than failing
     deep in a subprocess with a bare `No module named build` (direct mode) or a
     confusing docker error (container mode)."""
     from cmru import exit_codes
 
-    if not (os.getenv(_WHEEL_BUILDER_IMAGE_ENV) or "").strip():
+    image = _resolve_wheel_builder_image(cwd)
+    if not image:
         print(
             f"[ERROR] ${_WHEEL_BUILDER_IMAGE_ENV} is required for wheel-build. "
-            "Declare an immutable wheel-builder image in the project's cmru.toml [env]; "
+            "Set it explicitly or declare it in the enclosing CMRU configuration; "
             "CMRU refuses the non-reproducible local-Python build path.",
             file=sys.stderr,
         )
@@ -205,6 +375,7 @@ def _check_build_prerequisites() -> None:
             file=sys.stderr,
         )
         raise SystemExit(exit_codes.PREREQ_MISSING)
+    return image
 
 
 def _docker_cgroup_parent() -> str:
@@ -226,9 +397,84 @@ def _docker_cgroup_parent() -> str:
             "refusing to launch an ungoverned Docker container",
             file=sys.stderr,
         )
-        from cmru import exit_codes
         raise SystemExit(exit_codes.PREREQ_MISSING)
     return parent
+
+
+def _declared_input(cwd: Path, name: str) -> str:
+    """An explicit environment value wins; otherwise the enclosing CMRU config."""
+    if name in os.environ:
+        return os.environ[name].strip()
+    return _configured_env_value(cwd, name)
+
+
+def require_installed_cgroup_parent(cgroup_parent: str, cwd: Path) -> None:
+    """Prove *cgroup_parent* is a real, configured host systemd slice, or refuse.
+
+    systemd auto-vivifies a ``.slice`` for ANY name, so Docker given a typo'd
+    ``--cgroup-parent`` starts the container normally in an unlimited
+    transient slice next to production. The check therefore runs BEFORE the
+    wheel-builder ``docker run`` (and before the bootstrap script's Buildx),
+    through the same host-side probe contract ``tester-gate`` uses
+    (:func:`cmru.tester_gate.check_slice_unit`: ``LoadState=loaded`` and a
+    non-empty ``FragmentPath``, read from the Docker HOST's systemd via a
+    pinned privileged ``nsenter`` container; never a local ``systemctl`` from a
+    cockpit that has no view of the host's systemd).
+
+    The probe container is placed in the declared gates tier
+    (``CMRU_TESTER_CGROUP_PARENT``); the probe image is the declared
+    digest-pinned ``CMRU_TESTER_CGROUP_PROBE_IMAGE``. That probe parent is
+    verified FIRST with ``tester-gate``'s own self-check contract
+    (``check_slice_unit(parent, image, parent)``: the short, read-only probe
+    runs in the slice it is asking about, and a typo'd name is still caught
+    because it reads an empty ``FragmentPath``). Only a probe parent that
+    answers affirmatively is then used to probe the build slice, so a typo'd
+    gates tier is reported instead of silently hosting every probe. Either
+    input missing, or any uncertainty (no docker, probe failure, unknown
+    LoadState) for either slice, refuses.
+    """
+    from cmru import tester_gate
+
+    probe_image_name = tester_gate._SLICE_PROBE_IMAGE_ENV
+    probe_parent_name = tester_gate._CGROUP_PARENT_ENV
+    probe_image = _declared_input(cwd, probe_image_name)
+    probe_parent = _declared_input(cwd, probe_parent_name)
+    missing = [
+        name for name, value in (
+            (probe_image_name, probe_image), (probe_parent_name, probe_parent),
+        ) if not value
+    ]
+    if missing:
+        print(
+            f"[ERROR] cannot verify cgroup parent {cgroup_parent!r} before "
+            f"wheel-build: {', '.join(missing)} is required (normally declared in "
+            "cmru.orchestration.toml [env]); refusing to launch a Docker container "
+            "into an unverified slice",
+            file=sys.stderr,
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+    pinned_image = tester_gate.require_digest_pinned(probe_image, "cgroup probe image")
+    parent_ok, parent_note = tester_gate.check_slice_unit(
+        probe_parent, pinned_image, probe_parent,
+    )
+    if parent_ok is not True:
+        print(
+            f"[ERROR] wheel-build refuses to launch: {probe_parent_name}={probe_parent!r} "
+            f"is not a verified host slice, so it cannot host the probe that checks "
+            f"{cgroup_parent!r} ({parent_note})",
+            file=sys.stderr,
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+    exists, note = tester_gate.check_slice_unit(cgroup_parent, pinned_image, probe_parent)
+    if exists is not True:
+        print(
+            f"[ERROR] wheel-build refuses to launch: cgroup parent {cgroup_parent!r} "
+            f"is not a verified host slice ({note})",
+            file=sys.stderr,
+        )
+        raise SystemExit(exit_codes.PREREQ_MISSING)
+
+
 def _host_bind_source(container_path: Path) -> str:
     """Resolve the real host-filesystem path backing a bind-mounted directory.
 
@@ -359,28 +605,21 @@ def _wheel_builder_env_args() -> list[str]:
 
 def cmd_wheel_build(args: argparse.Namespace) -> None:
     """Clean stale wheels + `python -m build --wheel --outdir dist` in the project."""
-    _check_build_prerequisites()
     cwd = Path(args.cwd).resolve()
+    image = _check_build_prerequisites(cwd)
     if _git_common_dir(cwd) is None:
         raise RuntimeError(
             f"Wheel build requires a Git worktree: cannot resolve git common directory for {cwd}."
         )
+    # Verify the placement before anything is deleted or launched.
+    cgroup_parent = _docker_cgroup_parent()
+    require_installed_cgroup_parent(cgroup_parent, cwd)
     dist = cwd / "dist"
     if dist.exists():
         for stale in dist.glob("*.whl"):
             stale.unlink()
     print(f"[INFO] cmru handler: building wheel in {cwd}")
 
-    # _check_build_prerequisites() has already rejected an absent image.  Read it
-    # again rather than carrying ambient state in a module global: each command
-    # invocation remains self-contained and a caller which mutates its environment
-    # between the check and launch still fails loudly.
-    image = (os.getenv(_WHEEL_BUILDER_IMAGE_ENV) or "").strip()
-    if not image:
-        raise RuntimeError(
-            "wheel-builder image disappeared after prerequisite validation; refusing build"
-        )
-    cgroup_parent = _docker_cgroup_parent()
     # Run from the parent directory with the project dir as positional source;
     # the image's venv replaces the retired local-Python build path.
     mount_root = _wheel_builder_mount_root(cwd)
@@ -419,7 +658,10 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     else:
         wheel = find_built_wheel(cwd / "dist", pattern)
     version = read_wheel_version(wheel)
+    # Supplementary opening text only; the curated section below is mandatory
+    # for a project that declares a changelog and cannot be bypassed by it.
     notes = (os.getenv(args.notes_env) if args.notes_env else None) or f"{args.prefix} {version}"
+    release_notes = _curated_release_notes(cwd, args.prefix, version, build_output)
 
     # `--extra-asset` (repeatable, default none): additional files to attach to
     # the SAME release. `publish_versioned` has always accepted `extra_assets`;
@@ -449,6 +691,7 @@ def cmd_wheel_publish(args: argparse.Namespace) -> None:
     result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=wheel,
         notes=notes, extra_assets=extras or None, build_output=build_output,
+        **_notes_kwargs(release_notes),
     )
     print(f"[INFO] Published {args.prefix} {version}")
     for item in extras:
@@ -508,11 +751,13 @@ def cmd_tarball_publish(args: argparse.Namespace) -> None:
     else:
         art = find_artifact(cwd / "dist", args.glob)
     notes = (os.getenv(args.notes_env) if args.notes_env else None) or None
+    release_notes = _curated_release_notes(cwd, args.prefix, version, build_output)
 
     gh = GitHubReleases(owner, repo, token)
     result = _publish_versioned_artifacts(
         gh, prefix=args.prefix, version=version, asset_path=art,
         notes=notes, extra_assets=None, build_output=build_output,
+        **_notes_kwargs(release_notes),
     )
     print(f"[INFO] Published {args.prefix} {version}")
     print(result)
@@ -643,6 +888,76 @@ def cmd_oci_image_push(args: argparse.Namespace) -> None:
     print("[INFO] OCI image push complete")
 
 
+def _refuse_oci_release(message: str) -> NoReturn:
+    print(f"[ERROR] oci-image-release: {message}", file=sys.stderr)
+    raise SystemExit(exit_codes.REFUSED)
+
+
+def _protected_oci_release_identity(prefix: str) -> tuple[str, str, str]:
+    """``(tag, commit, version)`` from CMRU's protected release environment.
+
+    The image tag is DERIVED from the protected release tag; nothing is
+    guessed, defaulted, or read from the working tree. An absent, malformed or
+    mismatched value refuses before any GitHub call.
+    """
+    tag = (os.environ.get("CMRU_RELEASE_TAG") or "").strip()
+    commit = (os.environ.get("CMRU_RELEASE_COMMIT") or "").strip()
+    missing = [
+        name for name, value in
+        (("CMRU_RELEASE_TAG", tag), ("CMRU_RELEASE_COMMIT", commit)) if not value
+    ]
+    if missing:
+        _refuse_oci_release(
+            f"{' and '.join(missing)} not set. This handler publishes release metadata "
+            "for a tagged release only: place it in the `push` step of a project released "
+            "with `cmru release`, which supplies the release tag and candidate commit. "
+            "Do not export them by hand."
+        )
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        _refuse_oci_release(
+            f"CMRU_RELEASE_COMMIT={commit!r} is not a full 40-hex commit id"
+        )
+    marker = f"{prefix}-v"
+    version = tag[len(marker):] if tag.startswith(marker) else ""
+    if not version:
+        _refuse_oci_release(
+            f"CMRU_RELEASE_TAG={tag!r} is not a {marker}<version> tag for --prefix {prefix!r}"
+        )
+    if not is_release_version(version):
+        _refuse_oci_release(
+            f"CMRU_RELEASE_TAG={tag!r} names the non-release version {version!r}"
+        )
+    return tag, commit, version
+
+
+def cmd_oci_image_release(args: argparse.Namespace) -> None:
+    """Publish the GitHub Release body for an image the project's own step pushed.
+
+    Release metadata only: this handler never builds or pushes the image and
+    uploads no asset. The image coordinate (``--image`` plus ``:<version>``) and
+    the notes are bound to CMRU's protected release tag and candidate commit;
+    the changelog section is read from that commit, never the working tree.
+    """
+    cwd = Path(args.cwd).resolve()
+    tag, commit, version = _protected_oci_release_identity(args.prefix)
+    try:
+        declaration = declared_source()
+        release_notes = load_release_notes(cwd, declaration, version, commit=commit)
+        body = build_oci_image_release_body(args.image, version, release_notes=release_notes)
+    except ReleaseNotesError as exc:
+        print(f"[ERROR] release notes: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.REFUSED) from None
+    except ValueError as exc:
+        _refuse_oci_release(str(exc))
+
+    token = _require_env("GITHUB_PUSH_PAT")
+    owner = _require_env("GITHUB_USERNAME")
+    repo = _require_env("GITHUB_REPO")
+    gh = GitHubReleases(owner, repo, token)
+    gh.publish_release_body(tag, tag, body, tag_commit=commit)
+    print(f"[INFO] Published release notes for {args.image}:{version} under {tag}")
+
+
 def handlers_cli():
     from cli_extended import OptionSpec, VerbGroup, VerbSpec
     from cmru.cli_support import cmru_registry
@@ -695,6 +1010,11 @@ def handlers_cli():
             required_path("--cwd", "project directory (holds bake file)"),
             required_path("--bake-file", "path to bake HCL file"),
             required_name("--bake-target", "bake target name (not a project target)", "NAME"),
+        )),
+        ("oci-image-release", "Publish the GitHub Release body for a pushed OCI image.", cmd_oci_image_release, (
+            required_name("--prefix", "release prefix without -v", "PREFIX"),
+            required_name("--image", "image repository without tag or digest, <registry>/<repository>", "REPOSITORY"),
+            required_path("--cwd", "project directory (holds the changelog)"),
         )),
     )
     for name, description, handler, options in commands:

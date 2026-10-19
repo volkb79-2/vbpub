@@ -11,7 +11,8 @@ console entrypoint, **`ciu`**, a flat verb dispatcher:
 - read-only service data: `ciu resolve [--profile P ...] [--stack S] [--service X] [--live] --json` reports identities from rendered config, including an explicitly selected optional profile, and `ciu exec [--profile P ...] <stack>[:<service>] -- ARGV...` runs exact argv in one already-running service. Interactive terminal use gets a TTY automatically. `ciu profiles` also lists without persisting rendered config.
 - dry-run hooks: `ciu up --dry-run` skips `post_compose` hooks unless the hook module has the literal `DRY_RUN_SAFE = True` declaration; skipped modules are not imported. See [the hook guide](docs/CONSUMERS.md#14-preflight-a-config-change-without-deploying-ciu-check-s134a--s95) and [the design rationale](docs/DESIGN-GUIDE.md#why-reporting-and-dry-run-paths-do-not-run-live-hooks).
 - worktree resource isolation: project-built image tags include the linked checkout's instance id; pulled images and the primary tag stay unchanged. A build refuses if its final tag is named by the primary's rendered image map, and a linked checkout without a resolvable CIU identity refuses an unscoped Bake unless `--allow-shared-tag` is supplied. Before `up`, an explicit container name already owned by another or unknown checkout is refused. Configure the v7 shared-tag escape hatch only for consumers that need it. See [why these guards are separate](docs/DESIGN-GUIDE.md#why-worktree-images-and-explicit-container-names-have-separate-guards-ciu-117-and-ciu-104) and [the worktree adoption example](docs/CONSUMERS.md#25-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
-- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|lease|branches|reap` — `create` allocates one Git workspace and prepares every committed CIU root inside it; `create --up` also starts profiles declared in `[ciu.worktree].up` in one deploy invocation, preserving the checkout if startup fails. [The profiles run together so cross-profile preflights see the full selection](docs/DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy). Markerless Git families remain valid record-only worktrees with no fabricated CIU runtime. `worktree up --all` starts the full default deploy set. Root-specific profile work remains an ordinary stack command from that root. `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates); `reap` is the same survey-then-act shape for DOCKER resources — it sorts every resource group into seven closed categories and on `-y` destroys exactly the four that a record, a lease or a `ciu.instance` label proves are disposable, never the unattributable or ambiguous ones (which no flag can select), and disposes of a surviving checkout by running `ciu clean` there rather than by a bare docker removal
+- managed instances: `ciu worktree create|adopt|ensure|rm|list|inspect|up|exec|lease|branches|reap` — `create` allocates one Git workspace and prepares every committed CIU root inside it; invoke follow-on worktree verbs from the same selected CIU root (or pass it with `--root-folder`) so CIU looks up that root's record. `create`, `adopt`, and an absent-worktree `ensure` accept `--profile P1,P2` to store the initial service-profile selection in the selected root's instance overlay. A requested base ref is snapshotted to one commit before allocation and that same commit is validated and checked out. `create --up` also starts profiles declared in `[ciu.worktree].up` in one deploy invocation, preserving the checkout if startup fails. Initial overlay requests are validated before allocation and checkpointed in a durable schema-v5 record; the marker clears when allocation first reaches `ready`, so a later interrupted root repair cannot replay the original overlay over operator edits or deletion (CIU-135; see the [design rationale](docs/DESIGN-GUIDE.md#workspace-and-root-identity) and [consumer example](docs/CONSUMERS.md#2-create-a-managed-workspace)). `ensure` refuses ignored overlay options and mismatched explicit base/directory constraints. Both `ensure` and managed `up` verify a present network by Docker object id or CIU owner label; an indeterminate Docker permission error refuses instead of being treated as absence. Failed allocation verification is reported as `runtime-verification-failed`; `runtime-collision` is reserved for proven identity or ownership conflicts. Legacy unlabelled networks require a one-time `--adopt-existing-network` claim before an object id is saved. A checkout whose first reset may have run but was not checkpointed is preserved for operator recovery. [The profiles run together so cross-profile preflights see the full selection](docs/DESIGN-GUIDE.md#why-worktree-startup-is-one-declared-combined-deploy). Markerless Git families remain valid record-only worktrees with no fabricated CIU runtime. `worktree up --all` starts the full default deploy set. Root-specific profile work remains an ordinary stack command from that root. `branches` surveys local branches against a base, proves which are fully merged and safe to remove, and prunes exactly those on `-y` (never age-based; the mainline and the primary checkout's branch are never candidates); `reap` is the same survey-then-act shape for DOCKER resources — it sorts every resource group into seven closed categories and on `-y` destroys exactly the four that a record, a lease or a `ciu.instance` label proves are disposable, never the unattributable or ambiguous ones (which no flag can select), and disposes of a surviving checkout by running `ciu clean` there rather than by a bare docker removal
+- managed startup verification: direct native and shipped `ciu up` from a managed worktree verify its saved identity and live Docker network before network setup, after network creation, and immediately before Compose starts. Explicit `ciu env generate` also verifies ownership before creating or attaching a network. If the local CIU record is missing but the shared workspace record proves the checkout is managed, direct startup refuses; `ciu worktree ensure NAME` restores the record from its durable snapshot. The final check is point-in-time because Compose resolves networks by name and Docker offers no atomic handoff from CIU's inspection to Compose's later lookup. Unproven replacements and unreadable CIU-root sibling records fail with `runtime-verification-failed`; `runtime-collision` means a duplicate identity or proven foreign owner. For worktree verbs, `--root-folder` must name the exact selected CIU root or the Git-family root; when the family root is selected, the invocation directory chooses the nearest nested CIU root. See [the design rationale](docs/DESIGN-GUIDE.md#workspace-and-root-identity) and [consumer guidance](docs/CONSUMERS.md#2-create-a-managed-workspace).
 - machine interfaces: `ciu capabilities [--json]` — a versioned, closed capability allowlist
 - single stack: `ciu up --dir <stack>` accepts the shared `--deploy` and `--healthcheck` actions (`--healthcheck` gates that stack after it starts); `ciu down --dir <stack>` stops only that stack's running Compose project ([why](docs/DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors)); also `ciu render` and `ciu dev <stack>`
 - multi-stack / multi-host: `ciu up`, `ciu down`, `ciu clean`, `ciu health` (by host profile)
@@ -54,7 +55,14 @@ identity. An interrupted `worktree adopt` resume also compares HEAD with the
 recorded target and refuses if the checkout moved, preserving newer commits.
 `ciu worktree create` reports `ready` only after every CIU root committed at
 the allocated checkout's exact commit has generated facts and a matching entry
-in the shared workspace record. While those roots are being prepared,
+in the shared workspace record. Initial overlay options are validated before
+allocation and saved with the exact rendered payload; `ensure` replays that
+payload only for an interrupted first setup, and refuses conflicting files
+instead of replacing them. New v4 records distinguish created worktrees from
+adopted worktrees so only adoption may reuse a pre-existing runtime network;
+older records retain an unknown origin when migrated.
+Once ready, the overlay remains operator-editable. While
+those roots are being prepared,
 inspection reports `allocating`; a recoverable failure reports
 `recovery-required`, and `ciu worktree ensure NAME` retries it. If CIU cannot
 prove the checkout's exact commit, it keeps the allocation non-ready rather
@@ -155,7 +163,7 @@ enumerates, so a config-less stack still tears down to zero objects (S8.7/S6.4a)
    any CIU invocation for `HH:MM:SS [INFO]`/`[WARN]`/`[ERROR]` output. Severity is coloured
    on an interactive terminal only; redirected logs stay plain text.
 8. **App config as mounted files, with composite secrets.** Configfile mounts (S5) render a full app config — including DSNs that embed credentials via `secret()` (S5.4) — and mount it read-only, replacing sprawling `APP__*` env blocks.
-9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its minted root token into the stack's secret store with `persist:'secret'` (S9.4a), hand it to later stacks" — non-secret facts go to `[state]`, credentials never do (S3.4a). `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection — and removes the identity-scoped networks too (S6.4a), keeping nothing silently: a main-workspace clean names its deliberate keep, an instance clean leaves zero objects behind or fails.
+9. **Declarative bootstrap hooks + clean lifecycle.** Three structured hook points (S9) handle things like "unseal Vault, persist its minted root token into the stack's secret store with `persist:'secret'` (S9.4a), hand it to later stacks" — non-secret facts go to `[state]`, credentials never do (S3.4a). `ciu up --dir <stack> --reset` tears down one stack's containers, volumes, and rendered outputs (S6.4); `ciu clean` does the same for a profile selection — and removes the identity-scoped networks too (S6.4a), keeping nothing silently: a main-workspace clean names its deliberate keep, an instance clean leaves zero objects behind or fails. If Compose teardown fails, CIU preserves host directories and rendered config unless an exact project-label inspection succeeds and finds no remaining containers.
 
 ## When *not* to use `ciu`
 
@@ -189,7 +197,8 @@ my-stack/
 At the repo root: `ciu.global.defaults.toml.j2` (committed, the root marker),
 `ciu.global.toml.j2` (committed, OPTIONAL sparse override — not auto-created),
 `ciu.global.instance.toml.j2` (gitignored sparse per-checkout override, yours
-to edit — CIU never writes it), `ciu.instance.generated.toml` (gitignored,
+to edit after any initial managed-lifecycle selection — CIU does not rewrite
+it after the worktree becomes ready), `ciu.instance.generated.toml` (gitignored,
 CIU-owned identity facts, rewritten in full by every `ciu env generate`), the
 rendered `ciu.global.toml` (gitignored), `ciu.env` (gitignored **legacy
 write-only** machine-identity export — see below), and, for managed linked
@@ -298,8 +307,32 @@ cmru build   ciu     # retained worktree: gate + wheel build, no publish
 cmru resolve ciu     # resolve the current latest (version / url / sha256)
 ```
 
-The only ciu-owned release helper is `run-ciu-tests.py` (the pytest suite). An old,
-unmanaged GitHub Release is CMRU maintenance, not CIU behavior: inspect first with
+The release gate runs the full suite in `tester-unified`, then runs the
+registered `enroll` lane inside `tester-unified` with CMRU's isolated
+`--enable-docker` sidecar. CMRU verifies the host gates slice before starting
+the sidecar and gate container; the host Docker socket is never mounted into
+the suite.
+The nested fixtures are bounded inside the sidecar, and the lane refuses
+when the required isolated-Docker endpoint is missing. CMRU invokes the
+installed Run-Gate CLI (`run-gate enroll`) inside the tester container. Before
+each gate command, CIU checks that both installed Run-Gate module files and
+the console-entry-point targets match the selected checkout; a stale tester
+image fails with the exact rebuild command. This preflight checks the files and
+entry-point mapping that determine this lane's behavior, not every wheel metadata
+field.
+Run-Gate's `mode = "host"` is a general capability; each consumer chooses
+whether it fits its policy. The MDT cockpit policy requires the cockpit to drive gates
+while a stable test environment hosts the suite; see the
+[MDT container doctrine](../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+This nested lane opts out of Run-Gate resource profiling because its
+Docker view cannot inspect the outer tester container's host cgroup; CMRU still
+applies host placement and CPU/memory caps. See
+[CONSUMERS §12](docs/CONSUMERS.md#12-the-implementation-gate-assay-backed-s18)
+for the command and prerequisites, and the
+[design rationale](docs/DESIGN-GUIDE.md#why-enrollment-runs-in-the-isolated-gate)
+for the VM boundary. This CIU enrollment lane currently requires CMRU's DinD
+endpoint, so an external VM is not a drop-in runner for it. An old unmanaged
+GitHub Release is CMRU maintenance, not CIU behavior: inspect first with
 `cmru cleanup ciu --delete-unmanaged-release-tag ciu-wheel-latest --dry-run`,
 then repeat with `--yes` to delete that Release while deliberately retaining its Git tag.
 
@@ -448,9 +481,20 @@ ciu version
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
-discovers the declared lanes; definitions live in `run-gate.toml`.
-See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+The registered release test entrypoint is `cmru run ciu --step run-tests`;
+CMRU launches the declared lanes through the installed Run-Gate CLI in
+`tester-unified`. `run-gate --list` discovers the lanes from the project
+directory; definitions live in `run-gate.toml`. See
+[`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
+For a direct lane run, use `run-gate <lane>` from the installed wheel
+environment; there is no checkout-relative script dependency. Run-Gate's
+host mode runs in the environment invoking the CLI, including a cockpit when
+that is the consumer's choice. A stable, declared test environment gives
+repeatable dependencies and resource boundaries; MDT's cockpit policy
+requires it for MDT gates. See the
+[MDT container doctrine](../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md),
+[`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md), and the
+[enrollment gate design](docs/DESIGN-GUIDE.md#why-enrollment-runs-in-the-isolated-gate).
 
 ### CLI diagnostics
 

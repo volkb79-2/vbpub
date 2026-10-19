@@ -215,7 +215,7 @@ if args and args[0] == "inspect":
         print("true" if mode in {"blocked-wait", "blocked-launch", "create-then-nonzero", "stop-fails", "force-remove-fails"} and not state.get("stopped") else "false")
     elif ".Config.User" in fmt:
         cgroupns = "host" if mode == "bad-config" else state["cgroupns"]
-        print("|".join((state["id"], "/" + state["name"], state["token"], "1003", state["cgroup_parent"], cgroupns, "3000000000", "2147483648", "8589934592", state["network"])))
+        print("|".join((state["id"], "/" + state["name"], state["token"], "1003", state["cgroup_parent"], cgroupns, "3000000000", "2147483648", "8589934592", "8192", state["network"])))
     elif ".Mounts" in fmt:
         for mount in state["mounts"]:
             fields = {}
@@ -441,7 +441,6 @@ def committed_worktree():
     (project / ".gitignore").write_text(".assay/\n.run-gate/\n", encoding="utf-8")
     (project / "pyproject.toml").write_text("[project]\nname='assay-fixture'\nversion='1.0'\n", encoding="utf-8")
     shutil.copy2(PROJECT_ROOT / "run-gate.toml", project / "run-gate.toml")
-    (project / "run-gate.py").symlink_to((PROJECT_ROOT / "run-gate.py").resolve())
     shutil.copy2(SCRIPT, project / "tools" / SCRIPT.name)
     shutil.copy2(CGROUP_HELPER, project / "tools" / CGROUP_HELPER.name)
     shutil.copy2(PILOT_HOST_CHECK, project / "tools" / PILOT_HOST_CHECK.name)
@@ -763,6 +762,7 @@ if '--archive-prior-snapshot' in sys.argv:
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+        "ASSAY_GATE_HOST_DOCKER_GID": "994",
         "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
         "HOSTNAME": "deliberately-not-the-parent-container-name",
         "DOCKER_TRACE": str(trace),
@@ -793,7 +793,7 @@ if '--archive-prior-snapshot' in sys.argv:
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
         os.environ.get(
             "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/resource-observer.sock",
+            "/run/cgprofile/observer/resource-observer.sock",
         ),
     )
     if inner_pilot_log is not None:
@@ -811,7 +811,7 @@ if '--archive-prior-snapshot' in sys.argv:
         minimal_bin = tmp_path / "minimal-bin"
         minimal_bin.mkdir(exist_ok=True)
         for name in (
-            "bash", "git", "findmnt", "realpath", "flock", "chmod", "rm",
+            "bash", "git", "findmnt", "realpath", "dirname", "flock", "chmod", "rm",
             "mkdir", "mv", "python3", "stat",
         ):
             target = shutil.which(name)
@@ -855,7 +855,7 @@ def launch_env(tmp_path: Path, *, mode: str):
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
         os.environ.get(
             "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/resource-observer.sock",
+            "/run/cgprofile/observer/resource-observer.sock",
         ),
     )
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
@@ -947,7 +947,13 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     assert "--cpus=3" in launch
     assert "--memory=2g" in launch
     assert "--memory-swap=8g" in launch
+    assert "--pids-limit=8192" in launch
     assert "--group-add" in launch
+    assert "ASSAY_GATE_HOST_DOCKER_GID=994" in launch
+    gate_source = (PROJECT_ROOT / "tools" / "tester-unified-gate.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "observer-only tester identity includes the host Docker group" in gate_source
     assert "--network=none" in launch
     assert all("--cgroupns=host" not in call for call in calls if call and call[0] == "run")
     assert "CGROUP_PARENT_DEV_GATES=dev-gates.slice" in launch
@@ -964,11 +970,11 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         "ASSAY_GATE_RESOURCE_OBSERVER_SOURCE",
         os.environ.get(
             "ASSAY_RESOURCE_OBSERVER_SOCKET",
-            "/run/cgprofile/resource-observer.sock",
+            "/run/cgprofile/observer/resource-observer.sock",
         ),
     )
     expected_mounts.append(
-        f"type=bind,src={observer_source},dst=/tmp/cgprofile-resource-observer.sock,readonly"
+        f"type=bind,src={Path(observer_source).parent},dst=/run/cgprofile-observer,readonly"
     )
     assert mounts == expected_mounts
     assert all("docker.sock" not in mount for mount in mounts)
@@ -994,7 +1000,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     ).stdout.strip()
     assert f"ASSAY_B105_GATE_EXPECTED_COMMIT={source_commit}" in env
     assert f"ASSAY_B105_GATE_EXPECTED_TREE={source_tree}" in env
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in env
+    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in env
 
 
 @pytest.mark.parametrize(

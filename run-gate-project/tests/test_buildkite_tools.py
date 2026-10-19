@@ -4,7 +4,7 @@ REMOTE-LANES-BUILDKITE.md (§3 pipeline generator, §4 trigger/collector).
 Both scripts are exercised WITHOUT a network and WITHOUT a Buildkite account:
 
 * `pipeline.sh` is pure output, so the real script runs against a fake project
-  directory whose `run-gate.py` is a stub printing a fixed `--list` table. That
+  directory while an installed-command stub prints a fixed `--list` table. That
   is the whole contract between them — `name<TAB>kind<TAB>environment`, one
   lane per line — so a stub is a faithful stand-in, and no test here may parse
   `run-gate.toml` any more than the generator may.
@@ -46,9 +46,12 @@ LISTING = "mutation\tassay\ttester-unified\n" \
 
 
 def _stub_project(root: Path, listing: str = LISTING) -> Path:
-    """A directory that answers `./run-gate.py --list` and nothing else."""
+    """A project directory plus a PATH command stub that answers --list."""
     root.mkdir(parents=True, exist_ok=True)
-    script = root / "run-gate.py"
+    (root / "run-gate.toml").write_text("schema_version = 1\n")
+    bindir = root.parent / "bin"
+    bindir.mkdir(exist_ok=True)
+    script = bindir / "run-gate"
     script.write_text(
         "#!/usr/bin/env python3\n"
         "import sys\n"
@@ -70,6 +73,8 @@ def _run(script: Path, *args, cwd=None, env=None):
     environ.pop("RUN_GATE_LANES", None)
     environ.pop("RUN_GATE_QUEUE", None)
     environ.pop("RUN_GATE_TIMEOUT_MINUTES", None)
+    if cwd and (Path(cwd) / "bin").is_dir():
+        environ["PATH"] = f"{Path(cwd) / 'bin'}:{environ['PATH']}"
     environ.update(env or {})
     return subprocess.run(
         [str(script), *args], cwd=str(cwd) if cwd else None, env=environ,
@@ -89,7 +94,7 @@ def test_pipeline_emits_the_section_3_step_shape(tmp_path):
     assert res.stdout == textwrap.dedent("""\
         steps:
           - label: "run-gate: mutation on gate-alpha"
-            command: "cd proj && ./run-gate.py mutation"
+            command: "cd proj && run-gate mutation"
             agents:
               queue: "gate-alpha"
             concurrency: 1
@@ -102,7 +107,7 @@ def test_pipeline_emits_the_section_3_step_shape(tmp_path):
             env:
               RUN_GATE_LANE: "mutation"
           - label: "run-gate: nightly-properties on gate-alpha"
-            command: "cd proj && ./run-gate.py nightly-properties"
+            command: "cd proj && run-gate nightly-properties"
             agents:
               queue: "gate-alpha"
             concurrency: 1
@@ -115,7 +120,7 @@ def test_pipeline_emits_the_section_3_step_shape(tmp_path):
             env:
               RUN_GATE_LANE: "nightly-properties"
           - label: "run-gate: selftest on gate-alpha"
-            command: "cd proj && ./run-gate.py selftest"
+            command: "cd proj && run-gate selftest"
             agents:
               queue: "gate-alpha"
             concurrency: 1
@@ -128,7 +133,7 @@ def test_pipeline_emits_the_section_3_step_shape(tmp_path):
             env:
               RUN_GATE_LANE: "selftest"
         """)
-    assert proj.joinpath("run-gate.py").exists()
+    assert proj.joinpath("run-gate.toml").exists()
 
 
 @pytest.mark.skipif(yaml is None, reason="PyYAML not importable in this venv")
@@ -143,7 +148,7 @@ def test_pipeline_output_parses_as_the_documented_pipeline(tmp_path):
     (step,) = doc["steps"]
     assert step == {
         "label": "run-gate: mutation on gate-alpha",
-        "command": "cd proj && ./run-gate.py mutation",
+        "command": "cd proj && run-gate mutation",
         "agents": {"queue": "gate-alpha"},
         "concurrency": 1,
         "concurrency_group": "gate/gate-alpha",
@@ -157,9 +162,11 @@ def test_pipeline_output_parses_as_the_documented_pipeline(tmp_path):
 def test_pipeline_default_project_is_dot_and_emits_no_cd(tmp_path):
     proj = _stub_project(tmp_path / "proj")
     res = _run(PIPELINE_SH, cwd=proj, env={"RUN_GATE_QUEUE": "q1",
-                                           "RUN_GATE_LANES": "selftest"})
+                                           "RUN_GATE_LANES": "selftest",
+                                           "PATH": f"{tmp_path / 'bin'}:"
+                                                   f"{os.environ['PATH']}"})
     assert res.returncode == 0, res.stderr
-    assert '    command: "./run-gate.py selftest"\n' in res.stdout
+    assert '    command: "run-gate selftest"\n' in res.stdout
     assert '      - ".assay/*"\n' in res.stdout
     assert '      - ".assay/**/*"\n' in res.stdout
     assert '      - ".run-gate/history.json"\n' in res.stdout
@@ -297,18 +304,28 @@ def test_pipeline_refuses_when_no_lane_survives(tmp_path):
     assert "nothing to run remotely" in res.stderr
 
 
-def test_pipeline_refuses_a_project_without_run_gate_py(tmp_path):
+def test_pipeline_refuses_a_project_without_run_gate_config(tmp_path):
     (tmp_path / "empty").mkdir()
     res = _run(PIPELINE_SH, "empty", cwd=tmp_path, env={"RUN_GATE_QUEUE": "q1"})
     assert res.returncode == 2
-    assert "run-gate.py" in res.stderr
+    assert "run-gate.toml" in res.stderr
+
+
+def test_pipeline_refuses_when_run_gate_wheel_is_not_installed(tmp_path):
+    proj = _stub_project(tmp_path / "proj")
+    assert (proj / "run-gate.toml").is_file()
+    res = _run(PIPELINE_SH, "proj", cwd=tmp_path,
+               env={"RUN_GATE_QUEUE": "q1", "PATH": "/usr/bin:/bin"})
+    assert res.returncode == 2
+    assert "wheel is not installed" in res.stderr
 
 
 def test_pipeline_refuses_when_the_listing_itself_fails(tmp_path):
     proj = _stub_project(tmp_path / "proj")
-    (proj / "run-gate.py").write_text("#!/usr/bin/env python3\n"
-                                      "raise SystemExit('broken config')\n")
-    (proj / "run-gate.py").chmod(0o755)
+    script = tmp_path / "bin" / "run-gate"
+    script.write_text("#!/usr/bin/env python3\n"
+                      "raise SystemExit('broken config')\n")
+    script.chmod(0o755)
     res = _run(PIPELINE_SH, "proj", cwd=tmp_path, env={"RUN_GATE_QUEUE": "q1"})
     assert res.returncode == 2
     assert "--list' failed" in res.stderr
@@ -321,9 +338,16 @@ def test_pipeline_help_exits_zero_and_names_the_env_contract():
         assert key in res.stdout
 
 
-def test_pipeline_never_reads_run_gate_toml():
-    """The anti-goal, pinned as a test: no second parser of run-gate.toml."""
-    assert "run-gate.toml" not in _uncommented(PIPELINE_SH)
+def test_pipeline_delegates_lane_parsing_to_run_gate(tmp_path):
+    """The generator checks config presence, but never parses its contents."""
+    proj = _stub_project(tmp_path / "proj")
+    # A present but invalid config still works because the installed Run-Gate
+    # command is the only parser; this script consumes its --list output.
+    (proj / "run-gate.toml").write_text("not valid TOML = =\n")
+    res = _run(PIPELINE_SH, "proj", cwd=tmp_path,
+               env={"RUN_GATE_QUEUE": "q1", "RUN_GATE_LANES": "selftest"})
+    assert res.returncode == 0, res.stderr
+    assert 'command: "cd proj && run-gate selftest"' in res.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -637,9 +661,11 @@ def test_bk_run_needs_at_least_one_lane(token_file, git_repo):
     assert "at least one lane" in res.stderr
 
 
-def test_bk_run_refuses_outside_a_git_work_tree(token_file, tmp_path):
+def test_bk_run_refuses_outside_a_git_work_tree(token_file, tmp_path,
+                                               monkeypatch):
     outside = tmp_path / "nogit"
     outside.mkdir()
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path))
     res = _bk("--dry-run", "run", "selftest", token_file=token_file, cwd=outside)
     assert res.returncode == 2
     assert "git work tree" in res.stderr

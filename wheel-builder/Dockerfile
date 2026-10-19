@@ -22,9 +22,19 @@
 # Build from the REPO ROOT so the (bind-mounted-at-runtime) project sources would be
 # in context if ever needed — today nothing is COPY'd from it, so the build is fast:
 #   docker build -f wheel-builder/Dockerfile -t wheel-builder:local /workspaces/vbpub
-FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+ARG WHEEL_BUILDER_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie
+FROM ${WHEEL_BUILDER_BASE_IMAGE}
+
+LABEL org.vbpub.wheel-builder.kind="python-wheel-builder"
 
 USER root
+
+# setuptools-scm asks Git for the source version inside the builder. Keep this
+# image independent of vbpub's published MDT image so it can bootstrap the
+# first vbpub wheels from a source-only checkout.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates git passwd \
+ && rm -rf /var/lib/apt/lists/*
 
 # A dedicated /opt venv, not the base image's /home/vscode/.venv: this container runs
 # as uid 1003 (see below), a different user than the image's baked-in vscode/1000, and
@@ -39,8 +49,10 @@ RUN /usr/local/bin/python3.14 -m venv --copies /opt/wheel-builder-venv \
 # user, same reasoning as tester-unified/Dockerfile), which the base image has no
 # /etc/passwd entry for and no writable HOME. Provide both, so writes to the
 # bind-mounted project's dist/ (owned by the host uid) succeed.
-RUN echo "builder:x:1003:994:builder:/home/builder:/bin/bash" >> /etc/passwd \
- && echo "docker:x:994:builder" >> /etc/group \
+RUN if ! getent group 994 >/dev/null; then groupadd --gid 994 docker; fi \
+ && if ! getent passwd 1003 >/dev/null; then \
+      useradd --uid 1003 --gid 994 --create-home --shell /bin/bash builder; \
+    fi \
  && mkdir -p /home/builder/.config /home/builder/.cache /home/builder/.local/state \
  && chown -R 1003:994 /home/builder
 

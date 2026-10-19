@@ -1,5 +1,5 @@
 # =============================================================================
-# pwmcp project gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# pwmcp project gate lanes — parsed ONLY by Run-Gate CLI (one parser, D-110).
 # Environment facts come from the CENTRAL vbpub-root run-gate.root.toml. The tests
 # are self-contained (importlib loads build-push.py by path), so the lane is
 # a plain pytest run in tester-unified.
@@ -18,5 +18,10 @@ budget = "15m"
 kind = "assay"
 assay_lane = "r2"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 clean_tree = true
 budget = "4h"
+
+[lanes.r2.resources]
+memory = "2g"
+pids = 8192

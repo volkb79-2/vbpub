@@ -33,10 +33,12 @@ ARG NYXLOOM_BASE=ghcr.io/volkb79-2/modern-debian-tools-python-debug-php85-vsc-de
 FROM python:3.14-slim AS wheelbuild
 ARG NYXLOOM_VERSION=0.0.0-dev
 WORKDIR /build
-# Only the wheel inputs — deliberately NOT the .git dir. The version comes from
-# the ARG below, so setuptools-scm never shells out to git.
-COPY nyxloom/pyproject.toml ./nyxloom/pyproject.toml
-COPY nyxloom/src ./nyxloom/src
+# Install the builder before copying package sources. The wheel build RUNs below
+# then execute only their version assignment and build command.
+RUN pip install --no-cache-dir build==1.2.2
+# The pinned builder stage starts with no inherited package sources. Clear these
+# paths anyway so the wheel input tree is exactly the Docker context below.
+RUN rm -rf /build/libraries/cli-extended
 # cli-extended is a REAL wheel dependency of nyxloom (CX-D1, NYX-CLIX): its own
 # wheel is built here from the monorepo source (the stand-in for the released
 # asset, which is on GitHub Releases only, never PyPI) and installed FIRST in
@@ -49,11 +51,18 @@ COPY libraries/cli-extended/src ./libraries/cli-extended/src
 # lacks. The pretend version must satisfy nyxloom's declared floor
 # (cli-extended>=0.3.0); bump this ARG together with that floor.
 ARG CLI_EXTENDED_VERSION=0.3.0
+ENV SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED=${CLI_EXTENDED_VERSION}
 WORKDIR /build/libraries/cli-extended
-RUN pip install --no-cache-dir build==1.2.2 \
- && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED=${CLI_EXTENDED_VERSION} \
-    python -m build --wheel --outdir /wheels \
+RUN rm -rf /wheels \
+ && mkdir -p /wheels \
+ && python -m build --wheel --outdir /wheels \
  && ls -1 /wheels
+# Copy Nyxloom's wheel inputs after the cli-extended build. No separate RUN may
+# modify these source files before Nyxloom itself is built below.
+WORKDIR /build
+RUN rm -rf /build/nyxloom
+COPY nyxloom/pyproject.toml ./nyxloom/pyproject.toml
+COPY nyxloom/src ./nyxloom/src
 WORKDIR /build/nyxloom
 # Pretend-version short-circuits setuptools-scm's git lookup (which would fail with
 # no .git in the context). Targeted `_FOR_NYXLOOM` form so it can only affect this
@@ -65,6 +74,7 @@ RUN python -m build --wheel --outdir /wheels \
 # ─── stage 2: self-contained runtime image (mdt base + installed wheel) ───────
 FROM ${NYXLOOM_BASE}
 USER root
+RUN rm -rf /opt/nyxloom-venv /tmp/wheels && mkdir -p /tmp/wheels
 COPY --from=wheelbuild /wheels/*.whl /tmp/wheels/
 RUN python3 -m venv --copies /opt/nyxloom-venv \
  && /opt/nyxloom-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/wheels/cli_extended-*.whl \

@@ -27,7 +27,9 @@ Each product has its own README with product-specific detail.
 
 First-party operator entrypoints with a declared authoritative product version
 accept a top-level `--version`. They print their entrypoint name and version
-(or run-gate revision) on stdout and exit 0 without diagnostics on stderr.
+(Run-Gate reads its SemVer identity from installed wheel metadata) on stdout
+and exit 0 without diagnostics on stderr. Revision numbers are not a
+consumer-facing compatibility floor.
 The probe is exactly one identity line. At every parser depth, help, usage,
 missing-argument, unknown-argument, and other configuration diagnostics begin
 with the tool headline as line 1, before argparse usage text. Normal command
@@ -42,7 +44,8 @@ The DAMON decision and its operator-facing scope are recorded in
 [`scripts/damon-analysis/SCRIPTS.md`](scripts/damon-analysis/SCRIPTS.md).
 
 Testing is uniform across the projects that adopted the gate entrypoint:
-`cd <project> && ./run-gate.py --list` discovers that project's declared
+install the current Run-Gate wheel, then `cd <project> && run-gate --list`
+discovers that project's declared
 lanes (see [`run-gate-project/CONSUMERS.md`](run-gate-project/CONSUMERS.md)).
 The canonical estate-wide testing matrix, evidence rules, methodology review
 checklist, and Assay adoption policy are in
@@ -101,10 +104,12 @@ cmru --help
 cmru dependencies
 ```
 
-The script builds `wheel-builder:local` automatically when that image is absent. It
-does not require `cmru.handlers` to be installed: it adds `cmru/src` only for the
-bootstrap process. After installation, the `cmru` console script is the canonical
-interface for this repository and for each individual project.
+The script builds `wheel-builder:local` automatically when that image is absent.
+The wheel-builder uses Microsoft's upstream Python image rather than a published
+vbpub image, so it can build the first CMRU and library wheels from source. The
+script does not require `cmru.handlers` to be installed: it adds `cmru/src` only
+for the bootstrap process. After installation, the `cmru` console script is the
+canonical interface for this repository and for each individual project.
 
 Before running a release gate, ensure the dedicated gate image is built from
 [`tester-unified/Dockerfile`](tester-unified/Dockerfile), and keep gate

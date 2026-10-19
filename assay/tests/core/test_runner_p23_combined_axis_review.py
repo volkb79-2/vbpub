@@ -44,6 +44,8 @@ The module covers seven things the landed suite did not:
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import json
 import os
 import subprocess
@@ -206,7 +208,7 @@ def test_max_minus_one_and_max_execute_every_discovered_site(
     def process(argv, *, env, cwd, timeout):
         text = (Path(cwd) / "pkg/mod.py").read_text(encoding="utf-8")
         calls.append("baseline" if text == source else "mutant")
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv), 0 if text == source else 1, "", ""
         )
 
@@ -256,7 +258,7 @@ def test_an_adapter_that_misreports_a_site_line_is_refused_before_any_mutant(
     def process(argv, *, env, cwd, timeout):
         text = (Path(cwd) / "pkg/mod.py").read_text(encoding="utf-8")
         calls.append("baseline" if text == source else "mutant")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         lane,
@@ -347,7 +349,7 @@ def test_a_diverged_symbolic_judge_base_resolves_to_its_forkpoint(
             }
         }
         (Path(cwd) / "cov.json").write_text(json.dumps(document), encoding="utf-8")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         lane,
@@ -417,7 +419,7 @@ def test_identical_bytes_at_two_paths_stay_two_independent_mutants(
         )
         observed.append(pair)
         mutated = [text for text in pair if text != shared]
-        return subprocess.CompletedProcess(list(argv), 0 if not mutated else 1, "", "")
+        return completed_process(list(argv), 0 if not mutated else 1, "", "")
 
     verdict = runner.run_lane(
         lane,
@@ -504,7 +506,7 @@ def test_a_changed_non_source_file_under_a_source_root_is_not_a_target(
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="0.1.0",
-        process_runner=lambda argv, **kwargs: subprocess.CompletedProcess(
+        process_runner=lambda argv, **kwargs: completed_process(
             list(argv), 0, "", ""
         ),
         clock=_clock,
@@ -550,7 +552,7 @@ def test_a_changed_test_file_under_a_source_root_is_never_mutated(
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="0.1.0",
-        process_runner=lambda argv, **kwargs: subprocess.CompletedProcess(
+        process_runner=lambda argv, **kwargs: completed_process(
             list(argv), 0, "", ""
         ),
         clock=_clock,
@@ -586,7 +588,7 @@ def test_a_changed_file_outside_every_source_root_is_still_never_a_target(
         project_root=git_repo.path,
         adapter=PythonAdapter(),
         assay_version="0.1.0",
-        process_runner=lambda argv, **kwargs: subprocess.CompletedProcess(
+        process_runner=lambda argv, **kwargs: completed_process(
             list(argv), 0, "", ""
         ),
         clock=_clock,
@@ -617,7 +619,7 @@ def _scribble_on_mutation(original: str, calls: list[str]):
             (cwd / "support.txt").write_text("the mutant scribbled\n", encoding="utf-8")
         else:
             calls.append("baseline")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     return process
 
@@ -748,7 +750,7 @@ def test_a_judged_r2_failure_still_lets_r3_run(git_repo: GitRepo):
         text = (Path(cwd) / "pkg/mod.py").read_text(encoding="utf-8")
         units.append("unmodified" if text == original else "modified")
         # nothing is ever caught: the mutant SURVIVES and the canary too
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         lane,
@@ -802,7 +804,7 @@ def test_a_canary_transform_that_dirties_its_snapshot_is_a_payload_free_r3(
             (cwd / "support.txt").write_text("transform scribbled\n", encoding="utf-8")
         else:
             units.append("clean")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         lane,
@@ -1004,7 +1006,7 @@ def test_a_canary_control_that_dirties_its_snapshot_is_a_payload_free_r3(
         units.append("unit")
         if len(units) == 2:  # the CONTROL half, after the lane's own baseline
             (cwd / "support.txt").write_text("control scribbled\n", encoding="utf-8")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         lane,
@@ -1112,7 +1114,7 @@ def test_a_mutant_that_commits_inside_its_snapshot_is_head_changed(
             )
         else:
             units.append("baseline")
-        return subprocess.CompletedProcess(list(argv), 0, "", "")
+        return completed_process(list(argv), 0, "", "")
 
     verdict = runner.run_lane(
         _lane_with_scribbling_mutant(git_repo, base_rev, original),

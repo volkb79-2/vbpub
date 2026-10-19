@@ -18,6 +18,8 @@ Two levels of proof on purpose:
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -180,7 +182,7 @@ def test_append_without_permission_is_rejected_before_execution(tmp_path: Path):
 
     def spy_runner(argv, *, env, cwd, timeout):
         called.append(argv)
-        return subprocess.CompletedProcess(argv, 0, "", "")
+        return completed_process(argv, 0, "", "")
 
     result = runner.execute_command(
         lane, argv_append=("--extra",), cwd=tmp_path, process_runner=spy_runner

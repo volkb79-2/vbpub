@@ -332,6 +332,18 @@ def _truthy_env(name: str) -> bool:
     return (os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _apply_protected_environment(
+    protected_env: Optional[Mapping[str, Optional[str]]],
+) -> None:
+    if not protected_env:
+        return
+    for key, value in protected_env.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = str(value)
+
+
 def _write_line(handle, line: str) -> None:
     handle.write(line)
     handle.flush()
@@ -438,7 +450,7 @@ def execute_step(
     log_dir: Path,
     *,
     extra_env: Optional[Mapping[str, str]] = None,
-    protected_env: Optional[Mapping[str, str]] = None,
+    protected_env: Optional[Mapping[str, Optional[str]]] = None,
     path_prefixes: Optional[Iterable[Path]] = None,
     build_metadata: Optional[Mapping[str, str]] = None,
 ) -> None:
@@ -448,8 +460,9 @@ def execute_step(
     This is the single execution path every build step flows through (S3 contract).
     ``extra_env`` carries project-level declared environment from the orchestrator.
     Declared values override ambient values for this scoped step, so a stale shell setting
-    cannot silently change a project contract. The process environment is restored after
-    the step and cannot leak into a later project in the same orchestration run.
+    cannot silently change a project contract. A ``None`` protected value removes an
+    inherited key after project settings and environment helpers. The process environment is
+    restored after the step and cannot leak into a later project in the same orchestration run.
     """
     original_environment = os.environ.copy()
     try:
@@ -470,7 +483,7 @@ def _execute_step(
     log_dir: Path,
     *,
     extra_env: Optional[Mapping[str, str]] = None,
-    protected_env: Optional[Mapping[str, str]] = None,
+    protected_env: Optional[Mapping[str, Optional[str]]] = None,
     path_prefixes: Optional[Iterable[Path]] = None,
 ) -> None:
     """Implementation for :func:`execute_step` inside its scoped environment."""
@@ -490,11 +503,14 @@ def _execute_step(
         os.environ[key] = str(value)
 
     _prepend_path_entries(path_prefixes)
+    # Environment helpers are part of the project step's execution boundary.
+    # They must see the same protected release identity as the step itself,
+    # and ordinary steps must not inherit ambient release identity values.
+    _apply_protected_environment(protected_env)
     apply_env_command(step.env_command, project_root)
     _prepend_path_entries(path_prefixes)
-    if protected_env:
-        for key, value in protected_env.items():
-            os.environ[key] = str(value)
+    # A helper can emit values with reserved names; the CMRU-owned values win.
+    _apply_protected_environment(protected_env)
     ensure_required_env(step.required_env)
     maybe_login_multi(step.login, step.registries)
 

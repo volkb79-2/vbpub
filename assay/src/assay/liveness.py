@@ -93,6 +93,7 @@ from .errors import AssayError, Outcome, ReasonCode
 from .guards import is_int_at_least, is_real
 from .liveness_resources import compare_resource_snapshots, read_liveness_resources
 from .mutation_witness import WITNESS_FD_ENV
+from .process_tree import ProcessTreeError, ProcessTreeSpawnError, ProcessTreeWindow
 
 # B117/P6: termination is process-wide for one Assay invocation. Keep the
 # event here so the process-group registry can honor it without importing
@@ -101,6 +102,7 @@ _TERMINATION = threading.Event()
 _LIVE_GROUPS: set[int] = set()
 _LIVE_GROUPS_LOCK = threading.RLock()
 _DEFERRED_TERMINATION_SWEEP = False
+_CANDIDATE_TREE_CLEANUP_SECONDS = 10.0
 
 
 def _killpg_group(pgid: int, sig: int) -> None:
@@ -1689,52 +1691,77 @@ class LivenessRunner:
         stdout_path = events_path.with_suffix(".stdout")
         stderr_path = events_path.with_suffix(".stderr")
         start = self._monotonic()
-        stdout_fh = open(stdout_path, "wb")
-        stderr_fh = open(stderr_path, "wb")
         spawned_at = time.time()
+        proc = None
         try:
-            receipt_fd = stamped_env.get(WITNESS_FD_ENV)
-            descriptor_options = (
-                {} if receipt_fd is None else {"pass_fds": (int(receipt_fd),)}
-            )
-            proc = self._popen(
-                list(argv),
-                env=stamped_env,
-                cwd=cwd,
-                stdout=stdout_fh,
-                stderr=stderr_fh,
-                start_new_session=True,
-                **descriptor_options,
-            )
-            register_live_group(proc.pid)
-        finally:
-            stdout_fh.close()
-            stderr_fh.close()
-        try:
-            return self._monitor(
-                proc,
-                argv=argv_tuple,
-                timeout=timeout,
-                events_path=events_path,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-                start=start,
-                spawned_at=spawned_at,
-            )
-        finally:
-            # ``start_new_session=True`` makes the candidate pid the process
-            # group id.  The monitor normally kills that group on a hung or
-            # budget-expired candidate, but a candidate can exit cleanly while
-            # a descendant it created is still alive.  In that shape
-            # ``proc.poll()`` has already reaped the leader, so ``_kill`` can
-            # no longer discover the group with ``getpgid``; leaving it behind
-            # leaks descendants into the gate cgroup and eventually consumes
-            # its pids.max.  Always clean the recorded group after monitoring,
-            # including normal completion.
-            try:
-                self._cleanup_process_group(proc)
-            finally:
-                unregister_live_group(proc.pid)
+            with ProcessTreeWindow(
+                cleanup_seconds=_CANDIDATE_TREE_CLEANUP_SECONDS
+            ) as process_tree:
+                try:
+                    with open(stdout_path, "wb") as stdout_fh, open(
+                        stderr_path, "wb"
+                    ) as stderr_fh:
+                        receipt_fd = stamped_env.get(WITNESS_FD_ENV)
+                        descriptor_options = (
+                            {} if receipt_fd is None else {"pass_fds": (int(receipt_fd),)}
+                        )
+                        try:
+                            proc = self._popen(
+                                list(argv),
+                                env=stamped_env,
+                                cwd=cwd,
+                                stdout=stdout_fh,
+                                stderr=stderr_fh,
+                                start_new_session=True,
+                                **descriptor_options,
+                            )
+                        except OSError as exc:
+                            evidence = process_tree.finish()
+                            spawn_error = ProcessTreeSpawnError.from_oserror(exc)
+                            spawn_error.process_tree_evidence = evidence.to_dict()
+                            raise spawn_error from exc
+                        process_tree.attach(proc)
+                        register_live_group(proc.pid)
+                    try:
+                        result = self._monitor(
+                            proc,
+                            argv=argv_tuple,
+                            timeout=timeout,
+                            events_path=events_path,
+                            stdout_path=stdout_path,
+                            stderr_path=stderr_path,
+                            start=start,
+                            spawned_at=spawned_at,
+                        )
+                    except BaseException as exc:
+                        evidence = process_tree.finish(
+                            timed_out=isinstance(exc, subprocess.TimeoutExpired),
+                            force=True,
+                        )
+                        setattr(exc, "process_tree_evidence", evidence.to_dict())
+                        raise
+                    else:
+                        evidence = process_tree.finish()
+                        result.process_tree_evidence = evidence.to_dict()
+                except OSError as exc:
+                    if process_tree.evidence is None:
+                        evidence = process_tree.finish(force=True)
+                        setattr(exc, "process_tree_evidence", evidence.to_dict())
+                    if isinstance(exc, ProcessTreeSpawnError):
+                        raise
+                    raise ProcessTreeError(
+                        f"native liveness process runner failed: {exc}"
+                    ) from exc
+                finally:
+                    if proc is not None:
+                        unregister_live_group(proc.pid)
+        except ProcessTreeError as exc:
+            raise AssayError(
+                f"native R2 process-tree cleanup failed: {exc}",
+                outcome=Outcome.ERROR,
+                reason_code=ReasonCode.EXEC_FAILED,
+            ) from exc
+        return result
 
     def _cleanup_process_group(self, proc: Any) -> None:
         """Remove descendants left in this candidate's process group.

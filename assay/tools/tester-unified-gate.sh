@@ -34,28 +34,15 @@ bounded_docker_update_cpu_cap() {
   die "could not apply the $purpose CPU cap (bounded docker update exit $status)"
 }
 
-RESOURCE_OBSERVER_SOURCE="/run/cgprofile/resource-observer.sock"
-RESOURCE_OBSERVER_TARGET="/tmp/cgprofile-resource-observer.sock"
+RESOURCE_OBSERVER_SOURCE="/run/cgprofile/observer/resource-observer.sock"
+RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
+RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
+RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"
+source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {
-  local parent_uid parent_mode socket_uid socket_gid socket_mode
-  [[ -d /run/cgprofile && ! -L /run/cgprofile ]] \
-    || die 'cgprofile observer directory is absent, not a directory, or a symlink'
-  read -r parent_uid parent_mode < <(stat -Lc '%u %a' /run/cgprofile) \
-    || die 'could not inspect the cgprofile observer directory'
-  [[ "$parent_uid" == 0 ]] \
-    || die 'cgprofile observer directory is not root-owned'
-  (( (8#$parent_mode & 0002) == 0 )) \
-    || die 'cgprofile observer directory is world-writable'
-  [[ -S "$RESOURCE_OBSERVER_SOURCE" && ! -L "$RESOURCE_OBSERVER_SOURCE" ]] \
-    || die "cgprofile observer endpoint is not a Unix socket: $RESOURCE_OBSERVER_SOURCE"
-  read -r socket_uid socket_gid socket_mode < <(stat -Lc '%u %g %a' "$RESOURCE_OBSERVER_SOURCE") \
-    || die 'could not inspect the cgprofile observer socket'
-  [[ "$socket_uid" == 0 && "$socket_gid" == "$(stat -Lc %g /run/cgprofile)" ]] \
-    || die 'cgprofile observer socket ownership does not match its root-owned directory'
-  (( (8#$socket_mode & 0007) == 0 && (8#$socket_mode & 0020) != 0 )) \
-    || die 'cgprofile observer socket must be group-connectable and not accessible to other users'
-  printf '%s\n' "$socket_gid"
+  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" /run/cgprofile \
+    || die 'host observer group identity check failed'
 }
 
 assay_git() {
@@ -464,6 +451,16 @@ run_inner() {
   local worktree="$1"
   validate_worktree "$worktree"
   require_expected_head "$worktree"
+  [[ "${ASSAY_GATE_HOST_DOCKER_GID:-}" =~ ^[1-9][0-9]*$ ]] \
+    || die 'host Docker GID was not passed from the verified host launcher'
+  local groups observer_gid
+  groups=" $(id -G) "
+  observer_gid="$(stat -c %g "$ASSAY_RESOURCE_OBSERVER_SOCKET")" \
+    || die 'cannot determine the mounted observer group inside tester-unified'
+  [[ "$observer_gid" =~ ^[1-9][0-9]*$ && "$groups" == *" $observer_gid "* ]] \
+    || die 'tester identity lacks the mounted resource-observer group'
+  [[ "$groups" != *" $ASSAY_GATE_HOST_DOCKER_GID "* ]] \
+    || die 'observer-only tester identity includes the host Docker group'
 
   # The self-hosted lane below judges the ORIGINAL worktree, so its clean-tree
   # precondition requires the reviewed source to be committed. Refuse before
@@ -874,7 +871,7 @@ wait_for_container_log_follower() {
 }
 
 run_registered_tester_container() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4"
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4" docker_gid="$5"
   local forwarded_env=() container_id cidfile_id wait_status logs_status inventory
   _assay_gate_container_name="run-gate-assay-selfhosted-${BASHPID}-${RANDOM}-$(date +%s)"
   _assay_gate_container_ownership_token="$(od -An -N32 -tx1 /dev/urandom | tr -d '[:space:]')" \
@@ -905,13 +902,14 @@ run_registered_tester_container() {
     --cpus=3 \
     --group-add "$observer_gid" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    -e "ASSAY_GATE_HOST_DOCKER_GID=$docker_gid" \
     -e "ASSAY_GATE_EXPECTED_COMMIT=${ASSAY_GATE_EXPECTED_COMMIT:-}" \
     -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     "${forwarded_env[@]}" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
-    --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,target=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly" \
     tester-unified:local \
     bash "$worktree/assay/tools/tester-unified-gate.sh" --inner "$worktree")" \
     || die "could not start named tester-unified container"
@@ -1120,7 +1118,7 @@ run_b145_bounded_wait_acceptance_probe() {
 # even if its test regresses; the inner and outer limits bound the test process
 # and Docker wait independently.
 run_b145_low_pids_probe() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4"
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" observer_gid="$4" docker_gid="$5"
   local container_id cidfile_id wait_status wait_rc logs launch_rc wait_timeout_seconds=150
   command -v timeout >/dev/null 2>&1 \
     || die 'the B145 low-pids probe requires the host timeout command'
@@ -1139,13 +1137,14 @@ run_b145_low_pids_probe() {
     --cgroup-parent="$cgroup_parent" \
     --group-add "$observer_gid" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup_parent" \
+    -e "ASSAY_GATE_HOST_DOCKER_GID=$docker_gid" \
     -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     -e ASSAY_B145_LOW_PIDS_PROBE=1 \
     -e "ASSAY_GATE_PROBE_WORKTREE=$worktree" \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
-    --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
+    --mount "type=bind,source=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,target=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly" \
     tester-unified:local \
     bash -lc 'git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false config --global safe.directory "*" && cd "$ASSAY_GATE_PROBE_WORKTREE/assay" && exec timeout --signal=TERM --kill-after=10s 120s /opt/tester-venv/bin/python -m pytest -q tests/core/test_mutation_resource_limits.py::test_low_pids_limit_event_cannot_become_a_kill')" \
     || {
@@ -1286,11 +1285,7 @@ run_sql_qualification() {
   docker_socket_gid="$(stat -Lc %g "$docker_socket")" \
     || die "could not read Docker socket group for $docker_socket"
   [[ "$docker_socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $docker_socket_gid"
-  [[ "$observer_gid" =~ ^[0-9]+$ ]] || die "resource observer socket group is malformed: $observer_gid"
   group_add_args=(--group-add "$docker_socket_gid")
-  if [[ "$observer_gid" != "$docker_socket_gid" ]]; then
-    group_add_args+=(--group-add "$observer_gid")
-  fi
   if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
     forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
   fi
@@ -1351,14 +1346,12 @@ cat "$scratch/expected.marker"
     --cpus=3 \
     "${group_add_args[@]}" \
     -e "CGROUP_PARENT_DEV_GATES=$cgroup" \
-    -e "ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET" \
     "${forwarded_env[@]}" \
     -e 'PATH=/opt/tester-venv/bin:/usr/local/bin:/usr/bin:/bin' \
     --network=none \
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
     --mount "type=bind,src=$docker_socket,dst=/var/run/docker.sock" \
-    --mount "type=bind,source=$RESOURCE_OBSERVER_SOURCE,target=$RESOURCE_OBSERVER_TARGET,readonly" \
     -w /workspaces/vbpub \
     tester-unified:local \
     bash -c "$sql_runner_script" assay-sql-qualification \
@@ -1468,7 +1461,7 @@ cat "$scratch/expected.marker"
 }
 
 run_registered_gate() {
-  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names assay_names commit tree observer_gid
+  local worktree="$1" host_repo_root="$2" cgroup_parent="$3" listing names assay_names commit tree observer_gid docker_gid
   # (CD50) The shared-host opt-in is validated before anything else, so a typo
   # never launches and never touches the receipt.
   case "${ASSAY_GATE_ALLOW_SHARED_HOST:-}" in
@@ -1476,6 +1469,8 @@ run_registered_gate() {
     *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1' ;;
   esac
   observer_gid="$(resource_observer_gid)"
+  docker_gid="$(assay_host_docker_gid /run/cgprofile)" \
+    || die 'could not resolve the host Docker GID from the verified host setup'
   # (CD32) One `docker ps`, no waiting: another session's gate on this shared host
   # makes this run inconclusive before it captures, clears or builds anything.
   # A `docker ps` that fails cannot show the host is free, so it is inconclusive too.
@@ -1504,10 +1499,10 @@ run_registered_gate() {
   _assay_gate_receipt_to_clear="$worktree/assay/.assay/registered-gate/tester-unified.json"
   trap cleanup_assay_gate_container EXIT
   run_b145_bounded_wait_acceptance_probe "$host_repo_root" "$cgroup_parent"
-  run_b145_low_pids_probe "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid"
+  run_b145_low_pids_probe "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid" "$docker_gid"
   # A plain call, never inside `||`/`if`: the script's `set -e` ends the run with
   # the container's own status, so a red container never reaches the receipt.
-  ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid"
+  ASSAY_GATE_EXPECTED_COMMIT="$commit" run_registered_tester_container "$worktree" "$host_repo_root" "$cgroup_parent" "$observer_gid" "$docker_gid"
   run_sql_qualification "$commit" "$cgroup_parent" "$observer_gid"
   finish_registered_gate "$worktree" "$commit" "$tree"
 }

@@ -15,6 +15,8 @@ satisfy a result-only assertion while doubling the lane's real work.
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,7 +108,7 @@ def test_run_mutation_never_submits_an_undeclared_operators_mutant(tmp_path: Pat
     submitted: list[str] = []
 
     def _completed(returncode: int):
-        return subprocess.CompletedProcess(args=["pytest"], returncode=returncode)
+        return completed_process(args=["pytest"], returncode=returncode)
 
     def mutant_runner(argv, *, cwd, env, timeout):
         submitted.append(

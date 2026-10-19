@@ -13,9 +13,22 @@ from datetime import UTC, datetime
 from pathlib import Path
 import re
 import subprocess
-from typing import Any
+from typing import Any, Mapping
 
 from cmru.errors import RefusedBeforeChange, StepUnavailable, UsageRefusal
+from cmru.release_notes import (
+    HISTORY_MARKER,
+    PENDING_NOTES_BEGIN,
+    PENDING_NOTES_END,
+    ReleaseNotes,
+    ReleaseNotesError,
+    extract_release_section,
+    html_comments_outside_fenced_code,
+    html_comment_positions_outside_fenced_code,
+    markdown_h2_headings,
+    unreleased_body,
+    unreleased_span,
+)
 from cmru.version import (
     _RELEASE_CONTROL_EXCLUDES,
     _external_version,
@@ -25,40 +38,90 @@ from cmru.version import (
 )
 
 
-_HISTORY_MARKER = "<!-- cmru: release history -->"
+_HISTORY_MARKER = HISTORY_MARKER
 _GENERATED_MARKER = "<!-- cmru: generated -->"
 _SOURCE_END_MARKER_RE = re.compile(r"<!-- cmru: source-end=([0-9a-f]{40}) -->")
-_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - \d{4}-\d{2}-\d{2}$", re.MULTILINE)
 # KI-23: a hand-authored pre-release draft is conventionally headed
 # `## [X.Y.Z] - UNRELEASED` (renamed to a dated heading and folded at release
-# time). _HEADING_RE never matches it (UNRELEASED is not a date), so it was
+# time). The dated-heading parser below does not match it, so it was
 # invisible to the collision guard below and got silently duplicated instead
 # of blocking the release -- recurred on six consecutive ciu releases.
-_UNRELEASED_HEADING_RE = re.compile(r"^## \[([^\]]+)\] - UNRELEASED$", re.MULTILINE)
 _CONVENTIONAL_TYPE_RE = re.compile(r"^([a-z]+)(?:\([^)]+\))?!?:", re.IGNORECASE)
 
 
-_PLAIN_UNRELEASED_RE = re.compile(r"^## \[Unreleased\][ \t]*$", re.MULTILINE)
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+def _dated_versions(markdown: str) -> set[str]:
+    """The release versions named by real H2 headings, outside comments/code."""
+    return {
+        match.group(1)
+        for heading in markdown_h2_headings(markdown)
+        if (match := re.fullmatch(
+            r"## \[([^\]]+)\] - \d{4}-\d{2}-\d{2}", heading.text,
+        )) is not None
+    }
 
 
-def _unreleased_body(existing: str) -> str:
-    """Return the non-comment text of a plain ``## [Unreleased]`` section (KI-30).
+def _folded_notes_block(markdown: str) -> tuple[int, int, str] | None:
+    """Return the unique CMRU-owned pending-notes block in a version section."""
+    starts = list(html_comment_positions_outside_fenced_code(markdown, PENDING_NOTES_BEGIN))
+    ends = list(html_comment_positions_outside_fenced_code(markdown, PENDING_NOTES_END))
+    if not starts and not ends:
+        return None
+    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
+        raise ReleaseNotesError("the changelog has malformed or duplicate CMRU pending-note markers")
+    content_start = markdown.find("\n", starts[0])
+    if content_start < 0 or content_start > ends[0]:
+        raise ReleaseNotesError("the changelog has malformed CMRU pending-note markers")
+    content_start += 1
+    content = markdown[content_start:ends[0]].strip("\r\n")
+    if not content.strip():
+        raise ReleaseNotesError("the changelog has an empty CMRU pending-note block")
+    end = ends[0] + len(PENDING_NOTES_END)
+    return starts[0], end, content
 
-    The body runs to the next ``## `` heading or the history marker. HTML comments
-    and whitespace do not count, so a cleared section that keeps an explanatory
-    comment is empty.
+
+def _render_folded_notes(notes: str) -> str:
+    return f"{PENDING_NOTES_BEGIN}\n{notes}\n{PENDING_NOTES_END}"
+
+
+def fold_unreleased_notes(markdown: str, version: str) -> str | None:
+    """Move pending notes into the release section in the disposable candidate.
+
+    This happens before the gate and tag. Promotion carries the same changelog
+    bytes that the publisher reads from the tag, while a failed release leaves
+    the source branch's ``[Unreleased]`` untouched. ``None`` means there are no
+    pending notes to move.
     """
-    match = _PLAIN_UNRELEASED_RE.search(existing)
-    if match is None:
-        return ""
-    rest = existing[match.end():]
-    ends = [i for i in (
-        rest.find(_HISTORY_MARKER),
-        *(m.start() for m in re.finditer(r"^## ", rest, re.MULTILINE)),
-    ) if i >= 0]
-    body = rest[:min(ends)] if ends else rest
-    return _HTML_COMMENT_RE.sub("", body).strip()
+    notes = unreleased_body(markdown)
+    span = unreleased_span(markdown) if notes else None
+    if span is None:
+        return None
+    comments = "".join(
+        f"{item}\n\n"
+        for item in html_comments_outside_fenced_code(markdown[span[0]:span[1]])
+    )
+    cleared = markdown[:span[0]] + "\n\n" + comments + markdown[span[1]:]
+    headings = markdown_h2_headings(cleared)
+    target = [
+        item for item in headings
+        if re.fullmatch(rf"## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}", item.text)
+    ]
+    if len(target) != 1:
+        raise ReleaseNotesError(
+            f"cannot move the [Unreleased] notes: the changelog has {len(target)} dated "
+            f"`## [{version}]` sections (expected exactly one)"
+        )
+    later = [item.start for item in headings if item.start > target[0].start]
+    end = min(later) if later else len(cleared)
+    section = cleared[target[0].start:end].rstrip("\n")
+    if _folded_notes_block(section) is not None:
+        raise ReleaseNotesError(
+            "the target release section already has a folded-note block while [Unreleased] has notes"
+        )
+    return (
+        cleared[:target[0].start]
+        + f"{section}\n\n{_render_folded_notes(notes)}\n"
+        + ("\n" + cleared[end:] if later else "")
+    )
 
 
 def _git(repo_root: Path, *args: str) -> str:
@@ -78,6 +141,8 @@ def _project_release_plan(
     minor: bool = False,
     major: bool = False,
     set_version: str | None = None,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> tuple[str | None, str | None]:
     """Return the pending ``(version, previous_tag)`` for a release.
 
@@ -90,7 +155,8 @@ def _project_release_plan(
     changed = {
         candidate_name: (last_tag, bump)
         for candidate_name, _candidate, last_tag, bump in detect_changed_projects(
-            repo_root, {name: project}
+            repo_root, {name: project}, known_projects=known_projects,
+            known_project_names=known_project_names,
         )
     }
     if name not in changed:
@@ -133,6 +199,8 @@ def pending_release_tag(
     minor: bool = False,
     major: bool = False,
     set_version: str | None = None,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> str | None:
     """The tag a release of *project* will create, or ``None`` for a no-tag project.
 
@@ -141,10 +209,45 @@ def pending_release_tag(
     """
     version, _previous = _project_release_plan(
         repo_root, project, minor=minor, major=major, set_version=set_version,
+        known_projects=known_projects, known_project_names=known_project_names,
     )
     if version is None:
         return None
     return f"{getattr(project, 'prefix', None) or project.name + '-v'}{version}"
+
+
+def pending_release_notes(
+    repo_root: Path,
+    project: Any,
+    *,
+    minor: bool = False,
+    major: bool = False,
+    set_version: str | None = None,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
+) -> ReleaseNotes:
+    """The curated section a tagged release of *project* will publish (KI-75).
+
+    Reads the changelog from the selected source tree for the SAME pending
+    version the history heading and the tag use. Raises
+    :class:`~cmru.release_notes.ReleaseNotesError` when the exact section is
+    missing, malformed, duplicated or empty, so a caller can refuse before any
+    tag, gate or upload. Only tagged projects with a changelog have a body.
+    """
+    path = _validate_changelog_path(project, repo_root)
+    version, _previous = _project_release_plan(
+        repo_root, project, minor=minor, major=major, set_version=set_version,
+        known_projects=known_projects, known_project_names=known_project_names,
+    )
+    if version is None:
+        raise UsageRefusal(
+            f"{project.name}: a no-tag release has no GitHub Release body to preview"
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ReleaseNotesError(f"cannot read release notes source {path}: {exc}") from exc
+    return extract_release_section(text, version, source=str(path))
 
 
 def _subject_groups(
@@ -215,6 +318,7 @@ def _generated_exclusions(project: Any, changelog_path: Path, repo_root: Path) -
 
 def _project_commits_after_cursor(
     repo_root: Path, project: Any, changelog_path: Path, section: str,
+    version: str | None = None,
 ) -> bool:
     """Whether project commits exist after a generated section's ``source-end``.
 
@@ -237,13 +341,44 @@ def _project_commits_after_cursor(
     # cmru's own ``file:`` version-bump commit lands AFTER the section is generated
     # and is release machinery, not project work: a resumed release must not count it
     # (it would regenerate the section with a self-referential "chore: bump" entry
-    # and re-tag a new commit).
-    bump_subject = f"chore: bump {getattr(project, 'prefix', None) or project.name + '-v'} to "
+    # and re-tag a new commit). KI-59: skip ONLY the exact commit cmru writes -- the
+    # subject for THIS prefix and the pending version, touching nothing but the
+    # declared version file (and the generated changelog). A look-alike subject on a
+    # real code change is project work.
     return any(
-        not item.startswith(bump_subject)
+        not _is_own_bump_commit(repo_root, project, changelog_path, item, version)
         for items in newer.values()
         for item in items
     )
+
+
+_ENTRY_HASH_RE = re.compile(r"\s\([0-9a-f]{7,40}\)$")
+_MAX_DROPPED_LINES_SHOWN = 20
+
+
+def _is_own_bump_commit(
+    repo_root: Path, project: Any, changelog_path: Path, item: str, version: str | None,
+) -> bool:
+    """Whether a rendered ``subject (hash)`` entry is cmru's own ``file:`` bump commit."""
+    version_cfg = getattr(project, "version", None)
+    strategy = getattr(version_cfg, "strategy", "") if version_cfg else ""
+    if version is None or not strategy.startswith("file:"):
+        return False
+    prefix = getattr(project, "prefix", None) or f"{project.name}-v"
+    subject_hash = _ENTRY_HASH_RE.search(item)
+    if subject_hash is None or item[:subject_hash.start()] != f"chore: bump {prefix} to {version}":
+        return False
+    short = subject_hash.group(0).strip()[1:-1]
+    cwd = getattr(project, "cwd", None) or project.name
+    allowed = {
+        f"{cwd}/{strategy[len('file:'):]}",
+        *_generated_exclusions(project, changelog_path, repo_root),
+    }
+    try:
+        touched = _git(repo_root, "show", "--name-only", "--format=", short).split()
+    except RuntimeError:
+        return False
+    return bool(touched) and set(touched) <= allowed
 
 
 def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:
@@ -270,6 +405,72 @@ def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
         raise RuntimeError(f"git status for generated outputs failed ({result.returncode}): {detail}")
     return bool(result.stdout.strip())
+
+
+def _comparable_lines(text: str) -> list[str]:
+    """Section lines normalised for a generated-vs-hand-written comparison.
+
+    Blank lines, cmru's own HTML-comment markers and the abbreviated trailing
+    commit hash (its length depends on the repository size at render time) do not
+    count as content.
+    """
+    lines = []
+    for raw in text.splitlines():
+        line = _ENTRY_HASH_RE.sub("", raw.rstrip())
+        if not line.strip() or line.lstrip().startswith("<!--"):
+            continue
+        lines.append(line)
+    return lines
+
+
+def _folded_notes_block_or_refuse(project: Any, path: Path, section: str):
+    """Turn malformed candidate metadata into the release refusal it is."""
+    try:
+        return _folded_notes_block(section)
+    except ReleaseNotesError as exc:
+        raise RefusedBeforeChange(
+            f"{project.name}: {path} has an invalid CMRU pending-note block: {exc}"
+        ) from exc
+
+
+def _dropped_hand_edits(
+    repo_root: Path,
+    project: Any,
+    changelog_path: Path,
+    section: str,
+    heading: str,
+    previous_ref: str | None,
+) -> list[str]:
+    """Lines of an old generated section that the generator would not produce (KI-68).
+
+    The generator's own output for the OLD range (``previous_ref`` .. the section's
+    recorded ``source-end``) is rendered and compared line by line with the old
+    body. What remains are hand edits (including curated release notes, KI-75)
+    that regenerating the section would drop. A section without a readable
+    cursor, or whose range cannot be listed, yields no evidence and therefore no
+    refusal (the same stance as :func:`_project_commits_after_cursor`).
+    """
+    cursor = _last_generated_source_end(section)
+    if cursor is None:
+        return []
+    try:
+        old_groups = _subject_groups(
+            repo_root,
+            previous_ref,
+            list(getattr(project, "paths", None) or [getattr(project, "cwd", None) or project.name]),
+            exclude_paths=_generated_exclusions(project, changelog_path, repo_root),
+            end_ref=cursor,
+        )
+    except RuntimeError:
+        return []
+    produced = set(_comparable_lines(_render_section(heading, old_groups, source_end=cursor)))
+    # The `## [x] - date` heading line is the section's own anchor, never content.
+    folded = _folded_notes_block_or_refuse(project, changelog_path, section)
+    section_without_pending = (
+        section if folded is None else section[:folded[0]] + section[folded[1]:]
+    )
+    body = section_without_pending.split("\n", 1)[1] if "\n" in section_without_pending else ""
+    return [line for line in _comparable_lines(body) if line not in produced]
 
 
 def _render_section(
@@ -303,6 +504,8 @@ def generate_release_changelog(
     minor: bool = False,
     major: bool = False,
     set_version: str | None = None,
+    known_projects: Mapping[str, Any] | None = None,
+    known_project_names: frozenset[str] | None = None,
 ) -> bool:
     """Generate exactly one pending history section; return whether the file changed.
 
@@ -314,6 +517,7 @@ def generate_release_changelog(
     path = _validate_changelog_path(project, repo_root)
     version, previous_tag = _project_release_plan(
         repo_root, project, minor=minor, major=major, set_version=set_version,
+        known_projects=known_projects, known_project_names=known_project_names,
     )
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
     source_end = _git(repo_root, "rev-parse", "HEAD").strip()
@@ -331,31 +535,39 @@ def generate_release_changelog(
     if version is None and not groups and not _generated_outputs_changed(repo_root, project):
         return False
     heading = version if version is not None else f"source-{source_end[:12]}"
-    if heading in set(_UNRELEASED_HEADING_RE.findall(existing)):
+    headings = markdown_h2_headings(existing)
+    if any(
+        re.fullmatch(r"## \[([^\]]+)\] - UNRELEASED", item.text)
+        and re.fullmatch(r"## \[([^\]]+)\] - UNRELEASED", item.text).group(1) == heading
+        for item in headings
+    ):
         raise RefusedBeforeChange(
             f"{project.name}: {path} already has a hand-authored [{heading}] - UNRELEASED "
             "section (KI-23); CMRU refuses to create a second, un-merged heading for the "
             "same version -- fold it into the generated section by hand first, then rename "
             "its heading to match (or remove it)"
         )
-    if version is not None and _unreleased_body(existing):
-        raise RefusedBeforeChange(
-            f"{project.name}: {path} has a non-empty hand-written `## [Unreleased]` "
-            "section (KI-30); CMRU does not fold it, so a tagged release would leave "
-            "it orphaned and describing already-shipped work -- fold its content into "
-            "the commit history / next section by hand, then empty its body (keep a "
-            "comment if you like) before releasing"
-        )
-    existing_versions = set(_HEADING_RE.findall(existing))
+    # KI-78 folds pending notes into the generated release section in the
+    # disposable candidate before its gate. The tag is then the source for both
+    # the published body and the promoted changelog; failed transactions leave
+    # the source branch's notes untouched.
+    existing_versions = _dated_versions(existing)
     if heading in existing_versions:
-        expected = f"## [{heading}]"
-        # Anchor to a real heading line: prose or a comment that merely MENTIONS
-        # `## [X]` mid-line (e.g. inside the [Unreleased] notes) is not the section.
-        start = re.search(
-            rf"^{re.escape(expected)} - \d{{4}}-\d{{2}}-\d{{2}}$", existing, re.MULTILINE,
-        ).start()
-        next_heading = existing.find("\n## [", start + len(expected))
-        section = existing[start:next_heading if next_heading >= 0 else len(existing)]
+        target = [
+            item for item in headings
+            if re.fullmatch(
+                rf"## \[{re.escape(heading)}\] - \d{{4}}-\d{{2}}-\d{{2}}", item.text,
+            )
+        ]
+        if len(target) != 1:
+            raise RefusedBeforeChange(
+                f"{project.name}: {path} has {len(target)} real dated sections for "
+                f"[{heading}]; CMRU requires exactly one"
+            )
+        start = target[0].start
+        later = [item.start for item in headings if item.start > start]
+        next_heading = min(later) if later else None
+        section = existing[start:next_heading if next_heading is not None else len(existing)]
         if _GENERATED_MARKER not in section:
             raise RefusedBeforeChange(
                 f"{project.name}: {path} already has a hand-authored [{version}] section; "
@@ -367,13 +579,36 @@ def generate_release_changelog(
         # from the range). If project commits landed after the cursor, the section
         # is stale -- it would ship without them -- so regenerate it in place.
         if not _project_commits_after_cursor(
-            repo_root, project, path, section,
+            repo_root, project, path, section, version,
         ):
             return False
+        # KI-68: regenerating replaces the whole body, so hand-written lines the
+        # generator would not produce for the OLD range (curated notes among
+        # them) would vanish silently. Refuse instead; there is no override.
+        dropped = _dropped_hand_edits(
+            repo_root, project, path, section, heading, previous_ref,
+        )
+        if dropped:
+            shown = "\n".join(f"  {line}" for line in dropped[:_MAX_DROPPED_LINES_SHOWN])
+            more = len(dropped) - _MAX_DROPPED_LINES_SHOWN
+            if more > 0:
+                shown += f"\n  ... and {more} more"
+            raise RefusedBeforeChange(
+                f"{project.name}: {path} section [{heading}] was generated before later "
+                "project commits landed, so CMRU must regenerate it, but it holds "
+                f"{len(dropped)} line(s) the generator would not produce (hand edits) that "
+                f"would be dropped:\n{shown}\n"
+                "Remedy: advance `<!-- cmru: source-end=... -->` to the final project "
+                "commit in the same commit as the hand edit (a section whose cursor is "
+                "current is kept byte-identical)."
+            )
         regenerated = _render_section(heading, groups, source_end=source_end)
+        folded = _folded_notes_block_or_refuse(project, path, section)
+        if folded is not None:
+            regenerated = f"{regenerated.rstrip()}\n\n{_render_folded_notes(folded[2])}\n"
         new_content = (
             existing[:start] + regenerated
-            + (existing[next_heading:] if next_heading >= 0 else "")
+            + (existing[next_heading:] if next_heading is not None else "")
         )
         path.write_text(new_content, encoding="utf-8")
         return True
@@ -436,7 +671,7 @@ def backfill_release_changelog(
     source_end = _git(repo_root, "rev-parse", f"{tag}^{{commit}}").strip()
     version = tag[len(prefix):]
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    existing_versions = set(_HEADING_RE.findall(existing))
+    existing_versions = _dated_versions(existing)
     if version in existing_versions:
         return False
     previous_tag = _previous_project_tag(repo_root, prefix, tag)

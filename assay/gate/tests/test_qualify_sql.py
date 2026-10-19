@@ -46,6 +46,7 @@ _FIXTURE_ROOT = PROJECT_ROOT / "gate" / "python" / "fixtures" / "sql"
 _SCHEMA_PATH = PROJECT_ROOT / "tests" / "fixtures" / "mutation" / "sql" / "qualification" / "01-schema.sql"
 _WITNESS_PATH = _FIXTURE_ROOT / "expected" / "sql-r2-witness.json"
 _GATE_SCRIPT = PROJECT_ROOT / "tools" / "tester-unified-gate.sh"
+_OBSERVER_GID_HELPER = PROJECT_ROOT / "tools" / "resource-observer-gid.sh"
 
 
 def _matrix() -> list[dict]:
@@ -1818,6 +1819,9 @@ def gate_functions(tmp_path_factory) -> Path:
         "docker_socket=/var/run/docker.sock", f"docker_socket={socket_path}"
     )
     out.write_text(body, encoding="utf-8")
+    shutil.copyfile(
+        _OBSERVER_GID_HELPER, out.parent / _OBSERVER_GID_HELPER.name
+    )
     return out
 
 
@@ -2138,8 +2142,8 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     assert "type=bind,src=/host/vbpub,dst=/workspaces/vbpub" in mounts
     socket_source = gate_functions.read_text(encoding="utf-8").split("docker_socket=", 1)[1].split()[0]
     assert f"type=bind,src={socket_source},dst=/var/run/docker.sock" in mounts
-    assert "type=bind,source=/run/cgprofile/resource-observer.sock,target=/tmp/cgprofile-resource-observer.sock,readonly" in mounts
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/tmp/cgprofile-resource-observer.sock" in launch
+    assert not any("resource-observer.sock" in value for value in launch)
+    assert not any("resource-observer" in value for value in mounts)
     assert not any(value == "-v" for value in launch)
     assert ["logs", "--follow", _FAKE_RUNNER_ID] in calls
     assert ["wait", _FAKE_RUNNER_ID] in calls

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -303,8 +304,10 @@ def _check(args: argparse.Namespace) -> str:
     ):
         raise ValueError("container attestation schema or commit differs from the gate")
 
+    if re.fullmatch(r"[0-9a-f]{40}", args.expected_commit) is None:
+        raise ValueError("expected commit is not a full lowercase Git object id")
     project = Path(args.project_root).resolve(strict=True)
-    state_dir = project / ".assay/analysis-r2-pilot-state"
+    state_dir = project / ".assay" / f"analysis-r2-pilot-state-{args.expected_commit[:12]}"
     expected_paths = {
         "plan": project / ".assay/analysis-r2-pilot-plan.json",
         "selection": project / ".assay/analysis-r2-pilot-selection.json",

@@ -6,6 +6,8 @@ used by ``--resume`` and the candidate event in the progress stream.
 
 from __future__ import annotations
 
+from conftest import completed_process, process_tree_evidence_dict, timeout_expired
+
 import json
 import subprocess
 from datetime import datetime, timezone
@@ -99,7 +101,7 @@ def test_hung_resource_evidence_is_written_to_state_and_progress(tmp_path: Path)
     evidence = _evidence()
 
     def baseline_runner(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     baseline = execute_command(
         make_lane(argv=("pytest", "-q")),
@@ -109,13 +111,17 @@ def test_hung_resource_evidence_is_written_to_state_and_progress(tmp_path: Path)
     assert baseline.outcome is Outcome.PASS
 
     def hung_runner(argv, *, env, cwd, timeout):
-        raise liveness.LivenessHungExpired(
+        error = liveness.LivenessHungExpired(
             cmd=list(argv),
             timeout=timeout,
             output=b"",
             stderr=b"",
             resource_evidence=evidence,
         )
+        error.process_tree_evidence = process_tree_evidence_dict(
+            leader_status="timeout-killed"
+        )
+        raise error
 
     scratch_root = tmp_path / "scratch"
     scratch_root.mkdir()

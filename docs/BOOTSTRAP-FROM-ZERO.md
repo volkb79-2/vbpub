@@ -1,106 +1,338 @@
-# Bootstrapping the estate from ZERO releases
+# Bootstrapping the estate with no published first-party releases
 
-Situation: no GitHub release exists for any estate project (a fresh fork, a lost
-release page, a new organisation). The estate can release itself from here, in
-the order below, using only existing tools (`cmru`, the tester image build, the
-projects' own gates). Nothing here is automatic: every zero-release input is an
-explicit operator choice, never a silent fallback.
+This procedure starts from a vbpub checkout whose first-party projects have no
+GitHub Releases or package artifacts yet. It uses committed source from this
+checkout for build and gate tools until each project has a published release.
+External inputs such as the Python package index and Microsoft's base
+devcontainer image are still required; this is a zero-first-party-release
+procedure, not an offline build.
 
-## Why an order is needed (the cycle)
+## What the graph means
 
-```
-cli-extended release -> needs cmru (every cmru.toml calls it) + the tester image
-cmru wheel           -> needs the cli-extended WHEEL (cmru/pyproject.toml, floor 0.3.0)
-tester-unified image -> installs the cli-extended wheel (pinned release asset)
-```
+`cmru dependencies` is the source of truth for releaseable artifact and gate
+prerequisites. A project that invokes the CMRU CLI in its build or release
+steps does not depend on the *published CMRU wheel*: the controller itself is
+bootstrapped from this repository's source. Those tool invocations must not
+create release-order edges.
 
-Breaking the cycle: build the cli-extended wheel once FROM SOURCE with cmru's own
-wheel builder, use it to bootstrap cmru and the image, then release cli-extended
-for real and re-pin to the release.
+CMRU's own wheel has two real prerequisites. Its runtime requires the
+`cli-extended` wheel, and its release gate requires a published stable
+Run-Gate wheel plus a tester image containing those exact Run-Gate bytes.
+Run-Gate can be built and released with the source-bootstrapped CMRU controller,
+so this is a one-way edge rather than a cycle.
 
-## The order (derived from `cmru dependencies`)
+The tester image normally uses the published MDT devcontainer. During the
+zero-release bootstrap, use the upstream Python devcontainer base explicitly
+with `tester-unified/build-image.sh --base-image ...`. The tester image builds
+CMRU from the selected checkout, installs the explicitly digest-checked local
+`cli-extended` wheel, and installs the exact Run-Gate wheel supplied by the
+builder. No published vbpub image is needed.
 
-Run `cmru dependencies` for the authoritative, current levels. A project is
-released only after every project on a lower level (its transitive providers are
-all on lower levels). The block below is checked against that graph by
-`cmru/tests/test_dependency_levels_pyproject.py`; if the graph changes, regenerate this
-block from `cmru dependencies` (the `LEVELS` section).
+The checked-in level view must match the graph:
 
 ```project-order
-L0: cli-extended
-L1: cmru
-L2: ciu, run-gate-project, assay, topos, nyxloom, pwmcp, tls-edge, cgroup-profiler
+L0: cli-extended, cgroup-profiler, ciu, assay, topos, pwmcp, tls-edge
+L1: run-gate-project, nyxloom
+L2: cmru
 L3: modern-debian-tools-python-debug
 ```
 
-- L0 is the library everything adopts. L1 needs L0 as a real wheel dependency.
-- L2 projects have no cli-extended dependency of their own in their pyproject; their
-  release/gate tooling is cmru (declared as a build-time edge). Within a level the
-  order is free (`project_order` fixes one).
-- L3 stages the wheels of L0-L2 into its image (`pip/wheels.list`) and is released last.
+Within a level, `project_order` is the explicit order used by the release
+transaction. The graph captures the release chain: Run-Gate follows CGProfile
+because its full R2 qualification needs the contract-2 observer, and CMRU
+follows Run-Gate because its own gate requires the published wheel. The test
+`cmru/tests/test_dependency_levels_pyproject.py` checks both this level table
+and the CGProfile → Run-Gate → CMRU gate prerequisites.
 
 ## Steps from an empty release set
 
-Preconditions: Docker, the wheel-builder image (`CMRU_WHEEL_BUILDER_IMAGE`) and a
-governed cgroup parent (`CMRU_BOOTSTRAP_CGROUP_PARENT` or `CGROUP_PARENT_DEV_BACKGROUND`).
-Run on a quiet host; every step is serial.
+Prerequisites: Docker/Buildx, a governed background parent for the builds, the
+gates tier, and the probe image. The exact inputs differ by command, so set all
+of them in the shell that runs these steps:
 
-Not offline: the wheel builder's isolated `python -m build` installs its pinned build
-backends (setuptools, wheel, setuptools_scm; see the `wheel-builder/Dockerfile` header)
-per invocation, so step 1 needs a package index or a populated pip cache. Zero *releases*
-is the premise here, not zero network.
+- `build-initial-standalone.sh` (step 1) reads `CMRU_BOOTSTRAP_CGROUP_PARENT`,
+  else `$CGROUP_PARENT_DEV_BACKGROUND`. It exports its choice only to its own
+  child builds.
+- `cmru handler wheel-build` (steps 2 and the release steps) does **not** read
+  `CMRU_BOOTSTRAP_CGROUP_PARENT`. It needs `CMRU_DOCKER_CGROUP_PARENT` or
+  `$CGROUP_PARENT_DEV_BACKGROUND`; with only the bootstrap variable set it
+  refuses at step 2 (safe, but surprising), so export
+  `$CGROUP_PARENT_DEV_BACKGROUND` once for the whole procedure.
+- `$CGROUP_PARENT_DEV_GATES` is expanded into `CMRU_TESTER_CGROUP_PARENT` by
+  `cmru.orchestration.toml`. It places tester-image builds, gates and the
+  host-slice probe, and it is itself verified first (with the probe's own
+  short self-check) before it is trusted to host the probe of the build slice.
 
-1. **Build cli-extended from source and bootstrap cmru (one command).**
-   `CMRU_BOOTSTRAP_CLI_EXTENDED=source cmru/build-initial-standalone.sh`
-   builds `libraries/cli-extended` with cmru's own wheel builder
-   (`cmru.handlers wheel-build`; version `0.2.0+bootstrap.source`, the `+local` segment keeps
-   it distinct from any release; override with `CMRU_BOOTSTRAP_CLI_EXTENDED_SOURCE_VERSION`),
-   logs its sha256 (`cli-extended source wheel sha256=...`), stages it exactly like a
-   released wheel and builds the first cmru wheel with it. Both wheels end up in `cmru/dist/`.
-   Install both offline, cli-extended first (the script prints the exact commands).
-   The default mode `release` (no variable) FAILS with exit 2 when no release exists and names
-   this variable; it never falls back by itself. `CMRU_BOOTSTRAP_CLI_EXTENDED=<wheel-path>`
-   plus `CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256` is the explicit prebuilt-wheel form.
-   Afterwards remove the ignored build leftovers before running any gate:
-   `git clean -fdX cmru/build cmru/cmru.egg-info libraries/cli-extended/build libraries/cli-extended/src/cli_extended.egg-info`
-   (keep the wheels in `cmru/dist` and `libraries/cli-extended/dist` until step 2 has copied
-   them). A stale `*.egg-info` makes `importlib.metadata` report the bootstrap version instead
-   of the image's, and the cmru version-contract tests fail on it.
-2. **Build the tester image with the local wheel.** Copy the cli-extended wheel
-   (`libraries/cli-extended/dist/cli_extended-*+bootstrap.source-*.whl`) into
-   `tester-unified/local-wheel/` and build with
-   `--build-arg CLI_EXTENDED_RESOLVE=local --build-arg CLI_EXTENDED_WHEEL_SHA256=<logged sha256>`
-   (see `tester-unified/README.md`). The image asserts the wheel carries a `+local` version.
-3. **Run the cli-extended gate.** From `libraries/cli-extended`: `./run-gate.py r0-r1` and `r3`
-   (the same lanes its release transaction runs).
-4. **Release cli-extended** with the source-bootstrapped cmru from step 1:
-   `cmru release cli-extended --set-version 0.2.0` (the first release has no prior tag).
-5. **Re-pin to the release.** Copy `version`/`url`/`sha256` from
-   `cli-extended-latest/latest.json` into the `CLI_EXTENDED_WHEEL_*` pin defaults in
-   `tester-unified/Dockerfile`, and rebuild the image in the default `pinned` mode; the
-   `local-wheel` input is no longer needed. Reinstall cmru from a normal bootstrap
-   (`cmru/build-initial-standalone.sh`, default `release` mode) when convenient.
-6. **Release cmru:** `cmru release cmru` (its gate runs in the pinned image; the wheel
-   declares `cli-extended>=0.3.0`, now satisfied by a real release).
-7. **Continue in graph order:** the remaining levels from the block above, L2 then L3
-   (`cmru release <project>` each, or the whole set in `project_order`).
+Also required: the configured
+digest-pinned CMRU host-probe image pulled locally, the Python environment you
+choose to own the `cmru` command (`ESTATE_PYTHON`, below; in the estate
+cockpit `/home/vscode/.venv/bin/python`), and network access to the upstream
+Python image, PyPI build backends, and GitHub. Both the bootstrap script and
+`cmru handler wheel-build` verify that the build slice is a real host systemd
+unit (`LoadState=loaded` with a non-empty `FragmentPath`, read through the
+pinned probe container, never a local `systemctl`) **before** any builder
+workload starts; a typo'd slice name refuses instead of becoming an unlimited
+transient slice. Tester-gate deliberately runs the configured privileged probe
+image with `--pull=never`, so pull its exact digest before the first build:
 
-## Open items (not solved here, stated so they are not forgotten)
+```bash
+docker pull debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
+```
 
-- **The tester image's base is a published mdt image.** `tester-unified/Dockerfile`
-  starts `FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:...`,
-  which is an L3 output of THIS graph. There is NO zero-release path for it in this
-  repository today: with no published base image the tester image (and so every gate
-  lane) cannot be built. A fork must obtain or build that base image out of band first
-  (mdt's own build tolerates an empty `pip/wheels/`, so a wheel-less first build is the
-  likely route; not verified here). This is a graph-external prerequisite and an
-  open item for a local-base-image target.
-- **mdt `pip/wheels.list` now names `cli-extended`**, so mdt's offline `pip --no-index`
-  install can resolve cmru's dependency; its resolver is generic
-  (`GitHubReleases.resolve_latest("cli-extended")`) but was not run here (no network).
-- **Vendored copies are outside the guard.** nyxloom compiles the cli-extended source
-  into its own wheel (`nyxloom/pyproject.toml`, `nyxloomd/Dockerfile`) without a pyproject
-  dependency, so the pyproject-derived guard cannot see it. Follow-up: move nyxloom to
-  the wheel dependency (CX-D1), then its edge is guarded automatically.
-- `scripts/debian-install-v2/bootstrap-remote.py` still fetches the cli-extended SOURCE
-  subtree instead of the released wheel (CX-D3); that belongs to the W9b branch.
+This digest is also the `CMRU_TESTER_CGROUP_PROBE_IMAGE` value in
+`cmru.orchestration.toml`. The bootstrap script builds `wheel-builder:local` from
+that upstream image automatically when it is absent. Run builds serially.
+Before publishing the first Run-Gate stable release, run `run-gate assay-r1`
+from `run-gate-project/` on the reviewed source. The first-release selftest can
+report diff coverage as `SKIPPED` because no earlier stable tag exists; R1
+supplies the whole-source line-and-branch qualification.
+
+1. **Build and install the source bootstrap.** No `cmru` command exists on a
+   fresh host, so this step ends by installing the exact wheels it built:
+
+   ```bash
+   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+bootstrap.source \
+     CMRU_BOOTSTRAP_CLI_EXTENDED=source cmru/build-initial-standalone.sh
+   . cmru/dist/bootstrap-artifacts.env
+   printf '%s  %s\n' \
+     "$BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256" "$BOOTSTRAP_CLI_EXTENDED_WHEEL" \
+     "$BOOTSTRAP_CMRU_WHEEL_SHA256" "$BOOTSTRAP_CMRU_WHEEL" | sha256sum -c -
+   "${ESTATE_PYTHON:?set ESTATE_PYTHON to the Python that will own the cmru command}" \
+     -m pip install --no-index --no-deps --force-reinstall \
+     "$BOOTSTRAP_CLI_EXTENDED_WHEEL" "$BOOTSTRAP_CMRU_WHEEL"
+   export PATH="$(dirname "$ESTATE_PYTHON"):$PATH"
+   cmru --version
+   ```
+
+   The script builds `cli-extended` at CMRU's declared runtime floor with a
+   `+bootstrap.source` suffix, then builds CMRU from this checkout using that
+   wheel. The explicit CMRU local version is needed when the checkout has no
+   `cmru-v*` tag. Wheel paths and SHA-256 digests are never typed by hand: the
+   script writes the exact files it produced to the sourceable
+   `cmru/dist/bootstrap-artifacts.env` (`BOOTSTRAP_CMRU_WHEEL[_SHA256]`,
+   `BOOTSTRAP_CLI_EXTENDED_WHEEL[_SHA256]`), and the commands above verify and
+   install exactly those files, `cli-extended` first, into the environment you
+   selected. The default `release` mode still refuses when no `cli-extended`
+   release exists; source mode is an explicit bootstrap choice, never an
+   automatic fallback. Before building, the script verifies the build slice on
+   the Docker host and checks the configured wheel-builder image's dedicated
+   label; a missing or mismatched image is built from `wheel-builder/Dockerfile`
+   on Microsoft's upstream Python base. A local MDT image tag cannot be reused
+   as the builder by accident.
+
+2. **Build the first tester image from source inputs.** Copy the one
+   `cli_extended-*.whl` produced above into the git-ignored
+   `tester-unified/local-wheel/`. Build the Run-Gate wheel from the selected
+   commit using the planned stable version (the example is for the current
+   24.0.0 candidate); its path is derived from what the build produced. The
+   handler needs the build parent from the prerequisites
+   (`$CGROUP_PARENT_DEV_BACKGROUND` or `CMRU_DOCKER_CGROUP_PARENT`):
+
+   ```bash
+   mkdir -p tester-unified/local-wheel
+   cp "$BOOTSTRAP_CLI_EXTENDED_WHEEL" tester-unified/local-wheel/
+   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.0.0 \
+     cmru handler wheel-build --cwd run-gate-project
+   shopt -s nullglob
+   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-24.0.0-*.whl)
+   test "${#run_gate_wheels[@]}" -eq 1
+   RUN_GATE_CANDIDATE_WHEEL="${run_gate_wheels[0]}"
+   CMRU_TESTER_MEMORY=1g \
+   CMRU_TESTER_MEMORY_SWAP=16g \
+   CMRU_TESTER_CPUS=2.5 \
+   CMRU_TESTER_PIDS_LIMIT=4096 \
+   CMRU_TESTER_CGROUP_PROBE_IMAGE='debian@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132' \
+   tester-unified/build-image.sh \
+     --base-image mcr.microsoft.com/devcontainers/python:3.14-trixie \
+     --cli-extended-resolve local \
+     --cli-extended-wheel-sha256 "$BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256" \
+     --wheel-dir run-gate-project/dist \
+     --tag tester-unified:bootstrap
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:bootstrap)"
+   export RUN_GATE_TESTER_UNIFIED_IMAGE
+   "$ESTATE_PYTHON" -m pip install --force-reinstall --no-deps "$RUN_GATE_CANDIDATE_WHEEL"
+   ```
+
+   The builder checks the supplied Run-Gate wheel and image labels, and every
+   image it builds carries `org.vbpub.cli-extended.wheel-sha256`, the digest of
+   the exact `cli-extended` wheel installed (here the source wheel's
+   `$BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256`); it re-reads that label after the
+   build and fails on a difference. The
+   explicit upstream base is also used for the builder's unprivileged CMRU
+   preflight, so this step does not require a pre-existing
+   `tester-unified:local` image. The privileged host-systemd slice probe still
+   uses its separately configured digest-pinned image. The
+   Dockerfile explicitly installs the host-facing tools it needs, so the
+   upstream Python base does not need to inherit a vbpub or MDT release. The
+   host venv install makes this exact local candidate available to the
+   registered gates and release steps; it is built from the checkout and does
+   not need a published Run-Gate tag.
+
+3. **Release `cli-extended` first, then rebuild the tester image from the
+   released bytes.** Its initial stable version must satisfy CMRU's declared
+   `cli-extended>=0.3.0` floor:
+
+   ```bash
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:bootstrap)" \
+     cmru release cli-extended --set-version 0.3.0
+   ```
+
+   This release is gated with the source-built `cli-extended` wheel above. The
+   source suffix distinguishes the bootstrap wheel from the stable artifact.
+   The command pins the image built in step 2 even if you run the code blocks
+   from different shells.
+
+   The stable wheel is a *different file* from the bootstrap one, and the
+   Dockerfile's embedded `pinned` default still names whatever `cli-extended`
+   asset was current when it was last edited. Do not build a tester image in
+   `pinned` mode now without checking. The `cli-extended` push step is quiet
+   (`quiet = true`), so `cmru release` does not print the published wheel's
+   identity on the terminal; its output is in the root audit log
+   `cmru.release.log` and the transaction-local `logs/cmru/<step>.log`
+   (`--show-run-details` also streams it). Read the digest from there, then
+   carry it into the check below:
+
+   ```bash
+   grep -E 'CLI-EXTENDED_WHEEL_(SHA256|ASSET_URL)=' cmru.release.log
+   ```
+
+   The check
+   refuses when the `cli-extended-latest` pointer does not name that same
+   digest (it never reads an unreachable or stale pointer as "nothing
+   released"), and otherwise prints the resolve mode that is safe for the
+   Dockerfile's current pin:
+
+   ```bash
+   CLI_EXTENDED_RELEASED_SHA256='<CLI-EXTENDED_WHEEL_SHA256 value from cmru.release.log>'
+   unset CLI_EXTENDED_RESOLVE
+   identity="$(python3 cmru/tools/cli_extended_release_identity.py \
+     --released-sha256 "$CLI_EXTENDED_RELEASED_SHA256" \
+     --dockerfile tester-unified/Dockerfile)"
+   eval "$identity"
+   echo "Dockerfile pin: $CLI_EXTENDED_DOCKERFILE_PIN; resolve mode: $CLI_EXTENDED_RESOLVE"
+   cx_resolve=(--cli-extended-resolve "${CLI_EXTENDED_RESOLVE:?the identity check above must succeed}")
+   if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then
+     # `latest` is only accepted together with the published digest: the build
+     # refuses a pointer or download that names any other bytes.
+     cx_resolve+=(--cli-extended-wheel-sha256 "$CLI_EXTENDED_RELEASED_SHA256")
+   fi
+   tester-unified/build-image.sh \
+     --base-image mcr.microsoft.com/devcontainers/python:3.14-trixie \
+     "${cx_resolve[@]}" --no-cache \
+     --wheel-dir run-gate-project/dist \
+     --tag tester-unified:cli-extended-released
+   python3 cmru/tools/cli_extended_release_identity.py \
+     --released-sha256 "$CLI_EXTENDED_RELEASED_SHA256" \
+     --dockerfile tester-unified/Dockerfile > /dev/null
+   test "$(docker image inspect --format '{{index .Config.Labels "org.vbpub.cli-extended.wheel-sha256"}}' \
+     tester-unified:cli-extended-released)" = "$CLI_EXTENDED_RELEASED_SHA256"
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:cli-extended-released)"
+   export RUN_GATE_TESTER_UNIFIED_IMAGE
+   ```
+
+   A stale pin yields `latest`, which the builder accepts only together with the
+   published digest: the image's fetcher refuses a pointer that names other
+   bytes, downloads the asset and requires it to hash to that digest before
+   installing it, and the image is labelled with the digest it verified. The
+   builder and the `test` above both read that label back, and the check run
+   again after the build proves the pointer still names the published digest. Once the Dockerfile's three pinned defaults
+   are updated to the released URL and digest in a reviewed commit, the same
+   check reports `current` and `pinned` is valid again. Use the released-bytes
+   image from here on; the bootstrap image carries only the source wheel.
+
+4. **Release CGProfile and then Run-Gate with the source-bootstrapped CMRU
+   controller.** CGProfile uses the candidate Run-Gate wheel and the
+   released-bytes tester image from step 3. The graph places Run-Gate after
+   CGProfile because Run-Gate's R2 qualification uses CGProfile's observer. For
+   the Run-Gate release, its CMRU gate rebuilds the candidate wheel and tester
+   image from the exact release transaction checkout; pass the resolve mode
+   from step 3 through `RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE` (a stale pin must
+   not make that rebuild reinstall the old bytes), and use the upstream base
+   explicitly. In `latest` mode Run-Gate's release tooling also requires the
+   published digest (`RUN_GATE_TESTER_CLI_EXTENDED_SHA256`), refuses to build
+   without it, and inspects the built image's
+   `org.vbpub.cli-extended.wheel-sha256` label before the gate may use the
+   image. Do not switch back to the source bootstrap wheel. Each command pins
+   its own image, so it is correct to run them from different shells:
+
+   ```bash
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:cli-extended-released)" \
+   RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE="${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}" \
+   RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}" \
+     cmru release cgroup-profiler --set-version 1.0.0
+   RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE="${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}" \
+   RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}" \
+   RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie \
+     cmru release run-gate-project --set-version 24.0.0
+   ```
+
+   The first Run-Gate release publishes the artifact that CMRU's own release
+   gate requires. CMRU retains the exact published wheel in the release
+   transaction's `artifacts/<project>/` output and records its path in
+   `cmru.release.log`. Use that retained
+   file to rebuild the image and install the host CLI; use the exact Run-Gate
+   wheel, while the checked resolve mode keeps the released cli-extended
+   runtime wheel:
+
+   ```bash
+   RUN_GATE_RELEASE_WHEEL='<exact wheel path from cmru.release.log>'
+   "$ESTATE_PYTHON" -m pip install --force-reinstall --no-deps "$RUN_GATE_RELEASE_WHEEL"
+   cx_resolve=(--cli-extended-resolve "${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}")
+   if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then
+     cx_resolve+=(--cli-extended-wheel-sha256 "${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}")
+   fi
+   tester-unified/build-image.sh \
+     --base-image mcr.microsoft.com/devcontainers/python:3.14-trixie \
+     "${cx_resolve[@]}" --no-cache \
+     --wheel-dir "$(dirname "$RUN_GATE_RELEASE_WHEEL")" \
+     --tag tester-unified:run-gate-release
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:run-gate-release)"
+   export RUN_GATE_TESTER_UNIFIED_IMAGE
+   ```
+
+   The builder verifies and installs the exact retained Run-Gate wheel. Its
+   version and digest labels then match the published stable artifact, which
+   CMRU checks before running its own lanes.
+
+5. **Release CMRU, then the remaining projects in graph order.** The
+   configured `gate-provisional` release gate queries origin with CMRU's
+   scoped Git auth. When it finds no published stable CMRU tag, it uses the
+   registered whole-source R0/R1/R3 lane instead of requiring a nonexistent
+   changed-lines baseline. The gate is allowed to make that first-release
+   choice only inside the exact-commit CMRU release transaction. It records
+   whole-source R2 as deferred, with an explicit post-release lane:
+
+   ```bash
+   RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:run-gate-release)" \
+     cmru release cmru --set-version 0.1.0
+   ```
+
+   The post-release R2 follow-up declares every production module and uses no
+   prior tag. It also needs the CGProfile host observer to be deployed and
+   reachable. After releasing CIU, deploy the released CGProfile image through
+   the declared CIU workflow and verify the observer before running
+   `run-gate assay-first-release-r2` from `cmru/`. This qualification can stay
+   deferred until that deployment exists; do not interpret the provisional
+   release gate as an R2 result. Release the remaining projects in graph order;
+   MDT is last because its published image stages the first-party wheels from
+   earlier levels. Keep each release transaction scoped to one project so
+   CMRU can verify the newly published prerequisites before moving to its
+   consumers.
+
+## Bootstrap boundaries
+
+- `cli-extended` is a true runtime artifact dependency of CMRU and remains an
+  explicit edge in the graph. The local `+bootstrap.source` wheel is only for
+  bootstrapping and gating; release the stable wheel before releasing CMRU.
+- Run-Gate is a true CMRU release-gate prerequisite and is now an explicit
+  graph edge. CMRU releases after Run-Gate.
+- CMRU's first stable release uses source-complete whole-target Assay lanes;
+  its post-release whole-source R2 lane does not require an earlier CMRU tag.
+  Origin access failures never count as an empty first-release baseline.
+- CMRU as the command used to run another project's release is source-built
+  tooling, not a dependency on the published CMRU wheel.
+- The upstream Python base is a named, explicit bootstrap input. Normal builds
+  keep using the configured MDT image; a missing MDT image never causes an
+  implicit fallback.
+- This process still uses network-fetched third-party build backends and the
+  upstream Python base image. Offline bootstrap is a separate requirement.

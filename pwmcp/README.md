@@ -392,14 +392,14 @@ ciu-build -d . push-images
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+`run-gate` is the canonical test entrypoint — `run-gate --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
-The release gate is `./run-gate.py r1`. It runs the resolver, image-builder
+The release gate is `run-gate r1`. It runs the resolver, image-builder
 contract, and client tests through source-backed Assay in `tester-unified`,
 with branch coverage recorded in `coverage.json`. The slower mutation lane is
-`./run-gate.py r2`; it is resumable and may be run separately before a release.
+`run-gate r2`; it is resumable and may be run separately before a release.
 PWMCP has no HTTP/OpenAPI contract, so Hypothesis is used for the pure upstream
 version-intersection invariant and Schemathesis is not applicable.
 

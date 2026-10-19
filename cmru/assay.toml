@@ -60,7 +60,7 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "cmru-v5.5.0"
+base = "cmru-v6.1.0"
 
 [lanes.cmru.judge.coverage]
 format = "coverage-py-json"
@@ -69,6 +69,177 @@ artifact = "coverage.json"
 [lanes.cmru.judge.canary]
 # Import-break proves that the complete declared gate rejects a known-bad
 # source snapshot, independent of the mutation campaign's individual tests.
+mechanism = "import-break"
+target = "src/cmru/config.py"
+budget_per_attempt = "20m"
+
+# A repository with no published stable CMRU tag has no diff baseline. The
+# first release therefore qualifies every production source file under R0/R1/
+# R3. These targets are literal by Assay contract; the config test compares
+# them to all tracked cmru/src/**/*.py files so a new module cannot escape.
+[lanes.cmru-first-release]
+scope = "S1"
+rigor = ["R0", "R1", "R3"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
+  "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
+env = { PYTHONPATH = "src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "20m"
+allow_argv_append = false
+
+[lanes.cmru-first-release.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.cmru-first-release.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+mode = "whole_target"
+targets = [
+  "src/cmru/__init__.py",
+  "src/cmru/bundle.py",
+  "src/cmru/changelog.py",
+  "src/cmru/cli.py",
+  "src/cmru/cli_support.py",
+  "src/cmru/config.py",
+  "src/cmru/config_names.py",
+  "src/cmru/credential_handoff.py",
+  "src/cmru/delegate_targets.py",
+  "src/cmru/delegated.py",
+  "src/cmru/dependencies.py",
+  "src/cmru/doctor.py",
+  "src/cmru/errors.py",
+  "src/cmru/exit_codes.py",
+  "src/cmru/gate_snapshot.py",
+  "src/cmru/getpy.py",
+  "src/cmru/ghcr.py",
+  "src/cmru/git_auth.py",
+  "src/cmru/handlers.py",
+  "src/cmru/hosts/__init__.py",
+  "src/cmru/hosts/github.py",
+  "src/cmru/manifest.py",
+  "src/cmru/output.py",
+  "src/cmru/release.py",
+  "src/cmru/release_controller.py",
+  "src/cmru/release_notes.py",
+  "src/cmru/resolve.py",
+  "src/cmru/runner.py",
+  "src/cmru/scaffold.py",
+  "src/cmru/standards.py",
+  "src/cmru/tester_gate.py",
+  "src/cmru/tool_deps.py",
+  "src/cmru/transaction.py",
+  "src/cmru/version.py",
+  "src/cmru/version_config.py",
+  "src/cmru/version_registry.py",
+  "src/cmru/versions.py",
+]
+
+[lanes.cmru-first-release.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.cmru-first-release.judge.canary]
+mechanism = "import-break"
+target = "src/cmru/config.py"
+budget_per_attempt = "20m"
+
+# Run after the first stable CMRU tag has been published. It is still a
+# whole-source claim: the first release has no earlier tree to diff against.
+[lanes.cmru-first-release-r2]
+scope = "S1"
+rigor = ["R0", "R1", "R2", "R3"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
+  "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
+env = { PYTHONPATH = "src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "7h"
+allow_argv_append = false
+
+[lanes.cmru-first-release-r2.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.cmru-first-release-r2.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+mode = "whole_target"
+targets = [
+  "src/cmru/__init__.py",
+  "src/cmru/bundle.py",
+  "src/cmru/changelog.py",
+  "src/cmru/cli.py",
+  "src/cmru/cli_support.py",
+  "src/cmru/config.py",
+  "src/cmru/config_names.py",
+  "src/cmru/credential_handoff.py",
+  "src/cmru/delegate_targets.py",
+  "src/cmru/delegated.py",
+  "src/cmru/dependencies.py",
+  "src/cmru/doctor.py",
+  "src/cmru/errors.py",
+  "src/cmru/exit_codes.py",
+  "src/cmru/gate_snapshot.py",
+  "src/cmru/getpy.py",
+  "src/cmru/ghcr.py",
+  "src/cmru/git_auth.py",
+  "src/cmru/handlers.py",
+  "src/cmru/hosts/__init__.py",
+  "src/cmru/hosts/github.py",
+  "src/cmru/manifest.py",
+  "src/cmru/output.py",
+  "src/cmru/release.py",
+  "src/cmru/release_controller.py",
+  "src/cmru/release_notes.py",
+  "src/cmru/resolve.py",
+  "src/cmru/runner.py",
+  "src/cmru/scaffold.py",
+  "src/cmru/standards.py",
+  "src/cmru/tester_gate.py",
+  "src/cmru/tool_deps.py",
+  "src/cmru/transaction.py",
+  "src/cmru/version.py",
+  "src/cmru/version_config.py",
+  "src/cmru/version_registry.py",
+  "src/cmru/versions.py",
+]
+
+[lanes.cmru-first-release-r2.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.cmru-first-release-r2.judge.mutation]
+# This lane runs after the initial stable release, when it has no prior
+# CMRU release baseline to compare. Keep its whole-source R2 policy aligned
+# with Assay's own serial Python qualification campaign.
+jobs = 1
+max_mutants = 10000
+operators = [
+  "python:compare-swap",
+  "python:boolop-swap",
+  "python:bool-const-flip",
+  "python:falsy-swap",
+]
+budget_per_candidate = "auto"
+liveness = true
+
+[lanes.cmru-first-release-r2.judge.canary]
 mechanism = "import-break"
 target = "src/cmru/config.py"
 budget_per_attempt = "20m"

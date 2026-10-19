@@ -43,6 +43,10 @@ def cgroup_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         (directory / "memory.events").write_text(
             "max 3\noom 4\noom_kill 5\noom_group_kill 6\n", encoding="ascii"
         )
+        (directory / "pids.events.local").write_text("max 2\n", encoding="ascii")
+        (directory / "memory.events.local").write_text(
+            "max 3\noom 4\noom_kill 5\noom_group_kill 6\n", encoding="ascii"
+        )
     cgroup = tmp_path / "proc-cgroup"
     cgroup.write_text("0::/worker/lane\n", encoding="utf-8")
     mountinfo = tmp_path / "mountinfo"
@@ -86,12 +90,12 @@ def test_valid_combined_process_and_memory_observation_round_trips(cgroup_tree):
         memory_oom_kill=10,
         memory_oom_group_kill=12,
         limit_signature=(
-            (str(cgroup_tree[2]), 31, True, 16, True, 4096, True, True),
-            (str(cgroup_tree[1]), 31, True, 16, True, 4096, True, True),
+            (str(cgroup_tree[2]), 31, True, 16, True, 4096, True, True, True, True, False, False),
+            (str(cgroup_tree[1]), 31, True, 16, True, 4096, True, True, True, True, False, False),
         ),
         path_event_counters=(
-            (str(cgroup_tree[2]), 2, 3, 4, 5, 6),
-            (str(cgroup_tree[1]), 2, 3, 4, 5, 6),
+            (str(cgroup_tree[2]), 2, 3, 4, 5, 6, 2, 3, 4, 5, 6),
+            (str(cgroup_tree[1]), 2, 3, 4, 5, 6, 2, 3, 4, 5, 6),
         ),
     )
     (cgroup_tree[2] / "pids.events").write_text("max 3\n", encoding="ascii")
@@ -104,6 +108,80 @@ def test_valid_combined_process_and_memory_observation_round_trips(cgroup_tree):
     assert evidence.memory_events_max.delta == 1
     assert evidence.memory_events_oom_group_kill.delta == 1
     assert ResourceLimitEvidence.from_dict(evidence.to_dict()) == evidence
+
+
+def test_hierarchical_sibling_delta_does_not_invalidate_candidate(cgroup_tree):
+    before = _read(cgroup_tree)
+    parent = cgroup_tree[1]
+    (parent / "pids.events").write_text("max 3\n", encoding="ascii")
+    (parent / "memory.events").write_text(
+        "max 4\noom 4\noom_kill 5\noom_group_kill 6\n", encoding="ascii"
+    )
+
+    evidence = ResourceLimitEvidence.between(before, _read(cgroup_tree))
+
+    assert evidence.limit_hit is False
+
+
+def test_parent_local_event_without_candidate_event_withholds_outcome(cgroup_tree):
+    before = _read(cgroup_tree)
+    (cgroup_tree[1] / "pids.events.local").write_text("max 3\n", encoding="ascii")
+
+    with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
+        ResourceLimitEvidence.between(before, _read(cgroup_tree))
+
+
+def test_reader_binds_localevents_mode_and_requires_candidate_leaf(cgroup_tree):
+    root, _parent, candidate, _cgroup, mountinfo = cgroup_tree
+    mountinfo.write_text(
+        f"31 23 0:28 / {root} ro - cgroup2 cgroup rw,pids_localevents,memory_localevents\n",
+        encoding="utf-8",
+    )
+    counters = _read(cgroup_tree)
+    assert counters.limit_signature[0][-2:] == (True, True)
+
+    (candidate / "nested").mkdir()
+    with pytest.raises(ResourceLimitObservationError, match="child cgroups"):
+        _read(cgroup_tree)
+
+
+def test_localevents_on_inactive_candidate_controller_does_not_block_child(cgroup_tree):
+    root, _parent, candidate, _cgroup, mountinfo = cgroup_tree
+    mountinfo.write_text(
+        f"31 23 0:28 / {root} ro - cgroup2 cgroup rw,pids_localevents\n",
+        encoding="utf-8",
+    )
+    for name in ("pids.max", "pids.events", "pids.events.local"):
+        (candidate / name).unlink()
+    (candidate / "nested").mkdir()
+
+    counters = _read(cgroup_tree)
+
+    assert counters.path_event_counters[0][1] is None
+    assert counters.path_event_counters[0][6] is None
+
+
+def test_localevents_regular_counter_supplies_local_ancestor_evidence(cgroup_tree):
+    root, parent, _candidate, _cgroup, mountinfo = cgroup_tree
+    mountinfo.write_text(
+        f"31 23 0:28 / {root} ro - cgroup2 cgroup rw,pids_localevents\n",
+        encoding="utf-8",
+    )
+    for directory in (parent, cgroup_tree[2]):
+        (directory / "pids.events.local").unlink()
+    before = _read(cgroup_tree)
+    (parent / "pids.events").write_text("max 3\n", encoding="ascii")
+
+    with pytest.raises(ResourceLimitObservationError, match="shared ancestor resource event"):
+        ResourceLimitEvidence.between(before, _read(cgroup_tree))
+
+
+@pytest.mark.parametrize("name", ["pids.events.local", "memory.events.local"])
+def test_reader_requires_local_event_file_for_active_controller(cgroup_tree, name):
+    (cgroup_tree[2] / name).unlink()
+
+    with pytest.raises(ResourceLimitObservationError, match=r"\.local is unavailable"):
+        _read(cgroup_tree)
 
 
 @pytest.mark.parametrize(
@@ -184,18 +262,23 @@ def test_no_visible_active_controller_counter_refuses(cgroup_tree, controller):
     for directory in cgroup_tree[1:3]:
         (directory / f"{controller}.max").unlink()
         (directory / f"{controller}.events").unlink()
+        (directory / f"{controller}.events.local").unlink()
     with pytest.raises(ResourceLimitObservationError, match=f"no visible {controller}.events"):
         _read(cgroup_tree)
 
 
 def test_inactive_child_controller_keeps_valid_parent_evidence(cgroup_tree):
     child = cgroup_tree[2]
-    for name in ("pids.max", "pids.events", "memory.max", "memory.events"):
+    for name in (
+        "pids.max", "pids.events", "pids.events.local",
+        "memory.max", "memory.events", "memory.events.local",
+    ):
         (child / name).unlink()
     counters = _read(cgroup_tree)
     assert (counters.pids_max, counters.memory_max, counters.memory_oom) == (2, 3, 4)
     assert counters.limit_signature[0] == (
-        str(child), 31, False, None, False, None, False, False
+        str(child), 31, False, None, False, None,
+        False, False, False, False, False, False,
     )
 
 
@@ -551,10 +634,10 @@ def test_evidence_model_refuses_untyped_delta():
 @pytest.mark.parametrize(
     "entry",
     [
-        ("/lane", 0, True, 16, True, 4096, True, True),
-        ("/lane", 31, False, 16, True, 4096, True, True),
-        ("/lane", 31, True, 16, True, 4096, False, True),
-        ("/lane", 31, True, 16, True, 4096, True, False),
+        ("/lane", 0, True, 16, True, 4096, True, True, True, True, False, False),
+        ("/lane", 31, False, 16, True, 4096, True, True, True, True, False, False),
+        ("/lane", 31, True, 16, True, 4096, False, True, True, True, False, False),
+        ("/lane", 31, True, 16, True, 4096, True, False, True, True, False, False),
     ],
 )
 def test_counter_signature_refuses_unbound_or_missing_limit_evidence(entry):

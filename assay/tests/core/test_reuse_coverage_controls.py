@@ -32,7 +32,7 @@ def _write_document(tmp_path: Path, document) -> Path:
 def _source(*, complete=True, cold_start=False, outcomes=None, candidates=()):
     return ReuseSource(
         path=Path("prior.json"),
-        schema_version=12 if cold_start else VERDICT_SCHEMA_VERSION,
+        schema_version=15 if cold_start else VERDICT_SCHEMA_VERSION,
         sha256="a" * 64,
         document={} if not cold_start else None,
         cold_start=cold_start,
@@ -99,6 +99,21 @@ def test_current_schema_artifact_must_pass_the_current_verifier(tmp_path):
         match=f"current v{VERDICT_SCHEMA_VERSION} verifier rejected",
     ):
         reuse.load_reuse_source(path)
+
+
+@pytest.mark.parametrize("version", [12, 13, 14, 15])
+def test_prior_schema_versions_are_uninspected_cold_starts(tmp_path, version):
+    path = _write_document(
+        tmp_path,
+        {"schema_version": version, "claims": "deliberately malformed"},
+    )
+
+    source = reuse.load_reuse_source(path)
+
+    assert source.schema_version == version
+    assert source.cold_start
+    assert source.document is None
+    assert source.outcomes == {}
 
 
 def test_unsupported_schema_version_is_not_treated_as_a_legacy_cold_start(
@@ -186,7 +201,7 @@ def test_classification_refuses_every_non_reusable_prior_state():
     incomplete = _source(complete=False)
     assert reuse.classify_candidate(
         cold, "a", sequential_pytest_supported=True
-    )[1].startswith("v12 cold start")
+    )[1].startswith("v15 cold start")
     assert reuse.classify_candidate(
         incomplete, "a", sequential_pytest_supported=True
     )[1].startswith("source is not a complete")

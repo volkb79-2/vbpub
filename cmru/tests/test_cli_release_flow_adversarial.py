@@ -38,6 +38,7 @@ def _project(root: Path, *, steps=None, generated=()):
         runner_steps=steps or {}, steps=steps or {}, commit_generated=generated,
         changelog=None, version=SimpleNamespace(strategy="scm"), git_tag=True,
         prefix="demo-v", build_step="build", scm_dist=None,
+        known_project_names=frozenset(),
     )
 
 
@@ -133,15 +134,42 @@ def test_run_project_steps_rejects_missing_declared_step(tmp_path, monkeypatch):
         cli._run_project_steps(root, {"demo": project}, ["demo"], ["build"])
 
 
+def test_run_project_steps_forwards_protected_release_identity(monkeypatch, tmp_path):
+    root = _repo(tmp_path)
+    project = _project(root, steps={"build": object()})
+    identity = {
+        "CMRU_RELEASE_COMMIT": "a" * 40,
+        "CMRU_RELEASE_TAG": "demo-v1.2.3",
+    }
+    monkeypatch.setattr(cli, "resolve_versions_from_git", lambda *_a, **_k: None)
+    calls = []
+    monkeypatch.setattr(
+        cli,
+        "run_project_step",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    cli._run_project_steps(
+        root, {"demo": project}, ["demo"], ["build"], protected_env=identity,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1]["protected_env"] == identity
+
+
 def test_release_gates_require_run_tests_and_dispatch_declared_gate(tmp_path, monkeypatch):
     missing = _project(tmp_path)
     with pytest.raises(RuntimeError, match="no release gate"):
         cli._run_release_gates(tmp_path, {"demo": missing}, ["demo"])
     project = _project(tmp_path, steps={"run-tests": object()})
     calls = []
-    monkeypatch.setattr(cli, "run_project_step", lambda *args: calls.append(args[1]))
+    monkeypatch.setattr(cli, "_git", lambda *_args, **_kwargs: "a" * 40)
+    monkeypatch.setattr(
+        cli, "run_project_step",
+        lambda *args, **kwargs: calls.append((args[1], kwargs.get("protected_env"))),
+    )
     cli._run_release_gates(tmp_path, {"demo": project}, ["demo"])
-    assert calls == ["run-tests"]
+    assert calls == [("run-tests", {"CMRU_RELEASE_GATE_COMMIT": "a" * 40})]
 
 
 def test_untagged_project_refuses_build_side_effect_after_artifact_step(tmp_path, monkeypatch):

@@ -342,7 +342,7 @@ def test_assay_plan_names_why_an_ingested_lane_cannot_be_planned(
     out, err = io.StringIO(), io.StringIO()
 
     code = cli.main(
-        ["plan", "ui_mutation", "--file", str(lane_file)],
+        ["plan", "--json", "ui_mutation", "--file", str(lane_file)],
         stdout=out,
         stderr=err,
     )

@@ -15,6 +15,8 @@ checked first" class of bug -- ``crashed`` must win even when
 
 from __future__ import annotations
 
+from conftest import completed_process, file_not_found, timeout_expired
+
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -392,16 +394,16 @@ _TARGETS = (
 def _decide(project_root: Path):
     def decide(argv, *, env, cwd, timeout):
         if Path(cwd) == project_root:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         text = (Path(cwd) / "pkg" / "flags.py").read_text(encoding="utf-8")
         if "a = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=1, stdout="", stderr="")
+            return completed_process(list(argv), returncode=1, stdout="", stderr="")
         if "b = False" in text:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         if "c = False" in text:
-            raise FileNotFoundError(2, "No such file or directory", argv[0])
+            raise file_not_found(2, "No such file or directory", argv[0])
         if "d = False" in text:
-            raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+            raise timeout_expired(cmd=list(argv), timeout=timeout)
         raise AssertionError(f"unexpected content: {text!r}")
 
     return decide
@@ -433,7 +435,7 @@ def test_run_mutation_reaches_all_four_buckets_and_total_accounts_for_every_one(
             deadline=deadline,
             targets=_TARGETS,
             adapter=PythonAdapter(),
-            jobs=2,
+            jobs=1,
             max_mutants=50,
             operators=("python:bool-const-flip",),
             process_runner=decide,

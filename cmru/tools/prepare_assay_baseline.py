@@ -6,6 +6,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Mapping
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -13,6 +14,7 @@ _OID_RE = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _TAG_REF_RE = re.compile(
     r"refs/tags/(?P<tag>cmru-v[0-9][A-Za-z0-9.+-]*)(?P<peeled>\^\{\})?\Z"
 )
+_STABLE_RELEASE_TAG_RE = re.compile(r"cmru-v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
 
 
 def _remote_tag_commits(repo_root: Path, git_auth) -> dict[str, str]:
@@ -66,12 +68,31 @@ def _remote_tag_commits(repo_root: Path, git_auth) -> dict[str, str]:
     return {tag: peeled.get(tag, object_id) for tag, object_id in plain.items()}
 
 
+def published_release_state(repo_root: Path, *, git_auth) -> tuple[str | None, dict[str, str]]:
+    """Return the latest stable release tag and all authenticated origin tags.
+
+    A successful empty response is the only first-release signal. Transport,
+    authentication, and malformed-response failures remain errors; they must
+    never turn an unavailable baseline into a first-release claim.
+    """
+    from assay_baseline_tags import latest_published_release_tag
+
+    remote_tags = _remote_tag_commits(repo_root, git_auth)
+    stable_tags = {
+        tag: commit
+        for tag, commit in remote_tags.items()
+        if _STABLE_RELEASE_TAG_RE.fullmatch(tag)
+    }
+    return latest_published_release_tag(stable_tags), remote_tags
+
+
 def build_facts(
     repo_root: Path,
     project_root: Path = PROJECT_ROOT,
     *,
     git_auth=None,
     assay_git=None,
+    remote_tag_commits: Mapping[str, str] | None = None,
 ) -> dict[str, object]:
     """Resolve the latest published ancestor and prepare token-free origin facts."""
     if assay_git is None:
@@ -113,7 +134,11 @@ def build_facts(
             "git describe and git tag disagree about CMRU release tags at HEAD"
         )
 
-    remote_tags = _remote_tag_commits(repo_root, git_auth)
+    remote_tags = (
+        dict(remote_tag_commits)
+        if remote_tag_commits is not None
+        else _remote_tag_commits(repo_root, git_auth)
+    )
     if not remote_tags:
         raise RuntimeError("origin has no published CMRU release tags")
     latest_tag = latest_published_release_tag(remote_tags)

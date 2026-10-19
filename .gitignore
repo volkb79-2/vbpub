@@ -239,6 +239,10 @@ ciu.worktree-instance.json
 # migrated yet.
 ciu.global.worktree.toml.j2
 ciu.global.instance.toml.j2
+# Atomic CIU-135 initial-overlay writer scratch; a hard interruption may leave
+# the unique staging file for later inspection/cleanup without dirtying gates.
+**/.ciu.worktree-instance.json.*.tmp
+**/.ciu.global.instance.toml.j2.*.tmp
 ciu.instance.generated.toml
 
 # Spyder project settings
@@ -343,6 +347,8 @@ cmru.secret.toml
 .ghcr-auth.json
 cmru.vars
 cmru/build/
+# CMRU's transient host-only source-mount canary (KI-74).
+/.cmru-gate-canary-*.txt
 # cmru tester-gate's in-container cgroup events handoff (removed after each run)
 .cmru/
 

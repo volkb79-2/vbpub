@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Assay mutation campaign analysis v1",
-  "description": "A bounded, read-only closeout joining one committed lane plan, an optional verified verdict, the progress stream, an optional mutation state directory, the observed command exit, and explicitly supplied coverage evidence. Every estimate is diagnostic; this report does not replace assay verify.",
+  "title": "Assay mutation campaign analysis v2",
+  "description": "A bounded, read-only analysis joining one committed lane plan, optional verified verdict evidence, progress, optional state and coverage evidence. Version 2 can also bind a non-qualifying pilot to its exact plan and selection report. Every estimate is diagnostic; this report does not replace assay verify.",
   "oneOf": [
     {"$ref": "#/$defs/document"},
     {"$ref": "#/$defs/evidenceError"}
@@ -12,14 +12,14 @@
       "additionalProperties": false,
       "required": ["schema_version", "analysis", "status", "qualifying", "complete_blockers", "expected_commit", "tree", "lane", "lane_file", "torn_final_record", "verdict", "plan", "campaign", "runs", "coverage", "timing", "evidence", "candidate_details", "adverse", "unresolved", "reclassified", "state", "projection"],
       "properties": {
-        "schema_version": {"const": 1, "type": "integer"},
+        "schema_version": {"const": 2, "type": "integer"},
         "analysis": {"const": "mutation_campaign"},
         "status": {"enum": ["complete", "incomplete"]},
-        "qualifying": {"const": true},
+        "qualifying": {"type": "boolean"},
         "complete_blockers": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"enum": ["no_verdict", "command_exit_not_observed", "inventory_not_exhausted", "terminal_disagrees", "coverage_not_reverified", "state_unreconciled", "unverified_hung_records", "lane_timeout_or_unstarted"]}
+          "items": {"enum": ["no_verdict", "command_exit_not_observed", "inventory_not_exhausted", "terminal_disagrees", "coverage_not_reverified", "state_unreconciled", "unverified_hung_records", "lane_timeout_or_unstarted", "shard_not_merged"]}
         },
         "expected_commit": {"$ref": "#/$defs/objectId"},
         "tree": {"$ref": "#/$defs/objectId"},
@@ -48,6 +48,29 @@
         {
           "if": {"properties": {"status": {"const": "incomplete"}}, "required": ["status"]},
           "then": {"properties": {"complete_blockers": {"minItems": 1}}}
+        },
+        {
+          "if": {"properties": {"qualifying": {"const": false}}, "required": ["qualifying"]},
+          "then": {
+            "properties": {
+              "status": {"const": "incomplete"}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"evidence": {"required": ["selection_file"]}}, "required": ["evidence"]},
+          "then": {
+            "properties": {
+              "qualifying": {"const": false},
+              "status": {"const": "incomplete"},
+              "verdict": {"type": "null"},
+              "evidence": {"required": ["plan_json"]}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"evidence": {"required": ["plan_json"]}}, "required": ["evidence"]},
+          "then": {"properties": {"evidence": {"required": ["selection_file"]}}}
         }
       ]
     },
@@ -56,7 +79,7 @@
       "additionalProperties": false,
       "required": ["schema_version", "kind", "status", "lane", "expected_commit", "errors", "errors_truncated"],
       "properties": {
-        "schema_version": {"const": 1, "type": "integer"},
+        "schema_version": {"const": 2, "type": "integer"},
         "kind": {"const": "assay-campaign-analysis"},
         "status": {"const": "evidence_error"},
         "lane": {"type": "string"},
@@ -131,7 +154,7 @@
     },
     "campaign": {
       "type": "object", "additionalProperties": false,
-      "required": ["planned_total", "selected_total", "completed_total", "pending_total", "resumed_total", "rejudged_total", "per_run_resumed_total", "per_run_rejudged_total", "execution_mode_counts", "outcomes"],
+      "required": ["planned_total", "selected_total", "completed_total", "pending_total", "resumed_total", "rejudged_total", "per_run_resumed_total", "per_run_rejudged_total", "execution_mode_counts", "selection_sha256", "outcomes"],
       "properties": {
         "planned_total": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
         "selected_total": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
@@ -142,6 +165,7 @@
         "per_run_resumed_total": {"type": "array", "items": {"type": "integer", "minimum": 0}},
         "per_run_rejudged_total": {"type": "array", "items": {"type": "integer", "minimum": 0}},
         "execution_mode_counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+        "selection_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "outcomes": {"oneOf": [{"$ref": "#/$defs/bucketCounts"}, {"type": "null"}]}
       }
     },
@@ -159,7 +183,7 @@
     },
     "run": {
       "type": "object", "additionalProperties": false,
-      "required": ["run_id", "started", "ended", "elapsed_seconds", "progress_line", "commit", "lane", "rigor", "candidate_total", "candidate_milestone", "selected_total", "pending_total", "resumed_total", "rejected_total", "rejudged_total", "shard", "fresh_candidate_events", "sweep_end_buckets", "sweep_end_reason", "sweep_end_present", "terminal", "judge_sha256"],
+      "required": ["run_id", "started", "ended", "elapsed_seconds", "progress_line", "commit", "lane", "rigor", "candidate_total", "candidate_milestone", "selected_total", "pending_total", "resumed_total", "rejected_total", "rejudged_total", "shard", "selection_sha256", "fresh_candidate_events", "sweep_end_buckets", "sweep_end_reason", "sweep_end_present", "terminal", "judge_sha256"],
       "properties": {
         "run_id": {"type": "string", "minLength": 1},
         "started": {"type": "string", "minLength": 1},
@@ -177,6 +201,7 @@
         "rejected_total": {"type": "integer", "minimum": 0},
         "rejudged_total": {"type": "integer", "minimum": 0},
         "shard": {"$ref": "#/$defs/shard"},
+        "selection_sha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "fresh_candidate_events": {"type": "integer", "minimum": 0},
         "sweep_end_buckets": {"oneOf": [{"$ref": "#/$defs/bucketCounts"}, {"type": "null"}]},
         "sweep_end_reason": {"$ref": "#/$defs/nullableString"},
@@ -277,6 +302,8 @@
         "verdict": {"oneOf": [{"$ref": "#/$defs/fingerprint"}, {"type": "null"}]},
         "progress": {"$ref": "#/$defs/fingerprint"},
         "lane_file": {"$ref": "#/$defs/fingerprint"},
+        "plan_json": {"$ref": "#/$defs/fingerprint"},
+        "selection_file": {"$ref": "#/$defs/fingerprint"},
         "log": {"$ref": "#/$defs/fingerprint"},
         "coverage": {"$ref": "#/$defs/fingerprint"}
       }

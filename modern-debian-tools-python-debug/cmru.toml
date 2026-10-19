@@ -63,7 +63,7 @@ commands = [
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "modern-debian-tools-python-debug: run-gate release lane", argv = ["./run-gate.py", "release"], cwd = "." },
+  { label = "modern-debian-tools-python-debug: run-gate release lane", argv = ["run-gate", "release"], cwd = "." },
 ]
 
 [steps.build]

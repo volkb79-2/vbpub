@@ -5,7 +5,12 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-from cmru.changelog import backfill_release_changelog, generate_release_changelog
+from cmru.changelog import (
+    backfill_release_changelog,
+    generate_release_changelog,
+    pending_release_tag,
+)
+from cmru.version import status_records
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -44,6 +49,18 @@ def _image_project() -> SimpleNamespace:
         changelog="CHANGES.md",
         commit_generated=(),
         version=SimpleNamespace(strategy="none", bump="conventional"),
+    )
+
+
+def _other_project() -> SimpleNamespace:
+    return SimpleNamespace(
+        name="other",
+        cwd="other",
+        paths=["other"],
+        prefix="other-v",
+        git_tag=True,
+        changelog="CHANGES.md",
+        version=SimpleNamespace(strategy="scm", bump="conventional"),
     )
 
 
@@ -88,6 +105,39 @@ def test_feature_selects_a_minor_history_heading(tmp_path):
     assert generate_release_changelog(tmp_path, _project()) is True
     history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
     assert "## [1.1.0]" in history
+
+
+def test_scoped_release_bump_uses_full_project_registry_for_plan_and_changelog(tmp_path):
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@cmru.test")
+    _git(tmp_path, "config", "user.name", "CMRU test")
+    _commit(
+        tmp_path, "chore: initialise release history", "demo/CHANGES.md",
+        "# Changelog\n\n<!-- cmru: release history -->\n",
+    )
+    demo = _project()
+    other = _other_project()
+    _commit(tmp_path, "feat(other): initialise other", "other/core.py", "VALUE = 1\n")
+    _git(tmp_path, "tag", "demo-v1.0.0")
+    _git(tmp_path, "tag", "other-v1.0.0")
+    _commit(tmp_path, "feat(other)!: change demo API", "demo/core.py", "VALUE = 2\n")
+    known_project_names = frozenset({"demo", "other"})
+
+    assert pending_release_tag(
+        tmp_path, demo, known_project_names=known_project_names,
+    ) == "demo-v1.0.1"
+    records = status_records(
+        tmp_path, {"demo": demo}, known_project_names=known_project_names,
+    )
+    assert records[0]["bump"] == "patch"
+    assert records[0]["next_version"] == "demo-v1.0.1"
+
+    assert generate_release_changelog(
+        tmp_path, demo, known_project_names=known_project_names,
+    ) is True
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert "## [1.0.1] - " in history
+    assert "feat(other)!: change demo API" in history
     assert "### Added" in history
 
 
@@ -152,11 +202,14 @@ def test_backfill_catalogues_an_already_published_tag_without_moving_it(tmp_path
     assert backfill_release_changelog(tmp_path, _project(), "demo-v0.1.0") is False
 
 
-def _init_demo(repo: Path, changelog: str = "# Changelog\n\n<!-- cmru: release history -->\n") -> None:
+def _init_demo(
+    repo: Path, changelog: str = "# Changelog\n\n<!-- cmru: release history -->\n",
+    name: str = "CHANGES.md",
+) -> None:
     _git(repo, "init", "-b", "main")
     _git(repo, "config", "user.email", "test@cmru.test")
     _git(repo, "config", "user.name", "CMRU test")
-    _commit(repo, "chore: initialise demo", "demo/CHANGES.md", changelog)
+    _commit(repo, "chore: initialise demo", f"demo/{name}", changelog)
     _git(repo, "tag", "-a", "demo-v1.0.0", "-m", "Release demo-v1.0.0")
 
 
@@ -215,23 +268,39 @@ def test_rel02_stale_section_keeps_older_sections_intact(tmp_path):
     assert history.index("## [1.0.1]") < history.index("## [0.9.0]")
 
 
-def test_rel10_tagged_release_refuses_a_nonempty_plain_unreleased_section(tmp_path):
+def test_ki78_tagged_release_carries_a_nonempty_unreleased_section_untouched(tmp_path):
+    """KI-78: the author's [Unreleased] notes ride the release; generation keeps them."""
+    notes = "### Added\n- hand-written entry\n\n### Migration\n- run `tool migrate` first\n"
+    _init_demo(
+        tmp_path,
+        f"# Changelog\n\n## [Unreleased]\n\n{notes}\n<!-- cmru: release history -->\n",
+    )
+    _commit(tmp_path, "fix(demo): a fix", "demo/core.py", "A = 1\n")
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert f"## [Unreleased]\n\n{notes}\n<!-- cmru: release history -->" in history
+    assert "## [1.0.1]" in history
+
+
+def test_ki78_a_custom_named_changelog_carries_unreleased_notes_too(tmp_path):
+    """Every consumer: the configured changelog path, whatever its name, is carried."""
     _init_demo(
         tmp_path,
         "# Changelog\n\n## [Unreleased]\n\n### Added\n- hand-written entry\n\n"
         "<!-- cmru: release history -->\n",
+        name="HISTORY.md",
     )
     _commit(tmp_path, "fix(demo): a fix", "demo/core.py", "A = 1\n")
-    before = (tmp_path / "demo" / "CHANGES.md").read_bytes()
+    project = _project()
+    project.changelog = "HISTORY.md"
 
-    try:
-        generate_release_changelog(tmp_path, _project())
-    except RuntimeError as exc:
-        assert "KI-30" in str(exc)
-        assert "[Unreleased]" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("a non-empty [Unreleased] must block a tagged release")
-    assert (tmp_path / "demo" / "CHANGES.md").read_bytes() == before
+    assert generate_release_changelog(tmp_path, project) is True
+
+    history = (tmp_path / "demo" / "HISTORY.md").read_text(encoding="utf-8")
+    assert "## [Unreleased]\n\n### Added\n- hand-written entry\n\n<!-- cmru: release history -->" in history
+    assert "## [1.0.1]" in history
 
 
 def test_rel10_cleared_unreleased_section_with_a_comment_is_accepted(tmp_path):

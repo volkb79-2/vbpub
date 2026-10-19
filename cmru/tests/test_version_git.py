@@ -18,6 +18,7 @@ from cmru.version import (
     _next_counter_version,
     bump_version,
     detect_changed_projects,
+    release_cmd,
 )
 
 
@@ -233,6 +234,74 @@ class TestDetectChangedProjects(unittest.TestCase):
             changed = detect_changed_projects(repo, projects)
             _, _, _, bump = changed[0]
             self.assertEqual(bump, "major")
+
+    def test_known_project_scope_limits_cross_project_breaking_bump(self):
+        with _TempRepo() as repo:
+            _commit(repo, "chore: init", {
+                "assay/src/assay.py": "base\n",
+                "run-gate-project/run_gate.py": "base\n",
+            })
+            _tag(repo, "assay-v1.0.0")
+            _tag(repo, "run-gate-v1.0.0")
+            _commit(repo, "feat(assay)!: change the verdict contract", {
+                "assay/src/assay.py": "breaking\n",
+                "run-gate-project/run_gate.py": "integration\n",
+            })
+            projects = {
+                "assay": _ProjCfg("assay-v", "assay", paths=["assay"]),
+                "run-gate": _ProjCfg(
+                    "run-gate-v", "run-gate-project", paths=["run-gate-project"]
+                ),
+            }
+            changed = {name: bump for name, _proj, _tag, bump in
+                       detect_changed_projects(repo, projects)}
+            self.assertEqual(changed, {"assay": "major", "run-gate": "patch"})
+
+    def test_single_project_release_uses_estate_scopes_for_bump_detection(self):
+        with _TempRepo() as repo:
+            _commit(repo, "chore: init", {
+                "assay/src/assay.py": "base\n",
+                "run-gate-project/run_gate.py": "base\n",
+            })
+            _tag(repo, "assay-v1.0.0")
+            _tag(repo, "run-gate-v1.0.0")
+            _commit(repo, "feat(assay)!: change the verdict contract", {
+                "assay/src/assay.py": "breaking\n",
+                "run-gate-project/run_gate.py": "integration\n",
+            })
+            all_projects = {
+                "assay": _ProjCfg("assay-v", "assay", paths=["assay"]),
+                "run-gate": _ProjCfg(
+                    "run-gate-v", "run-gate-project", paths=["run-gate-project"]
+                ),
+            }
+            tags = release_cmd(
+                repo, {"run-gate": all_projects["run-gate"]},
+                known_project_names=frozenset({"assay", "run-gate"}), dry_run=True,
+            )
+            self.assertEqual(tags, ["run-gate-v1.0.1"])
+
+    def test_unknown_scope_preserves_path_based_breaking_bump(self):
+        with _TempRepo() as repo:
+            _commit(repo, "chore: init", {
+                "assay/src/assay.py": "base\n",
+                "run-gate-project/run_gate.py": "base\n",
+            })
+            _tag(repo, "assay-v1.0.0")
+            _tag(repo, "run-gate-v1.0.0")
+            _commit(repo, "feat(platform)!: hard cut", {
+                "assay/src/assay.py": "breaking\n",
+                "run-gate-project/run_gate.py": "breaking\n",
+            })
+            projects = {
+                "assay": _ProjCfg("assay-v", "assay", paths=["assay"]),
+                "run-gate": _ProjCfg(
+                    "run-gate-v", "run-gate-project", paths=["run-gate-project"]
+                ),
+            }
+            changed = {name: bump for name, _proj, _tag, bump in
+                       detect_changed_projects(repo, projects)}
+            self.assertEqual(changed, {"assay": "major", "run-gate": "major"})
 
     def test_bump_patch_rule_overrides_conventional(self):
         """bump='patch' in config → always patch, even for feat: commits."""

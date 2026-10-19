@@ -64,7 +64,12 @@ import json
 from pathlib import Path
 
 import pytest
-from conftest import PROJECT_ROOT, why_invalid, zero_resource_limit_evidence_dict
+from conftest import (
+    PROJECT_ROOT,
+    process_tree_evidence_dict,
+    why_invalid,
+    zero_resource_limit_evidence_dict,
+)
 from jsonschema import Draft202012Validator
 
 from assay.cli import main
@@ -1052,7 +1057,7 @@ def test_verify_accepts_reconstructed_judgment_r2_and_r3():
             "cold_witness_kills": False,
             "r2_command": None,
             "equivalence_ledger": None,
-            "jobs": 4,
+            "jobs": 1,
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:boolop-swap"],
             "kill_attribution": "unattributed",
@@ -1105,7 +1110,7 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
             "cold_witness_kills": False,
             "r2_command": None,
             "equivalence_ledger": None,
-            "jobs": 2,
+            "jobs": 1,
             "max_mutants": 50,
             "operators": ["python:compare-swap", "python:bool-const-flip"],
             "kill_attribution": "unattributed",
@@ -1127,6 +1132,18 @@ def test_the_matrix_carries_the_r2_judgment_shape_its_producer_now_emits():
         for entry in r2_claim["mutation"][bucket]
     }
     assert recorded <= set(document["judgment"]["r2"]["operators"])
+
+
+def test_verify_rejects_parallel_native_r2_event_windows(
+    validator: Draft202012Validator,
+):
+    document = _load(JUDGMENT_R2_FIXTURE)
+    document["judgment"]["r2"]["jobs"] = 3
+
+    assert why_invalid(validator, document), "the packaged schema must require jobs=1"
+    failures = verify_document(document)
+    assert failures
+    assert any("jobs" in failure for failure in failures)
 
 
 def test_every_r2_or_r3_judged_claim_in_the_matrix_carries_its_judgment():
@@ -1383,9 +1400,9 @@ def test_verify_refuses_every_non_current_schema_version_with_one_diagnostic(ver
 #: version. An edit to `verdict.schema.json` without a VERDICT_SCHEMA_VERSION
 #: bump fails here; a bump fails with a KeyError until its digest is added.
 #: Carries forward the retired W9 gate phase's
-#: `test_shipped_schema_is_byte_identical_to_the_locked_v15_asset`.
+#: `test_shipped_schema_is_byte_identical_to_the_locked_v16_asset`.
 _VERDICT_SCHEMA_SHA256 = {
-    15: "89d018d68705904f9e609ee528e3f48dc4f4452c0c56c2f525946f187c698621",
+    16: "700a0afd0ad3c46fcdc9b41d23ac3e7b993b5e755a2a8c62f0ebd9a07e574fc4",
 }
 
 
@@ -1467,6 +1484,7 @@ def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
             "mutated_file_sha256": mutated_digest,
             "execution": {"mode": "full"},
             "resource_limit_evidence": zero_resource_limit_evidence_dict(),
+            "process_tree_evidence": process_tree_evidence_dict(),
         }
     )
     claim["mutation"][bucket] = [survivor]
@@ -1494,6 +1512,24 @@ def test_verify_rejects_an_r2_status_that_ignores_bucket_precedence(
 
 
 # --- B050/A-427/DA-R22: the floor is READ FROM THE DOCUMENT ----------------
+
+
+def test_verify_rejects_inconsistent_process_tree_signal_counts(
+    validator: Draft202012Validator,
+):
+    document = _load("r2_fail_mutants_survived.json")
+    claim = next(c for c in document["claims"] if c["rigor"] == "R2")
+    entry = claim["mutation"]["killed"][0]
+    evidence = entry["process_tree_evidence"]
+    evidence["outliving_descendants"] = 0
+    evidence["descendants_signalled"] = 1
+
+    assert why_invalid(validator, document) == []
+    failures = verify_document(document)
+    assert any(
+        "more signalled descendants than outliving descendants" in failure
+        for failure in failures
+    ), failures
 
 
 def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
@@ -1545,6 +1581,7 @@ def _as_ingested_at_floor(document: dict, fail_under: float) -> dict:
                 "mutated_file_sha256",
                 "execution",
                 "resource_limit_evidence",
+                "process_tree_evidence",
             ):
                 mutant.pop(field, None)
     return document

@@ -35,7 +35,7 @@ _JUDGE_SCALARS = {
 }
 _JUDGE_SUBTABLES = {
     "mutation": (
-        '\n[lanes.package.judge.mutation]\njobs = 2\nmax_mutants = 50\n'
+        '\n[lanes.package.judge.mutation]\njobs = 1\nmax_mutants = 50\n'
         'operators = ["python:compare-swap"]\n'
     ),
     "canary": (

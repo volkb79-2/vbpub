@@ -29,6 +29,7 @@ from assay.mutation import (
     plan_sha256,
     valid_hung_resource_evidence,
 )
+from assay.process_tree import ProcessTreeEvidence
 from assay.r2_command import R2_APPENDED, R2_TRANSFORM_ID, collection_digest, transform_argv
 from gate.tests.support import PROJECT_ROOT
 
@@ -51,6 +52,14 @@ ZERO_RESOURCE_EVIDENCE = {
         "oom_group_kill": {"before": 0, "after": 0, "delta": 0},
     },
 }
+PROCESS_TREE_EVIDENCE = ProcessTreeEvidence(
+    leader_status="exited",
+    group_signalled_before_reap=False,
+    outliving_descendants=0,
+    descendants_signalled=0,
+    cleanup_seconds=0.001,
+    clean=True,
+).to_dict()
 
 
 def _complete_hung_resource_trace() -> dict:
@@ -225,7 +234,7 @@ mode = "whole_target"
 targets = ["src/assay/adapters/go.py", "src/assay/adapters/pilot_bool_fixture.py"]
 
 [lanes.self-qualification.judge.mutation]
-jobs = 3
+jobs = 1
 max_mutants = 128
 operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-flip", "python:falsy-swap"]
 """,
@@ -433,6 +442,7 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
             "resources": cost_resources,
             "campaign_deadline_sha256": deadline_sha256,
             "resource_limit_evidence": ZERO_RESOURCE_EVIDENCE,
+            "process_tree_evidence": PROCESS_TREE_EVIDENCE,
         }
         (state_dir / f"{identity}.json").write_text(
             json.dumps(record, sort_keys=True) + "\n", encoding="utf-8"
@@ -449,7 +459,7 @@ operators = ["python:compare-swap", "python:boolop-swap", "python:bool-const-fli
         "completed": True,
         "lane": "self-qualification",
         "commit": commit,
-        "jobs": 3,
+        "jobs": 1,
         "requested": len(selected_ids),
         "selection_sha256": selection_sha256,
         "judge_sha256": "b" * 64,
@@ -575,6 +585,10 @@ def _verify_fixture_with_first_hung(
         "reason_code": "CANDIDATE_HUNG",
         "returncode": None,
     }
+    state_record["process_tree_evidence"] = {
+        **state_record["process_tree_evidence"],
+        "leader_status": "timeout-killed",
+    }
     if include_trace:
         trace = _complete_hung_resource_trace()
         assert valid_hung_resource_evidence(trace)
@@ -604,6 +618,47 @@ def test_pilot_state_accepts_hung_candidate_with_complete_liveness_trace(tmp_pat
     fixture = _fixture(tmp_path)
 
     _verify_fixture_with_first_hung(fixture, include_trace=True)
+
+
+@pytest.mark.parametrize(
+    ("damage", "message"),
+    [
+        ("missing", "no process-tree evidence"),
+        ("invalid", "invalid terminal or execution evidence"),
+        ("outliving-descendant", "does not validate its reported disposition"),
+    ],
+)
+def test_pilot_state_requires_consistent_process_tree_evidence(
+    tmp_path: Path, damage: str, message: str
+):
+    fixture = _fixture(tmp_path)
+    checker = _load_module("b110_pilot_report_check_process_tree_test", CHECKER_PATH)
+    identity = fixture["selected_ids"][0]
+    state_path = fixture["state_dir"] / f"{identity}.json"
+    record = json.loads(state_path.read_text(encoding="utf-8"))
+    if damage == "missing":
+        del record["process_tree_evidence"]
+    elif damage == "invalid":
+        record["process_tree_evidence"]["protocol"] = "unsupported"
+    else:
+        record["process_tree_evidence"]["outliving_descendants"] = 1
+    state_path.write_text(json.dumps(record, sort_keys=True) + "\n", encoding="utf-8")
+    dispositions = {
+        row["id"]: dict(row) for row in fixture["summary"]["candidates"]
+    }
+
+    with pytest.raises(ValueError, match=message):
+        checker._verify_state(
+            fixture["state_dir"],
+            selected_ids=fixture["selected_ids"],
+            rows=fixture["plan_rows"],
+            dispositions=dispositions,
+            selection_sha256=fixture["selection_sha256"],
+            deadline_sha256=fixture["deadline_sha256"],
+            expected_judge_sha256="b" * 64,
+            replacement_sha256_by_id=fixture["replacement_sha256_by_id"],
+            r2_baselines=fixture["r2_baselines"],
+        )
 
 
 def test_pilot_state_requires_collection_evidence_for_a_full_kill(tmp_path: Path):
@@ -2344,7 +2399,7 @@ def test_host_rejects_a_late_extra_live_state_record(
         ("wrong-replacement-hash", "different replacement identity"),
         ("wrong-mutated-hash", "stale or disagrees with the source plan or summary"),
         ("omitted-configured-target", "complete committed whole-target lane"),
-        ("wrong-job-count", "registered three-job pilot"),
+        ("wrong-job-count", "registered serial pilot"),
         ("coherent-wrong-judge", "differs from the in-memory summary"),
         ("current-selection-digest", "selection digest differs"),
         ("current-resource-mismatch", "resource evidence differs from its state record"),
@@ -2461,7 +2516,7 @@ def test_b110_pilot_checker_rejects_exit_six_without_complete_evidence(
         path.write_text(json.dumps(plan, sort_keys=True) + "\n")
     elif damage == "wrong-job-count":
         summary = json.loads((artifact_dir / "b110-pilot-summary.json").read_text())
-        summary["jobs"] = 1
+        summary["jobs"] = 2
         (artifact_dir / "b110-pilot-summary.json").write_text(json.dumps(summary))
     elif damage == "coherent-wrong-judge":
         for path in fixture["state_dir"].glob("*.json"):

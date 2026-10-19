@@ -53,16 +53,23 @@ def test_malformed_targets_are_argparse_usage_errors_exit_2(target, capsys):
 
 
 def test_status_json_is_one_record_list_with_the_stable_keys(monkeypatch, tmp_path):
-    alpha = SimpleNamespace(name="alpha", prefix="alpha-v", version=None, git_tag=True)
+    alpha = SimpleNamespace(
+        name="alpha", prefix="alpha-v", version=None, git_tag=True,
+        known_project_names=frozenset(),
+    )
     external = SimpleNamespace(
         name="ext", prefix="ext-v", git_tag=True,
         version=SimpleNamespace(strategy="external:VERSION"),
+        known_project_names=frozenset(),
     )
-    notag = SimpleNamespace(name="raw", prefix="raw-v", version=None, git_tag=False)
+    notag = SimpleNamespace(
+        name="raw", prefix="raw-v", version=None, git_tag=False,
+        known_project_names=frozenset(),
+    )
     configs = {"alpha": alpha, "ext": external, "raw": notag}
     monkeypatch.setattr(
         "cmru.version.detect_changed_projects",
-        lambda _root, projects, end_ref: [
+        lambda _root, projects, end_ref, **_kw: [
             ("alpha", alpha, "alpha-v1.0.0", "patch"),
             ("ext", external, None, "patch"),
             ("raw", notag, None, "patch"),
@@ -95,7 +102,7 @@ def test_status_records_list_every_selected_project_with_a_changed_field(monkeyp
     quiet = SimpleNamespace(name="quiet", prefix=None, version=None, git_tag=True)
     monkeypatch.setattr(
         version, "detect_changed_projects",
-        lambda _root, projects, end_ref: [("alpha", alpha, "alpha-v1.0.0", "patch")],
+        lambda _root, projects, end_ref, **_kw: [("alpha", alpha, "alpha-v1.0.0", "patch")],
     )
     monkeypatch.setattr(
         version, "_latest_tag_for_prefix",
@@ -119,7 +126,7 @@ def test_status_text_table_lists_only_changed_projects(monkeypatch, tmp_path, ca
     quiet = SimpleNamespace(name="quiet", prefix="quiet-v", version=None, git_tag=True)
     monkeypatch.setattr(
         version, "detect_changed_projects",
-        lambda _root, projects, end_ref: [("alpha", alpha, "alpha-v1.0.0", "patch")],
+        lambda _root, projects, end_ref, **_kw: [("alpha", alpha, "alpha-v1.0.0", "patch")],
     )
     monkeypatch.setattr(version, "_latest_tag_for_prefix", lambda *_a, **_k: "quiet-v2.0.0")
 

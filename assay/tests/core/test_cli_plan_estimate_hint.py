@@ -54,7 +54,11 @@ operators = ["python:compare-swap"]
 
 def _plan(toml: Path) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
-    code = main(["plan", "package", "--file", str(toml)], stdout=out, stderr=err)
+    code = main(
+        ["plan", "package", "--json", "--file", str(toml)],
+        stdout=out,
+        stderr=err,
+    )
     return code, out.getvalue(), err.getvalue()
 
 
@@ -87,9 +91,22 @@ def test_the_hint_names_the_analyze_subcommand_and_the_placeholder():
     assert "\n" not in PLAN_ESTIMATE_HINT
 
 
+def test_plan_is_human_readable_by_default_and_json_is_opt_in(git_repo: GitRepo):
+    toml = _seed(git_repo)
+    out, err = io.StringIO(), io.StringIO()
+    code = main(["plan", "package", "--file", str(toml)], stdout=out, stderr=err)
+    assert code == 0
+    assert out.getvalue().startswith("Mutation plan for package\nStatus: ok\n")
+    assert "Candidates: 1 / 10 maximum" in out.getvalue()
+    assert not out.getvalue().startswith("{")
+    assert err.getvalue() == PLAN_ESTIMATE_HINT + "\n"
+
+
 def test_without_an_error_stream_no_hint_is_printed(git_repo: GitRepo):
     toml = _seed(git_repo)
     out = io.StringIO()
-    args = cli.build_parser().parse_args(["plan", "package", "--file", str(toml)])
+    args = cli.build_parser().parse_args(
+        ["plan", "package", "--json", "--file", str(toml)]
+    )
     assert cli._cmd_plan(args, out) == 0
     assert json.loads(out.getvalue())["status"] == "ok"

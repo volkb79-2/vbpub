@@ -164,7 +164,9 @@ def test_resume_restores_config_from_manifest_and_records_success(tmp_path):
     store = StateStore(config.state_dir)
     store.save_new(StateStore.new(config))
     installer.resume()
-    # LT-APT: the apt timers are released as the very last stage2 step.
-    assert installer.actions.planned[-1].description == "enable apt timers (install finished)"
-    assert installer.actions.planned[-2].description == "write /etc/fstab"
+    # LT-APT: timers are released after install work; the durable replay marker
+    # is the final host write before the completed state is recorded.
+    assert installer.actions.planned[-1].description == "write /var/lib/vbpub/install-v2-complete"
+    assert installer.actions.planned[-2].description == "enable apt timers (install finished)"
+    assert installer.actions.planned[-3].description == "write /etc/fstab"
     assert any(action.description == f"enable {installer._partition_base}{installer.root_number + 4}" for action in installer.actions.planned)

@@ -530,6 +530,11 @@ def _job():
 def _record(job, *, judge: str, **overrides) -> dict:
     import hashlib
 
+    default_process_tree_leader = (
+        "timeout-killed"
+        if overrides.get("outcome_bucket") in {"hung", "budget_exceeded"}
+        else "exited"
+    )
     payload = {
         "schema_version": mutation.MUTATION_STATE_SCHEMA_VERSION,
         "candidate_id": mutation.candidate_id(job),
@@ -540,6 +545,15 @@ def _record(job, *, judge: str, **overrides) -> dict:
         "judge_sha256": judge,
         "outcome_bucket": "survived",
         "resource_limit_evidence": zero_resource_limit_evidence_dict(),
+        "process_tree_evidence": {
+            "protocol": "assay-process-tree/1",
+            "leader_status": default_process_tree_leader,
+            "group_signalled_before_reap": False,
+            "outliving_descendants": 0,
+            "descendants_signalled": 0,
+            "cleanup_seconds": 0.001,
+            "clean": True,
+        },
     }
     payload.update(overrides)
     if "terminal_result" not in overrides:
@@ -1138,6 +1152,59 @@ def test_forced_crash_cannot_be_relabelled_as_killed(tmp_path: Path):
     ) is mutation._RECORD_REJECTED
 
 
+def test_timeout_cleanup_descendants_keep_hung_classification():
+    from assay.process_tree import ProcessTreeEvidence
+    from assay.verify import _check_b162_process_tree_evidence
+
+    job = _job()
+    evidence = ProcessTreeEvidence(
+        leader_status="timeout-killed",
+        group_signalled_before_reap=True,
+        outliving_descendants=2,
+        descendants_signalled=2,
+        cleanup_seconds=0.01,
+        clean=True,
+    )
+    payload = _record(
+        job,
+        judge="j" * 64,
+        outcome_bucket="hung",
+        process_tree_evidence=evidence.to_dict(),
+    )
+
+    assert mutation._terminal_result_matches_bucket(
+        payload, process_tree_evidence=evidence
+    )
+    failures: list[str] = []
+    _check_b162_process_tree_evidence(
+        "hung", {"process_tree_evidence": evidence.to_dict()}, failures
+    )
+    assert failures == []
+
+
+def test_normal_exit_with_descendants_cannot_be_a_functional_kill():
+    from assay.process_tree import ProcessTreeEvidence
+
+    job = _job()
+    evidence = ProcessTreeEvidence(
+        leader_status="exited",
+        group_signalled_before_reap=False,
+        outliving_descendants=1,
+        descendants_signalled=1,
+        cleanup_seconds=0.01,
+        clean=True,
+    )
+    payload = _record(
+        job,
+        judge="j" * 64,
+        outcome_bucket="killed",
+        process_tree_evidence=evidence.to_dict(),
+    )
+    assert not mutation._terminal_result_matches_bucket(
+        payload, process_tree_evidence=evidence
+    )
+
+
 @pytest.mark.parametrize(
     "terminal_result",
     [
@@ -1254,8 +1321,8 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
         mutation._load_validated_state_record(root, job, judge="n" * 64)
 
 
-def test_b118_and_rg89_advance_the_judge_identity_label_for_resource_evidence():
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/9"
+def test_b155_advances_judge_identity_for_event_scope_attribution():
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/12"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):
@@ -1639,7 +1706,7 @@ def test_b145_worker_capability_guard_reexecutes_a_pre_fix_kill(
     """A worker-capability guard repair cold-starts earlier B145 results.
 
     Generate a realistic persisted `killed` record using the former `/6`
-    identity, then resume the unchanged lane under `/9`. This models builds
+    identity, then resume the unchanged lane under `/10`. This models builds
     whose Assay version string is unchanged; the judge label alone must reject
     a zero-delta kill that may have come from an unguarded worker.
     """
@@ -1662,7 +1729,7 @@ def test_b145_worker_capability_guard_reexecutes_a_pre_fix_kill(
     old_record = _records(state_dir)[0]
     assert old_record["resource_limit_evidence"] == zero_resource_limit_evidence_dict()
 
-    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/9")
+    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/12")
     second = _run(git_repo, state_dir, tmp_path / "second.jsonl")
 
     assert _resumed(second) == 0

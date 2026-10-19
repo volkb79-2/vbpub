@@ -567,7 +567,7 @@ or when adding new domains.
 |---|---|---|
 | `traefik.enable=true` | yes | Opt this container into Traefik routing |
 | `traefik.http.routers.<n>.rule` | yes | Routing rule, e.g. `Host(...)` |
-| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443) or `websecure-alt` (8443) |
+| `traefik.http.routers.<n>.entrypoints` | yes | `websecure` (443) or `websecure-alt` (default 8443; host override may differ) |
 | `traefik.http.services.<n>.loadbalancer.server.port` | yes | Container port to forward to |
 | `traefik.http.routers.<n>.tls=true` | no | TLS is enabled at the entrypoint level — not needed |
 | `traefik.http.routers.<n>.tls.certresolver` | no | Cert resolver is set at the entrypoint level — not needed |
@@ -576,6 +576,12 @@ or when adding new domains.
 
 `<n>` must be a unique name per router/service **across all containers on the host**.
 Convention: `<stack>-<service>`.
+
+Raw TCP/UDP media forwarding is a separate optional feature; HTTP router labels
+do not carry it. For Mattermost Calls, public TCP and UDP 8443 are routed by
+the L4 labels in the Mattermost CIU template. See
+[`docs/CONSUMERS.md`](docs/CONSUMERS.md) for the port mapping and firewall
+requirements.
 
 ---
 

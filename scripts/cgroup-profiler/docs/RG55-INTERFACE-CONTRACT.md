@@ -16,21 +16,31 @@ nullability note for `peak_over_baseline_bytes`, `§7` new subsection).
 two carriers (§8.1), `watch` (§8.2), placement (§8.3), liveness + policy
 (§8.4), `host.gates_slice` (§8.5), `version.transports` (§8.6), Summary
 `liveness`/`placement`/`watch` (§8.7), new error codes (§8.8). Producers
-implement it in cgprofile 1.1.0 (P6); consumers in run-gate 23.9.0 (P5).
-A v1 consumer talking to a v1.1 producer, and vice versa, keeps working:
+implemented it under the then-planned cgprofile 1.1.0 (P6) and run-gate
+23.9.0 (P5). RW-434/RW-476 later combined these already-merged capabilities
+in cgprofile's first 1.0.0 release. A v1 consumer talking to a v1.1 producer,
+and vice versa, keeps working for this separate daemon control protocol:
 every new field is optional and every new option is opt-in.
 **RW-43 (2026-09-12, §4.3a):** bare-host lanes — `method: "rusage"`,
 `scope: null`, `source: "rusage-maxrss"`, manifest/`meta.expected`
 `source` provenance.
-**RW-484–RW-487 (2026-10-07, §9):** additive contract-1 native-R2 resource
-observer on a second, observer-only Unix socket. Run-Gate opts in per Assay
-lane; Assay uses it only when its local cgroup namespace specifically hides
-ancestors. The control socket and its verbs are unchanged.
+**RW-484–RW-487 (2026-10-07, §9):** native-R2 resource observer on a second,
+observer-only Unix socket. Its initial request contract was 1. Run-Gate opts
+in per Assay lane; Assay uses it only when its local cgroup namespace
+specifically hides ancestors. The control socket and its verbs are unchanged.
+**RW-569 (2026-10-12, §9):** resource-observer contract 2 is the sole
+supported observer version; contract-1 observer requests receive an explicit
+unsupported-contract refusal. The separate daemon control protocol remains
+contract 1. The combined first cgroup-profiler release is 1.0.0.
+**RW-570 (2026-10-14):** the supported Run-Gate consumer is its installed
+SemVer wheel. A copied project-local `run-gate.py` script is not supported;
+compatibility checks use the installed `run-gate --version`.
 
 Parties: **producer** = cgroup-profiler's daemon (`cgprofile serve`) and its
 client verb (`cgprofile ctl`), running inside the container
-`cgprofile-host-daemon`; **consumer** = `run-gate.py` (stdlib-only, docker
-CLI only), invoking `docker exec cgprofile-host-daemon cgprofile ctl <verb>
+`cgprofile-host-daemon`; **consumer** = the installed Run-Gate wheel
+(stdlib-only runtime, docker CLI only), invoking
+`docker exec cgprofile-host-daemon cgprofile ctl <verb>
 [args] --json` from any devcontainer, worktree or instance.
 
 ---
@@ -73,7 +83,7 @@ CLI only), invoking `docker exec cgprofile-host-daemon cgprofile ctl <verb>
 ### 2.1 `cgprofile ctl version --json`
 
 ```json
-{"ok": true, "contract": 1, "cgprofile": "1.1.0",
+{"ok": true, "contract": 1, "cgprofile": "1.0.0",
  "daemon": {"name": "cgprofile-host-daemon", "started_at": "2026-09-12T10:00:00Z",
             "damon": "available", "damon_default": "on",
             "sessions_live": 2, "max_sessions": 16}}
@@ -182,7 +192,7 @@ measurement.
 ```json
 {
  "schema": 1,
- "session": "s-…", "daemon": {"name": "cgprofile-host-daemon", "version": "1.1.0"},
+ "session": "s-…", "daemon": {"name": "cgprofile-host-daemon", "version": "1.0.0"},
  "scope": "container" | "container-shared",
  "method": "daemon",
  "started_at": "…", "ended_at": "…", "duration_seconds": 316.204,
@@ -648,6 +658,12 @@ is not installed — `ctl host` and run-gate `doctor` say "unbounded").
                "allow_uids": [] , "peer_cred": true}}
 ```
 
+The additive `version.resource_observer` object advertises the separate
+native-R2 listener: `{"contract": 2,
+"path": "/run/cgprofile/observer/resource-observer.sock", "listening": true}`.
+This contract number is independent of the control protocol's `contract: 1`;
+`listening` reflects whether the observer socket was bound successfully.
+
 ### 8.7 Summary additions (schema 1, optional keys)
 
 `liveness` (the final §8.4 block), `placement` (the final §8.3 block),
@@ -695,17 +711,20 @@ for completeness).
 ## 9. Native-R2 resource observer (RW-484–RW-487)
 
 The daemon exposes a second AF_UNIX listener at
-`/run/cgprofile/resource-observer.sock`. It is distinct from
+`/run/cgprofile/observer/resource-observer.sock`. It is distinct from
 `/run/cgprofile/ctl.sock`; a read-only bind of the control socket would still
 expose its control verbs. The observer listener belongs to the existing
 cgprofile daemon and performs no placement or cgroup write.
 
 ### 9.1 Request and response
 
-One newline-delimited JSON request per connection:
+One newline-delimited JSON request per connection. The resource observer
+requires contract 2 and returns event-scope metadata and local event counters.
+The separate control listener remains contract 1; observer contract 1 is no
+longer accepted.
 
 ```json
-{"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
+{"verb":"resource-limits","args":{"thread_id":1234},"contract":2}
 ```
 
 The request has exactly the three wire keys shown, exactly one argument
@@ -721,25 +740,48 @@ allowlist, when configured, also applies to this listener.
 Success has this shape (values abbreviated):
 
 ```json
-{"ok":true,"contract":1,"cgroup_version":2,"thread_id":1234,
- "gates_slice":"/dev.slice/dev-gates.slice","cgroups":[
+{"ok":true,"contract":2,"cgroup_version":2,"thread_id":1234,
+ "gates_slice":"/dev.slice/dev-gates.slice",
+ "pids_events_scope":"hierarchical","memory_events_scope":"hierarchical",
+ "cgroups":[
   {"path":"/dev.slice/dev-gates.slice/rg-abc","mount_id":42,
    "pids_max_present":true,"pids_max":null,
    "memory_max_present":true,"memory_max":1073741824,
    "pids_events":{"max":0},
-   "memory_events":{"max":0,"oom":0,"oom_kill":0,"oom_group_kill":0}}
+   "memory_events":{"max":0,"oom":0,"oom_kill":0,"oom_group_kill":0},
+   "pids_events_local":{"max":0},
+   "memory_events_local":{"max":0,"oom":0,"oom_kill":0,"oom_group_kill":0}}
  ]}
 ```
+
+`pids_events_scope` is always `hierarchical` in a successful response. The
+observer refuses contract 2 when `pids_localevents` is enabled: in that mode
+the pids event records a failed fork in the cgroup where the process attempted
+it, including failures caused by an ancestor's limit, and cannot identify which
+`pids.max` enforced the failure. `memory_events_scope` is `hierarchical` or
+`local`, derived from the verified mount options. The `.local` maps are always
+local, regardless of those options. When a local memory file is unavailable
+but the regular memory file is local under the verified mount mode, that
+regular file supplies equivalent local evidence. If `memory_localevents` is
+active and the candidate has a memory event file, the observer refuses contract
+2 when the candidate has child cgroups, since its local file then cannot prove
+the whole candidate subtree.
 
 `cgroups` is ordered from the peer's leaf through every ancestor to `/`.
 Each entry carries the canonical hierarchy path, selected mount ID, limit
 presence/value pairs, and event maps (or `null` when the controller exposes
 no such event file). An absent limit is `present:false,value:null`; an
 unlimited limit is `present:true,value:null`. A finite limit requires its
-matching event file. The response contains no PID/TID list, process listing,
-caller-selected path, or sibling cgroup data. A refusal uses the ordinary
-contract-1 error object, with `bad-argument`, `peer-refused`,
-`observer-refused`, or `daemon-error` as applicable.
+matching regular event file and effective local event evidence: the `.local` file or, when the
+regular file is already local under the mount mode, that regular file.
+The response contains no PID/TID list, process listing, caller-selected path,
+or sibling cgroup data. Once a valid request envelope is dispatched, an error
+object uses observer contract 2, including when a request uses an unsupported
+version or is malformed, with `bad-argument`, `peer-refused`,
+`observer-refused`, or `daemon-error` as applicable. Peer-policy refusals that
+occur before the request is read, and transport/framing errors before a valid
+envelope is available, also use observer contract 2. Contract-1 observer
+clients must upgrade; the separate control protocol remains contract 1.
 
 ### 9.2 Peer binding and path derivation
 
@@ -772,16 +814,19 @@ outside the gates slice refuses the query.
 ### 9.3 Consumer rules
 
 Run-Gate's closed `resource_observer = "cgprofile"` lane key is legal only
-for an Assay lane or command lane in `tester-unified`. The explicit lane
+for an Assay lane or command lane in an ephemeral environment. The explicit lane
 declaration is the opt-in; command wrappers that launch Assay R2 preserve the
 inherited endpoint variable for that process. The observer remains a
-read-only query bound to the command's own peer. Before launch Run-Gate verifies the fixed host
-socket's type and ownership/mode relationship to its root-owned parent;
-missing or unsafe state is an infrastructure refusal. It mounts only the
-observer socket read-only into the test container, adds the observed socket
-GID, and sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. It
-does not mount `ctl.sock`, change PID/cgroup/network namespaces, or add a
-Docker socket.
+read-only query bound to the command's own peer. Before launch Run-Gate
+validates the root-owned, non-writable `/run/cgprofile/observer` directory
+and its socket. Host setup provisions that directory as mode `0751` with the
+dedicated `cgprofile-observer` group; it is separate from the Docker group.
+Run-Gate mounts the directory read-only into the test container, so the socket
+path resolves again after daemon restart. It grants that dedicated GID and
+sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container path. Observer-backed
+lanes declare per-container memory and PID ceilings and refuse arbitrary extra
+mounts. They do not mount `ctl.sock`, change PID/cgroup/network namespaces, or
+add a Docker socket.
 
 Assay first attempts its existing local B145 reader. It uses the configured
 observer only when the local reader specifically proves that the private
@@ -789,8 +834,10 @@ cgroup namespace hides ancestors. Other local failures do not fall through.
 The daemon accepts only a peer whose derived leaf is a descendant of the
 configured gates slice. It returns that peer's complete canonical ancestry
 through `/`, with per-path resource limits and event counters; it exposes no
-descendant or sibling cgroups. Per-path samples are compared around each candidate;
-a shared-ancestor delta without the same candidate-leaf delta aborts the lane
-before assigning a candidate bucket. Any endpoint, identity, path, mount,
-counter, or attribution uncertainty remains `ERROR/EXEC_FAILED`, never a
-kill or survivor.
+descendant or sibling cgroups. Assay compares the candidate's regular event
+counters and each ancestor's local counters around the candidate. A
+hierarchical-only ancestor change can come from a sibling and does not block
+the candidate; a positive ancestor-local change without a candidate event is
+ambiguous and aborts the lane before assigning a candidate bucket. Any
+endpoint, identity, path, mount, counter, or attribution uncertainty remains
+`ERROR/EXEC_FAILED`, never a kill or survivor.

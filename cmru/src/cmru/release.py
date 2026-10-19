@@ -32,7 +32,11 @@ from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import Request, urlopen
 
+from cmru.release_notes import ReleaseNotes, compose_release_body
+
 API_BASE = "https://api.github.com"
+
+_FULL_SHA = re.compile(r"[0-9a-f]{40}")
 
 
 # ─── version helpers ─────────────────────────────────────────────────────────
@@ -288,6 +292,134 @@ class GitHubReleases:
             self.upload_asset(str(upload_url), asset, asset.name)
         return release
 
+    def publish_release_body(
+        self, tag: str, title: str, notes: str, *, tag_commit: str,
+    ) -> Dict[str, Any]:
+        """Create or refresh ONLY the title and body of ``tag``'s GitHub Release.
+
+        For a release with no CMRU-uploaded asset (an OCI image project: the
+        image was pushed to its registry by the project's own step). ``tag``
+        must already exist on the remote at exactly ``tag_commit``: CMRU pushes
+        the release tag before its push step, and this method never creates or
+        moves a Git ref itself. Every PRE-write refusal happens before any
+        release mutation (post-write findings are described below); the only
+        writes are one create (a missing release, bound to
+        ``tag`` and ``tag_commit``) or one metadata PATCH (name and body). No
+        asset is listed, deleted or uploaded, so a retry can never disturb an
+        existing asset, whatever its name.
+
+        What is and is not guaranteed. An EXISTING release is re-fetched and its
+        exact ID, tag identity and remote tag target are re-verified immediately
+        before the PATCH, so a change detected there refuses with no mutation.
+        GitHub offers no conditional update and no way to make the tag check
+        atomic with a release CREATE, so for a create (and for a PATCH racing a
+        change in that last instant) the only protection is the read-back after
+        the write. A tag or release change found there is reported, but the
+        write is NOT undone: the release may be left in place with the new body
+        and must be inspected before any retry. Nothing here rolls anything back.
+        """
+        if not isinstance(tag_commit, str) or not _FULL_SHA.fullmatch(tag_commit):
+            _die(
+                f"refusing to publish GitHub Release {tag}: no valid 40-hex "
+                "release commit was supplied"
+            )
+        remote_commit = self.get_tag_commit(tag)
+        if remote_commit is None:
+            _die(
+                f"refusing to publish GitHub Release {tag}: the remote has no such tag. "
+                "`cmru release` pushes the release tag before its push step runs; "
+                "this publisher never creates a tag itself"
+            )
+        if remote_commit != tag_commit:
+            _die(
+                f"refusing to publish GitHub Release {tag}: the remote tag points at "
+                f"{remote_commit}, not the release commit {tag_commit}"
+            )
+        existing = self.get_release_by_tag(tag)
+        if existing is None:
+            created = self.create_release(tag, title, notes, target_commitish=tag_commit)
+            release_id = self._release_record_id(tag, created, written=True)
+            release = created
+            recheck_release = False  # a just-created release may not be readable by tag yet
+        else:
+            release_id = self._release_record_id(tag, existing)
+            target = existing.get("target_commitish")
+            if isinstance(target, str) and _FULL_SHA.fullmatch(target) and target != tag_commit:
+                _die(
+                    f"refusing to update GitHub Release {tag}: it targets commit "
+                    f"{target}, not the release commit {tag_commit}"
+                )
+            # Re-fetch and verify the exact captured release ID, tag identity and
+            # remote tag target IMMEDIATELY before the only mutation. A change
+            # found here refuses with no PATCH sent.
+            self._verified_existing_release(tag, release_id, tag_commit)
+            release = self.update_release(release_id, title, notes)
+            recheck_release = True
+        self._verify_after_write(tag, release_id, tag_commit, recheck_release=recheck_release)
+        return release
+
+    def _verify_after_write(
+        self, tag: str, release_id: int, tag_commit: str, *, recheck_release: bool,
+    ) -> None:
+        """Read the release identity and tag back AFTER the write; report, never undo.
+
+        A failure here means the release already carries the new body. The error
+        says so, and that nothing was rolled back, so an operator inspects the
+        release before retrying instead of assuming the run changed nothing.
+        """
+        problem = None
+        try:
+            if recheck_release:
+                after = self.get_release_by_tag(tag)
+                if not isinstance(after, dict):
+                    problem = "the release can no longer be read back by its tag"
+                elif after.get("id") != release_id or type(after.get("id")) is not int:
+                    problem = (
+                        f"its release ID is now {after.get('id')!r}, not {release_id}"
+                    )
+                elif after.get("tag_name") != tag:
+                    problem = f"it now reports tag {after.get('tag_name')!r}"
+            if problem is None:
+                final_commit = self.get_tag_commit(tag)
+                if final_commit != tag_commit:
+                    problem = (
+                        f"the remote tag now points at {final_commit!r}, "
+                        f"not the release commit {tag_commit}"
+                    )
+        except SystemExit:
+            print(
+                f"[ERROR] GitHub Release {tag} WAS WRITTEN before this read-back failed; "
+                "nothing was rolled back. Inspect the release and the tag before any retry",
+                file=sys.stderr,
+            )
+            raise
+        if problem is not None:
+            _die(
+                f"GitHub Release {tag} was written, but {problem}. The write was NOT "
+                "rolled back and the release may carry the new body: inspect the release "
+                "and the tag before any retry"
+            )
+
+    def _release_record_id(self, tag: str, release: Any, *, written: bool = False) -> int:
+        """The positive integer ID of a release record that carries ``tag`` exactly.
+
+        ``written`` marks a record returned by a create that already happened, so a
+        malformed answer is reported as a release that exists, not as a refusal.
+        """
+        lead = (
+            f"GitHub Release {tag} was written (not rolled back; inspect it before any "
+            "retry), but"
+            if written else f"refusing to publish GitHub Release {tag}:"
+        )
+        if not isinstance(release, dict):
+            _die(f"{lead} the returned record is malformed")
+        release_id = release.get("id")
+        if type(release_id) is not int or release_id <= 0:
+            _die(f"{lead} the returned release ID is malformed")
+        if release.get("tag_name") != tag:
+            _die(f"{lead} the returned record is for tag {release.get('tag_name')!r}")
+        return release_id
+
     def asset_download_url(self, tag: str, asset_name: str) -> str:
         return f"https://github.com/{self.owner}/{self.repo}/releases/download/{tag}/{asset_name}"
 
@@ -317,6 +449,119 @@ class GitHubReleases:
         }
 
 
+# ─── release body (KI-75) ────────────────────────────────────────────────────
+def _resolve_pointer_text(prefix: str) -> str:
+    return (
+        f"Resolve latest programmatically by scanning `{prefix}-v*` releases "
+        f"(highest semver); see cmru docs/SPEC.md S5."
+    )
+
+
+def build_release_body(
+    prefix: str, version: str, *, artifact_name: str, sha256: str,
+    notes: Optional[str] = None, release_notes: Optional[ReleaseNotes] = None,
+) -> str:
+    """The GitHub Release body of a single-artifact release.
+
+    The publisher and ``cmru release --dry-run`` both call this function, so a
+    preview shows exactly what is published. ``notes`` is the operator's
+    supplementary opening text (``--notes-env``); ``release_notes`` is the
+    project's curated section for ``version`` and always comes last.
+    """
+    generated = (
+        f"\n\n**Artifact:** `{artifact_name}`\n"
+        f"**SHA256:** `{sha256}`\n\n"
+        f"Verify: `sha256sum -c {artifact_name}.sha256`\n\n"
+        f"{_resolve_pointer_text(prefix)}"
+    )
+    return compose_release_body(notes or f"{prefix} {version}", generated, release_notes)
+
+
+# A registry host (optionally with a port) or one repository path component,
+# per the OCI distribution name grammar (lower-case path components).
+_IMAGE_HOST = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?::[0-9]{1,5})?")
+_IMAGE_PATH_PART = re.compile(r"[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*")
+_IMAGE_TAG = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+
+
+def validate_oci_image_repository(image: str) -> str:
+    """``image`` unchanged if it is a valid ``<registry>/<repository>`` reference.
+
+    The reference carries NO tag and NO digest (a pushed image gets its tag from
+    the release version, never from configuration). Raises ``ValueError`` naming
+    the problem. The publisher, the release-plan validator and the dry-run
+    preview all call this, so none can accept a reference another refuses.
+    """
+    if not isinstance(image, str) or not image or image != image.strip():
+        raise ValueError("--image must be a non-empty repository reference")
+    if "@" in image:
+        raise ValueError(
+            f"--image {image!r} carries a digest; pass the repository only "
+            "(<registry>/<repository>)"
+        )
+    parts = image.split("/")
+    if len(parts) < 2 or not all(parts):
+        raise ValueError(
+            f"--image {image!r} must be <registry>/<repository> with no empty path component"
+        )
+    if ":" in parts[-1]:
+        raise ValueError(
+            f"--image {image!r} carries a tag; pass the repository only, the tag is "
+            "derived from the release version"
+        )
+    if not _IMAGE_HOST.fullmatch(parts[0]) or not all(
+        _IMAGE_PATH_PART.fullmatch(part) for part in parts[1:]
+    ):
+        raise ValueError(f"--image {image!r} is not a valid <registry>/<repository> reference")
+    return image
+
+
+def oci_image_reference(image: str, version: str) -> str:
+    """The exact ``<registry>/<repository>:<version>`` coordinate of a release.
+
+    Raises ``ValueError`` naming the problem; both the publisher and the dry-run
+    preview call this through :func:`build_oci_image_release_body`, so neither
+    can accept a reference the other refuses.
+    """
+    validate_oci_image_repository(image)
+    if not _IMAGE_TAG.fullmatch(version):
+        raise ValueError(f"release version {version!r} is not a valid image tag")
+    return f"{image}:{version}"
+
+
+def build_oci_image_release_body(
+    image: str, version: str, *, release_notes: Optional[ReleaseNotes] = None,
+) -> str:
+    """The GitHub Release body of an image-only release (KI-78).
+
+    There is no uploaded artifact, so there is no artifact name or SHA256: the
+    body opens with the exact versioned image coordinate and its pull command,
+    then ends with the project's curated section for ``version`` (the tagged
+    changelog section; see :func:`cmru.release_notes.compose_release_body`).
+    ``oci-image-release`` and ``cmru release --dry-run`` both call this
+    function, so a preview shows exactly what is published.
+    """
+    reference = oci_image_reference(image, version)
+    return compose_release_body(
+        f"**Image:** `{reference}`", f"\n\nPull: `docker pull {reference}`", release_notes,
+    )
+
+
+def build_variants_release_body(
+    prefix: str, version: str, *, records: Sequence[Dict[str, Any]],
+    notes: Optional[str] = None, release_notes: Optional[ReleaseNotes] = None,
+) -> str:
+    """The GitHub Release body of a multi-variant release (same contract as above)."""
+    variant_lines = "\n".join(f"- `{r['asset']}` — `{r['sha256']}`" for r in records)
+    generated = (
+        f"\n\n**Variants** ({len(records)}), one asset each under this tag "
+        f"(select at install time with `--variant <name>`):\n{variant_lines}\n\n"
+        f"Verify: `sha256sum -c <asset>.sha256`\n\n"
+        f"{_resolve_pointer_text(prefix)}"
+    )
+    return compose_release_body(notes or f"{prefix} {version}", generated, release_notes)
+
+
 # ─── high-level publish entrypoint ───────────────────────────────────────────
 def publish_versioned(
     gh: GitHubReleases,
@@ -331,8 +576,12 @@ def publish_versioned(
     require_existing_targets: bool = False,
     latest_pointer_recreate: bool = True,
     expected_tag_commit: Optional[str] = None,
+    release_notes: Optional[ReleaseNotes] = None,
 ) -> Dict[str, Any]:
     """Publish ``asset_path`` for ``version`` under the uniform scheme.
+
+    ``release_notes`` is the project's curated section for ``version`` (KI-75);
+    it follows the generated install/artifact block in the release body.
 
     * Always writes + uploads a ``<asset>.sha256`` sidecar and records the digest in
       the release notes (reproducibility baseline).
@@ -432,12 +681,9 @@ def publish_versioned(
 
     if released:
         assert release_tag is not None
-        body = (notes or f"{prefix} {version}") + (
-            f"\n\n**Artifact:** `{asset_path.name}`\n"
-            f"**SHA256:** `{digest}`\n\n"
-            f"Verify: `sha256sum -c {asset_path.name}.sha256`\n\n"
-            f"Resolve latest programmatically by scanning `{prefix}-v*` releases "
-            f"(highest semver); see cmru docs/SPEC.md S5."
+        body = build_release_body(
+            prefix, version, artifact_name=asset_path.name, sha256=digest,
+            notes=notes, release_notes=release_notes,
         )
         publish_assets(release_tag, release_tag, body, [asset_path, sidecar, *extras])
         result["release_tag"] = release_tag
@@ -535,6 +781,7 @@ def publish_versioned_variants(
     notes: Optional[str] = None,
     latest_pointer: bool = True,
     target_commitish: Optional[str] = None,
+    release_notes: Optional[ReleaseNotes] = None,
 ) -> Dict[str, Any]:
     """Publish N per-interpreter variants under ONE ``<prefix>-v<version>`` release.
 
@@ -578,15 +825,8 @@ def publish_versioned_variants(
     result: Dict[str, Any] = {"version": version, "release_tag": None, "variants": records}
 
     if released:
-        variant_lines = "\n".join(
-            f"- `{r['asset']}` — `{r['sha256']}`" for r in records
-        )
-        body = (notes or f"{prefix} {version}") + (
-            f"\n\n**Variants** ({len(records)}), one asset each under this tag "
-            f"(select at install time with `--variant <name>`):\n{variant_lines}\n\n"
-            f"Verify: `sha256sum -c <asset>.sha256`\n\n"
-            f"Resolve latest programmatically by scanning `{prefix}-v*` releases "
-            f"(highest semver); see cmru docs/SPEC.md S5."
+        body = build_variants_release_body(
+            prefix, version, records=records, notes=notes, release_notes=release_notes,
         )
         gh.publish(release_tag, release_tag, body, assets, target_commitish=target_commitish)
         result["release_tag"] = release_tag

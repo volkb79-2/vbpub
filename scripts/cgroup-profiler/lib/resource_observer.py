@@ -30,6 +30,7 @@ _PIDS_EVENTS = frozenset({"max"})
 _MEMORY_EVENTS = frozenset({"max", "oom", "oom_kill", "oom_group_kill"})
 _CAPS_THAT_CAN_BYPASS_CGROUP_DAC = sum(1 << bit for bit in (0, 1, 3, 6, 7, 21))
 _PEER_SNAPSHOT_ATTEMPTS = 3
+RESOURCE_OBSERVER_CONTRACT_VERSION = 2
 
 
 def observe_peer_cgroup(
@@ -41,6 +42,7 @@ def observe_peer_cgroup(
     cgroup_root: str,
     mountinfo_path: str,
     gates_slice_name: str,
+    contract: int,
 ) -> dict[str, Any]:
     """Return counters for the authenticated peer's cgroup and ancestors.
 
@@ -53,6 +55,8 @@ def observe_peer_cgroup(
         raise ResourceObserverError("thread_id must be a positive native TID")
     if peer_uid is None or type(peer_uid) is not int or peer_uid < 0:
         raise ResourceObserverError("SO_PEERCRED did not provide a valid peer UID")
+    if type(contract) is not int or contract != RESOURCE_OBSERVER_CONTRACT_VERSION:
+        raise ResourceObserverError("resource observer contract must be 2")
 
     peer = _resolve_peer(peer_pid, peer_uid, thread_id, proc_root)
     gates_path = PurePosixPath(targets.slice_to_path(gates_slice_name))
@@ -60,7 +64,17 @@ def observe_peer_cgroup(
     if not root.is_absolute():
         raise ResourceObserverError("configured cgroup root is not absolute")
     root = Path(os.path.normpath(str(root)))
-    mount_id, namespace_parent_levels = _cgroup_mount(root, Path(mountinfo_path))
+    (
+        mount_id,
+        namespace_parent_levels,
+        pids_localevents,
+        memory_localevents,
+    ) = _cgroup_mount(root, Path(mountinfo_path))
+    if pids_localevents:
+        raise ResourceObserverError(
+            "pids_localevents cannot identify which cgroup's pids.max rejected a fork; "
+            "native R2 attribution requires hierarchical pids.events and pids.events.local"
+        )
     leaf_path = _host_cgroup_path(peer["cgroup"], namespace_parent_levels)
     if leaf_path == gates_path or not leaf_path.is_relative_to(gates_path):
         raise ResourceObserverError("peer cgroup is not a descendant of the configured gates slice")
@@ -73,7 +87,16 @@ def observe_peer_cgroup(
     current = leaf_path
     while True:
         directory = root.joinpath(*current.parts[1:])
-        entries.append(_read_cgroup_entry(current, directory, mount_id, peer["tasks"]))
+        entry = _read_cgroup_entry(
+            current,
+            directory,
+            mount_id,
+            peer["tasks"],
+            memory_localevents=memory_localevents,
+        )
+        if current == leaf_path and memory_localevents and entry["memory_events"] is not None:
+            _require_no_candidate_subgroups(directory, leaf_path)
+        entries.append(entry)
         if current == PurePosixPath("/"):
             break
         current = current.parent
@@ -82,12 +105,15 @@ def observe_peer_cgroup(
     if after["cgroup"] != peer["cgroup"] or after["start_ticks"] != peer["start_ticks"]:
         raise ResourceObserverError("peer process or cgroup identity changed during observation")
 
-    return {
+    result = {
         "cgroup_version": 2,
         "thread_id": thread_id,
         "gates_slice": str(gates_path),
         "cgroups": entries,
+        "pids_events_scope": "hierarchical",
+        "memory_events_scope": "local" if memory_localevents else "hierarchical",
     }
+    return result
 
 
 def _resolve_peer(peer_pid: int, peer_uid: int, thread_id: int, proc_root: str) -> dict[str, Any]:
@@ -257,12 +283,14 @@ def _read_status(path: Path) -> dict[str, Any]:
     return values
 
 
-def _cgroup_mount(cgroup_root: Path, mountinfo_path: Path) -> tuple[int, int]:
+def _cgroup_mount(
+    cgroup_root: Path, mountinfo_path: Path
+) -> tuple[int, int, bool, bool]:
     try:
         lines = mountinfo_path.read_text(encoding="ascii").splitlines()
     except (OSError, UnicodeError) as exc:
         raise ResourceObserverError("cannot inspect daemon cgroup mount identity") from exc
-    matches: list[tuple[int, int]] = []
+    matches: list[tuple[int, int, bool, bool]] = []
     nested_mounts: list[str] = []
     for line in lines:
         left, separator, right = line.partition(" - ")
@@ -270,7 +298,7 @@ def _cgroup_mount(cgroup_root: Path, mountinfo_path: Path) -> tuple[int, int]:
             raise ResourceObserverError("daemon mountinfo contains a malformed record")
         fields = left.split()
         filesystem = right.split()
-        if len(fields) < 6 or not filesystem:
+        if len(fields) < 6 or len(filesystem) < 3:
             raise ResourceObserverError("daemon mountinfo contains a truncated record")
         mountpoint = _unescape_mountinfo(fields[4])
         normalized_mountpoint = os.path.normpath(mountpoint)
@@ -297,7 +325,13 @@ def _cgroup_mount(cgroup_root: Path, mountinfo_path: Path) -> tuple[int, int]:
             raise ResourceObserverError("daemon cgroup mount ID is malformed") from exc
         if mount_id <= 0:
             raise ResourceObserverError("daemon cgroup mount ID is invalid")
-        matches.append((mount_id, parent_levels))
+        super_options = set(filesystem[2].split(","))
+        matches.append((
+            mount_id,
+            parent_levels,
+            "pids_localevents" in super_options,
+            "memory_localevents" in super_options,
+        ))
     if nested_mounts:
         raise ResourceObserverError(
             "nested mount(s) can shadow cgroup ancestry: "
@@ -348,6 +382,8 @@ def _read_cgroup_entry(
     directory: Path,
     mount_id: int,
     tasks: list[dict[str, Any]],
+    *,
+    memory_localevents: bool = False,
 ) -> dict[str, Any]:
     try:
         metadata = directory.lstat()
@@ -360,10 +396,30 @@ def _read_cgroup_entry(
     memory_limit_present, memory_max = _read_limit(directory / "memory.max")
     pids_events = _read_events(directory / "pids.events", _PIDS_EVENTS)
     memory_events = _read_events(directory / "memory.events", _MEMORY_EVENTS)
+    pids_events_local = _read_events(directory / "pids.events.local", _PIDS_EVENTS)
+    memory_events_local = _read_events(
+        directory / "memory.events.local", _MEMORY_EVENTS
+    )
     if pids_limit_present and pids_events is None:
         raise ResourceObserverError(f"{cgroup_path} pids.max is present but pids.events is unavailable")
     if memory_limit_present and memory_events is None:
         raise ResourceObserverError(f"{cgroup_path} memory.max is present but memory.events is unavailable")
+    pids_events_local = _effective_local_events(
+        pids_events,
+        pids_events_local,
+        regular_is_local=False,
+        required=_PIDS_EVENTS,
+        controller="pids",
+        cgroup_path=cgroup_path,
+    )
+    memory_events_local = _effective_local_events(
+        memory_events,
+        memory_events_local,
+        regular_is_local=memory_localevents,
+        required=_MEMORY_EVENTS,
+        controller="memory",
+        cgroup_path=cgroup_path,
+    )
 
     procs = directory / "cgroup.procs"
     try:
@@ -382,7 +438,7 @@ def _read_cgroup_entry(
                 f"peer credentials can write cgroup.procs at {cgroup_path} and migrate into an unsampled cgroup"
             )
 
-    return {
+    result = {
         "path": str(cgroup_path),
         "mount_id": mount_id,
         "pids_max_present": pids_limit_present,
@@ -391,7 +447,25 @@ def _read_cgroup_entry(
         "memory_max": memory_max,
         "pids_events": pids_events,
         "memory_events": memory_events,
+        "pids_events_local": pids_events_local,
+        "memory_events_local": memory_events_local,
     }
+    return result
+
+
+def _require_no_candidate_subgroups(directory: Path, cgroup_path: PurePosixPath) -> None:
+    """memory_localevents is sufficient evidence only for a leaf candidate."""
+    try:
+        with os.scandir(directory) as entries:
+            has_child = any(entry.is_dir(follow_symlinks=False) for entry in entries)
+    except OSError as exc:
+        raise ResourceObserverError(
+            f"cannot prove localevents candidate {cgroup_path} has no child cgroups"
+        ) from exc
+    if has_child:
+        raise ResourceObserverError(
+            f"localevents expose local events, but candidate {cgroup_path} has child cgroups"
+        )
 
 
 def _read_limit(path: Path) -> tuple[bool, int | None]:
@@ -430,6 +504,33 @@ def _read_events(path: Path, required: frozenset[str]) -> dict[str, int] | None:
     if not required.issubset(values):
         raise ResourceObserverError(f"{path.name} omits required event counters")
     return {name: values[name] for name in required}
+
+
+def _effective_local_events(
+    regular: dict[str, int] | None,
+    local: dict[str, int] | None,
+    *,
+    regular_is_local: bool,
+    required: frozenset[str],
+    controller: str,
+    cgroup_path: PurePosixPath,
+) -> dict[str, int] | None:
+    """Return local counters, using an explicitly verified local source."""
+    if regular is None:
+        if local is not None:
+            raise ResourceObserverError(
+                f"{cgroup_path} {controller}.events.local is present without its regular event file"
+            )
+        return None
+    if local is None:
+        if regular_is_local:
+            return {key: regular[key] for key in required}
+        raise ResourceObserverError(f"{cgroup_path} {controller}.events.local is unavailable")
+    if regular_is_local:
+        # Both interfaces are local under this mount option. The maximum keeps
+        # an increment between sequential reads from disappearing in the sample.
+        return {key: max(regular[key], local[key]) for key in required}
+    return {key: local[key] for key in required}
 
 
 def _has_access_acl(path: Path) -> bool:

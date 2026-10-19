@@ -82,6 +82,7 @@ from . import (
     liveness,
     measurability,
     mutation,
+    process_tree,
     provenance,
     registry,
     resource_limits,
@@ -293,7 +294,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--pilot-jobs",
         default=None,
         metavar="N",
-        help="pilot-only worker override (1..8); requires --candidates-file",
+        help="pilot-only worker override (must be 1 for native R2); requires --candidates-file",
     )
     run.add_argument(
         "--file",
@@ -329,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "for snapshot lanes only, admit unignored dirty paths and record "
-            "them in the v15 verdict; project isolation.dirty_ignore paths "
+            "them in the v16 verdict; project isolation.dirty_ignore paths "
             "are recorded separately. R0 lanes remain strict. This flag is "
             "independent of run-gate's own --allow-dirty policy."
         ),
@@ -343,7 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERDICT",
         help=(
             "reuse only current pytest kill witnesses from a verified complete "
-            "native v15 verdict; v12-v14 start cold, and every uncertain candidate "
+            "native v16 verdict; v12-v15 start cold, and every uncertain candidate "
             "runs fully. Cannot be combined with --shard."
         ),
     )
@@ -387,6 +388,11 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan.add_argument("lane", help="the mutation lane name to inspect")
+    plan.add_argument(
+        "--json",
+        action="store_true",
+        help="emit the full plan as JSON for scripts and machine consumers",
+    )
     plan.add_argument("--operators", default=None)
     plan.add_argument(
         "--cold-witness",
@@ -613,6 +619,20 @@ def main(
     inp = sys.stdin if stdin is None else stdin
     out = sys.stdout if stdout is None else stdout
     err = sys.stderr if stderr is None else stderr
+    if sys.platform.startswith("linux"):
+        try:
+            sigchld_ignored = process_tree._sigchld_is_ignored()
+        except process_tree.ProcessTreeError as exc:
+            err.write(f"assay: cannot verify child exit-status handling: {exc}\n")
+            return 2
+        if sigchld_ignored:
+            if threading.current_thread() is not threading.main_thread():
+                err.write(
+                    "assay: cannot run with SIGCHLD ignored from a non-main thread; "
+                    "subprocess exit status would be unreliable\n"
+                )
+                return 2
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     raw = list(sys.argv[1:] if argv is None else argv)
     # Analysis owns its record-command separator. Lane argv appending belongs
     # to the existing lane commands and must not consume the recorded command.
@@ -741,10 +761,10 @@ def _parse_pilot_jobs(raw: str | None, *, candidates_file: bool) -> int | None:
     if not candidates_file:
         raise LaneConfigError("--pilot-jobs requires --candidates-file")
     if re.fullmatch(r"[0-9]+", raw) is None:
-        raise LaneConfigError("--pilot-jobs must be an integer from 1 through 8")
+        raise LaneConfigError("--pilot-jobs must be 1 for native R2 event attribution")
     normalized = raw.lstrip("0")
-    if normalized not in {"1", "2", "3", "4", "5", "6", "7", "8"}:
-        raise LaneConfigError("--pilot-jobs must be an integer from 1 through 8")
+    if normalized != "1":
+        raise LaneConfigError("--pilot-jobs must be 1 for native R2 event attribution")
     return int(normalized)
 
 
@@ -1416,13 +1436,23 @@ def _build_pilot_summary(
         "candidates": candidates,
         "unresolved": unresolved,
     }
+    if not completed:
+        summary["claim_diagnostics"] = {
+            claim.rigor: {
+                "detail": claim.detail,
+                "detail_dropped_bytes": claim.detail_dropped_bytes,
+            }
+            for claim in verdict.claims
+            if claim.detail is not None
+        }
     if r2_mutation is None:
-        summary["refusal"] = {
+        refusal: dict[str, Any] = {
             "status": verdict.outcome.value,
             "reason_code": (
                 verdict.reason_code.value if verdict.reason_code is not None else None
             ),
         }
+        summary["refusal"] = refusal
     return summary
 
 
@@ -1575,9 +1605,10 @@ def _built_in_registry() -> registry.Registry:
 
     **B087 registers JavaScript at R3 through the existing producer path.**
     Real-Vitest fixture oracles exercise both canary mechanisms. Both current
-    dstdns canaries passed with retained schema-v15 verdicts and verifier
-    transcripts; see ``nyxloom-trove/reports/B087-js-r3-qualification.md`` for
-    scope and limits. This consumer evidence is separate from the integrated
+    dstdns canaries were qualified under Assay 9.0.0/schema v15; their retained
+    verdicts and verifier transcripts document that release. See
+    ``nyxloom-trove/reports/B087-js-r3-qualification.md`` for scope and limits.
+    This consumer evidence is separate from the integrated
     Assay release gate. No verdict or schema change was needed for registration.
     """
     return registry.new_registry(
@@ -3002,6 +3033,12 @@ def _run_reserved(
                 unresolved=summary["unresolved"],
             )
             summary["completed"] = completed
+            if completed:
+                # The summary was assembled before completion could be
+                # derived from its unresolved-candidate list. Preserve the
+                # completed-pilot wire shape: diagnostics are an incomplete
+                # run aid, not part of a completed result.
+                summary.pop("claim_diagnostics", None)
             exit_code = _pilot_exit_code(verdict, completed=completed, err=err)
             if pilot_state_accepted:
                 assert state_store_root_fd is not None
@@ -3443,94 +3480,9 @@ def _run_reserved(
             except AssayError as exc:
                 return _deliver_refusal(exc)
 
-        if _has_native_r2(lane):
-            capability = _current_cgroup_observation_capability()
-            if not capability.available:
-                try:
-                    if (
-                        getattr(args, "reuse_from", None) is not None
-                        and getattr(args, "shard", None) is not None
-                    ):
-                        raise LaneConfigError(
-                            "--reuse-from cannot be combined with --shard; "
-                            "selective reuse produces only a complete unsharded "
-                            "campaign"
-                        )
-                    _parse_mutation_shard(getattr(args, "shard", None))
-                    base_declaration = runner.resolve_base_declaration(
-                        lane, getattr(args, "request_base", None)
-                    )
-                    discovered = _discover_plan_jobs(
-                        lane_file,
-                        lane,
-                        adapter=adapter,
-                        base_declaration=base_declaration,
-                        operators=lane.judge.mutation.operators,
-                        allow_dirty=getattr(args, "allow_dirty", False),
-                        resolve_reuse_command=False,
-                        deadline=deadline,
-                    )
-                except AssayError as exc:
-                    # Without visibility, candidate selection is a required
-                    # precondition. A failed discovery is not evidence that
-                    # the lane has no candidates, so its own typed error
-                    # takes precedence and R0 remains unstarted. A native
-                    # mutation-discovery code is R2-claim-only in the wire
-                    # schema; keep its diagnostic in the lane-wide cgroup
-                    # refusal rather than emitting a claim that cannot verify.
-                    if exc.reason_code is ReasonCode.MUTATION_DISCOVERY_FAILED:
-                        exc = AssayError(
-                            "cannot determine whether native R2 candidates are "
-                            "selected because mutation discovery failed while "
-                            "cgroup observation is unavailable; "
-                            f"discovery error: {exc}; cgroup observation error: "
-                            f"{capability.reason}",
-                            outcome=Outcome.NO_MEASUREMENT,
-                            reason_code=ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE,
-                        )
-                    return _deliver_refusal(exc)
-
-                if discovered.commit != commit:
-                    return _deliver_refusal(
-                        AssayError(
-                            "HEAD changed while Assay checked native R2 candidate "
-                            f"selection for cgroup visibility: resolved {commit}, "
-                            f"then observed {discovered.commit}; rerun against one "
-                            "unchanged commit",
-                            outcome=Outcome.NO_MEASUREMENT,
-                            reason_code=ReasonCode.HEAD_CHANGED,
-                        )
-                    )
-                if discovered.jobs != mutation.UNSUPPORTED:
-                    mutation_config = lane.judge.mutation
-                    if len(discovered.jobs) <= mutation_config.max_mutants:
-                        try:
-                            selected_jobs = _select_plan_jobs(
-                                discovered.jobs,
-                                getattr(args, "shard", None),
-                                deadline_check=discovered.deadline.remaining,
-                            )
-                        except AssayError as exc:
-                            if exc.reason_code is not ReasonCode.LANE_TIMEOUT:
-                                raise
-                            return _deliver_refusal(exc)
-                        if selected_jobs:
-                            return _deliver_refusal(
-                                AssayError(
-                                    "native R2 candidates are selected, but this "
-                                    "process cannot observe the complete cgroup v2 "
-                                    "ancestor hierarchy required to distinguish "
-                                    "resource-limit failures from mutant kills; run "
-                                    "Assay where the complete hierarchy is visible; "
-                                    "configure the runner so this process can observe "
-                                    "its complete cgroup v2 ancestor hierarchy. "
-                                    f"Observation failed: {capability.reason}",
-                                    outcome=Outcome.NO_MEASUREMENT,
-                                    reason_code=(
-                                        ReasonCode.CGROUP_OBSERVATION_UNAVAILABLE
-                                    ),
-                                )
-                            )
+        # Native-R2 counter availability is checked by the campaign runner
+        # after the independent R0/R1 measurements. Refusing here would erase
+        # valid coverage evidence for an R2-only observer problem.
         try:
             verdict = runner.run_lane(
                 lane,
@@ -3880,6 +3832,9 @@ def _discover_plan_jobs(
                     source_root_paths=source_root_paths,
                     adapter=adapter,
                     deadline=deadline,
+                    target_source_identities=frozenset(
+                        target.path for target in targets
+                    ),
                 ),
                 deadline_check=deadline.remaining,
             )
@@ -4232,12 +4187,82 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             cgroup_capability.reason if cgroup_capability is not None else None
         ),
     }
-    rendered_payload = json.dumps(payload, indent=2, sort_keys=True)
     deadline_check()
-    print(rendered_payload, file=out)
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, sort_keys=True), file=out)
+    else:
+        _render_plan_text(payload, out)
     if payload["status"] == "ok" and err is not None:
         print(PLAN_ESTIMATE_HINT, file=err)
     return 0
+
+
+def _render_plan_text(payload: dict[str, Any], out: TextIO) -> None:
+    """Render the concise human view of a plan; ``--json`` carries full rows."""
+    lane = payload["lane"]
+    print(f"Mutation plan for {lane}", file=out)
+    print(f"Status: {payload['status']}", file=out)
+    if payload["status"] != "ok":
+        print(f"Reason: {payload['reason']}", file=out)
+        return
+
+    print(f"Commit: {payload['commit']}", file=out)
+    print(f"Tree: {payload['tree']}", file=out)
+    print(
+        f"Candidates: {payload['candidate_count']} / "
+        f"{payload['max_mutants']} maximum",
+        file=out,
+    )
+    print(
+        f"Workers: {payload['jobs']}; per-candidate budget: "
+        f"{payload['budget_per_candidate']}",
+        file=out,
+    )
+    if payload.get("shard") is not None:
+        print(f"Shard: {payload['shard']}", file=out)
+    print(
+        "Estimated runtime: "
+        f"{payload['estimated_serial_seconds']:.1f}s serial, "
+        f"{payload['estimated_wall_seconds']:.1f}s wall-clock",
+        file=out,
+    )
+    if payload["by_operator"]:
+        print(
+            "By operator: "
+            + ", ".join(
+                f"{name}={count}" for name, count in payload["by_operator"].items()
+            ),
+            file=out,
+        )
+    if payload["by_file"]:
+        print(
+            "By file: "
+            + ", ".join(
+                f"{name}={count}" for name, count in payload["by_file"].items()
+            ),
+            file=out,
+        )
+    observation = payload.get("resource_observation", {})
+    if observation.get("available") is False:
+        print(
+            f"Resource observation: unavailable ({observation.get('reason')})",
+            file=out,
+        )
+    cold_witness = payload.get("cold_witness")
+    if cold_witness is not None:
+        if cold_witness["eligible"]:
+            print("Cold witness: eligible", file=out)
+        else:
+            print(f"Cold witness: refused ({cold_witness['refusal']})", file=out)
+    reuse = payload.get("reuse_from")
+    if reuse is not None:
+        counts = reuse["classification_counts"]
+        rendered_counts = ", ".join(
+            f"{name}={count}" for name, count in counts.items()
+        ) or "none"
+        print(f"Prior-verdict classifications: {rendered_counts}", file=out)
+    if payload.get("candidates"):
+        print("Use --json for candidate identities and detailed evidence.", file=out)
 
 
 def _cold_witness_plan_preview(

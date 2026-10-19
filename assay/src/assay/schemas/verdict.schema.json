@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:assay:schema:verdict:15",
+  "$id": "urn:assay:schema:verdict:16",
   "title": "assay verdict artifact",
   "description": "One verdict, one lane, one commit. Computed R0-R4 claims and externally sourced evidence are separate arrays because provenance is not rigor. This hand-written schema ships as data and is never generated from the Python model. LAYER OWNERSHIP (A-182): this document owns every LOCALLY expressible rule -- enums, ranges, requiredness, string grammar, and reason/payload conditionals within a single object. It deliberately does NOT own cross-object arithmetic (candidate_count against judgment.r2.max_mutants), cross-object equality (canary.attempts[i].target against judgment.r3.targets[i]), or temporal ordering (ended >= started): Draft 2020-12 has no $data, so claiming those here would be a hollow contract. They live in the Python model AND, independently worded, in assay.verify's raw-document checks. It also does not own the BYTE bound on claim.detail -- maxLength counts characters, so the document's bound is satisfied by every legal artifact and the real one is enforced in the model and the verifier (A-428).",
   "type": "object",
@@ -18,9 +18,9 @@
   ],
   "properties": {
     "schema_version": {
-      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v15 and the verifier refuses every other version.",
+      "description": "The verdict schema version, independent of assay.toml lane schema version. Exactly one schema is active in a released build: producers emit v16 and the verifier refuses every other version.",
       "type": "integer",
-      "const": 15
+      "const": 16
     },
     "assay_version": {
       "type": "string",
@@ -1528,7 +1528,7 @@
       "additionalProperties": false
     },
     "resource_limit_evidence": {
-      "description": "B145: cgroup v2 process-limit and memory event counter evidence for native R2 candidates. A started full candidate command has samples bracketing its execution. A candidate whose full command did not start after an early stop is budget_exceeded and shares one zero-duration sample taken after already-submitted work finishes at sweep close. Replacement materialization or a saved-witness replay may already have run; the shared sample does not describe that earlier work or prove it did not happen. A positive delta during a full command is classified as crashed; a positive delta during witness-prefix replay stops the lane with payload-free ERROR/EXEC_FAILED before retry. Events are sampled at the candidate cgroup and every visible ancestor with the corresponding controller active, including unlimited active ancestors; a finite pids.max or memory.max requires its event file. The model and independent verifier require each delta in a candidate outcome to equal after minus before and any positive delta to be classified as crashed.",
+      "description": "B145: cgroup v2 process-limit and memory event counter evidence for native R2 candidates. A started full candidate command has samples bracketing its execution. A candidate whose full command did not start after an early stop is budget_exceeded and shares one zero-duration sample taken after already-submitted work finishes at sweep close. Replacement materialization or a saved-witness replay may already have run; the shared sample does not describe that earlier work or prove it did not happen. A positive failed-fork or OOM-related delta during a full command is classified as crashed; a positive failed-fork or OOM-related delta during witness-prefix replay stops the lane with payload-free ERROR/EXEC_FAILED before retry. A positive memory.events:max delta is retained as telemetry and does not invalidate an outcome by itself. Events are sampled at the candidate cgroup and every visible ancestor with the corresponding controller active, including unlimited active ancestors; a finite pids.max or memory.max requires its event file. The model and independent verifier require each delta in a candidate outcome to equal after minus before and classify positive failed-fork or OOM-related deltas as crashed.",
       "type": "object",
       "required": [
         "cgroup_version",
@@ -1576,6 +1576,32 @@
           },
           "additionalProperties": false
         }
+      },
+      "additionalProperties": false
+    },
+    "process_tree_evidence": {
+      "description": "B162: Linux child-subreaper proof for one native command. The leader status and cleanup counts are recorded, and clean is true only after waitid proves the caller has no child processes.",
+      "type": "object",
+      "required": [
+        "protocol",
+        "leader_status",
+        "group_signalled_before_reap",
+        "outliving_descendants",
+        "descendants_signalled",
+        "cleanup_seconds",
+        "clean"
+      ],
+      "properties": {
+        "protocol": {"type": "string", "const": "assay-process-tree/1"},
+        "leader_status": {
+          "type": "string",
+          "enum": ["exited", "signaled", "timeout-killed", "not-started"]
+        },
+        "group_signalled_before_reap": {"type": "boolean"},
+        "outliving_descendants": {"type": "integer", "minimum": 0},
+        "descendants_signalled": {"type": "integer", "minimum": 0},
+        "cleanup_seconds": {"type": "number", "minimum": 0},
+        "clean": {"type": "boolean", "const": true}
       },
       "additionalProperties": false
     },
@@ -1648,6 +1674,9 @@
         "resource_limit_evidence": {
           "$ref": "#/$defs/resource_limit_evidence"
         },
+        "process_tree_evidence": {
+          "$ref": "#/$defs/process_tree_evidence"
+        },
         "evidence": {
           "$ref": "#/$defs/mutant_evidence"
         }
@@ -1674,7 +1703,8 @@
           "then": {
             "not": {
               "required": [
-                "resource_limit_evidence"
+                "resource_limit_evidence",
+                "process_tree_evidence"
               ]
             }
           },
@@ -1686,13 +1716,15 @@
             },
             "then": {
               "required": [
-                "resource_limit_evidence"
+                "resource_limit_evidence",
+                "process_tree_evidence"
               ]
             },
             "else": {
               "not": {
                 "required": [
-                  "resource_limit_evidence"
+                  "resource_limit_evidence",
+                  "process_tree_evidence"
                 ]
               }
             }
@@ -2086,9 +2118,9 @@
           }
         },
         "jobs": {
-          "description": "A concurrency bound only -- never derived from machine capacity (A-082/A-122). Required when producer = 'native'; FORBIDDEN when producer = 'ingested' -- assay chose no concurrency for a run it did not orchestrate, and copying the foreign tool's own setting here would put that tool's configuration on the wire under assay's name.",
+          "description": "Native R2 candidate event counters share one lane cgroup, so native execution is serial until each candidate has independently attributable evidence (B157). Required as 1 when producer = 'native'; FORBIDDEN when producer = 'ingested'.",
           "type": "integer",
-          "minimum": 1
+          "const": 1
         },
         "max_mutants": {
           "description": "The declared candidate ceiling (A-163). jobs bounds WORKERS; this bounds total work and memory. Required when producer = 'native'; FORBIDDEN when producer = 'ingested' for jobs' own reason -- assay declared no ceiling on a discovery it did not perform.",

@@ -63,10 +63,15 @@ from . import (
 from .version import runtime_version
 
 CONTRACT_VERSION = 1
-CGPROFILE_VERSION = runtime_version("1.1.0")
+RESOURCE_OBSERVER_CONTRACT_VERSION = (
+    resource_observer_mod.RESOURCE_OBSERVER_CONTRACT_VERSION
+)
+CGPROFILE_VERSION = runtime_version("0.0.0-dev")
 
 DEFAULT_SOCKET_PATH = "/run/cgprofile/ctl.sock"
-DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH = "/run/cgprofile/resource-observer.sock"
+DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH = (
+    "/run/cgprofile/observer/resource-observer.sock"
+)
 DEFAULT_SESSIONS_DIR = "/var/lib/cgprofile/sessions"
 DEFAULT_DAEMON_NAME = "cgprofile-host-daemon"
 DEFAULT_MAX_SESSIONS = 16
@@ -343,10 +348,8 @@ class SessionServer:
             raise ValueError(f"damon_default must be 'on' or 'off', got {damon_default!r}")
         self.sessions_dir = sessions_dir
         self.socket_path = socket_path
-        self.observer_socket_path = observer_socket_path or (
-            DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH
-            if socket_path == DEFAULT_SOCKET_PATH
-            else os.path.join(os.path.dirname(socket_path) or ".", "resource-observer.sock")
+        self.observer_socket_path = (
+            observer_socket_path or DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH
         )
         if os.path.normpath(self.observer_socket_path) == os.path.normpath(self.socket_path):
             raise ValueError("resource observer socket must be distinct from the control socket")
@@ -424,6 +427,7 @@ class SessionServer:
         self._lock = threading.RLock()
         self._sock: Optional[socket.socket] = None
         self._observer_sock: Optional[socket.socket] = None
+        self._observer_socket_identity: Optional[Tuple[int, int]] = None
         self._observer_thread: Optional[threading.Thread] = None
         self._stopping = False
 
@@ -751,6 +755,7 @@ class SessionServer:
     def handle_version(self, args: Dict[str, Any]) -> Dict[str, Any]:
         with self._lock:
             live = self._count_live()
+            observer_listening = self._observer_sock is not None
         damon_state = "available" if damon_mod.available() else "unavailable:not available on this host"
         return {
             "ok": True,
@@ -778,6 +783,14 @@ class SessionServer:
                     "allow_uids": list(self.allow_uids or []),
                     "peer_cred": True,
                 },
+            },
+            # Resource observation is a separate wire contract and listener;
+            # advertise it so operators can distinguish a control-v1 daemon
+            # that supports the contract-2 R2 observer from an older daemon.
+            "resource_observer": {
+                "contract": RESOURCE_OBSERVER_CONTRACT_VERSION,
+                "path": self.observer_socket_path,
+                "listening": observer_listening,
             },
         }
 
@@ -2370,8 +2383,24 @@ class SessionServer:
         return verb, args, None
 
     @staticmethod
-    def _error_response(code: str, message: str) -> Dict[str, Any]:
-        return {"ok": False, "contract": CONTRACT_VERSION, "error": {"code": code, "message": message}}
+    def _error_response(
+        code: str, message: str, *, contract: int = CONTRACT_VERSION
+    ) -> Dict[str, Any]:
+        return {"ok": False, "contract": contract, "error": {"code": code, "message": message}}
+
+    @staticmethod
+    def _requested_observer_contract(payload: bytes) -> int:
+        """Use the only supported observer contract for error envelopes."""
+        try:
+            request = json.loads(payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return RESOURCE_OBSERVER_CONTRACT_VERSION
+        if not isinstance(request, dict):
+            return RESOURCE_OBSERVER_CONTRACT_VERSION
+        contract = request.get("contract")
+        if type(contract) is int and contract == RESOURCE_OBSERVER_CONTRACT_VERSION:
+            return contract
+        return RESOURCE_OBSERVER_CONTRACT_VERSION
 
     def _bind(self) -> None:
         socket_dir = os.path.dirname(self.socket_path)
@@ -2398,7 +2427,34 @@ class SessionServer:
 
     def _bind_observer_socket(self) -> None:
         observer_dir = os.path.dirname(self.observer_socket_path) or "."
-        os.makedirs(observer_dir, exist_ok=True)
+        try:
+            directory = os.lstat(observer_dir)
+        except OSError as exc:
+            raise OSError(
+                exc.errno,
+                f"resource observer directory must be provisioned by host setup: {exc}",
+                observer_dir,
+            ) from exc
+        if not stat.S_ISDIR(directory.st_mode):
+            raise OSError(
+                errno.EPERM,
+                "resource observer path parent must be an existing directory",
+                observer_dir,
+            )
+        default_directory = os.path.normpath(observer_dir) == os.path.dirname(
+            os.path.normpath(DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH)
+        )
+        if default_directory and (
+            directory.st_uid != 0
+            or directory.st_mode & 0o022
+            or not directory.st_mode & 0o010
+        ):
+            raise OSError(
+                errno.EPERM,
+                "default resource observer directory must be root-owned, group-searchable, "
+                "and not writable by group or other users",
+                observer_dir,
+            )
         try:
             existing = os.lstat(self.observer_socket_path)
         except FileNotFoundError:
@@ -2429,19 +2485,86 @@ class SessionServer:
                 )
             finally:
                 probe.close()
+            current = os.lstat(self.observer_socket_path)
+            if (current.st_dev, current.st_ino) != (existing.st_dev, existing.st_ino):
+                raise OSError(
+                    errno.EADDRINUSE,
+                    "resource observer socket path changed while checking stale entry",
+                    self.observer_socket_path,
+                )
             os.unlink(self.observer_socket_path)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        owned_identity: Optional[Tuple[int, int]] = None
         try:
             sock.bind(self.observer_socket_path)
+            bound = os.lstat(self.observer_socket_path)
+            if not stat.S_ISSOCK(bound.st_mode):
+                raise OSError(errno.EINVAL, "bound resource observer path is not a socket")
+            owned_identity = (bound.st_dev, bound.st_ino)
             sock.listen(16)
             sock.settimeout(self.accept_timeout)
-            self._observer_sock = sock
-            self._assert_one_socket_permissions(
-                observer_dir, self.observer_socket_path, warn_root_only=False
+            self._assert_observer_socket_permissions(
+                observer_dir, self.observer_socket_path,
+                require_host_identity=default_directory,
             )
+            self._observer_sock = sock
+            self._observer_socket_identity = owned_identity
         except Exception:
             sock.close()
+            self._unlink_observer_socket_if_owned(owned_identity)
             raise
+
+    def _unlink_observer_socket_if_owned(
+        self, identity: Optional[Tuple[int, int]]
+    ) -> None:
+        if identity is None:
+            return
+        try:
+            current = os.lstat(self.observer_socket_path)
+        except OSError:
+            return
+        if not stat.S_ISSOCK(current.st_mode) or (current.st_dev, current.st_ino) != identity:
+            return
+        try:
+            os.unlink(self.observer_socket_path)
+        except OSError:
+            pass
+
+    def _assert_observer_socket_permissions(
+        self, socket_dir: str, socket_path: str, *, require_host_identity: bool
+    ) -> None:
+        """Apply socket access without changing the host-owned directory.
+
+        Host setup owns and persists the directory. The daemon only creates
+        the socket name; it must never widen the directory or invent it.
+        Custom paths are an internal test seam and keep the test process's
+        uid/gid because it may not have permission to chown to root.
+        """
+        directory = os.lstat(socket_dir)
+        socket_stat = os.lstat(socket_path)
+        if not stat.S_ISDIR(directory.st_mode) or not stat.S_ISSOCK(socket_stat.st_mode):
+            raise OSError(errno.EINVAL, "invalid resource observer directory or socket")
+        if require_host_identity:
+            if directory.st_uid != 0 or directory.st_mode & 0o022 \
+                    or not directory.st_mode & 0o010:
+                raise OSError(errno.EPERM, "unsafe host resource observer directory", socket_dir)
+            try:
+                os.chown(socket_path, 0, directory.st_gid)
+            except OSError as exc:
+                raise OSError(
+                    exc.errno,
+                    f"could not set observer socket owner root:gid={directory.st_gid}: {exc}",
+                    socket_path,
+                ) from exc
+        try:
+            os.chmod(socket_path, SOCKET_MODE)
+        except OSError as exc:
+            raise OSError(exc.errno, f"could not chmod observer socket: {exc}", socket_path) from exc
+        socket_stat = os.lstat(socket_path)
+        expected_uid = 0 if require_host_identity else os.geteuid()
+        if socket_stat.st_uid != expected_uid or socket_stat.st_gid != directory.st_gid \
+                or socket_stat.st_mode & 0o007 or not socket_stat.st_mode & 0o020:
+            raise OSError(errno.EPERM, "resource observer socket permissions do not match its directory", socket_path)
 
     def _assert_one_socket_permissions(
         self, socket_dir: str, socket_path: str, *, warn_root_only: bool
@@ -2583,16 +2706,15 @@ class SessionServer:
             except OSError:
                 pass
         owned_observer_socket = self._observer_sock is not None
+        observer_identity = self._observer_socket_identity
         if owned_observer_socket:
             try:
                 self._observer_sock.close()
             finally:
                 self._observer_sock = None
-        if owned_observer_socket and os.path.exists(self.observer_socket_path):
-            try:
-                os.unlink(self.observer_socket_path)
-            except OSError:
-                pass
+                self._observer_socket_identity = None
+        if owned_observer_socket:
+            self._unlink_observer_socket_if_owned(observer_identity)
 
     def _handle_connection(self, conn: socket.socket) -> None:
         handed_off = False
@@ -2885,23 +3007,44 @@ class SessionServer:
         observer_sock = self._observer_sock
         if observer_sock is None:
             return
-        while not self._stopping:
+        observer_identity = self._observer_socket_identity
+        try:
+            while not self._stopping:
+                try:
+                    conn, _addr = observer_sock.accept()
+                except socket.timeout:
+                    continue
+                except OSError as exc:
+                    if not self._stopping:
+                        self._log(
+                            "resource observer accept loop stopped unexpectedly: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                    return
+                self._handle_observer_connection(conn)
+        finally:
+            with self._lock:
+                still_owned = self._observer_sock is observer_sock
+                if still_owned:
+                    self._observer_sock = None
+                    self._observer_socket_identity = None
             try:
-                conn, _addr = observer_sock.accept()
-            except socket.timeout:
-                continue
+                observer_sock.close()
             except OSError:
-                return
-            self._handle_observer_connection(conn)
+                pass
+            if still_owned:
+                self._unlink_observer_socket_if_owned(observer_identity)
 
     def _handle_observer_connection(self, conn: socket.socket) -> None:
         """Serve one strictly read-only query on the dedicated socket."""
+        request_contract = RESOURCE_OBSERVER_CONTRACT_VERSION
         try:
             peer = self._peer_credentials(conn)
             uid = None if peer is None else peer[1]
             if not self._peer_allowed(uid):
                 conn.sendall((json.dumps(self._error_response(
-                    "peer-refused", "peer UID is not allowed by the configured socket policy"
+                    "peer-refused", "peer UID is not allowed by the configured socket policy",
+                    contract=RESOURCE_OBSERVER_CONTRACT_VERSION,
                 )) + "\n").encode("utf-8"))
                 return
             deadline = time.monotonic() + 5.0
@@ -2924,13 +3067,17 @@ class SessionServer:
                             "bad-argument",
                             f"observer request exceeds "
                             f"{MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES} bytes",
+                            contract=RESOURCE_OBSERVER_CONTRACT_VERSION,
                         )
                     elif newline + 1 != len(data):
                         response = self._error_response(
-                            "bad-argument", "observer accepts exactly one request line"
+                            "bad-argument", "observer accepts exactly one request line",
+                            contract=RESOURCE_OBSERVER_CONTRACT_VERSION,
                         )
                     else:
-                        response = self._observer_dispatch(bytes(data[:newline]), peer)
+                        payload = bytes(data[:newline])
+                        request_contract = self._requested_observer_contract(payload)
+                        response = self._observer_dispatch(payload, peer)
                     conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
                     return
                 if len(data) > MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES:
@@ -2938,6 +3085,7 @@ class SessionServer:
                         "bad-argument",
                         f"observer request exceeds "
                         f"{MAX_RESOURCE_OBSERVER_REQUEST_LINE_BYTES} bytes",
+                        contract=RESOURCE_OBSERVER_CONTRACT_VERSION,
                     )
                     conn.sendall((json.dumps(response) + "\n").encode("utf-8"))
                     return
@@ -2949,7 +3097,8 @@ class SessionServer:
             )
             try:
                 conn.sendall((json.dumps(self._error_response(
-                    "daemon-error", "resource observer failed closed"
+                    "daemon-error", "resource observer failed closed",
+                    contract=request_contract,
                 )) + "\n").encode("utf-8"))
             except OSError:
                 pass
@@ -2959,27 +3108,48 @@ class SessionServer:
     def _observer_dispatch(
         self, payload: bytes, peer: Optional[Tuple[int, int, int]]
     ) -> Dict[str, Any]:
+        def error(code: str, message: str) -> Dict[str, Any]:
+            return {
+                "ok": False,
+                "contract": RESOURCE_OBSERVER_CONTRACT_VERSION,
+                "error": {"code": code, "message": message},
+            }
+
         try:
             req = json.loads(payload.decode("utf-8"))
         except (json.JSONDecodeError, UnicodeDecodeError):
-            return self._error_response("bad-argument", "request was not valid JSON")
-        verb, args, wire_error = self._validate_wire(req)
-        if wire_error is not None:
-            return wire_error
+            return error("bad-argument", "request was not valid JSON")
+        if not isinstance(req, dict) or any(not isinstance(key, str) for key in req):
+            return error("bad-argument", "request must be a JSON object")
+        contract = req.get("contract")
+        if type(contract) is not int or contract != RESOURCE_OBSERVER_CONTRACT_VERSION:
+            return error("bad-argument", "resource observer supports contract 2 only")
+
+        if set(req) != {"verb", "args", "contract"}:
+            return error(
+                "bad-argument",
+                "resource observer request requires exactly verb, args, and contract",
+            )
+        verb = req["verb"]
+        args = req["args"]
+        if not isinstance(verb, str):
+            return error("bad-argument", "request 'verb' must be a string")
+        if not isinstance(args, dict):
+            return error("bad-argument", "request 'args' must be a JSON object")
         if verb != "resource-limits":
-            return self._error_response(
+            return error(
                 "bad-argument", "resource observer socket accepts only 'resource-limits'"
             )
         if set(args) != {"thread_id"}:
-            return self._error_response(
+            return error(
                 "bad-argument", "resource-limits requires exactly one 'thread_id' argument"
             )
         if type(args["thread_id"]) is not int or args["thread_id"] <= 0:
-            return self._error_response(
+            return error(
                 "bad-argument", "resource-limits 'thread_id' must be a positive integer"
             )
         if peer is None:
-            return self._error_response(
+            return error(
                 "peer-refused", "SO_PEERCRED is required for resource observation"
             )
         try:
@@ -2991,10 +3161,11 @@ class SessionServer:
                 cgroup_root=self.cgroup_root,
                 mountinfo_path=os.path.join(self.proc_root, "self", "mountinfo"),
                 gates_slice_name=self.gates_slice_name,
+                contract=contract,
             )
         except resource_observer_mod.ResourceObserverError as exc:
-            return self._error_response("observer-refused", str(exc))
-        return {"ok": True, "contract": CONTRACT_VERSION, **body}
+            return error("observer-refused", str(exc))
+        return {"ok": True, "contract": contract, **body}
 
     def serve_forever(self) -> None:
         """Blocks until :meth:`request_shutdown` is called or a signal

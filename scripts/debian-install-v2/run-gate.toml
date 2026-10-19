@@ -1,5 +1,5 @@
 # =============================================================================
-# debian-install gate lanes — parsed ONLY by run-gate.py (one parser, D-110).
+# debian-install gate lanes — parsed ONLY by the installed Run-Gate CLI (D-110).
 # r0-r1, r2 and r3 are the standard 3-tier lane matrix (see scripts/
 # LANE-MATRIX-PROGRESS.md) and are host-scoped because they exercise
 # dry-run and fake-command boundaries only; no disk/systemd mutation is
@@ -16,7 +16,7 @@
 # "changed" (it doesn't exist on main yet), not just any one session's
 # edits, so this reflects the package's overall test-suite maturity, not a
 # regression. r2 still runs and reports its real, complete result whenever
-# invoked by name (`./run-gate.py r2`) or as part of `assay lanes --file
+# invoked by name (`run-gate r2`) or as part of `assay lanes --file
 # assay.toml` inventories -- it's excluded from the aggregate specifically
 # so a pre-existing, estate-typical mutation-coverage gap doesn't block
 # every debian-install-v2 change from merging while closing it properly is
@@ -71,6 +71,7 @@ budget = "5m"
 # budget) lives in this project's own assay.toml [lanes.r2].
 [lanes.r2]
 kind = "command"
+resource_observer = "cgprofile"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
@@ -140,7 +141,11 @@ kind = "command"
 environment = "bare-host"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/debian-install-v2 && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r3",
+    "cd {worktree}/scripts/debian-install-v2 && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r3",
 ]
 clean_tree = false
 budget = "1h"
+
+[lanes.r2.resources]
+memory = "2g"
+pids = 8192

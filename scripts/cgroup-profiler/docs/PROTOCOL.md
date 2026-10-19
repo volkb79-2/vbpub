@@ -180,6 +180,18 @@ note in `docs/CONSUMERS.md` and the rationale in `docs/DESIGN-GUIDE.md`.
 listener. `exec` is `true` by construction — the exec carrier is permanent
 (§8.1 rule 5), not probed.
 
+The additive `resource_observer` field reports the distinct observer listener:
+
+```json
+"resource_observer": {"contract": 2,
+                       "path": "/run/cgprofile/observer/resource-observer.sock",
+                       "listening": true}
+```
+
+Its contract number is independent of the control protocol's `contract: 1`.
+If binding the observer socket failed, `listening` is false; opted-in native
+R2 consumers still fail closed when their configured endpoint is unavailable.
+
 ## 6. Errors
 
 Response shape is always
@@ -200,18 +212,25 @@ they are what the run-gate socket client (P5) is written against.
 ## 8. Native R2 resource observer (RG-89)
 
 This is a **separate listener**, not a new verb on the control carrier:
-`/run/cgprofile/resource-observer.sock`. Run-Gate may bind-mount only this
-socket into an explicitly opted-in Assay R2 container. The listener is served
+`/run/cgprofile/observer/resource-observer.sock`. Host setup provisions the
+root-owned `/run/cgprofile/observer` directory as `0751` with the dedicated
+`cgprofile-observer` group. Run-Gate bind-mounts this directory read-only into
+an explicitly opted-in Assay R2 container, so daemon restarts replace the
+socket inode at a path an existing container can still resolve. The listener is served
 by the existing daemon and accepts no control operation, including `start`,
-`stop`, or placement. Its socket mode uses the existing `/run/cgprofile`
-directory group and `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the
-observed socket GID as a supplementary group. A read-only mount of `ctl.sock`
+`stop`, or placement. Its socket mode uses the dedicated observer directory
+group and the `CGPROFILE_ALLOW_UIDS` policy; Run-Gate forwards the observed
+socket GID as a supplementary group. Observer lanes also declare per-container
+memory and PID ceilings and refuse arbitrary extra mounts. A read-only mount of `ctl.sock`
 is not equivalent and is prohibited for this use.
 
-The request is exactly:
+The observer requires contract 2, independently of the daemon's contract-1
+control protocol. Contract 2 reports regular event scope and effective local
+counters. Contract-1 observer requests receive `bad-argument` with an
+unsupported-contract message. The request is:
 
 ```json
-{"verb":"resource-limits","args":{"thread_id":1234},"contract":1}
+{"verb":"resource-limits","args":{"thread_id":1234},"contract":2}
 ```
 
 There is one positive native TID, one line, and one connection. The complete
@@ -223,11 +242,20 @@ The daemon uses that PID/UID plus the requested TID to prove the caller's
 thread identity, shared thread cgroup/credentials, and gates-slice membership;
 the request cannot choose a PID, cgroup path, or slice. A successful response
 contains only the complete canonical leaf-to-root cgroup-v2 ancestry, mount
-ID, limit presence/value pairs, and pids/memory event counters. It contains
-no process list, PID, or sibling cgroup data. See contract §9 for the exact
-response shape and the verified private-cgroup-namespace path mapping.
+ID, limit presence/value pairs, both event-counter scopes, and effective
+local event maps at every path. Successful responses always report
+`pids_events_scope: "hierarchical"`; the observer refuses a mount using
+`pids_localevents`, because that option counts failed forks in the cgroup where
+the process tried to fork even when an ancestor's `pids.max` rejected it. That
+counter cannot identify the enforcing cgroup. `memory_events_scope` reports
+whether regular memory events are hierarchical or local under
+`memory_localevents`. The observer reads the `.local` files when available; if
+a regular memory file is already local under the mount mode, it can supply
+equivalent local evidence when the `.local` file is unavailable. The response
+contains no process list, PID, or sibling cgroup data. See contract §9 for exact response
+shapes and the verified private-cgroup-namespace path mapping.
 
 Assay configures this socket explicitly and consults it only after its local
 reader proves that ancestors are hidden. Any other local failure, invalid
-response, identity mismatch, incomplete hierarchy, or ambiguous shared
-ancestor delta remains a fail-closed lane error.
+response, identity mismatch, incomplete hierarchy, or positive shared-ancestor
+local event without a candidate event remains a fail-closed lane error.

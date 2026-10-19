@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
+from conftest import completed_process, timeout_expired
 from conftest import (
     GitRepo,
     make_deadline,
@@ -117,7 +118,7 @@ def _run(
         lane,
         cwd=repo.path,
         passthrough_source=source,
-        process_runner=lambda argv, *, env, cwd, timeout: subprocess.CompletedProcess(
+        process_runner=lambda argv, *, env, cwd, timeout: completed_process(
             list(argv), returncode=0
         ),
     )
@@ -156,7 +157,7 @@ def _ddl_apply_that_fails_on_the_dropped_constraint(argv, *, env, cwd, timeout):
     """
     # `execute_command` runs its child under `text=True`, so both streams
     # reach `_bounded_tail` already decoded -- the fixture matches.
-    return subprocess.CompletedProcess(
+    return completed_process(
         list(argv), returncode=1, stdout="applying 03c-create-workflow-core.sql\n",
         stderr=_REAL_STDERR,
     )
@@ -196,7 +197,7 @@ def test_a_crashed_state_record_masks_exact_passthrough_values(tmp_path: Path):
     secret = "postgresql://dstdns:dsn-secret@db/schema"
 
     def echo_dsn_then_fail(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv),
             returncode=1,
             stdout=f"connecting {secret}\n",
@@ -231,7 +232,7 @@ def test_a_killed_candidates_record_is_unaffected_in_shape_and_size(tmp_path: Pa
     state_root = tmp_path / "state"
 
     def suite_catches_the_mutant(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv), returncode=1, stdout="2 failed, 450 passed\n",
             stderr="assertion failed\n",
         )
@@ -260,7 +261,7 @@ def test_a_survived_candidates_record_is_unaffected_too(tmp_path: Path):
     state_root = tmp_path / "state"
 
     def suite_never_notices(argv, *, env, cwd, timeout):
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv), returncode=0, stdout="452 passed\n", stderr=""
         )
 
@@ -302,7 +303,7 @@ def test_a_crashed_record_still_resumes(tmp_path: Path):
     def must_not_run(argv, *, env, cwd, timeout):
         if Path(cwd) != repo.path:
             executed.append(str(cwd))
-        return subprocess.CompletedProcess(list(argv), returncode=0)
+        return completed_process(list(argv), returncode=0)
 
     resumed = _run(
         repo,

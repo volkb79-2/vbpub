@@ -72,7 +72,12 @@ META = {
 # normalization the socket goldens get.
 PROD_SESSIONS_DIR = "/var/lib/cgprofile/sessions"
 PROD_SOCKET = "/run/cgprofile/ctl.sock"
+PROD_OBSERVER_SOCKET = "/run/cgprofile/observer/resource-observer.sock"
 REGEN_ENV = "CGPROFILE_REGEN_SOCKET_GOLDENS"
+# The frozen wire documents include a daemon version. Pin it here so the
+# protocol oracle does not depend on whether this checkout is tagged or an
+# untagged development build (whose runtime identity is 0.0.0-dev).
+FIXTURE_CGPROFILE_VERSION = "1.0.0"
 VERBS = ("version", "host", "start", "status", "stop", "report", "gc")
 # §8.2's streaming verb answers MANY lines on one connection, so its
 # response golden is the ARRAY of those lines rather than one object —
@@ -239,9 +244,12 @@ def _wait_for_socket(server: serve.SessionServer, thread: threading.Thread) -> N
         time.sleep(0.01)
 
 
-def _normalize(doc: Any, *, sessions_dir: str, socket_path: str) -> Any:
+def _normalize(doc: Any, *, sessions_dir: str, socket_path: str,
+               observer_socket_path: str) -> Any:
     text = json.dumps(doc)
-    text = text.replace(sessions_dir, PROD_SESSIONS_DIR).replace(socket_path, PROD_SOCKET)
+    text = (text.replace(sessions_dir, PROD_SESSIONS_DIR)
+            .replace(socket_path, PROD_SOCKET)
+            .replace(observer_socket_path, PROD_OBSERVER_SOCKET))
     return json.loads(text)
 
 
@@ -347,12 +355,16 @@ class _Scenario:
         self.capsys = capsys
         self.sessions_dir = str(tmp_path / "sessions")
         self.socket_path = str(tmp_path / "run" / "ctl.sock")
+        observer_dir = tmp_path / "observer"
+        observer_dir.mkdir(mode=0o751)
+        self.observer_socket_path = str(observer_dir / "resource-observer.sock")
         self.barrier = _TickBarrier()
         monkeypatch.setattr(damon_mod, "available", lambda: True)
         ids = iter([SESSION_ID, SESSION_ID_2])
         root, proc = _fake_roots(tmp_path)
         self.server = serve.SessionServer(
             sessions_dir=self.sessions_dir, socket_path=self.socket_path,
+            observer_socket_path=self.observer_socket_path,
             cgroup_root=str(root), proc_root=str(proc),
             clock=lambda: EPOCH_START, sampler_clock=_per_thread_counting_clock(),
             sampler_sleep=self.barrier, session_id_fn=lambda: next(ids),
@@ -391,9 +403,11 @@ class _Scenario:
                 req: Dict[str, Any], resp: Dict[str, Any]) -> Dict[str, Any]:
         into[verb] = {
             "request": _normalize(req, sessions_dir=self.sessions_dir,
-                                  socket_path=self.socket_path),
+                                  socket_path=self.socket_path,
+                                  observer_socket_path=self.observer_socket_path),
             "response": _normalize(resp, sessions_dir=self.sessions_dir,
-                                   socket_path=self.socket_path),
+                                   socket_path=self.socket_path,
+                                   observer_socket_path=self.observer_socket_path),
         }
         return resp
 
@@ -461,9 +475,11 @@ class _Scenario:
         self._over_socket("stop", session=SESSION_ID)
         self.watch_doc = {
             "request": _normalize(watch_req, sessions_dir=self.sessions_dir,
-                                  socket_path=self.socket_path),
+                                  socket_path=self.socket_path,
+                                  observer_socket_path=self.observer_socket_path),
             "response": _normalize([first] + reader.rest(), sessions_dir=self.sessions_dir,
-                                   socket_path=self.socket_path),
+                                   socket_path=self.socket_path,
+                                   observer_socket_path=self.observer_socket_path),
         }
         self._over_exec("stop", session=SESSION_ID_2)
         self._over_socket("report", session=SESSION_ID)
@@ -483,6 +499,7 @@ def _rewrite_second_session(doc: Any) -> Any:
 
 @pytest.fixture
 def scenario(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(serve, "CGPROFILE_VERSION", FIXTURE_CGPROFILE_VERSION)
     with _Scenario(tmp_path, monkeypatch, capsys) as sc:
         sc.run()
         yield sc
@@ -1107,6 +1124,7 @@ class TestSocketPermissions:
         if make_dir:
             socket_dir.mkdir()
             os.chmod(socket_dir, 0o755)
+        kw.setdefault("observer_socket_path", str(socket_dir / "resource-observer.sock"))
         server = serve.SessionServer(
             sessions_dir=str(tmp_path / "sessions"),
             socket_path=str(socket_dir / "ctl.sock"), **kw,
@@ -1126,11 +1144,10 @@ class TestSocketPermissions:
         finally:
             server._close_socket()
 
-    def test_the_socket_takes_the_directorys_own_gid(self, tmp_path, monkeypatch, capsys):
-        # RW-35(b): the group is whatever the host's tmpfiles.d entry
-        # (mdt-cgprofile.conf) put on the directory — never a name this
-        # image resolves for itself. The chown itself needs root, so what is
-        # asserted is the CALL, with the gid read from the directory.
+    def test_control_socket_takes_the_directorys_own_gid(self, tmp_path, monkeypatch, capsys):
+        # The control socket inherits the group from its own runtime
+        # directory. The observer socket has a separate host-provisioned
+        # directory and is checked in test_default_observer_directory_....
         chowns: List[tuple] = []
         real_stat = os.stat
 
@@ -1147,10 +1164,7 @@ class TestSocketPermissions:
         monkeypatch.setattr(serve.os, "chown", lambda p, u, g: chowns.append((p, u, g)))
         server, _socket_dir = self._bound(tmp_path)
         try:
-            assert chowns == [
-                (server.socket_path, 0, 4242),
-                (server.observer_socket_path, 0, 4242),
-            ]
+            assert chowns == [(server.socket_path, 0, 4242)]
             assert "root-only" not in capsys.readouterr().err
         finally:
             server._close_socket()
@@ -1260,6 +1274,10 @@ def _check_golden(name: str, doc: Any) -> None:
         return
     assert path.is_file(), f"missing golden {path} (regenerate with {REGEN_ENV}=1)"
     assert path.read_text() == text, f"{path} differs from the live document"
+
+
+def test_socket_goldens_pin_the_combined_first_release_version():
+    assert FIXTURE_CGPROFILE_VERSION == "1.0.0"
 
 
 def test_socket_goldens_are_the_live_documents(scenario):

@@ -1642,6 +1642,17 @@ done
         self.assertNotIn("--force requires --wizard", install)
         self.assertNotIn('cp -- "$HERE/host-setup.env.example" /etc/mdt/host-setup.env', install)
 
+    def test_installer_places_shared_cli_parser_beside_python_entrypoints(self) -> None:
+        install = (ROOT / "install.sh").read_text()
+        self.assertIn(
+            'install -m 0644 "$HERE/scripts/mdt_cli.py"             /usr/local/sbin/mdt_cli.py',
+            install,
+        )
+        self.assertLess(
+            install.index('install -m 0644 "$HERE/scripts/mdt_cli.py"'),
+            install.index('install -m 0755 "$HERE/scripts/mdt-io-baseline.py"'),
+        )
+
     def test_installer_uses_only_new_runtime_names_and_retires_old_names(self) -> None:
         install = (ROOT / "install.sh").read_text()
         # The old names may occur only in the explicit retirement block. They

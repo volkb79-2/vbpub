@@ -14,9 +14,9 @@ fingerprints).
 
 Stdlib + tmp files only for everything except the container tests, which are
 integration tests by nature; they run against a fixture image this file owns,
-never a live host. Direct local runs may skip when Docker is unavailable; the
-registered ``enroll`` lane (ciu/run-gate.toml) sets ``CIU_ENROLL_REQUIRED=1``,
-making missing prerequisites and fixture-build failures fatal.
+never a live host. The real-system tests run only through CIU's registered
+``enroll`` lane inside ``cmru tester-gate --enable-docker``. They skip from the
+ordinary suite and refuse if the required isolated-Docker endpoint is absent.
 """
 from __future__ import annotations
 
@@ -34,11 +34,6 @@ from typing import Iterator, Optional
 from unittest import mock
 
 import pytest
-
-try:  # only the container preflight needs cmru; everything else is self-contained
-    from cmru import tester_gate
-except ImportError:  # pragma: no cover - depends on the environment
-    tester_gate = None
 
 CIU_ROOT = Path(__file__).resolve().parents[2]
 GET_PY = CIU_ROOT / "get.py"
@@ -678,13 +673,14 @@ class TestEnrollHostProbes:
 # There is no prior "spin up a container, run the installer, assert on real
 # system state" pattern in this repo; this is it. The fixture image is built and
 # owned here (never a live host), every container is torn down in a finally, and
-# a direct local run skips if Docker or the estate's cgroup tier is unavailable.
-# The registered lane sets CIU_ENROLL_REQUIRED=1 to turn those conditions into
-# failures so the O2/O3 oracle cannot disappear from release evidence.
+# Direct invocation does not get the isolated Docker daemon. The registered
+# release lane runs this suite inside tester-unified with CMRU's DinD sidecar;
+# CIU_ENROLL_REQUIRED=1 makes missing wiring fatal so O2/O3 cannot disappear
+# from release evidence behind a skip.
 
 ENROLL_FIXTURE_IMAGE = "ciu-enroll-fixture:local"
 ENROLL_FIXTURE_DOCKERFILE = """\
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 RUN apt-get update \\
  && apt-get install -y --no-install-recommends \\
         openssh-server python3 iproute2 hostname passwd \\
@@ -694,70 +690,59 @@ RUN apt-get update \\
 
 
 def _docker_unavailable_reason() -> Optional[str]:
+    if os.environ.get("CIU_ENROLL_REQUIRED") != "1":
+        return "enrollment container oracles run only through the registered CIU release gate"
+    if os.environ.get("DOCKER_HOST", "").strip() != "tcp://localhost:2375":
+        return "registered enrollment gate requires CMRU tester-gate --enable-docker"
+    if not os.environ.get("CGROUP_PARENT_DEV_GATES", "").strip():
+        return "CMRU did not forward CGROUP_PARENT_DEV_GATES into tester-unified"
     if shutil.which("docker") is None:
         return "docker CLI not present"
     probe = subprocess.run(["docker", "info"], capture_output=True, text=True)
     if probe.returncode != 0:
-        return f"docker daemon unreachable: {probe.stderr.strip()[:200]}"
-    # AGENTS.md "Host cgroup placement": no hardcoded fallback slice — a
-    # gate fixture we cannot place on the host's dedicated gates tier is one
-    # we do not start next to production.
-    slice_name = os.environ.get("CGROUP_PARENT_DEV_GATES", "").strip()
-    if not slice_name:
-        return "CGROUP_PARENT_DEV_GATES unset — refusing an unplaced container"
-    if tester_gate is None:
-        return "cmru.tester_gate not importable — cannot verify CGROUP_PARENT_DEV_GATES"
-    try:
-        probe_image = tester_gate.resolve_cgroup_probe_image(None)
-    except SystemExit as exc:
-        return f"could not verify CGROUP_PARENT_DEV_GATES unit: {exc}"
-    exists, note = tester_gate.check_slice_unit(slice_name, probe_image, slice_name)
-    if exists is not True:
-        return f"could not verify CGROUP_PARENT_DEV_GATES unit on the Docker host: {note}"
+        return f"CMRU's isolated nested Docker daemon is unreachable: {probe.stderr.strip()[:200]}"
     return None
 
 
-@pytest.mark.skipif(tester_gate is None, reason="cmru.tester_gate not importable")
 @pytest.mark.parametrize(
-    ("probe_result", "note"),
-    [
-        (False, "LoadState=not-found"),
-        (False, "FragmentPath is empty"),
-        (None, "could not determine"),
-    ],
+    "docker_host", [None, "unix:///var/run/docker.sock", "tcp://host:2375"],
 )
-def test_enroll_preflight_rejects_gate_slice_not_verified_on_docker_host(
-    monkeypatch, probe_result, note,
-):
-    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "typo-or-transient.slice")
-    monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
-    monkeypatch.setattr(
-        subprocess, "run", lambda *_args, **_kwargs:
-        subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
-    )
-    monkeypatch.setattr(tester_gate, "resolve_cgroup_probe_image", lambda _image: "probe:image")
-    monkeypatch.setattr(tester_gate, "check_slice_unit", lambda *_args: (probe_result, note))
-
-    assert note in _docker_unavailable_reason()
+def test_enroll_preflight_requires_the_registered_dind_endpoint(monkeypatch, docker_host):
+    monkeypatch.setenv("CIU_ENROLL_REQUIRED", "1")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
+    if docker_host is None:
+        monkeypatch.delenv("DOCKER_HOST", raising=False)
+    else:
+        monkeypatch.setenv("DOCKER_HOST", docker_host)
+    assert "tester-gate --enable-docker" in _docker_unavailable_reason()
 
 
-@pytest.mark.skipif(tester_gate is None, reason="cmru.tester_gate not importable")
-def test_enroll_preflight_accepts_loaded_gate_slice_with_fragment(monkeypatch):
+def test_enroll_preflight_requires_the_forwarded_gates_slice(monkeypatch):
+    monkeypatch.setenv("CIU_ENROLL_REQUIRED", "1")
+    monkeypatch.setenv("DOCKER_HOST", "tcp://localhost:2375")
+    monkeypatch.delenv("CGROUP_PARENT_DEV_GATES", raising=False)
+
+    assert "did not forward CGROUP_PARENT_DEV_GATES" in _docker_unavailable_reason()
+
+
+def test_registered_enroll_lane_fails_closed_when_dind_endpoint_is_missing(monkeypatch):
+    monkeypatch.setenv("CIU_ENROLL_REQUIRED", "1")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    with pytest.raises(pytest.fail.Exception, match="registered enrollment gate preflight failed"):
+        enroll_fixture_image.__wrapped__()
+
+
+def test_enroll_preflight_accepts_the_registered_tester_gate_endpoint(monkeypatch):
+    monkeypatch.setenv("CIU_ENROLL_REQUIRED", "1")
+    monkeypatch.setenv("DOCKER_HOST", "tcp://localhost:2375")
     monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
     monkeypatch.setattr(shutil, "which", lambda _name: "/usr/bin/docker")
     monkeypatch.setattr(
         subprocess, "run", lambda *_args, **_kwargs:
         subprocess.CompletedProcess(["docker", "info"], 0, "", ""),
     )
-    monkeypatch.setattr(tester_gate, "resolve_cgroup_probe_image", lambda _image: "probe:image")
-    observed = []
-    monkeypatch.setattr(
-        tester_gate, "check_slice_unit",
-        lambda *args: (observed.append(args) or (True, "loaded with fragment")),
-    )
-
     assert _docker_unavailable_reason() is None
-    assert observed == [("dev-gates.slice", "probe:image", "dev-gates.slice")]
 
 
 def _skip_or_fail_enroll_preflight(reason: str) -> None:
@@ -826,16 +811,14 @@ def rendered_get_py() -> Path:
 def _enroll_container(image: str, script: Path, *, network: str = "bridge") -> Iterator[str]:
     """A short-lived fixture container carrying the rendered installer.
 
-    Placed on the estate's gate cgroup tier with a 2 GiB hard RAM cap and ample
-    swap; named for operator visibility
-    and removed in a finally so a failing assertion never leaves one running.
+    The outer tester-gate and its DinD sidecar are placed under the verified
+    estate gates slice. This inner fixture is bounded inside that sidecar and
+    removed in a finally so a failing assertion never leaves one running.
     """
-    slice_name = os.environ["CGROUP_PARENT_DEV_GATES"]
     container = f"ciu-enroll-{os.getpid()}-{uuid.uuid4().hex[:12]}"
     started = subprocess.run(
         ["docker", "run", "-d", "--init", f"--name={container}",
-         f"--cgroup-parent={slice_name}",
-         "--cpus=3", "--memory=2g", "--memory-swap=16g",
+         "--cpus=1.5", "--memory=1g",
          f"--network={network}",
          image, "sleep", "600"],
         capture_output=True, text=True,
@@ -1010,8 +993,11 @@ class TestEnrollAgainstRealSystem:
             )
             assert enrolled.returncode == 0, enrolled.stdout + enrolled.stderr
 
-            started = _cexec(c, "sh", "-c",
-                             "mkdir -p /run/sshd && /usr/sbin/sshd -p 2222")
+            started = _cexec(
+                c, "sh", "-c",
+                "mkdir -p /run/sshd && chown root:root /run/sshd "
+                "&& chmod 0755 /run/sshd && /usr/sbin/sshd -p 2222",
+            )
             assert started.returncode == 0, started.stderr
             login = _cexec(
                 c, "ssh", "-o", "StrictHostKeyChecking=no", "-o", "BatchMode=yes",

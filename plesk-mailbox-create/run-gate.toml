@@ -1,7 +1,7 @@
 # =============================================================================
-# plesk-mailbox-create gate lanes — parsed ONLY by run-gate.py (one parser,
+# plesk-mailbox-create gate lanes — parsed ONLY by Run-Gate CLI (one parser,
 # D-110). Single-script project with no test suite: the lane is a syntax
-# smoke (py_compile) so `./run-gate.py --list` answers "how do I test this?"
+# smoke (py_compile) so `run-gate --list` answers "how do I test this?"
 # uniformly. Host lane.
 # See run-gate-project/SPEC.md.
 # =============================================================================

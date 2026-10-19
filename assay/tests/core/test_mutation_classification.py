@@ -25,6 +25,15 @@ end-to-end proof lives in ``test_cli_run.py``
 
 from __future__ import annotations
 
+import signal
+
+from conftest import (
+    completed_process,
+    file_not_found,
+    process_tree_evidence_dict,
+    timeout_expired,
+)
+
 import subprocess
 from concurrent.futures import Future
 from datetime import datetime, timezone
@@ -107,7 +116,12 @@ class _SynchronousExecutor:
         return future
 
 
-def _decide_by_mutated_flag(repo_path: Path, *, kill_signal_artifact: str | None = None):
+def _decide_by_mutated_flag(
+    repo_path: Path,
+    *,
+    kill_signal_artifact: str | None = None,
+    signaled_lineno: int | None = None,
+):
     """The fake `process_runner` driving every row of the table: the
     BASELINE call (``cwd == repo_path``) always PASSes and writes nothing --
     `run_mutation` never re-runs the baseline (A-119), so this branch exists
@@ -119,7 +133,7 @@ def _decide_by_mutated_flag(repo_path: Path, *, kill_signal_artifact: str | None
     def decide(argv, *, env, cwd, timeout):
         cwd_path = Path(cwd)
         if cwd_path == repo_path:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         text = (cwd_path / "pkg" / "flags.py").read_text(encoding="utf-8")
 
         def write_artifact(data: bytes) -> None:
@@ -131,26 +145,34 @@ def _decide_by_mutated_flag(repo_path: Path, *, kill_signal_artifact: str | None
 
         if "a = False" in text:  # PASS, artifact DIFFERENT -> survived
             write_artifact(_DIFFERENT_BYTES)
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         if "b = False" in text:  # FAIL, artifact DIFFERENT -> killed
             write_artifact(_DIFFERENT_BYTES)
+            if signaled_lineno == 3:
+                result = completed_process(
+                    list(argv), returncode=-signal.SIGTERM, stdout="", stderr=""
+                )
+                result.process_tree_evidence = process_tree_evidence_dict(
+                    leader_status="signaled"
+                )
+                return result
             if kill_signal_artifact is not None:
                 write_signal(b"  ERROR: check constraint violated  \n")
-            return subprocess.CompletedProcess(list(argv), returncode=1, stdout="", stderr="")
+            return completed_process(list(argv), returncode=1, stdout="", stderr="")
         if "c = False" in text:  # PASS, artifact ABSENT -> crashed
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         if "d = False" in text:  # FAIL, artifact ABSENT -> crashed
-            return subprocess.CompletedProcess(list(argv), returncode=1, stdout="", stderr="")
+            return completed_process(list(argv), returncode=1, stdout="", stderr="")
         if "e = False" in text:  # PASS, artifact SAME as baseline -> equivalent
             write_artifact(_BASELINE_BYTES)
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         if "f = False" in text:  # FAIL, artifact SAME as baseline -> equivalent
             write_artifact(_BASELINE_BYTES)
-            return subprocess.CompletedProcess(list(argv), returncode=1, stdout="", stderr="")
+            return completed_process(list(argv), returncode=1, stdout="", stderr="")
         if "g = False" in text:  # ERROR -- crashed, unaffected by the artifact
-            raise FileNotFoundError(2, "No such file or directory", argv[0])
+            raise file_not_found(2, "No such file or directory", argv[0])
         if "h = False" in text:  # BUDGET_EXCEEDED -- unaffected by the artifact
-            raise subprocess.TimeoutExpired(cmd=list(argv), timeout=timeout)
+            raise timeout_expired(cmd=list(argv), timeout=timeout)
         raise AssertionError(f"unexpected mutated content in {cwd}: {text!r}")
 
     return decide
@@ -160,12 +182,27 @@ def _run(
     tmp_path: Path,
     *,
     kill_signal_artifact: str | None = None,
+    strip_process_tree_evidence: bool = False,
+    signaled_lineno: int | None = None,
 ) -> mutation.Mutation:
     lane = make_lane(argv=("pytest", "-q"))
     repo = _seed_repo(tmp_path, "repo")
     scratch_root = tmp_path / "scratch"
     scratch_root.mkdir()
-    decide = _decide_by_mutated_flag(repo.path, kill_signal_artifact=kill_signal_artifact)
+    decide = _decide_by_mutated_flag(
+        repo.path,
+        kill_signal_artifact=kill_signal_artifact,
+        signaled_lineno=signaled_lineno,
+    )
+    if strip_process_tree_evidence:
+        complete_decide = decide
+
+        def decide(argv, *, env, cwd, timeout):
+            result = complete_decide(argv, env=env, cwd=cwd, timeout=timeout)
+            if hasattr(result, "process_tree_evidence"):
+                del result.process_tree_evidence
+            return result
+
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
     assert baseline.outcome is Outcome.PASS
     plan = make_plan(lane)
@@ -192,6 +229,31 @@ def _run(
         )
     assert result is not None and not isinstance(result, str)
     return result
+
+
+def test_native_r2_refuses_a_runner_without_process_tree_proof(tmp_path: Path):
+    with pytest.raises(AssayError, match="no process-tree proof"):
+        _run(tmp_path, strip_process_tree_evidence=True)
+
+
+def test_signaled_test_runner_is_crashed_not_killed(tmp_path: Path):
+    result = _run(tmp_path, signaled_lineno=3)
+
+    assert not result.killed
+    assert [outcome.lineno for outcome in result.crashed] == [3, 4, 5, 8]
+    signaled = next(outcome for outcome in result.crashed if outcome.lineno == 3)
+    assert signaled.process_tree_evidence.leader_status == "signaled"
+    assert mutation._terminal_result_matches_bucket(
+        {
+            "terminal_result": {
+                "outcome": "FAIL",
+                "reason_code": "COMMAND_FAILED",
+                "returncode": -signal.SIGTERM,
+            },
+            "outcome_bucket": "crashed",
+        },
+        process_tree_evidence=signaled.process_tree_evidence,
+    )
 
 
 # =============================================================================
@@ -283,14 +345,14 @@ def test_a_killed_mutant_with_no_kill_signal_file_reclassifies_to_crashed(tmp_pa
     def decide(argv, *, env, cwd, timeout):
         cwd_path = Path(cwd)
         if cwd_path == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         mutated = (cwd_path / "pkg" / "flags.py").read_text(encoding="utf-8")
         assert "b = False" in mutated
         # writes the equivalence artifact (so this mutant is NOT `crashed`
         # for the unrelated artifact-absent reason) but NEVER the kill
         # signal file -- the one fact this test isolates.
         (cwd_path / _ARTIFACT).write_bytes(_DIFFERENT_BYTES)
-        return subprocess.CompletedProcess(list(argv), returncode=1, stdout="", stderr="")
+        return completed_process(list(argv), returncode=1, stdout="", stderr="")
 
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
     assert baseline.outcome is Outcome.PASS
@@ -537,10 +599,10 @@ def test_a_killed_mutant_whose_kill_signal_is_not_valid_utf8_is_fatal(tmp_path: 
     def decide(argv, *, env, cwd, timeout):
         cwd_path = Path(cwd)
         if cwd_path == repo.path:
-            return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+            return completed_process(list(argv), returncode=0, stdout="", stderr="")
         (cwd_path / _ARTIFACT).write_bytes(_DIFFERENT_BYTES)
         (cwd_path / "signal.txt").write_bytes(b"\xff\xfe not valid utf-8")
-        return subprocess.CompletedProcess(list(argv), returncode=1, stdout="", stderr="")
+        return completed_process(list(argv), returncode=1, stdout="", stderr="")
 
     baseline = execute_command(lane, cwd=repo.path, process_runner=decide)
     assert baseline.outcome is Outcome.PASS

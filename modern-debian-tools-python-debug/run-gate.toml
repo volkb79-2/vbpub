@@ -1,5 +1,5 @@
 # =============================================================================
-# modern-debian-tools-python-debug gate lanes — parsed ONLY by run-gate.py
+# modern-debian-tools-python-debug gate lanes — parsed ONLY by Run-Gate CLI
 # (one parser, D-110). Image-build tooling has no build-unit suite, so the lane
 # is a syntax smoke over every tracked Python file, plus host-setup Python tests
 # and (RG-55 P8)
@@ -38,11 +38,13 @@ budget = "15m"
 kind = "assay"
 assay_lane = "host_setup"
 environment = "tester-unified"
+resource_observer = "cgprofile"
 clean_tree = true
 budget = "2h"
 artifacts = [".assay/verdict-host_setup.json", ".assay/progress-host_setup.jsonl", ".assay/coverage.json"]
 
 [lanes.assay-full.resources]
+pids = 8192
 # The full wizard R0-R3 lane routinely exceeds 4 GiB while executing the
 # serial mutation campaign (the observed peak was just over 4.1 GiB). Keep a
 # 6 GiB per-container ceiling so a normal mutation candidate is not mistaken

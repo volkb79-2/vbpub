@@ -77,6 +77,12 @@ services:
       - "{{ bind }}{{ tls_edge.ports.https }}:443"
       # Alternative HTTPS: port-based routing fallback.
       - "{{ bind }}{{ tls_edge.ports.https_alt }}:8443"
+{% if tls_edge.calls.enabled %}
+      # Mattermost Calls: same public port over TCP and UDP. TCP maps to its
+      # own Traefik port because internal 8443/TCP belongs to websecure-alt.
+      - "{{ bind }}{{ tls_edge.calls.public_port }}:{{ tls_edge.calls.tcp_internal_port }}/tcp"
+      - "{{ bind }}{{ tls_edge.calls.public_port }}:{{ tls_edge.calls.udp_internal_port }}/udp"
+{% endif %}
 {% if tls_edge.tls.mode == 'acme-dns' %}
 {% if tls_edge.standalone %}
     # lego DNS provider credentials live in the gitignored .env (chmod 600).

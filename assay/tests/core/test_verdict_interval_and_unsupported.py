@@ -205,7 +205,7 @@ def test_the_unsupported_terminal_still_records_the_policy_it_applied():
                 language="python", source_roots=("pkg",), base="a" * 40
             ),
             r2=JudgmentR2(
-                jobs=2,
+                jobs=1,
                 max_mutants=50,
                 operators=("python:compare-swap",),
                 kill_attribution="unattributed",
@@ -244,7 +244,7 @@ def test_a_policy_recorded_for_a_baseline_that_never_ran_is_refused():
                     language="python", source_roots=("pkg",), base="a" * 40
                 ),
                 r2=JudgmentR2(
-                    jobs=2,
+                    jobs=1,
                     max_mutants=50,
                     operators=("python:compare-swap",),
                     kill_attribution="unattributed",

@@ -1,5 +1,70 @@
 # run-gate design guide
 
+## SemVer names the installed tool
+
+Consumers install Run-Gate as a wheel and invoke its `run-gate` console
+command. The wheel's SemVer, read from installed distribution metadata, is the
+public version and compatibility floor. `run-gate --version` and the normal
+CLI banners all report that same value. Missing or malformed package metadata
+is an error; Run-Gate does not guess from a source checkout.
+
+The old integer `__revision__` existed to show whether copied scripts had
+drifted. Once copied scripts and consumer symlinks are retired, that number
+cannot tell an adopter whether its installed package satisfies a release
+floor. Release tags therefore carry SemVer (`run-gate-vX.Y.Z`), and consumers
+compare that value with their required version. Persisted `revision` fields
+can remain where they identify the writer of older records or a record
+format; those are data provenance, not the installed tool's identity.
+
+This separates two questions: package compatibility is answered by SemVer,
+while saved-record compatibility is answered by the record's schema and
+provenance contract. See the [user-facing version contract](../CONSUMERS.md#distribution-installed-wheel-and-semver)
+and [CLI overview](../README.md#distribution-installed-wheel).
+
+## Release coverage uses a fixed tag baseline and follows content across renames
+
+The selftest release coverage floor compares executable lines changed since
+the newest reachable stable `run-gate-vX.Y.Z` tag. The tag remains a fixed
+baseline after the candidate merges to `main`; a `main` merge-base would become
+the candidate itself and report no changed source lines. On the first stable
+release, the selftest's explicit `--allow-first-release` policy reports the
+diff check as `SKIPPED` when no stable tag exists. The test suite still runs,
+and the separate `assay-r1` campaign supplies whole-source line-and-branch
+qualification before merge. If stable tags exist but none are reachable from
+the candidate, the check remains an error. Git must identify renames before Run-Gate filters the diff to
+`run_gate.py`. A path-limited diff hides the deleted path from rename
+detection; when a compatibility symlink becomes the wheel module, Git then
+reports every line in the module as newly added. The gate uses rename and
+rewrite detection on the project diff, then applies its source filter to the
+parsed paths. This keeps the denominator tied to changed content while still
+ignoring unrelated files. See the [release-gate description](../README.md#version-probe)
+and [consumer adoption note](../CONSUMERS.md#release-coverage-baseline).
+
+## The release gate tests the published wheel
+
+The CMRU `run-tests` step reads the new dated version section prepared in
+`CHANGES.md` and refuses a section at or behind the newest release tag. It
+requires CMRU's protected `CMRU_RELEASE_GATE_COMMIT` and verifies that it
+matches the selected checkout, so a dated heading alone cannot stamp a stable
+version onto an unrelated or manually prepared tree. For a first release, no
+prior stable tag exists; the protected CMRU transaction may use its prepared
+version as the initial stable identity. It then
+builds that wheel through CMRU's wheel builder and builds a uniquely tagged
+`tester-unified` image from those exact wheel bytes. The selftest selects that
+tag through `image_env`, leaving the shared `:local` tag alone. Before pytest,
+the running gate checks the image labels, installed module paths and bytes,
+distribution version, and the installed CLI's `--version` result against the
+candidate receipt. After tagging, CMRU rebuilds the wheel from
+the same candidate commit and refuses to publish if its version, filename,
+digest, or tester image identity differs. This connects the bytes that ran in
+the gate to the bytes attached to the release rather than treating matching
+version strings as artifact identity.
+
+The receipt is stored under the candidate's ignored `.assay/` directory and
+names the exact commit, wheel, and image. A normal local `run-gate selftest`
+does not require a release receipt; CMRU sets the receipt variable only for its
+release transaction. See the [consumer release workflow](../CONSUMERS.md#exact-wheel-release-verification).
+
 ## A worktree is the complete judgment boundary
 
 `--worktree W` selects the source tree whose commit is judged. The lane policy
@@ -21,6 +86,63 @@ one supplied shared policy.
 This rule preserves nested projects in a monorepo: a project at
 `packages/service` in the invoking checkout maps to
 `W/packages/service`, while the worktree root stays the Git judgment root.
+
+## Shared Git metadata keeps host hooks inert
+
+Linked-worktree container lanes need the common Git directory read-write for
+object writes and in-lane commits. Making that entire mount read-only would
+break supported lane behavior, while masking only Git config still leaves
+`<common>/hooks` writable. A tester could write `post-commit` there and have a
+later host commit execute tester-controlled code.
+
+Run-Gate keeps the shared directory writable, but overlays its common `hooks/`
+directory with a private empty directory mounted read-only. It mounts the real
+common `info/` directory read-only as well, protecting host exclude metadata.
+Both overlays follow the physical and namespace mount paths. Missing, symlinked,
+or non-directory hook/info paths refuse as infrastructure before the lane
+starts. The real-container oracle plants a host hook, proves the tester cannot
+create a hook or edit `info/exclude`, and verifies the in-container commit
+does not execute the host hook. A subsequent host commit runs the original hook
+unchanged. This preserves normal in-container commits while keeping the host's
+later Git operations outside the tester's hook-writing authority.
+
+CMRU independently disables hooks around its own host Git calls while it
+prepares release-baseline facts. That protects the aggregate controller's
+credential-bearing Git operation; the Run-Gate mount protects later host Git
+operations after a tester lane.
+
+## Concurrent exec lanes use read-only Git safety
+
+Run-Gate needs `safe.directory=*` because a container user may differ from the
+host owner of the mounted checkout. Writing that setting with `git config
+--global` creates a shared lock file in the runner. Two concurrent `docker
+exec` lanes can then race during setup, and the loser can look like a product
+failure. Run-Gate instead passes the setting through Git's `GIT_CONFIG_COUNT`
+environment interface. Each lane process sees the value without writing a
+config file, lock file, or adding mutual exclusion. Test containers are
+single-user environments; this contract covers Run-Gate's own safety setting,
+not arbitrary global Git configuration writes performed by lane bodies.
+
+Two details are easy to get wrong. The entry must be **appended** at the count
+the lane's environment already carries: a fixed index 0 silently overwrote
+entries a runner or wrapper had injected, and only the lane's own shell knows
+that count (an exec runner's environment is not the controller's). And the
+mechanism has a **Git floor of 2.38**: Git reads `safe.directory` only from
+protected configuration, and command-line scope — which the environment
+variables are — joined it in that release. An older Git ignores the entry
+silently and the lane fails as "dubious ownership", the very symptom RG-99
+exists to prevent, so the inner command checks the version it finds and
+refuses by name; an absent `git` is not this setting's concern. The previous
+file-based approach also pinned `GIT_CONFIG_GLOBAL`, which hid the user's
+global Git configuration from lanes; that isolation is gone by design, and
+the SPEC says so. The oracle is Git itself: with
+`GIT_TEST_ASSUME_DIFFERENT_OWNER=1` the repository is rejected without the
+injection and accepted with it, not merely a string match on the environment.
+
+The one remaining RG-99 item is live acceptance: two concurrent lane commands
+observed inside the same running runner container. See
+[SPEC.md R-19a](../SPEC.md#5-execution-contract)
+and the [consumer guidance](../CONSUMERS.md#exec-mode-git-safety).
 
 ## The runner belongs to the judged worktree
 
@@ -60,6 +182,30 @@ inserts the old implicit choice as literal config text, preserving comments
 and requiring the operator to review the resulting diff. It migrates one
 file per call so a project config and an ancestor `run-gate.root.toml` can be
 checked independently.
+
+A lane that still names `host` or `bare-host` without declaring it is refused
+at resolution. The refusal prints the remedy the loader will accept — the
+exact declaration (`mode = "host"` for `bare-host`, `mode = "ephemeral"` plus
+an `image` for `host`) and the `migrate-modes` command — and picks the file
+that command must run on: `migrate-modes` acts on the config it is given, so
+a lane inherited from the central config is migrated there, not in the
+project file where it would change nothing. The migration also sees names
+referenced only by `[assay]` or `[assay.import]`. A remedy that names a
+command the loader then rejects, or that is a no-op, would be worse than no
+hint, so a test runs the printed command and reloads the config.
+
+## Per-invocation image identity
+
+Release gates must not replace a shared mutable image tag while proving which
+wheel they tested. `image_env` is available only to ephemeral environments:
+the Run-Gate process that starts the lane can select that invocation's image,
+but an `exec` lane cannot replace the image of a persistent container. The
+named host variable overrides the declared `image` when set and non-empty; when
+unset, the declared value remains in effect. A set but empty value refuses.
+Run-Gate prints the override source and effective image, then records that
+selection and the actual Docker image ID in the lane history. This binds a
+receipt-specific candidate to its evidence without moving a shared tag and
+makes an environment override visible during later review.
 
 ## PID 1 and cgroup resource events
 
@@ -161,32 +307,50 @@ The existing cgprofile daemon already has the host proc and cgroup view
 required for its measurement and placement duties. Run-Gate's explicit
 resource_observer = "cgprofile" lane setting mounts a separate
 observer-only Unix socket, not ctl.sock, into the opted-in tester container.
-It is supported on native Assay lanes and on any explicitly opted-in
-`tester-unified` command lane. Its intended command use is a wrapper that
+It is supported on native Assay lanes and command lanes whose resolved
+environment has `mode = "ephemeral"`. Its intended command use is a wrapper that
 launches an Assay campaign (such as Assay's B105 self-qualification driver).
 Run-Gate cannot establish from arbitrary command argv whether a script will
 launch Assay, so the opt-in is defined by the declared lane rather than a
 fragile command-string heuristic. This keeps the observer available across
 the wrapper boundary without asking the wrapper to recreate Docker mount or
 credential logic; the inherited endpoint variable must reach its Assay
-process.
+process. Before launching the lane, Run-Gate queries the daemon's control
+`version` response and requires an observer advertisement with contract 2,
+the fixed socket path, and `listening = true`. This catches stale daemons and
+failed socket binds before test code starts. The advertisement is a startup
+capability check; it does not prove the listener will remain healthy for the
+whole lane.
+Observer-backed container lanes also require explicit local memory and PID
+ceilings. These put memory and process-count rejection events on the candidate
+container's own cgroup, where Assay can distinguish them from an event caused
+by a sibling. The observer uses a dedicated group and a stable directory bind,
+so a daemon restart does not pin an already-running lane to an unlinked socket
+inode. Observer lanes refuse extra mounts because they could expose the Docker
+API to test code that receives the observer group.
 The first cut restricted the setting to native Assay lanes, but that excluded
 B105's qualification wrapper: it builds and installs the exact source wheel,
 then runs Assay in a private venv, so replacing it with the ordinary lane
-driver would discard its deadline and receipt guarantees. The extension is
-limited to an explicit opt-in on `tester-unified` command lanes. It broadens
-which runner may receive the same read-only endpoint, not what the endpoint
-can do: the daemon still binds each query to that peer's native thread and
-returns only that peer's gates-slice ancestry, never a caller-selected path,
-sibling cgroup, or control operation. The explicit lane declaration is the
-grant; the command process is trusted with the same narrow query capability
-whether or not it passes the endpoint onward to Assay.
+driver would discard its deadline and receipt guarantees. The initial command
+lane extension allowed only `tester-unified`; revision 66 generalized it to
+any command lane whose resolved environment is ephemeral. The environment name
+does not grant the capability: the lane must still opt in explicitly. This
+broadens which runner may receive the same read-only endpoint, not what the
+endpoint can do: the daemon still binds each query to that peer's native thread
+and returns only that peer's gates-slice ancestry, never a caller-selected
+path, sibling cgroup, or control operation. The explicit lane declaration is
+the grant; the command process is trusted with the same narrow query
+capability whether or not it passes the endpoint onward to Assay.
 The observer accepts only a resource-counter request; filesystem read-only
 alone would not constrain the existing control socket's verbs. Docker also
 receives the socket's observed GID as a supplementary group, and the socket
 path, type, owner, group, and mode are checked before launch. Missing service
 or unsafe socket state is an infrastructure refusal, never a reason to
-silently run without B145.
+silently run without B145. To reject a socket that uses Docker's powerful
+group, Run-Gate reads the numeric GID from the root-owned `/run/cgprofile`
+control directory provisioned as `root:docker` by host setup. It does not use
+`getgrnam("docker")` from the devcontainer's potentially different group
+table, and it refuses when that host path cannot be verified.
 
 The client sends only its native thread ID. The daemon binds that request to
 SO_PEERCRED, checks the thread's host/namespace PID mapping, verifies that
@@ -217,6 +381,48 @@ The shipped R2 declaration therefore uses `jobs = 1`; `--resume` continues a
 budget-limited campaign on the same tree. Parallel workers require separate
 cgroups and counter bindings before they can be classified independently.
 
+### Assay unavailable observation is an infrastructure error
+
+Assay's `NO_MEASUREMENT` has several causes. Most describe a judged claim that
+cannot be made and keep run-gate's established FAIL mapping. The specific
+`CGROUP_OBSERVATION_UNAVAILABLE` reason means native R2 could not start because
+its required counters were unavailable before the first candidate. The gate
+maps that reason to `ERROR` only after validating the claim and evidence
+records and confirming every other result passed. This preserves the outcome
+precedence that the top-level `NO_MEASUREMENT` rollup can otherwise hide: an
+independent budget stop remains `BUDGET_EXCEEDED`, and an independent failure
+or inconclusive claim remains `FAIL`. A malformed claim or evidence record is
+`ERROR`. The gate preserves the raw Assay outcome and reason. It does not say
+that the tested code failed. If observation is lost after a candidate starts,
+Assay itself returns `ERROR/EXEC_FAILED`; the candidate is withheld because
+its event window cannot be attributed. See the
+[consumer example](../CONSUMERS.md#native-r2-resource-observation-refusals).
+The v16 reason-code mapping requires Assay 10.0.0 or newer because older
+versions do not provide the independent claim and evidence rollup it inspects.
+
+### Assay result requires agreement between process and artifact
+
+An Assay verdict artifact is not a substitute for the process status that
+produced it. Run-Gate compares the raw lane exit with the artifact's top-level
+`exit_code`, then checks that this code matches the outcome's closed table
+(PASS 0, FAIL 1, ERROR 2, NO_MEASUREMENT 3, BUDGET_EXCEEDED 4,
+INCONCLUSIVE 5). Missing, malformed, or disagreeing codes produce infrastructure
+ERROR with the raw runner status and Assay outcome preserved. The gate does not
+repair a mismatch by trusting whichever source says PASS: the artifact can be
+stale or forged, while the process can fail after writing its verdict. This
+comparison keeps both facts visible and fails closed only on an actual
+inconsistency.
+
+## Env drift does not certify unreadable source
+
+`--check-env` is a heuristic scan, so its result is only as complete as the
+Python files it can read. A syntax error can use the documented line-regex
+fallback; an I/O or decoding error cannot be scanned at all. Run-Gate names
+that file and marks the overall scan incomplete instead of folding missing
+input into a clean zero-reference result. The drift scan remains advisory:
+it does not decide whether a lane is allowed to run, while a toolchain failure
+still keeps its existing exit status.
+
 ## Preflight probes preserve lane context
 
 An Assay inventory or toolchain probe must reach the same ephemeral
@@ -224,6 +430,26 @@ environment as its judged lane. It uses the lane's configured container user
 and the same operator extra mounts. Without those, an imported Assay command
 or tool can be unavailable to preflight even though it is present in the
 actual lane, or a probe can pass under permissions the lane does not have.
+
+## Imported lanes are resolved only when needed
+
+An inventory import depends on a live Assay judge. Requiring that judge merely
+to list lanes or run an unrelated local command turns a stopped optional
+runner into a project-wide outage. Run-Gate therefore resolves inventory for
+an imported lane selection, a local sequence that references an imported
+lane, or a verb whose answer covers every lane; help, `--list` and an omitted
+lane never probe, and keep their stable three-column output with a stderr note
+that the import was not queried. A fallback to placeholders is only safe for a
+display. `doctor`, `--check-env`, and `history` / `footprint` over every lane
+(including `footprint --write`) used to skip resolution, and then answered from
+the declared lanes alone: a doctor that reported a clean result without
+checking imported lanes, and a manifest rewritten with their entries missing,
+both exit 0. Those verbs now resolve, and when the judge is unavailable they
+refuse with the runner remedy instead of degrading. A named lane (`history L`,
+`footprint L`) resolves only when `L` is not declared locally, so a stopped
+runner never blocks a question about a local lane. Failing closed here keeps
+unknown inventory distinct from an empty inventory and avoids guessing
+imported names.
 
 ## Source-backed Assay identifies code as source
 
@@ -320,6 +546,14 @@ parent is the base. A non-merge trunk HEAD has no post-merge change set, so it
 is NOT_RUN with `no-base`. The resolved commit is passed only to member lanes
 that request it. This avoids comparing different members against different
 moving refs during one composite.
+
+A sequence declares no environment of its own, so a preflight that walks lanes
+and asks each for one has nothing to ask. `doctor` therefore walks a
+sequence's members instead (RG-103) and reports each member with its
+environment facts. The walk treats the lane table as untrusted input: a missing
+member, a cycle, an empty member list or an environment-less member is a named
+`[FAIL]`, because a preflight that raises `KeyError` hides every other finding
+and one that silently skips a lane certifies something it did not check.
 
 ## Selective requests stay with the selected lane
 
@@ -460,11 +694,33 @@ through its declared runner, never by host-statting a container path.
 When the default `<checkout>/.run-gate` path is not mounted there, the result
 is NOT_RUN/`state-mount` with the required read-write mount named. A container
 environment can set `state_root` when its durable mount uses another path;
-`doctor` checks that path once per assay environment. The Assay command's
-`TMPDIR` and `GIT_CEILING_DIRECTORIES` are derived from this same selected
-state path and passed through to pytest; a fixed `/worktree` path would be
-wrong in a differently mounted checkout. Run-Gate creates keyed per-project
-descendants only beneath the checked root. See the
+`doctor` checks that path once per assay environment. The test command's
+temporary path and `GIT_CEILING_DIRECTORIES` are derived from this same
+selected state path; a fixed `/worktree` path would be wrong in a differently
+mounted checkout. Run-Gate creates keyed per-project
+descendants only beneath the checked root.
+
+**Why the judge does not always get `TMPDIR` (RG-98).** An assignment before
+the Assay command lands in the judge's own environment, and Assay allocates its
+snapshot scratch from `TMPDIR`; the snapshot must not see its own scratch, so
+Assay refuses a scratch root inside `repo_top`. RG-85 pointed `TMPDIR` at the
+state root so pytest's temporary files land on a mounted path, which for the
+default in-repo root also pointed Assay's scratch into the repository: every
+snapshot-isolated lane failed before R0. Two fixes were considered. (a) Refuse
+that combination in preflight and require an external `state_root`: rejected,
+because it turns the default configuration into a refusal, probes the judge on
+every run, and has no remedy at all for a bare-host lane (`state_root` is
+forbidden for `mode = "host"`). (b) Keep the judge's environment free of the
+in-repo path and give the test command its own channel: chosen. The state-root
+path is always exported as `RUN_GATE_TMPDIR` (a name Assay does not read), and
+as `TMPDIR` only when it is outside the judged worktree, where it is harmless
+to Assay and keeps existing `env_passthrough = ["TMPDIR"]` lanes working. In the
+in-worktree case the consumer maps `RUN_GATE_TMPDIR` onto the test command's
+`TMPDIR` with Assay's own `required-env:` infrastructure fact; Run-Gate cannot
+scope an environment variable to a grandchild process itself, and does not
+parse `assay.toml` to guess. The cost is one `assay.toml` line for a lane that
+needs the state path as `TMPDIR`; the saving is that no lane can ERROR before
+R0 on scratch placement. See the
 [consumer contract](../CONSUMERS.md#resume-progress-and-durable-assay-state)
 for the config and mount requirement.
 

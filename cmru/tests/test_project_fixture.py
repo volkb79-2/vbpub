@@ -1,4 +1,5 @@
 from pathlib import Path
+import subprocess
 import sys
 
 from tests._cx_paths import CX_LIBRARY
@@ -39,6 +40,10 @@ def test_disposable_project_fixture_copies_worktree_library_never_cli_extended_a
         package_file = repo_root / "libraries" / library / "src" / package / "__init__.py"
         package_file.parent.mkdir(parents=True, exist_ok=True)
         package_file.write_text("", encoding="utf-8")
+
+    # The fixture copies only TRACKED inputs, resolved through a real Git worktree.
+    subprocess.run(["git", "init", "-q", str(repo_root)], check=True)
+    subprocess.run(["git", "-C", str(repo_root), "add", "-A"], check=True)
 
     copied_project = copy_project_fixture(
         repo_root=repo_root,

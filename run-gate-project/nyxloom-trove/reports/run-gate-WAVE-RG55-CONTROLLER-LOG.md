@@ -9371,3 +9371,60 @@ Resumed again at 18:36:17Z from the same judged tree/state in
 baseline pytest command; memory PSI `full avg10=0.00`. Keep the tree quiet and
 do not overlap another mutation campaign. Continue at the operator's
 25-minute observation interval absent an error or likely completion.
+
+### RW-568 — 2026-10-11 23:58:28 UTC — progress update and RW-567 count correction
+
+Correction to RW-567: that entry counted only the seven records visible in a
+tail view. The complete progress stream for the 10:34Z retry contains 20
+candidate records at `candidate_total=1493` (19 killed, 1 survived), not seven.
+Thus 120/1,593 candidates were accounted for before the current run, not
+107/1,593. The partial records remain valid; the R2 lane remains incomplete.
+
+The active run is container `run-gate-vbpub-r2-1453530-1791743776` on the
+unchanged judged tree `06e7804eaf0126c8d8611ff28e61f92657a57d49`, started
+18:36:17Z, with a 3-CPU cap under `dev-gates.slice`. At 23:58:28Z the progress
+stream contained 396/1,473 candidates for this resumed segment (390 killed,
+6 survived), latest candidate at 23:57:28Z. Across saved records, 516/1,593
+are accounted for: 509 killed, 7 survived, and 1,077 remain. No final R2
+verdict exists. Memory PSI `full avg10=0.01`; the exact container is running
+and no other Run-Gate/Assay test container was active at the observation.
+
+From the first to latest candidate event in this segment, observed throughput
+is about 48.3 seconds/candidate. Linear projection for 1,077 remaining is
+about 14h 27m, around 2026-10-12 14:26Z, with roughly 4h 10m before the 24h
+lane budget. This is an estimate, not a completion promise; candidate cost
+and host activity vary.
+
+### RW-569 — 2026-10-12 — retire resource-observer contract 1
+
+The operator approved contract 2 as the sole supported resource-observer
+version. This is a hard cut for the observer-only socket: a request carrying
+contract 1 receives an explicit unsupported-contract refusal, and contract 2
+returns both hierarchical and effective local event evidence. The daemon's
+separate control socket and its contract-1 verbs remain unchanged. Assay
+already requests contract 2 and refuses an old daemon response; the minimum
+daemon release for B155 is cgroup-profiler 1.0.0, the combined RG-55 first
+release. Untagged source must identify itself as `0.0.0-dev`; a stale
+`1.1.0` fallback must not imply a release exists.
+
+The in-flight contract-1 R2 campaign in
+`.worktrees/rg55-cgprofile-cap-20261011/scripts/cgroup-profiler` was stopped
+after the operator superseded that observer contract. Its progress file has
+581 saved candidate records (573 killed, 8 survived) and the latest completed
+candidate index is 460 of the resumed 1,473-candidate plan. The termination
+signal produced an incomplete `BUDGET_EXCEEDED/LANE_TIMEOUT` receipt; that is
+not a mutation verdict. Preserve the records for audit, do not reuse them to
+qualify contract 2, and do not call the campaign PASS or FAIL. The new exact
+tree must run the registered contract-2 R2 lane. Before that run, the two
+survivor-specific oracle additions cover a forbidden root target and a
+counter/path disagreement while the other six dispositions remain
+masked/equivalent pending fresh R2 confirmation.
+
+### RW-570 — 2026-10-14 — installed Run-Gate wheel is the only supported consumer
+
+The operator confirmed that copied `run-gate.py` scripts are no longer a
+supported integration. The supported consumer is the installed Run-Gate wheel;
+its SemVer from `run-gate --version` is the public compatibility identity.
+Updated the canonical RG-55 interface contract and its cgroup-profiler copy,
+and aligned the adopter docs. This changes distribution identity wording, not
+the daemon wire protocol.

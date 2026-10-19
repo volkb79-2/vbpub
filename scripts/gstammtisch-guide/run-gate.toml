@@ -1,5 +1,5 @@
 # =============================================================================
-# gstammtisch-guide gate lanes — parsed ONLY by run-gate.py (one parser,
+# gstammtisch-guide gate lanes — parsed ONLY by Run-Gate CLI (one parser,
 # D-110). The modules under test load via importlib.util.spec_from_file_
 # location against fixture data (fake_rcon_server.py, a local socketpair,
 # monkeypatched subprocess/docker calls) — the one file that talks to a real
@@ -21,7 +21,7 @@
 # worked out and verified live first.
 #
 # gate stays bare-host: its whole job is launching the three lanes above as
-# nested `./run-gate.py <lane>` processes, each starting its own docker
+# nested `run-gate <lane>` processes, each starting its own docker
 # container -- that needs real docker-socket access tester-unified does not
 # have wired up.
 # =============================================================================
@@ -43,6 +43,7 @@ budget = "5m"
 # [lanes.r2].
 [lanes.r2]
 kind = "command"
+resource_observer = "cgprofile"
 environment = "tester-unified"
 argv = [
     "bash", "-c",
@@ -75,7 +76,11 @@ kind = "command"
 environment = "bare-host"
 argv = [
     "bash", "-c",
-    "cd {worktree}/scripts/gstammtisch-guide && ./run-gate.py --worktree {worktree} r0-r1 && ./run-gate.py --worktree {worktree} r2 && ./run-gate.py --worktree {worktree} r3",
+    "cd {worktree}/scripts/gstammtisch-guide && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r2 && run-gate --worktree {worktree} r3",
 ]
 clean_tree = false
 budget = "1h"
+
+[lanes.r2.resources]
+memory = "2g"
+pids = 8192

@@ -1,7 +1,7 @@
 # =============================================================================
 # run-gate ROOT config — vbpub monorepo root.
-# Parsed ONLY by run-gate.py (one parser, D-110). Project configs remain named
-# run-gate.toml next to each project's run-gate.py symlink/copy; they inherit
+# Parsed ONLY by Run-Gate CLI (one parser, D-110). Project configs remain named
+# run-gate.toml next to each project's Run-Gate CLI symlink/copy; they inherit
 # THESE tables unless they shadow a name. Since RG-16 (SPEC R-22) central
 # [lanes.*] are LEGAL
 # here: shared lanes inherited by every consuming project by name.
@@ -12,6 +12,9 @@ schema_version = 1
 [environments.tester-unified]
 mode = "ephemeral"
 image = "tester-unified:local"
+# Release gates can bind one exact candidate image without mutating the shared
+# `:local` tag. Ordinary callers leave this unset and use the declared image.
+image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"
 # The repository-wide gate policy binds to the host-injected value once here;
 # every project inheriting this environment uses the same gates tier. The
 # value itself remains host-owned so host setup can verify the installed unit;
@@ -20,7 +23,7 @@ cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
 # CIU's nested-stack governance tests read the application-stack tier inside
 # the gate container. This is a forwarded fact only; the gate container itself
 # remains placed in the sibling gates tier above.
-forward_env = ["CGROUP_PARENT_DEV_BACKGROUND"]
+forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "RUN_GATE_RELEASE_WHEEL_RECEIPT"]
 # Gate containers inherit an explicit CPU limit; lane-level resources may
 # tighten it for workloads with a smaller declared budget.
 [environments.tester-unified.resources]

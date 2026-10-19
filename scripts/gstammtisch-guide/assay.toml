@@ -41,7 +41,7 @@ source_roots = ["files/usr/local/sbin"]
 base = "origin/main"
 
 [lanes.r2.judge.mutation]
-jobs = 2
+jobs = 1
 max_mutants = 400
 operators = [
   "python:compare-swap",

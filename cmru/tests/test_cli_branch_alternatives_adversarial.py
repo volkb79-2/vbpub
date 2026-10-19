@@ -40,5 +40,10 @@ def test_release_prepare_changelog_changed_path_logs_update(monkeypatch, tmp_pat
     monkeypatch.setattr(cli, "run_project_step", lambda *args: None)
     monkeypatch.setattr(changelog, "generate_release_changelog", lambda *args, **kwargs: True)
     monkeypatch.setattr(cli, "_commit_prepared_generated", lambda *args: True)
+    monkeypatch.setattr(
+        cli, "_pending_release_notes_or_refuse",
+        lambda *args, **kwargs: SimpleNamespace(version="1.0.0"),
+    )
+    monkeypatch.setattr(cli, "_fold_pending_release_notes", lambda *args, **kwargs: False)
     cli._prepare_release_projects(tmp_path, {"demo": project}, ["demo"])
     assert "updated CHANGES.md" in capsys.readouterr().out

@@ -72,7 +72,7 @@ generated."
 |---|---|---|
 | `ciu.global.defaults.toml.j2` | Committed (repo-root marker, S1.1) | Canonical global defaults; used as-is if no override exists |
 | `ciu.global.toml.j2` | **Committed, OPTIONAL** | Global sparse override; **not auto-created** (S3.1a) — author only the keys that differ from defaults; absent = defaults apply alone |
-| `ciu.global.instance.toml.j2` | **Gitignored, OPTIONAL** | Sparse per-checkout override; created initially by managed lifecycle options and then operator-editable; preserved by clean/env regeneration (S3.1b/S16). **CIU never writes it after that** — since ciu-P47 it holds nothing CIU owns, so nothing in it can be clobbered. Removed only by `ciu clean --vanilla`. Was `ciu.global.worktree.toml.j2` before ciu-P47 (hard cutover; `ciu migration-check` reports a leftover) |
+| `ciu.global.instance.toml.j2` | **Gitignored, OPTIONAL** | Sparse per-checkout override; managed `create`/`adopt` may publish its initial profile/shared-infrastructure selection after recording the exact payload for interrupted recovery. New CIU-written files use mode `0644`: this non-secret config must be readable by containers running under another uid. Once the worktree is ready it is operator-editable; later clean/env generation preserves it (S3.1b/S16.11). The one-time recovery marker clears with the first ready state and stays clear through later root repair, so recovery never replays the initial payload over operator changes. Conflicting or unsafe files are never replaced. Removed only by `ciu clean --vanilla`. Was `ciu.global.worktree.toml.j2` before ciu-P47 (hard cutover; `ciu migration-check` reports a leftover) |
 | `ciu.instance.generated.toml` | Gitignored, generated | CIU-OWNED identity facts, `[ciu.instance.generated]` (CIU-60). Plain TOML, never a template; rewritten in full by every `ciu env generate`; merged LAST in the chain. Hand edits do not survive. Removed only by `ciu clean --vanilla` |
 | `ciu.global.toml` | Gitignored, rendered | Runtime global config; read by profile-based CIU verbs |
 | `ciu.env` | Gitignored, generated | Shell export of generated identity and machine facts (S2); written by `ciu env generate`. **Since 7.7.0 CIU reads no facts from it** — internal reads use the exact `[ciu.instance.generated]` and `[ciu.instance.machine]` tables above (S3.1c); this file is for shell consumers |
@@ -1240,8 +1240,9 @@ The whole file, as CIU writes it:
 # CIU-owned (S3.1b) — GENERATED. Rewritten in full by every
 # `ciu env generate`; hand edits are silently overwritten.
 # Gitignored, machine-specific, and regenerable: never commit it.
-# Put YOUR own per-checkout overrides in ciu.global.instance.toml.j2,
-# which CIU never writes.
+# Put YOUR own per-checkout overrides in ciu.global.instance.toml.j2.
+# Managed create/adopt may write its initial selection before the worktree is
+# ready; afterward CIU does not rewrite the file.
 
 [ciu.instance.generated]
 repo_name = "dstdns"
@@ -1266,16 +1267,18 @@ sibling checkout's `ciu.env` carries THAT checkout's paths, and a template
 reading `env.*` silently renders them. `ciu.instance.generated.*` comes from a
 file in this repo root, written for this repo root, that you can `cat`.
 
-Two rules, and since ciu-P47 they are enforced by the filesystem rather than
-by careful writing:
+Two ownership rules make the boundary explicit:
 
 - **CIU owns every byte of `ciu.instance.generated.toml`** and rewrites the
   whole file on every `env generate`, so a hand edit anywhere in it does not
   survive. There is nothing of yours in it to lose.
-- **CIU never writes `ciu.global.instance.toml.j2` at all** after the managed
-  lifecycle command that may create it. Your comments, spacing, key ordering
-  and tables are safe there because no CIU code path opens that file for
-  writing — not because a careful text-replace works around them.
+- **Managed lifecycle may write `ciu.global.instance.toml.j2` once, before the
+  worktree becomes ready,** when explicit initial profile/shared-infrastructure
+  options request it. The exact payload is saved first so `ensure` can recover
+  an interrupted allocation without guessing. After readiness, CIU does not
+  rewrite it; your later comments, spacing, key ordering and tables are
+  preserved. `ciu clean --vanilla` remains the explicit command that removes
+  it.
 
   (Before ciu-P47 both roles shared one file, and the second rule had to be
   bought with a surgical text replace of exactly the CIU-owned span. That

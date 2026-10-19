@@ -156,6 +156,67 @@ def test_compose_runner_returns_nonzero_status_and_streamed_output(tmp_path, mon
     }
 
 
+def test_compose_runner_checks_managed_network_immediately_before_launch(
+    tmp_path, monkeypatch
+):
+    events: list[str] = []
+
+    class SuccessfulProcess:
+        returncode = 0
+        stdout = iter(())
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(
+        engine,
+        "verify_workspace_runtime_network",
+        lambda root: events.append(f"verify:{Path(root).resolve()}"),
+    )
+
+    def popen(*args, **kwargs):
+        events.append("compose")
+        return SuccessfulProcess()
+
+    monkeypatch.setattr(engine.subprocess, "Popen", popen)
+
+    result = engine.execute_docker_compose_with_logs(
+        ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project",
+        repo_root=tmp_path,
+    )
+
+    assert result["status"] == "success"
+    assert events == [f"verify:{tmp_path.resolve()}", "compose"]
+
+
+def test_compose_runner_refuses_when_final_network_verification_fails(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        engine,
+        "verify_workspace_runtime_network",
+        lambda _root: (_ for _ in ()).throw(
+            engine.WorkspaceEnvError("network ownership changed")
+        ),
+    )
+    monkeypatch.setattr(
+        engine.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: pytest.fail("Compose must not launch"),
+    )
+
+    result = engine.execute_docker_compose_with_logs(
+        ["-f", "ciu.compose.yml"], cwd=tmp_path, project="test-project",
+        repo_root=tmp_path,
+    )
+
+    assert result == {
+        "status": "error",
+        "message": "network ownership changed",
+        "stdout": "",
+    }
+
+
 def test_compose_runner_missing_docker_is_structured_failure(tmp_path, monkeypatch):
     """S8.1: an absent docker executable does not leak an implementation exception."""
     def _missing(*args, **kwargs):

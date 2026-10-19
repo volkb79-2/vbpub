@@ -4,8 +4,40 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-<!-- Empty on purpose: KI-30 refuses a tagged release while this body is non-empty, and KI-23
-     refuses one while a hand-authored `## [6.0.0] - UNRELEASED` heading exists, so this file
+### Added
+- `cmru handler oci-image-release --prefix <prefix> --image <registry/repository> --cwd <dir>` (KI-78): an image-only CMRU release now publishes a GitHub Release body with the tagged changelog notes and explicit `docker pull <image>:<version>` instructions (no artifact name or SHA256). Place it after the project's image push; it writes release metadata only (never builds, pushes, tags or touches an asset), derives the image tag from the protected release tag, reads the notes from the protected candidate commit, and refuses before any change when the release identity is absent or malformed, the remote tag is missing or at another commit, or an existing release targets another commit; an existing release is re-fetched and re-verified immediately before its body is edited. It must be the last command of the push step, and CMRU validates its `--prefix`/`--image`/`--cwd`, its position and the one-body-handler rule for every shipped project before any prepare step, gate, tag or image push (`--dry-run` runs the same check). A tag or release change detected only after the write (GitHub cannot make that atomic) is reported as `was written` with the release left in place, not rolled back. `cmru release --dry-run` prints the same complete body, with no placeholders.
+
+### Changed
+- KI-78 stages pending notes inside every tagged candidate's dated section before the gate and tag; direct publishers read the matching tag rather than mutable changelog files. `--no-build`, and an image push without `oci-image-release`, retain notes in the tagged changelog without creating a GitHub Release body.
+- Real `cmru release` transactions require a non-editable CMRU wheel controller and record its wheel and installed-file digests in the release logs; `--dry-run` remains source-checkout friendly.
+- CMRU's aggregate gate uses Run-Gate SemVer as its compatibility floor and retained judge identity; it no longer treats a source revision counter as a compatibility version.
+- CMRU can make its first release without a prior CMRU tag: it verifies an empty origin tag set, runs whole-source R0/R1/R3, and records the whole-source R2 follow-up.
+- The native-R2 mutation lane requests contract-2 cgroup resource-event evidence; other tester lanes declare memory and PID limits but do not yet produce event evidence (KI-77). The 6.2.0 release candidate uses `gate-provisional`, so it records an explicit R2 deferral and contains no mutation resource-event evidence (KI-79).
+
+### Fixed
+- KI-79 finalization: success is decided only after cleanup. If canary removal or snapshot close fails after every lane passed, the gate exits non-zero, deletes the provisional marker and records `state: "failed"` with empty `deferred_lanes`; a gate invocation refused by input validation preserves the previous run's evidence, and a valid new gate clears stale success-shaped state before its first lane. The recorded follow-up lane is now `gate` (the standalone `mutation` lane cannot run without gate-prepared baseline facts).
+- `wheel-build` verifies its probe parent (`CMRU_TESTER_CGROUP_PARENT`) with `tester-gate`'s self-check before using it to probe the build slice; an unverified gates tier refuses naming that variable, with no builder started and existing wheels preserved.
+- Every tester-unified image carries `org.vbpub.cli-extended.wheel-sha256`, verified against the installed wheel and re-read by `build-image.sh`; `--cli-extended-resolve latest` now requires the published digest (`--cli-extended-wheel-sha256`) and Run-Gate's release tooling requires `RUN_GATE_TESTER_CLI_EXTENDED_SHA256` in `latest` mode and inspects the label before the gate uses the image.
+- The from-zero bootstrap guide reads the published `cli-extended` identity from `cmru.release.log` (the push step is quiet), names the exact cgroup-parent inputs each command reads, pins the image per release command, and the bootstrap script reports configuration failures as themselves instead of as a bad slice.
+- `wheel-build` and the source bootstrap script now prove the build cgroup parent is a real host systemd slice (`LoadState=loaded`, non-empty `FragmentPath`, through the `tester-gate` host probe) before any builder `docker run` or Buildx; a typo'd slice, a missing probe input or an unavailable probe refuses with exit 3 and starts no workload.
+- The from-zero bootstrap is executable on a fresh host: the script writes `cmru/dist/bootstrap-artifacts.env` with the exact wheel paths and SHA-256 digests it built, `docs/BOOTSTRAP-FROM-ZERO.md` installs those wheels before the first `cmru` command, and a new `cmru/tools/cli_extended_release_identity.py` check refuses a lagging `cli-extended-latest` pointer and selects `latest` when the Dockerfile's pinned digest differs from the newly released wheel, so the tester image is rebuilt from the released bytes.
+- `publish --from-checkout` refuses to read release notes from a local `<prefix>-v<version>` tag unless origin has that tag at the same commit; an absent, moved or unqueryable origin tag refuses before any publish call.
+- A deferred-mutation (KI-79) gate is recorded as provisional evidence: the snapshot manifest (schema 4) has `state: "provisional"` and a `deferred_lanes` entry, the marker has `result: "provisional"` and the follow-up prerequisites, and both are written only after every required lane and the canary pass. A full gate records `state: "passed"` and clears stale deferral state.
+- Bind release gates to the exact candidate commit and committed file contents. CMRU now refuses a release when a gate changes the candidate or hides tracked edits with Git index flags.
+- Recheck the pinned Run-Gate executable, installed wheel, published asset digest, and tester-image labels around each lane; use stable SemVer without a synthetic tester-image suffix.
+- Apply project-scope filtering against the full configured project set and refuse published-tag divergence even when only changelog files changed.
+- Parse valid indented level-two changelog headings when collecting pending release notes.
+- Resolve direct wheel-build invocations from the enclosing CMRU configuration when no
+  explicit builder-image environment value is supplied.
+- Use the full configured project-scope registry consistently for status, release tags, generated
+  changelog headings, and release notes, so cross-project scopes cannot produce mismatched versions.
+- Explain that a Run-Gate development/local build fails CMRU's stable `24.0.0` release-gate floor and name the minimum stable SemVer required.
+- Fix a `NameError` that stopped every real `cmru release` while it recorded the installed controller identity: the audit line logged through an undefined `log_debug`. It now goes through the shared `cmru` logger at debug level.
+- Refuse a selected project with no declared `run-tests` gate as the typed pre-change refusal (exit 4) before CMRU reads any Git state, so the refusal no longer depends on the checkout being a Git worktree.
+
+<!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
+     folds pending notes into the version section in the disposable release candidate.
+     KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
      carries no 6.0.0 draft. The operator upgrade guide is `docs/UPGRADING-6.0.md`; the
      pre-6.0 hand-written text is recoverable at `68a03b4fe^:cmru/CHANGES.md`.
 

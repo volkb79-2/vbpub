@@ -65,6 +65,8 @@ def _fixture(
         (directory / "memory.max").write_text("max\n", encoding="ascii")
         (directory / "pids.events").write_text(PIDS_EVENTS, encoding="ascii")
         (directory / "memory.events").write_text(MEMORY_EVENTS, encoding="ascii")
+        (directory / "pids.events.local").write_text(PIDS_EVENTS, encoding="ascii")
+        (directory / "memory.events.local").write_text(MEMORY_EVENTS, encoding="ascii")
         # The synthetic requester is neither the fixture owner nor in its
         # group, so 0644 proves it cannot write cgroup.procs.
         (directory / "cgroup.procs").chmod(0o644)
@@ -87,10 +89,21 @@ def _fixture(
 
 
 def _observe(kwargs):
+    kwargs.setdefault(
+        "contract", resource_observer.RESOURCE_OBSERVER_CONTRACT_VERSION
+    )
     return resource_observer.observe_peer_cgroup(**kwargs)
 
 
-def test_observation_returns_only_peer_ancestry_and_no_process_ids(tmp_path):
+@pytest.mark.parametrize("contract", [1, 3])
+def test_observer_rejects_unsupported_contract_before_peer_inspection(tmp_path, contract):
+    kwargs = _fixture(tmp_path)
+
+    with pytest.raises(resource_observer.ResourceObserverError, match="contract must be 2"):
+        resource_observer.observe_peer_cgroup(**kwargs, contract=contract)
+
+
+def test_contract_2_observation_returns_peer_ancestry_and_no_process_ids(tmp_path):
     result = _observe(_fixture(tmp_path))
 
     assert result["cgroup_version"] == 2
@@ -107,8 +120,210 @@ def test_observation_returns_only_peer_ancestry_and_no_process_ids(tmp_path):
     assert all(set(entry) == {
         "path", "mount_id", "pids_max_present", "pids_max",
         "memory_max_present", "memory_max", "pids_events", "memory_events",
+        "pids_events_local", "memory_events_local",
     } for entry in result["cgroups"])
+    assert result["pids_events_scope"] == "hierarchical"
+    assert result["memory_events_scope"] == "hierarchical"
     assert "peer_pid" not in result and "host_tid" not in result
+
+
+def test_contract_2_exposes_both_event_scopes_and_mount_mode(tmp_path):
+    kwargs = _fixture(tmp_path)
+
+    result = _observe({**kwargs, "contract": 2})
+
+    assert result["pids_events_scope"] == "hierarchical"
+    assert result["memory_events_scope"] == "hierarchical"
+    assert all(entry["pids_events_local"] == {"max": 0} for entry in result["cgroups"])
+    assert all(entry["memory_events_local"] == {
+        "max": 0, "oom": 0, "oom_kill": 0, "oom_group_kill": 0,
+    } for entry in result["cgroups"])
+    assert set(result["cgroups"][0]) == {
+        "path", "mount_id", "pids_max_present", "pids_max",
+        "memory_max_present", "memory_max", "pids_events", "memory_events",
+        "pids_events_local", "memory_events_local",
+    }
+
+
+def test_contract_2_preserves_distinct_hierarchical_and_local_counters(tmp_path):
+    kwargs = _fixture(tmp_path)
+    leaf = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/")
+    parent = leaf.parent
+    (leaf / "pids.events").write_text("max 3\n", encoding="ascii")
+    (leaf / "pids.events.local").write_text("max 1\n", encoding="ascii")
+    (parent / "pids.events").write_text("max 8\n", encoding="ascii")
+    (parent / "pids.events.local").write_text("max 2\n", encoding="ascii")
+    (leaf / "memory.events").write_text(
+        "max 5\noom 4\noom_kill 3\noom_group_kill 2\n", encoding="ascii"
+    )
+    (leaf / "memory.events.local").write_text(
+        "max 1\noom 1\noom_kill 0\noom_group_kill 0\n", encoding="ascii"
+    )
+    (parent / "memory.events").write_text(
+        "max 9\noom 8\noom_kill 7\noom_group_kill 6\n", encoding="ascii"
+    )
+    (parent / "memory.events.local").write_text(
+        "max 2\noom 2\noom_kill 1\noom_group_kill 0\n", encoding="ascii"
+    )
+
+    result = _observe({**kwargs, "contract": 2})
+
+    leaf_entry, parent_entry = result["cgroups"][:2]
+    assert leaf_entry["pids_events"] == {"max": 3}
+    assert leaf_entry["pids_events_local"] == {"max": 1}
+    assert parent_entry["pids_events"] == {"max": 8}
+    assert parent_entry["pids_events_local"] == {"max": 2}
+    assert leaf_entry["memory_events"] == {
+        "max": 5, "oom": 4, "oom_kill": 3, "oom_group_kill": 2,
+    }
+    assert leaf_entry["memory_events_local"] == {
+        "max": 1, "oom": 1, "oom_kill": 0, "oom_group_kill": 0,
+    }
+    assert parent_entry["memory_events"] == {
+        "max": 9, "oom": 8, "oom_kill": 7, "oom_group_kill": 6,
+    }
+    assert parent_entry["memory_events_local"] == {
+        "max": 2, "oom": 2, "oom_kill": 1, "oom_group_kill": 0,
+    }
+
+
+def test_contract_2_hierarchical_mount_requires_local_event_files(tmp_path):
+    kwargs = _fixture(tmp_path)
+    leaf = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/")
+    (leaf / "pids.events.local").unlink()
+
+    with pytest.raises(resource_observer.ResourceObserverError, match="pids.events.local is unavailable"):
+        _observe({**kwargs, "contract": 2})
+
+
+def test_contract_2_refuses_local_events_without_regular_event_file(tmp_path):
+    kwargs = _fixture(tmp_path)
+    leaf = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/")
+    (leaf / "pids.max").unlink()
+    (leaf / "pids.events").unlink()
+
+    with pytest.raises(resource_observer.ResourceObserverError, match="present without its regular event file"):
+        _observe({**kwargs, "contract": 2})
+
+
+def test_contract_2_refuses_when_candidate_child_scan_fails(tmp_path, monkeypatch):
+    kwargs = _fixture(tmp_path)
+    mountinfo = Path(kwargs["mountinfo_path"])
+    mountinfo.write_text(
+        f"29 22 0:25 / {kwargs['cgroup_root']} rw,nosuid,nodev - "
+        "cgroup2 cgroup rw,memory_localevents\n",
+        encoding="ascii",
+    )
+    leaf = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/")
+    real_scandir = resource_observer.os.scandir
+
+    def denied(path):
+        if Path(path) == leaf:
+            raise PermissionError("synthetic denied directory scan")
+        return real_scandir(path)
+
+    monkeypatch.setattr(resource_observer.os, "scandir", denied)
+    with pytest.raises(resource_observer.ResourceObserverError, match="cannot prove localevents candidate"):
+        _observe({**kwargs, "contract": 2})
+
+
+@pytest.mark.parametrize(
+    "super_options",
+    ["rw,pids_localevents", "rw,pids_localevents,memory_localevents"],
+)
+def test_contract_2_rejects_pids_localevents_mount_mode(tmp_path, super_options):
+    kwargs = _fixture(tmp_path)
+    mountinfo = Path(kwargs["mountinfo_path"])
+    mountinfo.write_text(
+        f"29 22 0:25 / {kwargs['cgroup_root']} rw,nosuid,nodev - "
+        f"cgroup2 cgroup {super_options}\n",
+        encoding="ascii",
+    )
+
+    with pytest.raises(
+        resource_observer.ResourceObserverError,
+        match="cannot identify which cgroup's pids.max rejected a fork",
+    ):
+        _observe({**kwargs, "contract": 2})
+
+
+def test_contract_2_reports_memory_localevents_mount_mode(tmp_path):
+    kwargs = _fixture(tmp_path)
+    mountinfo = Path(kwargs["mountinfo_path"])
+    mountinfo.write_text(
+        f"29 22 0:25 / {kwargs['cgroup_root']} rw,nosuid,nodev - "
+        "cgroup2 cgroup rw,memory_localevents\n",
+        encoding="ascii",
+    )
+
+    result = _observe({**kwargs, "contract": 2})
+
+    assert result["pids_events_scope"] == "hierarchical"
+    assert result["memory_events_scope"] == "local"
+
+
+def test_contract_2_refuses_memory_localevents_candidate_with_child_cgroup(tmp_path):
+    kwargs = _fixture(tmp_path)
+    mountinfo = Path(kwargs["mountinfo_path"])
+    mountinfo.write_text(
+        f"29 22 0:25 / {kwargs['cgroup_root']} rw,nosuid,nodev - "
+        "cgroup2 cgroup rw,memory_localevents\n",
+        encoding="ascii",
+    )
+    child = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/") / "nested"
+    child.mkdir()
+
+    with pytest.raises(resource_observer.ResourceObserverError, match="child cgroups"):
+        _observe({**kwargs, "contract": 2})
+
+
+def test_memory_localevents_inactive_at_candidate_allows_child_cgroup(tmp_path):
+    kwargs = _fixture(tmp_path)
+    mountinfo = Path(kwargs["mountinfo_path"])
+    mountinfo.write_text(
+        f"29 22 0:25 / {kwargs['cgroup_root']} rw,nosuid,nodev - "
+        "cgroup2 cgroup rw,memory_localevents\n",
+        encoding="ascii",
+    )
+    leaf = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/")
+    for name in (
+        "pids.max", "pids.events", "pids.events.local",
+        "memory.max", "memory.events", "memory.events.local",
+    ):
+        (leaf / name).unlink()
+    (leaf / "nested").mkdir()
+
+    result = _observe({**kwargs, "contract": 2})
+
+    assert result["memory_events_scope"] == "local"
+    assert result["cgroups"][0]["pids_events"] is None
+    assert result["cgroups"][0]["memory_events"] is None
+
+
+def test_contract_2_memory_localevents_regular_file_supplies_local_counter(tmp_path):
+    kwargs = _fixture(tmp_path)
+    mountinfo = Path(kwargs["mountinfo_path"])
+    mountinfo.write_text(
+        f"29 22 0:25 / {kwargs['cgroup_root']} rw,nosuid,nodev - "
+        "cgroup2 cgroup rw,memory_localevents\n",
+        encoding="ascii",
+    )
+    leaf = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/")
+    parent = leaf.parent
+    for directory in (leaf, parent):
+        (directory / "memory.events.local").unlink()
+    (parent / "memory.events").write_text(
+        "max 7\noom 3\noom_kill 2\noom_group_kill 1\n", encoding="ascii"
+    )
+
+    result = _observe({**kwargs, "contract": 2})
+
+    assert result["cgroups"][0]["memory_events_local"] == {
+        "max": 0, "oom": 0, "oom_kill": 0, "oom_group_kill": 0,
+    }
+    assert result["cgroups"][1]["memory_events_local"] == {
+        "max": 7, "oom": 3, "oom_kill": 2, "oom_group_kill": 1,
+    }
 
 
 def test_private_daemon_namespace_maps_peer_path_to_full_host_hierarchy(tmp_path):
@@ -362,7 +577,10 @@ def test_finite_limit_requires_its_event_file(tmp_path):
 def test_absent_limit_and_events_are_reported_as_absent(tmp_path):
     kwargs = _fixture(tmp_path)
     directory = Path(kwargs["cgroup_root"]) / LEAF.lstrip("/")
-    for filename in ("pids.max", "memory.max", "pids.events", "memory.events"):
+    for filename in (
+        "pids.max", "memory.max", "pids.events", "memory.events",
+        "pids.events.local", "memory.events.local",
+    ):
         (directory / filename).unlink()
     entry = _observe(kwargs)["cgroups"][0]
     assert entry["pids_max_present"] is False and entry["pids_events"] is None

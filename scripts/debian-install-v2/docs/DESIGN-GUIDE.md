@@ -61,8 +61,10 @@ failures leave the cloud-init cache available for diagnosis. A failure in the
 cleanup action itself is reported as a stage-two failure and may have partially
 cleaned cloud-init state.
 
-The policy deliberately separates removing only raw `user-data.txt` from
-running `cloud-init clean`. A clean resets cloud-init's run state, so its
+The policy deliberately separates removing secret-bearing user-data copies
+from running `cloud-init clean`. `userdata-only` removes the raw `user-data.txt`
+and cloud-init's parsed/intermediate copies `user-data.txt.i`,
+`cloud-config.txt`, and `obj.pkl`. A clean resets cloud-init's run state, so its
 stages run again on the next boot. `clean-all` adds `--logs --seed`, but not
 `--configs all`: cloud-init does not preserve a pristine copy of files for
 rollback. Its cleanup implementation removes specific paths it recognizes as
@@ -73,8 +75,11 @@ configuration changes made by this installer. The mode also omits
 
 `--seed` clears only cloud-init's guest-side seed cache. It cannot detach an
 ISO from the VM, and a still-attached NoCloud ISO can supply the same
-user-data again after a clean. Operators should account for that before the
-next boot. `cloud-init clean` also executes any local cleanup hooks installed
+user-data again after a clean. Before cleanup, the installer writes the fixed
+`/var/lib/vbpub/install-v2-complete` marker outside the cache. The fresh-install
+entrypoint checks it before modifying state or host files, so a replayed seed
+cannot start another partitioning run. Operators should still detach the seed
+ISO after installation. `cloud-init clean` also executes any local cleanup hooks installed
 under `/etc/cloud/clean.d/`; these remain the host administrator's
 responsibility.
 

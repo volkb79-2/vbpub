@@ -134,6 +134,22 @@ available.
 | ├─ `dev-buildkitd.slice` (shared builder) | `1.5G / 2G` | `500%` | `80% of parent` | `60% of parent IOPS` | Protect the shared builder and its cache. |
 | └─ `dev-memory_min_guaranteed.slice` (admitted floor) | optional | inherited | inherited | inherited | Share `MemoryMin` only when explicitly admitted. |
 
+The shipped `dev-gates.slice` example is intentionally conservative: its
+`1.5G` memory maximum cannot admit the contract-2 mutation lanes, which declare
+`2G` per container. Before running those lanes, tune the gate slice's
+`MemoryHigh` and `MemoryMax` above the sum of the active lane caps, with room
+for container and controller overhead. Two concurrent `2G` lanes need more
+than `4G`; a `6G` MDT full-assay lane needs more than `6G` by itself. Check the
+ancestor `dev.slice` limits and current use too. Run-Gate refuses a request
+when it can read the declared slice's `memory.max` and `memory.current` and the
+request exceeds that slice's remaining budget. If those files are hidden or
+unreadable, Run-Gate warns and continues under its other shared-infrastructure
+checks; it does not establish ancestor or whole-host headroom. Cgprofile reports
+a candidate as inconclusive if a shared ancestor limit changes during
+execution. Keep the smaller default when that extra capacity is unavailable,
+record the effective slice and ancestor limits before a campaign, and serialize
+high-memory lanes unless measured headroom supports running them together.
+
 Why each row exists:
 
 - `dev.slice` is one aggregate shield: all dev children together stay below
@@ -160,9 +176,13 @@ Before systemd reports the service ready, the post-start check makes the
 root-owned directory non-writable (mode `0711`), rechecks that the endpoint is
 a real socket, verifies its owner from inside the service container's user
 namespace, then assigns the socket to host group `docker` with mode `0660`.
-The next service start restores the bind directory to mode `01777` and removes
-any stale socket before launching BuildKit. This closes a path-replacement
-race and keeps the owner check valid with Docker `userns-remap`. Devcontainer
+The runtime directory is preserved across service stops and restarts so an
+already-running devcontainer keeps the same bind-mounted directory inode. The
+host reboot recreates it because `/run` is tmpfs. A service start corrects the
+directory permissions to `01777` and removes only a stale socket entry before
+launching BuildKit; it does not delete or recreate the directory. This closes
+a path-replacement race and keeps the owner check valid with Docker
+`userns-remap`. Devcontainer
 clients must receive the same host group; the directory itself is never made
 broadly writable as a substitute for socket permissions.
 
@@ -371,6 +391,21 @@ permanent fallback). The daemon package (P6) re-asserts the directory's own
 owner/mode at its own start as belt-and-braces; this package only creates
 it and gets out of the way. Opt out by deleting the `mounts` line.
 
+The observer uses a separate host-owned directory at
+`/run/cgprofile/observer`, created as `0751 root:cgprofile-observer`. Other
+users can traverse the known socket path for preflight, but cannot list or
+write in the directory; only the dedicated group can connect to the `0660`
+socket. The
+install script creates the `cgprofile-observer` group with
+`systemd-sysusers` before applying the tmpfiles entry. Tester containers that
+need R2 counters receive only this dedicated GID; they do not inherit Docker
+group access through the observer. The daemon binds only
+`resource-observer.sock` inside this stable directory, so a daemon restart
+does not strand a gate container on a socket-file bind mount.
+Host setup fails if `systemd-tmpfiles` cannot apply the entry or if the
+resulting directory is not exactly root-owned, assigned to the resolved
+`cgprofile-observer` GID, and mode `0751`.
+
 ## Changes
 
 **2026-09-12 (RG-55 P8, round-1 repairs + M5):** `dev-gates.slice` shipped
@@ -464,6 +499,34 @@ sudo ./install.sh --with-baseline  # re-render + measure disk ceilings (~12 min 
 sudo mdt-host-check.sh             # verify
 ```
 
+### Provision the cgprofile observer directory
+
+An existing MDT host can prepare cgroup-profiler's read-only observer socket
+directory without rerunning the host policy workflow:
+
+```bash
+sudo ./install.sh --observer-only
+stat -c '%u:%g %a %n' /run/cgprofile/observer
+getent group cgprofile-observer
+sudo mdt-host-check.sh
+```
+
+The focused mode requires `/run/cgprofile` to exist as a real `root:docker`
+directory with mode `0770`. It first refuses an existing
+`cgprofile-observer` group that shares Docker's GID, before writing units or
+creating the observer directory. It then creates the dedicated system group,
+installs and applies only the observer tmpfiles rule, and verifies the
+directory is `root:<observer-gid>` with mode `0751`. Full host installs use the
+same helper. The mode refuses if the control directory's identity or mode is
+unexpected, or if a pre-existing observer path is not a real directory with
+the expected root, group, and mode; it never asks tmpfiles to silently repair
+that drift. `mdt-host-check.sh` verifies the observer group, live directory,
+and the complete active sysusers/tmpfiles rule sets after setup; it ignores
+comments and blank lines but rejects additional active directives. The
+[design rationale](../docs/DESIGN-GUIDE.md#narrow-cgprofile-observer-provisioning)
+and [consumer procedure](../docs/CONSUMERS.md#cgprofile-resource-observer-host-setup)
+cover the daemon deployment that follows.
+
 Or, instead of the hand-edit step: `sudo ./install.sh --wizard` walks
 `host-setup.env.example`'s own sections interactively (IO device, static root
 IO fallback values, benchmark-results path and identity, IO cap percentages, every governed slice's four
@@ -531,6 +594,7 @@ the test stacks.
 | `scripts/mdt-dev-governance-reconcile.sh` | `/usr/local/sbin/` | reconciliation implementation (see below) |
 | `scripts/mdt-container-io-events-watcher.sh` | `/usr/local/sbin/` | `docker events` event watcher — instant counterpart to reconciliation's per-container IO pass |
 | `scripts/mdt-container-io-caps.lib.sh` | `/usr/local/sbin/` | shared `_mdt_*` matching/cap-application functions — sourced by both of the above, one definition of "how a container gets capped" |
+| `scripts/mdt_cli.py` | `/usr/local/sbin/` | shared argparse diagnostics imported by installed Python entrypoints |
 | `scripts/mdt-container-memory-inotify-watcher.py` | `/usr/local/sbin/` (iff `INOTIFY_OK=1`) | optional inotify watcher for explicitly configured per-container `MemoryHigh`/`MemoryMax`; the periodic sweep does not apply memory caps |
 | `scripts/mdt-slice-memory-min-low-audit.py` | `/usr/local/sbin/` | read-only audit of only `memory.min`/`memory.low` — logs a `[WARN]` when an ancestor makes a value ineffective |
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | shared Linux-derived `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound benchmark results) |

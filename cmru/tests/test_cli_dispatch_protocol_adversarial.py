@@ -112,7 +112,11 @@ def test_status_dispatch_selects_orchestrated_project_and_forwards_version_flags
     cli.main(["status", "--config", str(cfg), "demo", "--major"])
     assert calls[0][1]["demo"].name == project.name
     assert calls[0][1]["demo"].project_root == tmp_path
-    assert calls[0][2] == {"minor": False, "major": True, "set_version": None, "ref": "HEAD"}
+    forwarded = dict(calls[0][2])
+    # status also receives the full loaded registry for scope resolution.
+    assert set(forwarded.pop("known_projects")) == {"demo"}
+    assert forwarded.pop("known_project_names") is None  # this config retains no scope registry
+    assert forwarded == {"minor": False, "major": True, "set_version": None, "ref": "HEAD"}
 
 
 def test_status_dispatch_forwards_a_custom_ref(monkeypatch, tmp_path):

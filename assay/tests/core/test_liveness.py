@@ -22,6 +22,8 @@ DECIDES once it is running.
 
 from __future__ import annotations
 
+from conftest import completed_process, timeout_expired
+
 import io
 import json
 from pathlib import Path, PurePosixPath
@@ -886,7 +888,7 @@ def test_liveness_injected_plan_runs_through_execute_plan_despite_no_consent(
         import subprocess
 
         assert "-p" in argv and "assay_liveness_plugin" in argv
-        return subprocess.CompletedProcess(args=list(argv), returncode=0, stdout="", stderr="")
+        return completed_process(args=list(argv), returncode=0, stdout="", stderr="")
 
     result = execute_plan(
         injection.plan,

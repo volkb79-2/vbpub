@@ -44,16 +44,18 @@ build_step = "build"
 # gate IS this project's own two run-gate lanes, not a duplicated pytest
 # line. r0-r1 (unit + coverage, 100% line+branch) then r3 (canary rejection)
 # — BOTH must pass for a release. r2 (assay mutation-of-changed-lines) is
-# deliberately NOT here: it is a PRE-MERGE lane a package implementer runs
-# ONCE before handoff (RG55 wave plan §3), not a release gate every cmru
-# release re-runs — assay mutation testing against the full diff-since-last-
-# release would re-litigate lines a prior release already accepted, and its
-# 45-90m budget has no business blocking every routine release.
+# deliberately NOT here: it is part of the complete run-gate `gate` lane (a
+# 24-hour resumable window judging one exact tree against one comparison
+# base), not a release gate every cmru release re-runs. The operator's release
+# policy allows that full-source R2 campaign to be deferred, so the initial
+# 1.0.0 release has NO completed full-source R2 verdict and must not be
+# described as R2-qualified. See docs/DESIGN-GUIDE.md "Release qualification
+# and the full R2 gate".
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "cgprofile: r0-r1 (unit + 100% line/branch coverage)", argv = ["./run-gate.py", "r0-r1"], cwd = "." },
-  { label = "cgprofile: r3 (canary rejection)", argv = ["./run-gate.py", "r3"], cwd = "." },
+  { label = "cgprofile: r0-r1 (unit + 100% line/branch coverage)", argv = ["run-gate", "r0-r1"], cwd = "." },
+  { label = "cgprofile: r3 (canary rejection)", argv = ["run-gate", "r3"], cwd = "." },
 ]
 
 [steps.build]
@@ -66,4 +68,5 @@ commands = [
 quiet = true
 commands = [
   { label = "cgprofile: push daemon image", argv = ["python3", "build-push.py", "--push"], cwd = "." },
+  { label = "cgprofile: publish tagged release notes", argv = ["cmru", "handler", "oci-image-release", "--prefix", "cgprofile", "--image", "ghcr.io/volkb79-2/cgprofile", "--cwd", "."], cwd = "." },
 ]

@@ -18,29 +18,25 @@
 # GitHub Release is keyed by --prefix on the push step, so everything
 # user-facing stays `run-gate-v*` / `run_gate-*.whl`.
 #
-# Version identity is TWO-TIER (pyproject.toml header): __revision__ inside
-# run-gate.py stays the copy-drift marker external repos compare; semver
-# tags/releases are the publish identity, derived by setuptools-scm from the
-# tag this config's strategy mints.
+# The installed wheel's SemVer is the public identity and compatibility
+# floor. Internal revision fields remain only in persisted record provenance.
 #
-# Historical bootstrap note: the first semver release followed the bare
-# integer tag `run-gate-v22`, so it used `--set-version 23.0.0`. Semver tags
-# have existed since then; routine releases should omit `--set-version` and
-# let SCM apply the configured conventional bump. For a deliberate override,
-# pass a bare semver (never the `run-gate-v`-prefixed tag).
+# The next release deliberately crosses from the former revision-era 23.x
+# identity to the wheel-only SemVer 24.0.0 contract. Its breaking Conventional
+# Commit in the pending source history makes the configured conventional bump
+# choose 24.0.0; inspect the release plan and refuse the release if it does not.
+# Release notes come from CHANGES.md, so the published body uses the same
+# versioned notes as the tagged changelog.
 # =============================================================================
 schema_version = 1
 
 [runtime]
 kind = "none"
 
-[env]
-RUN_GATE_RELEASE_NOTES = "## run-gate wheel\n\nThe per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script. Stdlib-only — no dependencies.\n\nThe canonical artifact remains the SCRIPT (`run-gate.py`, drift marker `__revision__`); this wheel only wraps the same module for pip-installable consumption and must never become a requirement.\n\n**Install**\n```bash\npython -m pip install ./<wheel-file>\n```"
-
 [project]
 id = "run-gate-project"
-description = "run-gate — the per-project gate entrypoint: declared lanes, reserved exit codes, zero-install script"
-template_revision = 4
+description = "run-gate — the per-project gate entrypoint: declared lanes and reserved exit codes"
+template_revision = 5
 prefix = "run-gate-v"
 artifacts = ["wheel"]
 scm_dist = "run_gate"
@@ -57,18 +53,20 @@ artifact_dirs = ["dist"]
 evidence_paths = ["coverage.json"]
 
 # SSOT pointer (D-110/D-111): the release gate IS the project's own run-gate
-# lane (`./run-gate.py selftest` -> run-gate.toml), not a duplicated pytest
+# lane (`run-gate selftest` -> run-gate.toml), not a duplicated pytest
 # line. The lane owns all test logic (pytest + diff-coverage floor) in exactly
 # one place. CMRU executes step commands directly; the registered Run-Gate
 # lane owns its tester-unified container, placement, init, and resource caps.
-# Do not wrap it with `cmru tester-gate`: that wrapper starts a separate
-# privileged host-PID systemd probe which this package gate does not need.
+# The suite itself is not wrapped in `cmru tester-gate`; Run-Gate owns its
+# container. The image builder separately uses CMRU's slice probe before the
+# Buildx workload starts.
 # The lane's container bind-mounts this checkout so mountinfo tests exercise
 # a real mapping, and the release step runs with project_root as cwd.
-# The installed CMRU 6.1.0 executes this argv as a project step; Run-Gate
-# itself now supplies `--init` for the tester container (RG-84).
-# First standalone bootstrap before cmru is installed anywhere fresh:
-# python3 run-gate.py selftest works with zero installs (stdlib-only).
+# CMRU executes this argv from its active runtime; when a release wave needs
+# unreleased CMRU behavior, bootstrap from a non-editable wheel built from the
+# exact merged source (docs/RELEASE-TRANSACTIONS.md#bootstrap-when-the-release-engine-changes-in-the-same-wave).
+# Run-Gate must be installed from the exact wheel built from this candidate
+# before invoking this selftest release step.
 #
 # RG-55 wave, package P2, C2 (2026-09-12): run-gate.toml grew `assay-r1`/
 # `assay-r2`/`assay-r3`/`gate-full` (assay-based judgment, stricter and
@@ -85,17 +83,19 @@ evidence_paths = ["coverage.json"]
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "run-gate: selftest in tester-unified", argv = ["./run-gate.py", "selftest"], cwd = "." },
+  { label = "run-gate: build and receipt exact release wheel/image", argv = ["python", "tools/release_candidate.py", "prepare"], cwd = "." },
+  { label = "run-gate: selftest in the receipt-specific tester image", argv = ["python", "tools/release_candidate.py", "run-selftest"], cwd = "." },
 ]
 
 [steps.build]
 quiet = true
 commands = [
   { label = "run-gate: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "run-gate: verify published wheel is the exact tested wheel", argv = ["python", "tools/release_candidate.py", "verify"], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "run-gate: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "run-gate", "--cwd", ".", "--notes-env", "RUN_GATE_RELEASE_NOTES"], cwd = "." },
+  { label = "run-gate: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "run-gate", "--cwd", "."], cwd = "." },
 ]

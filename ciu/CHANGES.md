@@ -21,6 +21,26 @@ restatement of the technical detail below it.
 
 <!-- cmru: release history -->
 
+## [Unreleased]
+
+### Fixed
+- Managed worktree creation and adoption validate initial overlay options before lifecycle mutation and preserve the exact request for safe interrupted recovery. Schema v5 records overlay recovery, the one-time checkout-reset boundary, and a verified Docker network object id. The requested base is snapshotted before allocation so marker validation, workspace creation, and reset use one commit. All worktree verbs use the selected nested CIU root for record lookup.
+- `ensure` refuses to repeat an uncheckpointed initial reset, verifies same-name networks on its ready path, and checks explicit base/directory constraints. Managed `up` also verifies network ownership before launching. A failed Docker permission probe is indeterminate rather than network absence; a failed allocation records `runtime-verification-failed`, reserving `runtime-collision` for proven conflicts. A one-time legacy claim cannot replace a saved object id. Lease updates serialize with lifecycle transitions, record writes sync the parent directory after replacement, and CIU's ignore rules cover interrupted record and overlay staging files.
+- `clean` preserves host volume directories and rendered configuration when Compose teardown fails unless an exact project-label inspection proves no containers remain. Symlinked and out-of-stack `vol-*` paths are refused before the privileged root helper can widen deletion beyond the stack.
+- CIU-created Docker networks carry an instance owner label. Reuse requires the saved Docker object id or a matching owner label; an explicit `--adopt-existing-network` claim is available only for an unlabelled legacy network before an object id is saved. Name equality alone is not ownership evidence.
+- Direct native and shipped `ciu up` verify the managed worktree record and network before startup, after network creation, and immediately before Compose starts. Full `ciu env generate` verifies ownership before creating or attaching a network. If the CIU-local record is missing but the shared workspace record proves the checkout is managed, direct startup refuses and `worktree ensure` restores it from a validated snapshot; ready snapshots cannot replay initial overlay state. The final check is point-in-time because Compose resolves networks by name after CIU's inspection, leaving a small external-Docker replacement race. Unproven network state and identity drift are `runtime-verification-failed`; only positive identity or owner-label conflicts are `runtime-collision`. Runtime identity admission uses committed sibling-root markers and refuses unreadable CIU-root siblings during allocation and direct startup, while listing and rootless siblings remain best effort. An explicit `--root-folder` must name the exact CIU root or Git-family root; selecting the family root resolves the nearest nested root from the invocation directory even when the family root also has a marker. `--adopt-existing-network` refuses when the named network is absent.
+
+### Adoption / Migration Notes
+- New managed allocations use worktree record schema v5. Ready v1-v4 records remain readable. Incomplete v1/v2 records lack overlay intent, incomplete v3 records lack overlay-recovery phase, and an initial reset whose exact result was not checkpointed requires operator-directed recovery. Existing unlabelled networks may need a one-time `ciu worktree adopt|ensure --adopt-existing-network` claim before CIU has saved an object id.
+
+### Changed
+- Run the real-system enrollment lane as a required release gate, verify installed Run-Gate module bytes and console-entry-point targets against the selected checkout, and pin the disposable fixture image (CIU-131).
+
+### Fixed
+- Detect ignored files placed over tracked worktree paths before a reset, so recovery cannot silently overwrite local data.
+- Keep the allocation-lock bypass private to CIU's internal call path instead of exposing it as a user-facing CLI option.
+- Preserve the CLI's concise `[ERROR]` diagnostic when private worktree env generation runs under an already-held allocation lock; expected workspace identity errors no longer surface as Python tracebacks.
+
 ## [7.16.0] - 2026-10-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=5a9154b69c381545422c6f896f269a8f947b287b -->

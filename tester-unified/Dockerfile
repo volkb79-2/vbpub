@@ -14,12 +14,40 @@
 # that relied on the pre-3.14 multiprocessing "fork" default is now explicitly
 # fork-scoped, so 3.14 is green.
 #
-# Build from the REPO ROOT so the project sources are in context:
-#   docker build -f tester-unified/Dockerfile -t tester-unified:local /workspaces/vbpub
-# (see the repo-root .dockerignore, which whitelists only these projects.)
-FROM ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+# Build from the repo root using `tester-unified/build-image.sh`; it supplies
+# the exact Run-Gate wheel as a named build context and verifies its version
+# and digest during the image build. The default base is the published MDT
+# cockpit image; a zero-release bootstrap may explicitly use the upstream
+# Python devcontainer base, which has no vbpub release dependency.
+# The repo-root .dockerignore whitelists the project sources in this context.
+ARG TESTER_UNIFIED_BASE_IMAGE=ghcr.io/volkb79-2/modern-debian-tools-python-debug-vsc-devcontainer:trixie-py3.14-php8.5-latest
+FROM ${TESTER_UNIFIED_BASE_IMAGE}
 
 USER root
+
+# Keep host-facing tools explicit so the zero-release build can use the
+# upstream Python base without inheriting a published vbpub image. Docker is a
+# client only; the launcher supplies the host socket when a lane needs it.
+#
+# Install only what the base lacks. The MDT base already ships Docker's own
+# `docker-ce-cli` and `docker-compose-plugin`; Debian's `docker-cli` and
+# `docker-compose` own the same files (/usr/bin/docker and the compose
+# plugin), so installing them over it makes dpkg refuse the overwrite or, if
+# apt resolves the clash, silently swaps the gate image's Docker client. On
+# the upstream Python base neither exists and `docker-cli docker-compose` are
+# installed from Debian. Each is decided by the capability it provides, not by
+# a package name: `docker` on PATH, and `docker compose version` answering.
+RUN set -eu \
+ && packages="ca-certificates curl git jq openssh-client util-linux" \
+ && if ! command -v docker >/dev/null 2>&1; then packages="$packages docker-cli"; fi \
+ && if ! docker compose version >/dev/null 2>&1; then packages="$packages docker-compose"; fi \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends $packages \
+ && rm -rf /var/lib/apt/lists/* \
+ && docker --version \
+ && docker compose version \
+ && git --version \
+ && nsenter --version
 
 # git's detached auto-maintenance (`git gc --auto` / `git maintenance run
 # --auto` after a commit) forks a daemon that is orphaned to PID 1. A gate
@@ -33,31 +61,20 @@ RUN git config --system maintenance.autoDetach false \
  && test "$(git config --system --get maintenance.autoDetach)" = false \
  && test "$(git config --system --get gc.autoDetach)" = false
 
-# Copy only the Python projects pip needs to resolve + install from their
-# pyprojects. Gate runs execute against the BOUND worktree via PYTHONPATH, so
-# these baked copies only seed the dependency closure, not the code under test.
+# Copy dependency metadata first. The generator reads only these pyprojects, so
+# this layer stays stable when source files change.
 COPY tester-unified/gen-requirements.py /usr/local/lib/tester-unified/gen-requirements.py
 COPY tester-unified/fetch-cli-extended.py /usr/local/lib/tester-unified/fetch-cli-extended.py
-COPY ciu/         /src/ciu/
-COPY cmru/        /src/cmru/
-COPY assay/       /src/assay/
-COPY topos/       /src/topos/
-COPY nyxloom/ /src/nyxloom/
-# The one estate-internal library cmru still packages itself, at the path cmru's
-# pyproject expects relative to /src/cmru (`../libraries/worktree/src`). It is
-# built ONLY from this copied source, never from an index. cli-extended is NOT
-# copied: it is a real wheel dependency of cmru (KI-51 / CX-D1) and is installed
-# from its RELEASE below.
-COPY libraries/worktree/ /src/libraries/worktree/
+COPY ciu/pyproject.toml /src/ciu/pyproject.toml
+COPY cmru/pyproject.toml /src/cmru/pyproject.toml
+COPY assay/pyproject.toml /src/assay/pyproject.toml
+COPY topos/pyproject.toml /src/topos/pyproject.toml
+COPY nyxloom/pyproject.toml /src/nyxloom/pyproject.toml
+COPY scripts/cgroup-profiler/pyproject.toml /src/cgroup-profiler/pyproject.toml
+COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
 # ZERO-RELEASE INPUT: empty (a .gitkeep) unless the operator dropped a locally
 # built cli_extended-*.whl here for CLI_EXTENDED_RESOLVE=local (see below).
 COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
-# scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
-# scipy/ruptures) that no other project here pulls in. It is NOT a fork
-# candidate the way srdm was: its suite uses fake cgroup trees, injected
-# clocks and stubbed sysfs by design, so it needs no Go toolchain, no
-# privilege, no systemd and no Docker socket — only this closure.
-COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 
 # One COPIES venv on python 3.14 under /opt (a real interpreter binary, so a
 # runtime home bind at /home/vscode cannot shadow it).  The build context omits
@@ -92,7 +109,11 @@ COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 # --no-cache, the unchanged RUN text would otherwise reuse the cached wheel).
 # THREE MODES (CLI_EXTENDED_RESOLVE):
 #   pinned  (DEFAULT) the released asset named by the two pin args above.
-#   latest  the `cli-extended-latest/latest.json` pointer (opt-in).
+#   latest  the `cli-extended-latest/latest.json` pointer (opt-in). The caller must
+#           also pass the PUBLISHED digest as CLI_EXTENDED_WHEEL_SHA256 (build-image.sh
+#           requires --cli-extended-wheel-sha256): a pointer naming other bytes, or
+#           downloaded bytes that hash differently, fail the build, so no mode installs
+#           unverified bytes.
 #   local   ZERO-RELEASE path: no release exists to fetch, so install a LOCALLY BUILT
 #           wheel from the build context instead. Build it with cmru's own wheel
 #           builder (`CMRU_BOOTSTRAP_CLI_EXTENDED=source` in cmru/build-initial-
@@ -103,12 +124,31 @@ COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
 #           --build-arg CLI_EXTENDED_WHEEL_SHA256=<its sha256>   (the existing arg).
 #           The digest is verified with sha256sum, the wheel goes in the same
 #           `--no-index --no-deps` way, and the post-install assertion requires a
-#           `+local` version (a release has none). Never a fallback: pinned stays
+#           PEP 440 local version (a stable release has none). Never a fallback: pinned stays
 #           the default and fails by itself when the pinned release is missing.
 ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
 ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.3.0/cli_extended-0.3.0-py3-none-any.whl
 ARG CLI_EXTENDED_WHEEL_SHA256=a0f80f1b614bcaf81fac235aa3a7f42f20eccac06f82311a6d8d5a725eea5f50
+# CLI_EXTENDED_WHEEL_SHA256 is, in EVERY mode, the digest the installed wheel must
+# have: the repository pin (pinned), the supplied digest (local) or the published
+# digest the caller names (latest, which refuses to resolve without it). The label
+# records it, and the install RUN below verifies the actual wheel file against it.
+LABEL org.vbpub.cli-extended.wheel-sha256="${CLI_EXTENDED_WHEEL_SHA256}"
+# Exact identity of the Run-Gate wheel supplied through the named build context.
+# The image installs those exact wheel bytes; the version and digest are
+# independently checked before installation and against installed metadata.
+ARG RUN_GATE_TESTER_VERSION
+ARG RUN_GATE_TESTER_WHEEL_SHA256
+RUN test -n "${RUN_GATE_TESTER_VERSION}" \
+ && test -n "${RUN_GATE_TESTER_WHEEL_SHA256}" \
+    || { echo "Run-Gate version and wheel SHA-256 are required; use tester-unified/build-image.sh" >&2; exit 1; }
+LABEL org.vbpub.run-gate.version="${RUN_GATE_TESTER_VERSION}" \
+      org.vbpub.run-gate.wheel-sha256="${RUN_GATE_TESTER_WHEEL_SHA256}"
+RUN printf '{"version":"%s","sha256":"%s"}\n' \
+      "${RUN_GATE_TESTER_VERSION}" "${RUN_GATE_TESTER_WHEEL_SHA256}" \
+      > /etc/tester-unified-run-gate-wheel.json \
+ && chmod 0444 /etc/tester-unified-run-gate-wheel.json
 RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
       > /tmp/tester-requirements.txt \
  && /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py --root /src \
@@ -116,7 +156,7 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
       > /tmp/internal-build-requirements.txt \
  && case "${CLI_EXTENDED_RESOLVE}" in \
       pinned) set -- --wheel-url "${CLI_EXTENDED_WHEEL_URL}" --sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; \
-      latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" ;; \
+      latest) set -- --pointer-url "${CLI_EXTENDED_POINTER_URL}" --expect-sha256 "${CLI_EXTENDED_WHEEL_SHA256}" ;; \
       local) set -- ;; \
       *) echo "CLI_EXTENDED_RESOLVE must be pinned, latest or local" >&2; exit 1 ;; \
     esac \
@@ -129,52 +169,126 @@ RUN /usr/local/bin/python3.14 /usr/local/lib/tester-unified/gen-requirements.py 
     else \
       /usr/local/bin/python3.14 /usr/local/lib/tester-unified/fetch-cli-extended.py \
         --dest /tmp/cli-extended-release --min-version 0.3.0 "$@"; \
-    fi
+    fi \
+ && set -- /tmp/cli-extended-release/cli_extended-*.whl \
+ && [ "$#" -eq 1 ] && [ -f "$1" ] \
+ && echo "${CLI_EXTENDED_WHEEL_SHA256}  $1" | sha256sum -c -
+
+# `venv` preserves existing contents. Start with empty environments so files
+# or `.pth` configuration inherited from a changed base image cannot affect
+# dependency installation or the offline internal wheel builds.
+RUN rm -rf /opt/tester-venv /tmp/internal-build-venv
+
 RUN /usr/local/bin/python3.14 -m venv --copies /opt/tester-venv \
  && /opt/tester-venv/bin/pip install --no-cache-dir --upgrade pip \
  && /opt/tester-venv/bin/pip install --no-cache-dir -r /tmp/tester-requirements.txt \
  && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/cli-extended-release/*.whl \
  && /usr/local/bin/python3.14 -m venv /tmp/internal-build-venv \
- && /tmp/internal-build-venv/bin/pip install --no-cache-dir -r /tmp/internal-build-requirements.txt \
+ && /tmp/internal-build-venv/bin/pip install --no-cache-dir -r /tmp/internal-build-requirements.txt
+
+# Start the source-build roots empty. A base image or earlier metadata layer
+# must not contribute files that setuptools could discover beside the copied
+# candidate sources.
+RUN rm -rf /src/cmru /src/libraries/worktree /src/run-gate-project
+
+# Keep Run-Gate's metadata for dependency closure generation. Its code is not
+# rebuilt from this mutable context: the named context supplies the exact wheel
+# whose version and digest the caller also installs into the cockpit.
+COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
+COPY --from=run-gate-wheel /run_gate-*.whl /tmp/run-gate-wheels/
+RUN set -eu; \
+    set -- /tmp/run-gate-wheels/run_gate-*.whl; \
+    if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then \
+      echo "named run-gate-wheel context must contain exactly one run_gate-*.whl" >&2; exit 1; \
+    fi; \
+    printf '%s  %s\n' "${RUN_GATE_TESTER_WHEEL_SHA256}" "$1" | sha256sum -c -; \
+    /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps "$1"; \
+    rm -rf /tmp/run-gate-wheels /src/run-gate-project
+
+# Build tooling is ready before package sources enter the image. These copies
+# stay untouched until the single-command offline CMRU wheel build below; gate
+# runs still execute against the BOUND worktree via PYTHONPATH.
+COPY ciu/ /src/ciu/
+COPY cmru/ /src/cmru/
+COPY assay/ /src/assay/
+COPY topos/ /src/topos/
+COPY nyxloom/ /src/nyxloom/
+# The one estate-internal library cmru still packages itself, at the path cmru's
+# pyproject expects relative to /src/cmru (`../libraries/worktree/src`). It is
+# built ONLY from this copied source, never from an index. cli-extended is NOT
+# copied: it is a real wheel dependency of cmru (KI-51 / CX-D1) and is installed
+# from its RELEASE below.
+COPY libraries/worktree/ /src/libraries/worktree/
+# scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
+# scipy/ruptures) that no other project here pulls in. It is NOT a fork
+# candidate the way srdm was: its suite uses fake cgroup trees, injected
+# clocks and stubbed sysfs by design, so it needs no Go toolchain, no
+# privilege, no systemd and no Docker socket — only this closure.
+COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
+
+RUN rm -rf /tmp/internal-wheels \
+ && mkdir -p /tmp/internal-wheels \
  && SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CMRU=0.0.0+tester.unified \
     /tmp/internal-build-venv/bin/pip wheel --no-index --no-deps --no-build-isolation \
-      -w /tmp/internal-wheels /src/cmru \
- && /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
+      -w /tmp/internal-wheels /src/cmru
+RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
  && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt /tmp/cli-extended-release \
- && /opt/tester-venv/bin/python -c "import build, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog; print('tester-unified closure OK')" \
+ && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog, markdown_it, linkify_it; print('tester-unified closure OK')" \
  && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgroup-profiler report tier OK')"
 
 # Build-time assertion (BG-05): `worktree` and cmru resolve from THIS image's
 # locally built cmru wheel (a PyPI release can never carry the +tester.unified
-# local version segment), and cli_extended is the RELEASED wheel, not a local
-# build and not an index install; cmru's metadata must require it.
+# local version segment), and cli_extended matches the selected resolver mode:
+# a stable published wheel by default, or an explicitly supplied local wheel.
+# cmru's metadata must require cli-extended.
 RUN /opt/tester-venv/bin/python - <<'PY'
 import importlib.metadata as metadata
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import cli_extended
+import cmru
+import run_gate
 import worktree
 
 site = "/opt/tester-venv/"
-for module in (cli_extended, worktree):
+for module in (cli_extended, cmru, run_gate, worktree):
     location = str(Path(module.__file__).resolve())
     assert location.startswith(site), f"{module.__name__} imports from {location}, not {site}"
 version = metadata.version("cmru")
 assert version.endswith("+tester.unified"), (
     f"cmru {version} was not built from the COPYed source in this image"
 )
+run_gate_version = metadata.version("run-gate")
+expected_run_gate_version = (
+    os.environ["RUN_GATE_TESTER_VERSION"]
+)
+assert run_gate_version == expected_run_gate_version, (
+    f"Run-Gate wheel {run_gate_version} does not match the requested image version "
+    f"{expected_run_gate_version}"
+)
+run_gate_location = str(Path(run_gate.__file__).resolve())
+assert run_gate_location.startswith(site), (
+    f"run_gate imports from {run_gate_location}, not {site}"
+)
+entrypoint = Path(sys.executable).with_name("run-gate")
+reported = subprocess.run([str(entrypoint), "--version"], check=True,
+                          capture_output=True, text=True).stdout
+assert reported == f"run-gate {run_gate_version}\n", reported
 released = metadata.version("cli-extended")
 if os.environ["CLI_EXTENDED_RESOLVE"] == "local":
     # Zero-release mode: the operator-built wheel (sha256-verified above) carries a
-    # +local version segment so it can never be mistaken for, or equal, a release.
-    assert "+" in released, f"cli-extended {released} has no +local segment: not a local build"
+    # PEP 440 local version segment so it cannot be mistaken for a stable release.
+    assert "+" in released, f"cli-extended {released} has no local version segment"
 else:
     assert "+" not in released, f"cli-extended {released} is a local build, not the release"
 assert any(r.startswith("cli-extended") for r in metadata.requires("cmru") or ()), (
     "cmru's wheel does not declare cli-extended as a dependency"
 )
-print("cmru is a local build; cli-extended is the released wheel:", released)
+print("cmru local, Run-Gate installed:", run_gate_version,
+      "; cli-extended identity:", released)
 PY
 
 # The container runs as uid 1003 (to match the host-owned bind mounts), which
@@ -183,15 +297,26 @@ PY
 # writable HOME with XDG dirs, so suites that read/write $HOME/.config or
 # $HOME/.cache (e.g. topos config/record) don't hit PermissionError on the
 # image's root-owned /home/vscode. A gate must give the run-uid a real HOME.
-RUN echo "tester:x:1003:994:tester:/home/tester:/bin/bash" >> /etc/passwd \
- && echo "docker:x:994:tester" >> /etc/group \
+RUN if getent group 1003 >/dev/null; then \
+      test "$(getent group 1003 | cut -d: -f1)" != docker; \
+    else \
+      groupadd --gid 1003 tester; \
+    fi \
+ && ! getent passwd 1003 >/dev/null \
+ && ! getent passwd tester >/dev/null \
+ && echo "tester:x:1003:1003:tester:/home/tester:/bin/bash" >> /etc/passwd \
  && mkdir -p /home/tester/.config /home/tester/.cache /home/tester/.local/state \
- && chown -R 1003:994 /home/tester \
- && chown -R 1003:994 /opt/tester-venv
+ && chown -R 1003:1003 /home/tester \
+ && chown -R 1003:1003 /opt/tester-venv
 
 USER 1003
-ENV HOME=/home/tester \
+ENV PATH=/opt/tester-venv/bin:${PATH} \
+    HOME=/home/tester \
     XDG_CONFIG_HOME=/home/tester/.config \
     XDG_CACHE_HOME=/home/tester/.cache \
     XDG_STATE_HOME=/home/tester/.local/state \
     TESTER_VENV=/opt/tester-venv
+
+# The installed CLI must remain executable after switching to the unprivileged
+# gate identity, with PATH resolving to the exact wheel installed above.
+RUN run-gate --version

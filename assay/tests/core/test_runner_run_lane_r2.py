@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from conftest import completed_process, timeout_expired
 from conftest import (
     GitRepo,
     cut_snapshot_history,
@@ -80,7 +81,7 @@ def _kill_on_mutation():
 
     def decide(argv, *, env, cwd, timeout):
         text = (Path(cwd) / "src" / "mod.py").read_text(encoding="utf-8")
-        return subprocess.CompletedProcess(
+        return completed_process(
             list(argv), returncode=0 if "x > 0" in text else 1, stdout="", stderr=""
         )
 
@@ -228,15 +229,15 @@ def test_judgment_r2_records_the_lanes_own_declared_policy_verbatim(
     recorded the operators it actually SUBMITTED rather than the ones the
     lane declared, or that canonicalised the list, would pass all of them.
 
-    This lane declares a ``jobs`` no default could coincide with, and TWO
-    operators in an order that is neither alphabetical nor
-    ``MUTATION_OPERATORS``'s own -- of which the fixture exercises exactly
-    one. Both must come back untouched: the record is the DECLARED policy,
-    not a summary of what happened.
+    Native R2 is serial because all candidates share event counters, so this
+    lane declares ``jobs = 1`` and TWO operators in an order that is neither
+    alphabetical nor ``MUTATION_OPERATORS``'s own -- of which the fixture
+    exercises exactly one. Both must come back untouched: the record is the
+    DECLARED policy, not a summary of what happened.
     """
     base_rev, head_rev = _seed_compare_swap_site(git_repo)
     declared = MutationConfig(
-        jobs=3, max_mutants=50, operators=("python:falsy-swap", "python:compare-swap")
+        jobs=1, max_mutants=50, operators=("python:falsy-swap", "python:compare-swap")
     )
     judge = make_r2_judge(
         source_root_paths=(git_repo.path / "src",), base=base_rev, mutation=declared
@@ -254,7 +255,7 @@ def test_judgment_r2_records_the_lanes_own_declared_policy_verbatim(
     )
 
     assert verdict.claims[1].mutation.total == 1, "only the compare-swap site exists"
-    assert verdict.judgment.r2.jobs == 3
+    assert verdict.judgment.r2.jobs == 1
     assert verdict.judgment.r2.operators == ("python:falsy-swap", "python:compare-swap")
     # (B091/D-23) `declared` above names no `budget_per_candidate` at all --
     # the OMITTED-means-"auto" default -- so `run_lane` must have derived one
@@ -809,7 +810,7 @@ def test_a_baseline_that_declares_equivalence_artifact_and_does_not_write_it_sto
 
     def counting(argv, *, env, cwd, timeout):
         calls.append(Path(cwd))
-        return subprocess.CompletedProcess(list(argv), returncode=0, stdout="", stderr="")
+        return completed_process(list(argv), returncode=0, stdout="", stderr="")
 
     verdict = runner.run_lane(
         lane,

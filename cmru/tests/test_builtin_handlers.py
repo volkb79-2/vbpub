@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -108,6 +109,77 @@ def test_check_build_prerequisites_requires_explicit_builder_image(monkeypatch):
     assert exc.value.code == exit_codes.PREREQ_MISSING
 
 
+def test_wheel_build_resolves_registered_builder_image_from_cmr_config(monkeypatch):
+    repo_root = Path(__file__).resolve().parents[2]
+    config_path = repo_root / "cmru.orchestration.toml"
+    declared = tomllib.loads(config_path.read_text(encoding="utf-8"))[
+        "orchestration"]["defaults"]["env"][handlers._WHEEL_BUILDER_IMAGE_ENV]
+    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+    # The strict orchestration loader resolves this required host placement
+    # input while reading the same configuration used for the image.
+    monkeypatch.setenv("CGROUP_PARENT_DEV_GATES", "dev-gates.slice")
+
+    actual = handlers._configured_wheel_builder_image(repo_root / "run-gate-project")
+
+    assert actual == declared
+
+
+def test_wheel_builder_image_from_config_follows_the_registered_project_containing_cwd(
+    tmp_path, monkeypatch,
+):
+    from tests.test_cli_dispatch import _valid_config
+
+    _valid_config(
+        tmp_path,
+        project_append='\n[env]\nCMRU_WHEEL_BUILDER_IMAGE = "wheel-builder:alpha"\n',
+    )
+    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+    nested = tmp_path / "alpha" / "src" / "pkg"
+    nested.mkdir(parents=True)
+
+    # A directory inside the registered project resolves that project's image.
+    assert handlers._configured_wheel_builder_image(nested) == "wheel-builder:alpha"
+    # The explicit environment value still wins over any configuration.
+    monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, " wheel-builder:explicit ")
+    assert handlers._resolve_wheel_builder_image(nested) == "wheel-builder:explicit"
+
+
+def test_wheel_builder_image_from_config_refuses_a_directory_outside_every_project(
+    tmp_path, monkeypatch,
+):
+    from tests.test_cli_dispatch import _valid_config
+
+    config = _valid_config(tmp_path)
+    monkeypatch.delenv(handlers._WHEEL_BUILDER_IMAGE_ENV, raising=False)
+    stray = tmp_path / "not-a-registered-project"
+    stray.mkdir()
+
+    with pytest.raises(ValueError) as refused:
+        handlers._configured_wheel_builder_image(stray)
+
+    assert str(refused.value) == (
+        f"{stray} is not inside a project registered by {config}"
+    )
+
+
+def test_wheel_builder_image_refuses_loader_without_project_registry(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    config_path = tmp_path / "cmru.orchestration.toml"
+    config_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        "cmru.config.load_forge_config",
+        lambda _path: SimpleNamespace(env={}, orchestration=None, projects={}),
+    )
+
+    with pytest.raises(RuntimeError) as refused:
+        handlers._configured_wheel_builder_image(tmp_path)
+
+    assert str(refused.value) == (
+        f"{config_path}: strict CMRU config loader returned no project registry"
+    )
+
+
 def test_check_build_prerequisites_explicit_builder_image_is_accepted(monkeypatch):
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:test")
     monkeypatch.setattr(handlers.shutil, "which", lambda _name: "/usr/bin/docker")
@@ -172,6 +244,7 @@ def test_cmd_wheel_build_container_mode(tmp_path, monkeypatch):
     project.mkdir()
     monkeypatch.setenv(handlers._WHEEL_BUILDER_IMAGE_ENV, "wheel-builder:local")
     monkeypatch.setenv(handlers._DOCKER_CGROUP_PARENT_ENV, "dev-background.slice")
+    monkeypatch.setattr(handlers, "require_installed_cgroup_parent", lambda *_a: None)
     monkeypatch.setattr(handlers, "_git_common_dir", lambda _cwd: tmp_path / ".git")
     monkeypatch.setattr(handlers, "_host_bind_source", lambda p: f"/host{p}")
     monkeypatch.setattr(handlers, "_wheel_builder_git_mount_args", lambda _source, **_kw: [])

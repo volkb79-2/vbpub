@@ -141,6 +141,30 @@ decoy.
 See the [consumer setup](CONSUMERS.md#host-cgroup-preflight) for the required
 install and rebuild steps.
 
+## Narrow cgprofile observer provisioning
+
+The resource observer uses a read-only Unix socket whose group is deliberately
+separate from `docker`. A normal MDT host install creates its group and runtime
+directory as part of the complete host policy workflow. Contract-2 adoption on
+an already configured host also needs a small additive path that prepares the
+socket directory without re-running unrelated host policy, Docker, or BuildKit
+steps. `install.sh --observer-only` provides that path: it verifies the
+existing `/run/cgprofile` control directory and refuses a pre-existing
+observer group that aliases Docker's GID or an observer path with the wrong
+type, owner, group, or mode before it writes units or applies tmpfiles. It
+refuses drift rather than letting tmpfiles silently re-own a live path. It
+creates the observer group, applies only the observer tmpfiles rule, and
+validates the resulting owner, group, and mode before returning.
+
+The dedicated tmpfiles rule is separate from the control-socket rule so the
+narrow path cannot rewrite the Docker-accessible parent directory. The full
+installer uses the same provisioning helper, keeping both host workflows on
+one implementation. `mdt-host-check.sh` verifies the live observer group,
+directory metadata, and the complete active sysusers/tmpfiles rule sets. It
+ignores blank lines and comments but rejects extra active directives, so a
+missing or widened rule is reported before a consumer lane tries to mount the socket. See the
+[pasteable consumer command](CONSUMERS.md#cgprofile-resource-observer-host-setup).
+
 ## BuildKit guard policy
 
 The guard defaults to `report-only` because a reserved Buildx worker may be

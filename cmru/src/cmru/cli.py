@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import logging
 import os
 import re
 import shlex
@@ -30,6 +31,7 @@ from cmru.config import InvocationContext, resolve_invocation_context
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.credential_handoff import CredentialHandoff
 from cmru.cli_support import (
+    CMRU_LOGGER,
     TargetSelectionError,
     select_target_names,
     write_config_diagnostic,
@@ -103,6 +105,9 @@ class ProjectConfig:
     # First-party artifacts this project's own tests/tooling consume (S15). Empty ⇒
     # no declared tool dependency (today's behaviour, unchanged).
     tool_dependencies: tuple = ()
+    # Scope names from the full orchestration registry, retained when a
+    # release child loads only selected projects from its candidate tree.
+    known_project_names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -169,6 +174,16 @@ def log_info(message: str) -> None:
 
 def log_warn(message: str) -> None:
     print(f"[WARN] {message}", flush=True)
+
+
+def log_debug(message: str) -> None:
+    """Emit a diagnostic through the shared CMRU logger.
+
+    Unlike ``log_info``, this prints nothing unless the invocation's log level
+    asks for debug output (``--debug``/``--log-level debug`` configure the
+    logger in the cli-extended runtime), so routine releases stay quiet.
+    """
+    logging.getLogger(CMRU_LOGGER).debug(message)
 
 
 def log_error(message: str) -> None:
@@ -340,7 +355,7 @@ def run_project_step(
         with tempfile.TemporaryDirectory(prefix="cmru-runtime-") as launcher_root:
             launcher_dir = Path(launcher_root)
             launcher = _create_bound_cmru_launcher(launcher_dir)
-            internal_env = {
+            internal_env: dict[str, Optional[str]] = {
                 transaction.INTERNAL_BIN_ENV: str(launcher),
                 "CMRU_RUNTIME_KIND": getattr(project, "runtime_kind", "none"),
                 **{
@@ -350,6 +365,20 @@ def run_project_step(
                 },
                 **dict(protected_env or {}),
             }
+            # A release identity is a protected artifact-step input, never an
+            # ambient capability. Clear stale shell/project values after
+            # project environment commands on every ordinary step; tagged
+            # artifact steps receive the exact pair above.
+            for key in ("CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG"):
+                internal_env.setdefault(key, None)
+            internal_env.setdefault("CMRU_RELEASE_GATE_COMMIT", None)
+            # KI-75: where a publisher finds the curated section for the version
+            # it releases (or `none` when the project opted out of a changelog).
+            # Protected: a project cannot declare or replace it.
+            from cmru.release_notes import NOTES_SOURCE_ENV, declaration_for
+            internal_env[NOTES_SOURCE_ENV] = declaration_for(
+                getattr(project, "changelog", None),
+            )
             resolved_token = (getattr(project, "github_token", None) or "").strip()
             if resolved_token:
                 # This is applied after project/step env and env commands by
@@ -559,6 +588,18 @@ def _bare_prefix(prefix: Optional[str]) -> str:
     return prefix[:-2] if prefix.endswith("-v") else prefix
 
 
+def _known_project_scope_names(
+    configs: Mapping[str, ProjectConfig],
+) -> frozenset[str] | None:
+    """Return the full scope registry retained on selected project configs."""
+    names = frozenset(
+        scope_name
+        for project in configs.values()
+        for scope_name in project.known_project_names
+    )
+    return names or None
+
+
 def load_config(
     config_path: Path,
     *,
@@ -584,6 +625,13 @@ def load_config(
     """
     resolved_config_path = config_path.expanduser().resolve()
     forge = load_forge_config(resolved_config_path)
+    from cmru.version import _project_scope_names
+
+    known_project_names = frozenset(
+        alias
+        for name, project in forge.projects.items()
+        for alias in _project_scope_names(name, project)
+    )
     if (
         validate_dependencies
         and resolved_config_path.name == ORCHESTRATION_CONFIG_FILENAME
@@ -713,6 +761,7 @@ def load_config(
             github_token=forge.project_tokens.get(name, forge.github.token or ""),
             tool_dependencies=tuple(parsed.tool_dependencies),
             runtime_kind=parsed.runtime_kind,
+            known_project_names=known_project_names,
         )
 
     cleanup_raw = forge.cleanup
@@ -756,7 +805,7 @@ def apply_release_env(github: GitHubConfig, env_config: ReleaseEnvConfig) -> Non
     configured_internal = sorted(name for name in env_config.env if is_reserved_internal_env(name))
     if configured_internal:
         raise UsageRefusal(
-            "release environment key(s) are reserved for CMRU internal launch state: "
+            "release environment key(s) are reserved for CMRU-managed protected context: "
             + ", ".join(configured_internal)
         )
     if github.owner:
@@ -1912,7 +1961,12 @@ def cleanup_project_step(
         step_env["GITHUB_PUSH_PAT"] = publisher_token
     step = _build_step_config("clean", project.steps["clean"])
     from cmru.runner import execute_step
-    protected_env = {"GITHUB_PUSH_PAT": publisher_token} if publisher_token else None
+    protected_env: dict[str, Optional[str]] = {
+        "CMRU_RELEASE_COMMIT": None,
+        "CMRU_RELEASE_TAG": None,
+    }
+    if publisher_token:
+        protected_env["GITHUB_PUSH_PAT"] = publisher_token
     execute_step(
         step, repo_root, log_dir, extra_env=step_env, protected_env=protected_env,
     )
@@ -2639,6 +2693,7 @@ def _run_project_steps(
     *,
     github_config: Optional[GitHubConfig] = None,
     env_config: Optional[ReleaseEnvConfig] = None,
+    protected_env: Optional[Mapping[str, str]] = None,
 ) -> None:
     """Run ``steps`` (in order) for each named project through the unified runner (S3).
 
@@ -2658,7 +2713,12 @@ def _run_project_steps(
                     f"{PROJECT_CONFIG_FILENAME}"
                 )
             log_info(f"{name}: running step '{step}'")
-            run_project_step(project, step, repo_root, log_dir)
+            if protected_env is None:
+                run_project_step(project, step, repo_root, log_dir)
+            else:
+                run_project_step(
+                    project, step, repo_root, log_dir, protected_env=protected_env,
+                )
 
 
 def _run_isolated_build_projects(
@@ -2735,26 +2795,24 @@ def _version_strategy(proj: "ProjectConfig") -> str:
 
 
 def _assert_release_candidate_unchanged(
-    repo_root: Path, project_name: str, expected_sha: str,
+    repo_root: Path, project_name: str, expected_sha: str, *, phase: str,
 ) -> None:
-    """Require publication to have used the exact candidate commit.
+    """Require a release step to use the exact candidate commit and bytes.
 
     Release steps may create ignored logs and artifact output, but they must not
-    move ``HEAD`` or leave a non-ignored worktree mutation behind. A later
-    promotion must therefore integrate the same commit that was gated and built.
+    move ``HEAD`` or change tracked source, including changes hidden by Git index
+    flags. A later promotion must integrate the same bytes that were gated and
+    built.
     """
     actual_sha = _git(repo_root, "rev-parse", "HEAD")
     if actual_sha != expected_sha:
         raise RuntimeError(
-            f"{project_name}: release step moved HEAD from {expected_sha} to "
+            f"{project_name}: {phase} moved HEAD from {expected_sha} to "
             f"{actual_sha}; refusing to promote a different commit"
         )
-    changed = _worktree_changed_paths(repo_root)
-    if changed:
-        raise RuntimeError(
-            f"{project_name}: release step left non-ignored changes before promotion: "
-            f"{', '.join(changed)}"
-        )
+    _assert_release_gate_source_matches_commit(
+        repo_root, expected_sha, phase=f"{phase} for {project_name}",
+    )
 
 
 def _project_release_paths(project: "ProjectConfig", name: str) -> list[str]:
@@ -2847,6 +2905,62 @@ def _report_publication_started(
     )
 
 
+def _run_release_gates_on_exact_head(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    names: List[str],
+) -> str:
+    """Run the declared gate and return only the commit it actually judged."""
+    judged_sha = _git(repo_root, "rev-parse", "HEAD")
+    _assert_release_gate_source_matches_commit(repo_root, judged_sha, phase="before")
+    _run_release_gates(repo_root, configs, names, candidate_sha=judged_sha)
+    current_sha = _git(repo_root, "rev-parse", "HEAD")
+    if current_sha != judged_sha:
+        raise RuntimeError(
+            "a release gate changed the candidate commit "
+            f"({judged_sha[:12]} -> {current_sha[:12]}); refusing to tag a commit "
+            "that the gate did not judge"
+        )
+    _assert_release_gate_source_matches_commit(repo_root, judged_sha, phase="after")
+    return judged_sha
+
+
+def _assert_release_gate_source_matches_commit(
+    repo_root: Path, expected_sha: str, *, phase: str,
+) -> None:
+    """Reject candidate changes hidden by index flags or ordinary Git status.
+
+    `git status` and `git diff` honor index flags such as assume-unchanged and
+    skip-worktree. Check those flags directly, then compare every tracked byte
+    and mode with the exact commit before trusting the usual dirty-path scan.
+    """
+    index = _git(repo_root, "ls-files", "-v", "-z")
+    flagged = [
+        entry for entry in index.split("\0")
+        if entry and (entry[:1] == "S" or entry[:1].islower())
+    ]
+    if flagged:
+        raise RuntimeError(
+            f"candidate source {phase} has assume-unchanged or "
+            "skip-worktree index entries; clear them before CMRU uses this candidate"
+        )
+    try:
+        from cmru.gate_snapshot import _verify_tracked_files_match_commit
+
+        _verify_tracked_files_match_commit(repo_root, expected_sha)
+    except RuntimeError as exc:
+        raise RuntimeError(
+            f"candidate source {phase} does not match commit "
+            f"{expected_sha[:12]}: {exc}"
+        ) from exc
+    changed = _worktree_changed_paths(repo_root)
+    if changed:
+        raise RuntimeError(
+            f"candidate source {phase} has non-ignored changes: "
+            f"{', '.join(changed[:8])}"
+        )
+
+
 def _run_tagged_build_and_publish(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -2865,11 +2979,22 @@ def _run_tagged_build_and_publish(
     A failed build rolls the freshly pushed tag back (the candidate stays
     resumable). Once the publishing step has begun, the tag is never touched.
     """
+    release_identity = {
+        "CMRU_RELEASE_COMMIT": candidate_sha,
+        "CMRU_RELEASE_TAG": tag,
+    }
     if artifact_phases:
         try:
+            _assert_release_candidate_unchanged(
+                repo_root, name, candidate_sha, phase="before artifact build",
+            )
             _run_project_steps(
                 repo_root, configs, [name], artifact_phases,
                 github_config=github_config, env_config=env_config,
+                protected_env=release_identity,
+            )
+            _assert_release_candidate_unchanged(
+                repo_root, name, candidate_sha, phase="after artifact build",
             )
         except Exception as exc:  # deliberately broad: ANY build failure must roll the tag back; re-raised
             _rollback_unpublished_release_tag(
@@ -2877,11 +3002,23 @@ def _run_tagged_build_and_publish(
             )
             raise
     try:
+        _assert_release_candidate_unchanged(
+            repo_root, name, candidate_sha, phase="before publication",
+        )
+    except Exception as exc:
+        _rollback_unpublished_release_tag(
+            repo_root, workspace, tag, git_auth=git_auth, cause=exc,
+        )
+        raise
+    try:
         _run_project_steps(
             repo_root, configs, [name], ["push"],
             github_config=github_config, env_config=env_config,
+            protected_env=release_identity,
         )
-        _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
+        _assert_release_candidate_unchanged(
+            repo_root, name, candidate_sha, phase="after publication",
+        )
     except Exception:  # deliberately broad: ANY failure after publish began must report it; re-raised
         _report_publication_started(repo_root, workspace, tag)
         raise
@@ -2934,24 +3071,31 @@ def _release_projects_sequentially(
         log_info(f"=== {name}: releasing ===")
 
         _prepare_release_projects(
-            repo_root, configs, [name], minor=minor, major=major, set_version=set_version,
+            repo_root, configs, [name], minor=minor, major=major,
+            set_version=set_version,
         )
         # Keep the remote candidate branch current before the gate too. A gate
         # failure must leave the generated candidate available for inspection.
         transaction.push_backup_branch(workspace, git_auth=git_auth)
-        _run_release_gates(repo_root, configs, [name])
-        gated_sha = _git(repo_root, "rev-parse", "HEAD")
+        gated_sha = _run_release_gates_on_exact_head(
+            repo_root, configs, [name]
+        )
 
         strategy = _version_strategy(project)
         if not getattr(project, "git_tag", True):
             if not no_build:
                 log_info(f"Building + publishing {name} (no git tag)")
                 candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+                _assert_release_candidate_unchanged(
+                    repo_root, name, candidate_sha, phase="before untagged release",
+                )
                 _run_untagged_project(
                     repo_root, configs, name,
                     github_config=github_config, env_config=env_config,
                 )
-                _assert_release_candidate_unchanged(repo_root, name, candidate_sha)
+                _assert_release_candidate_unchanged(
+                    repo_root, name, candidate_sha, phase="after untagged release",
+                )
                 released.append(f"{name} (no git tag)")
                 transaction.write_release_result(
                     repo_root, workspace, name, f"source-{_git(repo_root, 'rev-parse', 'HEAD')[:12]}"
@@ -2965,7 +3109,11 @@ def _release_projects_sequentially(
             )
             log_info(f"{name}: promoted release candidate to origin/main")
         else:
-            release_cmd(repo_root, {name: project}, minor=minor, major=major, set_version=set_version)
+            release_cmd(
+                repo_root, {name: project}, minor=minor, major=major,
+                set_version=set_version, known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
+            )
             # A file:-strategy tag commits a version bump here. Refresh the
             # durable candidate before tags or public publication are touched.
             transaction.push_backup_branch(workspace, git_auth=git_auth)
@@ -2976,10 +3124,31 @@ def _release_projects_sequentially(
                 # candidate so the commit that produces the artifact has passed
                 # the same acceptance contract before publication begins.
                 log_info(f"{name}: versioning changed the candidate; re-running release gate")
-                _run_release_gates(repo_root, configs, [name])
+                gated_sha = _run_release_gates_on_exact_head(
+                    repo_root, configs, [name]
+                )
+                candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+            if candidate_sha != gated_sha:
+                raise RuntimeError(
+                    f"{name}: refusing to tag candidate {candidate_sha[:12]} "
+                    f"because its gate receipt is for {gated_sha[:12]}"
+                )
             tag = _tag_on_head(repo_root, project.prefix or f"{name}-v")
             if tag:
+                candidate_sha = _git(repo_root, "rev-parse", "HEAD")
+                _assert_release_candidate_unchanged(
+                    repo_root, name, candidate_sha, phase="before tag publication",
+                )
                 _push_tags(repo_root, [tag], git_auth=git_auth, workspace=workspace)
+                try:
+                    _assert_release_candidate_unchanged(
+                        repo_root, name, candidate_sha, phase="after tag publication",
+                    )
+                except Exception as exc:
+                    _rollback_unpublished_release_tag(
+                        repo_root, workspace, tag, git_auth=git_auth, cause=exc,
+                    )
+                    raise
                 if not no_build:
                     log_info(f"Building + publishing {name} ({tag})")
                     candidate_sha = _git(repo_root, "rev-parse", "HEAD")
@@ -4095,9 +4264,12 @@ def _run_release_gates(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
     project_names: List[str],
+    *,
+    candidate_sha: str | None = None,
 ) -> None:
     """Run every selected project's declared release gate before source promotion."""
     log_dir = repo_root / "logs"
+    gate_commit = candidate_sha
     for name in project_names:
         project = configs[name]
         if not project.steps.get("run-tests"):
@@ -4105,8 +4277,15 @@ def _run_release_gates(
                 f"{name}: no release gate is declared ([project.{name}.steps.run-tests]); "
                 "cmru refuses to tag or publish without a meaningful tester-unified gate"
             )
+        if gate_commit is None:
+            # Only a declared gate needs the commit identity; a missing gate is
+            # a typed refusal that must not depend on a Git checkout.
+            gate_commit = _git(repo_root, "rev-parse", "HEAD")
         log_info(f"{name}: running required release gate")
-        run_project_step(project, "run-tests", repo_root, log_dir)
+        run_project_step(
+            project, "run-tests", repo_root, log_dir,
+            protected_env={"CMRU_RELEASE_GATE_COMMIT": gate_commit},
+        )
 
 
 def _check_release_tool_dependencies(
@@ -4239,6 +4418,337 @@ def _commit_prepared_generated(
     return True
 
 
+_RELEASE_BODY_HANDLERS = frozenset({"wheel-publish", "tarball-publish", "oci-image-release"})
+_OCI_RELEASE_HANDLER = "oci-image-release"
+
+
+def _release_body_handler_argv(project) -> tuple[str, ...] | None:
+    """The first CMRU release-body handler in the push step, as ``(handler, *options)``.
+
+    ``oci-image-release`` owns the whole GitHub Release body and replaces
+    whatever an earlier body handler wrote, so it cannot share a push step with
+    another body handler (nor repeat): that is refused before any side effect.
+    """
+    step = (getattr(project, "runner_steps", None) or {}).get("push")
+    found: list[tuple[str, ...]] = []
+    for command in getattr(step, "commands", ()):
+        argv = command.get("argv", ()) if isinstance(command, dict) else ()
+        if len(argv) >= 3 and [str(item) for item in argv[:2]] == ["cmru", "handler"]:
+            if str(argv[2]) in _RELEASE_BODY_HANDLERS:
+                found.append(tuple(str(item) for item in argv[2:]))
+    if any(item[0] == _OCI_RELEASE_HANDLER for item in found) and len(found) > 1:
+        raise RefusedBeforeChange(
+            f"{getattr(project, 'name', 'project')}: `{_OCI_RELEASE_HANDLER}` writes the whole "
+            "GitHub Release body, so its push step cannot also run another CMRU "
+            "release-body handler (wheel-publish, tarball-publish or a second "
+            f"{_OCI_RELEASE_HANDLER}): the later one would overwrite the earlier body"
+        )
+    return found[0] if found else None
+
+
+def _has_cmru_github_release_body(project) -> bool:
+    """Whether the declared push step uses a CMRU handler that publishes notes."""
+    return _release_body_handler_argv(project) is not None
+
+
+_OCI_RELEASE_OPTIONS = ("--prefix", "--image", "--cwd")
+
+
+def _parse_oci_release_options(options: Sequence[str]) -> dict[str, str]:
+    """Strictly parse the three options of ``oci-image-release``; ``ValueError`` if malformed.
+
+    Exactly one each of ``--prefix``, ``--image`` and ``--cwd`` (``--flag V`` or
+    ``--flag=V``), non-empty, and nothing else: an unknown flag, a stray
+    positional, a duplicate, a missing value or a missing option is refused.
+    """
+    found: dict[str, str] = {}
+    index = 0
+    while index < len(options):
+        token = options[index]
+        flag, equals, inline = token.partition("=")
+        if flag not in _OCI_RELEASE_OPTIONS:
+            raise ValueError(
+                f"unexpected argument {token!r}; the only options are "
+                f"{', '.join(_OCI_RELEASE_OPTIONS)}"
+            )
+        if flag in found:
+            raise ValueError(f"{flag} is given more than once")
+        if equals:
+            value = inline
+            index += 1
+        else:
+            if index + 1 >= len(options):
+                raise ValueError(f"{flag} has no value")
+            value = options[index + 1]
+            index += 2
+        if not value:
+            raise ValueError(f"{flag} has an empty value")
+        if value.startswith("-"):
+            raise ValueError(f"{flag} value {value!r} looks like an option, not a value")
+        found[flag] = value
+    missing = [flag for flag in _OCI_RELEASE_OPTIONS if flag not in found]
+    if missing:
+        raise ValueError(f"missing required option(s): {', '.join(missing)}")
+    return found
+
+
+def _project_release_prefix(project) -> str:
+    """The project's release prefix without ``-v`` (``<prefix>-v<version>`` is its tag)."""
+    return (getattr(project, "prefix", None) or f"{project.name}-v").removesuffix("-v")
+
+
+def _validated_oci_release_image(project, repo_root: Path) -> str | None:
+    """Validate a configured ``oci-image-release`` command; return its ``--image``.
+
+    ``None`` when the project's push step has no such command. EVERY check is made
+    from CMRU's declared config and the candidate worktree, before any prepare
+    step, gate, tag, image push or other release side effect; ``cmru release
+    --dry-run`` calls this same function, so a preview refuses exactly what the
+    release would. A violation raises ``RefusedBeforeChange``:
+
+    * the body-handler conflict rule (one release-body handler per push step);
+    * the project is tagged (the protected release identity exists only then);
+    * exactly one well-formed ``--prefix``/``--image``/``--cwd`` and nothing else;
+    * ``--prefix`` is the project's release prefix without ``-v``;
+    * ``--image`` is a repository reference without a tag or digest;
+    * the step appends no runner arguments (``bake_set_*``/``no_cache_env`` add
+      tokens to every command's argv, which would corrupt this one's);
+    * the command is the LAST of the push step (it publishes externally visible
+      metadata, so it must follow the image push and nothing may follow it);
+    * ``--cwd`` (relative, resolved from the command's declared ``cwd`` within
+      the project root derived from the candidate) is the project root that holds
+      the declared changelog.
+    """
+    from cmru.changelog import _validate_changelog_path
+    from cmru.release import validate_oci_image_repository
+    from cmru.runner import resolve_path
+
+    argv = _release_body_handler_argv(project)
+    if argv is None or argv[0] != _OCI_RELEASE_HANDLER:
+        return None
+    name = getattr(project, "name", "project")
+
+    def refuse(detail: str) -> NoReturn:
+        raise RefusedBeforeChange(f"{name}: `{_OCI_RELEASE_HANDLER}`: {detail}")
+
+    if not getattr(project, "git_tag", True):
+        refuse(
+            "the project has no git tag (release.git_tag = false), so there is no "
+            "protected release tag or commit for it to publish against"
+        )
+    try:
+        options = _parse_oci_release_options(argv[1:])
+    except ValueError as exc:
+        refuse(str(exc))
+    expected_prefix = _project_release_prefix(project)
+    if options["--prefix"] != expected_prefix:
+        refuse(
+            f"--prefix {options['--prefix']!r} must be this project's release prefix "
+            f"without -v, {expected_prefix!r}"
+        )
+    try:
+        image = validate_oci_image_repository(options["--image"])
+    except ValueError as exc:
+        refuse(str(exc))
+
+    step = (getattr(project, "runner_steps", None) or {}).get("push")
+    if getattr(step, "no_cache_env", None) or (
+        getattr(step, "bake_set_prefix", None) and getattr(step, "bake_set_vars", None)
+    ):
+        refuse(
+            "the push step declares bake_set_prefix/bake_set_vars or no_cache_env, which "
+            "make the runner append arguments to every command in the step and would "
+            "corrupt this command's argv after the image was pushed"
+        )
+
+    commands = _push_commands(project)
+    position = next(
+        index for index, command in enumerate(commands)
+        if _command_handler(command) == _OCI_RELEASE_HANDLER
+    )
+    if position != len(commands) - 1:
+        following = commands[position + 1]
+        refuse(
+            "it publishes externally visible release metadata, so it must be the LAST "
+            f"command of the push step, after the image push; "
+            f"{len(commands) - 1 - position} command(s) follow it, starting with "
+            f"{following.get('label', 'an unlabelled command') if isinstance(following, dict) else following!r}"
+        )
+
+    command = commands[position]
+    raw_cwd = command.get("cwd") if isinstance(command, dict) else None
+    if not isinstance(raw_cwd, str) or not raw_cwd.strip():
+        refuse("the command declares no working directory (cwd)")
+    if Path(raw_cwd).is_absolute() or Path(options["--cwd"]).is_absolute():
+        refuse(
+            "the command's cwd and --cwd must be relative: an absolute path would bake a "
+            "candidate-specific location into the project configuration"
+        )
+    project_root = resolve_cwd(repo_root, _project_working_directory(project)).resolve()
+    target = (resolve_path(project_root, raw_cwd) / options["--cwd"]).resolve()
+    if target != project_root:
+        refuse(
+            f"--cwd {options['--cwd']!r}, resolved from the command's cwd {raw_cwd!r}, is "
+            f"not the project root {_project_working_directory(project)!r} that holds the "
+            "changelog; use --cwd . with cwd = \".\""
+        )
+    if getattr(project, "changelog", None):
+        try:
+            _validate_changelog_path(project, repo_root).relative_to(target)
+        except ValueError:
+            refuse(f"--cwd does not contain the declared changelog {project.changelog!r}")
+    return image
+
+
+def _validate_release_body_handlers(
+    repo_root: Path, configs: Mapping[str, "ProjectConfig"], names: Sequence[str],
+) -> None:
+    """Validate every named project's release-body handlers before ANY of them is released."""
+    for name in names:
+        _validated_oci_release_image(configs[name], repo_root)
+
+
+def _push_commands(project) -> list:
+    """The command tables of the project's declared ``push`` step (possibly empty)."""
+    step = (getattr(project, "runner_steps", None) or {}).get("push")
+    return list(getattr(step, "commands", ()))
+
+
+def _command_handler(command) -> str | None:
+    """The CMRU handler a ``cmru handler <name> ...`` command table runs, else ``None``."""
+    argv = command.get("argv", ()) if isinstance(command, dict) else ()
+    if len(argv) >= 3 and [str(item) for item in argv[:2]] == ["cmru", "handler"]:
+        return str(argv[2])
+    return None
+
+
+def _fold_pending_release_notes(repo_root: Path, project, version: str) -> bool:
+    """Fold pending notes into the generated section before the release gate."""
+    from cmru.changelog import _validate_changelog_path, fold_unreleased_notes
+    from cmru.release_notes import ReleaseNotesError
+
+    path = _validate_changelog_path(project, repo_root)
+    try:
+        updated = fold_unreleased_notes(path.read_text(encoding="utf-8"), version)
+    except ReleaseNotesError as exc:
+        raise RefusedBeforeChange(f"{project.name}: release notes: {exc}") from exc
+    if updated is None:
+        return False
+    path.write_text(updated, encoding="utf-8")
+    log_info(
+        f"{project.name}: folded [Unreleased] notes into [{version}] in the release candidate"
+    )
+    return True
+
+
+def _pending_release_notes_or_refuse(repo_root: Path, project, **plan):
+    """Resolve the pending release's curated section or refuse before any side effect."""
+    from cmru.changelog import pending_release_notes
+    from cmru.release_notes import ReleaseNotesError
+
+    try:
+        return pending_release_notes(repo_root, project, **plan)
+    except ReleaseNotesError as exc:
+        raise RefusedBeforeChange(f"{project.name}: release notes: {exc}") from exc
+
+
+def _preview_release_bodies(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: List[str],
+    *,
+    no_build: bool = False,
+    **plan,
+) -> None:
+    """Preview tagged changelog notes and any GitHub Release body (dry-run).
+
+    Uses the SAME builder as the publisher. The changelog section is generated
+    exactly as the real prepare phase would and then restored, so the disposable
+    candidate is unchanged. Only the artifact file name and its SHA256 are unknown
+    before a build; they appear as marked placeholders.
+    """
+    from cmru.changelog import _validate_changelog_path, generate_release_changelog
+    from cmru.release import build_oci_image_release_body, build_release_body
+    from cmru.release_notes import ARTIFACT_PLACEHOLDER, SHA256_PLACEHOLDER
+
+    # The release plan knows every project in the Git family, including scopes
+    # that are not selected for this particular release. Changelog headings,
+    # notes and tags must interpret scoped Conventional Commits the same way.
+    plan = {
+        **plan,
+        "known_projects": configs,
+        "known_project_names": _known_project_scope_names(configs),
+    }
+
+    for name in project_names:
+        project = configs[name]
+        # The SAME validator the release preparation runs, before anything else
+        # (even for a project this preview would otherwise skip), so a dry run
+        # refuses exactly what the release would refuse, before any change.
+        oci_image = _validated_oci_release_image(project, repo_root)
+        if not getattr(project, "changelog", None) or not getattr(project, "git_tag", True):
+            continue
+        handler_argv = _release_body_handler_argv(project)
+        has_release_body = handler_argv is not None
+        path = _validate_changelog_path(project, repo_root)
+        original = path.read_bytes() if path.exists() else None
+        try:
+            generate_release_changelog(repo_root, project, **plan)
+            notes = _pending_release_notes_or_refuse(repo_root, project, **plan)
+            _fold_pending_release_notes(repo_root, project, notes.version)
+            notes = _pending_release_notes_or_refuse(repo_root, project, **plan)
+        finally:
+            if original is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(original)
+        prefix = _project_release_prefix(project)
+        if no_build or not has_release_body:
+            reason = (
+                "--no-build skips publication" if no_build else
+                "its push step has no CMRU GitHub Release-body handler"
+            )
+            log_info(
+                f"[DRY RUN] {name}: candidate tag {prefix}-v{notes.version} will include "
+                f"this changelog section; {reason}, so no GitHub Release body is published:"
+            )
+            print("----- begin release notes section -----")
+            print(notes.text)
+            print("----- end release notes section -----")
+            continue
+        if oci_image is not None:
+            image = oci_image
+            try:
+                body = build_oci_image_release_body(image, notes.version, release_notes=notes)
+            except ValueError as exc:
+                raise RefusedBeforeChange(f"{name}: {_OCI_RELEASE_HANDLER}: {exc}") from exc
+            log_info(
+                f"[DRY RUN] {name}: GitHub Release body for {prefix}-v{notes.version} "
+                f"(image {image}:{notes.version}, published by `{_OCI_RELEASE_HANDLER}` after "
+                f"the image push; curated section from {project.changelog}; pending notes, when "
+                "present, are folded into this version section in the candidate before its gate "
+                "and tag):"
+            )
+            print("----- begin release body -----")
+            print(body)
+            print("----- end release body -----")
+            continue
+        body = build_release_body(
+            prefix, notes.version, artifact_name=ARTIFACT_PLACEHOLDER,
+            sha256=SHA256_PLACEHOLDER, release_notes=notes,
+        )
+        log_info(
+            f"[DRY RUN] {name}: GitHub Release body for {prefix}-v{notes.version} "
+            f"(curated section from {project.changelog}; pending notes, when present, "
+            "are folded into this version section in the candidate before its gate and tag; "
+            "the artifact name and SHA256 are placeholders until the build; a --notes-env "
+            "text replaces only the opening line):"
+        )
+        print("----- begin release body -----")
+        print(body)
+        print("----- end release body -----")
+
+
 def _prepare_release_projects(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
@@ -4248,12 +4758,15 @@ def _prepare_release_projects(
     major: bool = False,
     set_version: Optional[str] = None,
 ) -> None:
-    """Prepare declared source inputs, including an optional generated changelog."""
+    """Prepare declared inputs, folding pending notes into every tagged candidate."""
     from cmru.changelog import generate_release_changelog, pending_release_tag
 
     log_dir = repo_root / "logs"
     for name in project_names:
         project = configs[name]
+        # Refuse an invalid release-body handler (conflict, config, order, root)
+        # before the project's `prepare` step or any other side effect.
+        _validated_oci_release_image(project, repo_root)
         if "prepare" in project.steps:
             log_info(f"{name}: preparing release inputs")
             run_project_step(project, "prepare", repo_root, log_dir)
@@ -4262,20 +4775,55 @@ def _prepare_release_projects(
             log_info(f"{name}: generating release history")
             changed = generate_release_changelog(
                 repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
             )
             if changed:
                 log_info(f"{name}: updated {changelog}")
+        notes = None
+        if changelog and getattr(project, "git_tag", True):
+            # Validate the exact version section before committing any generated
+            # inputs. A supported CMRU GitHub publisher reads only this section
+            # from the eventual tag, never the mutable [Unreleased] source.
+            notes = _pending_release_notes_or_refuse(
+                repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
+            )
+            _fold_pending_release_notes(repo_root, project, notes.version)
+            notes = _pending_release_notes_or_refuse(
+                repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
+            )
+            if not _has_cmru_github_release_body(project):
+                log_info(
+                    f"{name}: pending notes are in the tagged changelog; its push step "
+                    "does not publish a CMRU GitHub Release body"
+                )
         if "prepare" in project.steps or changelog:
             candidate_label = project.name
             if getattr(project, "git_tag", True):
                 try:
                     candidate_label = pending_release_tag(
                         repo_root, project, minor=minor, major=major,
-                        set_version=set_version,
+                        set_version=set_version, known_projects=configs,
+                        known_project_names=_known_project_scope_names(configs),
                     ) or project.name
                 except RuntimeError:
                     pass  # the trailer is provenance only; fall back to the name
             _commit_prepared_generated(repo_root, project, candidate_label)
+        if notes is not None:
+            if _has_cmru_github_release_body(project):
+                log_info(
+                    f"{name}: the release body will end with the [{notes.version}] "
+                    f"section of {changelog}"
+                )
+            else:
+                log_info(
+                    f"{name}: the tagged changelog will include the [{notes.version}] "
+                    f"section of {changelog}; no GitHub Release body is configured"
+                )
 
 
 def _prepare_dry_run_external_versions(
@@ -4320,6 +4868,72 @@ def _current_git_root() -> Path:
     """Resolve the current repository root through the shared Git API."""
 
     return transaction._shared_worktree().discover_git_root(Path.cwd())[0]
+
+
+def _gate_snapshots(args, runtime) -> None:
+    """List retained release-gate snapshots; ``--remove`` deletes the removable ones.
+
+    Removal is judged from fresh facts per snapshot (``gate_snapshot``): a live or
+    unprovable lease, an unobservable source, or a mismatched record keeps the
+    snapshot, so the verb is safe to repeat and never touches an active gate.
+    """
+    from cmru import gate_snapshot
+
+    shared = transaction._shared_worktree()
+    try:
+        repo_root = _current_git_root()
+    except shared.WorkspaceError as exc:
+        _usage_error(
+            "cmru gate-snapshots must run inside the repository whose gate "
+            f"snapshots you want to manage: {exc}"
+        )
+    try:
+        reports = gate_snapshot.inspect_gate_snapshots(
+            repo_root, include_current=args.include_current,
+        )
+    except RuntimeError as exc:
+        log_error(f"cannot inspect gate snapshots: {exc}")
+        sys.exit(exit_codes.FAILURE)
+    if args.json:
+        runtime.output.primary([
+            {
+                "branch": item.record.branch,
+                "path": str(item.record.worktree_path),
+                "source": str(item.record.source_git_root),
+                "status": item.status,
+                "reason": item.reason,
+            }
+            for item in reports
+        ])
+    elif not reports:
+        log_info("No retained CMRU gate snapshots.")
+    for item in reports if not args.json else ():
+        print(
+            f"{item.status}: {item.record.branch}\n  path: {item.record.worktree_path}\n"
+            f"  source: {item.record.source_git_root}\n  reason: {item.reason}"
+        )
+    if not args.remove:
+        return
+    failures = 0
+    for item in reports:
+        if item.status != gate_snapshot.REMOVABLE:
+            continue
+        path = item.record.worktree_path
+        if args.dry_run:
+            log_info(f"[DRY RUN] Would remove gate snapshot {path}")
+            continue
+        try:
+            gate_snapshot.remove_gate_snapshot(
+                item.record.record_path, executor_git_root=repo_root,
+                include_current=args.include_current,
+            )
+        except RuntimeError as exc:
+            failures += 1
+            log_error(f"could not remove gate snapshot {path}: {exc}")
+        else:
+            log_info(f"Removed gate snapshot {path}")
+    if failures:
+        sys.exit(exit_codes.FAILURE)
 
 
 def _dispatch(args, runtime):
@@ -4421,6 +5035,9 @@ def _dispatch(args, runtime):
                         "Inspect the checkout and its Git metadata before acting."
                     )
 
+
+    elif verb == "gate-snapshots":
+        _gate_snapshots(args, runtime)
 
     elif verb == "dependencies":
         vargs = args
@@ -4982,14 +5599,19 @@ def _status(vargs, runtime, repo_root: Path, configs, selected_names: List[str])
     groups = transaction.project_git_family_groups(
         repo_root, [configs[name] for name in selected_names]
     )
+    all_groups = transaction.project_git_family_groups(repo_root, list(configs.values()))
     records: list = []
     for family_root, members in groups.items():
         family_names = [getattr(project, "name") for project in members]
         family_configs = _configs_for_git_family(configs, family_names, family_root)
+        known_members = all_groups.get(family_root, members)
+        known_names = [getattr(project, "name") for project in known_members]
+        known_configs = _configs_for_git_family(configs, known_names, family_root)
         family = {name: family_configs[name] for name in family_names}
         options = dict(
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-            ref=vargs.ref or "HEAD",
+            ref=vargs.ref or "HEAD", known_projects=known_configs,
+            known_project_names=_known_project_scope_names(known_configs),
         )
         if vargs.json:
             records.extend(status_records(family_root, family, **options))
@@ -5011,6 +5633,90 @@ def _exit_for_domain_error(exc: CmruError) -> NoReturn:
     if exc.hint:
         log_info(exc.hint)
     sys.exit(exc.exit_code)
+
+
+def _record_release_controller_identity(phase: str) -> Mapping[str, str]:
+    """Validate the installed release controller and return its audit identity."""
+    from cmru.release_controller import release_controller_identity
+
+    identity = release_controller_identity(Path(__file__))
+    log_debug(
+        f"verified CMRU release controller during {phase}: "
+        f"module={identity['module_path']}"
+    )
+    return identity
+
+
+def _record_installed_release_controller_identity(phase: str) -> Mapping[str, str]:
+    """Hash the installed controller when CMRU self-release loads candidate source."""
+    from cmru.release_controller import installed_release_controller_identity
+
+    identity = installed_release_controller_identity()
+    log_debug(
+        f"verified installed CMRU release controller during {phase}: "
+        f"module={identity['module_path']}"
+    )
+    return identity
+
+
+def _release_child_controller_identity(
+    repo_root: Path, selected_names: Sequence[str],
+) -> Mapping[str, str]:
+    """Require the transaction child to see the launcher's installed wheel."""
+    expected = {
+        "version": os.environ.get(transaction.RELEASE_CONTROLLER_VERSION_ENV),
+        "wheel_sha256": os.environ.get(
+            transaction.RELEASE_CONTROLLER_WHEEL_SHA256_ENV,
+        ),
+        "distribution_sha256": os.environ.get(
+            transaction.RELEASE_CONTROLLER_FILES_SHA256_ENV,
+        ),
+    }
+    if not all(isinstance(value, str) and value for value in expected.values()):
+        raise RuntimeError(
+            "CMRU transaction child has no complete launcher controller identity"
+        )
+    selected = {
+        "version": expected["version"],
+        "wheel_sha256": expected["wheel_sha256"],
+        "distribution_sha256": expected["distribution_sha256"],
+    }
+    if any(
+        re.fullmatch(r"[0-9a-f]{64}", selected[key]) is None
+        for key in ("wheel_sha256", "distribution_sha256")
+    ):
+        raise RuntimeError("CMRU transaction child launcher controller identity is malformed")
+
+    if "cmru" in selected_names:
+        # A CMRU self-release intentionally imports the candidate source tree.
+        # Its installed bootstrap wheel still must match the parent launcher.
+        try:
+            active_module = Path(__file__).resolve(strict=True)
+            candidate_module = (
+                repo_root / "cmru" / "src" / "cmru" / "cli.py"
+            ).resolve(strict=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"cannot resolve the CMRU self-release candidate controller: {exc}"
+            ) from exc
+        if active_module != candidate_module:
+            raise RuntimeError(
+                "CMRU self-release controller is not loaded from its selected candidate: "
+                f"active={active_module}, candidate={candidate_module}"
+            )
+        actual = _record_installed_release_controller_identity("transaction")
+    else:
+        actual = _record_release_controller_identity("transaction")
+    actual_identity = {
+        key: actual.get(key)
+        for key in ("version", "wheel_sha256", "distribution_sha256")
+    }
+    if actual_identity != selected:
+        raise RuntimeError(
+            "CMRU release controller identity changed between launcher and transaction: "
+            f"launcher={selected}, transaction={actual_identity}; refusing to release"
+        )
+    return actual
 
 
 def _release_launcher(
@@ -5058,6 +5764,15 @@ def _release_launcher(
     # project's own path (--allow-uncommitted overrides): otherwise it would be
     # silently left out with no warning, since the build never looks at it.
     try:
+        launcher_identity = None
+        if not vargs.dry_run:
+            launcher_identity = _record_release_controller_identity("launcher")
+            log_info(
+                "CMRU release controller: "
+                f"version={launcher_identity['version']} "
+                f"wheel-sha256={launcher_identity['wheel_sha256']} "
+                f"installed-files-sha256={launcher_identity['distribution_sha256']}"
+            )
         transaction_root = transaction.source_git_root_for_projects(
             repo_root, [configs[name] for name in release_scope]
         )
@@ -5177,6 +5892,7 @@ def _release_launcher(
             rc = transaction.run_child(
                 workspace, child_args, project_names=release_scope,
                 credentials=_credential_handoff(github_config, configs, release_scope),
+                controller_identity=launcher_identity,
             )
             if rc == 0:
                 retained: list[Path] = []
@@ -5266,6 +5982,15 @@ def _release_child(
     """The in-worktree half of ``release``: detect, tag, push, build, publish."""
     from cmru.version import ReleasePlanRefused, release_cmd, detect_changed_projects
 
+    if not vargs.dry_run:
+        identity = _release_child_controller_identity(repo_root, selected_names)
+        log_info(
+            "CMRU transaction controller: "
+            f"version={identity['version']} "
+            f"wheel-sha256={identity['wheel_sha256']} "
+            f"installed-files-sha256={identity['distribution_sha256']}"
+        )
+
     selected_ordered = {name: ordered[name] for name in selected_names}
 
     # Scope to what this run will actually touch *before* computing the plan
@@ -5300,6 +6025,8 @@ def _release_child(
             check_tag_at_head=True,
             allow_tag_ahead_of_head=vargs.allow_tag_ahead_of_head,
             git_auth=git_auth,
+            known_projects=configs,
+            known_project_names=_known_project_scope_names(configs),
         )
     except ReleasePlanRefused as exc:
         log_error(str(exc))
@@ -5322,6 +6049,18 @@ def _release_child(
     # its exact baseline and reason, not a second, bare name-only list here.
     # This also runs identically whether or not --dry-run is set (KI-14):
     # the plan above is computed once, before the dry-run/real branch below.
+
+    # A configured release-body handler (`oci-image-release`) is validated for
+    # EVERY project this run ships before ANY project's cycle starts, so an
+    # invalid handler in a later project cannot be discovered after an earlier
+    # project was tagged, pushed or published. Same typed refusal and same
+    # validator as the dry-run preview and per-project preparation use.
+    try:
+        _validate_release_body_handlers(repo_root, configs, release_names)
+    except RefusedBeforeChange as exc:
+        log_error(str(exc))
+        transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+        sys.exit(exit_codes.REFUSED)
 
     # S15: declared tool dependencies for external/copy consumers
     # are verified here, alongside the tag-preflight above -- same phase (no
@@ -5347,10 +6086,17 @@ def _release_child(
     if vargs.dry_run:
         # Preview only: show what would be tagged for every changed project, no
         # commits/gates/promotion/tags — nothing here has side effects.
+        _preview_release_bodies(
+            repo_root, ordered, release_names,
+            no_build=vargs.no_build,
+            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            known_projects=configs,
+        )
         release_cmd(
             repo_root, selected_ordered,
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
-            dry_run=True,
+            dry_run=True, known_projects=configs,
+            known_project_names=_known_project_scope_names(configs),
         )
         log_info("[DRY RUN] No tags pushed, nothing built/published.")
         return
@@ -5970,6 +6716,18 @@ def _build_cli():
         include_progress=False, handler=direct(),
     ))
     registry.register(VerbSpec("worktrees", description="Discover retained CMRU build and release worktrees (read-only).", group=VerbGroup.EXPLORATION.value, include_json=True, include_progress=False, handler=direct()))
+    registry.register(VerbSpec(
+        "gate-snapshots",
+        description="List retained release-gate snapshots; --remove deletes only those proven unneeded.",
+        group=VerbGroup.MIXED.value,
+        options=(
+            OptionSpec(("--remove",), "remove every snapshot judged removable (default: list only)", parser_kwargs={"action": "store_true", "default": False}),
+            OptionSpec(("--include-current",), "also treat a snapshot whose source is still at its commit as removable (it can then no longer resume)", parser_kwargs={"action": "store_true", "default": False}),
+        ),
+        mutating=True, dry_run=True, include_confirmation=False, include_json=True,
+        include_progress=False, handler=direct(),
+        constraints=(Requires("--dry-run", ("--remove",), "a removal preview is only meaningful with --remove"),),
+    ))
     registry.register(VerbSpec(
         "dependencies",
         description="Show and preflight the project dependency graph; --write updates its generated block (read-only without it).",

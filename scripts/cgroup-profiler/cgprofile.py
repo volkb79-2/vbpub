@@ -1291,6 +1291,16 @@ def _validate_ctl_response(verb: str, resp: Any) -> None:
         for key in ("sessions_live", "max_sessions"):
             if type(daemon.get(key)) is not int or daemon[key] < 0:
                 raise ValueError(f"invalid response: version.daemon.{key} must be a non-negative integer")
+        # Older control-v1 daemons predate this additive capability field, so
+        # retain their response compatibility. When present, validate every
+        # field before presenting it as observer support.
+        if "resource_observer" in resp:
+            observer = object_at("resource_observer")
+            if type(observer.get("contract")) is not int or observer["contract"] < 1:
+                raise ValueError("invalid response: version.resource_observer.contract must be a positive integer")
+            string_at(observer, "path")
+            if type(observer.get("listening")) is not bool:
+                raise ValueError("invalid response: version.resource_observer.listening must be a boolean")
     elif verb == "start":
         require("session", "reused", "started_at", "scope", "damon", "interval_seconds", "target")
         string_at(resp, "session")

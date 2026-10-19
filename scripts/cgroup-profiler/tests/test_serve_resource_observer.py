@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import socket
 import stat
 import struct
@@ -17,8 +18,8 @@ import pytest
 from lib import serve
 
 
-def _request(verb="resource-limits", **args):
-    return (json.dumps({"verb": verb, "args": args, "contract": 1}) + "\n").encode()
+def _request(verb="resource-limits", *, contract=2, **args):
+    return (json.dumps({"verb": verb, "args": args, "contract": contract}) + "\n").encode()
 
 
 def _response(conn):
@@ -47,11 +48,11 @@ def test_observer_dispatch_accepts_only_peer_bound_resource_query(tmp_path, monk
 
     monkeypatch.setattr(serve.resource_observer_mod, "observe_peer_cgroup", observe)
     payload = json.dumps({
-        "verb": "resource-limits", "args": {"thread_id": 777}, "contract": 1,
+        "verb": "resource-limits", "args": {"thread_id": 777}, "contract": 2,
     }).encode()
     response = server._observer_dispatch(payload, (1234, 1000, 1000))
     assert response == {
-        "ok": True, "contract": 1, "cgroup_version": 2,
+        "ok": True, "contract": 2, "cgroup_version": 2,
         "thread_id": 777, "cgroups": [],
     }
     assert observed == {
@@ -62,6 +63,36 @@ def test_observer_dispatch_accepts_only_peer_bound_resource_query(tmp_path, monk
         "cgroup_root": str(tmp_path / "cgroup"),
         "mountinfo_path": str(tmp_path / "proc" / "self" / "mountinfo"),
         "gates_slice_name": "dev-gates.slice",
+        "contract": 2,
+    }
+
+
+def test_observer_dispatch_accepts_contract_2_without_changing_control_contract(tmp_path, monkeypatch):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    monkeypatch.setattr(
+        serve.resource_observer_mod,
+        "observe_peer_cgroup",
+        lambda **kwargs: {
+            "cgroup_version": 2,
+            "thread_id": kwargs["thread_id"],
+            "pids_events_scope": "hierarchical",
+            "memory_events_scope": "local",
+            "cgroups": [],
+        },
+    )
+
+    response = server._observer_dispatch(
+        _request(thread_id=42, contract=2), (1, 1, 1)
+    )
+
+    assert response == {
+        "ok": True,
+        "contract": 2,
+        "cgroup_version": 2,
+        "thread_id": 42,
+        "pids_events_scope": "hierarchical",
+        "memory_events_scope": "local",
+        "cgroups": [],
     }
 
 
@@ -90,6 +121,116 @@ def test_observer_dispatch_requires_peer_credentials(tmp_path):
     assert response["error"]["code"] == "peer-refused"
 
 
+def test_contract_2_observer_errors_keep_the_requested_contract(tmp_path):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    response = server._observer_dispatch(
+        _request(thread_id=42, contract=2), None
+    )
+
+    assert response["contract"] == 2
+    assert response["error"]["code"] == "peer-refused"
+
+
+def test_contract_2_structural_errors_echo_valid_contract(tmp_path):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    request = json.dumps({
+        "verb": "resource-limits",
+        "args": {"thread_id": 42},
+        "contract": 2,
+        "extra": True,
+    }).encode("utf-8")
+
+    response = server._observer_dispatch(request, None)
+
+    assert response["contract"] == 2
+    assert response["error"]["code"] == "bad-argument"
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (_request(thread_id=42, contract=1), "supports contract 2 only"),
+        (_request(thread_id=42, contract=3), "supports contract 2 only"),
+        (
+            json.dumps({"verb": None, "args": {}, "contract": 2}).encode(),
+            "request 'verb' must be a string",
+        ),
+        (
+            json.dumps({"verb": "resource-limits", "args": [], "contract": 2}).encode(),
+            "request 'args' must be a JSON object",
+        ),
+    ],
+)
+def test_observer_dispatch_rejects_invalid_contract_verb_and_args(
+    tmp_path, payload, message
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    response = server._observer_dispatch(payload, (1234, 1000, 1000))
+
+    assert response["ok"] is False
+    assert response["contract"] == 2
+    assert message in response["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (b"not json", 2),
+        (b"[]", 2),
+        (b'{"contract": false}', 2),
+        (b'{"contract": 1}', 2),
+        (b'{"contract": 2}', 2),
+    ],
+)
+def test_requested_observer_contract_uses_safe_default_for_invalid_envelopes(
+    payload, expected
+):
+    assert serve.SessionServer._requested_observer_contract(payload) == expected
+
+
+def test_observer_socket_echoes_valid_contract_for_unhandled_dispatch_error(
+    tmp_path, monkeypatch
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    monkeypatch.setattr(server, "_peer_credentials", lambda _conn: (1234, 1000, 1000))
+    monkeypatch.setattr(server, "_peer_allowed", lambda _uid: True)
+
+    def fail(**_kwargs):
+        raise RuntimeError("synthetic observer crash")
+
+    monkeypatch.setattr(serve.resource_observer_mod, "observe_peer_cgroup", fail)
+    client, daemon = socket.socketpair()
+    client.sendall(_request(thread_id=42, contract=2))
+
+    server._handle_observer_connection(daemon)
+    response = _response(client)
+    client.close()
+
+    assert response == {
+        "ok": False,
+        "contract": 2,
+        "error": {"code": "daemon-error", "message": "resource observer failed closed"},
+    }
+
+
+def test_observer_socket_uses_current_observer_contract_for_peer_refusal_before_read(
+    tmp_path, monkeypatch
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    monkeypatch.setattr(server, "_peer_credentials", lambda _conn: (1234, 1000, 1000))
+    monkeypatch.setattr(server, "_peer_allowed", lambda _uid: False)
+    client, daemon = socket.socketpair()
+
+    server._handle_observer_connection(daemon)
+    response = _response(client)
+    client.close()
+
+    assert response["contract"] == 2
+    assert response["error"]["code"] == "peer-refused"
+
+
 def test_observer_dispatch_maps_identity_refusal_to_structured_error(tmp_path, monkeypatch):
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
 
@@ -99,7 +240,7 @@ def test_observer_dispatch_maps_identity_refusal_to_structured_error(tmp_path, m
     monkeypatch.setattr(serve.resource_observer_mod, "observe_peer_cgroup", refuse)
     response = server._observer_dispatch(_request(thread_id=42).rstrip(b"\n"), (1, 1, 1))
     assert response == {
-        "ok": False, "contract": 1,
+        "ok": False, "contract": 2,
         "error": {"code": "observer-refused", "message": "identity unavailable"},
     }
 
@@ -146,7 +287,9 @@ def test_dedicated_socket_serves_observer_but_control_socket_does_not(tmp_path, 
     control_client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     control_client.settimeout(2)
     control_client.connect(server.socket_path)
-    control_client.sendall(_request(thread_id=threading.get_native_id()))
+    control_client.sendall(
+        _request(thread_id=threading.get_native_id(), contract=serve.CONTRACT_VERSION)
+    )
     response = _response(control_client)
     control_client.close()
     assert response["error"]["code"] == "bad-argument"
@@ -245,6 +388,78 @@ def test_bind_observer_replaces_only_a_stale_socket(tmp_path):
         server._close_socket()
 
 
+def test_observer_bind_refuses_a_stale_socket_path_replaced_during_probe(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "resource-observer.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(path))
+    stale.close()
+    real_lstat = serve.os.lstat
+    path_reads = 0
+
+    def replaced_lstat(candidate):
+        nonlocal path_reads
+        result = real_lstat(candidate)
+        if str(candidate) == str(path):
+            path_reads += 1
+            if path_reads == 2:
+                return SimpleNamespace(
+                    st_mode=result.st_mode,
+                    st_dev=result.st_dev,
+                    st_ino=result.st_ino + 1,
+                )
+        return result
+
+    monkeypatch.setattr(serve.os, "lstat", replaced_lstat)
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+        observer_socket_path=str(path),
+    )
+
+    with pytest.raises(OSError, match="path changed while checking stale entry"):
+        server._bind_observer_socket()
+
+    assert path_reads == 2
+    assert stat.S_ISSOCK(real_lstat(path).st_mode)
+
+
+def test_observer_bind_refuses_a_non_socket_bound_at_the_requested_path(
+    tmp_path, monkeypatch,
+):
+    path = tmp_path / "resource-observer.sock"
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+        observer_socket_path=str(path),
+    )
+
+    class BoundRegularFile:
+        closed = False
+
+        def bind(self, candidate):
+            Path(candidate).write_text("raced replacement", encoding="ascii")
+
+        def listen(self, _backlog):
+            pass
+
+        def settimeout(self, _timeout):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    fake_socket = BoundRegularFile()
+    monkeypatch.setattr(serve.socket, "socket", lambda *_args, **_kwargs: fake_socket)
+
+    with pytest.raises(OSError, match="bound resource observer path is not a socket"):
+        server._bind_observer_socket()
+
+    assert fake_socket.closed
+    assert path.read_text(encoding="ascii") == "raced replacement"
+
+
 def test_observer_socket_path_derivation_and_control_path_separation(tmp_path):
     default = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     assert default.observer_socket_path == serve.DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH
@@ -253,7 +468,7 @@ def test_observer_socket_path_derivation_and_control_path_separation(tmp_path):
     derived = serve.SessionServer(
         sessions_dir=str(tmp_path / "derived-sessions"), socket_path=control
     )
-    assert derived.observer_socket_path == str(tmp_path / "resource-observer.sock")
+    assert derived.observer_socket_path == serve.DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH
 
     with pytest.raises(ValueError, match="must be distinct"):
         serve.SessionServer(
@@ -261,6 +476,122 @@ def test_observer_socket_path_derivation_and_control_path_separation(tmp_path):
             socket_path=control,
             observer_socket_path=control,
         )
+
+
+def test_observer_bind_refuses_to_invent_a_missing_directory(tmp_path):
+    observer_dir = tmp_path / "observer"
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+        observer_socket_path=str(observer_dir / "resource-observer.sock"),
+    )
+    with pytest.raises(OSError, match="provisioned by host setup"):
+        server._bind_observer_socket()
+    assert not observer_dir.exists()
+
+
+def test_observer_bind_refuses_a_non_directory_parent(tmp_path):
+    observer_dir = tmp_path / "observer"
+    observer_dir.write_text("not a directory", encoding="ascii")
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+        observer_socket_path=str(observer_dir / "resource-observer.sock"),
+    )
+
+    with pytest.raises(OSError, match="parent must be an existing directory"):
+        server._bind_observer_socket()
+
+    assert observer_dir.read_text(encoding="ascii") == "not a directory"
+
+
+def test_observer_bind_does_not_change_host_directory_permissions(tmp_path):
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir(mode=0o751)
+    observer_dir.chmod(0o751)
+    socket_path = observer_dir / "resource-observer.sock"
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+        observer_socket_path=str(socket_path),
+    )
+    before = observer_dir.stat()
+    server._bind_observer_socket()
+    try:
+        after = observer_dir.stat()
+        socket_stat = socket_path.stat()
+        assert stat.S_IMODE(after.st_mode) == 0o751
+        assert after.st_uid == before.st_uid
+        assert after.st_gid == before.st_gid
+        assert stat.S_IMODE(socket_stat.st_mode) == 0o660
+        assert socket_stat.st_gid == after.st_gid
+    finally:
+        server._close_socket()
+
+
+def test_default_observer_directory_accepts_0751_without_changing_it(
+    tmp_path, monkeypatch,
+):
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir(mode=0o751)
+    observer_dir.chmod(0o751)
+    socket_path = observer_dir / "resource-observer.sock"
+    monkeypatch.setattr(serve, "DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH", str(socket_path))
+    real_lstat = serve.os.lstat
+    directory_gid = 1234
+    directory_stat = real_lstat(observer_dir)
+    chowns = []
+
+    def host_metadata(path):
+        if str(path) == str(observer_dir):
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=directory_gid,
+                st_dev=directory_stat.st_dev, st_ino=directory_stat.st_ino,
+            )
+        if str(path) == str(socket_path) and real_lstat(path):
+            socket_stat = real_lstat(path)
+            return SimpleNamespace(
+                st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=directory_gid,
+                st_dev=socket_stat.st_dev, st_ino=socket_stat.st_ino,
+            )
+        return real_lstat(path)
+
+    monkeypatch.setattr(serve.os, "lstat", host_metadata)
+    monkeypatch.setattr(serve.os, "chown", lambda *args: chowns.append(args))
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+    )
+    server._bind_observer_socket()
+    try:
+        assert server._observer_sock is not None
+        assert stat.S_IMODE(observer_dir.stat().st_mode) == 0o751
+        assert chowns == [(str(socket_path), 0, directory_gid)]
+    finally:
+        server._close_socket()
+
+
+def test_default_observer_directory_refuses_group_or_world_write(
+    tmp_path, monkeypatch,
+):
+    observer_dir = tmp_path / "observer"
+    observer_dir.mkdir()
+    socket_path = observer_dir / "resource-observer.sock"
+    monkeypatch.setattr(serve, "DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH", str(socket_path))
+    real_lstat = serve.os.lstat
+    monkeypatch.setattr(
+        serve.os, "lstat",
+        lambda path: SimpleNamespace(
+            st_mode=stat.S_IFDIR | 0o771, st_uid=0, st_gid=1234
+        ) if str(path) == str(observer_dir) else real_lstat(path),
+    )
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+    )
+    with pytest.raises(OSError, match="not writable by group or other users"):
+        server._bind_observer_socket()
+    assert not socket_path.exists()
 
 
 def test_control_socket_stays_available_if_observer_path_is_occupied(tmp_path, monkeypatch):
@@ -296,19 +627,19 @@ def test_observer_bind_propagates_setup_failure_and_closes_new_socket(tmp_path, 
     def fail_permissions(*_args, **_kwargs):
         raise PermissionError("cannot secure socket")
 
-    monkeypatch.setattr(server, "_assert_one_socket_permissions", fail_permissions)
+    monkeypatch.setattr(server, "_assert_observer_socket_permissions", fail_permissions)
     with pytest.raises(PermissionError, match="cannot secure socket"):
         server._bind_observer_socket()
-    assert server._observer_sock is not None
-    with pytest.raises(OSError):
-        server._observer_sock.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN)
-    server._close_socket()
+    assert server._observer_sock is None
+    assert server.handle_version({})["resource_observer"]["listening"] is False
     assert not path.exists()
 
 
 def test_close_socket_survives_observer_path_unlink_failure(tmp_path, monkeypatch):
     path = tmp_path / "resource-observer.sock"
-    path.write_text("owned stale path", encoding="ascii")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(str(path))
+        identity = os.lstat(path)
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"),
         socket_path=str(tmp_path / "ctl.sock"),
@@ -323,6 +654,7 @@ def test_close_socket_survives_observer_path_unlink_failure(tmp_path, monkeypatc
 
     owned = OwnedSocket()
     server._observer_sock = owned
+    server._observer_socket_identity = (identity.st_dev, identity.st_ino)
     unlink = serve.os.unlink
 
     def deny_observer_unlink(candidate, *args, **kwargs):
@@ -350,6 +682,47 @@ def test_close_socket_preserves_an_unowned_observer_path(tmp_path):
     server._close_socket()
 
     assert path.read_text(encoding="ascii") == "belongs to another listener"
+
+
+def test_unlink_observer_socket_returns_if_its_identity_cannot_be_read(
+    tmp_path, monkeypatch,
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    monkeypatch.setattr(
+        serve.os, "lstat",
+        lambda _path: (_ for _ in ()).throw(PermissionError("stat denied")),
+    )
+
+    server._unlink_observer_socket_if_owned((10, 20))
+
+
+@pytest.mark.parametrize("entry_kind", ["regular-file", "replaced-socket"])
+def test_unlink_observer_socket_preserves_non_socket_and_replaced_entries(
+    tmp_path, entry_kind,
+):
+    path = tmp_path / "resource-observer.sock"
+    owner = None
+    if entry_kind == "regular-file":
+        path.write_text("preserve", encoding="ascii")
+        current = path.lstat()
+    else:
+        owner = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        owner.bind(str(path))
+        current = path.lstat()
+    server = serve.SessionServer(
+        sessions_dir=str(tmp_path / "sessions"),
+        socket_path=str(tmp_path / "ctl.sock"),
+        observer_socket_path=str(path),
+    )
+
+    try:
+        server._unlink_observer_socket_if_owned((current.st_dev, current.st_ino + 1))
+        assert path.exists()
+        if entry_kind == "regular-file":
+            assert path.read_text(encoding="ascii") == "preserve"
+    finally:
+        if owner is not None:
+            owner.close()
 
 
 def test_observer_socket_permission_failures_are_logged_and_fail_closed(tmp_path, monkeypatch):
@@ -387,6 +760,121 @@ def test_observer_socket_permission_check_returns_if_directory_stat_fails(tmp_pa
     assert any("could not stat observer-dir" in message for message in messages)
 
 
+@pytest.mark.parametrize("invalid", ["directory", "socket"])
+def test_observer_socket_permission_check_rejects_non_directory_and_non_socket(
+    tmp_path, invalid,
+):
+    socket_dir = tmp_path / "observer"
+    socket_path = tmp_path / "observer.sock"
+    if invalid == "directory":
+        socket_dir.write_text("not a directory", encoding="ascii")
+        socket_path.write_text("not a socket", encoding="ascii")
+    else:
+        socket_dir.mkdir()
+        socket_path.write_text("not a socket", encoding="ascii")
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    with pytest.raises(OSError, match="invalid resource observer directory or socket"):
+        server._assert_observer_socket_permissions(
+            str(socket_dir), str(socket_path), require_host_identity=False,
+        )
+
+
+def test_observer_socket_permission_check_skips_root_only_warning_for_custom_group(
+    tmp_path, monkeypatch,
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    messages = []
+    monkeypatch.setattr(server, "_log", messages.append)
+    monkeypatch.setattr(serve.os, "chmod", lambda *_args: None)
+    monkeypatch.setattr(serve.os, "stat", lambda _path: SimpleNamespace(st_gid=0))
+    monkeypatch.setattr(serve.os, "chown", lambda *_args: None)
+
+    server._assert_one_socket_permissions(
+        "observer-dir", "observer.sock", warn_root_only=False,
+    )
+
+    assert not any("root-only until host-setup" in message for message in messages)
+
+
+def test_observer_socket_permission_check_refuses_unsafe_host_directory(
+    tmp_path, monkeypatch,
+):
+    socket_dir = tmp_path / "observer"
+    socket_path = socket_dir / "resource-observer.sock"
+
+    def metadata(candidate):
+        if str(candidate) == str(socket_dir):
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o771, st_uid=0, st_gid=1234,
+            )
+        return SimpleNamespace(
+            st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=1234,
+        )
+
+    monkeypatch.setattr(serve.os, "lstat", metadata)
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    with pytest.raises(OSError, match="unsafe host resource observer directory"):
+        server._assert_observer_socket_permissions(
+            str(socket_dir), str(socket_path), require_host_identity=True,
+        )
+
+
+def test_observer_socket_permission_check_reports_host_socket_chown_failure(
+    tmp_path, monkeypatch,
+):
+    socket_dir = tmp_path / "observer"
+    socket_path = socket_dir / "resource-observer.sock"
+
+    def metadata(candidate):
+        if str(candidate) == str(socket_dir):
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=1234,
+            )
+        return SimpleNamespace(
+            st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=1234,
+        )
+
+    monkeypatch.setattr(serve.os, "lstat", metadata)
+    monkeypatch.setattr(
+        serve.os, "chown",
+        lambda *_args: (_ for _ in ()).throw(PermissionError("chown denied")),
+    )
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    with pytest.raises(OSError, match="could not set observer socket owner root:gid=1234"):
+        server._assert_observer_socket_permissions(
+            str(socket_dir), str(socket_path), require_host_identity=True,
+        )
+
+
+def test_observer_socket_permission_check_refuses_wrong_final_socket_identity(
+    tmp_path, monkeypatch,
+):
+    socket_dir = tmp_path / "observer"
+    socket_path = socket_dir / "resource-observer.sock"
+
+    def metadata(candidate):
+        if str(candidate) == str(socket_dir):
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR | 0o751, st_uid=0, st_gid=1234,
+            )
+        return SimpleNamespace(
+            st_mode=stat.S_IFSOCK | 0o660, st_uid=1000, st_gid=1234,
+        )
+
+    monkeypatch.setattr(serve.os, "lstat", metadata)
+    monkeypatch.setattr(serve.os, "chown", lambda *_args: None)
+    monkeypatch.setattr(serve.os, "chmod", lambda *_args: None)
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+
+    with pytest.raises(OSError, match="permissions do not match its directory"):
+        server._assert_observer_socket_permissions(
+            str(socket_dir), str(socket_path), require_host_identity=True,
+        )
+
+
 @pytest.mark.parametrize("failure", [OSError("getsockopt"), struct.error("short credentials")])
 def test_peer_credentials_refuse_unreadable_kernel_identity(tmp_path, failure):
     class Connection:
@@ -405,24 +893,94 @@ def test_observer_accept_loop_handles_absent_socket_timeout_and_close(tmp_path):
 
     class TimeoutOnce:
         calls = 0
+        closed = False
 
         def accept(self):
             self.calls += 1
             server._stopping = True
             raise socket.timeout()
 
+        def close(self):
+            self.closed = True
+
     server._observer_sock = TimeoutOnce()
     server._stopping = False
     server._observer_accept_loop()
-    assert server._observer_sock.calls == 1
+    assert server._observer_sock is None
+    assert server.handle_version({})["resource_observer"]["listening"] is False
 
     class Closed:
         def accept(self):
+            server._stopping = True
             raise OSError("closed")
+
+        def close(self):
+            pass
 
     server._observer_sock = Closed()
     server._stopping = False
     server._observer_accept_loop()
+    assert server._observer_sock is None
+    assert server.handle_version({})["resource_observer"]["listening"] is False
+
+
+def test_observer_accept_loop_logs_unexpected_accept_error(tmp_path, monkeypatch):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    messages = []
+    monkeypatch.setattr(server, "_log", messages.append)
+
+    class UnexpectedError:
+        closed = False
+
+        def accept(self):
+            raise OSError("unexpected accept failure")
+
+        def close(self):
+            self.closed = True
+
+    observer = UnexpectedError()
+    server._observer_sock = observer
+    server._stopping = False
+
+    server._observer_accept_loop()
+
+    assert server._observer_sock is None
+    assert observer.closed
+    assert any("accept loop stopped unexpectedly" in message for message in messages)
+
+
+def test_observer_accept_loop_preserves_replacement_socket_and_swallows_close_error(
+    tmp_path, monkeypatch,
+):
+    server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
+    replacement = object()
+
+    class ReplacedSocket:
+        close_attempted = False
+
+        def accept(self):
+            server._observer_sock = replacement
+            server._observer_socket_identity = (30, 40)
+            server._stopping = True
+            raise socket.timeout()
+
+        def close(self):
+            self.close_attempted = True
+            raise OSError("close raced with shutdown")
+
+    old = ReplacedSocket()
+    server._observer_sock = old
+    server._observer_socket_identity = (10, 20)
+    monkeypatch.setattr(
+        server, "_unlink_observer_socket_if_owned",
+        lambda _identity: pytest.fail("replacement socket must not be unlinked"),
+    )
+
+    server._observer_accept_loop()
+
+    assert old.close_attempted
+    assert server._observer_sock is replacement
+    assert server._observer_socket_identity == (30, 40)
 
 
 def test_accept_loop_logs_if_observer_thread_does_not_stop(tmp_path, monkeypatch):
@@ -574,10 +1132,10 @@ def test_observer_request_line_accepts_limit_and_refuses_one_byte_over(
     dispatched = []
     monkeypatch.setattr(
         server, "_observer_dispatch",
-        lambda payload, _peer: (dispatched.append(payload) or {"ok": True, "contract": 1}),
+        lambda payload, _peer: (dispatched.append(payload) or {"ok": True, "contract": 2}),
     )
     prefix = b'{"verb":"resource-limits","args":{"thread_id":1,"padding":"'
-    suffix = b'"},"contract":1}\n'
+    suffix = b'"},"contract":2}\n'
 
     def payload_of_size(size):
         padding = size - len(prefix) - len(suffix)
@@ -623,7 +1181,7 @@ def test_observer_request_received_exactly_at_deadline_is_not_dispatched(
     server = serve.SessionServer(sessions_dir=str(tmp_path / "sessions"))
     monkeypatch.setattr(
         server, "_observer_dispatch",
-        lambda *_args: {"ok": True, "contract": 1},
+        lambda *_args: {"ok": True, "contract": 2},
     )
     ticks = iter((10.0, 15.0))
     monkeypatch.setattr(serve.time, "monotonic", lambda: next(ticks))

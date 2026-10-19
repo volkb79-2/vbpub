@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+from datetime import timedelta
 
 from analysis.tests import campaign_support as support
 from analysis.tests.test_analysis_campaign import (
@@ -143,6 +144,106 @@ def test_o17_f4_a_sharded_pass_verdict_is_never_a_complete_campaign(tmp_path, mo
     assert result["status"] == "incomplete"
     assert "inventory_not_exhausted" in result["complete_blockers"]
     assert result["plan"]["shard"] == "0/4"
+    assert result["qualifying"] is False
+
+
+def test_a_complete_single_shard_campaign_qualifies_as_whole_plan(tmp_path, monkeypatch):
+    rows = support.make_rows(8)
+    document, _everything = _verdict_document(
+        {"killed": rows}, outcome="PASS", exit_code=0, reason=None,
+        policy={"shard_index": 0, "shard_count": 1},
+    )
+    root, head, verdict = _repository(tmp_path, document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    records = support.run_records(head, rows)
+    records.insert(1, {
+        "event": "shard", "shard_index": 0, "shard_count": 1,
+        "selected_total": len(rows),
+    })
+    support.write_records(progress, records)
+
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+
+    assert (code, err) == (0, "")
+    result = json.loads(out)
+    _validate(result)
+    assert result["status"] == "complete"
+    assert result["qualifying"] is True
+    assert result["plan"]["shard"] == "0/1"
+
+
+def test_a_multi_shard_with_every_small_plan_candidate_is_still_incomplete(
+    tmp_path, monkeypatch,
+):
+    rows = support.make_rows(1)
+    from assay.mutation import select_mutation_shard
+
+    ids = [row["id"] for row in rows]
+    shard_index = next(
+        index for index in range(2)
+        if select_mutation_shard(ids, index=index, count=2)
+    )
+    document, _everything = _verdict_document(
+        {"killed": rows}, outcome="PASS", exit_code=0, reason=None,
+        policy={"shard_index": shard_index, "shard_count": 2},
+    )
+    root, head, verdict = _repository(tmp_path, document)
+    _install_plan(monkeypatch, document, rows)
+    progress = tmp_path / "progress.jsonl"
+    records = support.run_records(head, rows)
+    records.insert(1, {
+        "event": "shard", "shard_index": shard_index, "shard_count": 2,
+        "selected_total": 1,
+    })
+    support.write_records(progress, records)
+
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+
+    assert (code, err) == (3, "")
+    result = json.loads(out)
+    _validate(result)
+    assert result["status"] == "incomplete"
+    assert "shard_not_merged" in result["complete_blockers"]
+    assert result["qualifying"] is False
+    assert result["plan"]["shard"] == f"{shard_index}/2"
+
+
+def test_a_multi_shard_empty_plan_is_still_incomplete(tmp_path, monkeypatch):
+    document, _everything = _verdict_document(
+        {}, outcome="PASS", exit_code=0, reason=None,
+        policy={"shard_index": 0, "shard_count": 2},
+    )
+    root, head, verdict = _repository(tmp_path, document)
+    _install_plan(monkeypatch, document, [])
+    progress = tmp_path / "progress.jsonl"
+    support.write_records(progress, [
+        {
+            "event": "run", "commit": head, "lane": "package",
+            "rigor": ["R0", "R2"], "started": support.RUN_START.isoformat(),
+        },
+        {
+            "event": "end", "candidate_total": 0,
+            "buckets": {name: 0 for name in BUCKETS},
+            "reason": "no_candidates",
+        },
+        {
+            "event": "verdict_written", "outcome": "PASS", "exit_code": 0,
+            "reason_code": None,
+            "emitted_at": (support.RUN_START + timedelta(seconds=15)).isoformat(),
+            "elapsed_s": 15.0,
+        },
+    ])
+
+    code, out, err = _invoke(root, head, verdict, progress, command_exit=0)
+
+    assert (code, err) == (3, "")
+    result = json.loads(out)
+    _validate(result)
+    assert result["status"] == "incomplete"
+    assert "shard_not_merged" in result["complete_blockers"]
+    assert result["qualifying"] is False
+    assert result["plan"]["shard"] == "0/2"
 
 
 # ---- O18 ------------------------------------------------------------------

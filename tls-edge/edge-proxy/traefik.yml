@@ -61,6 +61,14 @@ entryPoints:
       tls:
         certResolver: letsencrypt
 
+  # Mattermost Calls media: UDP is preferred, TCP is the fallback. The
+  # public TCP port maps to a distinct container port because :8443/TCP is
+  # already the websecure-alt HTTPS entrypoint.
+  mattermost-calls-tcp:
+    address: ":8444"
+  mattermost-calls-udp:
+    address: ":8443/udp"
+
 # ─── ACME (Let's Encrypt) ─────────────────────────────────────────────────────
 # Certificates are issued automatically for every Host() a consumer router
 # declares (or one wildcard cert in acme-dns mode with wildcard_main set).

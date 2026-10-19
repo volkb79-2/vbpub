@@ -77,8 +77,9 @@ Invalid (each refused before any work with `LaneConfigError`, which becomes `ERR
 - Only comments or empty lines: *"selects no candidates"*.
 
 **B. `--pilot-jobs N`**
-- An integer with `1 ≤ N ≤ 8`. It is refused without `--candidates-file`.
-- It overrides `judge.mutation.jobs` for this invocation only.
+- Native R2 accepts only `1`, as required for attributable cgroup event
+  windows (A-491/B157). It is refused without `--candidates-file`.
+- The pilot cannot override the lane to run overlapping candidate windows.
 - The default when omitted is the lane's declared `jobs`.
 
 **C. Flag conflicts.** With `--candidates-file`, each of the following gives `LaneConfigError` → exit 2, and nothing runs:
@@ -273,7 +274,7 @@ Exit 0 only after both outputs are written, both requested parents still name th
   The DESIGN-GUIDE says so.
 - Bounds:
   - selection size ≤ `max_mutants`;
-  - `--pilot-jobs` ≤ 8;
+  - `--pilot-jobs` is exactly 1;
   - the summary lists at most the selection (≤ 10,000 rows; the pilot uses about 70).
 
 ### Decision table
@@ -405,7 +406,7 @@ Exit 0 only after both outputs are written, both requested parents still name th
      1. The bare-host launcher clears the previous attempt-window file. The outer `run_b110_pilot()` wrapper clears its attempt log, writes an exclusive source-bound attempt-window file, and then launches the inner worker under the 90-minute failsafe. The inner worker clears only its plan, candidate file, selection report, summary, run log and manifest. Preserve the campaign deadline, mutation state and progress stream for safe resume.
      2. If the campaign deadline does not exist, initialize the two-hour campaign through `timeout --kill-after=30s`, bounded by the remaining invocation cap. An initialization refusal emits `B110_PILOT_INIT_REFUSED=1`; a timeout emits `B110_PILOT_TIMEOUT_FAILSAFE=1`.
      3. Bound each of `assay plan`, `b110_pilot_select.py` and `assay run` by the smaller of the remaining 90-minute invocation cap and remaining persisted campaign time. Refuse a zero-second remainder; use `timeout --kill-after=30s` for each phase.
-     4. Run Assay with the selected candidate file, three pilot jobs, `--cold-witness --resume`, `.assay/b110-pilot-state`, `.assay/progress-b110-pilot.jsonl` and the persisted campaign deadline. Capture stdout in the summary and stderr in the run log.
+     4. Run Assay with the selected candidate file, one serial pilot worker, `--cold-witness --resume`, `.assay/b110-pilot-state`, `.assay/progress-b110-pilot.jsonl` and the persisted campaign deadline. Capture stdout in the summary and stderr in the run log.
      5. After Assay exits, re-read both the invocation remainder and persisted campaign remainder. If either is exhausted, replace the process status with 124. For status 6, run `tools/b110_pilot_report_check.py` inside the same 90-minute bound; it recomputes the exact source-bound selection and checks the complete summary, plan-derived mutation identities, state record judge/replacement identities, current and resumed progress, campaign deadline, attempt window and wheel digest. It writes a manifest only after rereading every validated artifact and confirming its digest did not change. Recheck source identity and both time bounds, then emit `B110_PILOT_VERIFIED=1`, one `B110_PILOT_ATTESTATION_SHA256=...`, and the worker completion marker. The outer launcher checks the exact manifest path set from one pinned manifest version, rehashes those same retained file descriptors, and publishes a read-only snapshot with a separate receipt. It writes the gate completion marker text before its final host check; all marker text is provisional, and a nonzero process result means the gate failed. The final host check revalidates the snapshot and deadlines after marker writes. Any failure, timeout, resource-limit event or incomplete artifact set leaves the gate incomplete.
    - Add a `run-gate.toml` lane `[lanes.b110-pilot]` using the current B105 launcher topology:
      - `kind = "command"`, `environment = "bare-host"`; the run-gate lane calls `tools/self-qualification-container.sh`, which owns the bounded cgroup-visible tester-unified child. Do not run the inner script directly in a generic tester-unified run-gate container: it needs Docker access to launch and inspect that child.
@@ -445,7 +446,7 @@ Exit 0 only after both outputs are written, both requested parents still name th
   - *Observable:* uppercase, trailing-space, duplicate and empty files each give exit 2, a stderr message naming the line or ID, and no progress `run` header.
   - *Negative:* a lenient parser executes the lane.
 - **T2: conflicts.**
-  - *Observable:* each of `--verdict-json v`, `--shard 0/2`, `--reuse-from x`, `--rejudge <id>`, `--rejudge-outcome killed`, a missing `--state-dir`, `--pilot-jobs 0`, `--pilot-jobs 9`, a 5000-digit `--pilot-jobs` value, `--pilot-jobs 2` without `--candidates-file`, and an R0/R1-only lane gives exit 2 with nothing executed. For `--verdict-json`, the file `v` does not exist afterwards.
+  - *Observable:* each of `--verdict-json v`, `--shard 0/2`, `--reuse-from x`, `--rejudge <id>`, `--rejudge-outcome killed`, a missing `--state-dir`, `--pilot-jobs 0`, `--pilot-jobs 2` with a candidate file, a 5000-digit `--pilot-jobs` value, `--pilot-jobs 2` without `--candidates-file`, and an R0/R1-only lane gives exit 2 with nothing executed. For `--verdict-json`, the file `v` does not exist afterwards.
 - **T3: selection.** Select 1 of 3 killable sites.
   - *Observable:*
     - exit 6;
@@ -724,7 +725,7 @@ This mirrors plan §7. It is carried out only after all of these are on the inte
    - An outer run-gate exit ≥ 124 is likewise a failsafe with no trusted output.
 
 **Re-piloting on a new commit (P7R2-6).** The new commit gets a new deadline file name, `b110-pilot-<new commit12>`. But `.assay/b110-pilot-state` still holds the old commit's deadline-bound records and its `PILOT-STATE`: P6's `init` refuses the unbound records, and the sentinel refuses the new selection. The append-only `.assay/progress-b110-pilot.jsonl` also contains the previous run, and analysis must not combine progress from one commit with another commit's plan or state. So **before** re-piloting, move both files aside with the old report (for example, `.assay/b110-pilot-state-<old commit12>` and `.assay/progress-b110-pilot-<old commit12>.jsonl`). The new pilot then starts with fresh active paths. Preserve both archived files; never delete or edit their contents.
-3. Offline, on the host, under nice: run P8's `assay analyze campaign` over the matching progress and state pair: the active `.assay/progress-b110-pilot.jsonl` with `.assay/b110-pilot-state`, or, for an archived pilot, `.assay/progress-b110-pilot-<commit12>.jsonl` with `.assay/b110-pilot-state-<commit12>`. Use the exact flags from P8's brief, including P8's required `--project-jobs 3` for the projection. Write the result to `/tmp/b110-pilot-analysis.json`.
+3. Offline, on the host, under nice: run P8's `assay analyze campaign` over the matching progress and state pair: the active `.assay/progress-b110-pilot.jsonl` with `.assay/b110-pilot-state`, or, for an archived pilot, `.assay/progress-b110-pilot-<commit12>.jsonl` with `.assay/b110-pilot-state-<commit12>`. Use the exact flags from P8's brief, including `--project-jobs 1`, which is required to match the lane's serial native-R2 execution. Write the result to `/tmp/b110-pilot-analysis.json`.
 4. Offline projection: use P8's projection output, with the plan §7/C19 strata fall-back (operator × file-size class → operator → all), p50 and p90, plus fixed overhead:
    - the coverage-baseline wall time;
    - the no-cov baseline `wall_s`;
@@ -749,7 +750,7 @@ This mirrors plan §7. It is carried out only after all of these are on the inte
 **Exit / completed:** B110_PILOT_EXIT=… · completed=… · unresolved=<n>
 
 ## 1. Environment
-tester-unified, 3 CPUs, 2 GiB / 8 GiB mem+swap, `--pilot-jobs 3`; concurrent host load (PSI avg10 at start/end); other gates running: none.
+tester-unified, 3 CPUs, 2 GiB / 8 GiB mem+swap, `--pilot-jobs 1`; concurrent host load (PSI avg10 at start/end); other gates running: none.
 
 ## 2. Fixed overhead
 | Phase | Wall s | Source |
@@ -768,10 +769,16 @@ Known-hard set: per label, bucket + elapsed (guards from P2 expected to turn sca
 Aggregate peak memory from the run-gate cgroup `memory.peak` … (C19: this is the GO number); per-candidate 1 Hz RSS samples (a lower bound only) …; memory-full stall s … (… % of wall); CPU avg cores ….
 
 ## 6. Projection (3,760 candidates)
-Formula: fixed (coverage baseline + no-cov baseline + R0/R1 + R3 estimate as two suite runs) + Σ_strata (count × p90) / effective workers; also at p50. Strata fall-back: operator × size_class (small ≤10 / medium 11–100 / large >100 candidates per file) → operator → all (C19, C26). Result: … h (p90), … h (p50). Assumptions + censoring.
+Formula: fixed (coverage baseline + no-cov baseline + R0/R1 + R3 estimate as two suite runs) + Σ_strata (count × p90) / 1; also at p50. The divisor is one because native-R2 event windows are serial. Strata fall-back: operator × size_class (small ≤10 / medium 11–100 / large >100 candidates per file) → operator → all (C19, C26). Result: … h (p90), … h (p50). Assumptions + censoring.
 
-## 7. Shard skew
-Hash shards (N=3) replay of measured durations vs queue: makespan …. (Consolidation cost is not measured by the pilot; it is B119's acceptance, C7.)
+## 7. Serial execution boundary
+
+The supported pilot and qualifying B105 lane use one native-R2 worker. This
+pilot reports one-worker candidate durations and a one-worker projection; it
+does not measure shard skew or predict parallel speedup. A future parallel
+execution design needs independent candidate cgroups (CP-23) or the separately
+decided isolation-unit model (B121). Consolidation cost remains B119's
+acceptance evidence, not a P7 pilot result.
 
 ## 8. Pilot GO inputs (plan §8.1 criteria 1–4, C6)
 | Criterion | Threshold | Measured | Pass? |

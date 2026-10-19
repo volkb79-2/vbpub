@@ -420,6 +420,22 @@ sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — qu
 sudo mdt-host-check.sh
 ```
 
+On a host that already has `/run/cgprofile` configured, provision only
+cgroup-profiler's read-only resource-observer directory with
+`sudo host-setup/install.sh --observer-only`. It creates the dedicated
+`cgprofile-observer` group and applies `/run/cgprofile/observer` permissions;
+the host checker verifies the group is distinct from `docker`, the directory
+is `root:<observer-gid> 0751`, and both required sysusers/tmpfiles rules are
+installed as the complete active rule sets (blank lines and comments are
+ignored; extra active directives fail the check):
+
+```bash
+sudo mdt-host-check.sh
+```
+
+see the [observer design](docs/DESIGN-GUIDE.md#narrow-cgprofile-observer-provisioning)
+and [consumer steps](docs/CONSUMERS.md#cgprofile-resource-observer-host-setup).
+
 For host inspection from an MDT devcontainer, `host-escape -- <command>` runs
 the command in the host's namespaces with host-root authority; `host-escape`
 opens a host shell. Review commands before running them. The helper runs
@@ -704,7 +720,7 @@ production-quality. Windows as of June 2026:
 |---|---|
 | [USAGE.md](USAGE.md) | Consuming the image day to day |
 | [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) | Build → create → start ordering, what runs when, host resource governance |
-| [host-setup/README.md](host-setup/README.md) | Installing the host cgroup tiers |
+| [host-setup/README.md](host-setup/README.md) | Installing the host cgroup tiers and narrow cgprofile observer setup |
 | [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
 | [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) | Which concerns belong to the image, the orchestration, and the host |
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
@@ -727,7 +743,7 @@ External references:
 
 ## Testing
 
-`./run-gate.py` is the canonical test entrypoint — `./run-gate.py --list`
+`run-gate` is the canonical test entrypoint — `run-gate --list`
 discovers the declared lanes; definitions live in `run-gate.toml`.
 See [`../run-gate-project/CONSUMERS.md`](../run-gate-project/CONSUMERS.md).
 
@@ -735,16 +751,16 @@ The smoke, release, and Assay lanes run in `tester-unified`, not in the cockpit
 devcontainer. The `vm-system` command lane runs its QEMU controller on the
 host, with product assertions inside the guest:
 
-- `./run-gate.py smoke` runs Python syntax checks, the host-setup renderer and
+- `run-gate smoke` runs Python syntax checks, the host-setup renderer and
   the complete `scripts/` and `host-setup/tests/` pytest suites.
-- `./run-gate.py release` is the image-release gate for the Docker/OCI release
+- `run-gate release` is the image-release gate for the Docker/OCI release
   flow tests; CMRU consumes this declaration instead of carrying a second
   `tester-gate` command.
-- `./run-gate.py assay-full` runs the wizard's assay lane at R0, R1, R2 and R3.
+- `run-gate assay-full` runs the wizard's assay lane at R0, R1, R2 and R3.
   R2 generates and runs the full native mutation campaign for the current
   source, and resumes from the git-ignored `.assay/` progress stream after an
   interrupted session.
-- `./run-gate.py vm-system` runs the MDT host setup acceptance in the shared
+- `run-gate vm-system` runs the MDT host setup acceptance in the shared
   QEMU/TCG harness. The bare-host lane only drives the runner; its assertions
   execute inside the guest and verify systemd PID 1, cgroup v2, Docker,
   rendered slice units, daemon configuration, and the installed host check.

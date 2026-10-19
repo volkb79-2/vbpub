@@ -16,6 +16,7 @@ scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["pytest", "-q", "tests/unit/test_durable_dlq.py", "--cov=libs/common/dlq", "--cov-report=json:artifacts/coverage/durable_dlq.json"]
+env = {}
 env_passthrough = ["PATH", "PYTHONPATH"]
 budget = "15m"
 allow_argv_append = false
@@ -37,6 +38,7 @@ scope = "S1"
 rigor = ["R0", "R1"]
 enforcement = "gate"
 argv = ["pytest", "-q", "tests/unit/test_enumeration_cursor.py", "--cov=applications/worker-io/enumeration", "--cov-report=json:artifacts/coverage/p129.json"]
+env = {}
 env_passthrough = ["PATH", "PYTHONPATH", "SCHEMA_GATE_PG_IMAGE"]
 env_required = ["SCHEMA_GATE_PG_IMAGE"]
 budget = "10m"
@@ -60,6 +62,7 @@ scope = "S1"
 rigor = ["R0", "R2"]
 enforcement = "gate"
 argv = ["scripts/schema-gate-lane.sh"]
+env = {}
 env_passthrough = ["PATH", "POSTGRES_HOST", "POSTGRES_PORT", "SCHEMA_GATE_PG_DUMP"]
 env_required = ["POSTGRES_HOST", "POSTGRES_PORT", "SCHEMA_GATE_PG_DUMP"]
 [lanes.cw2b_schema.infrastructure]              # facts from the instance — as environment variables the gate environment injects (binds.db, env_prefix = "POSTGRES")
@@ -73,7 +76,7 @@ source_roots = ["infra/db-init/init-scripts"]
 mode = "whole_target"
 targets = ["infra/db-init/init-scripts/10-schema.sql"]
 [lanes.cw2b_schema.judge.mutation]
-jobs = 2
+jobs = 1
 max_mutants = 200
 operators = ["sql:constraint-drop", "sql:default-swap"]
 equivalence_artifact = "artifacts/schema/equivalence.json"

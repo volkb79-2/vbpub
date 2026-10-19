@@ -38,6 +38,66 @@ checkout before it creates the release worktree:
 Both are fail-closed by default; `--allow-uncommitted` only overrides the
 second one; there is no override for the first (push your commits instead).
 
+## Bootstrap when the release engine changes in the same wave
+
+When an earlier tool release needs CMRU behavior that is present on the
+merged `origin/main` but not in the currently released CMRU wheel (for
+example, folding `[Unreleased]` notes under KI-78), bootstrap from the exact
+merged commit before releasing that tool. Build CMRU from the committed
+`cmru/` source with the declared wheel-builder workflow, install that wheel as
+a non-editable package in the estate venv, and record the source commit and
+wheel SHA-256 in the release log. Verify the active `cmru` launcher and its
+distribution both resolve from the estate venv before starting releases. This
+bootstrap wheel is a local release controller, not a published CMRU release.
+An actual `cmru release` now refuses a source-tree or editable controller and
+records the wheel and installed-file digests in both the launcher and
+transaction logs.
+
+Use the bootstrapped controller for dependent releases such as CGProfile and
+Run-Gate. After Run-Gate is published, rebuild `tester-unified` from the exact
+published Run-Gate wheel and run the CMRU release gate with that image before
+releasing CMRU itself. This keeps the dependency order usable while ensuring
+the CMRU release is judged with the public Run-Gate artifact. The gate hashes
+the published wheel bytes, checks the installed wheel's recorded source digest,
+and verifies the selected image's version and wheel-digest labels before each
+lane. It pins the lane to the inspected image ID so a mutable tag cannot select
+a different image. Never run the
+bootstrap through an editable checkout: uncommitted files and whichever source
+tree happens to be mounted are not release evidence.
+
+### Run-Gate compatibility bootstrap before CGProfile
+
+The current root `run-gate.root.toml` declares `image_env`, which is supported
+by the Run-Gate source in this wave but is rejected by the previously published
+Run-Gate wheel. A CGProfile-first release therefore needs a temporary local
+Run-Gate bootstrap after the reviewed source commit has reached
+`origin/main` and the CMRU bootstrap above is installed. This bootstrap is not
+a publication; it only lets CGProfile's registered Run-Gate lanes use the
+configuration declared by the same commit.
+
+From a checkout at the exact reviewed `origin/main` commit:
+
+```bash
+git rev-parse HEAD
+git rev-parse origin/main
+cmru handler wheel-build --cwd run-gate-project
+python3 tester-unified/run-gate-wheel-version.py run-gate-project/dist --json
+tester-unified/build-image.sh \
+  --wheel-dir run-gate-project/dist \
+  --tag tester-unified:run-gate-bootstrap
+docker image inspect --format '{{.Id}}' tester-unified:run-gate-bootstrap
+```
+
+Install the one wheel identified by that output into the estate venv, verify
+`run-gate --version`, and set `RUN_GATE_TESTER_UNIFIED_IMAGE` to the inspected
+image ID for the CGProfile release. Record the source commit, wheel SHA-256,
+and image ID in the release log. The image ID makes Run-Gate's lane selection
+independent of later movement of the temporary tag. Release CGProfile with
+`cmru release cgroup-profiler --set-version 1.0.0`, then release Run-Gate as its
+own project. Run-Gate's own CMRU release gate prepares and tests the exact wheel
+it will publish; after publication, use that public wheel and a newly built
+tester image for the CMRU release described above.
+
 cmru then creates the release worktree and reports concise orchestration progress
 to your terminal. Full project subprocess output is line-flushed into the root
 audit log and transaction-local `<project>/logs/cmru/<step>.log` files; use
@@ -255,11 +315,17 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
 
 ### Release history behaviour changes (REL-02, REL-10)
 
-- **A tagged release is refused while a plain `## [Unreleased]` section has a non-empty body**
-  (KI-30). cmru generates the notes for the release, so hand-written text left under
-  `[Unreleased]` would be silently dropped or duplicated. Remedy: move the text into the
-  generated notes of the release (or the project's own release-notes source), or empty the
-  section (a comment may stay). A comment-only body is accepted.
+- **A non-empty plain `## [Unreleased]` section is folded into every tagged candidate before
+  the gate and tag (KI-78).** For a CMRU GitHub Release-body handler, the text is appended
+  verbatim inside the generated dated version section, then the exact tagged section is used
+  in the GitHub Release body (`--dry-run` prints that same body). The release tag and body
+  therefore describe the same notes. `--no-build`, and an image push without
+  `oci-image-release`, still carry the notes in the tagged changelog but publish no GitHub
+  Release body (see "Image-only release bodies" below). Failed gates,
+  builds, publishes, and promotions leave source `main`'s `[Unreleased]` unchanged. No
+  post-publish changelog commit is needed. The project's configured
+  changelog path remains excluded from change detection. This replaces the KI-30 refusal;
+  a comment-only body is still just an empty section.
 - **Regenerating a stale generated section overwrites hand edits inside it.** When project
   commits landed after a generated section's `source-end` cursor (for example on `--resume`
   of a candidate that was prepared earlier), the section is rebuilt in place from the project
@@ -271,11 +337,66 @@ then `git push origin HEAD:refs/heads/main` from the retained worktree.
   reworded entry) is only safe if the SAME final commit also advances that section's
   `<!-- cmru: source-end=<sha> -->` marker to the project's current head, so cmru sees the section
   as current and keeps it byte-identical. Otherwise any project commit landing after the old
-  `source-end` makes cmru regenerate the section from commit subjects and silently drop the
-  edit (seen in run-gate 23.10.0, whose release lost hand-curated text that two of its tests
-  pin). The alternative that cannot go wrong: curate AFTER the release (a post-release
-  commit, keeping the markers intact). Tracked as KI-68 (a WARN when regeneration discards
-  non-generated lines).
+  `source-end` makes cmru need to regenerate the section from commit subjects. It used to drop
+  the edit silently (seen in run-gate 23.10.0, whose release lost hand-curated text that two of
+  its tests pin); since KI-68 it **refuses** instead (exit 4, before any gate or tag), listing
+  up to 20 lines the generator would not produce, with no override flag. Curated release
+  notes (KI-75) live in that section, so advancing `source-end` in the same commit is how they
+  survive. Text that is not release notes can still be curated AFTER the release (a
+  post-release commit, keeping the markers intact).
+
+### Image-only release bodies (`oci-image-release`, KI-78)
+
+For a project whose artifact is an OCI image pushed by its own `push` commands, the
+GitHub Release body is published by `cmru handler oci-image-release --prefix <prefix>
+--image <registry/repository> --cwd <dir>`, which must be the LAST command of the same
+`push` step, after the image push. It runs at the ordinary publication point of the order
+above, so its preconditions are facts CMRU has already established by then.
+
+**Checked before any side effect.** In the release child, right after the plan names the
+projects to ship and before the tool-dependency check, any `prepare` step, any gate, any
+tag or any image push, CMRU validates the configured command of EVERY project it will ship
+with one function (`_validated_oci_release_image`); `cmru release --dry-run` calls it too
+and refuses identically, leaving the changelog bytes unchanged, and each project's
+preparation repeats it before running its `prepare` step. An invalid command is a typed
+refusal (exit 4) that marks the plan refused, so no candidate is retained. It refuses a
+malformed, duplicate, missing or unexpected `--prefix`/`--image`/`--cwd`; a prefix other
+than the project's release prefix without `-v`; an `--image` with a tag or digest; a
+`--cwd` that, resolved from the command's declared `cwd` against the project root derived
+from the candidate, is not the project root holding the changelog (an absolute path is
+refused); any command after it in the push step; an untagged project; a push step whose
+`bake_set_*`/`no_cache_env` appends runner arguments; and another body handler in the
+step. These checks keep a bad configuration out of a release. They do not make the
+publication atomic.
+
+At the handler, the remaining preconditions are:
+
+1. The release tag is already on `origin` at the gated candidate commit (the explicit tag
+   step pushed it before build and publish), and the protected `CMRU_RELEASE_TAG`,
+   `CMRU_RELEASE_COMMIT` and `CMRU_RELEASE_NOTES_SOURCE` are set for the step. The handler
+   derives the image tag from `CMRU_RELEASE_TAG` and reads the changelog section from
+   `CMRU_RELEASE_COMMIT`, never the working tree.
+2. Before any release mutation it checks that the remote tag exists and equals that
+   commit, and that an existing release is for that tag and does not target another commit.
+   Any absent, malformed or mismatched value refuses; it never creates, moves or deletes a
+   Git ref. A missing Release is created under that tag and commit; an existing one has
+   only its name and body rewritten, after it is re-fetched and its exact release ID, tag
+   identity and remote tag target are verified again immediately before the PATCH (a change
+   there sends nothing and refuses). No asset is listed, deleted or uploaded. After the
+   write it reads the release (for an update) and the remote tag back. GitHub offers no
+   conditional update and cannot make the tag check atomic with a create, so a change seen
+   only in that read-back is reported as `was written, but ...`: the release may stay in
+   place with the new body, nothing is rolled back, and it must be inspected before any
+   retry.
+3. It is publication: once the `push` step has begun, a failure follows
+   [Post-publication recovery](#post-publication-recovery) and never rolls the tag back.
+   The handler itself is idempotent: running it again for the same tag and commit only
+   rewrites the body of the same release and leaves every asset alone.
+
+The step cannot also hold `wheel-publish`, `tarball-publish` or a second
+`oci-image-release` (the later body would overwrite the earlier one); that is refused by
+the same up-front validation, before any side effect. `--no-build` runs no `push` step, so
+it creates no body (its configuration is still validated).
 
 ### Post-publication recovery
 
@@ -499,7 +620,7 @@ The following release gates are now declared through `cmru tester-gate`:
 | Project | Current state | Required follow-up |
 |---|---|---|
 | ciu | Full pytest coverage floor | `run-ciu-tests.py` |
-| cmru | Assay R0/R1/R3, tag-based R2 mutation, coverage, and canary | `./run-gate.py gate` |
+| cmru | Contract-2 resource observation on every ephemeral gate lane; current 6.2.0 candidate uses the KI-79 provisional R2 deferral | `run-gate gate` for full R2; `run-gate gate-provisional` records an approved deferral only |
 | nyxloom | Full unit/contract suite | `pytest tests -q` |
 | MDT | Source-first release-flow and OCI-staging contracts | focused `unittest` modules |
 | pwmcp | Resolver and builder contracts | `pytest tests -q` |
