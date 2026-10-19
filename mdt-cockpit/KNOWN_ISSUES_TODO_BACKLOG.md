@@ -251,3 +251,11 @@ if a build input consumes them while the label stands (change label, docs and te
 Python <3.13 (MDTC-03). When an aider release supports Python 3.14: delete the file, declare
 `pypi.aider-chat` in `cmru.toml`, read it in `_vetted_ai_cli_versions` with the other three, and drop the
 documented exception from README / DESIGN-GUIDE.
+
+## MDT-015 - a version waiver has no expiry (INT-01 B-06, 2026-10-19)
+
+`_check_record` marks `<TOOL>_WAIVED` and the manifest row says so, but nothing makes a long-lived
+waiver fail or age out: an override released after the age cutoff waives the 14-day window for that
+tool's dependencies indefinitely. Give a waiver an expiry or a ceiling (for example refuse a waiver older
+than the record age limit) and test it.
+
