@@ -4208,10 +4208,15 @@ def test_tester_unified_path_is_its_own_venv_then_the_base_path():
 
 
 def test_tester_unified_has_no_systemctl_stub_and_installs_what_its_suites_run():
-    """D-001: no fake systemd (topos handles a missing systemctl itself). D-003: zsh. D-004: node,
-    npm and npx copied from the digest-pinned official node image (node 26 ships no corepack)."""
+    """D-001: no fake systemd (topos handles a missing systemctl itself) - but the REAL client IS
+    installed, because host-placement gate scripts run /bin/systemctl inside this image (the
+    cgprofile r0-r1 probe exited 127 without it). D-003: zsh. D-004: node, npm and npx copied from
+    the digest-pinned official node image (node 26 ships no corepack)."""
     code = "\n".join(_code_lines(DOCKERFILE))
-    assert "systemctl" not in code
+    # no stub: nothing writes a systemctl file; the only systemctl action is the real package + check
+    assert not re.search(r"(?:>|tee|install|cp|ln)[^\n]*/systemctl\b", code.replace("/bin/systemctl --version", ""))
+    assert "apt-get install -y --no-install-recommends systemd" in code
+    assert "/bin/systemctl --version" in code
     assert "apt-get install -y --no-install-recommends zsh" in code
     assert "nodejs" not in code, "Debian's nodejs is too old; node comes from the official image"
     for source in ("/usr/local/bin/node", "/usr/local/lib/node_modules"):

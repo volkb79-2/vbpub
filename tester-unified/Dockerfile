@@ -341,6 +341,15 @@ RUN if getent group 1003 >/dev/null; then \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends zsh \
  && rm -rf /var/lib/apt/lists/*
+#  * `systemctl` (INT-01 finding): host-placement gate scripts (scripts/cgroup-profiler/tools/gate.sh
+#    placement probe, shared-ramdisk-depot-manager/tools/cgroup-parent.sh) run /bin/systemctl INSIDE
+#    this image against the host's system bus, and the old cockpit base carried the binary. Without it
+#    the cgprofile r0-r1 probe exits 127. This is the real client from Debian's `systemd` package, not
+#    a stub (MDTC-02 D-001 forbids a fake one; topos handles an unreachable systemd itself).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends systemd \
+ && rm -rf /var/lib/apt/lists/* \
+ && /bin/systemctl --version
 #  * Node.js + npm + npx (D-004) from the official node image (stage `node-source` above,
 #    digest-pinned and age-checked by `cmru versions`), not Debian's nodejs, which is too old.
 #    pwmcp's runtime-gateway tests execute the node binary. The links mirror the official image's.
