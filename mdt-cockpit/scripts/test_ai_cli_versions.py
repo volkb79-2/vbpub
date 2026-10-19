@@ -253,3 +253,15 @@ def test_the_aider_installer_fails_when_the_built_version_differs_from_the_recor
     monkeypatch.setenv("AIDER_COMMIT", AIDER_PIN["AIDER_COMMIT"])
     with pytest.raises(installer.InstallerError, match="records"):
         installer.install_aider(type("Ctx", (), {"venv_python": tmp_path / "python"})())
+
+
+def test_every_installer_layer_loads_the_staged_versions_first() -> None:
+    """The venv layer once ran the aider installer without tool-versions.env: the build failed 35 minutes in."""
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    call = re.compile(r"install_ai_cli_tools\.py\s+(root|npm-image|user|venv)\b")
+    layers = [m for m in re.finditer(r"(?ms)^RUN .*?(?=^\S)", dockerfile) if call.search(m.group(0))]
+    modes = {call.search(layer.group(0)).group(1) for layer in layers}
+    assert {"npm-image", "venv"} <= modes, modes
+    for layer in layers:
+        text = layer.group(0)
+        assert text.index("ai-tool-versions.env") < text.index("install_ai_cli_tools.py"), text[:200]

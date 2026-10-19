@@ -751,6 +751,7 @@ RUN --mount=type=cache,target=/tmp/mdt-build-cache/pip,uid=0,gid=0,sharing=locke
     set -euo pipefail; \
     umask 0002; \
     export PIP_CACHE_DIR=/tmp/mdt-build-cache/pip; \
+    set -a; . /tmp/ai-tool-versions.env; set +a; \
     python3 /tmp/install_ai_cli_tools.py venv; \
     mdt-perms fix /opt/mdt/venv
 # Aider is installed after toolkit.txt and may change packages shared with the
