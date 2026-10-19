@@ -14,13 +14,14 @@
 # =============================================================================
 schema_version = 1
 
-# The bake-file evaluation test needs `docker buildx`, which tester-unified (built on tester-base)
-# deliberately does not carry. It is DESELECTED here, explicitly, so no skip hides it; its only
-# coverage is the `oci-push` lane below, in the mdt-cockpit image, where it is required (T6/R6).
+# The bake-file evaluation test and the whole OCI-layout push module need `docker buildx`, `crane` and
+# `regctl`, which tester-unified (built on tester-base) deliberately does not carry. They are
+# DESELECTED here, explicitly, so no skip hides them; their only coverage is the `oci-push` lane below,
+# in the mdt-cockpit image, where they are required (T6/R6).
 [lanes.smoke]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1 && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests -q -rs --deselect scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone && echo 'smoke: OK'"]
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && export PYTHONPATH=. MDT_REQUIRE_SHELLS=1 && find . -name '*.py' -print0 | xargs -0 -r python3 -m py_compile && bash host-setup/tests/test-render.sh && /opt/tester-venv/bin/pytest scripts host-setup/tests -q -rs --deselect scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone --deselect scripts/test_oci_layout_push.py && echo 'smoke: OK'"]
 budget = "2m"
 
 [lanes.smoke.resources]

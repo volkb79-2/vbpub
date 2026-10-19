@@ -117,6 +117,7 @@ class Driver(unittest.TestCase):
         smoke = tomllib.loads((root / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["smoke"]["argv"][-1]
         node = "scripts/test_local_dev.py::test_the_bake_file_gives_a_local_dev_build_only_dev_tags_and_leaves_release_tags_alone"
         self.assertIn(f"--deselect {node}", smoke)
+        self.assertIn("--deselect scripts/test_oci_layout_push.py", smoke)
         self.assertIn(node, lane.INNER)
 
     def test_the_bake_test_fails_instead_of_skipping_when_required(self) -> None:
