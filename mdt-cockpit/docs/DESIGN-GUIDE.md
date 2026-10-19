@@ -666,9 +666,10 @@ came out of the 2026-10-19 incident; the mechanism is in
 
 - **D-HS-01-1: withdraw by re-asserting, never by emptying.** An empty
   `IO*Max=` assignment resets systemd's whole list, unit-file values included.
-  Rejected: deleting systemd's private runtime drop-ins and `daemon-reload`ing
-  (depends on systemd's file naming, races its own writes, re-reads every unit
-  on a production host). Chosen: `set-property --runtime` with the explicit
+  Rejected, by measurement: deleting systemd's runtime drop-in and running
+  `daemon-reload`. On the live host (2026-10-19) the unit-file value was NOT
+  re-applied to the cgroup (`memory.swap.max` stayed at the old runtime value
+  until an explicit `set-property`). Chosen: `set-property --runtime` with the explicit
   fallback numbers; empty assignments only when no device exists. Every apply
   is read back from the kernel `io.max` (device = the originating whole disk) and
   a mismatch fails the service; "authoritative" is only said after a match.
@@ -676,16 +677,20 @@ came out of the 2026-10-19 incident; the mechanism is in
   reads the hypervisor's cache. A real fix (O_DIRECT + `--fsync`, a working set
   beyond the visible cache, a steady-state tail) changes the shared
   `scripts/debian-install-v2/tools/iocost_coef_gen.py`, outside `mdt-cockpit`,
-  so it is MDT-017. Shipped: schema 3 records the method, old schemas are stale,
+  so it is MDT-017 (D-NNN filed in both mdt-cockpit and debian-install-v2: the plausibility refusal ships in both consumers, `mdt-io-baseline.py` and `iocost-calibrate.sh`; the generator itself is unchanged). Shipped: schema 3 records the method, old schemas are stale,
   and a rotational device above 1 GiB/s or 20k IOPS is refused. The honest limit:
   a non-rotational device is not bounded, so operator-pinned `DEV_IO_*_MAX` are
   the recommended source on a virtual disk (min of pin and baseline).
-- **D-HS-01-3: swap sizing is OPEN (operator's call; MDT-018).** Options:
-  (a) keep 80% of host swap cascading (current default, unchanged);
-  (b) absolute defaults, e.g. dev 8G / gates 2G;
-  (c) RAM-relative. A large allowance lets a disposable gate thrash a shared
-  disk; until decided the default is kept and documented, and the reconcile
-  warns when swap sits on an uncapped disk.
+- **D-HS-01-3: swap stays ample, the gate tier is throttled (DECIDED by the
+  operator, 2026-10-19; MDT-018 closed).** Options were (a) keep 80% of host swap
+  cascading, (b) absolute defaults (dev 8G / gates 2G), (c) RAM-relative. Chosen:
+  (a), plus a tight IO cap on the gate tier: swap-out IO is charged to the page
+  owner's cgroup, so a gate that swaps is throttled by its own cap and cannot
+  thrash the shared disk. Per-tier keys `DEV_<TIER>_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX`
+  (`DEV_GATES_IO_WBPS_MAX` and its siblings); the IOPS sub-ceiling becomes
+  min(sub-ceiling, absolute). Cost: a throttled gate stalls and runs slowly, which
+  is an infrastructure-classified slowdown, not a product failure. The reconcile
+  warns `UNCAPPED SWAP` when swap sits on a disk with no `dev.slice` entry.
 - **D-HS-01-4: bytes, base 1024, one conversion.** systemd and MDT could read
   `80M` differently; MDT converts K/M/G/T (base 1024) once and hands systemd and
   the unit file plain byte counts, so unit, runtime and read-back agree.

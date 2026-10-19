@@ -459,6 +459,29 @@ _mdt_uncapped_swap_devices() {
     if ! mm=$(_mdt_dev_majmin "$devpath"); then
       printf '%s unresolved\n' "$dev"; continue
     fi
-    printf '%s\n' "$capped" | grep -qx "$mm" || printf '%s %s\n' "$dev" "$mm"
+    grep -qx "$mm" <<<"$capped" || printf '%s %s\n' "$dev" "$mm"
   done < "$proc/swaps"
+}
+
+# Per-tier absolute IO keys (runtime, read by the reconcile; amendment A1/D7).
+# DEV_<TIER>_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX for each child slice.  The gate
+# tier is the one that matters: swap stays ample, and a gate that swaps is
+# throttled by ITS OWN IO cap because swap-out IO is charged to the page
+# owner's cgroup — it cannot thrash the shared disk.
+# shellcheck disable=SC2034  # consumed by mdt-dev-governance-reconcile.sh
+MDT_IO_TIERS="INTERACTIVE:dev-interactive.slice BACKGROUND:dev-background.slice GATES:dev-gates.slice BUILDKITD:dev-buildkitd.slice"
+
+# _mdt_tier_pin <TIER> <RBPS|WBPS|RIOPS|WIOPS>: prints the validated byte/IOPS
+# count of DEV_<TIER>_IO_<FIELD>_MAX, nothing when unset.  rc 1 (after logging
+# an ERROR, printing nothing) when set but invalid, so the caller keeps the
+# tier capped by what remains and fails the run.
+_mdt_tier_pin() {
+  local key="DEV_${1}_IO_${2}_MAX" raw value
+  raw="${!key:-}"
+  [ -n "$raw" ] || return 0
+  if ! value=$(_mdt_size_to_bytes "$raw"); then
+    log "ERROR: $key='$raw' is not a positive integer with an optional K/M/G/T suffix (0 would halt IO) — ignoring it" >&2
+    return 1
+  fi
+  printf '%s\n' "$value"
 }

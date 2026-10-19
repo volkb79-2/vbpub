@@ -816,6 +816,9 @@ def _config_value_validators() -> dict[str, Validator]:
         "IO_BASELINE_TESTFILE": validate_absolute_path,
     }
 
+    for tier in ("INTERACTIVE", "BACKGROUND", "GATES", "BUILDKITD"):
+        for field in ("RBPS", "WBPS", "RIOPS", "WIOPS"):
+            validators[f"DEV_{tier}_IO_{field}_MAX"] = validate_io_pin
     for key in (
         "DEV_INTERACTIVE_CPU_QUOTA",
         "DEV_BACKGROUND_CPU_QUOTA",
@@ -1712,11 +1715,18 @@ def step_io_pins(
         out(f"- {bullet}", hang="  ")
     if results:
         out(f"Current plausible baseline would give: {_io_cap_result_text(results, resolve_default('DEV_IO_CAP_PCT', cfg_current, example_defaults, None))}")
+    out("Gate-tier caps (recommended: swap stays ample, the disposable gate tier is throttled instead):")
+    out("- Swap-out IO is charged to the page owner's cgroup, so a gate that swaps is throttled by its own tight IO cap and cannot thrash the shared disk.", hang="  ")
+    out("- IOPS values combine with the `DEV_SUBSLICE_IOPS_PCT` sub-ceiling as min(sub-ceiling, absolute). A throttled gate runs slowly; that is an infrastructure slowdown, not a product failure.", hang="  ")
     fields = (
         ("Pinned read bandwidth cap (bytes/s, e.g. 80M; empty = not pinned)", "DEV_IO_RBPS_MAX"),
         ("Pinned write bandwidth cap (bytes/s, e.g. 40M; empty = not pinned)", "DEV_IO_WBPS_MAX"),
         ("Pinned read IOPS cap (e.g. 800; empty = not pinned)", "DEV_IO_RIOPS_MAX"),
         ("Pinned write IOPS cap (e.g. 600; empty = not pinned)", "DEV_IO_WIOPS_MAX"),
+        ("Gate tier read bandwidth cap (e.g. 40M; empty = not set)", "DEV_GATES_IO_RBPS_MAX"),
+        ("Gate tier write bandwidth cap (e.g. 20M; empty = not set)", "DEV_GATES_IO_WBPS_MAX"),
+        ("Gate tier read IOPS cap (e.g. 300; empty = sub-ceiling only)", "DEV_GATES_IO_RIOPS_MAX"),
+        ("Gate tier write IOPS cap (e.g. 200; empty = sub-ceiling only)", "DEV_GATES_IO_WIOPS_MAX"),
     )
     return {
         key: walk_key(label, key, cfg_current, example_defaults, validate=validate_io_pin, empty_token="-")

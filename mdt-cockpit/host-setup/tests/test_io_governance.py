@@ -207,7 +207,9 @@ class ReconcileIoGovernanceTests(unittest.TestCase):
     # D2 -------------------------------------------------------------------
     def test_withdrawing_the_baseline_never_writes_an_empty_assignment_to_a_capped_slice(self) -> None:
         result = self.host.run()
-        empty = [c for c in self.host.calls() if re.search(r"\bIO\w+Max=(\s|$)", c)]
+        # dev.slice is the slice meant to stay capped; tier slices carry no static IO line
+        empty = [c for c in self.host.calls()
+                 if c.startswith("set-property --runtime dev.slice ") and re.search(r"\bIO\w+Max=(\s|$)", c)]
         self.assertEqual(empty, [], result.stdout)
         # the runtime layer holds the EXPLICIT fallback, not nothing
         self.assertEqual(
@@ -290,6 +292,42 @@ class ReconcileIoGovernanceTests(unittest.TestCase):
         self.assertEqual(self.host.io_max(), f"254:0 rbps={80 * MIB} wbps={40 * MIB} riops=800 wiops=600\n")
         self.assertEqual(self.host.io_max("dev.slice/dev-gates.slice"), "254:0 rbps=max wbps=max riops=480 wiops=360\n")
         self.assertEqual(self.host.io_max("dev.slice/dev-buildkitd.slice"), "254:0 rbps=max wbps=max riops=480 wiops=360\n")
+
+    def test_gate_tier_absolute_caps_apply_bandwidth_and_min_with_the_iops_subceiling(self) -> None:
+        self.host.config_lines += ["DEV_IO_RBPS_MAX=80M", "DEV_IO_WBPS_MAX=40M", "DEV_IO_RIOPS_MAX=800", "DEV_IO_WIOPS_MAX=600",
+                                   "DEV_GATES_IO_RBPS_MAX=40M", "DEV_GATES_IO_WBPS_MAX=20M",
+                                   "DEV_GATES_IO_RIOPS_MAX=300", "DEV_GATES_IO_WIOPS_MAX=900"]
+        result = self.host.run()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        # riops: min(480 sub-ceiling, 300 pin) = 300; wiops: min(360, 900 pin) = 360
+        self.assertEqual(self.host.io_max("dev.slice/dev-gates.slice"),
+                         f"254:0 rbps={40 * MIB} wbps={20 * MIB} riops=300 wiops=360\n")
+        # buildkitd has no pin: IOPS sub-ceiling only, bandwidth inherits
+        self.assertEqual(self.host.io_max("dev.slice/dev-buildkitd.slice"), "254:0 rbps=max wbps=max riops=480 wiops=360\n")
+
+    def test_removing_a_gate_pin_does_not_leave_the_old_bandwidth_cap_behind(self) -> None:
+        self.host.config_lines += ["DEV_GATES_IO_RBPS_MAX=40M"]
+        self.assertEqual(self.host.run().returncode, 0)
+        self.assertIn(f"rbps={40 * MIB}", self.host.io_max("dev.slice/dev-gates.slice"))
+        self.host.config_lines.remove("DEV_GATES_IO_RBPS_MAX=40M")
+        self.assertEqual(self.host.run().returncode, 0)
+        self.assertIn("rbps=max", self.host.io_max("dev.slice/dev-gates.slice"))
+
+    def test_interactive_tier_pins_apply_and_an_unset_tier_is_left_alone(self) -> None:
+        (self.host.cg / "dev.slice" / "dev-interactive.slice").mkdir()
+        (self.host.cg / "dev.slice" / "dev-interactive.slice" / "io.max").write_text("")
+        self.host.config_lines += ["DEV_INTERACTIVE_IO_WBPS_MAX=10M"]
+        result = self.host.run()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.host.io_max("dev.slice/dev-interactive.slice"), f"254:0 rbps=max wbps={10 * MIB} riops=max wiops=max\n")
+        self.assertFalse(any("dev-background.slice" in c for c in self.host.calls()))
+
+    def test_an_invalid_tier_pin_is_refused_loudly_and_never_applied(self) -> None:
+        self.host.config_lines += ["DEV_GATES_IO_WBPS_MAX=0"]
+        result = self.host.run()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("ERROR: DEV_GATES_IO_WBPS_MAX='0'", result.stdout)
+        self.assertIn("wbps=max", self.host.io_max("dev.slice/dev-gates.slice"))
 
     def test_without_pins_a_plausible_baseline_gives_the_percentage(self) -> None:
         self.host.write_baseline(rbw=1_000_000, wbw=2_000_000, riops=1000, wiops=2000)
@@ -509,12 +547,57 @@ class ListingToolTests(unittest.TestCase):
             self.assertEqual(r.returncode, 1)
 
 
+class IocostCalibratePlausibilityTests(unittest.TestCase):
+    """debian-install-v2's tools/iocost-calibrate.sh is the second consumer of the generator."""
+
+    CALIBRATE = ROOT.parents[1] / "scripts" / "debian-install-v2" / "tools" / "iocost-calibrate.sh"
+
+    def _run(self, rotational: str, line: str) -> tuple[subprocess.CompletedProcess, Path]:
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp, True)
+        tools = tmp / "tools"
+        tools.mkdir()
+        shutil.copy(self.CALIBRATE, tools / "iocost-calibrate.sh")
+        (tools / "iocost_coef_gen.py").write_text(f"print({line!r})\n")
+        bin_dir = tmp / "bin"
+        bin_dir.mkdir()
+        for name in ("findmnt", "pv", "dd", "fio"):
+            _write_exec(bin_dir / name, "#!/usr/bin/env bash\nexit 0\n")
+        queue = tmp / "sys" / "dev" / "block" / "254:0" / "queue"
+        queue.mkdir(parents=True)
+        (queue / "rotational").write_text(rotational + "\n")
+        out_dir = tmp / "out"
+        env = {**os.environ, "PATH": f"{bin_dir}:/usr/bin:/bin", "IOCOST_SYSFS_ROOT": str(tmp / "sys"),
+               "IOCOST_RESULT_DIR": str(out_dir)}
+        result = subprocess.run(["bash", str(tools / "iocost-calibrate.sh")], input="yes\n", env=env, text=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
+        return result, out_dir / "iocost-model.env"
+
+    GOOD = "254:0 rbps=20000000 rseqiops=1500 rrandiops=1500 wbps=20000000 wseqiops=1500 wrandiops=1500"
+    INFLATED = "254:0 rbps=4287506096 rseqiops=94246 rrandiops=94246 wbps=2001630742 wseqiops=67748 wrandiops=67748"
+
+    def test_cache_inflated_numbers_on_a_rotational_device_are_refused_and_nothing_is_written(self) -> None:
+        result, model = self._run("1", self.INFLATED)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("REFUSED", result.stdout)
+        self.assertFalse(model.exists())
+
+    def test_realistic_numbers_and_non_rotational_devices_are_written(self) -> None:
+        for rotational, line in (("1", self.GOOD), ("0", self.INFLATED)):
+            with self.subTest(rotational=rotational):
+                result, model = self._run(rotational, line)
+                self.assertEqual(result.returncode, 0, result.stdout)
+                self.assertTrue(model.exists())
+
+
 class WizardAndDocsTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.wizard = _load(ROOT / "mdt-host-setup-wizard.py", "mdt_wizard_gov")
 
     PIN_KEYS = ("DEV_IO_RBPS_MAX", "DEV_IO_WBPS_MAX", "DEV_IO_RIOPS_MAX", "DEV_IO_WIOPS_MAX")
+    TIER_KEYS = tuple(f"DEV_{t}_IO_{f}_MAX" for t in ("INTERACTIVE", "BACKGROUND", "GATES", "BUILDKITD")
+                      for f in ("RBPS", "WBPS", "RIOPS", "WIOPS"))
 
     def test_pin_validator_matches_the_runtime_rules(self) -> None:
         for good in ("", "800", "80M", "1G", "1T", "4096K"):
@@ -525,7 +608,7 @@ class WizardAndDocsTests(unittest.TestCase):
     def test_every_pin_key_is_validated_and_shipped_in_the_example(self) -> None:
         validators = self.wizard._config_value_validators()
         example = self.wizard.parse_env_file((ROOT / "host-setup.env.example").read_text())
-        for key in self.PIN_KEYS:
+        for key in (*self.PIN_KEYS, *self.TIER_KEYS):
             self.assertIn(key, validators)
             self.assertIn(key, example)
             self.assertEqual(example[key], "")  # an illustration lives in a comment, never a shipped host value
@@ -545,14 +628,14 @@ class WizardAndDocsTests(unittest.TestCase):
         }
         for name, path in docs.items():
             text = path.read_text()
-            for needle in (*self.PIN_KEYS, "mdt-cgroup-io-limits.sh"):
+            for needle in (*self.PIN_KEYS, "DEV_GATES_IO_WBPS_MAX", "mdt-cgroup-io-limits.sh"):
                 if name in ("host-setup/CGROUP-NOTES.md", "docs/DESIGN-GUIDE.md") and needle != "mdt-cgroup-io-limits.sh" \
-                        and needle != "DEV_IO_RBPS_MAX":
+                        and needle != "DEV_GATES_IO_WBPS_MAX":
                     continue  # the rationale documents name the family once
                 self.assertIn(needle, text, f"{name} does not mention {needle}")
         for name in ("host-setup/README.md", "docs/CONSUMERS.md"):
             text = docs[name].read_text()
-            for needle in ("DEV_SWAP_MAX", "DEV_GATES_MEMORY_SWAP_MAX", "kernel update", "UNCAPPED SWAP"):
+            for needle in ("DEV_SWAP_MAX", "DEV_GATES_MEMORY_SWAP_MAX", "kernel update", "UNCAPPED SWAP", "daemon-reload", "infrastructure"):
                 self.assertIn(needle, text, f"{name} does not mention {needle}")
         self.assertIn("MDT-016", (ROOT.parent / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text())
 

@@ -820,12 +820,19 @@ along the ancestor path, resolved device names, systemd properties and
 drop-in paths). Why: [CGROUP-NOTES section 3](CGROUP-NOTES.md#3-caps-expressed-as-a-percentage-of-what-the-disk-actually-does);
 adoption steps: [CONSUMERS](../docs/CONSUMERS.md#dev-tier-io-governance-pin-verify-swap).
 
-**Swap sizing is yours to set.** The default (`DEV_SWAP_CASCADE_PCT=80` of host
-swap, cascading) gave dev.slice 59 GB and each child 47 GB on a 16 GiB host: a
-disposable gate that outgrows its memory can thrash a shared disk for hours.
-Set `DEV_SWAP_MAX` and e.g. `DEV_GATES_MEMORY_SWAP_MAX` to absolute values
-(`8G`/`2G` worked on the incident host) and re-run `install.sh`; the default
-semantics are unchanged until that decision is made (D-HS-01-3).
+**Swap stays ample; the gate tier is throttled by IO instead (decided).** The
+default (`DEV_SWAP_CASCADE_PCT=80` of host swap, cascading) is kept. A gate that
+swaps is throttled by its own tight IO cap, because swap-out IO is charged to the
+page owner's cgroup: set `DEV_GATES_IO_RBPS_MAX`, `DEV_GATES_IO_WBPS_MAX`,
+`DEV_GATES_IO_RIOPS_MAX`, `DEV_GATES_IO_WIOPS_MAX` (runtime keys; the same four
+exist for `INTERACTIVE`, `BACKGROUND` and `BUILDKITD`; IOPS values combine with the
+`DEV_SUBSLICE_IOPS_PCT` sub-ceiling as min). Illustration from the incident host:
+`dev.slice` 80M/40M/800/600, gates 40M/20M/300/200. A throttled gate runs slowly:
+that is an infrastructure-classified slowdown, not a product failure. A smaller
+swap allowance (`DEV_SWAP_MAX`, `DEV_GATES_MEMORY_SWAP_MAX`) stays available but is
+not the protection (D-HS-01-3). The withdraw path re-asserts values because a
+`daemon-reload` after removing a runtime drop-in was measured NOT to re-apply the
+unit-file value (D-HS-01-1).
 
 The caps derived from it sit in a **60-80% band** of the measured ceiling:
 `DEV_IO_CAP_PCT=60` for the whole `dev.slice` estate (it bounds every

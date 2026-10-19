@@ -230,15 +230,27 @@ exits non-zero if the kernel does not hold the intended values, and warns
 `UNCAPPED SWAP` when a swap device sits on a disk with no `dev.slice` `io.max`
 entry (`mdt-host-check.sh` reports the same).
 
-Swap is sized separately and the default is generous: 80% of host swap cascades
-to `dev.slice` and again to every child, so a disposable gate that outgrows its
-memory can thrash the shared disk. Bound it explicitly in `host-setup.env` and
-re-run `install.sh`:
+Swap stays ample (80% of host swap cascades to `dev.slice` and to every child;
+that default is kept). The protection against a gate thrashing the shared disk is
+a tight IO cap on the gate tier: swap-out IO is charged to the page owner's
+cgroup, so a gate that swaps is throttled by its own cap. Runtime keys in
+`host-setup.env`, picked up by the next reconcile (illustration from one host,
+not a default):
 
 ```bash
-DEV_SWAP_MAX=8G
-DEV_GATES_MEMORY_SWAP_MAX=2G
+DEV_GATES_IO_RBPS_MAX=40M
+DEV_GATES_IO_WBPS_MAX=20M
+DEV_GATES_IO_RIOPS_MAX=300    # min(DEV_SUBSLICE_IOPS_PCT sub-ceiling, 300)
+DEV_GATES_IO_WIOPS_MAX=200
 ```
+
+The same four keys exist for `INTERACTIVE`, `BACKGROUND` and `BUILDKITD`. A
+throttled gate stalls and runs slowly: classify that as an infrastructure
+slowdown, not a product failure. `DEV_SWAP_MAX` / `DEV_GATES_MEMORY_SWAP_MAX`
+(absolute values such as `8G`/`2G`) remain available for a smaller allowance. If
+the reconcile ever has to withdraw a cap it re-asserts explicit values with
+`set-property --runtime`: a `daemon-reload` after removing a runtime drop-in was
+measured not to re-apply the unit-file value.
 
 The wizard also asks for `CGROUP2_FLAGS`, the timer interval, and the one
 out-of-tree Buildx name-pattern field. Correctly placed containers are selected

@@ -112,10 +112,14 @@ _mdt_load_baseline
 # ended with an empty io.max — no IO cap at all — while this script logged
 # that the static fallback was authoritative.  The runtime layer therefore
 # never withdraws a cap: when there is no usable baseline it holds the
-# explicit fallback values (D-HS-01-1: re-assert, rather than deleting
-# systemd's private /run/systemd/system.control drop-ins and daemon-reloading,
-# which depends on systemd's file naming, races its own writes and re-reads
-# every unit on a host running production workloads).
+# explicit fallback values, re-asserted with `set-property --runtime`
+# (D-HS-01-1).  The alternative — removing MDT's runtime drop-ins and running
+# `systemctl daemon-reload` — was MEASURED on the live host on 2026-10-19 and
+# does not work: after removing a runtime drop-in and a daemon-reload the
+# unit-file value was NOT re-applied to the cgroup (memory.swap.max stayed at
+# the old runtime value until an explicit set-property).  Deleting systemd's
+# private /run/systemd/system.control files also depends on its file naming
+# and races its own writes.
 #
 # The one exception is a host with NO block-device node: the installer drops
 # the static IO lines there, the slice is not meant to be capped on a device
@@ -140,7 +144,7 @@ _mdt_clear_runtime_io_caps_no_device() {
 }
 
 _mdt_apply_dev_io() {
-  local majmin sub sub_ri sub_wi pct="${DEV_SUBSLICE_IOPS_PCT:-60}" err _rc
+  local majmin err _rc
   _mdt_resolve_dev_io_caps || MDT_RC=1
   if ! majmin=$(_mdt_dev_majmin "$IO_DEV_PATH"); then
     log "ERROR: cannot resolve $IO_DEV_PATH to the whole disk systemd caps (missing node, no sysfs entry, or several backing devices) — IO governance cannot be verified"
@@ -160,22 +164,51 @@ _mdt_apply_dev_io() {
     # "authoritative" is only ever claimed after the kernel agreed
     log "dev.slice: io.max on $IO_DEV_PATH (disk $majmin) is authoritative: ${DEV_RIOPS}r/${DEV_WIOPS}w IOPS, ${DEV_RBPS}/${DEV_WBPS} B/s r/w [$DEV_IO_SRC; DEV_IO_CAP_PCT=${DEV_IO_CAP_PCT}] — covers every dev.slice child combined"
   fi
-  # Per-tier IOPS sub-ceiling for dev-gates.slice/dev-buildkitd.slice: a
-  # percentage of the EFFECTIVE dev.slice IOPS (measured, pinned or static),
-  # so neither alone can claim the whole dev.slice IOPS budget. IOPS only —
-  # bandwidth inherits the parent's.
-  sub_ri=$(( DEV_RIOPS * pct / 100 )); sub_wi=$(( DEV_WIOPS * pct / 100 ))
-  if [ "$sub_ri" -lt 1 ] || [ "$sub_wi" -lt 1 ]; then
-    log "WARN: derived sub-slice IOPS cap <= 0 — dev-gates.slice/dev-buildkitd.slice keep only dev.slice's shared ceiling"
-    return
-  fi
-  for sub in dev-gates.slice dev-buildkitd.slice; do
-    if err=$(systemctl set-property --runtime "$sub" \
-         "IOReadIOPSMax=$IO_DEV_PATH $sub_ri" "IOWriteIOPSMax=$IO_DEV_PATH $sub_wi" 2>&1); then
-      _mdt_verify_io_max "$sub" "$CG/dev.slice/$sub" "$majmin" "" "" "$sub_ri" "$sub_wi"; _rc=$?
+  _mdt_apply_tier_io "$majmin"
+}
+
+# Per-tier caps.  dev-gates.slice/dev-buildkitd.slice always get an IOPS
+# sub-ceiling: DEV_SUBSLICE_IOPS_PCT% of the EFFECTIVE dev.slice IOPS (measured,
+# pinned or static), further reduced to min(sub-ceiling, absolute) by
+# DEV_<TIER>_IO_{RIOPS,WIOPS}_MAX.  Every tier (interactive and background
+# too) also takes absolute DEV_<TIER>_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX caps,
+# applied only for the values that are set.  Bandwidth otherwise inherits the
+# parent's.  These slices carry no static IO line in their unit file, so an
+# empty assignment for a value that is NOT set only removes our own earlier
+# runtime value (a removed pin must not linger until reboot); it is never
+# written to dev.slice, which is the slice meant to stay capped.
+_mdt_apply_tier_io() {
+  local majmin="$1" pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub rb wb ri wi sub_ri sub_wi err _rc props
+  for entry in $MDT_IO_TIERS; do
+    tier=${entry%%:*}; unit=${entry#*:}
+    sub=0; case "$unit" in dev-gates.slice|dev-buildkitd.slice) sub=1 ;; esac
+    rb=$(_mdt_tier_pin "$tier" RBPS) || MDT_RC=1
+    wb=$(_mdt_tier_pin "$tier" WBPS) || MDT_RC=1
+    ri=$(_mdt_tier_pin "$tier" RIOPS) || MDT_RC=1
+    wi=$(_mdt_tier_pin "$tier" WIOPS) || MDT_RC=1
+    if [ "$sub" = 1 ]; then
+      sub_ri=$(( DEV_RIOPS * pct / 100 )); sub_wi=$(( DEV_WIOPS * pct / 100 ))
+      if [ "$sub_ri" -lt 1 ] || [ "$sub_wi" -lt 1 ]; then
+        log "WARN: derived sub-slice IOPS cap <= 0 — $unit keeps only dev.slice's shared ceiling"
+        sub_ri=""; sub_wi=""
+      fi
+      if [ -n "$sub_ri" ]; then
+        { [ -z "$ri" ] || [ "$sub_ri" -lt "$ri" ]; } && ri=$sub_ri
+        { [ -z "$wi" ] || [ "$sub_wi" -lt "$wi" ]; } && wi=$sub_wi
+      fi
+    fi
+    # nothing configured for a tier that is not a sub-ceiling tier: leave it alone
+    [ -n "$rb$wb$ri$wi" ] || continue
+    props=()
+    if [ -n "$rb" ]; then props+=("IOReadBandwidthMax=$IO_DEV_PATH $rb"); else props+=("IOReadBandwidthMax="); fi
+    if [ -n "$wb" ]; then props+=("IOWriteBandwidthMax=$IO_DEV_PATH $wb"); else props+=("IOWriteBandwidthMax="); fi
+    if [ -n "$ri" ]; then props+=("IOReadIOPSMax=$IO_DEV_PATH $ri"); else props+=("IOReadIOPSMax="); fi
+    if [ -n "$wi" ]; then props+=("IOWriteIOPSMax=$IO_DEV_PATH $wi"); else props+=("IOWriteIOPSMax="); fi
+    if err=$(systemctl set-property --runtime "$unit" "${props[@]}" 2>&1); then
+      _mdt_verify_io_max "$unit" "$CG/dev.slice/$unit" "$majmin" "$rb" "$wb" "$ri" "$wi"; _rc=$?
       [ "$_rc" = 1 ] && MDT_RC=1
     else
-      log "ERROR: $sub IOPS sub-ceiling set-property failed ($err)"
+      log "ERROR: $unit IO cap set-property failed ($err)"
       MDT_RC=1
     fi
   done

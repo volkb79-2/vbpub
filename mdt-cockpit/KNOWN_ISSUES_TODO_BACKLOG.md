@@ -287,11 +287,14 @@ Tests: `host-setup/tests/test_io_governance.py`.
 Redesign: O_DIRECT with `--fsync`/`--end_fsync` for writes, a working set larger than the cache the host
 can see, and a steady-state tail measurement (last N seconds) recorded in the results. This changes the
 shared `scripts/debian-install-v2/tools/iocost_coef_gen.py` (and its vendored patch series), which is
-outside `mdt-cockpit`; coordinate with debian-install-v2. Until then pinned `DEV_IO_*_MAX` are the
-recommended source on a virtual disk.
+outside `mdt-cockpit`; coordinate with debian-install-v2 (same item filed there in `TODO.md`). The
+plausibility refusal is shipped in both consumers (`mdt-io-baseline.py`, `iocost-calibrate.sh`). Until the
+redesign, pinned `DEV_IO_*_MAX` are the recommended source on a virtual disk.
 
-## MDT-018 - decide the dev-tier swap sizing default (D-HS-01-3, operator)
+## MDT-018 - dev-tier swap sizing default (D-HS-01-3)
 
-Options: (a) keep 80% of host swap cascading (current), (b) absolute defaults (dev 8G / gates 2G),
-(c) RAM-relative. Default semantics are unchanged until decided; `DEV_SWAP_MAX` /
-`DEV_GATES_MEMORY_SWAP_MAX` are documented as the operator's knobs.
+**CLOSED 2026-10-19 (decided by the operator, amendment A1).** Swap stays ample (the 80% cascade is kept).
+The protection is a tight IO cap on the gate tier (`DEV_GATES_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX`, and the
+same four keys per tier): swap-out IO is charged to the page owner's cgroup. A throttled gate runs
+slowly, an infrastructure-classified slowdown. `DEV_SWAP_MAX` / `DEV_GATES_MEMORY_SWAP_MAX` stay
+available but are not the protection.

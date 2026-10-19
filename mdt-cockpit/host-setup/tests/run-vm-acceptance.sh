@@ -101,4 +101,5 @@ PY
      sudo grep -q 'dev-background.slice' /etc/docker/daemon.json
      sudo docker info >/dev/null
      sudo docker buildx version
-     echo 'MDT VM acceptance: systemd, cgroup2, Docker, rendered slices, and host check passed'"
+     sudo bash host-setup/tests/vm-governance-acceptance.sh
+     echo 'MDT VM acceptance: systemd, cgroup2, Docker, rendered slices, host check, and IO governance passed'"

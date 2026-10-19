@@ -104,10 +104,9 @@ static fallback was authoritative. The timer re-ran it every 60 s, so a manual
 fix lasted a minute. So the reconcile has **no clear path** any more: with no
 usable baseline the runtime layer holds the *explicit* fallback values
 (`set-property --runtime` with the same numbers the unit file renders).
-Re-asserting was chosen over deleting systemd's private drop-ins and
-`daemon-reload`ing because that depends on systemd's file naming, races
-systemd's own writes, and re-reads every unit on a host running production
-workloads (D-HS-01-1). The one exception is a host with no block-device node:
+Re-asserting is the only mechanism that works: Measured on the live host on 2026-10-19: removing a runtime drop-in and running `systemctl daemon-reload` did NOT re-apply the unit-file value to the cgroup (`memory.swap.max` stayed at the old runtime value until an explicit `set-property`). (Deleting
+systemd's private drop-ins also depends on its file naming and races its own
+writes.) (D-HS-01-1). The one exception is a host with no block-device node:
 no static line was rendered and nothing can be capped, so stale MDT runtime
 values are removed with empty assignments.
 
@@ -148,6 +147,18 @@ rejected as stale with a message naming the cause. The full redesign (O_DIRECT
 plus `--fsync`, a working set beyond the visible cache, a steady-state tail) is
 recorded as D-HS-01-2 / MDT-017: it needs a change to the shared
 `iocost_coef_gen.py`, which is outside `mdt-cockpit`.
+
+**Swap stays ample; the gate tier is throttled instead (D7, decided by the
+operator 2026-10-19).** Per-tier absolute keys `DEV_<TIER>_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX`
+(`INTERACTIVE`, `BACKGROUND`, `GATES`, `BUILDKITD`; runtime keys) give a tier
+bandwidth and IOPS caps; for the gate and BuildKit slices the IOPS values combine
+with the `DEV_SUBSLICE_IOPS_PCT` sub-ceiling as min(sub-ceiling, absolute). A gate
+that swaps is throttled by its own tight IO cap, because swap-out IO is charged to
+the page owner's cgroup, so it cannot thrash the shared disk (illustration on the
+incident host: dev.slice 80M/40M/800/600, `DEV_GATES_IO_RBPS_MAX`/`DEV_GATES_IO_WBPS_MAX`/
+`DEV_GATES_IO_RIOPS_MAX`/`DEV_GATES_IO_WIOPS_MAX` 40M/20M/300/200).
+Caveat: a throttled gate stalls and runs slowly; classify that as an
+infrastructure slowdown, not a product failure.
 
 **Swap IO is charged to the page's memcg, so the disk cap covers it, if the
 swap disk has an entry (D6).** Both swap partitions on the incident host sat on
