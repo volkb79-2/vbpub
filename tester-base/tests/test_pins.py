@@ -13,6 +13,7 @@ import json
 import re
 import tomllib
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +26,31 @@ PINS = [
     (REPO / "tester-unified" / "Dockerfile", "node-source", "oci.node.26.trixie"),
 ]
 FROM = re.compile(r"^FROM (?P<image>[^\s:@]+):(?P<tag>[^\s@]+)@(?P<digest>sha256:[0-9a-f]{64})(?: AS (?P<stage>\S+))?$", re.MULTILINE)
+
+
+def canonical_image(name: str) -> str:
+    """The fully-qualified form cmru records: docker.io/library/<name> for a bare official image."""
+    if name.startswith("docker.io/"):
+        return name
+    return "docker.io/library/" + name if "/" not in name else "docker.io/" + name
+
+
+def age_window_days() -> int:
+    """The estate's window, read from the root cmru config: the record is judged against the SAME number."""
+    root = tomllib.loads((REPO / "cmru.orchestration.toml").read_text(encoding="utf-8"))
+    return int(root["versions"]["age_window_days"])
+
+
+def parse_time(text: str) -> datetime:
+    return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def check_entry(entry: dict, resolved_at: str, window_days: int) -> None:
+    """Raise AssertionError unless the recorded image is at least `window_days` old at `resolved_at`."""
+    cutoff = parse_time(resolved_at) - timedelta(days=window_days)
+    released = parse_time(entry["released_at"])
+    if released > cutoff:
+        raise AssertionError(f"{entry['tag']} was released {entry['released_at']}, after the cutoff {cutoff.isoformat()} ({window_days} days before {resolved_at})")
 
 
 def literal(dockerfile: Path, stage: str | None) -> re.Match:
@@ -54,10 +80,31 @@ class Pins(unittest.TestCase):
             with self.subTest(target=target):
                 pinned = literal(dockerfile, stage)
                 entry = record["targets"][target]
-                self.assertTrue(entry["image"].endswith(pinned.group("image").removeprefix("docker.io/")))
+                self.assertEqual(entry["image"], canonical_image(pinned.group("image")), "exact image match, not a suffix")
+                check_entry(entry, record["resolved_at"], age_window_days())
                 self.assertEqual(pinned.group("tag"), entry["tag"], "the Dockerfile tag and the cmru target tag must be bumped together")
                 self.assertEqual(entry["tag"], tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))["versions"]["targets"][target]["oci"]["tag"])
                 self.assertEqual(pinned.group("digest"), entry["digest"], f"{dockerfile.name} carries a digest cmru did not record")
+
+    def test_the_age_check_accepts_old_enough_and_refuses_too_new(self) -> None:
+        old = {"tag": "x", "released_at": "2026-09-19T13:55:46Z"}
+        check_entry(old, "2026-10-19T00:01:28Z", 14)
+        check_entry({"tag": "x", "released_at": "2026-10-05T00:01:28Z"}, "2026-10-19T00:01:28Z", 14)  # exactly at the cutoff
+        with self.assertRaises(AssertionError):
+            check_entry({"tag": "x", "released_at": "2026-10-05T00:01:29Z"}, "2026-10-19T00:01:28Z", 14)
+        with self.assertRaises(AssertionError):
+            check_entry({"tag": "x", "released_at": "2026-10-18T00:00:00Z"}, "2026-10-19T00:01:28Z", 14)
+
+    def test_the_window_is_the_estates_not_a_literal_here(self) -> None:
+        self.assertEqual(age_window_days(), 14)
+        self.assertIsNone(re.search(r"timedelta\(days=\d+\)", Path(__file__).read_text(encoding="utf-8")), "no window literal in the test")
+
+    def test_the_image_match_is_exact(self) -> None:
+        self.assertEqual(canonical_image("python"), "docker.io/library/python")
+        self.assertEqual(canonical_image("docker.io/library/node"), "docker.io/library/node")
+        self.assertNotEqual(canonical_image("python"), "evil/docker.io/library/python")
+        self.assertTrue("registry.example/docker.io/library/python".endswith("docker.io/library/python"))  # a suffix check would accept this lookalike
+        self.assertNotEqual("registry.example/docker.io/library/python", canonical_image("python"))
 
     def test_the_comparison_can_fail(self) -> None:
         sample = "FROM python:3.14.7-trixie@sha256:" + "a" * 64 + "\n"
