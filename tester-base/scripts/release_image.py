@@ -173,9 +173,14 @@ def login(user: str, token: str, config_dir: str, runner: Runner = run) -> None:
 
 # ONLY a registry's own "this does not exist" answers. `docker manifest inspect` prints the registry error
 # code text ("manifest unknown"); other tools print MANIFEST_UNKNOWN / NAME_UNKNOWN or an explicit 404.
-# A bare "not found" is NOT accepted: it also matches `executable file not found in $PATH` (a broken
+# `no such manifest: <ref>` is the docker CLI's own definite text in other versions. Measured (docker 29.8.2,
+# ghcr.io, 2026-10-19): `docker manifest inspect` on a missing tag of an existing repository AND on a
+# repository that does not exist yet (tester-base's first release) both print exactly `manifest unknown`,
+# rc=1 (pinned in tests/test_release_image.py). A bare "not found" is NOT accepted: it also matches `executable file not found in $PATH` (a broken
 # buildx or docker under the isolated config), which would read as "the tag is free".
-NOT_FOUND = re.compile(r"MANIFEST_UNKNOWN|NAME_UNKNOWN|\bmanifest unknown\b|\bname unknown\b|\b404\b", re.IGNORECASE)
+NOT_FOUND = re.compile(
+    r"MANIFEST_UNKNOWN|NAME_UNKNOWN|\bmanifest unknown\b|\bname unknown\b|\bno such manifest: \S+|\b404\b", re.IGNORECASE
+)
 
 
 def tag_exists(name: str, config_dir: str, runner: Runner = run) -> bool:

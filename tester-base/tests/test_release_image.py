@@ -276,8 +276,13 @@ class PushIsAuthenticatedAndOrdered(Base):
 class RegistryAnswersOnly(Base):
     """W1: only the registry's own 'does not exist' answer means the tag is free."""
 
-    REAL_NOT_FOUND = ["manifest unknown", "MANIFEST_UNKNOWN: manifest unknown", "name unknown: repository name not known",
-                      "NAME_UNKNOWN", "unexpected status: 404 Not Found"]
+    # Captured output (docker 29.8.2, ghcr.io, 2026-10-19, measured by the coordinator): `docker manifest
+    # inspect ghcr.io/volkb79-2/tester-base:<missing>` on an existing repository and on a repository that does
+    # not exist yet (the first release) print exactly this on stderr, rc=1.
+    CAPTURED_DOCKER_29_8_2 = "manifest unknown"
+    REAL_NOT_FOUND = [CAPTURED_DOCKER_29_8_2, "MANIFEST_UNKNOWN: manifest unknown", "name unknown: repository name not known",
+                      "NAME_UNKNOWN", "unexpected status: 404 Not Found",
+                      "no such manifest: ghcr.io/volkb79-2/tester-base:0.2.0"]
     NOT_EVIDENCE = [
         'docker: unknown command: docker buildx\nexec: "docker-buildx": executable file not found in $PATH',
         "docker: 'manifest' is not a docker command",
@@ -292,6 +297,15 @@ class RegistryAnswersOnly(Base):
         for text in self.REAL_NOT_FOUND:
             docker = FakeDocker(lookup_failure=text)
             self.assertFalse(ri.tag_exists("x:1", "/cfg", docker), text)
+
+    def test_the_captured_docker_output_is_a_free_tag_for_a_missing_tag_and_a_missing_repository(self) -> None:
+        for ref in ("ghcr.io/volkb79-2/tester-base:9.9.9", "ghcr.io/volkb79-2/no-such-repo-yet:0.1.0"):
+            self.assertFalse(ri.tag_exists(ref, "/cfg", FakeDocker(lookup_failure=self.CAPTURED_DOCKER_29_8_2)), ref)
+
+    def test_no_such_manifest_needs_the_reference_and_is_not_a_bare_not_found(self) -> None:
+        self.assertFalse(ri.tag_exists("x:1", "/cfg", FakeDocker(lookup_failure="no such manifest: x:1")))
+        with self.assertRaises(SystemExit):
+            ri.tag_exists("x:1", "/cfg", FakeDocker(lookup_failure="no such manifest"))  # no reference: not the CLI's text
 
     def test_a_broken_tool_or_transport_is_not_evidence_of_absence(self) -> None:
         for text in self.NOT_EVIDENCE:

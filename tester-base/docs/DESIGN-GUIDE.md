@@ -72,6 +72,21 @@ release. If a push fails after `:latest` moved, `:latest` already points at the 
 `:<VERSION>` does not exist yet; nothing else changed, and re-running `push` is safe (same image, same
 digests). A failure before `:latest` leaves the registry untouched.
 
+**Re-run after a partial publish, and when the re-run refuses.** The "already published" decision compares the
+local `docker image inspect .Id` with the config digest the registry serves for the version tag. On a
+classic image store these are the same value. On a containerd image store `.Id` can be the manifest or
+index digest instead, so a re-run finds them different and REFUSES (fail-closed: nothing is pushed over the
+version tag). The same refusal happens when the version tag and `:latest` were published wrapped differently
+(one as an image manifest, the other as an index with attestations) and the first wrapper cannot be followed
+to a linux/amd64 config. Recovery: inspect what the registry serves
+(`docker buildx imagetools inspect ghcr.io/volkb79-2/tester-base:<VERSION> --raw`), and if its image config
+is the tested image, finish by hand with the same isolated-config login and `docker push` of `:latest`; if it
+is another image, the version number is spent: bump `VERSION` and release again.
+
+**Private candidate tags are left behind.** `tester-base:release-<source-commit>` is created by `prepare`
+and kept until the release is done; an abandoned retry leaves its tag (and the image) on that machine.
+Remove them by exact tag; the cleanup command is in CONSUMERS.
+
 `docker-ce-cli` is pinned to an exact recorded version for the same reason. The cmru handlers
 `oci-image-build` / `oci-image-push` are not used; see `mdt-cockpit/handoff/CMRU-GAPS-2026-10-19.md`.
 

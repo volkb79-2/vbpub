@@ -58,6 +58,15 @@ new `VERSION`) tag and push it. Nobody types a ref, a version or a digest, and t
 refuses before any registry call. See the DESIGN-GUIDE "One build, one image" for the order and for what a
 failed push leaves behind.
 
+### Cleaning up abandoned release candidates
+Each release attempt builds `tester-base:release-<source-commit>`; abandoned retries leave their tags
+behind. List them and remove each one by its exact tag (never by a filter):
+
+```bash
+docker image ls --format '{{.Repository}}:{{.Tag}}' tester-base | grep '^tester-base:release-'
+docker rmi tester-base:release-4b233baa4cfb        # one exact tag per command
+```
+
 ## When a gate needs another tool
 First ask which side owns it. A real low-level OS binary: mark the test `os_integration` and run
 it in the VM lane. A userland package a registered gate lane executes: add it to the Dockerfile
