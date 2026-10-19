@@ -46,18 +46,26 @@ inputs (`apt-get update`, a registry index) - published something nobody had tes
 now ONE build, and the version is applied late because cmru's order is prepare -> gate -> (VERSION
 written, committed, tagged) -> build step -> push:
 
-1. `prepare` builds `tester-base:local` once and `release_image.py record` stores its image id. Nothing
-   versioned exists yet, so nothing here knows a version.
-2. The `contract` lane tests `tester-base:local`.
+1. `prepare` runs `release_image.py build`: it builds the image once under a PRIVATE per-release tag
+   `tester-base:release-<source-commit>` and records the tag and image id. `tester-base:local` is the
+   developer bootstrap tag that other sessions rebuild, so a release never tests or pushes it (a record
+   naming it is refused). Nothing versioned exists yet, so nothing here knows a version.
+2. `run-tests` runs `release_image.py gate`: the `contract` lane against the recorded private tag
+   (`TESTER_BASE_IMAGE` is derived from the record, never typed).
 3. The `build` step is the first one after cmru wrote `VERSION`: `release_image.py tag` reads it (it
-   FAILS when the file is absent or not `x.y.z` - there is no default anywhere), re-checks that
-   `tester-base:local` is still the recorded id, `docker tag`s that same image `:<VERSION>` and
-   `:latest`, and re-verifies the ids after tagging.
+   FAILS when the file is absent or not `x.y.z` - there is no default anywhere), re-checks that the
+   private tag is still the recorded id, `docker tag`s that same image `:<VERSION>` and `:latest`, and
+   re-verifies the ids after tagging.
 4. `push` authenticates with the step's own credentials (`GITHUB_USERNAME` / `GITHUB_PUSH_PAT`, the PAT on
-   stdin into an isolated docker config, never on argv, never from ambient credentials), refuses a
-   version tag that already exists in the registry (only a definite "not found" counts as free; an
-   auth or network error aborts), pushes `:latest` and then `:<VERSION>` LAST, and requires that the
-   registry serves the digest that was pushed.
+   stdin into an isolated docker config, never on argv, never from ambient credentials), pushes `:latest`
+   and then `:<VERSION>` LAST, and requires that the registry serves the digest that was pushed. A version
+   tag is never overwritten: only the registry's own "does not exist" answer (`manifest unknown`,
+   `MANIFEST_UNKNOWN`, `NAME_UNKNOWN`, an explicit 404) means the tag is free - a bare "not found" would also
+   match `executable file not found in $PATH`, so any other failure aborts. If the version tag already
+   exists and serves THIS image (same image id, compared through the manifest or index), the release is
+   treated as already published: the push step logs it and runs only the final digest checks, so a re-run
+   after a partial publish completes instead of refusing forever; a tag that serves another image stops
+   the release before anything moves.
 
 **Partial publish.** `:latest` is a moving alias; the immutable `:<VERSION>` is the commit point of a
 release. If a push fails after `:latest` moved, `:latest` already points at the new, tested image and

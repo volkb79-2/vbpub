@@ -4,8 +4,6 @@ schema_version = 1
 kind = "none"
 
 [env]
-# The candidate the `contract` lane tests: built by the `prepare` step below.
-TESTER_BASE_IMAGE = "tester-base:local"
 BUILDX_BUILDER = "mdt-managed"
 BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
 
@@ -25,24 +23,25 @@ git_tag = true
 build_step = "build"
 artifact_dirs = []
 
-# ONE build (R1), versioned late (V1). cmru runs prepare -> gate -> (VERSION written, committed,
-# tagged) -> build_step -> push, so `prepare` cannot know the release version. It builds the image as
-# tester-base:local and records its id; the gate tests that image; `build` (the first step after the
-# version exists) reads VERSION, re-verifies the id and gives the SAME image its registry names with
-# `docker tag`; `push` logs in with the step's credentials (stdin, isolated config), refuses an
-# existing version tag, pushes :latest and then :<VERSION> last, and checks the served digests.
+# ONE build (R1), versioned late (V1), private candidate tag (W5). cmru runs prepare -> gate ->
+# (VERSION written, committed, tagged) -> build_step -> push, so `prepare` cannot know the release version.
+# It builds the image under a private per-release tag tester-base:release-<source-commit> (NOT the shared
+# developer tag tester-base:local, which other sessions rebuild) and records tag + id; the gate runs the
+# contract lane against that recorded tag; `build` (the first step after the version exists) reads
+# VERSION, re-verifies the id and gives the SAME image its registry names with `docker tag`; `push` logs in
+# with the step's credentials (stdin, isolated config), never overwrites a version tag that serves another
+# image, pushes :latest and then :<VERSION> last, and checks the served digests.
 # The `oci-image-*` handlers are not used (see handoff/CMRU-GAPS-2026-10-19.md).
 [steps.prepare]
 quiet = true
 commands = [
-  { label = "tester-base: build the image once (tester-base:local)", argv = ["docker", "buildx", "bake", "-f", "docker-bake.hcl", "tester-base-local", "--load"], cwd = "." },
-  { label = "tester-base: record the tested image id", argv = ["python3", "scripts/release_image.py", "record"], cwd = "." },
+  { label = "tester-base: build the image once under its private per-release tag", argv = ["python3", "scripts/release_image.py", "build"], cwd = "." },
 ]
 
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "tester-base: run-gate contract lane", argv = ["./run-gate.py", "contract"], cwd = "." },
+  { label = "tester-base: run-gate contract lane against the recorded private tag", argv = ["python3", "scripts/release_image.py", "gate"], cwd = "." },
 ]
 
 [steps.build]

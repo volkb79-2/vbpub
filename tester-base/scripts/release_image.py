@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Release exactly the image the contract tested (tester-base R1, V1, V2), stdlib only.
+"""Release exactly the image the contract tested (tester-base R1, V1, V2, W1-W5), stdlib only.
 
-One build, three actors, in cmru's own step order (prepare -> gate -> tag -> build_step -> push):
+One build, four actors, in cmru's own step order (prepare -> gate -> tag -> build_step -> push):
 
-* ``record``  (prepare) the image just built as ``tester-base:local`` is the one the gate will test:
-              its id is written to build/tested-image.json. `prepare` runs BEFORE cmru writes the new
-              VERSION, so nothing versioned exists yet and nothing here reads VERSION.
+* ``build``   (prepare) builds the image ONCE under a PRIVATE per-release tag
+              ``tester-base:release-<source-commit>`` (derived from HEAD; the shared ``tester-base:local``
+              is the developer bootstrap tag that other sessions rebuild, so a release never tests or
+              pushes it) and writes the tag and image id to build/tested-image.json. `prepare` runs BEFORE
+              cmru writes the new VERSION, so nothing versioned exists yet.
+* ``gate``    (run-tests) runs the ``contract`` lane against that private tag (TESTER_BASE_IMAGE is set
+              from the record, never typed).
 * ``tag``     (build_step) cmru has by now written the final VERSION and tagged: read it (FAIL when it is
-              missing or not x.y.z - there is no default), require ``tester-base:local`` to still be the
+              missing or not x.y.z - there is no default), require the private tag to still be the
               recorded id, and give that very image the registry names ``:<VERSION>`` and ``:latest``
               with ``docker tag``. Nothing is rebuilt.
 * ``push``    log in (credentials from the step environment only, never ambient: an isolated
-              DOCKER_CONFIG, the PAT on stdin, never on argv), re-verify the ids, refuse when the version
-              tag already exists in the registry (a release never overwrites one), push ``:latest`` and
+              DOCKER_CONFIG, the PAT on stdin, never on argv), re-verify the ids, push ``:latest`` and
               then ``:<VERSION>`` LAST, and require that the registry serves the digest that was pushed.
+              A version tag that already exists is never overwritten: if it already serves THIS image
+              (same image id) the release is treated as already published and only the final checks run;
+              if it serves another image the release stops.
 
 Partial publish: ``:latest`` is a moving alias and the immutable ``:<VERSION>`` is the commit point. If a
 push fails after ``:latest`` moved, ``:latest`` points at the new (tested) image while ``:<VERSION>`` does
@@ -35,7 +41,6 @@ from typing import Callable
 ROOT = Path(__file__).resolve().parents[1]
 RECORD = ROOT / "build" / "tested-image.json"
 VERSION_FILE = ROOT / "VERSION"
-LOCAL_TAG = "tester-base:local"
 REGISTRY = "ghcr.io"
 REPOSITORY = "ghcr.io/volkb79-2/tester-base"
 SEMVER = re.compile(r"\d+\.\d+\.\d+")
@@ -68,6 +73,17 @@ def release_tags(version: str) -> list[str]:
     return [f"{REPOSITORY}:latest", f"{REPOSITORY}:{version}"]
 
 
+def private_tag(commit: str) -> str:
+    """The per-release candidate tag, derived from the source commit prepare ran at."""
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise SystemExit(f"release_image: {commit!r} is not a commit id")
+    return f"tester-base:release-{commit[:12]}"
+
+
+def source_commit(runner: Runner = run) -> str:
+    return runner(["git", "rev-parse", "HEAD"])
+
+
 def image_id(tag: str, runner: Runner = run) -> str:
     value = runner(["docker", "image", "inspect", "--format", "{{.Id}}", tag])
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", value):
@@ -75,37 +91,60 @@ def image_id(tag: str, runner: Runner = run) -> str:
     return value
 
 
-def record(runner: Runner = run, path: Path = RECORD) -> str:
-    tested = image_id(LOCAL_TAG, runner)
+def build(runner: Runner = run, path: Path = RECORD) -> str:
+    """Build once under the private per-release tag and record (tag, id). Returns the tag."""
+    tag_name = private_tag(source_commit(runner))
+    runner(["docker", "buildx", "bake", "-f", str(ROOT / "docker-bake.hcl"), "tester-base-local",
+            "--set", f"tester-base-local.tags={tag_name}", "--load"])
+    return record(tag_name, runner, path)
+
+
+def record(tag_name: str, runner: Runner = run, path: Path = RECORD) -> str:
+    tested = image_id(tag_name, runner)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"image_id": tested, "tag": LOCAL_TAG}, indent=2) + "\n", encoding="utf-8")
-    return tested
+    path.write_text(json.dumps({"image_id": tested, "tag": tag_name}, indent=2) + "\n", encoding="utf-8")
+    return tag_name
 
 
-def tested_id(path: Path = RECORD) -> str:
+def recorded(path: Path = RECORD) -> tuple[str, str]:
+    """(private tag, image id) of the build prepare made."""
     if not path.is_file():
-        raise SystemExit("release_image: nothing was recorded; run `record` right after the build")
-    return json.loads(path.read_text(encoding="utf-8"))["image_id"]
+        raise SystemExit("release_image: nothing was recorded; run `build` in the prepare step")
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("tag") == "tester-base:local":
+        raise SystemExit("release_image: the shared developer tag tester-base:local is never a release candidate")
+    return data["tag"], data["image_id"]
 
 
-def verify(tags: list[str], runner: Runner = run, path: Path = RECORD) -> str:
-    tested = tested_id(path)
-    for tag in [LOCAL_TAG, *tags]:
-        found = image_id(tag, runner)
+def verify(names: list[str], runner: Runner = run, path: Path = RECORD) -> str:
+    candidate, tested = recorded(path)
+    for name in [candidate, *names]:
+        found = image_id(name, runner)
         if found != tested:
-            raise SystemExit(f"release_image: {tag} is {found}, but the contract tested {tested}: refusing to publish a different image")
+            raise SystemExit(f"release_image: {name} is {found}, but the contract tested {tested}: refusing to publish a different image")
     return tested
+
+
+def gate(runner_exec: Callable[[list[str], dict[str, str]], int] | None = None, path: Path = RECORD) -> int:
+    """Run the contract lane against the recorded private tag (the lane's image env is derived)."""
+    candidate, _tested = recorded(path)
+    env = {**os.environ, "TESTER_BASE_IMAGE": candidate}
+    argv = ["./run-gate.py", "contract"]
+    if runner_exec is not None:
+        return runner_exec(argv, env)
+    return subprocess.run(argv, cwd=ROOT, env=env, check=False).returncode
 
 
 def tag(version_path: Path = VERSION_FILE, runner: Runner = run, path: Path = RECORD) -> list[str]:
     version = read_version(version_path)
-    tags = release_tags(version)
-    if image_id(LOCAL_TAG, runner) != tested_id(path):
-        raise SystemExit(f"release_image: {LOCAL_TAG} is not the image the contract tested: refusing to tag it")
-    for name in tags:
-        runner(["docker", "tag", LOCAL_TAG, name])
-    verify(tags, runner, path)  # re-verify the id AFTER tagging, in the step that knows the final version
-    return tags
+    names = release_tags(version)
+    candidate, tested = recorded(path)
+    if image_id(candidate, runner) != tested:
+        raise SystemExit(f"release_image: {candidate} is not the image the contract tested: refusing to tag it")
+    for name in names:
+        runner(["docker", "tag", candidate, name])
+    verify(names, runner, path)  # re-verify the id AFTER tagging, in the step that knows the final version
+    return names
 
 
 def local_digest(name: str, runner: Runner = run) -> str:
@@ -132,14 +171,18 @@ def login(user: str, token: str, config_dir: str, runner: Runner = run) -> None:
     runner(["docker", "--config", config_dir, "login", REGISTRY, "-u", user, "--password-stdin"], stdin=token + "\n")
 
 
-NOT_FOUND = re.compile(r"manifest unknown|not found|no such manifest|name unknown", re.IGNORECASE)
+# ONLY a registry's own "this does not exist" answers. `docker manifest inspect` prints the registry error
+# code text ("manifest unknown"); other tools print MANIFEST_UNKNOWN / NAME_UNKNOWN or an explicit 404.
+# A bare "not found" is NOT accepted: it also matches `executable file not found in $PATH` (a broken
+# buildx or docker under the isolated config), which would read as "the tag is free".
+NOT_FOUND = re.compile(r"MANIFEST_UNKNOWN|NAME_UNKNOWN|\bmanifest unknown\b|\bname unknown\b|\b404\b", re.IGNORECASE)
 
 
 def tag_exists(name: str, config_dir: str, runner: Runner = run) -> bool:
-    """True when the registry has the tag; False ONLY for a definite 'not found'. Any other failure
-    (auth, network, rate limit) is not evidence of absence and aborts the release."""
+    """True when the registry has the tag; False ONLY for the registry's own 'does not exist' answer. Any
+    other failure (auth, network, rate limit, a broken tool) is not evidence of absence and aborts."""
     try:
-        runner(["docker", "--config", config_dir, "buildx", "imagetools", "inspect", name, "--format", "{{.Manifest.Digest}}"])
+        runner(["docker", "--config", config_dir, "manifest", "inspect", name])
     except SystemExit as exc:
         if NOT_FOUND.search(str(exc)):
             return False
@@ -147,19 +190,47 @@ def tag_exists(name: str, config_dir: str, runner: Runner = run) -> bool:
     return True
 
 
+def served_image_id(name: str, config_dir: str, runner: Runner = run) -> str:
+    """The image id (config digest) the registry serves for `name` - the content identity that equals a
+    local `docker image inspect` id, independent of how the manifest was wrapped."""
+    def raw(ref: str) -> dict:
+        return json.loads(runner(["docker", "--config", config_dir, "buildx", "imagetools", "inspect", ref, "--raw"]))
+
+    manifest = raw(name)
+    if "config" in manifest:
+        return manifest["config"]["digest"]
+    repo = name.rsplit(":", 1)[0]
+    for entry in manifest.get("manifests", []):
+        platform = entry.get("platform") or {}
+        if platform.get("os") == "linux" and platform.get("architecture") == "amd64":
+            return raw(f"{repo}@{entry['digest']}")["config"]["digest"]
+    raise SystemExit(f"release_image: {name} serves no linux/amd64 image")
+
+
 def push(version_path: Path = VERSION_FILE, runner: Runner = run, path: Path = RECORD, environ: dict[str, str] | None = None) -> str:
     version = read_version(version_path)
-    tags = release_tags(version)
+    names = release_tags(version)
     user, token = credentials(dict(os.environ) if environ is None else environ)
-    verify(tags, runner, path)
+    tested = verify(names, runner, path)
     config_dir = tempfile.mkdtemp(prefix="tester-base-docker-config-")
     try:
         login(user, token, config_dir, runner)
-        version_tag = tags[-1]
+        version_tag = names[-1]
+        already_published = False
         if tag_exists(version_tag, config_dir, runner):
-            raise SystemExit(f"release_image: {version_tag} already exists in the registry; a release never overwrites a version tag")
+            served = served_image_id(version_tag, config_dir, runner)
+            if served != tested:
+                raise SystemExit(
+                    f"release_image: {version_tag} already exists and serves image {served}, not the tested {tested}; "
+                    "a release never overwrites a version tag"
+                )
+            already_published = True
+            print(f"release_image: {version_tag} is already published with the tested image {tested}; continuing to the final checks")
         pushed: dict[str, str] = {}
-        for name in tags:  # latest first, the version tag LAST
+        for name in names:  # latest first, the version tag LAST
+            if name == version_tag and already_published:
+                pushed[name] = runner(["docker", "--config", config_dir, "buildx", "imagetools", "inspect", name, "--format", "{{.Manifest.Digest}}"])
+                continue
             runner(["docker", "--config", config_dir, "push", name])
             served = runner(["docker", "--config", config_dir, "buildx", "imagetools", "inspect", name, "--format", "{{.Manifest.Digest}}"])
             mine = local_digest(name, runner)
@@ -176,12 +247,14 @@ def push(version_path: Path = VERSION_FILE, runner: Runner = run, path: Path = R
 
 
 def main(argv: list[str]) -> int:
-    verbs = {"record", "tag", "push"}
+    verbs = {"build", "gate", "tag", "push"}
     if len(argv) != 2 or argv[1] not in verbs:
-        print("usage: release_image.py record|tag|push", file=sys.stderr)
+        print("usage: release_image.py build|gate|tag|push", file=sys.stderr)
         return 2
-    if argv[1] == "record":
-        print(f"recorded {record()}")
+    if argv[1] == "build":
+        print(f"built and recorded {build()}")
+    elif argv[1] == "gate":
+        return gate()
     elif argv[1] == "tag":
         print("tagged " + ", ".join(tag()))
     else:
