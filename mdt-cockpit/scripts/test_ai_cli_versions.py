@@ -421,3 +421,80 @@ def test_the_advisory_status_is_stated_in_the_design_guide_and_the_consumer_guid
     for doc in ("docs/DESIGN-GUIDE.md", "docs/CONSUMERS.md"):
         text = (ROOT / doc).read_text(encoding="utf-8")
         assert ADVISORY.lower() in text.lower() and "MDT-009" in text, doc
+
+
+# --- Z1: aider's hand-written deps_before is held to the estate window ---------------------------------
+
+PIN_BODY = 'commit = "5dc9490bb35f9729ef2c95d00a19ccd30c26339c"\nversion = "0.86.3.dev53+g5dc9490bb"\ndeps_before = "{}"\n'
+
+
+def _pin(tmp_path: Path, before: str) -> Path:
+    path = tmp_path / "aider-main-pin.toml"
+    path.write_text(PIN_BODY.format(before), encoding="utf-8")
+    return path
+
+
+def test_the_estate_window_is_read_from_the_orchestration_config() -> None:
+    assert stage._estate_window_days() == 14
+
+
+def test_deps_before_must_be_at_least_the_window_old(tmp_path: Path) -> None:
+    now = datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc)
+    oldest_ok = (now - timedelta(days=14)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    assert stage._aider_main_pin(_pin(tmp_path, oldest_ok), now=now, window_days=14)["AIDER_BEFORE"] == oldest_ok  # boundary passes
+    for label, before in (
+        ("one second too young", (now - timedelta(days=14) + timedelta(seconds=1)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+        ("yesterday", (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+        ("the future", (now + timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")),
+    ):
+        with pytest.raises(stage.StageError, match="float inside the window"):
+            stage._aider_main_pin(_pin(tmp_path, before), now=now, window_days=14)
+        assert label
+
+
+def test_the_window_comes_from_the_estate_not_a_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2026, 10, 19, 12, 0, 0, tzinfo=timezone.utc)
+    before = (now - timedelta(days=20)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    monkeypatch.setattr(stage, "_estate_window_days", lambda: 30)
+    with pytest.raises(stage.StageError, match="30-day window"):
+        stage._aider_main_pin(_pin(tmp_path, before), now=now)
+    monkeypatch.undo()  # back to the real _estate_window_days
+    monkeypatch.setattr(stage, "PROJECT_ROOT", tmp_path / "x" / "y")  # no orchestration config there: refuse, no default
+    with pytest.raises(stage.StageError, match="age_window_days"):
+        stage._estate_window_days()
+
+
+# --- Z2: an override released inside the window waives it for its dependencies, visibly ------------------
+
+def _manifest_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rdr2", ROOT / "scripts" / "resolve-devcontainers-release.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_a_waiving_override_is_flagged_in_staging_and_the_manifest() -> None:
+    records = fake_version_records(VETTED)
+    records["npm.copilot"].update({"version": "1.0.92-4", "reason": "keep until the handshake bug is fixed"})
+    records["npm.copilot"]["resolved"]["sources"]["npm"]["released_at"] = "2099-01-01T00:00:00Z"
+    vetted = stage._vetted_ai_cli_versions(lambda: records)
+    assert vetted["COPILOT_WAIVED"] == "true" and "OPENCLAW_WAIVED" not in vetted
+    rows = "\n".join(_manifest_module().render_vetting_lines(vetted))
+    assert "copilot: dependency window waived by override: keep until the handshake bug is fixed" in rows
+    assert "openclaw: all dependencies uploaded/published before" in rows
+
+
+def test_an_override_of_an_old_enough_release_is_not_waived() -> None:
+    records = fake_version_records(VETTED)
+    records["npm.copilot"].update({"version": "1.0.92-4", "reason": "pinned on purpose"})
+    vetted = stage._vetted_ai_cli_versions(lambda: records)
+    assert "COPILOT_WAIVED" not in vetted and vetted["COPILOT_REASON"] == "pinned on purpose"
+    rows = "\n".join(_manifest_module().render_vetting_lines(vetted))
+    assert "waived" not in rows and "pinned by override, reason: pinned on purpose" in rows
+
+
+def test_the_check_record_docstring_states_the_waiver() -> None:
+    doc = stage._check_record.__doc__
+    assert "WAIVED" in doc and "same window" not in doc

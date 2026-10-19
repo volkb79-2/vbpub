@@ -184,3 +184,12 @@ class DoctorHubLoginNoticeTests(HostEscapeCliTests):
         result = self.doctor({"credsStore": f"x; touch {marker}"})
         self.assertFalse(marker.exists())
         self.assertIn("cannot confirm a Docker Hub login", result.stderr)
+        self.assertIn("invalid credsStore name", result.stderr)
+        self.assertNotIn("touch", result.stderr + result.stdout, "the raw config value is never echoed")
+
+    def test_an_overlong_or_odd_store_name_is_reported_without_being_echoed(self) -> None:
+        for name in ("a" * 65, "x\u001b[31my", "pass word"):
+            result = self.doctor({"credsStore": name})
+            self.assertIn("invalid credsStore name", result.stderr)
+            self.assertNotIn(name, result.stderr)
+            self.assertEqual(result.returncode, 0)

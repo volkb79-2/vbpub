@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 import zipfile
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -1571,7 +1571,21 @@ def _record_age_days(resolved_at: object, now: datetime | None = None) -> float:
     return ((now or datetime.now(timezone.utc)) - stamp).total_seconds() / 86400
 
 
-def _aider_main_pin(path: Path | None = None) -> dict[str, str]:
+def _estate_window_days() -> int:
+    """age_window_days from the estate's cmru.orchestration.toml (read, never defaulted)."""
+    import tomllib
+
+    path = PROJECT_ROOT.parent / "cmru.orchestration.toml"
+    try:
+        days = tomllib.loads(path.read_text(encoding="utf-8"))["versions"]["age_window_days"]
+    except (OSError, ValueError, KeyError) as exc:
+        raise StageError(f"cannot read versions.age_window_days from {path}: {exc}") from exc
+    if not isinstance(days, int) or isinstance(days, bool) or days < 1:
+        raise StageError(f"{path}: versions.age_window_days must be a positive integer, got {days!r}")
+    return days
+
+
+def _aider_main_pin(path: Path | None = None, now: datetime | None = None, window_days: int | None = None) -> dict[str, str]:
     """{AIDER_COMMIT, AIDER_VER} from the tracked pin file; an unpinned or malformed file fails staging."""
     import tomllib
 
@@ -1587,6 +1601,17 @@ def _aider_main_pin(path: Path | None = None) -> dict[str, str]:
         raise StageError(f"{path.name}: `version` must be the version that commit builds (it carries `g{commit[:9]}`)")
     if not isinstance(before, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", before):
         raise StageError(f"{path.name}: `deps_before` must be a UTC timestamp like 2026-10-05T00:00:00Z (aider's PyPI dependencies are held to it)")
+    # Hand-written, so more than a shape check: a future date would let dependencies float, and a date inside the
+    # estate window would admit dependencies younger than the 14-day rule allows.
+    moment = _parse_utc(before, f"{path.name} deps_before")
+    window = window_days if window_days is not None else _estate_window_days()
+    newest_allowed = (now or datetime.now(timezone.utc)) - timedelta(days=window)
+    if moment > newest_allowed:
+        raise StageError(
+            f"{path.name}: deps_before {before} is newer than {newest_allowed.strftime('%Y-%m-%dT%H:%M:%SZ')} "
+            f"(staging time minus the estate's {window}-day window); a future or too-young date lets aider's "
+            "dependencies float inside the window"
+        )
     return {"AIDER_COMMIT": commit, "AIDER_VER": version, "AIDER_BEFORE": before}
 
 
@@ -1625,9 +1650,11 @@ def _vetted_ai_cli_versions(load=_load_version_records, now: datetime | None = N
             raise StageError(f"{target} was resolved {age:.0f} days ago (limit {RECORD_MAX_AGE_DAYS}): {RESOLVE_ADVICE}")
         prefix = env_key[: -len("_VER")]
         vetted[env_key] = version
-        vetted[f"{prefix}_BEFORE"], reason = _check_record(target, declaration, resolved, version)
+        vetted[f"{prefix}_BEFORE"], reason, waived = _check_record(target, declaration, resolved, version)
         if reason:
             vetted[f"{prefix}_REASON"] = reason
+        if waived:
+            vetted[f"{prefix}_WAIVED"] = "true"
     if install_enabled("INSTALL_AIDER"):
         vetted.update(_aider_main_pin())
     return vetted
@@ -1640,15 +1667,17 @@ def _parse_utc(value: object, what: str) -> datetime:
         raise StageError(f"{what}: unreadable timestamp {value!r}; {RESOLVE_ADVICE}") from exc
 
 
-def _check_record(target: str, declaration: dict, resolved: dict, version: str) -> tuple[str, str]:
-    """Cross-check one record; returns (the `npm --before` cutoff, the override reason or "").
+def _check_record(target: str, declaration: dict, resolved: dict, version: str) -> tuple[str, str, bool]:
+    """Cross-check one record; returns (the `npm --before` cutoff, the override reason or "", whether the window is waived).
 
     * resolved.version must equal the source's version (a hand-edited record is caught);
     * without an override the release must be at least as old as the age cutoff;
     * a declared `version` override must equal the resolved value (an override edited without re-resolving
       fails) and carries a reason, which is carried into tool-versions.env and the image manifest;
-    * the cutoff handed to npm is the record's own age cutoff, or the override's release date when that is
-      later, so transitive dependencies obey the same window as the top-level package.
+    * the cutoff handed to npm is the record's own age cutoff, so transitive dependencies are judged by the
+      rule that judged the package. EXCEPTION: an override released AFTER the age cutoff cannot be installed
+      under that cutoff, so `--before` becomes its release date and the 14-day window is WAIVED for that tool's
+      dependencies too (returned `waived`, recorded as <TOOL>_WAIVED and shown in the manifest).
     """
     source = (resolved.get("sources") or {}).get("npm") if isinstance(resolved.get("sources"), dict) else None
     if not isinstance(source, dict) or source.get("version") != version:
@@ -1658,6 +1687,7 @@ def _check_record(target: str, declaration: dict, resolved: dict, version: str) 
     released = _parse_utc(source.get("released_at"), f"{target} released_at")
     override = declaration.get("version")
     reason = ""
+    waived = False
     if override is not None:
         reason = declaration.get("reason")
         if override != version:
@@ -1667,9 +1697,10 @@ def _check_record(target: str, declaration: dict, resolved: dict, version: str) 
         reason = reason.strip()
         if released > cutoff:
             cutoff_text = source["released_at"]
+            waived = True
     elif released > cutoff:
         raise StageError(f"{target}: {version} was released {source['released_at']}, after the age cutoff {cutoff_text}; {RESOLVE_ADVICE}")
-    return str(cutoff_text), reason
+    return str(cutoff_text), reason, waived
 
 
 def _resolve_versions() -> dict[str, str]:

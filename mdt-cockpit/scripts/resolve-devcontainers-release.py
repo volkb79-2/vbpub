@@ -1541,7 +1541,10 @@ def render_vetting_lines(resolved_versions: dict) -> list[str]:
         if resolved_versions.get(f"{prefix}_COMMIT"):
             row += f"; exact upstream commit `{resolved_versions[f'{prefix}_COMMIT']}` (documented exception, aider-main-pin.toml)"
         reason = str(resolved_versions.get(f"{prefix}_REASON") or "").strip()
-        if reason:
+        if reason and str(resolved_versions.get(f"{prefix}_WAIVED") or "") == "true":
+            row = (f"- {name}: dependency window waived by override: {reason} "
+                   f"(the pinned release is younger than the window; dependencies uploaded/published before `{before}`)")
+        elif reason:
             row += f"; pinned by override, reason: {reason}"
         rows.append(row)
     if not rows:

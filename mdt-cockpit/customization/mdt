@@ -180,7 +180,10 @@ if isinstance(store, str) and store:
     # helper means "cannot confirm", not "no login".
     import re, shutil, subprocess
     helper = "docker-credential-" + store
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", store) or not shutil.which(helper):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", store):
+        print("invalid")  # never echo the raw config value
+        raise SystemExit(0)
+    if not shutil.which(helper):
         print("unknown:" + store)
         raise SystemExit(0)
     try:
@@ -193,7 +196,9 @@ if isinstance(store, str) and store:
 print("absent")
 PY
     )
-    if [[ "$state" == unknown:* ]]; then
+    if [[ "$state" == invalid ]]; then
+        echo "[mdt doctor] notice: ${config} has an invalid credsStore name; cannot confirm a Docker Hub login. Anonymous Docker Hub pulls are limited to 100/hour per IP; see docs/CONSUMERS.md \"Docker Hub login\"." >&2
+    elif [[ "$state" == unknown:* ]]; then
         echo "[mdt doctor] notice: a credential store (${state#unknown:}) is configured in ${config}; cannot confirm a Docker Hub login without querying it (docker-credential-${state#unknown:} list is unavailable here). Anonymous Docker Hub pulls are limited to 100/hour per IP; see docs/CONSUMERS.md \"Docker Hub login\"." >&2
     elif [[ "$state" != "present" ]]; then
         echo "[mdt doctor] notice: no docker.io login found in ${config} - anonymous Docker Hub pulls are limited to 100/hour per IP, shared by every session on this host. Log in once: docker login docker.io --username <user> --password-stdin (read-only access token; see docs/CONSUMERS.md \"Docker Hub login\")." >&2

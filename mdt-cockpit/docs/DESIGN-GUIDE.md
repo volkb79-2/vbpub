@@ -378,6 +378,14 @@ base; it only keeps `cmru versions resolve` working and shows what a vetted base
 MDT-009 makes the build take the devcontainers record as the `FROM` digest, with an equality test like
 `tester-base/tests/test_pins.py`; the label, these paragraphs and that test change together then.
 
+**An override released inside the window waives it for that tool's dependencies.** The pinned release is
+younger than the cutoff, so `--before` has to be its release date to stay installable; its dependencies are
+then NOT 14-day vetted. This is stated, not hidden: staging records `<TOOL>_WAIVED`, and the manifest row
+reads "dependency window waived by override: <reason>". An override of a release older than the cutoff
+keeps the normal cutoff and is not waived. aider's hand-written `deps_before` is refused by staging when it
+is in the future or newer than the staging time minus `age_window_days` (read from
+`cmru.orchestration.toml`, never defaulted).
+
 **Transitive dependencies obey the window too.** `npm install -g pkg@ver` pins only the top-level version
 (and ignores `package-lock.json`), so the three npm installs also pass `--before <cutoff>`: the record's own
 `age_cutoff` (resolved_at minus the window - cmru's definition of "old enough", so the whole tree is judged
@@ -445,6 +453,10 @@ it: `docker`, `buildx` (the remote `mdt-managed` builder is driven through the c
 and `regctl`; cmru is meant to join them (gap recorded in `handoff/CMRU-GAPS-2026-10-19.md`). `mdt doctor`
 only reports whether an entry exists, by the config's `auths`/`credHelpers`/`credsStore` keys (for a `credsStore`: the helper's `list` verb, URLs only, offline-tolerant - an absent helper reads "cannot confirm"), and never
 reads or prints a secret; the notice is non-fatal because anonymous pulls are slow-failing, not impossible.
+Credential helpers differ: `pass` and `secretservice` may prompt (a GPG passphrase, a keyring unlock) or block
+on `list` until the doctor's 10 s timeout, in which case the result is "cannot confirm", never a failure. A
+`credsStore` name outside `[A-Za-z0-9_.-]{1,64}` is reported as "invalid credsStore name" without echoing the
+config value, and is never executed.
 Rejected alternatives: **cmru-only env vars** (`username_env`/`token_env`) - a second copy of the secret
 that only one tool reads; **an mdt env file** - a plaintext secret in the persisted home next to the real
 store; **ciu secrets** - the login is a property of the host user's Docker client, not of any stack.
