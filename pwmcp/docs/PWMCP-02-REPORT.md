@@ -128,7 +128,7 @@ Intentional changes (each is required by a checklist row or by the library's con
 | 2 | Break every verb's exit code (`cli.run(argv=argv); return 0` in `main`) | `test_real_executable_obeys_cli_contract` FAILED (`AssertionError: -h must be rejected by default`), plus at least 18 more, among them `test_contract_failure_*`, `test_doctor_fails_with_a_remedy_on_a_playwright_mismatch`, `test_doctor_unknown_check_is_a_usage_error`, `test_skills_install_check_and_dry_run_use_only_the_given_destination` and the exit-status assertions of `test_reviewed_case[skills-check*]` |
 | 3 | Reword the `contract` verb description (grammar text drift) | `test_committed_manifest_spec_and_catalog_are_current` FAILED: `generated CLI manifest is stale`, `generated CLI spec block is stale`, `CLI surface check failed.` |
 | 4 | Literal `0.1.0` fallback in `identity()` on `VersionLookupError` | `test_identity_has_no_literal_fallback_when_no_source_resolves` and `test_identity_refuses_metadata_that_disagrees_with_the_version_file` FAILED (`DID NOT RAISE VersionLookupError`) |
-| 5 | Remove `cli-extended` from pwmcp's `depends_on` | `cmru dependencies` still printed `PREFLIGHT: PASS`: the preflight only reads `<project>/pyproject.toml`, not the nested `pwmcp/client/pyproject.toml`. So the edge is declared by hand; filed as cmru KI-70 |
+| 5 | Remove `cli-extended` from pwmcp's `depends_on` | `cmru dependencies` still printed `PREFLIGHT: PASS`: the preflight only reads `<project>/pyproject.toml`, not the nested `pwmcp/client/pyproject.toml`. So the edge is declared by hand; filed as cmru KI-70 [now KI-83] |
 | 6 | `no_args_action=False` in `script_cli` | `tests/test_script_cli.py::test_build_push_requires_exactly_one_operation` FAILED (bare `build-push.py` printed help, exit 0) |
 
 ## Gate
@@ -183,6 +183,6 @@ cmru status         ->   pwmcp   pwmcp-v1.63.0-r2   prepare   (derived by PWMCP_
 
 ## Follow-ups filed
 
-* cmru `KNOWN_ISSUES_TODO_BACKLOG.md` KI-70: dependency preflight ignores a nested wheel pyproject.
+* cmru `KNOWN_ISSUES_TODO_BACKLOG.md` KI-70 [now KI-83: renumbered in INT-01 because KI-70 is the released mutation-campaign issue]: dependency preflight ignores a nested wheel pyproject.
 * `libraries/cli-extended/BACKLOG.md` CLI-EXT-32: audit AC-25 misses a library path built from pieces.
 * Not filed (small): the scripts' `fail()` helpers still use `SystemExit` (AC-11 deviation above).

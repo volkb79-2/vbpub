@@ -74,7 +74,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Documentation
 - docs(pwmcp): record second r1 gate run at the report tip (e76070db3)
-- docs(pwmcp): PWMCP-02 report, backlog FIXED, program row 5; file cmru KI-70 and CLI-EXT-32 (194f01e1d)
+- docs(pwmcp): PWMCP-02 report, backlog FIXED, program row 5; file cmru KI-70 [now KI-83] and CLI-EXT-32 (194f01e1d)
 - docs(cli-extended): file planned adoptions in each tool's backlog (W10) (c8a56ad8f)
 - docs(pwmcp): add PWMCP-01 (665246456)
 - docs(pwmcp): record final external gate evidence (79e2efd7e)
