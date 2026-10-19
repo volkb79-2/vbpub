@@ -804,6 +804,13 @@ fi
 ) || fail "_bytes_of regression case failed (B7) -- see stderr above"
 pass "check.sh's _bytes_of parses legal-systemd non-integer sizes (4.5G) to the correct byte count and returns ? (never a bash syntax error, never a silent mis-compare) for non-byte-comparable forms (50%, bogus)"
 
+# --- mdt-buildkitd.service must bound a cold pull in its start job -----------
+# ExecStartPre pulls the image and ExecStartPost waits for the socket inside one start
+# job; systemd's 90 s default timed out in the TCG guest (vm-system, 2026-10-19).
+grep -qE '^TimeoutStartSec=10min$' "$HERE/units/mdt-buildkitd.service.in" \
+  || fail "units/mdt-buildkitd.service.in lost TimeoutStartSec=10min (a cold image pull exceeds the 90 s default)"
+pass "mdt-buildkitd.service carries TimeoutStartSec=10min"
+
 # --- focused BuildKit/config/wizard identity tests --------------------------
 GOVERNANCE_TEST_OUT="$TMP/buildkit-governance-tests.log"
 if "$MDT_TEST_PYTHON" "$HERE/tests/test_buildkit_governance.py" >"$GOVERNANCE_TEST_OUT" 2>&1; then
@@ -819,7 +826,7 @@ echo "GOVERNANCE_TEST_EXIT=$GOV_RC"
 pass "focused BuildKit guard identity, policy, builder idempotency, memory constraints, and template invariants"
 
 # --- bash -n + shellcheck (if available) on every shell script this package touches --
-SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-io-caps.lib.sh" "$HERE/scripts/mdt-cgroup-io-limits.sh" "$HERE/tests/vm-governance-acceptance.sh" "$HERE/scripts/mdt-container-memory-inotify-watcher.py" "$HERE/scripts/mdt-slice-memory-min-low-audit.py" "$HERE/scripts/mdt-buildkit-guard.py" "$HERE/../scripts/mdt_buildkit_builder.py" "$HERE/mdt-host-setup-wizard.py" "${BASH_SOURCE[0]}")
+SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-io-caps.lib.sh" "$HERE/scripts/mdt-cgroup-io-limits.sh" "$HERE/tests/vm-governance-acceptance.sh" "$HERE/tests/vm-install-with-diagnostics.sh" "$HERE/tests/vm-dump-diagnostics.sh" "$HERE/scripts/mdt-container-memory-inotify-watcher.py" "$HERE/scripts/mdt-slice-memory-min-low-audit.py" "$HERE/scripts/mdt-buildkit-guard.py" "$HERE/../scripts/mdt_buildkit_builder.py" "$HERE/mdt-host-setup-wizard.py" "${BASH_SOURCE[0]}")
 for s in "${SCRIPTS[@]}"; do
   case "$s" in
     *.py) "$MDT_TEST_PYTHON" -m py_compile "$s" || fail "py_compile failed: $s" ;;
@@ -828,7 +835,7 @@ for s in "${SCRIPTS[@]}"; do
 done
 pass "bash -n / py_compile clean on every touched script"
 
-SHELL_SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-io-caps.lib.sh" "$HERE/scripts/mdt-cgroup-io-limits.sh" "$HERE/tests/vm-governance-acceptance.sh" "${BASH_SOURCE[0]}")
+SHELL_SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-io-caps.lib.sh" "$HERE/scripts/mdt-cgroup-io-limits.sh" "$HERE/tests/vm-governance-acceptance.sh" "$HERE/tests/vm-install-with-diagnostics.sh" "$HERE/tests/vm-dump-diagnostics.sh" "${BASH_SOURCE[0]}")
 if command -v shellcheck >/dev/null 2>&1; then
   # -S warning: this package leaves a handful of PRE-EXISTING info/style
   # findings untouched (SC2015 "A && B || C", SC2181 "check $? directly") --

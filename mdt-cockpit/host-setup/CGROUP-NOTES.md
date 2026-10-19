@@ -130,6 +130,19 @@ can never disagree. `0` is refused everywhere (in `io.max` it halts IO).
 `dev-gates.slice`/`dev-buildkitd.slice` get `DEV_SUBSLICE_IOPS_PCT`% of the
 *effective* `dev.slice` IOPS in every state.
 
+**Failure handling (review round 1).** An *invalid* tier pin is never treated as
+"unset": that property is omitted from `set-property` (the last good value or the
+fallback stays), the run logs `ERROR` and exits non-zero, whether it is the tier's
+only pin or one of several. With *no block device discovered* the reconcile writes
+nothing to `dev.slice` (a transient `findmnt` failure must not uncap a host): if
+`dev.slice` carries limits it logs `ERROR` and fails, otherwise there is nothing to
+cap. A node with *several backing devices* (md RAID, an LV spanning PVs) cannot be
+applied or verified against one `MAJ:MIN`: one `ERROR` per run names the members and
+the unit-file statics stay the only cap (capping every member was rejected: systemd's
+mapping for a multi-device node is not verified here). `UNCAPPED SWAP` is logged once
+per state change and not while `dev.slice` is inactive. The memory min/low audit runs
+as `ExecStopPost=`, so a failing reconcile no longer skips it.
+
 **A baseline can be a cache reading, not a disk (D5).** The measured baseline
 on the incident host was 4.3 GB/s read, 2 GB/s write, 94k IOPS, from a virtio
 disk (`write back` cache, `rotational=1`) that saturated at ~20 MB/s with
@@ -139,7 +152,14 @@ writes, and a 120 s mean hides the steady state. So a percentage of that
 baseline never bound. Schema 3 of the results records the method
 (`MEASURE_DETAIL`, `PLAUSIBILITY`) and the reconcile refuses an implausible
 baseline: a device that declares itself rotational but measures above 1 GiB/s
-or 20,000 IOPS is reading a cache. This is deliberately narrow: it cannot
+sequential or 20,000 random 4 KiB IOPS is reading a cache (the "sequential 4 KiB
+IOPS" run has merging disabled and is never judged). One shared definition,
+`tools/iocost_plausibility.py`, serves both `mdt-io-baseline.py` and debian-install-v2's
+`iocost-calibrate.sh`. virtio-blk reports `rotational=1` by default, so a genuinely
+fast virtio disk is refused too (fail closed: the cost is a pin); the operator who
+knows better sets `IO_BASELINE_ROTATIONAL_FLAG=ignore` (a heuristic that guesses
+"virtual" misclassifies in both directions, an explicit opt-in does not). This is
+deliberately narrow: it cannot
 prove a number right (a non-rotational device is not bounded), so on a virtual
 disk **pin the four `DEV_IO_*_MAX` values from a sustained measurement** (see
 CONSUMERS.md). Old schema-2 results and results from a previous kernel are
@@ -154,13 +174,13 @@ operator 2026-10-19).** Per-tier absolute keys `DEV_<TIER>_IO_{RBPS,WBPS,RIOPS,W
 bandwidth and IOPS caps; for the gate and BuildKit slices the IOPS values combine
 with the `DEV_SUBSLICE_IOPS_PCT` sub-ceiling as min(sub-ceiling, absolute). A gate
 that swaps is throttled by its own tight IO cap, because swap-out IO is charged to
-the page owner's cgroup, so it cannot thrash the shared disk (illustration on the
+the page owner's cgroup (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`), so it cannot thrash the shared disk (illustration on the
 incident host: dev.slice 80M/40M/800/600, `DEV_GATES_IO_RBPS_MAX`/`DEV_GATES_IO_WBPS_MAX`/
 `DEV_GATES_IO_RIOPS_MAX`/`DEV_GATES_IO_WIOPS_MAX` 40M/20M/300/200).
 Caveat: a throttled gate stalls and runs slowly; classify that as an
 infrastructure slowdown, not a product failure.
 
-**Swap IO is charged to the page's memcg, so the disk cap covers it, if the
+**Swap IO is charged to the page's memcg (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`), so the disk cap covers it, if the
 swap disk has an entry (D6).** Both swap partitions on the incident host sat on
 `vda`; a gate that outgrew its memory thrashed them at ~18 MB/s, ~1,700 writes/s
 and hurt the production game server. The reconcile (and `mdt-host-check.sh`)

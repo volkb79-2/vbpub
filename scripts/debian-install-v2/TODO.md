@@ -7,8 +7,9 @@ runs `fio --direct=1 ... --time_based` and reports the mean. O_DIRECT does not d
 write-back cache: one virtio host measured 4.3 GB/s read / 2 GB/s write / 94k IOPS from a disk that
 saturated at ~20 MB/s with 35-60 ms write latency, so the numbers (and any io.cost model or io.max cap
 derived from them) are cache readings. Shipped now (both consumers, mdt-cockpit `mdt-io-baseline.py` and
-`tools/iocost-calibrate.sh`): a plausibility REFUSAL for a rotational-flagged device above 1 GiB/s or
-20,000 4-KiB IOPS. NOT done (too large, touches the vendored patch series and the sha256): redesign the
+`tools/iocost-calibrate.sh`): a plausibility REFUSAL for a rotational-flagged device above 1 GiB/s sequential or
+20,000 random 4-KiB IOPS (one shared definition, `tools/iocost_plausibility.py`; override
+`IO_BASELINE_ROTATIONAL_FLAG=ignore` for a fast virtio disk). NOT done (too large, touches the vendored patch series and the sha256): redesign the
 generator to use `--fsync`/`--end_fsync` for writes, a working set larger than the cache the host can
 see, and a steady-state tail measurement (ramp then measure only the last N seconds), recorded in the
 output. Also open: `Installer._run_io_benchmark()` persists the generator's numbers without the

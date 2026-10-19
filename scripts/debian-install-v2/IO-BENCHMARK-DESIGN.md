@@ -207,6 +207,6 @@ highest-bug-density area of this whole project.
 The generator measures with `fio --direct=1`, which does not defeat a hypervisor write-back cache; a
 virtio host measured 4.3 GB/s from a disk that saturated at ~20 MB/s. `tools/iocost-calibrate.sh` now
 REFUSES to write `iocost-model.env` when the device is flagged rotational and a result exceeds 1 GiB/s
-(`rbps`/`wbps`) or 20,000 IOPS (the four IOPS values). The installer's `_run_io_benchmark()` still persists
+(`rbps`/`wbps`) or 20,000 random 4 KiB IOPS (`rrandiops`/`wrandiops`; the sequential 4 KiB figures are never judged). The rule is `tools/iocost_plausibility.py`, shared with mdt-cockpit's `mdt-io-baseline.py`; `IO_BASELINE_ROTATIONAL_FLAG=ignore` overrides it for a fast virtio disk. The installer's `_run_io_benchmark()` still persists
 unchecked advisory numbers. The generator redesign (fsync, larger working set, steady-state tail) is in
 `TODO.md`; installed hosts that wrote an io.cost model from the old generator should treat it as suspect.

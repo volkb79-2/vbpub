@@ -52,6 +52,8 @@ run_with_timeout 5m "$HARNESS" copy "$RUN" /source/scripts/debian-install-v2/ "$
 run_with_timeout 25m "$HARNESS" ssh "$RUN" -- \
     "set -eu
      cd '$GUEST_ROOT'
+     # leave evidence in the lane log BEFORE the host-side EXIT trap destroys the guest
+     trap 'rc=\$?; if [ \"\$rc\" -ne 0 ]; then sudo bash host-setup/tests/vm-dump-diagnostics.sh || true; fi' EXIT
      test \"\$(ps -p 1 -o comm=)\" = systemd
      test \"\$(stat -fc %T /sys/fs/cgroup)\" = cgroup2fs
      if systemd-detect-virt --container >/dev/null 2>&1; then
@@ -89,7 +91,7 @@ dst.write_text(''.join(out))
 PY
      sudo install -D -m 0644 /tmp/mdt-host-setup.env /etc/mdt/host-setup.env
      sudo systemctl enable --now docker
-     sudo bash host-setup/install.sh
+     sudo bash host-setup/tests/vm-install-with-diagnostics.sh
      sudo /usr/local/sbin/mdt-host-check.sh
      for unit in dev.slice dev-gates.slice dev-buildkitd.slice; do
          state=\"\$(sudo systemctl show \"\$unit\" -p LoadState --value)\"

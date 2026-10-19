@@ -295,6 +295,6 @@ redesign, pinned `DEV_IO_*_MAX` are the recommended source on a virtual disk.
 
 **CLOSED 2026-10-19 (decided by the operator, amendment A1).** Swap stays ample (the 80% cascade is kept).
 The protection is a tight IO cap on the gate tier (`DEV_GATES_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX`, and the
-same four keys per tier): swap-out IO is charged to the page owner's cgroup. A throttled gate runs
+same four keys per tier): swap-out IO is charged to the page owner's cgroup (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`). A throttled gate runs
 slowly, an infrastructure-classified slowdown. `DEV_SWAP_MAX` / `DEV_GATES_MEMORY_SWAP_MAX` stay
 available but are not the protection.

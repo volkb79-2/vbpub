@@ -90,28 +90,23 @@ DEVNO="${RESULT_LINE%% *}"
 
 # PLAUSIBILITY (MDT-016 / D-HS-01-2): the generator runs fio --direct=1, which
 # bypasses only the GUEST page cache; a hypervisor write-back cache still
-# absorbs the writes and a mean over the run hides the steady state.  One host
-# measured 4.3 GB/s / 94k IOPS from a virtio disk that saturated at ~20 MB/s.
-# A device that declares itself rotational (queue/rotational=1, the default for
-# virtio) but measures above 1 GiB/s or 20,000 4-KiB IOPS is reading a cache:
-# refuse to write an io.cost model from it.  This is deliberately narrow (it
-# cannot prove a non-rotational number right); the generator redesign
-# (--fsync, a working set beyond the cache, a steady-state tail) is in TODO.md.
+# absorbs the writes.  The rule lives in ONE place, tools/iocost_plausibility.py,
+# shared with mdt-cockpit's mdt-io-baseline.py (bandwidth on the sequential
+# numbers, IOPS on random 4 KiB only, ceilings for rotational devices, explicit
+# IO_BASELINE_ROTATIONAL_FLAG=ignore override for a fast virtio disk).  A refusal
+# writes no model.  The generator redesign is in TODO.md.
 SYSFS_ROOT="${IOCOST_SYSFS_ROOT:-/sys}"
 ROTATIONAL=$(cat "$SYSFS_ROOT/dev/block/$DEVNO/queue/rotational" 2>/dev/null || echo "")
-if [ "$ROTATIONAL" = 1 ]; then
-  for pair in ${RESULT_LINE#* }; do
-    key="${pair%%=*}"; val="${pair#*=}"
-    case "$key" in
-      rbps|wbps) limit=1073741824 ;;
-      *) limit=20000 ;;
-    esac
-    if [ "$val" -gt "$limit" ] 2>/dev/null; then
-      echo "iocost-calibrate: REFUSED: $key=$val exceeds $limit on a rotational device ($DEVNO): the measurement read a cache (hypervisor write-back), not the disk. No model written; pin caps from a sustained measurement instead." >&2
-      exit 1
-    fi
-  done
+pairs=" ${RESULT_LINE#* } "
+get() { local v="${pairs#* $1=}"; echo "${v%% *}"; }
+if ! python3 "$HERE/iocost_plausibility.py" --rotational "${ROTATIONAL:-unknown}" \
+     --rbps "$(get rbps)" --wbps "$(get wbps)" \
+     --rrandiops "$(get rrandiops)" --wrandiops "$(get wrandiops)" 2>"$OUT_DIR/.plausibility.err"; then
+  echo "iocost-calibrate: REFUSED ($DEVNO): $(cat "$OUT_DIR/.plausibility.err"). No model written." >&2
+  rm -f "$OUT_DIR/.plausibility.err"
+  exit 1
 fi
+rm -f "$OUT_DIR/.plausibility.err"
 {
   echo "MEASURED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "DEVNO=$DEVNO"

@@ -52,19 +52,12 @@ SCHEMA_VERSION = "3"
 MEASURE_DETAIL = (
     "fio direct=1 libaio via iocost_coef_gen; mean over DURATION_SEC; "
     "no fsync and no steady-state tail (hypervisor caches are NOT defeated); "
-    "accepted only if plausibility-class-ceiling-v1 passes"
+    "accepted only if plausibility-class-ceiling-v2 passes"
 )
-PLAUSIBILITY = "class-ceiling-v1"
-# Plausibility ceilings for a device that declares itself rotational.  Linux
-# sets queue/rotational=1 for every virtio disk that does not say otherwise, so
-# the flag alone does not prove spinning media, but no spindle (or small array)
-# sustains more than ~1 GiB/s sequential or ~20k 4-KiB random IOPS: a
-# rotational device measuring above either is reading a cache (observed:
-# 4.3 GB/s and 94k IOPS from a disk that saturated at ~20 MB/s).  Rotational
-# devices that really are faster are refused here and the operator pins the
-# caps explicitly (DEV_IO_*_MAX) -- a refusal costs a pin, never an outage.
-ROTATIONAL_MAX_BPS = 1024 ** 3
-ROTATIONAL_MAX_IOPS = 20000
+PLAUSIBILITY = "class-ceiling-v2"
+# The plausibility rule is ONE shared definition (tools/iocost_plausibility.py,
+# installed beside the generator in /usr/local/lib/mdt) used by this script and by
+# debian-install-v2's iocost-calibrate.sh, so the two cannot drift.
 MATRIX_KEYS = ("RBPS", "RSEQIOPS", "RRANDIOPS", "WBPS", "WSEQIOPS", "WRANDIOPS")
 SAFE_HOST_PATH_RE = re.compile(
     r"/(?:[A-Za-z0-9._+@%=:,-]+(?:/[A-Za-z0-9._+@%=:,-]+)*)?"
@@ -260,34 +253,40 @@ def device_identity(testfile: Path, io_dev_path: Path | None = None) -> dict[str
     return facts
 
 
+def _shared_plausibility():
+    import importlib.util
+    candidates = (
+        Path(os.environ.get("MDT_LIB_DIR") or "/usr/local/lib/mdt"),
+        Path(__file__).resolve().parents[3] / "scripts/debian-install-v2/tools",
+    )
+    for directory in candidates:
+        path = directory / "iocost_plausibility.py"
+        if path.is_file():
+            spec = importlib.util.spec_from_file_location("iocost_plausibility", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            return module
+    return None
+
+
 def plausibility_problem(values: dict[str, str]) -> str | None:
     """Why these numbers cannot be a real sustained device ceiling, or None.
 
-    Deliberately narrow: it only refuses what is demonstrably cache-inflated.
-    It cannot prove a number is right (a non-rotational device is not bounded
-    here), so the operator-pinned DEV_IO_*_MAX caps remain the recommended
-    source for a virtualised disk.
-    """
-    if values.get("DEVICE_ROTATIONAL") != "1":
-        return None
+    A missing shared module is a refusal, never a pass: numbers that cannot be
+    checked are not verified numbers."""
+    shared = _shared_plausibility()
+    if shared is None:
+        return "iocost_plausibility.py is not installed, so the baseline's plausibility cannot be verified"
     try:
-        for key in ("RBW_MAX_BPS", "WBW_MAX_BPS"):
-            if int(values[key]) > ROTATIONAL_MAX_BPS:
-                return (
-                    f"implausible baseline: {key}={values[key]} B/s exceeds {ROTATIONAL_MAX_BPS} B/s on a "
-                    "rotational device (the measurement read a cache); pin DEV_IO_*_MAX caps from a sustained "
-                    "measurement instead"
-                )
-        for key in ("RIOPS_MAX", "WIOPS_MAX"):
-            if int(values[key]) > ROTATIONAL_MAX_IOPS:
-                return (
-                    f"implausible baseline: {key}={values[key]} exceeds {ROTATIONAL_MAX_IOPS} IOPS on a "
-                    "rotational device (the measurement read a cache); pin DEV_IO_*_MAX caps from a sustained "
-                    "measurement instead"
-                )
+        return shared.plausibility_problem(
+            rbps=int(values["RBW_MAX_BPS"]), wbps=int(values["WBW_MAX_BPS"]),
+            rrandiops=int(values["RRANDIOPS"]), wrandiops=int(values["WRANDIOPS"]),
+            rotational=values.get("DEVICE_ROTATIONAL", ""),
+            names={"rbps": "RBW_MAX_BPS", "wbps": "WBW_MAX_BPS",
+                   "rrandiops": "RRANDIOPS", "wrandiops": "WRANDIOPS"},
+        )
     except (KeyError, ValueError):
         return None
-    return None
 
 
 def results_problem(path: Path) -> str | None:

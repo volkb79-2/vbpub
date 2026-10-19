@@ -112,6 +112,7 @@ _mdt_load_baseline() {
     # script).  Its absence is NOT a pass: a baseline that cannot be checked
     # is not a verified baseline (absence-for-emptiness).
     local _baseline_py="${MDT_IO_BASELINE_PY:-/usr/local/sbin/mdt-io-baseline.py}" _check_msg
+    export IO_BASELINE_ROTATIONAL_FLAG="${IO_BASELINE_ROTATIONAL_FLAG:-}"
     if [ ! -x "$_baseline_py" ]; then
       _invalid="$_baseline_py is not installed, so device identity and plausibility cannot be verified"
     elif ! _check_msg=$("$_baseline_py" --check-results \
@@ -289,11 +290,15 @@ _mdt_classify_and_apply() {
 _mdt_size_to_bytes() {
   local v="$1" num mult=1
   [[ "$v" =~ ^([0-9]+)([KMGT]?)$ ]] || return 1
+  # bound BEFORE any arithmetic: bash wraps silently (18446744073709551621 -> 5,
+  # an effective halt).  At most 18 digits, and number * multiplier <= 2^62.
+  [ "${#BASH_REMATCH[1]}" -le 18 ] || return 1
   num=$((10#${BASH_REMATCH[1]}))
   case "${BASH_REMATCH[2]}" in
     K) mult=1024 ;; M) mult=$((1024**2)) ;; G) mult=$((1024**3)) ;; T) mult=$((1024**4)) ;;
   esac
   [ "$num" -ge 1 ] || return 1
+  [ "$num" -le $((4611686018427387904 / mult)) ] || return 1
   printf '%s\n' $((num * mult))
 }
 
@@ -382,6 +387,10 @@ _mdt_dev_majmin() {
         majmin=$(cat "${slaves[0]}/dev" 2>/dev/null) || return 1
         continue
       elif [ "$n" -gt 1 ]; then
+        # several backing devices (md RAID, an LV spanning PVs): systemd caps ONE
+        # disk, so a cap here cannot be verified against one MAJ:MIN.  Refuse
+        # with one clear reason rather than guess a member.
+        echo "$path is backed by $n backing devices ($(printf '%s ' "${slaves[@]##*/}" | sed 's/ $//')); IO caps cannot be applied or verified on a multi-device node, so the unit-file static values stay the only cap" >&2
         return 1
       fi
     fi
@@ -426,6 +435,11 @@ _mdt_verify_io_max() {
     return 2
   fi
   if ! got=$(_mdt_io_max_fields "$dir" "$majmin"); then
+    if { [ -z "$want_rb" ] || [ "$want_rb" = max ]; } && { [ -z "$want_wb" ] || [ "$want_wb" = max ]; } \
+       && { [ -z "$want_ri" ] || [ "$want_ri" = max ]; } && { [ -z "$want_wi" ] || [ "$want_wi" = max ]; }; then
+      log "$label: verified kernel io.max has no limit for $majmin (cleared values read as unlimited)"
+      return 0
+    fi
     log "ERROR: $label: kernel io.max has NO entry for $majmin (content: '$(tr '\n' ';' < "$dir/io.max" 2>/dev/null)') — the intended cap is NOT in effect"
     return 1
   fi
@@ -454,9 +468,10 @@ _mdt_uncapped_swap_devices() {
     devpath="$dev"
     if [ "$type" = file ]; then
       devpath=$(findmnt -no SOURCE --target "$dev" 2>/dev/null || true)
+      devpath=${devpath%%\[*}   # btrfs: /dev/vda2[/@swap] -> /dev/vda2
       case "$devpath" in /dev/?*) ;; *) printf '%s unresolved\n' "$dev"; continue ;; esac
     fi
-    if ! mm=$(_mdt_dev_majmin "$devpath"); then
+    if ! mm=$(_mdt_dev_majmin "$devpath" 2>/dev/null); then
       printf '%s unresolved\n' "$dev"; continue
     fi
     grep -qx "$mm" <<<"$capped" || printf '%s %s\n' "$dev" "$mm"
@@ -484,4 +499,34 @@ _mdt_tier_pin() {
     return 1
   fi
   printf '%s\n' "$value"
+}
+
+# Keys that are RUNTIME-ONLY and optional: an absent line means "not set" (a
+# policy default), never "silently unbounded".  The 20 per-tier/dev.slice IO pins
+# and the rotational-flag override qualify.  Render-time keys do not: an absent
+# line drops a rendered directive and leaves a slice unbounded, so install.sh
+# keeps refusing for those.
+MDT_RUNTIME_OPTIONAL_RE='^(DEV_IO_(R|W)(BPS|IOPS)_MAX|DEV_(INTERACTIVE|BACKGROUND|GATES|BUILDKITD)_IO_(R|W)(BPS|IOPS)_MAX|IO_BASELINE_ROTATIONAL_FLAG)$'
+
+# _mdt_missing_declared_keys <config> <example> <required|optional>: prints the
+# keys the example declares that the config has no line for, restricted to the
+# render-time ones (required) or the runtime-optional ones (optional).
+_mdt_missing_declared_keys() {
+  local conf="$1" example="$2" mode="$3" key
+  while IFS= read -r key; do
+    grep -qE "^${key}=" "$conf" 2>/dev/null && continue
+    if [[ "$key" =~ $MDT_RUNTIME_OPTIONAL_RE ]]; then
+      [ "$mode" = optional ] && echo "$key"
+    else
+      [ "$mode" = required ] && echo "$key"
+    fi
+  done < <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$example" | sed 's/=$//')
+  return 0
+}
+
+# _mdt_io_pin_notice: one loud NOTICE when no DEV_IO_*_MAX pin is set, naming the
+# effective dev.slice cap source (call after _mdt_resolve_static_io).
+_mdt_io_pin_notice() {
+  [ -z "${DEV_IO_RBPS_MAX:-}${DEV_IO_WBPS_MAX:-}${DEV_IO_RIOPS_MAX:-}${DEV_IO_WIOPS_MAX:-}" ] || return 0
+  echo "NOTICE: no DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX pin is set. Effective dev.slice cap source: the static fallback DEV_STATIC_* = ${MDT_STATIC_RBPS}/${MDT_STATIC_WBPS} bytes/s r/w, ${MDT_STATIC_RIOPS}/${MDT_STATIC_WIOPS} IOPS r/w (lowered only by a current, plausible baseline). On a virtual disk pin the caps from a sustained measurement (docs/CONSUMERS.md) or run install.sh --wizard."
 }

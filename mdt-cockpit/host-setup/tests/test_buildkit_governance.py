@@ -804,28 +804,19 @@ esac
                 self.assertEqual(result.returncode, 0, result.stdout)
                 self.assertIn("no host block device was discovered", result.stdout)
                 calls = systemctl_log.read_text()
-                self.assertIn(
-                    "set-property --runtime dev.slice IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax=",
-                    calls,
-                )
-                self.assertIn(
-                    "set-property --runtime dev-gates.slice IOReadIOPSMax= IOWriteIOPSMax=",
-                    calls,
-                )
-                self.assertIn(
-                    "set-property --runtime dev-buildkitd.slice IOReadIOPSMax= IOWriteIOPSMax=",
-                    calls,
-                )
+                # H-04: with no device discovered the reconcile must NOT touch the
+                # dev tier's IO properties at all (an empty assignment wipes the unit-file
+                # cap; a transient findmnt failure must not uncap the host).
+                for unit in ("dev.slice", "dev-gates.slice", "dev-buildkitd.slice"):
+                    self.assertNotIn(f"set-property --runtime {unit} ", calls)
                 self.assertNotIn("CPUWeight=", calls)
                 self.assertNotIn("MemoryMax=", calls)
                 remaining = state.read_text()
                 self.assertIn("dev.slice|CPUWeight|900", remaining)
                 self.assertIn("dev.slice|MemoryMax|123456", remaining)
                 self.assertIn("dev-gates.slice|MemoryMax|234567", remaining)
-                self.assertNotIn("IOReadBandwidthMax", remaining)
-                self.assertNotIn("IOWriteBandwidthMax", remaining)
-                self.assertNotIn("IOReadIOPSMax", remaining)
-                self.assertNotIn("IOWriteIOPSMax", remaining)
+                self.assertIn("dev.slice|IOReadBandwidthMax|stale-read-bandwidth", remaining)
+                self.assertIn("dev-gates.slice|IOReadIOPSMax|stale-gates", remaining)
                 self.assertNotIn("docker-stale.scope|IOReadBandwidthMax", remaining)
                 self.assertNotIn("docker-stale.scope|IOWriteBandwidthMax", remaining)
                 self.assertNotIn("docker-stale.scope|IOReadIOPSMax", remaining)

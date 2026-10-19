@@ -372,10 +372,20 @@ fi
 # values: several keys are intentionally shipped empty in the example
 # itself (DEV_MEMORY_MIN_GUARANTEED_CEILING, DEV_BUILDKITD_CPU_QUOTA,
 # IO_DEV_PATH) -- "declared, empty" is a deliberate choice, not a finding.
-MISSING_KEYS=""
-while IFS= read -r key; do
-  grep -qE "^${key}=" "$CONFIG_PATH" 2>/dev/null || MISSING_KEYS="$MISSING_KEYS $key"
-done < <(grep -oE '^[A-Z_][A-Z0-9_]*=' "$HERE/host-setup.env.example" | sed 's/=$//')
+#
+# RUNTIME-OPTIONAL keys (the DEV_IO_*_MAX pins, the per-tier IO pins, and
+# IO_BASELINE_ROTATIONAL_FLAG) are exempt: for them an absent line means "not
+# set" (a policy default), not "silently unbounded", so a plain install.sh works
+# on an existing env file and prints one NOTICE instead of refusing.  The list is
+# MDT_RUNTIME_OPTIONAL_RE in scripts/mdt-container-io-caps.lib.sh.
+log(){ echo "$*" >&2; }
+# shellcheck source=./scripts/mdt-container-io-caps.lib.sh
+. "$HERE/scripts/mdt-container-io-caps.lib.sh"
+MISSING_KEYS=$(_mdt_missing_declared_keys "$CONFIG_PATH" "$HERE/host-setup.env.example" required | sed 's/^/ /' | tr -d '\n')
+MISSING_OPTIONAL=$(_mdt_missing_declared_keys "$CONFIG_PATH" "$HERE/host-setup.env.example" optional | wc -l)
+if [ "$MISSING_OPTIONAL" -gt 0 ]; then
+  echo "NOTICE: $MISSING_OPTIONAL runtime-optional key(s) are absent from $CONFIG_PATH (the DEV_IO_*_MAX pins and IO_BASELINE_ROTATIONAL_FLAG); they are treated as NOT SET. Run install.sh --wizard to review and add them." >&2
+fi
 if [ -n "$MISSING_KEYS" ]; then
   echo "ERROR: /etc/mdt/host-setup.env is missing declared keys:${MISSING_KEYS}" >&2
   echo "Add them from host-setup.env.example (or use --wizard), review the result, then re-run install.sh." >&2
@@ -465,15 +475,13 @@ fi
 # the operator-pinned DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX when set, else
 # DEV_STATIC_*.  Rendered as plain byte counts, so systemd never applies its
 # own K/M/G base to an MDT number.  An invalid value refuses the install.
-log(){ echo "$*" >&2; }
-# shellcheck source=./scripts/mdt-container-io-caps.lib.sh
-. "$HERE/scripts/mdt-container-io-caps.lib.sh"
 if ! _mdt_resolve_static_io; then
   echo "ERROR: invalid IO cap value in host-setup.env (see above); no host policy changes beyond this point were applied" >&2
   exit 2
 fi
 DEV_STATIC_RBW="$MDT_STATIC_RBPS"; DEV_STATIC_WBW="$MDT_STATIC_WBPS"
 DEV_STATIC_RIOPS="$MDT_STATIC_RIOPS"; DEV_STATIC_WIOPS="$MDT_STATIC_WIOPS"
+_mdt_io_pin_notice >&2
 
 # CPUQuota, absolute ceilings mirroring the IO one: auto-
 # detected from nproc when left unset in host-setup.env, floored at 1 core —
@@ -843,6 +851,9 @@ install -m 0755 "$HERE/scripts/mdt-io-baseline.py"     /usr/local/sbin/mdt-io-ba
 install -d -m 0755 /usr/local/lib/mdt
 install -m 0755 "$HERE/../../scripts/debian-install-v2/tools/iocost_coef_gen.py" \
   /usr/local/lib/mdt/iocost_coef_gen.py
+# the ONE plausibility definition shared with debian-install-v2's iocost-calibrate.sh
+install -m 0644 "$HERE/../../scripts/debian-install-v2/tools/iocost_plausibility.py" \
+  /usr/local/lib/mdt/iocost_plausibility.py
 install -m 0755 "$HERE/scripts/mdt-slice-memory-min-low-audit.py"     /usr/local/sbin/mdt-slice-memory-min-low-audit.py
 install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
 install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py

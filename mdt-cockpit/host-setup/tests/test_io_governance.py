@@ -142,7 +142,7 @@ class Host:
         self.set_swaps([])
         _write_exec(self.bin / "systemctl", FAKE_SYSTEMCTL.replace("__PY__", sys.executable))
         _write_exec(self.bin / "stat", FAKE_STAT.replace("__REAL_STAT__", shutil.which("stat") or "/usr/bin/stat"))
-        _write_exec(self.bin / "findmnt", "#!/usr/bin/env bash\necho /dev/fake\n")
+        _write_exec(self.bin / "findmnt", '#!/usr/bin/env bash\necho "${FAKE_FINDMNT_SOURCE:-/dev/fake}"\n')
         _write_exec(self.bin / "docker", "#!/usr/bin/env bash\nexit 1\n")
         self.unit_static = {"dev.slice": {
             "IOReadBandwidthMax": ["/dev/null", str(150 * MIB)],
@@ -152,6 +152,7 @@ class Host:
         }}
         self.baseline_py = base / "baseline-check.sh"
         _write_exec(self.baseline_py, "#!/usr/bin/env bash\nexit 0\n")
+        (base / "state").mkdir(exist_ok=True)
         self.config_lines = ["IO_DEV_PATH=/dev/null", "CGROUP2_FLAGS=warn",
                              f"IO_BASELINE_ENV={base / 'missing-baseline'}"]
         self.extra_env: dict[str, str] = {}
@@ -186,6 +187,7 @@ class Host:
             "MDT_PROC_ROOT": str(self.proc), "MDT_IO_BASELINE_PY": str(self.baseline_py),
             "PATH": f"{self.bin}:/usr/bin:/bin", "FAKE_STATE": str(self.state), "FAKE_LOG": str(self.log),
             "FAKE_UNIT_STATIC": json.dumps(self.unit_static),
+            "MDT_STATE_DIR": str(self.base / "state"),
         })
         env.update(self.extra_env)
         env.update(extra)
@@ -242,9 +244,11 @@ class ReconcileIoGovernanceTests(unittest.TestCase):
         self.host.extra_env["PATH"] = f"{self.host.bin}:/usr/bin:/bin"
         # findmnt must not discover a device either
         _write_exec(self.host.bin / "findmnt", "#!/usr/bin/env bash\necho overlay\n")
+        self.host.unit_static = {}  # nothing is capped on this host either
         result = self.host.run()
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("no host block device was discovered", result.stdout)
+        self.assertEqual([c for c in self.host.calls() if c.startswith("set-property")], [], result.stdout)
 
     # D3 -------------------------------------------------------------------
     def test_a_match_is_verified_and_only_then_called_authoritative(self) -> None:
@@ -440,23 +444,23 @@ class BaselinePlausibilityTests(unittest.TestCase):
         cls.mod = _load(SCRIPTS / "mdt-io-baseline.py", "mdt_io_baseline_gov")
 
     def _values(self, **over: str) -> dict[str, str]:
-        v = {"RBW_MAX_BPS": "20000000", "WBW_MAX_BPS": "20000000", "RIOPS_MAX": "1500", "WIOPS_MAX": "1500",
-             "DEVICE_ROTATIONAL": "1"}
+        v = {"RBW_MAX_BPS": "20000000", "WBW_MAX_BPS": "20000000", "RRANDIOPS": "1500", "WRANDIOPS": "1500",
+             "RSEQIOPS": "1500", "WSEQIOPS": "1500", "DEVICE_ROTATIONAL": "1"}
         v.update(over)
         return v
 
     def test_the_cache_inflated_numbers_measured_on_the_live_host_are_implausible(self) -> None:
         problem = self.mod.plausibility_problem(self._values(
-            RBW_MAX_BPS="4287506096", WBW_MAX_BPS="2001630742", RIOPS_MAX="94246", WIOPS_MAX="67748"))
+            RBW_MAX_BPS="4287506096", WBW_MAX_BPS="2001630742", RRANDIOPS="94246", WRANDIOPS="67748"))
         self.assertIn("implausible", problem or "")
 
     def test_a_realistic_rotational_baseline_and_a_fast_non_rotational_one_pass(self) -> None:
         self.assertIsNone(self.mod.plausibility_problem(self._values()))
         self.assertIsNone(self.mod.plausibility_problem(self._values(
-            DEVICE_ROTATIONAL="0", RBW_MAX_BPS="4287506096", RIOPS_MAX="94246")))
+            DEVICE_ROTATIONAL="0", RBW_MAX_BPS="4287506096", RRANDIOPS="94246")))
 
     def test_each_value_is_checked_on_its_own(self) -> None:
-        for key in ("RBW_MAX_BPS", "WBW_MAX_BPS", "RIOPS_MAX", "WIOPS_MAX"):
+        for key in ("RBW_MAX_BPS", "WBW_MAX_BPS", "RRANDIOPS", "WRANDIOPS"):
             with self.subTest(key=key):
                 self.assertIn(key, self.mod.plausibility_problem(self._values(**{key: "99999999999"})) or "")
 
@@ -539,10 +543,22 @@ class ListingToolTests(unittest.TestCase):
             self.assertIn("DropInPaths=/run/systemd/system.control/dev.slice.d/", r.stdout)
             self.assertIn("-- dev-gates.slice", r.stdout)
 
+    SIZE_TEST = re.compile(r"(\[\[?|\btest)\s+(!\s+)?-s\b")
+
+    def test_the_size_test_pattern_catches_every_spelling(self) -> None:
+        for text in ('[ -s f ]', '[[ -s f ]]', 'test -s f', '[ ! -s f ]', 'if [  -s "$x" ]', '[[ ! -s f ]]'):
+            self.assertTrue(self.SIZE_TEST.search(text), text)
+        self.assertFalse(self.SIZE_TEST.search('echo "-s" "$x"'))
+
     def test_no_size_test_is_ever_used_on_a_cgroup_control_file(self) -> None:
-        for script in (LISTER, RECONCILE, LIB, SCRIPTS / "check.sh"):
+        # every MDT shell script that can touch cgroup files; the VM acceptance script uses it
+        # ONCE on purpose, to prove the size-0 premise on real cgroupfs
+        scripts = sorted(SCRIPTS.glob("*.sh")) + [ROOT / "install.sh"] + sorted(
+            p for p in (ROOT / "tests").glob("*.sh") if p.name != "vm-governance-acceptance.sh")
+        self.assertIn(LISTER, scripts)
+        for script in scripts:
             with self.subTest(script=script.name):
-                self.assertIsNone(re.search(r"\[ +-s ", script.read_text()), script.name)
+                self.assertIsNone(self.SIZE_TEST.search(script.read_text()), script.name)
 
     def test_unknown_cgroup_is_an_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -556,13 +572,14 @@ class IocostCalibratePlausibilityTests(unittest.TestCase):
 
     CALIBRATE = ROOT.parents[1] / "scripts" / "debian-install-v2" / "tools" / "iocost-calibrate.sh"
 
-    def _run(self, rotational: str, line: str) -> tuple[subprocess.CompletedProcess, Path]:
+    def _run(self, rotational: str, line: str, **extra_env: str) -> tuple[subprocess.CompletedProcess, Path]:
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         tools = tmp / "tools"
         tools.mkdir()
         shutil.copy(self.CALIBRATE, tools / "iocost-calibrate.sh")
         (tools / "iocost_coef_gen.py").write_text(f"print({line!r})\n")
+        shutil.copy(self.CALIBRATE.parent / "iocost_plausibility.py", tools / "iocost_plausibility.py")
         bin_dir = tmp / "bin"
         bin_dir.mkdir()
         for name in ("findmnt", "pv", "dd", "fio"):
@@ -572,7 +589,7 @@ class IocostCalibratePlausibilityTests(unittest.TestCase):
         (queue / "rotational").write_text(rotational + "\n")
         out_dir = tmp / "out"
         env = {**os.environ, "PATH": f"{bin_dir}:/usr/bin:/bin", "IOCOST_SYSFS_ROOT": str(tmp / "sys"),
-               "IOCOST_RESULT_DIR": str(out_dir)}
+               "IOCOST_RESULT_DIR": str(out_dir), **extra_env}
         result = subprocess.run(["bash", str(tools / "iocost-calibrate.sh")], input="yes\n", env=env, text=True,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=30)
         return result, out_dir / "iocost-model.env"
@@ -585,6 +602,37 @@ class IocostCalibratePlausibilityTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("REFUSED", result.stdout)
         self.assertFalse(model.exists())
+
+    HDD_RAID = "254:0 rbps=800000000 rseqiops=50000 rrandiops=1500 wbps=700000000 wseqiops=45000 wrandiops=1200"
+
+    def test_sequential_4k_iops_of_a_real_disk_never_refuse(self) -> None:
+        """4 KiB sequential IO with merging disabled legitimately reports 25-50k 'IOPS' on spinning media."""
+        result, model = self._run("1", self.HDD_RAID)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue(model.exists())
+
+    def test_the_operator_can_declare_the_rotational_flag_wrong_for_a_fast_virtio_disk(self) -> None:
+        result, model = self._run("1", self.INFLATED, IO_BASELINE_ROTATIONAL_FLAG="ignore")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertTrue(model.exists())
+
+    def test_the_refusal_names_the_virtio_default_and_the_override(self) -> None:
+        result, _ = self._run("1", self.INFLATED)
+        self.assertIn("virtio", result.stdout)
+        self.assertIn("IO_BASELINE_ROTATIONAL_FLAG", result.stdout)
+
+    def test_both_consumers_use_the_one_shared_definition(self) -> None:
+        tools = self.CALIBRATE.parent
+        self.assertIn("iocost_plausibility", self.CALIBRATE.read_text())
+        self.assertIn("iocost_plausibility", (SCRIPTS / "mdt-io-baseline.py").read_text())
+        shared = _load(tools / "iocost_plausibility.py", "iocost_plausibility_gov")
+        base = _load(SCRIPTS / "mdt-io-baseline.py", "mdt_io_baseline_shared")
+        values = {"RBW_MAX_BPS": "4287506096", "WBW_MAX_BPS": "2001630742", "RRANDIOPS": "94246",
+                  "WRANDIOPS": "67748", "DEVICE_ROTATIONAL": "1"}
+        want = shared.plausibility_problem(rbps=4287506096, wbps=2001630742, rrandiops=94246, wrandiops=67748,
+                                           rotational="1")
+        self.assertEqual(base.plausibility_problem(values), want)
+        self.assertIsNotNone(want)
 
     def test_realistic_numbers_and_non_rotational_devices_are_written(self) -> None:
         for rotational, line in (("1", self.GOOD), ("0", self.INFLATED)):

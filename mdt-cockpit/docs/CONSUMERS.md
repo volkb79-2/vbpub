@@ -206,7 +206,7 @@ sustained measurement instead of trusting a percentage of the baseline. The four
 ```bash
 # 1. measure sustained write for minutes, use the LAST minute only
 sudo iostat -x 5            # while the disk is saturated; or fio --direct=1 --fsync=1 --time_based
-# 2. pin: edit the four (empty) lines in /etc/mdt/host-setup.env
+# 2. pin: add or edit these lines in /etc/mdt/host-setup.env
 #    positive integers or K/M/G/T suffixes; 0 is refused
 #      DEV_IO_RBPS_MAX=80M
 #      DEV_IO_WBPS_MAX=40M
@@ -218,6 +218,18 @@ sudo systemctl start mdt-dev-governance-reconcile.service
 systemctl is-failed mdt-dev-governance-reconcile.service     # expect: active (not "failed")
 sudo mdt-cgroup-io-limits.sh dev.slice --all --systemd       # limits, EFFECTIVE, drop-in paths
 ```
+
+Upgrading an existing host: the 20 pin keys (`DEV_IO_*_MAX` and `DEV_<TIER>_IO_*_MAX`) and
+`IO_BASELINE_ROTATIONAL_FLAG` are **runtime-optional**: absent from an older
+`/etc/mdt/host-setup.env` they mean "not set", so a plain `sudo ./host-setup/install.sh`
+works and prints one NOTICE naming the effective cap source (the static fallback
+`DEV_STATIC_*`, lowered only by a current, plausible baseline), plus a NOTICE counting the
+absent runtime-optional keys. Render-time keys still refuse when absent. Run
+`install.sh --wizard` to review and add them.
+
+virtio-blk reports `rotational=1` by default, so a genuinely fast virtio disk can have
+its baseline refused as implausible; set `IO_BASELINE_ROTATIONAL_FLAG=ignore` only if you
+know the disk is fast, and pin the caps from a sustained measurement either way.
 
 The values above are an illustration (one 16 GiB virtio host), not a default.
 Expected after a good run: the journal line
@@ -233,7 +245,7 @@ entry (`mdt-host-check.sh` reports the same).
 Swap stays ample (80% of host swap cascades to `dev.slice` and to every child;
 that default is kept). The protection against a gate thrashing the shared disk is
 a tight IO cap on the gate tier: swap-out IO is charged to the page owner's
-cgroup, so a gate that swaps is throttled by its own cap. Runtime keys in
+cgroup (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`), so a gate that swaps is throttled by its own cap. Runtime keys in
 `host-setup.env`, picked up by the next reconcile (illustration from one host,
 not a default):
 

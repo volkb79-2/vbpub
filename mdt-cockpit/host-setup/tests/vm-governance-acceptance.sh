@@ -134,9 +134,15 @@ if grep -q "is authoritative" /tmp/reconcile-bad.out; then fail "certified despi
 rm -rf "$SHIM"
 ok "read-back failure path exits non-zero and does not certify"
 
-# 8. recovery: the real reconcile restores the intended values.
+# 8. recovery after drift. Do NOT assume set-property with an UNCHANGED value
+# re-applies to the cgroup: first set a DIFFERENT value (which must change the
+# kernel value), then the target, and read the kernel back each time.
+set_conf DEV_IO_RIOPS_MAX 700
+run_reconcile || { cat /tmp/reconcile.out; fail "reconcile with a changed value exited non-zero"; }
+expect dev.slice riops 700
+set_conf DEV_IO_RIOPS_MAX 800
 run_reconcile || { cat /tmp/reconcile.out; fail "recovery reconcile exited non-zero"; }
 expect dev.slice riops 800; expect dev.slice/dev-gates.slice wiops 200
-ok "recovery after drift"
+ok "recovery: a different value, then the target, each read back from the kernel"
 
 echo "VM GOVERNANCE ACCEPTANCE PASSED"

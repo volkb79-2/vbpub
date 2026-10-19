@@ -126,28 +126,28 @@ _mdt_load_baseline
 # we cannot name, and an empty assignment only removes stale MDT runtime
 # values.
 MDT_RC=0
-_mdt_clear_runtime_io_caps_no_device() {
-  local _clear_error _unit
-  if _clear_error=$(systemctl set-property --runtime dev.slice \
-       IOReadBandwidthMax= IOWriteBandwidthMax= IOReadIOPSMax= IOWriteIOPSMax= 2>&1); then
-    log "dev.slice: no host block device was discovered — removed MDT runtime IO values; nothing is capped on a device we cannot name"
+# No block device discovered at run time.  This reconcile runs every minute and
+# findmnt can fail transiently (or at boot ordering), so an absent device is NEVER
+# a reason to write: an empty assignment would wipe the unit-file cap too.  If
+# dev.slice carries IO limits, refuse loudly (non-zero exit); if it carries none
+# there is nothing to cap and nothing to clear.
+_mdt_no_device() {
+  local shown
+  shown=$(systemctl show dev.slice -p IOReadBandwidthMax -p IOWriteBandwidthMax \
+            -p IOReadIOPSMax -p IOWriteIOPSMax 2>/dev/null | grep -E '=.+' || true)
+  if [ -n "$shown" ]; then
+    log "ERROR: no block device was discovered but dev.slice carries IO limits ($(printf '%s' "$shown" | tr '\n' ' ')) — refusing to wipe them; the current values stay in force and this run fails until the device is discoverable (set IO_DEV_PATH in host-setup.env)"
+    MDT_RC=1
   else
-    log "WARN: dev.slice runtime IO-value removal failed ($_clear_error)"
+    log "no host block device was discovered and dev.slice carries no IO limit — nothing to cap and nothing to clear"
   fi
-  for _unit in dev-gates.slice dev-buildkitd.slice; do
-    if _clear_error=$(systemctl set-property --runtime "$_unit" IOReadIOPSMax= IOWriteIOPSMax= 2>&1); then
-      log "$_unit: no host block device was discovered — removed MDT runtime IOPS sub-ceiling"
-    else
-      log "WARN: $_unit runtime IOPS removal failed ($_clear_error)"
-    fi
-  done
 }
 
 _mdt_apply_dev_io() {
   local majmin err _rc
   _mdt_resolve_dev_io_caps || MDT_RC=1
-  if ! majmin=$(_mdt_dev_majmin "$IO_DEV_PATH"); then
-    log "ERROR: cannot resolve $IO_DEV_PATH to the whole disk systemd caps (missing node, no sysfs entry, or several backing devices) — IO governance cannot be verified"
+  if ! majmin=$(_mdt_dev_majmin "$IO_DEV_PATH" 2>&1); then
+    log "ERROR: cannot resolve $IO_DEV_PATH to the whole disk systemd caps: ${majmin:-missing node or no sysfs entry} — IO governance cannot be verified"
     MDT_RC=1
     return
   fi
@@ -178,34 +178,50 @@ _mdt_apply_dev_io() {
 # runtime value (a removed pin must not linger until reboot); it is never
 # written to dev.slice, which is the slice meant to stay capped.
 _mdt_apply_tier_io() {
-  local majmin="$1" pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub rb wb ri wi sub_ri sub_wi err _rc props
+  local majmin="$1" pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub f sub_ri sub_wi err _rc touched
+  local -A v bad
+  local -a props
   for entry in $MDT_IO_TIERS; do
     tier=${entry%%:*}; unit=${entry#*:}
     sub=0; case "$unit" in dev-gates.slice|dev-buildkitd.slice) sub=1 ;; esac
-    rb=$(_mdt_tier_pin "$tier" RBPS) || MDT_RC=1
-    wb=$(_mdt_tier_pin "$tier" WBPS) || MDT_RC=1
-    ri=$(_mdt_tier_pin "$tier" RIOPS) || MDT_RC=1
-    wi=$(_mdt_tier_pin "$tier" WIOPS) || MDT_RC=1
+    v=(); bad=()
+    for f in RBPS WBPS RIOPS WIOPS; do
+      # an INVALID pin is not "unset": it is omitted below (the last good value or
+      # the fallback stays in force), logged ERROR by _mdt_tier_pin, and fails the run
+      if ! v[$f]=$(_mdt_tier_pin "$tier" "$f"); then bad[$f]=1; v[$f]=""; MDT_RC=1; fi
+    done
     if [ "$sub" = 1 ]; then
       sub_ri=$(( DEV_RIOPS * pct / 100 )); sub_wi=$(( DEV_WIOPS * pct / 100 ))
       if [ "$sub_ri" -lt 1 ] || [ "$sub_wi" -lt 1 ]; then
         log "WARN: derived sub-slice IOPS cap <= 0 — $unit keeps only dev.slice's shared ceiling"
-        sub_ri=""; sub_wi=""
-      fi
-      if [ -n "$sub_ri" ]; then
-        { [ -z "$ri" ] || [ "$sub_ri" -lt "$ri" ]; } && ri=$sub_ri
-        { [ -z "$wi" ] || [ "$sub_wi" -lt "$wi" ]; } && wi=$sub_wi
+      else
+        { [ -z "${v[RIOPS]}" ] || [ "$sub_ri" -lt "${v[RIOPS]}" ]; } && v[RIOPS]=$sub_ri
+        { [ -z "${v[WIOPS]}" ] || [ "$sub_wi" -lt "${v[WIOPS]}" ]; } && v[WIOPS]=$sub_wi
       fi
     fi
+    touched="${v[RBPS]}${v[WBPS]}${v[RIOPS]}${v[WIOPS]}"
     # nothing configured for a tier that is not a sub-ceiling tier: leave it alone
-    [ -n "$rb$wb$ri$wi" ] || continue
+    [ -n "$touched" ] || continue
     props=()
-    if [ -n "$rb" ]; then props+=("IOReadBandwidthMax=$IO_DEV_PATH $rb"); else props+=("IOReadBandwidthMax="); fi
-    if [ -n "$wb" ]; then props+=("IOWriteBandwidthMax=$IO_DEV_PATH $wb"); else props+=("IOWriteBandwidthMax="); fi
-    if [ -n "$ri" ]; then props+=("IOReadIOPSMax=$IO_DEV_PATH $ri"); else props+=("IOReadIOPSMax="); fi
-    if [ -n "$wi" ]; then props+=("IOWriteIOPSMax=$IO_DEV_PATH $wi"); else props+=("IOWriteIOPSMax="); fi
+    for f in RBPS WBPS RIOPS WIOPS; do
+      case "$f" in
+        RBPS) key=IOReadBandwidthMax ;; WBPS) key=IOWriteBandwidthMax ;;
+        RIOPS) key=IOReadIOPSMax ;; WIOPS) key=IOWriteIOPSMax ;;
+      esac
+      if [ -n "${bad[$f]:-}" ]; then
+        continue                                  # invalid: omitted, never cleared
+      elif [ -n "${v[$f]}" ]; then
+        props+=("$key=$IO_DEV_PATH ${v[$f]}")
+      else
+        props+=("$key=")                          # unset on a touched tier slice: drop our earlier value
+        v[$f]=max                                 # ... and verify it reads unlimited
+      fi
+    done
+    [ "${#props[@]}" -gt 0 ] || continue
     if err=$(systemctl set-property --runtime "$unit" "${props[@]}" 2>&1); then
-      _mdt_verify_io_max "$unit" "$CG/dev.slice/$unit" "$majmin" "$rb" "$wb" "$ri" "$wi"; _rc=$?
+      _mdt_verify_io_max "$unit" "$CG/dev.slice/$unit" "$majmin" \
+        "$([ -n "${bad[RBPS]:-}" ] || echo "${v[RBPS]}")" "$([ -n "${bad[WBPS]:-}" ] || echo "${v[WBPS]}")" \
+        "$([ -n "${bad[RIOPS]:-}" ] || echo "${v[RIOPS]}")" "$([ -n "${bad[WIOPS]:-}" ] || echo "${v[WIOPS]}")"; _rc=$?
       [ "$_rc" = 1 ] && MDT_RC=1
     else
       log "ERROR: $unit IO cap set-property failed ($err)"
@@ -219,21 +235,31 @@ if [ -n "${IO_DEV_PATH:-}" ]; then
     || log "no current plausible baseline — dev.slice uses its pinned/static values until mdt-io-baseline.py succeeds"
   _mdt_apply_dev_io
 else
-  _mdt_clear_runtime_io_caps_no_device
+  _mdt_no_device
 fi
 
 # --- swap coverage (D6) ----------------------------------------------------------
-# Swap-out IO is charged to the page's memcg, so a dev.slice io.max on the
-# disk holding the swap bounds it; a swap disk with no entry is uncapped.
-if [ -r "${MDT_PROC_ROOT:-/proc}/swaps" ]; then
-  while read -r _swap_dev _swap_disk; do
-    [ -n "$_swap_dev" ] || continue
-    if [ "$_swap_disk" = unresolved ]; then
-      log "WARN: swap device $_swap_dev: its whole disk could not be resolved — cannot confirm swap IO is capped"
-    else
-      log "WARN: UNCAPPED SWAP: $_swap_dev lies on disk $_swap_disk, which has NO dev.slice io.max entry — a dev container that swaps can saturate that disk"
-    fi
-  done < <(_mdt_uncapped_swap_devices)
+# Swap-out IO is charged to the page owner's cgroup (kernel behaviour; per kernel
+# source, not measured here — bio_associate_blkg_from_page in mm/page_io.c), so a
+# dev.slice io.max on the disk holding the swap bounds it; a swap disk with no
+# entry is uncapped.  The warning is moot while dev.slice is inactive (no io.max
+# file) and is logged ONCE per state change, not every minute.
+if [ -r "${MDT_PROC_ROOT:-/proc}/swaps" ] && [ -e "$CG/dev.slice/io.max" ]; then
+  _swap_now=$(_mdt_uncapped_swap_devices)
+  _swap_state_file="${MDT_STATE_DIR:-/run}/mdt-uncapped-swap.state"
+  _swap_before=$(cat "$_swap_state_file" 2>/dev/null || true)
+  if [ "$_swap_now" != "$_swap_before" ]; then
+    while read -r _swap_dev _swap_disk; do
+      [ -n "$_swap_dev" ] || continue
+      if [ "$_swap_disk" = unresolved ]; then
+        log "WARN: swap device $_swap_dev: its whole disk could not be resolved — cannot confirm swap IO is capped"
+      else
+        log "WARN: UNCAPPED SWAP: $_swap_dev lies on disk $_swap_disk, which has NO dev.slice io.max entry — a dev container that swaps can saturate that disk (logged once per change)"
+      fi
+    done <<<"$_swap_now"
+    [ -n "$_swap_now" ] || log "swap coverage: every active swap disk now has a dev.slice io.max entry"
+    printf '%s' "$_swap_now" > "$_swap_state_file" 2>/dev/null || true
+  fi
 fi
 
 # --- slice zswap writeback policies -------------------------------------------

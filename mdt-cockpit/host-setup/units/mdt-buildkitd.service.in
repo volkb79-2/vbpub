@@ -46,6 +46,10 @@ Wants=docker.service
 
 [Service]
 Type=simple
+# ExecStartPre pulls the image and ExecStartPost waits for the socket, all inside
+# the start job; systemd's 90 s default is too short for a cold image pull or a slow
+# (emulated, TCG) host: the vm-system lane timed out here on 2026-10-19.
+TimeoutStartSec=10min
 # Creates /run/mdt-buildkitd before ExecStart. Preserve the directory across
 # service stops and restarts: devcontainers bind-mount this host path, and
 # replacing its inode leaves an existing container attached to the old,

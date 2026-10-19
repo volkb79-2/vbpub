@@ -678,7 +678,7 @@ came out of the 2026-10-19 incident; the mechanism is in
   beyond the visible cache, a steady-state tail) changes the shared
   `scripts/debian-install-v2/tools/iocost_coef_gen.py`, outside `mdt-cockpit`,
   so it is MDT-017 (D-NNN filed in both mdt-cockpit and debian-install-v2: the plausibility refusal ships in both consumers, `mdt-io-baseline.py` and `iocost-calibrate.sh`; the generator itself is unchanged). Shipped: schema 3 records the method, old schemas are stale,
-  and a rotational device above 1 GiB/s or 20k IOPS is refused. The honest limit:
+  and a rotational-flagged device above 1 GiB/s sequential or 20k random 4 KiB IOPS is refused by ONE definition shared with debian-install-v2 (`iocost_plausibility.py`; sequential 4 KiB IOPS are never judged, merging is off in that run). virtio-blk is `rotational=1` by default, so a fast virtio disk is refused too: fail closed, with an explicit `IO_BASELINE_ROTATIONAL_FLAG=ignore` opt-in (a "looks virtual" heuristic was rejected: it misclassifies both ways). The honest limit:
   a non-rotational device is not bounded, so operator-pinned `DEV_IO_*_MAX` are
   the recommended source on a virtual disk (min of pin and baseline).
 - **D-HS-01-3: swap stays ample, the gate tier is throttled (DECIDED by the
@@ -686,7 +686,7 @@ came out of the 2026-10-19 incident; the mechanism is in
   cascading, (b) absolute defaults (dev 8G / gates 2G), (c) RAM-relative. Chosen:
   (a), plus a tight IO cap on the gate tier: swap-out IO is charged to the page
   owner's cgroup, so a gate that swaps is throttled by its own cap and cannot
-  thrash the shared disk. Per-tier keys `DEV_<TIER>_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX`
+  thrash the shared disk (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`). Per-tier keys `DEV_<TIER>_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX`
   (`DEV_GATES_IO_WBPS_MAX` and its siblings); the IOPS sub-ceiling becomes
   min(sub-ceiling, absolute). Cost: a throttled gate stalls and runs slowly, which
   is an infrastructure-classified slowdown, not a product failure. The reconcile

@@ -624,21 +624,26 @@ cannot express the next:
    from `host-setup.env` at install time so per-host tuning stays in one
    reviewable file.
 
-   If the io.cost baseline is missing or invalid, `mdt-dev-governance-reconcile.sh`
-   clears only MDT's runtime IO properties on `dev.slice` and its runtime IOPS
-   sub-ceilings on `dev-gates.slice`/`dev-buildkitd.slice`. That makes the
-   configured static unit-file values authoritative again instead of allowing
-   stale measured values to survive; unrelated cgroup properties are untouched.
-   On a no-baseline or no-device transition, MDT also clears its previously
+   The reconcile never withdraws `dev.slice`'s IO limits by clearing them. In
+   systemd an empty `IO*Max=` assignment resets the whole list, unit-file values
+   included (measured live, MDT-016), so with no usable baseline (missing, stale
+   after a kernel update, or implausible) `mdt-dev-governance-reconcile.sh`
+   re-asserts the explicit pinned or static values with
+   `set-property --runtime` and then reads the kernel `io.max` back; a mismatch
+   fails the service. Removing a runtime drop-in and running `daemon-reload` was
+   measured NOT to re-apply the unit-file value, which is why re-asserting is the
+   mechanism. With no block device discovered it writes nothing: it refuses
+   loudly if `dev.slice` carries limits and otherwise has nothing to cap.
+   On a no-baseline transition MDT also clears its previously
    applied transient caps from currently governed containers; otherwise an old
    cap would remain indefinitely. Governed containers then receive **no guessed
    per-container IO cap** until valid benchmark results are available. A
    missing or invalid measurement is indeterminate, so the Docker-events watcher remains
-   connected but skips cap application, and the periodic sweep applies measured
-   caps after the baseline is installed; restart the watcher after creating a
-   baseline so its one-time configuration load sees it. The explicit static
-   `DEV_STATIC_*` values remain the boot-window fallback for the root unit and
-   are a separate, operator-tunable policy.
+   connected but skips cap application, and the periodic sweep applies
+   measured caps after the baseline is installed; restart the watcher after
+   creating a baseline so its one-time configuration load sees it. The explicit
+   `DEV_STATIC_*` values (or the pinned `DEV_IO_*_MAX`) remain the fallback for the
+   root unit and are a separate, operator-tunable policy.
 2. **Boot service + periodic timer** (`mdt-dev-governance-reconcile.service/.timer` →
    `mdt-dev-governance-reconcile.sh`) — everything units *can't* declare:
    - the **measured** whole-estate IO caps on `dev.slice` (`DEV_IO_CAP_PCT`%
@@ -806,7 +811,7 @@ fallback; when a pin and a baseline both exist the smaller wins. The pins also
 become the static fallback in the rendered `dev.slice` unit. On a virtual disk
 **pin them from a sustained measurement**: a baseline can read the hypervisor's
 write-back cache (one host measured 4.3 GB/s from a disk that saturated at
-~20 MB/s), and the reconcile refuses an obviously cache-inflated one. A
+~20 MB/s), and the reconcile refuses an obviously cache-inflated one (a rotational-flagged device above 1 GiB/s sequential or 20,000 random 4 KiB IOPS). virtio-blk reports `rotational=1` by default, so a genuinely fast virtio disk is refused too: set `IO_BASELINE_ROTATIONAL_FLAG=ignore` only if you know it is fast, and pin the caps either way. On a host whose swap or root sits on md/LVM spanning several disks the runtime caps cannot be applied or verified (one clear ERROR per run; the unit-file statics stay the only cap). A
 **kernel update** invalidates the baseline until `mdt-io-baseline.py --force`
 is re-run; pins are unaffected.
 
@@ -823,7 +828,7 @@ adoption steps: [CONSUMERS](../docs/CONSUMERS.md#dev-tier-io-governance-pin-veri
 **Swap stays ample; the gate tier is throttled by IO instead (decided).** The
 default (`DEV_SWAP_CASCADE_PCT=80` of host swap, cascading) is kept. A gate that
 swaps is throttled by its own tight IO cap, because swap-out IO is charged to the
-page owner's cgroup: set `DEV_GATES_IO_RBPS_MAX`, `DEV_GATES_IO_WBPS_MAX`,
+page owner's cgroup (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`): set `DEV_GATES_IO_RBPS_MAX`, `DEV_GATES_IO_WBPS_MAX`,
 `DEV_GATES_IO_RIOPS_MAX`, `DEV_GATES_IO_WIOPS_MAX` (runtime keys; the same four
 exist for `INTERACTIVE`, `BACKGROUND` and `BUILDKITD`; IOPS values combine with the
 `DEV_SUBSLICE_IOPS_PCT` sub-ceiling as min). Illustration from the incident host:

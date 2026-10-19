@@ -485,6 +485,12 @@ def validate_io_pin(value: str) -> str | None:
     if value == "":
         return None
     match = _IO_PIN_RE.match(value)
+    if match and len(match.group(1)) > 18:
+        return "the value is too large (more than 18 digits); the runtime refuses it rather than let the arithmetic wrap"
+    if match:
+        mult = {"": 1, "K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}[match.group(2)]
+        if int(match.group(1)) * mult > 1 << 62:
+            return "the value exceeds 2^62; the runtime refuses it rather than let the arithmetic wrap"
     if not match:
         return (
             f"{value!r} is not a positive integer with an optional K/M/G/T suffix "
@@ -493,6 +499,13 @@ def validate_io_pin(value: str) -> str | None:
     if int(match.group(1)) <= 0:
         return "0 would halt all IO on dev.slice (it is not 'unlimited'); give a positive value, or leave empty to not pin"
     return None
+
+
+def validate_rotational_flag(value: str) -> str | None:
+    """IO_BASELINE_ROTATIONAL_FLAG: empty (trust queue/rotational) or ``ignore``."""
+    if value in ("", "ignore"):
+        return None
+    return f"{value!r} is not valid; leave empty to trust queue/rotational, or `ignore` for a fast virtio disk that wrongly reports rotational=1"
 
 
 def validate_optional_positive_size(value: str) -> str | None:
@@ -805,6 +818,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "WATCHER_GATES_MEMORY_MAX": validate_optional_positive_size,
         "CGROUP2_FLAGS": validate_cgroup2_flags,
         "DEV_IO_CAP_PCT": validate_cap_pct,
+        "IO_BASELINE_ROTATIONAL_FLAG": validate_rotational_flag,
         "DEV_IO_RBPS_MAX": validate_io_pin,
         "DEV_IO_WBPS_MAX": validate_io_pin,
         "DEV_IO_RIOPS_MAX": validate_io_pin,
