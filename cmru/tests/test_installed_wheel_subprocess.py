@@ -108,6 +108,11 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     (repo_root / "cmru" / "pyproject.toml").write_text(
         (PROJECT_DIR / "pyproject.toml").read_text(encoding="utf-8"), encoding="utf-8",
     )
+    # The script reads the wheel builder's base from the real Dockerfile (committed with the tree).
+    (repo_root / "wheel-builder").mkdir()
+    (repo_root / "wheel-builder" / "Dockerfile").write_text(
+        (REPO_ROOT / "wheel-builder" / "Dockerfile").read_text(encoding="utf-8"), encoding="utf-8",
+    )
     commit_env = {
         **os.environ,
         "GIT_AUTHOR_DATE": "2023-11-14T22:13:20+00:00",
@@ -130,9 +135,18 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     docker_log = tmp_path / "docker.log"
     builder_marker = tmp_path / "wheel-builder-ready"
     order_log = tmp_path / "order.log"
+    tester_base_marker = tmp_path / "tester-base-ready"
     docker.write_text(
         "#!/bin/sh\n"
         f'printf "docker %s\\n" "$*" >> "{order_log}"\n'
+        # tester-base:local is present unless CMRU_TEST_NO_TESTER_BASE is set; building it makes it appear.
+        'if [ "$1" = "image" ] && [ "$2" = "inspect" ] && [ "$3" = "tester-base:local" ]; then\n'
+        f'  if [ -n "$CMRU_TEST_NO_TESTER_BASE" ] && [ ! -f "{tester_base_marker}" ]; then exit 1; fi\n'
+        '  exit 0\n'
+        'fi\n'
+        'case "$*" in *"-t tester-base:local"*)\n'
+        f'  printf "%s\\n" "$*" >> "{docker_log}"; touch "{tester_base_marker}"; exit 0;;\n'
+        'esac\n'
         'if [ "$1" = "buildx" ] && [ "$2" = "build" ]; then\n'
         f'  printf "%s\\n" "$*" >> "{docker_log}"\n'
         f'  touch "{builder_marker}"\n'
@@ -217,6 +231,7 @@ def _bootstrap_tree(tmp_path: Path) -> dict[str, object]:
     return {
         "repo_root": repo_root, "bootstrap": bootstrap, "record": record, "commit_env": commit_env,
         "docker_log": docker_log, "builder_marker": builder_marker, "env": env,
+        "tester_base_marker": tester_base_marker,
         "order_log": order_log,
     }
 
@@ -283,6 +298,30 @@ def test_bootstrap_rebuilds_an_existing_tag_that_is_not_the_declared_wheel_build
     assert "wheel-builder/Dockerfile" in docker_commands
     assert "-t wheel-builder:test" in docker_commands
     assert Path(tree["builder_marker"]).is_file()
+
+
+def test_bootstrap_builds_tester_base_first_when_it_is_absent_and_only_then(tmp_path):
+    """The wheel builder is FROM the local tester-base tag: absent, the script builds it (public inputs)
+    before the builder, with the docker-driver builder and no --pull; present, it is not rebuilt."""
+    for absent in (True, False):
+        tree = _bootstrap_tree(tmp_path / ("absent" if absent else "present"))
+        wheel, digest = _toy_wheel(tmp_path / ("w1" if absent else "w2"))
+        tree["env"].update(CMRU_BOOTSTRAP_CLI_EXTENDED_WHEEL=str(wheel), CMRU_BOOTSTRAP_CLI_EXTENDED_SHA256=digest)
+        if absent:
+            tree["env"]["CMRU_TEST_NO_TESTER_BASE"] = "1"
+
+        _run_bootstrap(tree)
+
+        commands = Path(tree["docker_log"]).read_text(encoding="utf-8").splitlines()
+        base_builds = [i for i, line in enumerate(commands) if "-t tester-base:local" in line]
+        builder_builds = [i for i, line in enumerate(commands) if "-t wheel-builder:test" in line]
+        assert builder_builds, commands
+        assert all("--pull" not in line for line in commands)
+        if absent:
+            assert base_builds and base_builds[0] < builder_builds[0], commands
+            assert Path(tree["tester_base_marker"]).is_file()
+        else:
+            assert base_builds == [], commands
 
 
 def test_bootstrap_runs_python_isolated_with_the_verified_released_wheel_and_commit_epoch(tmp_path):

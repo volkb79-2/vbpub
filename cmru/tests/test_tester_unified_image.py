@@ -4286,6 +4286,7 @@ def test_a_pure_image_stage_must_be_a_lone_digest_pinned_from():
         return _dockerfile_copy_specs_before_command(
             first_stage + final, "stage-1", r"pip wheel[\s\S]*?/src/cmru",
             run_sensitive_sources=("cmru",), allowed_pure_image_stages=("node-source",),
+            expected_run_body="pip wheel /src/cmru",
         )
 
     run(base)  # the lone pinned FROM is accepted

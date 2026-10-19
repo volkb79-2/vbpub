@@ -36,6 +36,9 @@ UPSTREAM_BASE = "mcr.microsoft.com/devcontainers/python:3.14-trixie"
 assert UPSTREAM_BASE != DEFAULT_BASE
 
 
+BASE_ID = "sha256:" + "b" * 64
+
+
 def _tree(tmp_path: Path):
     root = tmp_path / "tree"
     (root / "tester-unified").mkdir(parents=True)
@@ -63,7 +66,9 @@ def _tree(tmp_path: Path):
         '    *org.vbpub.run-gate.version*) echo 24.0.0;;\n'
         f'    *org.vbpub.run-gate.wheel-sha256*) echo {digest};;\n'
         '    *org.vbpub.cli-extended.wheel-sha256*) echo "$FAKE_CLI_EXTENDED_LABEL";;\n'
+        '    *org.vbpub.tester-unified.base-image-id*) echo "$FAKE_BASE_IMAGE_ID_LABEL";;\n'
         '    *org.vbpub.tester-unified.base-image*) echo "$FAKE_BASE_IMAGE_LABEL";;\n'
+        '    *"{{.Id}}"*) echo "$FAKE_BASE_IMAGE_ID";;\n'
         '  esac\n'
         'fi\n'
         'exit 0\n',
@@ -79,12 +84,16 @@ def _tree(tmp_path: Path):
         # What the (fake) built image says it was built FROM: by default the
         # Dockerfile's own default base, as a real default build records.
         "FAKE_BASE_IMAGE_LABEL": DEFAULT_BASE,
+        # The identity the (fake) docker resolves the base to, and what the built image's id label says.
+        "FAKE_BASE_IMAGE_ID": BASE_ID,
+        "FAKE_BASE_IMAGE_ID_LABEL": BASE_ID,
     }
     return root, env, log
 
 
-def _build(tmp_path, *args, label=None, base_label=None):
+def _build(tmp_path, *args, label=None, base_label=None, env_extra=None):
     root, env, log = _tree(tmp_path)
+    env.update(env_extra or {})
     if label is not None:
         env["FAKE_CLI_EXTENDED_LABEL"] = label
     if base_label is not None:
@@ -188,7 +197,7 @@ def test_local_mode_labels_the_supplied_digest(tmp_path):
 def test_a_default_build_must_record_the_dockerfiles_default_base(tmp_path):
     ok, log = _build(tmp_path / "ok", label=PINNED_DIGEST, base_label=DEFAULT_BASE)
     assert ok.returncode == 0, ok.stderr
-    assert "TESTER_UNIFIED_BASE_IMAGE" not in _buildx(log)  # the Dockerfile default applies
+    assert "--build-arg TESTER_UNIFIED_BASE_IMAGE=" not in _buildx(log)  # the Dockerfile default applies
 
     other, _ = _build(tmp_path / "other", label=PINNED_DIGEST, base_label=UPSTREAM_BASE)
     assert other.returncode == 2
@@ -227,3 +236,45 @@ def test_an_image_without_a_base_label_is_refused(tmp_path):
         assert result.returncode == 2
         assert "not built from the requested base" in result.stderr
         assert "observed: <no label>" in result.stderr
+
+
+# --- org.vbpub.tester-unified.base-image-id: WHICH content the base reference was ----------
+
+
+def test_the_resolved_base_identity_is_passed_to_buildx_and_accepted_when_recorded(tmp_path):
+    result, log = _build(tmp_path, label=PINNED_DIGEST, base_label=DEFAULT_BASE)
+    assert result.returncode == 0, result.stderr
+    assert f"--build-arg TESTER_UNIFIED_BASE_IMAGE_ID={BASE_ID}" in _buildx(log)
+
+
+def test_an_image_recording_another_base_identity_is_refused(tmp_path):
+    """A stale local tester-base tag: the label must carry the identity the base resolved to."""
+    other = "sha256:" + "c" * 64
+    for index, label in enumerate((other, "")):
+        result, _log = _build(
+            tmp_path / str(index), label=PINNED_DIGEST, base_label=DEFAULT_BASE,
+            env_extra={"FAKE_BASE_IMAGE_ID_LABEL": label},
+        )
+        assert result.returncode == 2
+        assert "does not record the identity of the base" in result.stderr
+        assert f"expected: {BASE_ID}" in result.stderr
+
+
+def test_a_base_that_cannot_be_identified_is_refused_before_the_build(tmp_path):
+    result, log = _build(
+        tmp_path, label=PINNED_DIGEST, base_label=DEFAULT_BASE, env_extra={"FAKE_BASE_IMAGE_ID": ""},
+    )
+    assert result.returncode == 2
+    assert "unexpected base image identity" in result.stderr
+    assert not any(line.startswith("buildx build") for line in log.read_text(encoding="utf-8").splitlines())
+
+
+def test_a_digest_reference_is_its_own_identity(tmp_path):
+    digest = "a" * 64
+    result, log = _build(
+        tmp_path, "--base-image", f"example.invalid/base@sha256:{digest}", label=PINNED_DIGEST,
+        base_label=f"example.invalid/base@sha256:{digest}",
+        env_extra={"FAKE_BASE_IMAGE_ID": "", "FAKE_BASE_IMAGE_ID_LABEL": f"sha256:{digest}"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert f"--build-arg TESTER_UNIFIED_BASE_IMAGE_ID=sha256:{digest}" in _buildx(log)
