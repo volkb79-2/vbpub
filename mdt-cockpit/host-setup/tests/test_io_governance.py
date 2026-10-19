@@ -82,6 +82,9 @@ if args[:2] == ["set-property", "--runtime"]:
         state["runtime"].setdefault(unit, {})[key] = val.split() if val else []
     recompute(unit)
     json.dump(state, open(state_path, "w"))
+elif args and args[0] == "show" and os.environ.get("FAKE_SHOW_FAILS"):
+    sys.stderr.write("Failed to connect to bus\n")
+    sys.exit(1)
 elif args and args[0] == "show":
     unit = args[1]
     rt = state["runtime"].get(unit, {})

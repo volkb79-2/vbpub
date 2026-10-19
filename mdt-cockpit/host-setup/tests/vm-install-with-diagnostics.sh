@@ -12,8 +12,8 @@ if [ -f /etc/mdt/host-setup.env ]; then
     override=$(sed -n 's/^DEV_BUILDKITD_IMAGE=//p' /etc/mdt/host-setup.env | tr -d '"' | head -n 1)
     [ -z "$override" ] || image="$override"
 fi
-echo "vm-install: pre-pulling $image (timeout 900 s)"
-if ! timeout 900 docker pull "$image"; then
+echo "vm-install: pre-pulling $image (timeout 600 s)"
+if ! timeout 600 docker pull "$image"; then
     echo "vm-install: pre-pull of $image failed or timed out (network, registry, or TCG slowness)" >&2
     exit 1
 fi

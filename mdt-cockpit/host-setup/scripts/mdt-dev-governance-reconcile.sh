@@ -132,9 +132,16 @@ MDT_RC=0
 # dev.slice carries IO limits, refuse loudly (non-zero exit); if it carries none
 # there is nothing to cap and nothing to clear.
 _mdt_no_device() {
-  local shown
-  shown=$(systemctl show dev.slice -p IOReadBandwidthMax -p IOWriteBandwidthMax \
-            -p IOReadIOPSMax -p IOWriteIOPSMax 2>/dev/null | grep -E '=.+' || true)
+  local shown raw
+  # "could not read" is indeterminate, NOT "no limits": an empty string from a failed
+  # systemctl would otherwise certify "nothing to cap" (absence for emptiness)
+  if ! raw=$(systemctl show dev.slice -p IOReadBandwidthMax -p IOWriteBandwidthMax \
+               -p IOReadIOPSMax -p IOWriteIOPSMax 2>&1); then
+    log "ERROR: could not read dev.slice's IO limits (systemctl show failed: $(printf '%s' "$raw" | tr '\n' ' ')) while no block device was discovered — cannot tell whether dev.slice is capped; this run fails"
+    MDT_RC=1
+    return
+  fi
+  shown=$(printf '%s\n' "$raw" | grep -E '=.+' || true)
   if [ -n "$shown" ]; then
     log "ERROR: no block device was discovered but dev.slice carries IO limits ($(printf '%s' "$shown" | tr '\n' ' ')) — refusing to wipe them; the current values stay in force and this run fails until the device is discoverable (set IO_DEV_PATH in host-setup.env)"
     MDT_RC=1

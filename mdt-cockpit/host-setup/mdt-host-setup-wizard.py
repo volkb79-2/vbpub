@@ -1937,6 +1937,10 @@ def step_io_baseline_start(
     # The adapter's identity check must use the device the operator selected,
     # not an unrelated ambient value inherited from the launching shell.
     child_env["IO_DEV_PATH"] = io_dev_path
+    # the write-time plausibility check honours the operator's override from host-setup.env
+    flag = cfg_current.get("IO_BASELINE_ROTATIONAL_FLAG", "")
+    if flag:
+        child_env["IO_BASELINE_ROTATIONAL_FLAG"] = flag
     try:
         command = [sys.executable, str(io_baseline_script), "--output", baseline_env, "--testfile", testfile_text]
         if baseline_requested:

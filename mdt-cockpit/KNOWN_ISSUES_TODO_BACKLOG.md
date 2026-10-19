@@ -298,3 +298,13 @@ The protection is a tight IO cap on the gate tier (`DEV_GATES_IO_{RBPS,WBPS,RIOP
 same four keys per tier): swap-out IO is charged to the page owner's cgroup (per kernel source, not measured here: swap writeback bios are associated with the page owner's blkcg via `bio_associate_blkg_from_page` in `mm/page_io.c`). A throttled gate runs
 slowly, an infrastructure-classified slowdown. `DEV_SWAP_MAX` / `DEV_GATES_MEMORY_SWAP_MAX` stay
 available but are not the protection.
+
+## MDT-019 - a transient findmnt failure strips per-container IO caps for one sweep (pre-existing)
+
+With no block device discovered (for example a transient `findmnt` failure), `_mdt_derive_watcher_caps`
+sets `WATCHER_SKIP` and `_mdt_clear_container_caps` removes MDT's per-container transient IO caps for that
+one run; the next sweep or the Docker-events watcher re-applies them. The dev.slice and tier paths are
+guarded since MDT-016 (no write, ERROR when limits exist); the container sweep is not. Not fixed here: the
+existing no-baseline sweep test depends on the strip, and a guard needs the same "carries limits" probe per
+scope. Fix: skip `_mdt_clear_container_caps` when the device is merely undiscovered, keep it for a missing
+baseline.

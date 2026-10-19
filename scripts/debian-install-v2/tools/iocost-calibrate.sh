@@ -95,6 +95,11 @@ DEVNO="${RESULT_LINE%% *}"
 # numbers, IOPS on random 4 KiB only, ceilings for rotational devices, explicit
 # IO_BASELINE_ROTATIONAL_FLAG=ignore override for a fast virtio disk).  A refusal
 # writes no model.  The generator redesign is in TODO.md.
+if [ ! -r "$HERE/iocost_plausibility.py" ]; then
+  echo "iocost-calibrate: REFUSED: the shared plausibility module $HERE/iocost_plausibility.py is missing, so the numbers cannot be checked. No model written. Restore tools/iocost_plausibility.py." >&2
+  exit 1
+fi
+command -v python3 >/dev/null 2>&1 || { echo "iocost-calibrate: REFUSED: python3 is required for the plausibility check. No model written." >&2; exit 1; }
 SYSFS_ROOT="${IOCOST_SYSFS_ROOT:-/sys}"
 ROTATIONAL=$(cat "$SYSFS_ROOT/dev/block/$DEVNO/queue/rotational" 2>/dev/null || echo "")
 pairs=" ${RESULT_LINE#* } "

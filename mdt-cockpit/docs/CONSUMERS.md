@@ -228,8 +228,9 @@ absent runtime-optional keys. Render-time keys still refuse when absent. Run
 `install.sh --wizard` to review and add them.
 
 virtio-blk reports `rotational=1` by default, so a genuinely fast virtio disk can have
-its baseline refused as implausible; set `IO_BASELINE_ROTATIONAL_FLAG=ignore` only if you
-know the disk is fast, and pin the caps from a sustained measurement either way.
+its baseline refused as implausible; set `IO_BASELINE_ROTATIONAL_FLAG=ignore` in `/etc/mdt/host-setup.env` only if you
+know the disk is fast (`mdt-io-baseline.py`, the wizard benchmark and the reconcile all read it
+from there), and pin the caps from a sustained measurement either way.
 
 The values above are an illustration (one 16 GiB virtio host), not a default.
 Expected after a good run: the journal line

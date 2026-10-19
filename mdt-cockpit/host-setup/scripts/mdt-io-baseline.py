@@ -269,6 +269,17 @@ def _shared_plausibility():
     return None
 
 
+def rotational_flag_ignored() -> bool:
+    """IO_BASELINE_ROTATIONAL_FLAG=ignore, from the environment or, failing that, from
+    host-setup.env (CONF, default /etc/mdt/host-setup.env): the same file the reconcile
+    reads, so the tool that WRITES the baseline and the service that READS it agree."""
+    value = os.environ.get("IO_BASELINE_ROTATIONAL_FLAG")
+    if value is None or value == "":
+        conf = Path(os.environ.get("CONF") or "/etc/mdt/host-setup.env")
+        value = parse_env(conf).get("IO_BASELINE_ROTATIONAL_FLAG", "").strip().strip("\"'")
+    return value == "ignore"
+
+
 def plausibility_problem(values: dict[str, str]) -> str | None:
     """Why these numbers cannot be a real sustained device ceiling, or None.
 
@@ -282,6 +293,7 @@ def plausibility_problem(values: dict[str, str]) -> str | None:
             rbps=int(values["RBW_MAX_BPS"]), wbps=int(values["WBW_MAX_BPS"]),
             rrandiops=int(values["RRANDIOPS"]), wrandiops=int(values["WRANDIOPS"]),
             rotational=values.get("DEVICE_ROTATIONAL", ""),
+            flag_ignored=rotational_flag_ignored(),
             names={"rbps": "RBW_MAX_BPS", "wbps": "WBW_MAX_BPS",
                    "rrandiops": "RRANDIOPS", "wrandiops": "WRANDIOPS"},
         )

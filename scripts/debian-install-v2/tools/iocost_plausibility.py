@@ -46,8 +46,10 @@ OVERRIDE_VALUE = "ignore"
 
 _HINT = (
     "the measurement read a cache (hypervisor write-back), not the disk. virtio-blk reports rotational=1 by "
-    f"default; if this disk is genuinely fast set {OVERRIDE_ENV}={OVERRIDE_VALUE} and pin the caps from a "
-    "sustained measurement, otherwise pin DEV_IO_*_MAX from a sustained measurement instead"
+    f"default; if this disk is genuinely fast set {OVERRIDE_ENV}={OVERRIDE_VALUE} in /etc/mdt/host-setup.env "
+    "(read by mdt-io-baseline.py, the wizard benchmark and the reconcile; iocost-calibrate.sh reads it from its "
+    "environment) and pin the caps from a sustained measurement, otherwise pin DEV_IO_*_MAX from a "
+    "sustained measurement instead"
 )
 
 
