@@ -22,6 +22,7 @@ one config and one installed CLI.
 | plesk-mailbox-create | [`plesk-mailbox-create/`](plesk-mailbox-create/) | script tool | n/a |
 | devcontainer templates | [`modern-debian-tools-python-debug/templates/`](modern-debian-tools-python-debug/templates/) | devcontainer template | n/a |
 | **debian-install v2** | [`scripts/debian-install-v2/`](scripts/debian-install-v2/) | root-only Python installer | n/a |
+| zswap-writeback-governor | [`zswap-writeback-governor/`](zswap-writeback-governor/) | analysis, design, VM synthetic (docs and scripts only) | n/a |
 
 Each product has its own README with product-specific detail.
 
