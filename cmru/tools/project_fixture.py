@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import os
 import subprocess
@@ -33,6 +34,8 @@ SHARED_LIBRARIES = (
 # - .gitignore: test_release_gate's clean-source check uses the estate rules;
 # - run-gate-project/cmru.toml: test_release_gate's provider-prefix check;
 # - assay/src: run_release_gate's isolated component loader imports Assay there;
+# - tester-base/Dockerfile: test_installed_wheel_subprocess's _bootstrap_tree
+#   copies it into the throw-away tree it bootstraps (the script hashes it);
 # - docs/BOOTSTRAP-FROM-ZERO.md: linked from CMRU's README, DESIGN-GUIDE and
 #   CONSUMERS (test_docs_config_examples' cross-document link oracle).
 SUITE_COLLECTION_INPUTS = (
@@ -43,6 +46,7 @@ SUITE_COLLECTION_INPUTS = (
     Path("run-gate-project/cmru.toml"),
     Path("assay/src"),
     Path("docs/BOOTSTRAP-FROM-ZERO.md"),
+    Path("tester-base/Dockerfile"),
 )
 # mutation_campaign fingerprints and dirty-checks exactly the pathspecs of the
 # four fixture constants, so the collection inputs join this one rather than
@@ -59,6 +63,24 @@ ESTATE_CONFIG_FIXTURES = (
     Path("topos/cmru.toml"),
     Path("nyxloom/cmru.toml"),
 )
+
+
+_FAILURE_SECTION = re.compile(r"^(={3,} (?:FAILURES|ERRORS) ={3,}\n)|^(ERROR collecting)", re.MULTILINE)
+
+
+def failure_excerpt(output: str, limit: int) -> str:
+    """Return up to ``limit`` characters starting at the first failure section.
+
+    A pytest ``-q`` run ends with a short summary of bare ``FAILED node-id``
+    lines, so the tail of the output names the failing tests but never the
+    reason. Start at the first FAILURES/ERRORS section (or collection error)
+    instead; with neither, fall back to the tail.
+    """
+    match = _FAILURE_SECTION.search(output)
+    if match is None:
+        return output[-limit:]
+    start = match.end(1) if match.group(1) else match.start(2)
+    return output[start:start + limit]
 
 
 def tracked_paths(repo_root: Path, pathspecs: tuple[str, ...] | list[str]) -> list[str]:

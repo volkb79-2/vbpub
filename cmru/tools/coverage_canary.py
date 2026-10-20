@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 try:
-    from .project_fixture import copy_project_fixture
+    from .project_fixture import copy_project_fixture, failure_excerpt
 except ImportError:  # direct ``python tools/coverage_canary.py`` execution
-    from project_fixture import copy_project_fixture
+    from project_fixture import copy_project_fixture, failure_excerpt
 EXPECTED_REASON = "Required test coverage of 100% not reached"
 
 
@@ -79,9 +79,13 @@ def run(argv: Sequence[str] | None = None) -> int:
         )
         control = _run(test_argv, cwd=copied)
         if control.returncode != 0:
+            # The tail of a pytest run is only the bare FAILED list, so keep the whole
+            # output next to the evidence and quote the first failure section.
+            log = args.evidence.with_suffix(".control.log")
+            log.write_text(control.stdout, encoding="utf-8")
             raise RuntimeError(
-                f"known-good canary control failed with exit {control.returncode}: "
-                f"{control.stdout[-2000:]}"
+                f"known-good canary control failed with exit {control.returncode} "
+                f"(full output: {log}): {failure_excerpt(control.stdout, 2000)}"
             )
         target_copy = copied / target
         target_copy.write_text(

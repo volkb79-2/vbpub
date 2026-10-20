@@ -1108,7 +1108,7 @@ def _run_campaign(
     if baseline.returncode != 0:
         raise RuntimeError(
             f"the known-good mutation control failed with exit {baseline.returncode}: "
-            f"{baseline.stdout[-1000:]}"
+            f"{project_fixture.failure_excerpt(baseline.stdout, 1000)}"
         )
     if _campaign_tree_status(repo_root, project_prefix):
         raise RuntimeError("mutation campaign inputs changed while the known-good control ran")

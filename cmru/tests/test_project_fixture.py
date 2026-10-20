@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +40,7 @@ FAKE_COVERAGE_COMMAND = textwrap.dedent('''\
 
 #: Tracked files of each SUITE_COLLECTION_INPUTS pathspec in the estate below.
 SUPPORT_FILES = (
+    "tester-base/Dockerfile",
     "tester-unified/Dockerfile",
     "nyxloom/pyproject.toml",
     "nyxloom/src/nyxloom/__init__.py",
@@ -70,6 +72,7 @@ def _estate(repo_root: Path) -> Path:
         "nyxloom/cmru.toml",
         # Suite collection inputs, and their tracked siblings that must stay out:
         # gen-requirements.py and build-image.sh are the tester modules' skip keys.
+        "tester-base/Dockerfile",
         "tester-unified/Dockerfile",
         "tester-unified/gen-requirements.py",
         "tester-unified/build-image.sh",
@@ -238,3 +241,104 @@ def test_canary_refuses_an_uncovered_candidate_that_fails_for_another_reason(tmp
     assert document["control_exit_code"] == 0
     assert document["transformed_exit_code"] == 1
     assert document["observed_expected_reason"] is False
+
+
+# Test modules whose repository-root reads are deliberately NOT carried by the
+# fixture, because each skips itself in an isolated tree. A module listed here
+# is excluded from the read scan below, with the guard that justifies it.
+SKIP_GUARDED_MODULES = {
+    "test_tester_image_cli_extended_identity.py": "module pytestmark skipif: tester-unified absent (isolated canary tree)",
+    "test_tester_unified_image.py": "module pytestmark skipif: tester-unified generator absent (isolated canary tree)",
+    "test_w0_tester_hardening.py": "skipif at the repository-root-config test: configs absent (isolated canary tree)",
+    "test_dependency_levels_pyproject.py": "skipif _estate_complete(): estate projects absent (isolated canary tree)",
+    "test_bootstrap_from_zero_sequence.py": "_needs_repo / _needs_run_gate_tools skipifs (isolated canary tree)",
+    "test_w2_integ.py": "reads ciu/cmru.toml and mdt files, which the fixture keeps out so the estate tests skip",
+}
+# Individual repository-root paths a scanned module reads without needing them
+# copied: each is asserted ABSENT, or guarded by a skip, in that module.
+UNCARRIED_PATHS = {
+    "cmru.py": "asserted absent: the fresh-checkout bootstrap is the only launcher",
+    "libraries/cli-extended": "deliberately never copied (CX-D1); _needs_build_tools skips when absent",
+}
+_REPO_ROOT_READ = re.compile(r'REPO_ROOT((?:\s*/\s*"[^"]+")+)')
+
+
+def _repo_root_reads() -> dict[str, set[str]]:
+    reads: dict[str, set[str]] = {}
+    for module in sorted((Path(__file__).parent).glob("test_*.py")):
+        for match in _REPO_ROOT_READ.finditer(module.read_text(encoding="utf-8")):
+            parts = re.findall(r'"([^"]+)"', match.group(1))
+            reads.setdefault(module.name, set()).add("/".join(parts))
+    return reads
+
+
+def _fixture_pathspecs() -> list[str]:
+    return [
+        "cmru",
+        *(path for path in project_fixture.ROOT_CMRU_ARTIFACTS),
+        *(path.as_posix() for path in project_fixture.SHARED_LIBRARIES),
+        *(path.as_posix() for path in project_fixture.EXTERNAL_DOC_ARTIFACTS),
+        *(path.as_posix() for path in project_fixture.ESTATE_CONFIG_FIXTURES),
+    ]
+
+
+def test_fixture_carries_every_repo_root_file_the_suite_reads():
+    reads = _repo_root_reads()
+    # The parser must find reads, or this test would pass vacuously.
+    assert len(reads) >= 5 and sum(len(paths) for paths in reads.values()) >= 20, reads
+    assert "test_installed_wheel_subprocess.py" in reads, sorted(reads)
+    assert set(SKIP_GUARDED_MODULES) <= set(reads), set(SKIP_GUARDED_MODULES) - set(reads)
+    assert all(SKIP_GUARDED_MODULES.values()) and all(UNCARRIED_PATHS.values())
+
+    pathspecs = _fixture_pathspecs()
+    missing = sorted(
+        f"{module}: {path}"
+        for module, paths in reads.items() if module not in SKIP_GUARDED_MODULES
+        for path in paths
+        if path not in UNCARRIED_PATHS
+        and not any(path == spec or path.startswith(spec + "/") for spec in pathspecs)
+    )
+    assert not missing, (
+        "the canary/mutation fixture does not carry these repository-root files, so the "
+        f"known-good control fails with FileNotFoundError: {missing}"
+    )
+
+
+def test_canary_control_failure_keeps_the_first_failure_section_in_the_message_and_a_full_log(tmp_path):
+    project_root = _estate(tmp_path / "repo")
+    summary = "".join(f"FAILED tests/test_x.py::test_case_number_{n:03d}\n" for n in range(80))
+    assert len(summary) > 2000  # the old stdout[-2000:] kept only this
+    (project_root / "noisy_control.py").write_text(textwrap.dedent(f'''\
+        import sys
+        print("....F.....")
+        print("=================================== FAILURES ===================================")
+        print("____ test_real_cause ____")
+        print("E   FileNotFoundError: /scratch/tester-base/Dockerfile")
+        print("=========================== short test summary info ============================")
+        sys.stdout.write({summary!r})
+        print("== 80 failed in 1.00s ==")
+        sys.exit(1)
+    '''), encoding="utf-8")
+    subprocess.run(["git", "-C", str(project_root.parent), "add", "-A"], check=True)  # the fixture copies tracked files
+    evidence = tmp_path / "canary.json"
+
+    with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
+        coverage_canary.run([
+            "--repo-root", str(project_root.parent), "--project-root", str(project_root),
+            "--target", "src/cmru/config.py", "--evidence", str(evidence),
+            "--", sys.executable, "noisy_control.py",
+        ])
+
+    assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in str(raised.value)
+    log = tmp_path / "canary.control.log"
+    assert str(log) in str(raised.value)
+    text = log.read_text(encoding="utf-8")
+    assert text.startswith("....F.....") and "80 failed in 1.00s" in text
+    assert "FileNotFoundError: /scratch/tester-base/Dockerfile" in text
+    assert not evidence.exists()
+
+
+def test_failure_excerpt_starts_at_the_first_failure_section_else_the_tail():
+    assert project_fixture.failure_excerpt("a\n=== FAILURES ===\n__ t __\nE  boom\nFAILED x\n", 12) == "__ t __\nE  b"
+    assert project_fixture.failure_excerpt("x\nERROR collecting y\nrest\n", 100) == "ERROR collecting y\nrest\n"
+    assert project_fixture.failure_excerpt("0123456789", 4) == "6789"

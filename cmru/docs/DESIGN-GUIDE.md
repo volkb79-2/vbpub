@@ -816,6 +816,14 @@ closure. It includes the Topos and nyxloom CMRU manifests read by the estate
 adoption contract test; otherwise the control could fail before exercising a
 mutant and provide no valid R2 or canary evidence.
 
+The closure must carry every repository-root file that a non-skipping test module reads
+(for example `tester-base/Dockerfile`, which `test_installed_wheel_subprocess` copies into its
+throw-away bootstrap tree); a test in `test_project_fixture.py` scans the suite for
+`REPO_ROOT / "..."` reads and fails when one is neither carried nor explicitly allow-listed with
+its skip guard. A failing known-good control is reported with the first FAILURES/ERRORS section
+(a pytest `-q` tail is only a list of bare `FAILED` node ids) and the canary writes the whole control
+output beside its evidence as `<evidence stem>.control.log`.
+
 The full `run-gate gate` still covers R0 through R3: R0 runs the full test
 suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based
 changed-source campaign, and R3 runs an import-break canary. The gate also
