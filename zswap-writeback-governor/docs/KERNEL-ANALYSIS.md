@@ -258,7 +258,7 @@ above its low, so it is not skipped (a), its LRU scan is scaled to ~33% (b),
 and its zswap shrinker runs at full strength. Lowering `memory.min/low` makes
 no difference to that decision; **raising `memory.low` above the usage makes
 the memcg skipped in the first pass (a)**, which is what mitigation (a) in
-MEMORY-ARCHITECTURE.md relies on (and the cgroup then only gets reached on the
+MEMORY-ARCHITECTURE.md relies on (rejected by the operator 2026-10-20, see DESIGN) (and the cgroup then only gets reached on the
 `memcg_low_reclaim` retry, when other cgroups have nothing to give).
 
 **Target-memcg reclaim ignores protection entirely [S].** For reclaim whose
@@ -291,16 +291,18 @@ shrinker evicts everything deemed cold at once; reproducible."
 | The eviction is the memcg zswap shrinker, in the game's own threads | **proven [M+S]**: `shrink_memcg_cb` frames in game D-state stacks; 455.8 s total (measurement file + IO-STALL-TESTING-GUIDE.md section 10) |
 | It writes back "everything cold at once" with no governor | **proven [S] for the code, [M] for the effect**: no per-pass budget (section 5), pacing only by tag exhaustion (section 3) |
 | It is triggered by pages becoming "cold enough" over time | **not supported by source [S]**: there is no age or timer; the only per-entry state is the 1-bit `referenced` and the only clock is reclaim visits. "Cold enough" can only be "visited twice" |
-| It needs no other load | **not established**. Reclaim is required **[S]**. The host is overcommitted by design (game ~7.5 G, dev ~4.4 G on 16 G), so background reclaim is ever present; the pool grew 773M -> 789M between 11:13:44 and 11:15:27, but that is inside the controller's load test B2 (11:12:55-11:17:02 local), so it is **not** evidence of reclaim on an idle host; the burst began 2.5 min after B2 ended, and no log shows what pressure existed at 11:19:34 (the recorder units had expired), and 21 s of `try_to_free_pages` direct reclaim were recorded in the game's threads **[M]** |
+| It needs no other load | **the operator reports the pattern after every settle without load; for this instance (11:19:34) a preceding load cannot be excluded**: the controller's load test B2 (11:12:55-11:17:02 local) ended 2.5 min earlier, and the pool growth 773M -> 789M (11:13:44-11:15:27) lies inside it. Source side: reclaim is required **[S]**; the host is overcommitted by design (game ~7.5 G, dev ~4.4 G on 16 G) and 21 s of `try_to_free_pages` direct reclaim were recorded in the game's threads **[M]**, so baseline reclaim without any test load is plausible **[I]**. No log shows the pressure at 11:19:34 (the recorder units had expired). H1 tests this **[Q]** |
 | Reproducible a few minutes after settle | **[M] observed once at 11:19:34 (7.7 min after the squeeze, 5.7 min after fps normalised, 2.5 min after load test B2 ended at 11:17:02); a second, smaller instance in B3 (09:34:00-09:34:36 UTC, 16.03 s of D in `shrink_memcg_cb`)**. A statistical statement ("reproducible") needs the synthetic or repeated traced runs **[Q]** |
 
 So the honest synthesis: the operator's mechanism ("the shrinker, unpaced,
 in our threads") is source-proven. The *trigger* is reclaim activity combined
 with the second-chance arming, not time. "No other load" is compatible with
-the source only if the baseline overcommit pressure counts as the reclaim
-source, which the 21 s direct-reclaim stacks support **[I]**; the load test B2 that
-ended 2.5 min before the burst is a further candidate source of aged reclaim
-debt (section 5, deferral) **[I]**.
+the source if the baseline overcommit pressure counts as the reclaim
+source, which the 21 s direct-reclaim stacks support **[I]**; for the 11:19:34
+instance the load test B2 that ended 2.5 min earlier could additionally have
+left aged reclaim debt (section 5, deferral) **[I]**. The operator's general
+observation and this instance are independent recorded facts; the synthetic
+decides.
 
 ## 8. What only the synthetic (or a deeper trace) can decide [Q]
 

@@ -64,15 +64,25 @@ Docs triad: this README is WHAT; `docs/DESIGN.md` is WHY; HOW to adopt
 - `memory.min/low` gate a cgroup out of reclaim only while its usage is below
   them; the shrinker's object count ignores protection otherwise, and
   `memory.high` reclaim on the cgroup ignores its own protection. (source)
-- "A few minutes after settle with no other load" is not explained by time: the
-  source has no clock, so the trigger must be reclaim activity. The host is
-  overcommitted by design, and a load test ended 2.5 minutes before the burst.
-  Whether baseline reclaim alone reproduces it is what H1 decides. (inferred; to
-  be decided by the synthetic)
-- Recommendation: for now option 4 (`watermark_scale_factor`) plus raising the
-  game's `memory.low` where Wings reads it, **conditioned on the measured
-  caller**; later the userspace governor on `memory.reclaim source=zswap`
+- "A few minutes after settle": the source has no clock, so the trigger must be
+  reclaim activity, not time. For this instance (11:19:34 local) the controller's
+  load test B2 had ended 2.5 minutes earlier (09:17:02 UTC), so a preceding load
+  cannot be excluded; the operator reports the pattern without load after every
+  settle. Both are recorded facts, and H1 tests the operator's observation.
+  (inferred; to be decided by the synthetic)
+- Recommendation: on 7.2.6 there is nothing beyond keeping
+  `vm.watermark_scale_factor` 200 (provisional) and measuring the reclaim
+  caller; later the userspace governor on `memory.reclaim source=zswap`
   together with a per-pass budget/rate pursued upstream. See DESIGN section 6.
+
+## Operator decisions (2026-10-20, verbatim)
+
+| Item | Decision | Operator's words |
+|---|---|---|
+| Raise the game's steady `memory.low` (mitigation (a)) | **REJECTED** | "no, far too much, around 4G min is fine as set now. refaults stay low at 5G. ignore your suggestion." |
+| Lower `dev.slice` `memory.high` (mitigation (c)) | **REJECTED** | "no, we need it" |
+| `vm.watermark_scale_factor` 200 (mitigation (b)) | accepted provisionally; live since ~10:20 UTC, **not persisted** | (no quote recorded; accepted provisionally) |
+| Chunked, rate-governed writeback governor | **WANTED later** | "yes, we want that at some time" |
 
 ## Upstream references
 

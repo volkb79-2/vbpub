@@ -135,19 +135,29 @@ kswapd, not in the game's threads. Limits, from source:
 
 ## 6. Recommendation
 
-**For now (7.2.6, R1 intact): option 4, as the interim, conditioned on the
-caller measurement, plus raising the game scope's `memory.low` where Wings
-reads it (MEMORY-ARCHITECTURE.md mitigation (a)).** No new code, reversible,
-both already proposed. The memory.low half has a source basis (a cgroup below its
-effective low is skipped by the first reclaim pass, KERNEL-ANALYSIS section 6);
-the watermark half is only as good as its caller. Decision table for what the
-synthetic (or a traced real run with deep stacks) would change:
+## Operator decisions (2026-10-20, recorded verbatim)
+
+| Item | Decision | Operator's words |
+|---|---|---|
+| Raise the game's steady `memory.low` (mitigation (a)) | **REJECTED** | "no, far too much, around 4G min is fine as set now. refaults stay low at 5G. ignore your suggestion." |
+| Lower `dev.slice` `memory.high` (mitigation (c)) | **REJECTED** | "no, we need it" |
+| `vm.watermark_scale_factor` 200 (mitigation (b)) | accepted provisionally; live since ~10:20 UTC, **not persisted** | (no quote recorded; accepted provisionally) |
+| Chunked, rate-governed writeback governor | **WANTED later** | "yes, we want that at some time" |
+
+Within those constraints the honest answer for 7.2.6 is: **there is nothing to
+do beyond keeping `vm.watermark_scale_factor` 200 (provisional) and measuring
+the caller.** No userspace lever on 7.2.6 both keeps R1 and prevents the stall
+(section 3); the two other mitigations are rejected. What remains is evidence:
+find the reclaim caller (the synthetic's full-stack sampling, or a real-host
+trace with `kstack(32)` or deeper), because only that says whether the wsf change
+can help at all (it acts only on global direct reclaim). Decision table for what
+a measurement would change:
 
 | Measured caller | Meaning | Action |
 |---|---|---|
-| `global-direct` and H3 PASS | watermark relocation works | keep option 4, add (a); plan option 1 for when the kernel has it |
+| `global-direct` and H3 PASS | watermark relocation works | keep option 4 and persist it with the operator's approval; plan option 1 for when the kernel has it |
 | `global-direct` and H3 FAIL | kswapd blocks too | option 4 is not a fix; pursue option 3 upstream; the 7.2 userspace levers (section 3) need operator approval |
-| `memcg-high` | memory.high reclaim in the game's threads; the game's own min/low are ignored for target reclaim | watermarks and memory.low are irrelevant; raise/relax the game's `memory.high` or reduce its pressure; (3a)/(3b) |
+| `memcg-high` | memory.high reclaim in the game's threads; the game's own min/low are ignored for target reclaim | watermarks and memory.low are irrelevant; relaxing the game's `memory.high` is a separate operator decision (not yet asked); otherwise (3a)/(3b) upstream |
 | mixed | both | combine the above per share |
 
 **Later: option 1, the userspace governor on `memory.reclaim source=zswap`,
@@ -157,6 +167,7 @@ threads, but it governs the proactive path only; a per-pass budget or rate in th
 shrinker itself (3a/3b) is what bounds the reactive path. The reply draft asks
 the upstream author for both.
 
+Rejected by the operator (above): raising `memory.low`, lowering `dev.slice` `memory.high`.
 Not recommended: any option that turns the shrinker or writeback off (R1), and
 anything relying on `io.max` before it has been read and tried (section 3).
 
