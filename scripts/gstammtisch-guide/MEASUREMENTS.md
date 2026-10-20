@@ -442,9 +442,12 @@ background 4M, vda `nr_requests` 16, `max_sectors_kb` 64). Kernel settings at th
 **The burst, in the iostat capture** (the end of the zswap pool writeback): vda writes flat at
 **14 334–14 338 kB/s (= 14 MiB/s)** across the 5 s samples (one at 14 018), 100 % util, 2 100–2 800 w/s of
 ~5–7 KB requests, almost all to the swap partitions `vda6` + `vda7`. A flat rate at exactly 14 MiB/s points to a
-provider-side write cap **[I]**.
+provider-side write cap **[I]**. The iostat capture has **no timestamps**. Its read tail (dm-0 ~59 MB/s, r_await
+168 ms) is **unexplained**. The zpool trajectory inside the 146 s window is **unobserved**: 750M at the first
+row after the gap (11:22:00), 0 six seconds later; swap was already +1.5 G (5082M) at that first row.
 
-**Game D-state during the burst** (pid 4040733, 11:18:30–11:24 local; from the controller's trace,
+**Game D-state during the burst** (pid 4040733, 11:18:30–11:24 local; from the controller's bpftrace log on
+gstammtisch, `/var/log/mdt-stall/dstate-20261020-pid4040733.log`, **not in this repo**;
 IO-STALL-TESTING-GUIDE.md §10): **455.8 s** total in `blk_mq_get_tag` ← `submit_bio` ← **`shrink_memcg_cb`**
 (the zswap shrinker writeback, running in the game's OWN threads) and 12.9 s + 8.1 s in `try_to_free_pages`
 (global direct reclaim); each wait < 100 ms, but very many on many threads. **Mechanism [I]:** host memory

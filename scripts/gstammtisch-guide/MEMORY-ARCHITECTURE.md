@@ -94,9 +94,12 @@ the swap partitions **synchronously, in the game's own threads**, at whatever ra
 `blk_mq_get_tag`, but there are many of them, and the game stalls.
 
 **Evidence.** [M]
-- Burst 11:19:34–11:22:00 local: the monitor printed nothing for 146 s, zpool 769M → 0, disk swap +2.1 G,
+- Burst 11:19:34–11:22:00 local: the monitor printed nothing for 146 s, zpool 769M → 0 (**the trajectory inside the
+  146 s is unobserved**: 750M at the first row after the gap, 0 six seconds later; swap was already +1.5 G at that
+  row), disk swap +2.1 G,
   fps 29.9 → 5.9, recovered at 11:22:47; vda flat at 14 MiB/s, 100 % util, mostly to `vda6` + `vda7`.
-- Game D-state in that window: **455.8 s in `blk_mq_get_tag` ← `submit_bio` ← `shrink_memcg_cb`**, plus 12.9 s +
+- Game D-state in that window (the controller's bpftrace log on gstammtisch,
+  `/var/log/mdt-stall/dstate-20261020-pid4040733.log`, **not in this repo**): **455.8 s in `blk_mq_get_tag` ← `submit_bio` ← `shrink_memcg_cb`**, plus 12.9 s +
   8.1 s in `try_to_free_pages`.
 - Later, "B3: settled server" (all final settings live, a dev load running): game D total 16.25 s, **16.03 s of
   it `shrink_memcg_cb`**, and fps fell to 7 for ~35 s although the game's D-state max was only 90 ms.
@@ -107,20 +110,31 @@ the swap partitions **synchronously, in the game's own threads**, at whatever ra
 
 **Why `memory.zswap.max` is not a chunking lever.** [I] Lowering it only acts on the *next* store: it stops new
 pages entering the pool and does not push the existing pool out in controlled pieces. The upstream author of
-the proactive-writeback work makes the same argument.
+the proactive-writeback work argues the same in his replies on why `memory.zswap.max` is insufficient: it only
+acts on a new store, and the writeback per over-limit event is capped
+(<https://lkml.indiana.edu/2605.1/07304.html> and `/09790.html` in the same archive; read by the controller's
+web search 2026-10-20, not re-read by the author of this document).
 
-**Upstream status** (as read 2026-10-20; links go to the list archive):
+**Upstream status.** Source: a controller web search on 2026-10-20 of LKML mirror archives (**mirror archives;
+verify on lore.kernel.org**). Everything below is "posted, under review, not known to be merged":
 - "mm/zswap: Implement proactive writeback" (Hao Jia): v1 2026-05 with `memory.zswap.proactive_writeback`,
-  v3/v4 as `memory.reclaim zswap_writeback_only`, **v5 2026-06-29 as `memory.reclaim source=zswap`**.
+  v3/v4 as `memory.reclaim zswap_writeback_only`, v5 2026-06-29 as `memory.reclaim source=zswap`.
   <https://lkml.iu.edu/2606.3/08404.html>, <https://lkml.indiana.edu/2605.1/07304.html>
 - "mm/zswap: Fixes and improves shrinker" (batch writeback, v3 2026-07): <https://ratatoskr.run/lkml/2026/07/17333952/t>
-- **Kernel 7.2.6 on gstammtisch has no proactive-writeback symbols in `/proc/kallsyms`** [M], so the series is
-  **not merged in 7.2 [I]**.
+- **Not available on gstammtisch's kernel 7.2.6, [I] and resting only on one observation:** `/proc/kallsyms` of
+  that one build has no proactive-writeback symbols [M]. That is the sole basis for "not merged in 7.2".
+  A probe of `memory.reclaim` keys on an empty throwaway cgroup returned **EIO for every key, including a bogus
+  one**, so it was inconclusive and proves nothing either way.
 
 **Mitigation options: PROPOSED, none applied, each awaiting the operator.**
-- **(a)** Raise the game scope's steady `memory.low` to cover its steady set, so global reclaim takes from others first.
-- **(b)** Raise `vm.watermark_scale_factor` (now 50) so kswapd reclaims ahead of demand and the game stays out of direct reclaim.
-- **(c)** Lower `dev.slice` `memory.high` on this 16 GB host, so dev page cache and anon cannot starve the game.
+- **(a)** Raise the game scope's steady `memory.low` to cover its steady set, so global reclaim takes from others
+  first. **It must be done in the Wings steady-squeeze configuration** (the `WINGS_CG_STEADY_*` / steady-band
+  values, see [SOULMASK-STARTUP-MARKERS.md](SOULMASK-STARTUP-MARKERS.md)), otherwise the next start's squeeze
+  (low 9G → 5000M) undoes a runtime change.
+- **(b)** **[I]** Raise `vm.watermark_scale_factor` (now 50) so kswapd reclaims ahead of demand and the game stays
+  out of direct reclaim. Cost: more kswapd CPU and less usable free memory.
+- **(c)** **[I]** Lower `dev.slice` `memory.high` on this 16 GB host, so dev page cache and anon cannot starve the
+  game. Cost: dev builds reclaim themselves earlier and get slower.
 - **(d)** A userspace chunked governor, once `memory.reclaim source=zswap` is available: write the pool back in
   small paced pieces before pressure, instead of one unpaced burst.
 

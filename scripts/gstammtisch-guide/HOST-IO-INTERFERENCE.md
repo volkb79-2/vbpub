@@ -207,6 +207,12 @@ Findings:
 
 ### 4.6 Live B0/B1 and the read cost of small requests
 
+> **Scope pointer.** The bounded settings fix the *queue* stall (the journal and swap-in waits behind dev
+> writeback). The remaining stall on the settled server is a different mechanism: **zswap shrinker writeback
+> running in the game's own threads** under memory pressure; see
+> [MEMORY-ARCHITECTURE.md, "Burst writeback stall"](MEMORY-ARCHITECTURE.md#burst-writeback-stall-the-zswap-shrinker-has-no-rate-governor)
+> and [MEASUREMENTS.md M8](MEASUREMENTS.md#m8-soulmask-startup-to-steady-state-final-configuration-tmpfs-logs-eatmydata--ksm-bounded-io).
+
 **B0 vs B1, live.** [M 2026-10-20 07:42–07:58 UTC gstammtisch; source: `IO-STALL-TESTING-GUIDE.md` §10, program directory.] With `WS.log` already on tmpfs (SMT-01)
 and the same standard load as section 4.
 
