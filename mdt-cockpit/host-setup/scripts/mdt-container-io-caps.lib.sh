@@ -849,6 +849,69 @@ _mdt_io_wb_readback() {
   return "$bad"
 }
 
+# _mdt_io_interim_keys <sysctl|udev> <file>: the keys an interim file SETS, one per line (parsed, never
+# assumed): sysctl `vm.x`, or udev `queue/x` from ATTR{queue/x}.  Content that is not a recognised
+# assignment prints `(unparsed)` once so it can never be mistaken for "sets nothing".
+_mdt_io_interim_keys() {
+  local kind="$1" file="$2" meaningful parsed
+  meaningful=$(grep -cvE '^[[:space:]]*(#|;|$)' "$file" 2>/dev/null || true)
+  if [ "$kind" = sysctl ]; then
+    parsed=$(grep -vE '^[[:space:]]*(#|;)' "$file" 2>/dev/null | sed -n 's/^[[:space:]]*\([A-Za-z0-9_.]*\)[[:space:]]*=.*/\1/p')
+  else
+    parsed=$(grep -vE '^[[:space:]]*#' "$file" 2>/dev/null | grep -o 'ATTR{queue/[A-Za-z0-9_]*}' | sed 's/^ATTR{//; s/}$//')
+  fi
+  [ -z "$parsed" ] || printf '%s\n' "$parsed"
+  if [ "${meaningful:-0}" -gt 0 ] && [ -z "$parsed" ]; then echo "(unparsed)"; fi
+}
+
+# _mdt_io_interim_missing <sysctl|udev> <interim-file> <own-file>: the interim keys MDT's own file does not
+# carry, each prefixed by a space (empty output = every key is carried).  An absent own file carries nothing.
+_mdt_io_interim_missing() {
+  local kind="$1" interim="$2" own="$3" key out=""
+  while IFS= read -r key; do
+    [ -n "$key" ] || continue
+    if [ "$key" = "(unparsed)" ] || [ ! -f "$own" ]; then out="$out $key"; continue; fi
+    if [ "$kind" = sysctl ]; then
+      grep -qE "^[[:space:]]*${key//./\\.}[[:space:]]*=" "$own" || out="$out $key"
+    else
+      grep -qF "ATTR{$key}" "$own" || out="$out $key"
+    fi
+  done < <(_mdt_io_interim_keys "$kind" "$interim")
+  printf '%s' "$out"
+}
+
+# _mdt_io_interim_env_keys "<space separated keys>": the host-setup.env keys that would carry them.
+_mdt_io_interim_env_keys() {
+  local key out=""
+  for key in $1; do
+    case "$key" in
+      vm.dirty_bytes) out="$out IO_WRITEBACK_DIRTY_BYTES" ;;
+      vm.dirty_background_bytes) out="$out IO_WRITEBACK_DIRTY_BACKGROUND_BYTES" ;;
+      queue/nr_requests) out="$out IO_ROOT_QUEUE_NR_REQUESTS" ;;
+      queue/max_sectors_kb) out="$out IO_ROOT_QUEUE_MAX_SECTORS_KB" ;;
+      *) out="$out (no MDT key for $key)" ;;
+    esac
+  done
+  printf '%s' "${out# }"
+}
+
+# _mdt_io_disk_identity <devname>: `key=value` lines of the disk identity fields IOB-02 defines
+# (model, serial, size_bytes, wwn), read from sysfs; fields sysfs does not expose are omitted, never
+# invented.  virtio-blk exposes `serial`; SCSI/NVMe expose `device/model|serial|wwid`.
+_mdt_io_disk_identity() {
+  local base="${MDT_SYSFS_ROOT:-/sys}/block/$1" f v sectors
+  for f in model serial wwid; do
+    v=""
+    for src in "$base/device/$f" "$base/$f"; do
+      [ -r "$src" ] && { v=$(tr -s '[:space:]' ' ' < "$src" | sed 's/^ //; s/ $//'); [ -z "$v" ] || break; }
+    done
+    [ -z "$v" ] || printf '%s=%s\n' "$([ "$f" = wwid ] && echo wwn || echo "$f")" "$v"
+  done
+  if sectors=$(tr -d '[:space:]' < "$base/size" 2>/dev/null) && [ -n "$sectors" ]; then
+    printf 'size_bytes=%s\n' "$((sectors * 512))"
+  fi
+}
+
 # _mdt_apply_writeback_settings: render, apply, READ BACK, and only then retire the interim files.
 # Test seams: MDT_SYSCTL_D, MDT_UDEV_RULES_D (defaults /etc/sysctl.d, /etc/udev/rules.d), MDT_PROC_ROOT,
 # MDT_SYSFS_ROOT, MDT_ROOT_TARGET, and PATH shims for sysctl/udevadm.  rc 0 ok, 2 refused/failed.
@@ -911,14 +974,27 @@ _mdt_apply_writeback_settings() {
     echo "ERROR: the live writeback/queue values do not match host-setup.env after install; the interim files were left in place (still holding the previous values)." >&2
     return 2
   fi
-  # verified: only now retire the interim files (the udev one needs a rules reload to stop applying)
-  local removed=0
-  [ -f "$isfile" ] && { rm -f -- "$isfile"; echo "NOTICE: removed the interim file $isfile; $sfile replaces it"; removed=1; }
-  if [ -f "$iufile" ]; then
-    rm -f -- "$iufile"; echo "NOTICE: removed the interim file $iufile; $ufile replaces it"; removed=1
-    udevadm control --reload-rules >/dev/null 2>&1 || true
+  # Verified: retire an interim file ONLY when MDT's own file carries EVERY key the interim file sets
+  # (parsed from the interim file, never assumed) -- all of them verified live above.  Otherwise the
+  # interim file is the only thing still persisting a value, so it stays, with a WARN (MDT-HS-05 H-46).
+  local missing
+  if [ -f "$isfile" ]; then
+    missing=$(_mdt_io_interim_missing sysctl "$isfile" "$sfile")
+    if [ -z "$missing" ]; then
+      rm -f -- "$isfile"; echo "NOTICE: removed the interim file $isfile; $sfile replaces it"
+    else
+      echo "WARN: kept the interim file $isfile: it sets${missing} which $sfile does not carry, so it is still the only thing persisting them across a reboot. Remedy: run install.sh --wizard and set $(_mdt_io_interim_env_keys "$missing"), then re-run install.sh (or delete the interim file by hand if you no longer want those values)." >&2
+    fi
   fi
-  [ "$removed" = 0 ] || true
+  if [ -f "$iufile" ]; then
+    missing=$(_mdt_io_interim_missing udev "$iufile" "$ufile")
+    if [ -z "$missing" ]; then
+      rm -f -- "$iufile"; echo "NOTICE: removed the interim file $iufile; $ufile replaces it"
+      udevadm control --reload-rules >/dev/null 2>&1 || true
+    else
+      echo "WARN: kept the interim file $iufile: it sets${missing} which $ufile does not carry, so it is still the only thing persisting them across a reboot. Remedy: run install.sh --wizard and set $(_mdt_io_interim_env_keys "$missing"), then re-run install.sh (or delete the interim file by hand if you no longer want those values)." >&2
+    fi
+  fi
   if [ -n "$prev_dropped" ]; then
     echo "NOTICE: now set to kernel, MDT no longer renders:$prev_dropped. The running value is unchanged: MDT cannot restore the kernel's boot value at runtime (it does not know it). Reboot, or set the value by hand, to return to the kernel default." >&2
   fi

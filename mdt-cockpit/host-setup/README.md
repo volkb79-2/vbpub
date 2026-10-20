@@ -594,9 +594,16 @@ install time). The wizard proposes from a current benchmark result when one exis
 `KERNEL==<DEVNAME>` of the whole disk under `/`, derived with the MDT-HS-04 helpers; it sorts after
 `60-mdt-bfq-scheduler.rules` because a scheduler change resets `nr_requests`), applies them, reads `/proc/sys/vm/*` and
 `/sys/block/<disk>/queue/*` back and exits non-zero on a mismatch, naming the file and the remedy. Only after that does
-it remove the interim files `90-mdt-io-writeback-interim.conf` and `61-mdt-io-queue-interim.rules`, with a NOTICE. A
+it retire an interim file (`90-mdt-io-writeback-interim.conf`, `61-mdt-io-queue-interim.rules`), and only one whose
+every key (parsed from the interim file) is carried by MDT's own rendered file and verified live; otherwise the interim file
+is KEPT with a WARN naming the missing keys and the remedy (run the wizard and set them), because with `kernel` everywhere
+it would be the only thing persisting the live values. Values are validated strictly: no leading zeros, `dirty_bytes` at
+least two pages (the kernel ignores less), `max_sectors_kb` at least one page, at most the disk's `max_hw_sectors_kb`, and a
+multiple of its logical block size. The disk is always the whole disk under `/` (the wizard asks the same derivation as
+install.sh and check.sh, not `IO_DEV_PATH`), and a benchmark result is defaulted only when its device number AND at
+least one of model/serial/size/wwn match that disk. A
 key set back to `kernel` loses MDT's line but its running value cannot be restored (the kernel's boot value is unknown at
-runtime): reboot or set it by hand. `mdt-host-check.sh` reports each key as OK, MISMATCH, not managed, or could not read.
+runtime): reboot or set it by hand. `mdt-host-check.sh` reports each key as OK, MISMATCH, not managed, could not read, or LIVE ONLY, NOT PERSISTED (in force, but MDT's file is missing), and notices a later `sysctl.d` / `/etc/sysctl.conf` / udev file that sets the same key and would override MDT at boot.
 Why these values and what they cost (sequential reads fell from about 1.2-1.4 GB/s to 0.25-0.3 GB/s at 64 KB): see the
 DESIGN-GUIDE section on MDT-HS-05 and `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` sections 4.2-4.5 and 5.
 

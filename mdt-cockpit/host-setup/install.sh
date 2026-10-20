@@ -503,8 +503,12 @@ if _mdt_io_queue_keys_set; then
       echo "ERROR: cannot read max_hw_sectors_kb of $WB_DEV (${_wb_hw}), so IO_ROOT_QUEUE_MAX_SECTORS_KB=$_wb_max_sectors cannot be bounded; nothing was changed." >&2
       exit 2
     fi
-    if ! python3 "$HERE/mdt-host-setup-wizard.py" --check-max-sectors-kb "$_wb_max_sectors" --max-hw-sectors-kb "$_wb_hw"; then
-      echo "ERROR: IO_ROOT_QUEUE_MAX_SECTORS_KB=$_wb_max_sectors is not valid for $WB_DEV (max_hw_sectors_kb=$_wb_hw); nothing was changed." >&2
+    if ! _wb_lbs=$(_mdt_io_queue_attr "$WB_DEV" logical_block_size 2>&1); then
+      echo "ERROR: cannot read logical_block_size of $WB_DEV (${_wb_lbs}), so IO_ROOT_QUEUE_MAX_SECTORS_KB=$_wb_max_sectors cannot be checked for alignment; nothing was changed." >&2
+      exit 2
+    fi
+    if ! python3 "$HERE/mdt-host-setup-wizard.py" --check-max-sectors-kb "$_wb_max_sectors" --max-hw-sectors-kb "$_wb_hw" --logical-block-size "$_wb_lbs"; then
+      echo "ERROR: IO_ROOT_QUEUE_MAX_SECTORS_KB=$_wb_max_sectors is not valid for $WB_DEV (max_hw_sectors_kb=$_wb_hw, logical_block_size=$_wb_lbs); nothing was changed." >&2
       exit 2
     fi
   fi

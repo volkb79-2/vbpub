@@ -751,7 +751,21 @@ the MDT-HS-04 helpers; never typed). It sorts after `60-mdt-bfq-scheduler.rules`
 The interim files sort BEFORE the final ones (`-interim` before `.`), so both coexist harmlessly until the interim files are retired;
 sysctl.d likewise lets the later file win. install.sh applies them after the BFQ block (`sysctl -p`, udev reload, trigger with
 `--sysname-match`, settle), reads the live values back and fails non-zero on any mismatch or unreadable value, naming the file and the
-remedy; the rest of the install still completes. Only after the verified read-back are the interim files removed.
+remedy; the rest of the install still completes. An interim file is retired only when MDT's own file carries EVERY key the interim file sets (parsed from it, never
+assumed) and each is verified live; otherwise it is kept with a WARN naming the missing keys and the remedy, because with every key
+at `kernel` the interim file is the only thing persisting the live values (the state of gstammtisch when this shipped), and
+retiring it would silently lose the tuning at the next reboot (review H-46).
+
+**Strict values, derived disk, verified identity.** Values are positive integers without leading zeros. `vm.dirty_bytes` must be
+at least two pages: kernel `Documentation/admin-guide/sysctl/vm.rst` (v6.12) says a lower value "will be ignored and the old
+configuration will be retained", i.e. a silent no-op. `max_sectors_kb` must be at least one page (`blk_validate_limits`, v6.12, rejects a
+smaller user value), at most `max_hw_sectors_kb`, and a multiple of the logical block size: the same function does
+`round_down(min(max_hw, user), logical_block_size >> 9)`, so an unaligned value would read back lower and fail the read-back; it is refused up
+front. The wizard derives the root disk with `_mdt_root_disk_node`, like install.sh and check.sh, not from `IO_DEV_PATH` (the
+Docker-data device may be another disk). A benchmark result is defaulted only when the device number and at least one more IOB-02
+identity field (model, serial, size, wwn: read from sysfs, present on both sides) are equal; a device-number-only match is shown as
+"not verified for this disk" and not defaulted. `mdt-host-check.sh` separates "live only, not persisted" from OK and notices a later
+sysctl.d, `/etc/sysctl.conf` or udev rule that would override MDT's value at boot (later file wins).
 
 **Read-cost trade-off.** `max_sectors_kb` also caps read requests: sequential reads fell from about 1.2-1.4 GB/s to about
 0.25-0.3 GB/s at 64 KB (buffered reads were equal across 64-256 KB). That is why the wizard prints the cost next to the key and

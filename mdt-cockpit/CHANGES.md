@@ -7,6 +7,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## UNRELEASED
 
 ### Added (MDT-HS-05)
+- host-setup (review fixes): interim files are retired only when MDT's own file carries every key they set (else kept with a WARN); the wizard derives the root disk (`_mdt_root_disk_node`) instead of `IO_DEV_PATH`; benchmark proposals are defaulted only with a verified identity beyond the device number; values reject leading zeros, `dirty_bytes` below two pages and an unaligned or sub-page `max_sectors_kb`; `mdt-host-check.sh` reports "live only, not persisted" and notices later overrides
 - host-setup: four keys `IO_WRITEBACK_DIRTY_BYTES`, `IO_WRITEBACK_DIRTY_BACKGROUND_BYTES`, `IO_ROOT_QUEUE_NR_REQUESTS`, `IO_ROOT_QUEUE_MAX_SECTORS_KB` (positive integer or `kernel`, runtime-optional), asked by the wizard (benchmark proposal > existing > `kernel`, measured values shown only as a labelled example), validated by one shared validator, rendered by install.sh as `/etc/sysctl.d/90-mdt-io-writeback.conf` and `/etc/udev/rules.d/61-mdt-io-queue.rules` (derived whole disk, sorted after the BFQ rule), applied and read back (non-zero exit on mismatch), the interim files retired only after a verified apply; `mdt-host-check.sh` reports OK / MISMATCH / not managed / could not read per key
 
 ### Fixed (MDT-HS-04)

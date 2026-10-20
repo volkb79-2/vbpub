@@ -803,7 +803,7 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_SUBSLICE_IOPS_PCT": validate_pct_1_100,
         "DEV_ZSWAP_WRITEBACK": validate_yes_no,
         "DAMON_STAT_DISABLE_DEFAULT": validate_yes_no,
-        "IO_WRITEBACK_DIRTY_BYTES": validate_io_dirty_bytes,
+        "IO_WRITEBACK_DIRTY_BYTES": validate_io_dirty_bytes_floor,
         "IO_WRITEBACK_DIRTY_BACKGROUND_BYTES": validate_io_dirty_bytes,
         "IO_ROOT_QUEUE_NR_REQUESTS": validate_io_nr_requests,
         "IO_ROOT_QUEUE_MAX_SECTORS_KB": validate_io_max_sectors_kb,
@@ -1305,14 +1305,39 @@ IO_WRITEBACK_KEYS = (
     "IO_ROOT_QUEUE_MAX_SECTORS_KB",
 )
 IO_NR_REQUESTS_MIN = 4
-IO_MAX_SECTORS_KB_MIN = 4
+
+
+def _page_size() -> int:
+    """This host's page size (the kernel's floors below are expressed in pages)."""
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE"))
+    except (ValueError, OSError):
+        return 4096
+
+
+def io_dirty_bytes_min() -> int:
+    """Two pages. Kernel Documentation/admin-guide/sysctl/vm.rst (v6.12), dirty_bytes: "the minimum value
+    allowed for dirty_bytes is two pages (in bytes); any value lower than this limit will be ignored and
+    the old configuration will be retained" -- a lower value would be a silent no-op, never applied."""
+    return 2 * _page_size()
+
+
+def io_max_sectors_kb_min() -> int:
+    """One page, in KB (at least 4). Kernel block/blk-settings.c blk_validate_limits (v6.12) rejects a user
+    max_sectors below PAGE_SIZE / SECTOR_SIZE sectors."""
+    return max(4, _page_size() // 1024)
+
+
+_POSITIVE_NO_ZEROS = re.compile(r"[1-9][0-9]*")
 
 
 def _validate_kernel_or_number(value: str, minimum: int, what: str) -> str | None:
     if value in ("", "kernel"):
         return None
-    if not re.fullmatch(r"[0-9]+", value):
-        return f"{value!r} is not a positive whole number ({what}) or the word `kernel`"
+    if not _POSITIVE_NO_ZEROS.fullmatch(value):
+        return (
+            f"{value!r} is not a positive whole number without leading zeros ({what}) or the word `kernel`"
+        )
     if int(value) < minimum:
         return f"{what} must be at least {minimum} (or the word `kernel`)"
     return None
@@ -1322,16 +1347,21 @@ def validate_io_dirty_bytes(value: str) -> str | None:
     return _validate_kernel_or_number(value, 1, "bytes")
 
 
+def validate_io_dirty_bytes_floor(value: str) -> str | None:
+    """vm.dirty_bytes only: also at least two pages (see io_dirty_bytes_min)."""
+    return _validate_kernel_or_number(value, io_dirty_bytes_min(), "bytes; the kernel ignores a vm.dirty_bytes below two pages")
+
+
 def validate_io_nr_requests(value: str) -> str | None:
     return _validate_kernel_or_number(value, IO_NR_REQUESTS_MIN, "a request count")
 
 
 def validate_io_max_sectors_kb(value: str) -> str | None:
-    return _validate_kernel_or_number(value, IO_MAX_SECTORS_KB_MIN, "KB")
+    return _validate_kernel_or_number(value, io_max_sectors_kb_min(), "KB (at least one page)")
 
 
 def _io_number(value: str) -> int | None:
-    return int(value) if re.fullmatch(r"[0-9]+", value or "") else None
+    return int(value) if _POSITIVE_NO_ZEROS.fullmatch(value or "") else None
 
 
 def io_writeback_relation_errors(values: dict[str, str]) -> list[str]:
@@ -1345,11 +1375,21 @@ def io_writeback_relation_errors(values: dict[str, str]) -> list[str]:
     return []
 
 
-def io_max_sectors_hw_error(value: str, max_hw_kb: int) -> str | None:
-    """The disk-dependent bound: max_sectors_kb may not exceed the disk's max_hw_sectors_kb."""
+def io_max_sectors_hw_error(value: str, max_hw_kb: int, logical_block_size: int | None = None) -> str | None:
+    """The disk-dependent bounds: max_sectors_kb may not exceed the disk's max_hw_sectors_kb, and must be a
+    multiple of its logical block size. The kernel does not refuse the latter: blk_validate_limits (v6.12)
+    does `max_sectors = round_down(min(max_hw, user), logical_block_size >> 9)`, so an unaligned value
+    would read back LOWER than configured and the install's read-back would fail; refuse it up front."""
     number = _io_number(value)
-    if number is not None and number > max_hw_kb:
+    if number is None:
+        return None
+    if number > max_hw_kb:
         return f"max_sectors_kb {number} exceeds this disk's max_hw_sectors_kb ({max_hw_kb})"
+    if logical_block_size and (number * 1024) % logical_block_size:
+        return (
+            f"max_sectors_kb {number} is not a multiple of this disk's logical block size ({logical_block_size} bytes); "
+            f"the kernel would round it down to {(number * 1024) // logical_block_size * logical_block_size // 1024} KB"
+        )
     return None
 
 
@@ -2894,18 +2934,29 @@ def shell_helper(expression: str, *args: str, runner=subprocess.run, env: dict[s
     return result.stdout.strip()
 
 
-def derive_disk_facts(io_dev_path: str, *, runner=subprocess.run) -> tuple[str | None, int | None]:
-    """(whole-disk MAJ:MIN, max_hw_sectors_kb) of the disk behind `io_dev_path`, or None where it
-    cannot be derived (for example a wizard run away from the host): never guessed."""
-    if not io_dev_path or io_dev_path == "auto":
-        return None, None
-    majmin = shell_helper('_mdt_dev_majmin "$1"', io_dev_path, runner=runner)
-    node = shell_helper('_mdt_io_systemd_dev "$1"', io_dev_path, runner=runner)
-    hw = None
-    if node:
-        raw = shell_helper('_mdt_io_queue_attr "$1" max_hw_sectors_kb', node.removeprefix("/dev/"), runner=runner)
-        hw = int(raw) if raw and raw.isdigit() else None
-    return majmin, hw
+def derive_disk_facts(*, runner=subprocess.run) -> dict:
+    """Facts of the WHOLE DISK UNDER `/` (what install.sh and check.sh act on), derived through the shared
+    shell library's `_mdt_root_disk_node` -- NOT from IO_DEV_PATH, which names the Docker-data device and
+    may be another disk (MDT-HS-05 H-47).  Keys: majmin, max_hw_kb, logical_block_size, identity (model,
+    serial, size_bytes, wwn where sysfs has them).  Absent keys mean "could not be derived": never guessed."""
+    facts: dict = {"identity": {}}
+    node = shell_helper("_mdt_root_disk_node", runner=runner)
+    if not node:
+        return facts
+    name = node.removeprefix("/dev/")
+    majmin = shell_helper('_mdt_dev_majmin "$1"', node, runner=runner)
+    if majmin:
+        facts["majmin"] = majmin
+    for fact, attr in (("max_hw_kb", "max_hw_sectors_kb"), ("logical_block_size", "logical_block_size")):
+        raw = shell_helper('_mdt_io_queue_attr "$1" "$2"', name, attr, runner=runner)
+        if raw and raw.isdigit():
+            facts[fact] = int(raw)
+    ident = shell_helper('_mdt_io_disk_identity "$1"', name, runner=runner)
+    for line in (ident or "").splitlines():
+        key, _, value = line.partition("=")
+        if key and value:
+            facts["identity"][key] = int(value) if key == "size_bytes" and value.isdigit() else value
+    return facts
 
 
 @dataclass
@@ -2913,17 +2964,26 @@ class IobenchProposals:
     """What the benchmark result offers, read ONLY through the documented result.json schema
     (IOB-02 design section 4): `absent` = no benchmark = fall through, never an error."""
 
-    state: str  # absent | corrupt | unsupported | incomplete | implausible | unverified | stale | ok
+    state: str  # absent | corrupt | unsupported | incomplete | implausible | unverified | stale | unverified-identity | ok
     reason: str = ""
     values: dict[str, str] | None = None  # env key -> value
     labels: dict[str, str] | None = None  # env key -> provenance shown next to the proposal
 
 
-def load_iobench_writeback(path: Path | None, live_devno: str | None) -> IobenchProposals:
+# identity fields IOB-02 defines under identity.disk (design section 4) and the live sysfs counterpart
+IOBENCH_IDENTITY_FIELDS = ("model", "serial", "size_bytes", "wwn")
+
+
+def load_iobench_writeback(
+    path: Path | None, live_devno: str | None, live_identity: dict | None = None
+) -> IobenchProposals:
     """Read `proposals.writeback` from the IOB-02 result.json.  Coupled to the schema file only (no
     iobench import, no subprocess).  A proposal is offered as a default only for state `ok`: schema 1,
-    run.status complete, quality.plausible, and the result's disk identity equal to this host's disk
-    (full identity validation belongs to `iobench check`, which this reader does not replace)."""
+    run.status complete, quality.plausible, and the result's disk identity equal to the ROOT disk's: the
+    device number AND at least one more IOB-02 identity field (model/serial/size/wwn) present on both sides
+    and equal, none differing.  A result matching on the device number alone is `unverified-identity`: its
+    values are carried for display ("not verified for this disk") but never defaulted.  Full identity
+    validation belongs to `iobench check`, which this reader does not replace."""
     path = path or Path(os.environ.get("IOBENCH_RESULT") or IOBENCH_DEFAULT_RESULT)
     try:
         raw = path.read_text(encoding="utf-8")
@@ -2954,9 +3014,18 @@ def load_iobench_writeback(path: Path | None, live_devno: str | None) -> Iobench
     if plausible is not True:
         return IobenchProposals("implausible", "the benchmark marked its own result implausible (quality.plausible is not true)")
     if live_devno is None:
-        return IobenchProposals("unverified", "this host's disk could not be derived, so the result's identity cannot be compared")
+        return IobenchProposals("unverified", "this host's root disk could not be derived, so the result's identity cannot be compared")
     if devno != live_devno:
-        return IobenchProposals("stale", f"the result is for disk {devno}, this host's disk is {live_devno}")
+        return IobenchProposals("stale", f"the result is for disk {devno}, this host's root disk is {live_devno}")
+    result_identity = doc["identity"]["disk"]
+    compared = 0
+    for field in IOBENCH_IDENTITY_FIELDS:
+        theirs, mine = result_identity.get(field), (live_identity or {}).get(field)
+        if theirs in (None, "") or mine in (None, ""):
+            continue
+        if str(theirs).strip() != str(mine).strip():
+            return IobenchProposals("stale", f"the result's disk {field} ({theirs}) differs from this host's root disk ({mine})")
+        compared += 1
     notes_src = doc.get("quality", {})
     caution = []
     if doc.get("proposals", {}).get("target_missed"):
@@ -2977,6 +3046,14 @@ def load_iobench_writeback(path: Path | None, live_devno: str | None) -> Iobench
         labels[key] = ", ".join(label)
     if not values:
         return IobenchProposals("incomplete", "the result carries no usable proposals.writeback value")
+    if compared == 0:
+        labels = {k: f"{v}, not verified for this disk" for k, v in labels.items()}
+        return IobenchProposals(
+            "unverified-identity",
+            "the result matches this disk's device number only; no model/serial/size/wwn could be compared",
+            values,
+            labels,
+        )
     return IobenchProposals("ok", "", values, labels)
 
 
@@ -3014,7 +3091,6 @@ def step_io_writeback(
     cfg_current: dict[str, str],
     example_defaults: dict[str, str],
     *,
-    io_dev_path: str,
     iobench_result: Path | None = None,
     runner=subprocess.run,
 ) -> dict[str, str]:
@@ -3027,10 +3103,14 @@ def step_io_writeback(
         "behind a long backlog. Every key accepts a number or the word `kernel` (leave the kernel's value untouched). "
         "Measurement method and results: scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md sections 4 and 5."
     )
-    majmin, max_hw_kb = derive_disk_facts(io_dev_path, runner=runner)
-    bench = load_iobench_writeback(iobench_result, majmin)
+    facts = derive_disk_facts(runner=runner)
+    max_hw_kb = facts.get("max_hw_kb")
+    lbs = facts.get("logical_block_size")
+    bench = load_iobench_writeback(iobench_result, facts.get("majmin"), facts.get("identity"))
     if bench.state == "ok":
         out("A current benchmark result is available; its proposals are the defaults below (with their rule and confidence).")
+    elif bench.state == "unverified-identity":
+        out(f"A benchmark result exists but is {bench.reason}; its values are shown as labelled hints, NOT defaulted.")
     else:
         out(f"No usable benchmark ({bench.state}: {bench.reason}); proposing from the existing value, else `kernel`.")
     ex = GSTAMMTISCH_EXAMPLE
@@ -3040,10 +3120,12 @@ def step_io_writeback(
         f"nr_requests={ex['IO_ROOT_QUEUE_NR_REQUESTS']} max_sectors_kb={ex['IO_ROOT_QUEUE_MAX_SECTORS_KB']}."
     )
     if max_hw_kb is None:
-        out("This disk's max_hw_sectors_kb could not be read here; install.sh checks the max_sectors_kb bound against the live disk.")
+        out("The root disk's max_hw_sectors_kb could not be read here; install.sh checks the max_sectors_kb bound against the live disk.")
     chosen: dict[str, str] = {}
     for key in IO_WRITEBACK_KEYS:
         out(_IO_WRITEBACK_EXPLAIN[key], indent="  ", hang="  ")
+        if bench.state == "unverified-identity" and bench.values and key in bench.values:
+            out(f"hint (not verified for this disk, not defaulted): {bench.values[key]} ({bench.labels[key]})", indent="  ")
         if bench.state == "ok" and bench.values and key in bench.values:
             default, source = bench.values[key], bench.labels[key]
         elif cfg_current.get(key, "") != "":
@@ -3058,11 +3140,11 @@ def step_io_writeback(
                 relation = io_writeback_relation_errors({**_chosen, key: value})
                 return relation[0] if relation else None
         elif key == "IO_ROOT_QUEUE_MAX_SECTORS_KB":
-            def validate(value: str, _hw=max_hw_kb) -> str | None:
+            def validate(value: str, _hw=max_hw_kb, _lbs=lbs) -> str | None:
                 error = validate_io_max_sectors_kb(value)
                 if error or _hw is None:
                     return error
-                return io_max_sectors_hw_error(value, _hw)
+                return io_max_sectors_hw_error(value, _hw, _lbs)
         else:
             validate = _config_value_validators()[key]
         chosen[key] = ask(f"{_IO_WRITEBACK_LABEL[key]} ({key})", default, validate=validate, default_source=source)
@@ -3247,6 +3329,13 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="internal (install.sh): check IO_ROOT_QUEUE_MAX_SECTORS_KB against --max-hw-sectors-kb and exit",
     )
     parser.add_argument(
+        "--logical-block-size",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="internal (install.sh): the live disk's logical block size for --check-max-sectors-kb",
+    )
+    parser.add_argument(
         "--max-hw-sectors-kb",
         type=int,
         default=None,
@@ -3304,7 +3393,7 @@ def main(argv: list[str] | None = None) -> int:
             print("ERROR: --check-max-sectors-kb needs --max-hw-sectors-kb", file=sys.stderr)
             return 2
         error = validate_io_max_sectors_kb(args.check_max_sectors_kb) or io_max_sectors_hw_error(
-            args.check_max_sectors_kb, args.max_hw_sectors_kb
+            args.check_max_sectors_kb, args.max_hw_sectors_kb, args.logical_block_size
         )
         if error:
             print(f"ERROR: IO_ROOT_QUEUE_MAX_SECTORS_KB: {error}", file=sys.stderr)
@@ -3450,9 +3539,7 @@ def main(argv: list[str] | None = None) -> int:
             baseline_results = read_baseline_results(Path(baseline_env))
         walked.update(step_io_settings(cfg_current, example_defaults, baseline_results))
         walked.update(
-            step_io_writeback(
-                cfg_current, example_defaults, io_dev_path=io_dev_path, iobench_result=args.iobench_result
-            )
+            step_io_writeback(cfg_current, example_defaults, iobench_result=args.iobench_result)
         )
     except (ValueError, EOFError) as exc:
         abort_io_baseline(baseline_job)

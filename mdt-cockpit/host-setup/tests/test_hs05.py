@@ -37,6 +37,30 @@ class ValidatorTests(unittest.TestCase):
             for bad in ("-1", "1.5", "16M", "Kernel", "off", "0x10"):
                 self.assertIsNotNone(v[key](bad), (key, bad))
 
+    def test_leading_zeros_and_kernel_floors_are_refused(self) -> None:
+        for key in KEYS:
+            for bad in ("016", "007", "00", "0010"):
+                self.assertIsNotNone(WIZARD._config_value_validators()[key](bad), (key, bad))
+        v = WIZARD._config_value_validators()
+        floor = WIZARD.io_dirty_bytes_min()
+        self.assertGreaterEqual(floor, 8192)                      # two pages (vm.rst: lower values are ignored)
+        self.assertIsNotNone(v["IO_WRITEBACK_DIRTY_BYTES"](str(floor - 1)))
+        self.assertIn("two pages", v["IO_WRITEBACK_DIRTY_BYTES"]("4096"))
+        self.assertIsNone(v["IO_WRITEBACK_DIRTY_BYTES"](str(floor)))
+        self.assertIsNone(v["IO_WRITEBACK_DIRTY_BACKGROUND_BYTES"]("4096"))   # no floor documented for background
+        self.assertIsNotNone(v["IO_ROOT_QUEUE_MAX_SECTORS_KB"](str(WIZARD.io_max_sectors_kb_min() - 1)))
+        self.assertIsNone(v["IO_ROOT_QUEUE_MAX_SECTORS_KB"](str(WIZARD.io_max_sectors_kb_min())))
+
+    def test_max_sectors_must_be_a_multiple_of_the_logical_block_size(self) -> None:
+        err = WIZARD.io_max_sectors_hw_error
+        self.assertIsNotNone(err("6", 1280, 4096))      # 6 KB is not a multiple of 4 KB
+        self.assertIn("round it down to 4 KB", err("6", 1280, 4096))
+        self.assertIsNone(err("8", 1280, 4096))
+        self.assertIsNone(err("6", 1280, 512))
+        self.assertIsNone(err("6", 1280, None))          # unknown block size: install.sh reads it
+        source = (ROOT / "install.sh").read_text()
+        self.assertIn("--logical-block-size", source)
+
     def test_bounds(self) -> None:
         self.assertIsNotNone(WIZARD.validate_io_nr_requests("3"))
         self.assertIsNone(WIZARD.validate_io_nr_requests("4"))
@@ -236,6 +260,47 @@ class ApplyTests(Fixture):
         self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
         self.assertIn("could not read the live /sys/block/vda/queue/nr_requests", r.stderr)
 
+    def test_all_kernel_with_interim_files_keeps_them_and_warns(self) -> None:
+        """H-46, exactly gstammtisch today: the env says kernel everywhere while the interim files are the
+        ONLY thing persisting the live values; retiring them would silently lose the tuning at reboot."""
+        interim_s, interim_u = self.interim()
+        r = self.apply(**ALL_KERNEL)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(interim_s.exists() and interim_u.exists())
+        self.assertIn("WARN: kept the interim file", r.stderr)
+        self.assertIn("vm.dirty_bytes", r.stderr)
+        self.assertIn("queue/nr_requests", r.stderr)
+        self.assertIn("IO_WRITEBACK_DIRTY_BYTES", r.stderr)
+        self.assertIn("install.sh --wizard", r.stderr)
+        self.assertNotIn("removed the interim file", r.stdout)
+
+    def test_an_interim_file_is_retired_only_when_every_key_it_sets_is_carried(self) -> None:
+        interim_s, interim_u = self.interim()
+        interim_s.write_text("vm.dirty_bytes = 16777216\nvm.dirty_background_bytes = 4194304\n")
+        interim_u.write_text('KERNEL=="vda", ATTR{queue/nr_requests}="16", ATTR{queue/max_sectors_kb}="64"\n')
+        partial = {**ALL_KERNEL, "IO_WRITEBACK_DIRTY_BYTES": "16777216", "IO_ROOT_QUEUE_NR_REQUESTS": "16"}
+        r = self.apply(**partial)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(interim_s.exists(), "the interim also sets dirty_background_bytes, which MDT does not carry")
+        self.assertTrue(interim_u.exists(), "the interim also sets max_sectors_kb, which MDT does not carry")
+        self.assertIn("vm.dirty_background_bytes", r.stderr)
+        self.assertIn("queue/max_sectors_kb", r.stderr)
+        r = self.apply(**FULL)             # now every key is carried and verified
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(interim_s.exists())
+        self.assertFalse(interim_u.exists())
+
+    def test_an_interim_file_with_keys_mdt_does_not_manage_or_unparsable_content_is_kept(self) -> None:
+        interim_s, interim_u = self.interim()
+        interim_s.write_text("vm.dirty_bytes = 16777216\nvm.swappiness = 10\n")
+        interim_u.write_text("something weird\n")
+        r = self.apply(**FULL)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(interim_s.exists())
+        self.assertIn("vm.swappiness", r.stderr)
+        self.assertTrue(interim_u.exists())
+        self.assertIn("(unparsed)", r.stderr)
+
     def test_a_key_set_back_to_kernel_loses_its_line_and_says_it_cannot_restore_the_value(self) -> None:
         self.assertEqual(self.apply(**FULL).returncode, 0)
         r = self.apply(**{**FULL, "IO_ROOT_QUEUE_MAX_SECTORS_KB": "kernel", "IO_WRITEBACK_DIRTY_BYTES": "kernel",
@@ -272,6 +337,16 @@ class ApplyTests(Fixture):
         pre = install[:install.index("# === COMMIT POINT")]
         self.assertIn("_mdt_io_queue_keys_set", pre)       # derivation + bound are PREFLIGHT, before the commit point
         self.assertNotIn("_mdt_apply_writeback_settings", pre)
+
+
+class IdentityShellTests(Fixture):
+    def test_the_disk_identity_is_read_from_sysfs_and_omits_what_is_absent(self) -> None:
+        (self.host.sys / "block" / "vda" / "size").write_text("1024\n")
+        (self.host.sys / "block" / "vda" / "serial").write_text("abc123\n")
+        r = self.bash("_mdt_io_disk_identity vda")
+        self.assertIn("serial=abc123", r.stdout)
+        self.assertIn("size_bytes=524288", r.stdout)
+        self.assertNotIn("model=", r.stdout)       # no device/model file: omitted, never invented
 
 
 class CheckShTests(Fixture):
@@ -314,6 +389,41 @@ class CheckShTests(Fixture):
             self.assertEqual(out.count("not managed"), 4, out)
             self.assertNotIn("OK", out)
 
+    def test_live_but_not_persisted_is_its_own_state_not_ok(self) -> None:
+        """H-51: the live value matches the env, MDT's rendered file is gone: a reboot loses it."""
+        for name, value in (("dirty_bytes", "16777216"), ("dirty_background_bytes", "4194304")):
+            (self.vm / name).write_text(value + "\n")
+        (self.queue / "nr_requests").write_text("16\n")
+        (self.queue / "max_sectors_kb").write_text("64\n")
+        out = self.run_check(**FULL)                 # no 90-mdt-io-writeback.conf / 61-mdt-io-queue.rules rendered
+        self.assertIn("WARN vm.dirty_bytes = 16777216 is LIVE ONLY, NOT PERSISTED", out)
+        self.assertIn("WARN vda nr_requests = 16 is LIVE ONLY, NOT PERSISTED", out)
+        self.assertNotIn("OK vm.dirty_bytes", out)
+        self.assertNotIn("OK vda nr_requests", out)
+
+    def test_a_later_sysctl_or_udev_file_that_sets_a_managed_key_is_noticed(self) -> None:
+        self.assertEqual(self.bash("_mdt_apply_writeback_settings", **FULL).returncode, 0)
+        later = self.host.base / "usr-sysctl"
+        later.mkdir()
+        (later / "99-tuning.conf").write_text("vm.dirty_bytes = 1073741824\n")
+        (later / "10-early.conf").write_text("vm.dirty_bytes = 1073741824\n")       # sorts BEFORE ours: harmless
+        (later / "99-unrelated.conf").write_text("vm.swappiness = 10\n")
+        conf = self.host.base / "sysctl.conf"
+        conf.write_text("vm.dirty_background_bytes=1\n")
+        rules = self.host.base / "usr-udev"
+        rules.mkdir()
+        (rules / "99-queue.rules").write_text('ACTION=="add", KERNEL=="vda", ATTR{queue/nr_requests}="256"\n')
+        out = self.run_check(**FULL, MDT_SYSCTL_SCAN_DIRS=f"{self.sd}:{later}", MDT_SYSCTL_CONF=str(conf),
+                             MDT_UDEV_SCAN_DIRS=f"{self.ud}:{rules}")
+        self.assertIn("99-tuning.conf also sets a key MDT manages", out)
+        self.assertNotIn("10-early.conf", out)
+        self.assertNotIn("99-unrelated.conf", out)
+        self.assertIn("sysctl.conf also sets a key MDT manages", out)
+        self.assertIn("99-queue.rules also sets a queue attribute MDT manages", out)
+        clean = self.run_check(**FULL, MDT_SYSCTL_SCAN_DIRS=str(self.sd), MDT_SYSCTL_CONF="/nonexistent",
+                               MDT_UDEV_SCAN_DIRS=str(self.ud))
+        self.assertNotIn("NOTICE", clean)
+
     def test_an_underivable_disk_is_reported_not_skipped(self) -> None:
         out = self.run_check(**FULL, FAKE_FINDMNT_SOURCE="overlay")
         self.assertIn("could not derive the whole disk", out)
@@ -328,7 +438,8 @@ class WizardProposalTests(unittest.TestCase):
     def result(self, **over) -> dict:
         doc = {
             "schema": 1, "run": {"status": "complete"}, "quality": {"plausible": True, "limits": []},
-            "identity": {"disk": {"devno": self.DEVNO}},
+            "identity": {"disk": {"devno": self.DEVNO, "model": "QEMU HARDDISK", "serial": "abc123",
+                                  "size_bytes": 549755813888}},
             "proposals": {"writeback": {
                 "dirty_bytes": {"value": 8388608, "rule": "R1", "confidence": "measured+confirmed"},
                 "dirty_background_bytes": {"value": 2097152, "rule": "R1b", "confidence": "ratio-inferred"},
@@ -347,15 +458,25 @@ class WizardProposalTests(unittest.TestCase):
         p.write_text(doc if isinstance(doc, str) else json.dumps(doc))
         return p
 
-    def runner(self, majmin: str | None = DEVNO, hw: int | None = 1280):
+    IDENT = {"model": "QEMU HARDDISK", "serial": "abc123", "size_bytes": "549755813888"}
+
+    def runner(self, majmin: str | None = DEVNO, hw: int | None = 1280, lbs: int = 512, ident: dict | None = None):
+        self.calls: list[str] = []
+        ident = self.IDENT if ident is None else ident
+
         def run(cmd, **kwargs):
             expr = cmd[2]
-            if "_mdt_dev_majmin" in expr:
-                out, rc = (majmin or ""), (0 if majmin else 1)
-            elif "_mdt_io_systemd_dev" in expr:
+            self.calls.append(expr + " " + " ".join(cmd[5:]))
+            if "_mdt_root_disk_node" in expr:
                 out, rc = "/dev/vda", 0
-            elif "max_hw_sectors_kb" in expr:
+            elif "_mdt_dev_majmin" in expr:
+                out, rc = (majmin or ""), (0 if majmin else 1)
+            elif "_mdt_io_disk_identity" in expr:
+                out, rc = "\n".join(f"{k}={v}" for k, v in ident.items()), 0
+            elif "_mdt_io_queue_attr" in expr and cmd[-1] == "max_hw_sectors_kb":
                 out, rc = (str(hw) if hw is not None else ""), (0 if hw is not None else 1)
+            elif "_mdt_io_queue_attr" in expr and cmd[-1] == "logical_block_size":
+                out, rc = str(lbs), 0
             else:
                 out, rc = "", 1
             return subprocess.CompletedProcess(cmd, rc, out + "\n", "")
@@ -372,7 +493,7 @@ class WizardProposalTests(unittest.TestCase):
         printed: list[str] = []
         with mock.patch.object(WIZARD, "ask", side_effect=fake_ask), \
              mock.patch.object(WIZARD, "out", side_effect=lambda text="", **k: printed.append(text)):
-            chosen = WIZARD.step_io_writeback(cfg, {}, io_dev_path="/dev/null", iobench_result=result_path,
+            chosen = WIZARD.step_io_writeback(cfg, {}, iobench_result=result_path,
                                               runner=kw.get("runner", self.runner()))
         return chosen, asked, "\n".join(printed)
 
@@ -428,6 +549,49 @@ class WizardProposalTests(unittest.TestCase):
         for word in ("formula-only", "target missed", "fresh_write not measured"):
             self.assertIn(word, label)
 
+    def test_the_wizard_derives_the_ROOT_disk_not_io_dev_path(self) -> None:
+        """H-47: IO_DEV_PATH names the Docker-data device and may be another disk; the queue keys act on the
+        disk under /, so the bound, the identity and the benchmark all come from `_mdt_root_disk_node`."""
+        import inspect
+        self.assertNotIn("io_dev_path", inspect.signature(WIZARD.step_io_writeback).parameters)
+        seen = {}
+
+        def fake_ask(label, default, validate=None, **_):
+            seen[label.rsplit("(", 1)[1].rstrip(")")] = validate
+            return default
+
+        run = self.runner(hw=1280)
+        # a benchmark taken on ANOTHER disk (the IO_DEV_PATH disk, 8:0) must not be offered
+        other = self.write(self.result(identity={"disk": {"devno": "8:0", "model": "X"}}))
+        with mock.patch.object(WIZARD, "ask", side_effect=fake_ask), mock.patch.object(WIZARD, "out"):
+            chosen = WIZARD.step_io_writeback({}, {}, iobench_result=other, runner=run)
+        self.assertEqual(chosen["IO_WRITEBACK_DIRTY_BYTES"], "kernel")
+        self.assertTrue(any("_mdt_root_disk_node" in c for c in self.calls))
+        self.assertFalse(any("IO_DEV_PATH" in c for c in self.calls))
+        self.assertIsNotNone(seen["IO_ROOT_QUEUE_MAX_SECTORS_KB"]("4096"))     # bounded by the ROOT disk's 1280
+
+    def test_a_result_matching_only_the_device_number_is_labelled_and_not_defaulted(self) -> None:
+        """H-48."""
+        doc = self.result(identity={"disk": {"devno": self.DEVNO}})
+        chosen, asked, printed = self.step({}, self.write(doc))
+        self.assertEqual(chosen["IO_WRITEBACK_DIRTY_BYTES"], "kernel", "never defaulted without a verified identity")
+        self.assertIn("not verified for this disk", printed)
+        self.assertIn("8388608", printed)                       # shown as a hint
+        loaded = WIZARD.load_iobench_writeback(self.write(doc), self.DEVNO, self.IDENT)
+        self.assertEqual(loaded.state, "unverified-identity")
+        self.assertIn("not verified for this disk", loaded.labels["IO_WRITEBACK_DIRTY_BYTES"])
+
+    def test_identity_fields_that_differ_make_the_result_stale_and_matching_ones_verify_it(self) -> None:
+        for field, value in (("model", "OTHER"), ("serial", "zzz"), ("size_bytes", 1)):
+            doc = self.result()
+            doc["identity"]["disk"][field] = value
+            loaded = WIZARD.load_iobench_writeback(self.write(doc), self.DEVNO, self.IDENT)
+            self.assertEqual(loaded.state, "stale", field)
+        loaded = WIZARD.load_iobench_writeback(self.write(self.result()), self.DEVNO, self.IDENT)
+        self.assertEqual(loaded.state, "ok")
+        partial = {"model": "QEMU HARDDISK"}               # one more field present on both sides is enough
+        self.assertEqual(WIZARD.load_iobench_writeback(self.write(self.result()), self.DEVNO, partial).state, "ok")
+
     def test_the_reader_is_coupled_to_the_schema_file_only(self) -> None:
         source = (ROOT / "mdt-host-setup-wizard.py").read_text()
         reader = source[source.index("def load_iobench_writeback"):source.index("_IO_WRITEBACK_EXPLAIN")]
@@ -444,7 +608,7 @@ class WizardProposalTests(unittest.TestCase):
             return default
 
         with mock.patch.object(WIZARD, "ask", side_effect=fake_ask), mock.patch.object(WIZARD, "out"):
-            WIZARD.step_io_writeback({}, {}, io_dev_path="/dev/null", iobench_result=Path("/nonexistent"),
+            WIZARD.step_io_writeback({}, {}, iobench_result=Path("/nonexistent"),
                                      runner=self.runner(hw=1280))
         self.assertIsNotNone(seen["IO_ROOT_QUEUE_MAX_SECTORS_KB"]("4096"))     # above max_hw 1280
         self.assertIsNone(seen["IO_ROOT_QUEUE_MAX_SECTORS_KB"]("64"))
