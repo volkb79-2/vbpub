@@ -713,7 +713,7 @@ mapper path itself works. The best-supported model:
 
 **Consequence: single spelling and reset-then-set are necessary but do NOT heal an upgrade.** On the upgrade
 from the mapper spelling to `/dev/vda`, the reset turns the old mapper entry into a stale all-max entry that
-can win. So `_mdt_io_apply_verify` self-heals ONCE per run: when the read-back shows the intended disk missing
+can win. So `_mdt_io_queue_flush` (with `_mdt_io_queue_add`) self-heals ONCE per run: when the read-back shows the intended disk missing
 or at the wrong values while `systemctl show` reports the intended ones, it logs a WARN naming the reason, runs
 one `systemctl daemon-reload`, re-applies and re-verifies; a second mismatch fails. **Reload semantics (MDT-HS-06):** the unit of
 work is the BATCH, not the unit. On the live host (2026-10-20 10:00 UTC) the spelling migration left stale entries on several units;

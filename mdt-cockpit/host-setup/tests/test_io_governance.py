@@ -121,22 +121,15 @@ elif args == ["daemon-reload"]:
     for unit, entries in list(state.get("paths", {}).items()):
         if os.environ.get("FAKE_RELOAD_NOOP"):
             break
-        if os.environ.get("FAKE_RELOAD_CLEARS_KERNEL"):
-            # MDT-HS-06 (measured 2026-10-20): the reload rebuilds the lists but does NOT re-push the kernel
-            # state of units applied earlier; every managed unit's io.max reads empty until set-property again
-            state["paths"][unit] = [[p, {k: v for k, v in vals.items() if v != "max"}] for p, vals in entries
-                                    if any(v != "max" for v in vals.values())]
-            d = cgroup_dir(unit)
-            if os.path.isdir(d):
-                open(os.path.join(d, "io.max"), "w").write("")
-            continue
         kept = []
         for path, vals in entries:
             live = {k: v for k, v in vals.items() if v != "max"}
             if live:
                 kept.append([path, live])
         state["paths"][unit] = kept
-        recompute(unit)
+        # MDT-HS-06 (live evidence 2026-10-20): a reload rebuilds systemd's lists from the drop-ins but does NOT
+        # re-push kernel io.max (a manual daemon-reload left dev-gates' empty io.max empty; only the next
+        # set-property restored it).  So the kernel is left exactly as it was: only set-property writes it.
     save()
 elif args and args[0] == "show" and os.environ.get("FAKE_SHOW_FAILS"):
     sys.stderr.write("Failed to connect to bus\n")

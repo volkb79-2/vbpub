@@ -607,48 +607,49 @@ _mdt_io_queue_verify() {
 }
 
 # _mdt_io_queue_flush: verify the whole batch, heal at most once, leave each unit's result in MDT_IOQ_RC
-# (0 verified, 1 NOT in effect, 2 not verifiable).  rc 1 when any unit is 1.
+# (0 verified, 1 NOT in effect, 2 not verifiable).  rc 1 when any unit is 1.  Phases: (1) verify ALL;
+# (2) if any disagrees and systemd reports its values and the limiter allows: ONE reload; (3) re-apply
+# ALL; (4) verify ALL again (mirroring phase 1).
 _mdt_io_queue_flush() {
-  local n=${#MDT_IOQ_UNITS[@]} i err rb wb ri wi failed=0 reporting=0 bad_units=""
+  local n=${#MDT_IOQ_UNITS[@]} i err rb wb ri wi failed=0 reporting=0 disagree="" apply_failed=0
   local -a applied_ok
   for ((i = 0; i < n; i++)); do
-    if [ "${MDT_IOQ_RC[$i]}" = 1 ]; then applied_ok[i]=0; continue; fi    # its set-property failed (logged)
+    if [ "${MDT_IOQ_RC[$i]}" = 1 ]; then applied_ok[i]=0; apply_failed=1; continue; fi    # its set-property failed (logged)
     applied_ok[i]=1
-    _mdt_io_queue_verify "$i" 1
+    MDT_VERIFY_REMEDY="whether this is the stale-entry case is evaluated next; the final message names what was tried" _mdt_io_queue_verify "$i" 1
   done
   for ((i = 0; i < n; i++)); do
-    [ "${MDT_IOQ_RC[$i]}" = 1 ] || continue
-    bad_units="$bad_units ${MDT_IOQ_UNITS[$i]}"
-    [ "${applied_ok[$i]}" = 1 ] || continue
+    [ "${applied_ok[$i]}" = 1 ] && [ "${MDT_IOQ_RC[$i]}" = 1 ] || continue
+    disagree="$disagree ${MDT_IOQ_UNITS[$i]}"
     read -r rb wb ri wi <<<"${MDT_IOQ_WANT[$i]}"
     ! _mdt_systemd_reports_io "${MDT_IOQ_UNITS[$i]}" "$rb" "$wb" "$ri" "$wi" || reporting=1
   done
-  if [ -z "$bad_units" ]; then return 0; fi
-  # nothing to heal if systemd itself does not report the intended values for any failing unit
+  if [ -z "$disagree" ]; then return "$apply_failed"; fi
   if [ "$reporting" = 0 ]; then
+    # systemd itself does not report the intended values for any disagreeing unit: not the stale-entry case
     for ((i = 0; i < n; i++)); do
-      [ "${MDT_IOQ_RC[$i]}" = 1 ] && [ "${applied_ok[$i]}" = 1 ] || continue
+      [ "${applied_ok[$i]}" = 1 ] && [ "${MDT_IOQ_RC[$i]}" = 1 ] || continue
       MDT_VERIFY_REMEDY="systemd does not report all the intended values either, so this is not the stale-entry case and no reload was attempted; $_MDT_IO_OTHER_CAUSES" _mdt_io_queue_verify "$i" 0
     done
   elif ! _mdt_io_reload_allowed; then
     for ((i = 0; i < n; i++)); do
-      [ "${MDT_IOQ_RC[$i]}" = 1 ] && [ "${applied_ok[$i]}" = 1 ] || continue
+      [ "${applied_ok[$i]}" = 1 ] && [ "${MDT_IOQ_RC[$i]}" = 1 ] || continue
       MDT_VERIFY_REMEDY="reload suppressed: $MDT_IO_SUPPRESS_INFO; $_MDT_IO_OTHER_CAUSES" _mdt_io_queue_verify "$i" 0
     done
   else
     MDT_IO_RELOADED=1
-    if ! _mdt_io_stamp_write "units=${bad_units# } kernel-disagrees-with-show"; then
+    if ! _mdt_io_stamp_write "units=${disagree# } kernel-disagrees-with-show"; then
       log "ERROR: cannot record the self-heal reload under $(dirname "$(_mdt_io_stamp_file)") — refusing to reload without a rate limit; fix that directory and rerun"
-      for ((i = 0; i < n; i++)); do [ "${MDT_IOQ_RC[$i]}" = 1 ] && [ "${applied_ok[$i]}" = 1 ] && MDT_IOQ_RC[i]=1; done
     else
-      log "WARN:${bad_units}: systemctl show reports the intended IO limits but the kernel io.max disagrees — a stale per-spelling limit entry inside systemd (invisible in show) overrides it; running ONE 'systemctl daemon-reload' to rebuild systemd's list from its drop-ins, then re-applying EVERY managed unit and re-verifying all of them (at most once per ${MDT_IO_RELOAD_WINDOW_SECONDS}s across runs)"
+      log "WARN:${disagree}: systemctl show reports the intended IO limits but the kernel io.max disagrees — a stale per-spelling limit entry inside systemd (invisible in show) overrides it; running ONE 'systemctl daemon-reload' to rebuild systemd's list from its drop-ins, then re-applying EVERY managed unit and re-verifying all of them (at most once per ${MDT_IO_RELOAD_WINDOW_SECONDS}s across runs)"
       if ! err=$(systemctl daemon-reload 2>&1); then
-        log "ERROR: systemctl daemon-reload failed ($err) — the intended caps on${bad_units} are NOT in effect; fix the daemon-reload failure and rerun"
-        for ((i = 0; i < n; i++)); do [ "${MDT_IOQ_RC[$i]}" = 1 ] && [ "${applied_ok[$i]}" = 1 ] && MDT_IOQ_RC[i]=1; done
+        log "ERROR: systemctl daemon-reload failed ($err) — the intended caps on${disagree} are NOT in effect; fix the daemon-reload failure and rerun"
       else
-        for ((i = 0; i < n; i++)); do
-          if ! _mdt_io_queue_apply "$i"; then MDT_IOQ_RC[i]=1; applied_ok[i]=0; continue; fi
-          applied_ok[i]=1
+        for ((i = 0; i < n; i++)); do          # re-apply ALL ...
+          if _mdt_io_queue_apply "$i"; then applied_ok[i]=1; else MDT_IOQ_RC[i]=1; applied_ok[i]=0; fi
+        done
+        for ((i = 0; i < n; i++)); do          # ... then verify ALL (mirrors phase 1)
+          [ "${applied_ok[$i]}" = 1 ] || continue
           MDT_VERIFY_REMEDY="the stale-entry heal (one daemon-reload, then every managed unit re-applied) was tried and did not fix it; $_MDT_IO_OTHER_CAUSES" _mdt_io_queue_verify "$i" 0
         done
       fi
