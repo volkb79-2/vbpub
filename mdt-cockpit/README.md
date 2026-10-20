@@ -439,9 +439,9 @@ image, so it lives in two places that must agree:
   root cannot modify the host's `/etc`, systemd, or cgroup tree.
 
 The host wizard also asks whether to disable the kernel-wide `DAMON_STAT`
-monitor. Its recommended answer is yes, which lets cgprofile use the generic
-DAMON interface to collect per-session samples; choosing no preserves the
-kernel default. See the [host policy guide](host-setup/README.md#optional-damon_stat-policy).
+monitor. mdt defaults to disabling it (`DAMON_STAT_DISABLE_DEFAULT="yes"`), which lets
+cgprofile use the DAMON sysfs interface to collect per-session samples; choosing no
+preserves the kernel default. See the [host policy guide](host-setup/README.md#optional-damon_stat-policy).
 
 The shared `dev.slice` IO ceiling is verified, not assumed: the reconcile reads
 the kernel `io.max` back after every apply and fails the service on a mismatch,

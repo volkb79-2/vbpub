@@ -203,8 +203,13 @@ closed vocabulary: `report-only` (default) detects and logs without removal;
 `terminate` removes an unapproved BuildKit worker and is an explicit opt-in.
 The wizard asks for a second confirmation because termination can interrupt a
 live Buildx build. Missing or invalid policy configuration stops the guard.
-A plain install that finds `terminate` stops and disables the guard, then
-refuses to continue until `install.sh --wizard` confirms the choice again.
+The wizard's second confirmation is recorded durably in
+`/var/lib/mdt/guard-terminate.confirmed` (policy, timestamp, hash of the confirmed
+setting). A plain re-install with an unchanged, already-confirmed `terminate` proceeds
+and keeps the running guard. Only a new or changed `terminate` without a record refuses,
+and the refusal happens BEFORE anything is touched: a guard running under an earlier
+confirmation is left exactly as it was. Choosing `report-only` removes the record, so a
+later `terminate` needs confirming again.
 
 The wizard also configures `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` for the
 host-side `initialize_container_environment.py` that runs before a devcontainer
@@ -550,9 +555,10 @@ complete and the installer backs up any existing config only after validation.
 
 The wizard asks whether to disable the kernel-wide `DAMON_STAT` monitor so
 cgprofile can use generic DAMON sysfs sessions and collect per-session samples.
-It recommends `yes`; `no` preserves the kernel's current default. The shipped
-non-wizard `host-setup.env.example` uses `DAMON_STAT_DISABLE_DEFAULT="no"`, so
-an installation without the wizard never changes host policy. A `yes` choice
+mdt defaults to disabling `DAMON_STAT` (operator decision 2026-10-20): the shipped
+`host-setup.env.example` has `DAMON_STAT_DISABLE_DEFAULT="yes"`, the wizard's default
+answer is `yes`, and the cgroup-profiler daemon needs the DAMON sysfs interface that
+`DAMON_STAT` excludes. `no` preserves the kernel's current default. A `yes` choice
 installs `/etc/tmpfiles.d/mdt-damon-stat.conf` and applies it immediately when
 the running kernel exposes the parameter. systemd-tmpfiles applies it again at
 boot. Changing back to `no` removes MDT's boot override; the current kernel

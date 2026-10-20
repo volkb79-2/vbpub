@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## UNRELEASED
 
+### Fixed (MDT-HS-02)
+- host-setup: `install.sh` on an existing env file no longer refuses the runtime-optional keys: ONE definition (`host-setup/runtime-optional-keys.re`) is read by both the strict Python validator and the shell helper; present optional keys are still validated, render-time keys still refuse
+- host-setup: a non-wizard re-install with an already-confirmed `terminate` guard policy keeps the running guard; the confirmation is recorded in `/var/lib/mdt/guard-terminate.confirmed`; a refusal now happens before any mutation (pre-flight / COMMIT POINT split)
+
+### Changed (MDT-HS-02)
+- host-setup: `DAMON_STAT_DISABLE_DEFAULT` now defaults to `yes` (operator decision 2026-10-20)
+
 ### Fixed
 - host-setup: the dev.slice IO reconcile no longer resets the runtime IO list to empty (which removed the unit-file cap as well); it re-asserts explicit values, reads the kernel `io.max` back after every apply and exits non-zero on a mismatch (MDT-016)
 

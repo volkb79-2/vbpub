@@ -519,16 +519,23 @@ _mdt_tier_pin() {
 # and the rotational-flag override qualify.  Render-time keys do not: an absent
 # line drops a rendered directive and leaves a slice unbounded, so install.sh
 # keeps refusing for those.
-MDT_RUNTIME_OPTIONAL_RE='^(DEV_IO_(R|W)(BPS|IOPS)_MAX|DEV_(INTERACTIVE|BACKGROUND|GATES|BUILDKITD)_IO_(R|W)(BPS|IOPS)_MAX|IO_BASELINE_ROTATIONAL_FLAG)$'
+# The key set is defined ONCE, in host-setup/runtime-optional-keys.re, which the strict
+# Python validator reads too (MDT-HS-02: two copies diverged in effect).
+_mdt_runtime_optional_re() {
+  local file="${MDT_RUNTIME_OPTIONAL_FILE:-$(dirname "${BASH_SOURCE[0]}")/../runtime-optional-keys.re}"
+  grep -vE '^[[:space:]]*(#|$)' "$file" 2>/dev/null | head -n 1
+}
 
 # _mdt_missing_declared_keys <config> <example> <required|optional>: prints the
 # keys the example declares that the config has no line for, restricted to the
 # render-time ones (required) or the runtime-optional ones (optional).
 _mdt_missing_declared_keys() {
-  local conf="$1" example="$2" mode="$3" key
+  local conf="$1" example="$2" mode="$3" key re
+  re=$(_mdt_runtime_optional_re)
+  [ -n "$re" ] || { echo "runtime-optional-keys.re is missing or empty" >&2; return 1; }
   while IFS= read -r key; do
     grep -qE "^${key}=" "$conf" 2>/dev/null && continue
-    if [[ "$key" =~ $MDT_RUNTIME_OPTIONAL_RE ]]; then
+    if [[ "$key" =~ $re ]]; then
       [ "$mode" = optional ] && echo "$key"
     else
       [ "$mode" = required ] && echo "$key"
@@ -542,4 +549,60 @@ _mdt_missing_declared_keys() {
 _mdt_io_pin_notice() {
   [ -z "${DEV_IO_RBPS_MAX:-}${DEV_IO_WBPS_MAX:-}${DEV_IO_RIOPS_MAX:-}${DEV_IO_WIOPS_MAX:-}" ] || return 0
   echo "NOTICE: no DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX pin is set. Effective dev.slice cap source: the static fallback DEV_STATIC_* = ${MDT_STATIC_RBPS}/${MDT_STATIC_WBPS} bytes/s r/w, ${MDT_STATIC_RIOPS}/${MDT_STATIC_WIOPS} IOPS r/w (lowered only by a current, plausible baseline). On a virtual disk pin the caps from a sustained measurement (docs/CONSUMERS.md) or run install.sh --wizard."
+}
+
+# _mdt_apply_damon_policy: DAMON_STAT_DISABLE_DEFAULT=yes (the default since 2026-10-20)
+# installs MDT's boot-time tmpfiles rule and applies it now when the kernel exposes the
+# parameter; anything else removes MDT's override.  DAMON_STAT is a host-wide consumer
+# that excludes cgprofile's generic DAMON sysfs sessions.  Needs HERE (the host-setup
+# directory).  Test seams: DAMON_STAT_TMPFILES, MDT_DAMON_PARAM.  rc 2 = could not apply.
+_mdt_apply_damon_policy() {
+  local DAMON_STAT_TMPFILES="${DAMON_STAT_TMPFILES:-/etc/tmpfiles.d/mdt-damon-stat.conf}"
+  local param="${MDT_DAMON_PARAM:-/sys/module/damon_stat/parameters/enabled}"
+  if [ "${DAMON_STAT_DISABLE_DEFAULT:-}" = yes ]; then
+    install -m 0644 "$HERE/units/mdt-damon-stat.conf" "$DAMON_STAT_TMPFILES"
+    if [ -e "$param" ]; then
+      systemd-tmpfiles --create "$DAMON_STAT_TMPFILES" \
+        || { echo "ERROR: selected DAMON_STAT disable policy could not be applied" >&2; return 2; }
+      echo "DAMON_STAT disabled for this boot and by the boot-time tmpfiles policy"
+    else
+      echo "DAMON_STAT parameter is not exposed by this kernel; the persistent rule remains installed"
+    fi
+  elif [ -f "$DAMON_STAT_TMPFILES" ]; then
+    rm -f -- "$DAMON_STAT_TMPFILES"
+    echo "Removed MDT's DAMON_STAT boot override; the current kernel value is unchanged until reboot"
+  fi
+  return 0
+}
+
+# --- guard (terminate) policy confirmation, recorded durably (MDT-HS-02) -------------------
+# The wizard's second confirmation of BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate is recorded
+# in a root-owned file under /var/lib/mdt with a timestamp and a hash of the confirmed setting.
+# A non-wizard re-install with an unchanged, already-confirmed terminate policy proceeds and
+# keeps the running guard; only a NEW or changed terminate setting without a record refuses,
+# and the refusal tears nothing down.
+_mdt_guard_hash() { printf '%s' "BUILDX_ACCIDENTAL_CONTAINER_POLICY=$1" | sha256sum | cut -d' ' -f1; }
+
+_mdt_guard_record_write() { # <record-file> <policy>
+  local record="$1" policy="$2"
+  mkdir -p "$(dirname "$record")" || return 1
+  printf 'policy=%s\nconfirmed_at=%s\nsha256=%s\n' "$policy" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(_mdt_guard_hash "$policy")" \
+    > "$record.tmp" && mv -f "$record.tmp" "$record"
+}
+
+_mdt_guard_confirmed() { # <record-file> <policy>
+  [ -f "$1" ] && grep -qx "policy=$2" "$1" && grep -qx "sha256=$(_mdt_guard_hash "$2")" "$1"
+}
+
+# _mdt_guard_decision <policy> <wizard 0|1> <record-file> -> record | keep | clear | refuse | invalid
+_mdt_guard_decision() {
+  case "$1" in
+    terminate)
+      if [ "$2" = 1 ]; then echo record
+      elif _mdt_guard_confirmed "$3" terminate; then echo keep
+      else echo refuse
+      fi ;;
+    report-only) echo clear ;;
+    *) echo invalid ;;
+  esac
 }

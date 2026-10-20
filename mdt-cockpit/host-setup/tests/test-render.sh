@@ -724,11 +724,11 @@ pass "host-check validates observer ownership, group isolation, and installed ru
 
 # The optional DAMON_STAT policy is applied only from the operator's explicit
 # config choice and uses the documented kernel module parameter.
-grep -q '^DAMON_STAT_DISABLE_DEFAULT="no"$' "$EXAMPLE" \
-  || fail "host-setup.env.example must keep DAMON_STAT unchanged outside the wizard"
-grep -qF 'install -m 0644 "$HERE/units/mdt-damon-stat.conf" "$DAMON_STAT_TMPFILES"' "$INSTALL_SH" \
+grep -q '^DAMON_STAT_DISABLE_DEFAULT="yes"$' "$EXAMPLE" \
+  || fail "host-setup.env.example must default to disabling DAMON_STAT (operator decision 2026-10-20)"
+grep -qF 'install -m 0644 "$HERE/units/mdt-damon-stat.conf" "$DAMON_STAT_TMPFILES"' "$HERE/scripts/mdt-container-io-caps.lib.sh" \
   || fail "install.sh does not install the DAMON_STAT tmpfiles policy"
-grep -qF 'systemd-tmpfiles --create "$DAMON_STAT_TMPFILES"' "$INSTALL_SH" \
+grep -qF 'systemd-tmpfiles --create "$DAMON_STAT_TMPFILES"' "$HERE/scripts/mdt-container-io-caps.lib.sh" \
   || fail "install.sh does not apply the selected DAMON_STAT policy"
 grep -qF 'case "${DAMON_STAT_DISABLE_DEFAULT:-}" in' "$HERE/scripts/check.sh" \
   || fail "check.sh invents a DAMON_STAT policy when the configured value is absent"
