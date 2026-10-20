@@ -1,18 +1,22 @@
-"""Per-instance tmpfs sections of soulmask_tmpfs-{setup,teardown}.sh (work item SMT-01).
+"""Per-instance tmpfs of soulmask_tmpfs-{setup,teardown}.sh, soulmask_logs-prune.sh, toggle (SMT-01).
 
-These tests run the REAL shell scripts against a temporary etc, volumes root, state file, tmpfiles
-directory and ramdisk directory. Nothing touches a real mount: ``mount``, ``umount``, ``mountpoint``,
-``findmnt``, ``systemctl`` and (for owner/mode only) ``stat`` are PATH shims backed by a fake mount
-table (``mounts.tsv``: target, fstype, source, options). Every other tool (cp, du, awk, mkdir, ...)
-is the real one, operating inside pytest's tmp_path.
+These tests run the REAL shell scripts against a temporary etc, volumes root, state file and ramdisk
+directory. Nothing touches a real mount: ``mount``, ``umount``, ``mountpoint``, ``findmnt``,
+``systemctl``, ``docker``, ``df`` and (for owner/mode only) ``stat`` are PATH shims backed by a fake
+mount table (``mounts.tsv``: target, fstype, source, options). The path-containment checks use REAL
+directories and REAL symlinks (the scripts call the real ``realpath``). Every other tool (cp, du, find,
+awk, mkdir, ...) is the real one, operating inside pytest's tmp_path.
 
-The oracle is the behavioural contract in HANDOFF-SMT-01: each ``TMPFS=1`` instance gets its OWN
-tmpfs on each per-instance path, with owner/mode derived from the on-disk directory, never a literal.
+The oracle is the behavioural contract in HANDOFF-SMT-01 plus review SMT-01: each ``TMPFS=1`` instance
+gets its OWN tmpfs on each per-instance path, owner/mode derived from the on-disk directory, a symlink
+can never redirect the mount, the size stays bounded by the prune script, and a per-instance problem
+never blocks the shared tmpfs.
 """
 from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -22,9 +26,15 @@ PROJECT = Path(__file__).resolve().parent.parent
 SBIN = PROJECT / "files" / "usr" / "local" / "sbin"
 SETUP = SBIN / "soulmask_tmpfs-setup.sh"
 TEARDOWN = SBIN / "soulmask_tmpfs-teardown.sh"
+TOGGLE = SBIN / "soulmask_tmpfs-toggle.sh"
+PRUNE = SBIN / "soulmask_logs-prune.sh"
 LIB = SBIN / "soulmask-instance-lib.sh"
-SHIPPED_CONF = PROJECT / "files" / "etc" / "gstammtisch" / "soulmask_tmpfs-paths.conf"
-SHIPPED_UNIT = PROJECT / "files" / "etc" / "systemd" / "system" / "soulmask_tmpfs.service"
+ETC = PROJECT / "files" / "etc"
+SHIPPED_CONF = ETC / "gstammtisch" / "soulmask_tmpfs-paths.conf"
+UNITS = ETC / "systemd" / "system"
+SHIPPED_UNIT = UNITS / "soulmask_tmpfs.service"
+PRUNE_UNIT = UNITS / "soulmask-logs-prune.service"
+PRUNE_TIMER = UNITS / "soulmask-logs-prune.timer"
 
 UUID_A = "aaaaaaaa-1111-4111-8111-111111111111"  # ROLE=main
 UUID_B = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -55,6 +65,7 @@ case "$field" in
   *) echo "$tg $src $fs $opts" ;;
 esac
 """,
+    # Models the kernel: a tmpfs mount reports its options normalised (size in KiB) and with rw/relatime.
     "mount": r"""#!/usr/bin/env bash
 echo "mount $*" >> "$FAKE/calls.log"
 fstype=none; opts=""; pos=()
@@ -71,7 +82,33 @@ if [ -e "$FAKE/reject-noswap" ] && [[ ",$opts," == *,noswap,* ]]; then
   echo "mount: ${pos[1]}: unknown filesystem option 'noswap'" >&2
   exit 32
 fi
-printf '%s\t%s\t%s\t%s\n' "${pos[1]}" "$fstype" "${pos[0]}" "$opts" >> "$FAKE/mounts.tsv"
+if [ -e "$FAKE/fail-on" ] && grep -qxF "${pos[1]}" "$FAKE/fail-on"; then
+  echo "mount: ${pos[1]}: wrong fs type" >&2
+  exit 32
+fi
+stored="$opts"
+if [ "$fstype" = tmpfs ]; then
+  IFS=, read -ra toks <<< "$opts"; out=(rw)
+  for tk in "${toks[@]}"; do
+    case "$tk" in
+      size=*)
+        v="${tk#size=}"; n="${v%[kKmMgG]}"; u="${v:${#n}}"
+        case "$u" in k|K) kib="$n" ;; m|M) kib=$((n*1024)) ;; g|G) kib=$((n*1048576)) ;; *) kib=$(( (n+4095)/4096*4 )) ;; esac
+        out+=("size=${kib}k") ;;
+      *) out+=("$tk") ;;
+    esac
+  done
+  out+=(relatime)
+  stored=$(IFS=,; echo "${out[*]}")
+fi
+printf '%s\t%s\t%s\t%s\n' "${pos[1]}" "$fstype" "${pos[0]}" "$stored" >> "$FAKE/mounts.tsv"
+# TOCTOU hook: after the first mount, swap a path for a symlink
+if [ -e "$FAKE/swap-after-first" ]; then
+  read -r victim dest < "$FAKE/swap-after-first"
+  rm -f "$FAKE/swap-after-first"
+  rm -rf "$victim"
+  ln -s "$dest" "$victim"
+fi
 """,
     "umount": r"""#!/usr/bin/env bash
 echo "umount $*" >> "$FAKE/calls.log"
@@ -88,7 +125,34 @@ fi
 echo "umount: $t: not mounted." >&2
 exit 32
 """,
-    "systemctl": "#!/usr/bin/env bash\nexit 0\n",
+    "systemctl": r"""#!/usr/bin/env bash
+if [ "${1:-}" = "is-active" ] && [ -e "$FAKE/docker-inactive" ]; then exit 3; fi
+exit 0
+""",
+    # docker ps --filter name=^<uuid>$ --format {{.Names}} ; a name listed in $FAKE/running is "running"
+    "docker": r"""#!/usr/bin/env bash
+echo "docker $*" >> "$FAKE/docker.log"
+if [ -e "$FAKE/docker-down" ]; then echo "Cannot connect to the Docker daemon" >&2; exit 1; fi
+if [ "${1:-}" = "ps" ]; then
+  pat=""
+  for a in "$@"; do case "$a" in name=*) pat="${a#name=}" ;; esac; done
+  # docker's name filter is an UNANCHORED regex: without ^...$ a substring matches
+  if [ -n "$pat" ]; then grep -E -- "$pat" "$FAKE/running" 2>/dev/null || true
+  else cat "$FAKE/running" 2>/dev/null || true; fi
+fi
+exit 0
+""",
+    # usage = real du of the target, size = $FAKE/df.size
+    "df": r"""#!/usr/bin/env bash
+case " $* " in
+  *" --output=used,size "*)
+    for last; do :; done
+    size=$(cat "$FAKE/df.size" 2>/dev/null) || exit 1
+    used=$(du -sb "$last" | cut -f1)
+    echo "Used 1B-blocks"; echo "$used $size" ;;
+  *) PATH="${PATH#"$SHIMDIR":}" exec df "$@" ;;
+esac
+""",
     "stat": r"""#!/usr/bin/env bash
 if [ "${1:-}" = "-c" ] && [ "${2:-}" = "%u %g %a" ] && [ -f "$FAKE/stat.map" ]; then
   while read -r p u g m; do
@@ -108,11 +172,11 @@ class Rig:
         self.etc = root / "etc"
         self.volumes = root / "volumes"
         self.state = root / "run" / "soulmask_tmpfs.state"
-        self.tmpfiles_dir = root / "run" / "tmpfiles.d"
         self.ramdisk = root / "ramdisk"
         for d in (self.fake, self.shims, self.etc / "instances.d", self.volumes, self.state.parent):
             d.mkdir(parents=True, exist_ok=True)
         (self.fake / "mounts.tsv").write_text("")
+        (self.fake / "df.size").write_text("1000000000")
         for name, body in SHIMS.items():
             p = self.shims / name
             p.write_text(body)
@@ -141,7 +205,23 @@ class Rig:
         (self.fake / "stat.map").write_text("".join(f"{p} {u} {g} {m}\n" for p, u, g, m in rows))
 
     def mounts(self, *rows: tuple[str, str, str, str]) -> None:
-        (self.fake / "mounts.tsv").write_text("".join("\t".join(r) + "\n" for r in rows))
+        with (self.fake / "mounts.tsv").open("a") as f:
+            f.write("".join("\t".join(r) + "\n" for r in rows))
+
+    def own_mount(
+        self, uuid: str, uid: int = 988, gid: int = 988, mode: str = "755", size_kib: int = 65536,
+        noswap: bool = False, extra: str = "nosuid,nodev,noexec", in_state: bool = True,
+    ) -> str:
+        """Pre-existing mount of ours at uuid's logs dir, with the options the kernel would show."""
+        t = self.target(uuid)
+        opts = f"rw,{extra + ',' if extra else ''}relatime,size={size_kib}k,mode={mode},uid={uid},gid={gid}"
+        if noswap:
+            opts += ",noswap"
+        self.mounts((t, "tmpfs", f"soulmask-pi-{uuid[:8]}", opts))
+        if in_state:
+            with self.state.open("a") as f:
+                f.write(f"PI_TARGET={t}\nPI_DERIVED={t} {uid} {gid} {mode} {uuid}\n")
+        return t
 
     def mount_table(self) -> list[list[str]]:
         return [ln.split("\t") for ln in (self.fake / "mounts.tsv").read_text().splitlines() if ln]
@@ -149,6 +229,9 @@ class Rig:
     def calls(self) -> list[str]:
         f = self.fake / "calls.log"
         return f.read_text().splitlines() if f.exists() else []
+
+    def running(self, *names: str) -> None:
+        (self.fake / "running").write_text("".join(n + "\n" for n in names))
 
     # -- execution --------------------------------------------------------
     def env(self, **extra: str) -> dict[str, str]:
@@ -162,10 +245,9 @@ class Rig:
             "SOULMASK_VOLUMES_ROOT": str(self.volumes),
             "SOULMASK_TMPFS_STATE_FILE": str(self.state),
             "SOULMASK_TMPFS_RAMDISK": str(self.ramdisk),
-            "SOULMASK_TMPFILES_DIR": str(self.tmpfiles_dir),
             "SOULMASK_TMPFS_PER_INSTANCE_SIZE": "64M",
-            "SOULMASK_TMPFS_PER_INSTANCE_MAX_AGE": "3d",
-            "SOULMASK_TMPFS_PER_INSTANCE_KEEP": "WS.log",
+            "SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS": "1",
+            "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT": "75",
         }
         e.update(extra)
         return e
@@ -180,9 +262,12 @@ class Rig:
             check=False,
         )
 
-    @property
-    def tmpfiles_file(self) -> Path:
-        return self.tmpfiles_dir / "soulmask-per-instance.conf"
+    def run_without(self, script: Path, drop: str, **extra: str) -> subprocess.CompletedProcess[str]:
+        env = self.env(**extra)
+        del env[drop]
+        return subprocess.run(
+            ["bash", str(script)], env=env, capture_output=True, text=True, timeout=60, check=False
+        )
 
 
 @pytest.fixture
@@ -204,13 +289,21 @@ def pi_mount_lines(out: str) -> list[str]:
     return [ln for ln in out.splitlines() if "mount -t tmpfs" in ln and "soulmask-pi-" in ln]
 
 
+def shared_bind_lines(out: str) -> list[str]:
+    return [ln for ln in out.splitlines() if "mount --bind" in ln]
+
+
+def text(r: subprocess.CompletedProcess[str]) -> str:
+    return r.stdout + r.stderr
+
+
 # --- distinct per-instance mounts -----------------------------------------------------------------
 
 
 def test_two_instances_get_two_distinct_dry_run_mounts_and_nothing_shared(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
     r = rig.run(SETUP, DRY_RUN="1")
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 0, text(r)
     lines = pi_mount_lines(r.stdout)
     assert len(lines) == 2, r.stdout
     for uuid in (UUID_A, UUID_B):
@@ -221,8 +314,10 @@ def test_two_instances_get_two_distinct_dry_run_mounts_and_nothing_shared(rig: R
     binds = [ln for ln in r.stdout.splitlines() if "--bind" in ln or "cp -a" in ln]
     assert binds and not any(LOGS in ln for ln in binds), binds
     assert not (rig.ramdisk / LOGS).exists()
-    # dry run: no real action at all
-    assert rig.calls() == [] and not rig.state.exists() and not rig.tmpfiles_file.exists()
+    # dry run: no real action at all, and the prune pass is announced, not run
+    assert rig.calls() == [] and not rig.state.exists()
+    assert "DRY-RUN: " in r.stdout and "soulmask_logs-prune.sh" in r.stdout
+    assert "tmpfiles" not in r.stdout.lower()
 
 
 def test_dry_run_flag_behaves_like_env(rig: Rig) -> None:
@@ -232,13 +327,6 @@ def test_dry_run_flag_behaves_like_env(rig: Rig) -> None:
     assert rig.calls() == []
 
 
-def test_dry_run_prints_the_tmpfiles_action(rig: Rig) -> None:
-    rig.conf(SHARED_AND_PI)
-    r = rig.run(SETUP, DRY_RUN="1")
-    assert str(rig.tmpfiles_file) in r.stdout
-    assert re.search(rf"e {re.escape(rig.target(UUID_A))} - - - 3d", r.stdout), r.stdout
-
-
 # --- derived options ------------------------------------------------------------------------------
 
 
@@ -246,7 +334,7 @@ def test_mount_options_derive_from_the_on_disk_directory(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
     rig.stat_map((rig.target(UUID_A), 1234, 4321, "750"), (rig.target(UUID_B), 988, 988, "755"))
     r = rig.run(SETUP, DRY_RUN="1")
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 0, text(r)
     by_target = {ln.split()[-1]: ln for ln in pi_mount_lines(r.stdout)}
     a, b = by_target[rig.target(UUID_A)], by_target[rig.target(UUID_B)]
     assert "uid=1234,gid=4321,mode=750" in a
@@ -260,32 +348,86 @@ def test_mount_options_derive_from_the_on_disk_directory(rig: Rig) -> None:
 def test_noswap_section_mounts_with_noswap(rig: Rig) -> None:
     rig.conf(f"[per-instance-noswap]\n{LOGS}\n")
     r = rig.run(SETUP, DRY_RUN="1")
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 0, text(r)
     lines = pi_mount_lines(r.stdout)
     assert len(lines) == 2 and all("noswap" in ln for ln in lines)
 
 
-def test_size_has_no_script_default(rig: Rig) -> None:
+# --- config validation: loud, and never blocks the shared part -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "var",
+    [
+        "SOULMASK_TMPFS_PER_INSTANCE_SIZE",
+        "SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS",
+        "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT",
+    ],
+)
+def test_per_instance_policy_has_no_script_default(rig: Rig, var: str) -> None:
     rig.conf(SHARED_AND_PI)
-    env = rig.env(DRY_RUN="1")
-    del env["SOULMASK_TMPFS_PER_INSTANCE_SIZE"]
-    r = subprocess.run(["bash", str(SETUP)], env=env, capture_output=True, text=True, check=False)
+    r = rig.run_without(SETUP, var, DRY_RUN="1")
     assert r.returncode != 0
-    assert "SOULMASK_TMPFS_PER_INSTANCE_SIZE" in r.stdout + r.stderr
+    assert var in text(r)
+    assert pi_mount_lines(r.stdout) == []
+    # R-07: the per-instance problem did not stop the shared tmpfs
+    assert len(shared_bind_lines(r.stdout)) == 1
+
+
+@pytest.mark.parametrize(
+    ("var", "bad"),
+    [
+        ("SOULMASK_TMPFS_PER_INSTANCE_SIZE", "lots"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_SIZE", "0"),       # tmpfs: size=0 means UNLIMITED
+        ("SOULMASK_TMPFS_PER_INSTANCE_SIZE", "0M"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_SIZE", "50%"),     # relative to RAM
+        ("SOULMASK_TMPFS_PER_INSTANCE_SIZE", "1.5G"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_SIZE", "-4M"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS", "-1"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS", "two"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT", "0"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT", "100"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT", "abc"),
+    ],
+)
+def test_malformed_policy_values_are_refused(rig: Rig, var: str, bad: str) -> None:
+    rig.conf(SHARED_AND_PI)
+    r = rig.run(SETUP, DRY_RUN="1", **{var: bad})
+    assert r.returncode != 0 and var in text(r)
     assert pi_mount_lines(r.stdout) == []
 
 
-def test_malformed_size_is_refused(rig: Rig) -> None:
+@pytest.mark.parametrize("good", ["1", "4096", "64k", "256M", "1g"])
+def test_valid_sizes_are_accepted(rig: Rig, good: str) -> None:
     rig.conf(SHARED_AND_PI)
-    r = rig.run(SETUP, DRY_RUN="1", SOULMASK_TMPFS_PER_INSTANCE_SIZE="lots")
-    assert r.returncode != 0 and "SOULMASK_TMPFS_PER_INSTANCE_SIZE" in r.stdout + r.stderr
+    r = rig.run(SETUP, DRY_RUN="1", SOULMASK_TMPFS_PER_INSTANCE_SIZE=good)
+    assert r.returncode == 0, text(r)
+    assert len(pi_mount_lines(r.stdout)) == 2
 
 
-@pytest.mark.parametrize("bad", ["../escape", "/abs/path", "has space", "pct%x"])
+@pytest.mark.parametrize("bad", ["../escape", "/abs/path", "has space", "pct%x", "glob*", "a/b?c"])
 def test_unsafe_per_instance_path_is_refused(rig: Rig, bad: str) -> None:
-    rig.conf(f"[per-instance-compressible]\n{bad}\n")
+    rig.conf(f"[compressible]\nEngine\n[per-instance-compressible]\n{bad}\n")
     r = rig.run(SETUP, DRY_RUN="1")
     assert r.returncode != 0, r.stdout
+    assert pi_mount_lines(r.stdout) == []
+    assert len(shared_bind_lines(r.stdout)) == 1  # shared part still done
+
+
+@pytest.mark.parametrize(
+    "conf",
+    [
+        "[per-instance-compressible]\nWS/Saved\nWS/Saved/Logs\n",                       # nested
+        "[per-instance-compressible]\nWS/Saved/Logs\n[per-instance-noswap]\nWS/Saved/Logs\n",  # repeated
+        "[compressible]\nEngine\n[per-instance-compressible]\nEngine/Logs\n",            # inside a shared path
+        "[compressible]\nWS/Saved/Logs/x\n[per-instance-compressible]\nWS/Saved/Logs\n",  # contains a shared path
+    ],
+)
+def test_nested_repeated_or_shared_overlapping_paths_are_refused(rig: Rig, conf: str) -> None:
+    rig.conf(conf)
+    (rig.volumes / UUID_A / "Engine" / "Logs").mkdir()
+    r = rig.run(SETUP, DRY_RUN="1")
+    assert r.returncode != 0, text(r)
     assert pi_mount_lines(r.stdout) == []
 
 
@@ -294,11 +436,9 @@ def test_unsafe_per_instance_path_is_refused(rig: Rig, bad: str) -> None:
 
 def test_missing_directory_is_skipped_and_never_created(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
-    import shutil
-
     shutil.rmtree(rig.volumes / UUID_B / LOGS)
     r = rig.run(SETUP, DRY_RUN="1")
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 0, text(r)
     lines = pi_mount_lines(r.stdout)
     assert len(lines) == 1 and lines[0].rstrip().endswith(rig.target(UUID_A))
     assert "doesn't exist yet" in r.stdout
@@ -316,41 +456,150 @@ def test_existing_logs_get_a_hidden_content_notice_and_stay_put(rig: Rig) -> Non
     assert old.read_bytes() == b"x" * 5000
 
 
+# --- containment (SMT-R-01): real directories, real symlinks ---------------------------------------
+
+
+def _escape_dir(rig: Rig) -> Path:
+    outside = rig.root / "host-secret"
+    (outside / "WS" / "Saved" / "Logs").mkdir(parents=True)
+    (outside / "keep.txt").write_text("host data")
+    return outside
+
+
+def _assert_no_mount_on(rig: Rig, r: subprocess.CompletedProcess[str], uuid: str, outside: Path) -> None:
+    assert r.returncode != 0, text(r)
+    assert "symlink" in text(r) or "outside" in text(r)
+    for ln in pi_mount_lines(r.stdout) + [c for c in rig.calls() if "soulmask-pi-" in c]:
+        assert not ln.rstrip().endswith(rig.target(uuid)), ln
+        assert str(outside) not in ln, ln
+    assert (outside / "keep.txt").read_text() == "host data"
+
+
+def test_symlinked_leaf_is_refused_and_the_other_instance_still_mounts(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    outside = _escape_dir(rig)
+    shutil.rmtree(rig.volumes / UUID_B / LOGS)
+    (rig.volumes / UUID_B / "WS" / "Saved" / "Logs").symlink_to(outside / "WS" / "Saved" / "Logs")
+    r = rig.run(SETUP, DRY_RUN="1")
+    _assert_no_mount_on(rig, r, UUID_B, outside)
+    mounted = pi_mount_lines(r.stdout)
+    assert len(mounted) == 1 and mounted[0].rstrip().endswith(rig.target(UUID_A))
+
+
+def test_symlinked_parent_is_refused(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    outside = _escape_dir(rig)
+    shutil.rmtree(rig.volumes / UUID_B / "WS")
+    (rig.volumes / UUID_B / "WS").symlink_to(outside / "WS")
+    r = rig.run(SETUP, DRY_RUN="1")
+    _assert_no_mount_on(rig, r, UUID_B, outside)
+
+
+def test_symlink_staying_inside_the_volume_is_still_refused(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    inside = rig.volumes / UUID_B / "other-dir"
+    inside.mkdir()
+    shutil.rmtree(rig.volumes / UUID_B / LOGS)
+    (rig.volumes / UUID_B / "WS" / "Saved" / "Logs").symlink_to(inside)
+    r = rig.run(SETUP, DRY_RUN="1")
+    assert r.returncode != 0 and "symlink" in text(r)
+    assert not any(ln.rstrip().endswith(rig.target(UUID_B)) for ln in pi_mount_lines(r.stdout))
+
+
+def test_symlinked_volume_is_refused(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    outside = rig.root / "elsewhere"
+    shutil.move(str(rig.volumes / UUID_B), str(outside))
+    (rig.volumes / UUID_B).symlink_to(outside)
+    r = rig.run(SETUP, DRY_RUN="1")
+    assert r.returncode != 0 and "symlink" in text(r)
+    assert not any(ln.rstrip().endswith(rig.target(UUID_B)) for ln in pi_mount_lines(r.stdout))
+
+
+def test_path_swapped_for_a_symlink_after_planning_is_caught_by_the_recheck_and_rolled_back(rig: Rig) -> None:
+    rig.conf(f"[per-instance-compressible]\n{LOGS}\n")
+    outside = _escape_dir(rig)
+    # right after the FIRST mount (instance A) the container "swaps" B's Logs for a symlink
+    (rig.fake / "swap-after-first").write_text(f"{rig.target(UUID_B)} {outside / 'WS' / 'Saved' / 'Logs'}\n")
+    r = rig.run(SETUP)
+    assert r.returncode != 0, text(r)
+    assert not any(row[0] == rig.target(UUID_B) for row in rig.mount_table())
+    # A's mount of this run was rolled back
+    assert f"umount {rig.target(UUID_A)}" in rig.calls()
+    assert rig.mount_table() == []
+    assert (outside / "keep.txt").read_text() == "host data"
+
+
 # --- refusals --------------------------------------------------------------------------------------
 
 
-def test_foreign_mount_at_target_is_refused_not_stacked(rig: Rig) -> None:
+def test_foreign_mount_at_target_is_refused_not_stacked_and_others_proceed(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
     rig.mounts((rig.target(UUID_A), "ext4", "/dev/sda1", "rw"))
     r = rig.run(SETUP)
     assert r.returncode != 0, r.stdout
-    assert "refus" in (r.stdout + r.stderr).lower()
-    # nothing was mounted anywhere, including for the healthy instance B
-    assert [c for c in rig.calls() if c.startswith("mount ")] == []
+    assert "refus" in text(r).lower()
+    tmpfs_calls = [c for c in rig.calls() if c.startswith("mount -t tmpfs") and "soulmask-pi-" in c]
+    assert len(tmpfs_calls) == 1 and tmpfs_calls[0].endswith(rig.target(UUID_B))  # A never stacked
+    assert sum(1 for row in rig.mount_table() if row[0] == rig.target(UUID_A)) == 1
+    # shared part completed and is recorded
+    assert any(row[0] == rig.target(UUID_A, "Engine") for row in rig.mount_table())
+    assert f"TARGET={rig.target(UUID_A, 'Engine')}" in rig.state.read_text()
 
 
 def test_foreign_tmpfs_is_refused_even_though_the_fstype_matches(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
     rig.mounts((rig.target(UUID_A), "tmpfs", "tmpfs", "rw"))
     r = rig.run(SETUP)
-    assert r.returncode != 0 and "refus" in (r.stdout + r.stderr).lower()
+    assert r.returncode != 0 and "refus" in text(r).lower()
 
 
 def test_own_tmpfs_is_kept_idempotently(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
-    own = (rig.target(UUID_A), "tmpfs", f"soulmask-pi-{UUID_A[:8]}", "rw,nosuid,nodev,noexec")
-    rig.mounts(own)
+    own = rig.own_mount(UUID_A)
     r = rig.run(SETUP)
-    assert r.returncode == 0, r.stdout + r.stderr
-    assert own[0] in "\n".join(ln for ln in r.stdout.splitlines() if "keep" in ln.lower())
+    assert r.returncode == 0, text(r)
+    assert own in "\n".join(ln for ln in r.stdout.splitlines() if "keeping" in ln.lower())
     tmpfs_mounts = pi_mount_lines("\n".join(rig.calls()))
     assert len(tmpfs_mounts) == 1 and tmpfs_mounts[0].endswith(rig.target(UUID_B))
-    assert f"PI_TARGET={rig.target(UUID_A)}" in rig.state.read_text()
-    # second run: now everything is ours, nothing new is mounted
+    state = rig.state.read_text()
+    assert f"PI_TARGET={own}" in state and f"PI_DERIVED={own} 988 988 755 {UUID_A}" in state
+    # second run: everything is ours with the expected options, nothing new is mounted
     before = len(rig.calls())
     r2 = rig.run(SETUP)
-    assert r2.returncode == 0
+    assert r2.returncode == 0, text(r2)
     assert pi_mount_lines("\n".join(rig.calls()[before:])) == []
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "missing"),
+    [
+        ({"size_kib": 1024}, "size="),            # unit SIZE changed since the mount
+        ({"extra": "nodev,noexec"}, "nosuid"),
+        ({"extra": "nosuid,nodev"}, "noexec"),
+        ({"noswap": True}, "unexpected noswap"),  # mounted noswap, configured compressible
+    ],
+)
+def test_kept_mount_with_stale_options_is_refused(rig: Rig, kwargs: dict, missing: str) -> None:
+    rig.conf(SHARED_AND_PI)
+    rig.own_mount(UUID_A, **kwargs)
+    r = rig.run(SETUP)
+    assert r.returncode != 0 and "refusing to keep" in text(r) and missing in text(r)
+    assert not any(c.endswith(rig.target(UUID_A)) for c in rig.calls() if c.startswith("mount -t tmpfs"))
+
+
+def test_kept_noswap_section_mount_without_noswap_is_refused(rig: Rig) -> None:
+    rig.conf(f"[per-instance-noswap]\n{LOGS}\n")
+    rig.own_mount(UUID_A, noswap=False)
+    r = rig.run(SETUP)
+    assert r.returncode != 0 and "noswap" in text(r)
+
+
+def test_mount_with_our_tag_that_is_not_in_the_state_file_is_refused(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    rig.own_mount(UUID_A, in_state=False)
+    r = rig.run(SETUP)
+    assert r.returncode != 0 and "not recorded" in text(r)
 
 
 def test_kernel_rejecting_noswap_fails_and_never_falls_back(rig: Rig) -> None:
@@ -358,39 +607,91 @@ def test_kernel_rejecting_noswap_fails_and_never_falls_back(rig: Rig) -> None:
     (rig.fake / "reject-noswap").write_text("")
     r = rig.run(SETUP)
     assert r.returncode != 0, r.stdout
-    assert "noswap" in (r.stdout + r.stderr)
+    assert "noswap" in text(r)
     attempts = [c for c in rig.calls() if c.startswith("mount -t tmpfs")]
     assert attempts and all("noswap" in c for c in attempts)
     assert rig.mount_table() == []
 
 
-# --- real (shimmed) run, state file, tmpfiles, teardown --------------------------------------------
+# --- partial failure: rollback, and independence from the shared part ------------------------------
 
 
-def test_setup_records_pi_targets_and_tmpfiles_and_teardown_reverses_them(rig: Rig) -> None:
+def test_second_instance_mount_failure_rolls_back_the_first_but_shared_completes(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    (rig.fake / "fail-on").write_text(rig.target(UUID_B) + "\n")
+    r = rig.run(SETUP)
+    assert r.returncode != 0, text(r)
+    assert f"umount {rig.target(UUID_A)}" in rig.calls()
+    assert not any(row[2].startswith("soulmask-pi-") for row in rig.mount_table())
+    state = rig.state.read_text()
+    assert "PI_TARGET" not in state and f"TARGET={rig.target(UUID_A, 'Engine')}" in state
+    # the shared tmpfs and its bind are in place (the game can start)
+    assert any(row[0] == rig.target(UUID_A, "Engine") for row in rig.mount_table())
+    # and a teardown unwinds it cleanly
+    td = rig.run(TEARDOWN)
+    assert td.returncode == 0, text(td)
+    assert rig.mount_table() == []
+
+
+def test_a_failing_shared_part_still_applies_the_per_instance_mounts(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    r = rig.run(SETUP, SOULMASK_TMPFS_SIZE="1")  # payload >= tmpfs size -> shared part exits 1
+    assert r.returncode != 0, text(r)
+    mounted = [row for row in rig.mount_table() if row[2].startswith("soulmask-pi-")]
+    assert sorted(row[0] for row in mounted) == sorted([rig.target(UUID_A), rig.target(UUID_B)])
+    assert f"PI_TARGET={rig.target(UUID_A)}" in rig.state.read_text()
+
+
+# --- real (shimmed) run, state file, teardown ------------------------------------------------------
+
+
+def test_setup_records_pi_targets_and_teardown_reverses_them(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
     r = rig.run(SETUP)
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 0, text(r)
     state = rig.state.read_text().splitlines()
     pi = [ln[len("PI_TARGET="):] for ln in state if ln.startswith("PI_TARGET=")]
     assert sorted(pi) == sorted([rig.target(UUID_A), rig.target(UUID_B)])
+    for uuid in (UUID_A, UUID_B):
+        assert any(
+            ln.startswith(f"PI_DERIVED={rig.target(uuid)} ") and ln.endswith(f" {uuid}") for ln in state
+        )
     # a PI target is never recorded as a bind target
     assert not any(ln.startswith("TARGET=") and LOGS in ln for ln in state)
     assert any(ln.startswith("TARGET=") and "Engine" in ln for ln in state)
     table = {row[0]: row for row in rig.mount_table()}
     for t in pi:
         assert table[t][1] == "tmpfs" and table[t][2].startswith("soulmask-pi-")
-    text = rig.tmpfiles_file.read_text()
-    for t in pi:
-        assert f"e {t} - - - 3d" in text
-        assert f"X {t}/WS.log" in text
+    assert not (rig.root / "run" / "tmpfiles.d").exists()  # one pruning mechanism only
 
     td = rig.run(TEARDOWN)
-    assert td.returncode == 0, td.stdout + td.stderr
+    assert td.returncode == 0, text(td)
     remaining = {row[0] for row in rig.mount_table()}
     assert not remaining & set(pi), remaining
-    assert not rig.tmpfiles_file.exists() and not rig.state.exists()
-    assert [c for c in rig.calls() if c == f"umount {pi[0]}"]
+    assert not rig.state.exists()
+    assert f"umount {pi[0]}" in rig.calls()
+    # the container check ran for each instance by exact name
+    dl = (rig.fake / "docker.log").read_text()
+    assert f"name=^{UUID_A}$" in dl and f"name=^{UUID_B}$" in dl
+
+
+def test_state_rewrite_does_not_orphan_earlier_mounts(rig: Rig) -> None:
+    # earlier run mounted A's logs and a shared bind; this run's plan no longer mentions them
+    rig.conf(f"[per-instance-compressible]\n{LOGS}\n")
+    rig.own_mount(UUID_A)
+    old_bind = str(rig.volumes / UUID_A / "Engine")
+    rig.mounts((old_bind, "bind", "x", "rw"))
+    with rig.state.open("a") as f:
+        f.write(f"TARGET={old_bind}\n")
+    # instance A flips to TMPFS=0 -> not in this run's plan at all
+    (rig.etc / "instances.d" / f"{UUID_A}.env").write_text("TMPFS=0\nROLE=main\n")
+    rig.add_instance(UUID_B, role="main")
+    r = rig.run(SETUP)
+    assert r.returncode == 0, text(r)
+    state = rig.state.read_text()
+    assert f"PI_TARGET={rig.target(UUID_A)}" in state     # still mounted -> still recorded
+    assert f"TARGET={old_bind}" in state
+    assert f"PI_TARGET={rig.target(UUID_B)}" in state
 
 
 def test_teardown_refuses_when_a_per_instance_mount_is_busy(rig: Rig) -> None:
@@ -399,36 +700,81 @@ def test_teardown_refuses_when_a_per_instance_mount_is_busy(rig: Rig) -> None:
     (rig.fake / "busy").write_text(rig.target(UUID_A) + "\n")
     td = rig.run(TEARDOWN)
     assert td.returncode != 0
-    assert "busy" in (td.stdout + td.stderr).lower()
+    assert "busy" in text(td).lower()
     still = {row[0] for row in rig.mount_table()}
     assert rig.target(UUID_A) in still and rig.target(UUID_B) not in still
-    # the busy target stays recorded, so a later teardown can still find it
+    state = rig.state.read_text()
+    assert f"PI_TARGET={rig.target(UUID_A)}" in state and f"PI_DERIVED={rig.target(UUID_A)} " in state
+    assert f"PI_TARGET={rig.target(UUID_B)}" not in state
+
+
+def test_teardown_refuses_a_target_whose_container_is_running(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    assert rig.run(SETUP).returncode == 0
+    rig.running(UUID_A, "some-other-container")
+    td = rig.run(TEARDOWN)
+    assert td.returncode != 0
+    assert "RUNNING" in text(td) and UUID_A in text(td)
+    still = {row[0] for row in rig.mount_table()}
+    assert rig.target(UUID_A) in still and rig.target(UUID_B) not in still
+    assert f"umount {rig.target(UUID_A)}" not in rig.calls()   # refused BEFORE any umount
     assert f"PI_TARGET={rig.target(UUID_A)}" in rig.state.read_text()
-    assert not rig.tmpfiles_file.exists()
+
+
+def test_teardown_container_check_is_an_exact_name_match(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    assert rig.run(SETUP).returncode == 0
+    rig.running(UUID_A + "-sidecar", UUID_A[:8])   # similar names are not the instance
+    td = rig.run(TEARDOWN)
+    assert td.returncode == 0, text(td)
+
+
+def test_teardown_with_unreachable_docker_refuses_unless_the_daemon_is_down(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    assert rig.run(SETUP).returncode == 0
+    (rig.fake / "docker-down").write_text("")
+    td = rig.run(TEARDOWN)                      # docker.service is "active" per the shim -> cannot tell
+    assert td.returncode != 0 and "cannot determine" in text(td)
+    assert rig.target(UUID_A) in {row[0] for row in rig.mount_table()}
+    (rig.fake / "docker-inactive").write_text("")  # the daemon itself is stopped (e.g. shutdown)
+    td2 = rig.run(TEARDOWN)
+    assert td2.returncode == 0, text(td2)
+    assert not any(row[2].startswith("soulmask-pi-") for row in rig.mount_table())
+
+
+def test_teardown_without_a_recorded_instance_refuses(rig: Rig) -> None:
+    t = rig.target(UUID_A)
+    rig.mounts((t, "tmpfs", f"soulmask-pi-{UUID_A[:8]}", "rw"))
+    rig.state.write_text(f"PI_TARGET={t}\n")
+    td = rig.run(TEARDOWN)
+    assert td.returncode != 0 and "does not record which instance" in text(td)
+    assert t in {row[0] for row in rig.mount_table()}
+
+
+def test_teardown_unmounts_children_before_parents(rig: Rig) -> None:
+    parent, child = rig.target(UUID_A, "WS/Saved"), rig.target(UUID_A, "WS/Saved/Logs")
+    tag = f"soulmask-pi-{UUID_A[:8]}"
+    rig.mounts((parent, "tmpfs", tag, "rw"), (child, "tmpfs", tag, "rw"))
+    rig.state.write_text(
+        f"PI_TARGET={parent}\nPI_TARGET={child}\n"
+        f"PI_DERIVED={parent} 1 1 755 {UUID_A}\nPI_DERIVED={child} 1 1 755 {UUID_A}\n"
+    )
+    td = rig.run(TEARDOWN)
+    assert td.returncode == 0, text(td)
+    ums = [c for c in rig.calls() if c.startswith("umount ")]
+    assert ums.index(f"umount {child}") < ums.index(f"umount {parent}")
 
 
 def test_teardown_dry_run_lists_every_pi_unmount_and_changes_nothing(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
     assert rig.run(SETUP).returncode == 0
     calls_before = rig.calls()
+    state_before = rig.state.read_text()
     td = rig.run(TEARDOWN, DRY_RUN="1")
-    assert td.returncode == 0, td.stdout + td.stderr
+    assert td.returncode == 0, text(td)
     for uuid in (UUID_A, UUID_B):
         assert f"DRY-RUN: umount {rig.target(uuid)}" in td.stdout
-    assert str(rig.tmpfiles_file) in td.stdout
-    assert rig.calls() == calls_before and rig.tmpfiles_file.exists() and rig.state.exists()
-
-
-def test_stale_tmpfiles_file_is_removed_when_no_target_is_mounted(rig: Rig) -> None:
-    rig.conf(SHARED_AND_PI)
-    rig.tmpfiles_dir.mkdir(parents=True)
-    rig.tmpfiles_file.write_text("e /stale - - - 3d\n")
-    import shutil
-
-    for u in (UUID_A, UUID_B):
-        shutil.rmtree(rig.volumes / u / LOGS)
-    assert rig.run(SETUP).returncode == 0
-    assert not rig.tmpfiles_file.exists()
+    assert rig.calls() == calls_before and rig.state.read_text() == state_before
 
 
 # --- per-instance only config still works; shared behaviour unchanged -------------------------------
@@ -437,18 +783,18 @@ def test_stale_tmpfiles_file_is_removed_when_no_target_is_mounted(rig: Rig) -> N
 def test_per_instance_paths_are_mounted_even_when_no_shared_path_is_ready(rig: Rig) -> None:
     rig.conf(f"[compressible]\nNoSuchShared\n[per-instance-compressible]\n{LOGS}\n")
     r = rig.run(SETUP)
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 0, text(r)
     assert len(pi_mount_lines("\n".join(rig.calls()))) == 2
     assert f"PI_TARGET={rig.target(UUID_A)}" in rig.state.read_text()
 
 
 def test_unknown_section_still_warns_and_shared_behaviour_is_unchanged(rig: Rig) -> None:
-    rig.conf(f"[bogus]\nignored\n[compressible]\nEngine\n")
+    rig.conf("[bogus]\nignored\n[compressible]\nEngine\n")
     r = rig.run(SETUP, DRY_RUN="1")
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 0, text(r)
     assert "WARNING: unknown section header '[bogus]'" in r.stdout
     assert pi_mount_lines(r.stdout) == []
-    binds = [ln for ln in r.stdout.splitlines() if "mount --bind" in ln]
+    binds = shared_bind_lines(r.stdout)
     assert len(binds) == 1 and binds[0].rstrip().endswith(rig.target(UUID_A, "Engine"))
     assert "cp -a" in r.stdout
 
@@ -456,10 +802,172 @@ def test_unknown_section_still_warns_and_shared_behaviour_is_unchanged(rig: Rig)
 def test_shared_state_lines_are_unchanged_without_per_instance_sections(rig: Rig) -> None:
     rig.conf("[compressible]\nEngine\n")
     r = rig.run(SETUP)
-    assert r.returncode == 0, r.stdout + r.stderr
+    assert r.returncode == 0, text(r)
     state = rig.state.read_text()
     assert f"TARGET={rig.target(UUID_A, 'Engine')}" in state and "PI_TARGET" not in state
-    assert not rig.tmpfiles_file.exists()
+
+
+def test_setup_runs_one_prune_pass_after_writing_the_state(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    rec = rig.root / "recorder.sh"
+    rec.write_text('#!/usr/bin/env bash\ngrep -c "^PI_TARGET=" "$SOULMASK_TMPFS_STATE_FILE" > "$FAKE/prune-saw"\n')
+    rec.chmod(0o755)
+    r = rig.run(SETUP, SOULMASK_PRUNE_SCRIPT=str(rec))
+    assert r.returncode == 0, text(r)
+    assert (rig.fake / "prune-saw").read_text().strip() == "2"
+
+
+# --- the prune script ------------------------------------------------------------------------------
+
+
+def _backup(d: Path, name: str, size: int, age: int) -> Path:
+    p = d / name
+    p.write_bytes(b"x" * size)
+    t = 2_000_000_000 - age
+    os.utime(p, (t, t))
+    return p
+
+
+def _prune_rig(rig: Rig, uuid: str = UUID_A, **kw) -> Path:
+    t = Path(rig.own_mount(uuid, **kw))
+    return t
+
+
+def test_prune_keeps_live_log_and_newest_backups_and_touches_nothing_else(rig: Rig) -> None:
+    d = _prune_rig(rig)
+    live = _backup(d, "WS.log", 10, 0)
+    new = _backup(d, "WS-backup-2026.10.20-03.00.00.log", 10, 100)
+    mid = _backup(d, "WS-backup-2026.10.19-03.00.00.log", 10, 200)
+    old = _backup(d, "WS-backup-2026.10.18-03.00.00.log", 10, 300)
+    other = _backup(d, "other.log", 10, 900)
+    wrong_ext = _backup(d, "WS-backup-x.txt", 10, 900)
+    space = _backup(d, "WS-backup- sp.log", 10, 900)
+    sub = d / "WS-backup-dir.log"
+    sub.mkdir()
+    (sub / "inner.log").write_text("keep")
+    link = d / "WS-backup-link.log"
+    link.symlink_to(other)
+    r = rig.run(PRUNE)
+    assert r.returncode == 0, text(r)
+    assert live.exists() and new.exists()                    # KEEP_BACKUPS=1 -> only the newest backup stays
+    assert not mid.exists() and not old.exists()
+    for keep in (other, wrong_ext, space, sub / "inner.log"):
+        assert keep.exists(), keep
+    assert link.is_symlink() and other.exists()
+
+
+def test_prune_with_zero_backups_kept_still_never_deletes_the_live_log(rig: Rig) -> None:
+    d = _prune_rig(rig)
+    live = _backup(d, "WS.log", 10, 0)
+    b = _backup(d, "WS-backup-a.log", 10, 100)
+    r = rig.run(PRUNE, SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS="0")
+    assert r.returncode == 0, text(r)
+    assert live.exists() and not b.exists()
+
+
+def test_prune_deletes_oldest_backups_above_the_high_water_mark(rig: Rig) -> None:
+    d = _prune_rig(rig)
+    live = _backup(d, "WS.log", 100_000, 0)
+    b1 = _backup(d, "WS-backup-1.log", 100_000, 100)   # newest
+    b2 = _backup(d, "WS-backup-2.log", 100_000, 200)
+    b3 = _backup(d, "WS-backup-3.log", 100_000, 300)   # oldest
+    (rig.fake / "df.size").write_text("450000")        # 4 files + dir = ~90% > 75%
+    r = rig.run(PRUNE, SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS="5")
+    assert r.returncode == 0, text(r)
+    assert not b3.exists()                              # exactly the oldest went
+    assert live.exists() and b1.exists() and b2.exists()
+
+
+def test_prune_fails_loudly_when_the_live_log_alone_is_over_the_mark(rig: Rig) -> None:
+    d = _prune_rig(rig)
+    live = _backup(d, "WS.log", 100_000, 0)
+    (rig.fake / "df.size").write_text("110000")
+    r = rig.run(PRUNE)
+    assert r.returncode == 1 and "live log alone" in text(r)
+    assert live.exists()
+
+
+def test_prune_does_nothing_to_a_directory_that_is_not_our_mount(rig: Rig) -> None:
+    d = rig.volumes / UUID_A / LOGS
+    b = _backup(d, "WS-backup-1.log", 10, 100)
+    rig.state.write_text(f"PI_TARGET={d}\n")           # recorded, but NOT mounted (plain ext4 dir)
+    r = rig.run(PRUNE, SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS="0")
+    assert r.returncode == 0 and "NOT pruning" in text(r)
+    assert b.exists()
+
+
+def test_prune_refuses_a_mount_with_a_foreign_source(rig: Rig) -> None:
+    d = rig.volumes / UUID_A / LOGS
+    b = _backup(d, "WS-backup-1.log", 10, 100)
+    rig.mounts((str(d), "tmpfs", "tmpfs", "rw"))
+    rig.state.write_text(f"PI_TARGET={d}\n")
+    r = rig.run(PRUNE, SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS="0")
+    assert r.returncode == 1 and "not one of ours" in text(r)
+    assert b.exists()
+
+
+@pytest.mark.parametrize(
+    ("var", "bad"),
+    [
+        ("SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS", ""),
+        ("SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS", "-1"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT", "0"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT", "100"),
+        ("SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT", "x"),
+    ],
+)
+def test_prune_refuses_invalid_policy_and_deletes_nothing(rig: Rig, var: str, bad: str) -> None:
+    d = _prune_rig(rig)
+    b = _backup(d, "WS-backup-1.log", 10, 100)
+    r = rig.run(PRUNE, **{var: bad})
+    assert r.returncode == 2 and var in text(r)
+    assert b.exists()
+
+
+def test_prune_has_no_policy_defaults(rig: Rig) -> None:
+    d = _prune_rig(rig)
+    b = _backup(d, "WS-backup-1.log", 10, 100)
+    r = rig.run_without(PRUNE, "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT")
+    assert r.returncode == 2 and b.exists()
+
+
+def test_prune_dry_run_deletes_nothing_and_says_what_it_would(rig: Rig) -> None:
+    d = _prune_rig(rig)
+    live = _backup(d, "WS.log", 10, 0)
+    a = _backup(d, "WS-backup-a.log", 10, 100)
+    b = _backup(d, "WS-backup-b.log", 10, 200)
+    r = rig.run(PRUNE, "--dry-run")
+    assert r.returncode == 0, text(r)
+    assert f"DRY-RUN: rm -f -- {b}" in r.stdout
+    assert live.exists() and a.exists() and b.exists()
+
+
+# --- toggle status ---------------------------------------------------------------------------------
+
+
+def test_toggle_status_counts_are_single_lines_and_exclude_pi_targets_from_bind_counts(rig: Rig) -> None:
+    rig.state.write_text(
+        f"READONLY=0\nPI_TARGET={rig.target(UUID_A)}\nPI_TARGET={rig.target(UUID_B)}\n"
+    )
+    rig.ramdisk.mkdir()  # the real df -h runs on it
+    rig.mounts((str(rig.ramdisk), "tmpfs", "tmpfs", "rw"))
+    out = rig.run(TOGGLE).stdout
+    lines = [ln.strip() for ln in out.splitlines()]
+    assert "[soulmask_tmpfs] Bind mounts: 0 in state file" in lines
+    assert "[soulmask_tmpfs] Per-instance tmpfs mounts: 2 in state file" in lines
+    assert "0" not in lines                                    # the old "0\n0" glitch
+    assert any(f"{UUID_A}: 0 bind path(s), 1 per-instance tmpfs" in ln for ln in lines)
+
+
+def test_toggle_status_with_no_per_instance_targets_prints_zero_once(rig: Rig) -> None:
+    rig.state.write_text(f"READONLY=0\nTARGET={rig.target(UUID_A, 'Engine')}\n")
+    rig.ramdisk.mkdir()  # the real df -h runs on it
+    rig.mounts((str(rig.ramdisk), "tmpfs", "tmpfs", "rw"))
+    out = rig.run(TOGGLE).stdout
+    lines = [ln.strip() for ln in out.splitlines()]
+    assert "[soulmask_tmpfs] Per-instance tmpfs mounts: 0 in state file" in lines
+    assert "0" not in lines
+    assert any(f"{UUID_A}: 1 bind path(s), 0 per-instance tmpfs" in ln for ln in lines)
 
 
 # --- shipped files ---------------------------------------------------------------------------------
@@ -480,6 +988,12 @@ def _sections(path: Path) -> dict[str, list[str]]:
     return out
 
 
+def _env(unit: Path) -> dict[str, str]:
+    return dict(
+        m.groups() for m in re.finditer(r"^Environment=([A-Z_]+)=(.*)$", unit.read_text(), re.M)
+    )
+
+
 def test_shipped_conf_puts_the_game_log_dir_per_instance_and_nowhere_shared() -> None:
     sec = _sections(SHIPPED_CONF)
     assert sec["per-instance-compressible"] == [LOGS]
@@ -487,10 +1001,21 @@ def test_shipped_conf_puts_the_game_log_dir_per_instance_and_nowhere_shared() ->
     assert not any(LOGS in v for k, v in sec.items() if not k.startswith("per-instance"))
 
 
-def test_shipped_unit_defaults_the_per_instance_keys_not_the_script() -> None:
-    unit = SHIPPED_UNIT.read_text()
-    assert re.search(r"^Environment=SOULMASK_TMPFS_PER_INSTANCE_SIZE=256M$", unit, re.M)
-    assert re.search(r"^Environment=SOULMASK_TMPFS_PER_INSTANCE_MAX_AGE=3d$", unit, re.M)
-    assert re.search(r"^Environment=SOULMASK_TMPFS_PER_INSTANCE_KEEP=WS\.log$", unit, re.M)
-    # an empty default (":-}") is "unset"; a non-empty one would be an invented literal
-    assert not re.search(r"PER_INSTANCE_(SIZE|MAX_AGE):-[^}]", SETUP.read_text())
+def test_shipped_units_carry_the_policy_and_agree_with_each_other() -> None:
+    main, prune = _env(SHIPPED_UNIT), _env(PRUNE_UNIT)
+    assert main["SOULMASK_TMPFS_PER_INSTANCE_SIZE"] == "256M"
+    for k in ("SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS", "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT"):
+        assert main[k] == prune[k], k
+    assert main["SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT"] == "75"
+    assert "SOULMASK_TMPFS_PER_INSTANCE_MAX_AGE" not in main  # no second (age) mechanism
+    assert "soulmask_logs-prune.sh" in PRUNE_UNIT.read_text()
+    timer = PRUNE_TIMER.read_text()
+    assert re.search(r"^OnUnitActiveSec=10min$", timer, re.M) and "WantedBy=timers.target" in timer
+
+
+def test_scripts_default_none_of_the_policy_values_and_use_one_mechanism() -> None:
+    for script in (SETUP, PRUNE, LIB):
+        src = script.read_text()
+        assert not re.search(r"PER_INSTANCE_(SIZE|KEEP_BACKUPS|HIGH_WATER_PCT):-[^}]", src), script
+    for script in (SETUP, TEARDOWN):
+        assert "tmpfiles.d" not in script.read_text(), script

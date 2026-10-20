@@ -25,13 +25,19 @@ binary is absent; the gate containers report it as deselected, never as passed o
 **Status:** OPEN (filed by SMT-01, 2026-10-20).
 
 **Measured (not deferred).** `systemd-tmpfiles-clean.timer` on the host is static and active,
-firing 15 min after boot and then every 1 d (read-only check, 2026-10-20, gstammtisch).
+firing 15 min after boot and then every 1 d (read-only check, 2026-10-20, gstammtisch). It is
+no longer relied on: pruning is done by `soulmask_logs-prune.sh` + `soulmask-logs-prune.timer`
+(review SMT-01 R-02: an age rule cannot bound a 256M tmpfs against ~66 MB logs).
 
-**Deferred.** (1) The `noswap` tmpfs
-option on the host kernel (7.2.6 here, `noswap` needs >= 6.4; the code fails loudly rather than
-fall back, but no live mount of the `[per-instance-noswap]` section has happened because none is
-configured). (2) The age/`X` semantics were measured with `systemd-tmpfiles --clean` on a scratch
-directory (systemd 257), not on the live mounts.
+**Deferred.** (1) The `noswap` tmpfs option on the host kernel (7.2.6 here, `noswap` needs
+>= 6.4; the code fails loudly rather than fall back, but no live mount of the
+`[per-instance-noswap]` section has happened because none is configured). (2) The prune
+policy numbers (`KEEP_BACKUPS=1`, `HIGH_WATER_PCT=75`, size 256M) rest on a ~66 MB log; confirm
+with `df` on the live mounts after the first restart cycle and re-tune in BOTH units if the log
+grows. (3) The container-running check in teardown and the mount-namespace behaviour it guards
+against (a host `umount` succeeding while the game keeps its own copy) were not exercised against
+the live host. (4) The remaining mount-to-recheck race (microseconds, between the final
+containment check and the `mount` syscall) cannot be closed in shell.
 
 **Fix direction.** The controller runs the verification steps listed under "Deployment" in
 SOULMASK-TMPFS.md after install; promote any surprise to a test in

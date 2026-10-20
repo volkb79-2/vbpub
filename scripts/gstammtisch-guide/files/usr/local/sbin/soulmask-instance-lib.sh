@@ -155,3 +155,42 @@ soulmask_select_instance() {
        return 1 ;;
   esac
 }
+
+# --- per-instance tmpfs (SMT-01) ----------------------------------------------
+# Shared by soulmask_tmpfs-setup.sh and soulmask_logs-prune.sh so the two can
+# never disagree about what a valid value is. No defaults here: the values come
+# from the unit Environment (soulmask_tmpfs.service / soulmask-logs-prune.service).
+
+# Validate the prune policy env. Prints one line per problem on stderr, returns
+# 1 if any. KEEP_BACKUPS: integer >= 0. HIGH_WATER_PCT: integer 1..99.
+soulmask_pi_validate_prune_env() {
+  local bad=0
+  if ! [[ "${SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS:-}" =~ ^[0-9]+$ ]]; then
+    echo "SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS='${SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS:-}' is unset or not an integer >= 0 (set in the unit Environment; no script default)" >&2
+    bad=1
+  fi
+  if ! [[ "${SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT:-}" =~ ^[1-9][0-9]?$ ]]; then
+    echo "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT='${SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT:-}' is unset or not an integer in 1..99 (set in the unit Environment; no script default)" >&2
+    bad=1
+  fi
+  return $bad
+}
+
+# Validate a tmpfs size and print it as the KiB figure the kernel reports back in
+# the mount options (size=<n>k, rounded up to whole pages). Accepts a positive
+# integer with optional k/m/g suffix ONLY: 0 (= unlimited to tmpfs), a percentage
+# (relative to RAM) and anything else is refused. Returns 1 on refusal.
+soulmask_pi_size_kib() {
+  local v="${1:-}" n unit bytes ps
+  [[ "$v" =~ ^([1-9][0-9]*)([kKmMgG]?)$ ]] || return 1
+  n="${BASH_REMATCH[1]}"; unit="${BASH_REMATCH[2]}"
+  case "$unit" in
+    k|K) bytes=$(( n * 1024 )) ;;
+    m|M) bytes=$(( n * 1048576 )) ;;
+    g|G) bytes=$(( n * 1073741824 )) ;;
+    *)   bytes="$n" ;;
+  esac
+  ps=$(getconf PAGESIZE 2>/dev/null) || return 1
+  [[ "$ps" =~ ^[1-9][0-9]*$ ]] || return 1
+  echo $(( (bytes + ps - 1) / ps * ps / 1024 ))
+}

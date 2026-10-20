@@ -1,6 +1,6 @@
 # /etc/systemd/system/soulmask_tmpfs.service
 [Unit]
-Description=Soulmask unified tmpfs ramdisk (shared, bind-mounted into every TMPFS=1 instance)
+Description=Soulmask unified tmpfs ramdisk (shared, bind-mounted into every TMPFS=1 instance) + per-instance log tmpfs
 Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK-TMPFS.md
 # Must run before Docker so containers mount the tmpfs-backed paths.
 Before=docker.service
@@ -25,24 +25,35 @@ RemainAfterExit=yes
 Environment=SOULMASK_TMPFS_READONLY=0
 # Per-instance tmpfs sections of soulmask_tmpfs-paths.conf (SMT-01). The setup
 # script has NO defaults for these: they live here. SIZE is the cap of EACH
-# per-instance tmpfs (game cgroup memory.max is 12 GiB, ~4.5 GiB in use);
-# MAX_AGE is the systemd-tmpfiles age after which old files (WS-backup-*.log)
-# are pruned; KEEP lists names exempted from pruning (the live log).
+# per-instance tmpfs (game cgroup memory.max is 12 GiB, ~4.5 GiB in use).
+# soulmask_logs-prune.sh (run at the end of setup and every 10 min by
+# soulmask-logs-prune.timer) keeps the NEWEST KEEP_BACKUPS WS-backup-*.log files
+# and then deletes the oldest ones while usage is above HIGH_WATER_PCT; it never
+# touches the live WS.log. Arithmetic: a log is ~66 MB, so live + KEEP_BACKUPS=1
+# is ~132 MB (52% of 256M), and the transient right after a restart (old live
+# renamed to a second backup, before the next prune pass) is ~140 MB (55%), still
+# below the 75% mark (192 MB). Keep KEEP_BACKUPS and HIGH_WATER_PCT IDENTICAL to
+# soulmask-logs-prune.service's (a test asserts it).
 Environment=SOULMASK_TMPFS_PER_INSTANCE_SIZE=256M
-Environment=SOULMASK_TMPFS_PER_INSTANCE_MAX_AGE=3d
-Environment=SOULMASK_TMPFS_PER_INSTANCE_KEEP=WS.log
+Environment=SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS=1
+Environment=SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT=75
 # Enumerates /etc/gstammtisch/instances.d/*.env for TMPFS=1 instances, reads
 # /etc/gstammtisch/soulmask_tmpfs-paths.conf for what to share, copies from
 # the ROLE=main instance into ONE shared tmpfs, remounts it read-only, then
-# bind-mounts every path into every opted-in instance's volume.
+# bind-mounts every path into every opted-in instance's volume. Also mounts one
+# private rw tmpfs per instance on each [per-instance-*] path (WS/Saved/Logs);
+# a problem there never blocks the shared part, it makes this unit exit non-zero.
 ExecStart=/usr/local/sbin/soulmask_tmpfs-setup.sh
 # Belt-and-suspenders alongside the wings docker-compose.yml propagation fix
 # (rslave on its /var/lib/pterodactyl bind, applied 2026-07-31): restart
 # wings on every toggle so it can never again carry ghost copies of bind
 # mounts the host has since changed. See soulmask_tmpfs-restart-wings.sh.
 ExecStartPost=/usr/local/sbin/soulmask_tmpfs-restart-wings.sh
-# Teardown: unmount every bind target recorded in the setup script's state
-# file, then the shared tmpfs itself.
+# Teardown: unmount every bind target and per-instance tmpfs recorded in the
+# setup script's state file, then the shared tmpfs itself. It REFUSES (exit
+# non-zero) a per-instance tmpfs whose game container is still running — a
+# plain `systemctl stop/restart` does not otherwise check (only
+# soulmask_tmpfs-toggle.sh --stop does).
 ExecStop=/usr/local/sbin/soulmask_tmpfs-teardown.sh
 ExecStopPost=/usr/local/sbin/soulmask_tmpfs-restart-wings.sh
 # Generous: copies ~2.5G across many paths on cold disk (pak ~1.7G +

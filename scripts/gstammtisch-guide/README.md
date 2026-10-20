@@ -49,6 +49,7 @@ gstammtisch-guide/
 │   ├── etc/gstammtisch/instances.d/*.env(.example) # per-instance overrides (one file per server UUID)
 │   ├── etc/systemd/system/zswap-config.service        # zstd post-boot fix
 │   ├── etc/systemd/system/soulmask-graceful-stop.service
+│   ├── etc/systemd/system/soulmask-logs-prune.{service,timer}   # prunes the per-instance log tmpfs (SMT-01)
 │   ├── etc/systemd/system/soulmask_tmpfs.service  soulmask_tmpfs.slice
 │   │                        soulmask_tmpfs-ZSwapMax{0,1}.slice   # SOULMASK-TMPFS.md (shared tmpfs + per-instance
 │   │                                                             #   tmpfs for WS/Saved/Logs, SMT-01)
@@ -63,6 +64,7 @@ gstammtisch-guide/
 │   │                             soulmask-static-ramdisk-{setup,teardown}.sh
 │   └── usr/local/sbin/soulmask-shutdown.sh  soulmask-instance-lib.sh  wings-ps.sh
 │                         soulmask_tmpfs-{setup,teardown,toggle,restart-wings}.sh
+│                         soulmask_logs-prune.sh
 │                         soulmask-monitor.{sh,py}  soulmask-mempress.sh
 │                         soulmask-pak-mempress.sh  container-mempress.sh
 │                         exec-soulmask-rcon.{sh,py}  soulmask_rcon.py  # RCON admin helper + engine
