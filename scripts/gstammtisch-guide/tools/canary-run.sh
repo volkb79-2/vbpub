@@ -102,7 +102,7 @@ canary env-of-ignores-docker-failure files/usr/local/sbin/soulmask-monitor.py \
 canary pi-foreign-mount-accepted files/usr/local/sbin/soulmask_tmpfs-setup.sh \
   '    if [ "$fs" != "tmpfs" ] || [ "$src" != "$tag" ]; then' \
   '    if false; then' \
-  tests/test_soulmask_tmpfs_per_instance.py::test_foreign_tmpfs_is_refused_even_though_the_fstype_matches
+  tests/test_soulmask_tmpfs_per_instance.py::test_a_recorded_looking_foreign_mount_is_refused_by_the_identity_check_itself
 
 # 5. [per-instance-noswap] must really mount noswap (dropping the option would
 #    silently serve a swappable mount under a "stays resident" claim).

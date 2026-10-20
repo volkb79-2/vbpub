@@ -296,6 +296,13 @@ Engine
 """
 
 
+def mount_opts(line: str) -> list[str]:
+    """The comma-separated options of a `mount ... -o OPTS ...` line (NOT a substring search: the
+    pytest tmp path contains the test name, e.g. 'noswap')."""
+    toks = line.split()
+    return toks[toks.index("-o") + 1].split(",")
+
+
 def pi_mount_lines(out: str) -> list[str]:
     """Per-instance mount actions only (the shared ramdisk mount carries no soulmask-pi- tag)."""
     return [ln for ln in out.splitlines() if "mount -t tmpfs" in ln and "soulmask-pi-" in ln]
@@ -354,7 +361,7 @@ def test_mount_options_derive_from_the_on_disk_directory(rig: Rig) -> None:
     for ln in (a, b):
         assert "size=64M" in ln
         assert all(o in ln for o in ("nosuid", "nodev", "noexec"))
-        assert "noswap" not in ln  # compressible: zswap-eligible
+        assert "noswap" not in mount_opts(ln)  # compressible: zswap-eligible
 
 
 def test_noswap_section_mounts_with_noswap(rig: Rig) -> None:
@@ -362,7 +369,7 @@ def test_noswap_section_mounts_with_noswap(rig: Rig) -> None:
     r = rig.run(SETUP, DRY_RUN="1")
     assert r.returncode == 0, text(r)
     lines = pi_mount_lines(r.stdout)
-    assert len(lines) == 2 and all("noswap" in ln for ln in lines)
+    assert len(lines) == 2 and all("noswap" in mount_opts(ln) for ln in lines)
 
 
 # --- config validation: loud, and never blocks the shared part -----------------------------------
@@ -569,6 +576,17 @@ def test_foreign_tmpfs_is_refused_even_though_the_fstype_matches(rig: Rig) -> No
     assert r.returncode != 0 and "refus" in text(r).lower()
 
 
+def test_a_recorded_looking_foreign_mount_is_refused_by_the_identity_check_itself(rig: Rig) -> None:
+    # recorded in the state file with derived values and our options, but the mount is an ext4 /
+    # another source: only the tag/fstype identity check can refuse it (not the "not recorded" one)
+    rig.conf(SHARED_AND_PI)
+    t = rig.target(UUID_A)
+    rig.mounts((t, "ext4", "/dev/sda1", "rw,nosuid,nodev,noexec,relatime,size=65536k,mode=755,uid=988,gid=988"))
+    rig.state.write_text(f"PI_TARGET={t}\nPI_DERIVED={t} 988 988 755 {UUID_A}\n")
+    r = rig.run(SETUP)
+    assert r.returncode == 75 and "that is not ours" in text(r)
+
+
 def test_own_tmpfs_is_kept_idempotently(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
     own = rig.own_mount(UUID_A)
@@ -607,7 +625,7 @@ def test_kept_noswap_section_mount_without_noswap_is_refused(rig: Rig) -> None:
     rig.conf(f"[per-instance-noswap]\n{LOGS}\n")
     rig.own_mount(UUID_A, noswap=False)
     r = rig.run(SETUP)
-    assert r.returncode != 0 and "noswap" in text(r)
+    assert r.returncode != 0 and "lack/disagree on: noswap" in text(r)
 
 
 def test_mount_with_our_tag_that_is_not_in_the_state_file_is_refused(rig: Rig) -> None:
@@ -622,9 +640,9 @@ def test_kernel_rejecting_noswap_fails_and_never_falls_back(rig: Rig) -> None:
     (rig.fake / "reject-noswap").write_text("")
     r = rig.run(SETUP)
     assert r.returncode != 0, r.stdout
-    assert "noswap" in text(r)
+    assert "kernel rejected it" in text(r)
     attempts = [c for c in rig.calls() if c.startswith("mount -t tmpfs")]
-    assert attempts and all("noswap" in c for c in attempts)
+    assert attempts and all("noswap" in mount_opts(c) for c in attempts)
     assert rig.mount_table() == []
 
 
