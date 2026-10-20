@@ -2266,3 +2266,20 @@ the test instead of imported from the fixture, and "under `cmru/`" counts as car
 **Fix direction:** an AST walk resolving `Name / "lit"` chains for every repository-root spelling; exclusions per test
 function or per skipif marker (assert the marker is still present); expose the fixture's pathspec list as a function and use
 it in both places; check tracked-ness. Optional: pin the read counts per module (F-06).
+
+### KI-89 — nothing compares the asset name `publish_versioned` publishes with the one the rendered `get.py` downloads
+
+**Status:** OPEN. Filed 2026-10-20 from pwmcp PWMCP-07 (every pwmcp release ships `pwmcp-<ver>.tar.xz`;
+get.py requests `pwmcp-v<ver>.tar.xz` -> HTTP 404).
+
+**Mechanism.** The primary asset keeps whatever file name the project's build produced
+(`release.py:745 publish_versioned`), while `templates/get.py.tmpl:614` and `hosts/github.py:101`
+recompute `<tag><suffix>` independently; only the variants path (`release.py:940`) derives the
+name. `resolve_latest` falls back to the lone matching asset, masking the mismatch in cmru's own
+tooling. `tests/installer_fakes.py:138` builds the fake release from the template's own formula,
+so template-vs-template passes.
+
+**Fix.** One shared name function used by producer, template and host (see PWMCP-07 for the full
+proposal); `cmru` should also refuse (or warn on) a publish whose primary asset name differs from
+that function. Test: render get.py, publish via the real `publish_versioned` into a fake host, run
+get.py's download against it.
