@@ -83,6 +83,71 @@ The swap-*in* fault is **synchronous**: the game thread blocks until the page is
 
 ---
 
+### Burst writeback stall: the zswap shrinker has no rate governor
+
+*Measured 2026-10-20 on gstammtisch (raw data and phases: [MEASUREMENTS.md M8](MEASUREMENTS.md#m8-soulmask-startup-to-steady-state-final-configuration-tmpfs-logs-eatmydata--ksm-bounded-io)); labels as there, [M] measured, [I] inferred.*
+
+**What happens.** [I, from the stacks below] When host memory runs short, **global direct reclaim** reaches the
+game scope; the **memcg zswap shrinker** (`shrink_memcg_cb`) then writes the game's cold zswap pool back to
+the swap partitions **synchronously, in the game's own threads**, at whatever rate the device allows:
+~14 MiB/s here. Nothing paces it: a ~770M pool takes minutes. The game threads each wait < 100 ms on
+`blk_mq_get_tag`, but there are many of them, and the game stalls.
+
+**Evidence.** [M]
+- Burst 11:19:34–11:22:00 local: the monitor printed nothing for 146 s, zpool 769M → 0 (**the trajectory inside the
+  146 s is unobserved**: 750M at the first row after the gap, 0 six seconds later; swap was already +1.5 G at that
+  row), disk swap +2.1 G,
+  fps 29.9 → 5.9, recovered at 11:22:47; vda flat at 14 MiB/s, 100 % util, mostly to `vda6` + `vda7`.
+- Game D-state in that window (the controller's bpftrace log on gstammtisch,
+  `/var/log/mdt-stall/dstate-20261020-pid4040733.log`, **not in this repo**): **455.8 s in `blk_mq_get_tag` ← `submit_bio` ← `shrink_memcg_cb`**, plus 12.9 s +
+  8.1 s in `try_to_free_pages`.
+- Later, "B3: settled server" (all final settings live, a dev load running): game D total 16.25 s, **16.03 s of
+  it `shrink_memcg_cb`**, and fps fell to 7 for ~35 s although the game's D-state max was only 90 ms.
+- Settings at the time: `min_free_kbytes` 67584, `watermark_scale_factor` 50, `max_pool_percent` 25,
+  `shrinker_enabled` Y; the game scope's `memory.low` 5000M after the Wings steady squeeze, below its ~7.5 G
+  footprint **[I]** (so global reclaim can take from it). The operator decision stands: `writeback=1` and the
+  shrinker are required (do not turn them off to avoid this).
+
+**Why `memory.zswap.max` is not a chunking lever.** [I] Lowering it only acts on the *next* store: it stops new
+pages entering the pool and does not push the existing pool out in controlled pieces. The upstream author of
+the proactive-writeback work argues the same in his replies on why `memory.zswap.max` is insufficient: it only
+acts on a new store, and the writeback per over-limit event is capped
+(<https://lkml.indiana.edu/2605.1/07304.html> and <https://lkml.indiana.edu/2605.1/09790.html>; the second
+URL is spelled out assuming the same archive directory as the first; read by the controller's web search
+2026-10-20, not re-read by the author of this document).
+
+**Upstream status.** Source: a controller web search on 2026-10-20 of LKML mirror archives (**mirror archives;
+verify on lore.kernel.org**). Everything below is "posted, under review, not known to be merged":
+- "mm/zswap: Implement proactive writeback" (Hao Jia): v1 2026-05 with `memory.zswap.proactive_writeback`,
+  v3/v4 as `memory.reclaim zswap_writeback_only`, v5 2026-06-29 as `memory.reclaim source=zswap`.
+  <https://lkml.iu.edu/2606.3/08404.html>, <https://lkml.indiana.edu/2605.1/07304.html>
+- "mm/zswap: Fixes and improves shrinker" (batch writeback, v3 2026-07): <https://ratatoskr.run/lkml/2026/07/17333952/t>
+- **Not available on gstammtisch's kernel 7.2.6, [I] and resting only on one observation:** `/proc/kallsyms` of
+  that one build has no proactive-writeback symbols [M]. That is the sole basis for "not merged in 7.2".
+  A probe of `memory.reclaim` keys on an empty throwaway cgroup returned **EIO for every key, including a bogus
+  one**, so it was inconclusive and proves nothing either way.
+
+**Mitigation options: PROPOSED, none applied, each awaiting the operator.**
+- **(a)** Raise the game scope's steady `memory.low` to cover its steady set, so global reclaim takes from others
+  first. **It must be set where Wings reads it, or the next start's squeeze (low 9G → 5000M) undoes a runtime
+  change.** Where that is (read from the repo, 2026-10-20): the steady band is the per-server egg variables
+  `WINGS_CG_MEMORY_MIN` / `_LOW` / `_HIGH` / `_MAX`, whose egg defaults are 6G / 7G / 7G / 20G in
+  `game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json` (the startup band is the separate `WINGS_CG_STARTUP_*`
+  variables, and `WINGS_CG_STEADY_MATCH` only triggers the switch; see
+  [SOULMASK-STARTUP-MARKERS.md](SOULMASK-STARTUP-MARKERS.md)). A server's value overrides the egg default and is
+  set in the panel (Admin → Servers → the server → Startup), which stores it in the **panel database, not in
+  this repo**. The observed 4000M / 5000M / 8000M are not the egg defaults, so they are per-server panel values
+  **[I]**. The fallback when a server sets nothing is the node's `config.yml`
+  (`/etc/pterodactyl/config.yml`, `docker.per_server_slices.defaults`; host-only, deliberately empty on this
+  node per [WINGS-CGROUPS-ROLLOUT.md](WINGS-CGROUPS-ROLLOUT.md) §2). So (a) means changing the panel value of
+  `WINGS_CG_MEMORY_LOW` for the server.
+- **(b)** **[I]** Raise `vm.watermark_scale_factor` (now 50) so kswapd reclaims ahead of demand and the game stays
+  out of direct reclaim. Cost: more kswapd CPU and less usable free memory.
+- **(c)** **[I]** Lower the `dev.slice` `memory.high` on this 16 GB host, so dev page cache and anon cannot starve the
+  game. Cost: dev builds reclaim themselves earlier and get slower.
+- **(d)** A userspace chunked governor, once `memory.reclaim source=zswap` is available: write the pool back in
+  small paced pieces before pressure, instead of one unpaced burst.
+
 ## 3. The zstd boot-fallback gotcha (and the real fix)
 
 You will see this at every boot:

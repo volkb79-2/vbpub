@@ -40,6 +40,7 @@ scripts the same cgroup attributes to write.
 gstammtisch-guide/
 ├── README.md  MEMORY-ARCHITECTURE.md  OBSERVATION.md  SOULMASK.md  HOST-IO-INTERFERENCE.md
 ├── tools/io-stall/                          # host IO stall instruments (see its README)
+├── measurements/                            # raw operator captures, verbatim (MEASUREMENTS.md M8)
 ├── files/                                   # drop-in config, mirrors target paths
 │   ├── etc/modules-load.d/zstd.conf
 │   ├── etc/modules-load.d/bfq.conf          # load BFQ module at boot
