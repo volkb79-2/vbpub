@@ -101,7 +101,7 @@ class ValidateConfigOnAnOldEnvFileTests(unittest.TestCase):
             text=True, stdout=subprocess.PIPE).stdout.split()
         python = [k for k in example_keys() if OPTIONAL_RE and OPTIONAL_RE.fullmatch(k)]
         self.assertEqual(sorted(shell), sorted(python))
-        self.assertEqual(len(python), 21)
+        self.assertEqual(len(python), 25)
 
     def test_install_runs_the_validator_before_anything_it_exempts(self) -> None:
         install = (ROOT / "install.sh").read_text()
@@ -362,6 +362,7 @@ class PreflightBeforeActionTests(unittest.TestCase):
         "_mdt_missing_declared_keys", "_mdt_resolve_static_io", "_mdt_io_pin_notice", "_mdt_guard_decision",
         "_mdt_runtime_optional_re", "_mdt_size_to_bytes", "_mdt_guard_confirmed", "_mdt_guard_digest",
         "_mdt_io_systemd_dev", "_mdt_io_devname_for_majmin", "_mdt_dev_majmin",
+        "_mdt_io_queue_keys_set", "_mdt_root_disk_node", "_mdt_io_queue_attr", "_mdt_io_wb_value",
     }
     ALLOWED_REDIRECT = re.compile(r'\d*>>?\s*(&\d|/dev/null|"?\$CANDIDATE\w*"?)')
 
