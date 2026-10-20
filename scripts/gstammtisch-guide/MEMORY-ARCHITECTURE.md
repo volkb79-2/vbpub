@@ -83,6 +83,47 @@ The swap-*in* fault is **synchronous**: the game thread blocks until the page is
 
 ---
 
+### Burst writeback stall: the zswap shrinker has no rate governor
+
+*Measured 2026-10-20 on gstammtisch (raw data and phases: [MEASUREMENTS.md M8](MEASUREMENTS.md#m8-soulmask-startup-to-steady-state-final-configuration-tmpfs-logs-eatmydata--ksm-bounded-io)); labels as there, [M] measured, [I] inferred.*
+
+**What happens.** [I, from the stacks below] When host memory runs short, **global direct reclaim** reaches the
+game scope; the **memcg zswap shrinker** (`shrink_memcg_cb`) then writes the game's cold zswap pool back to
+the swap partitions **synchronously, in the game's own threads**, at whatever rate the device allows:
+~14 MiB/s here. Nothing paces it: a ~770M pool takes minutes. The game threads each wait < 100 ms on
+`blk_mq_get_tag`, but there are many of them, and the game stalls.
+
+**Evidence.** [M]
+- Burst 11:19:34–11:22:00 local: the monitor printed nothing for 146 s, zpool 769M → 0, disk swap +2.1 G,
+  fps 29.9 → 5.9, recovered at 11:22:47; vda flat at 14 MiB/s, 100 % util, mostly to `vda6` + `vda7`.
+- Game D-state in that window: **455.8 s in `blk_mq_get_tag` ← `submit_bio` ← `shrink_memcg_cb`**, plus 12.9 s +
+  8.1 s in `try_to_free_pages`.
+- Later, "B3: settled server" (all final settings live, a dev load running): game D total 16.25 s, **16.03 s of
+  it `shrink_memcg_cb`**, and fps fell to 7 for ~35 s although the game's D-state max was only 90 ms.
+- Settings at the time: `min_free_kbytes` 67584, `watermark_scale_factor` 50, `max_pool_percent` 25,
+  `shrinker_enabled` Y; the game scope's `memory.low` 5000M after the Wings steady squeeze, below its ~7.5 G
+  footprint **[I]** (so global reclaim can take from it). The operator decision stands: `writeback=1` and the
+  shrinker are required (do not turn them off to avoid this).
+
+**Why `memory.zswap.max` is not a chunking lever.** [I] Lowering it only acts on the *next* store: it stops new
+pages entering the pool and does not push the existing pool out in controlled pieces. The upstream author of
+the proactive-writeback work makes the same argument.
+
+**Upstream status** (as read 2026-10-20; links go to the list archive):
+- "mm/zswap: Implement proactive writeback" (Hao Jia): v1 2026-05 with `memory.zswap.proactive_writeback`,
+  v3/v4 as `memory.reclaim zswap_writeback_only`, **v5 2026-06-29 as `memory.reclaim source=zswap`**.
+  <https://lkml.iu.edu/2606.3/08404.html>, <https://lkml.indiana.edu/2605.1/07304.html>
+- "mm/zswap: Fixes and improves shrinker" (batch writeback, v3 2026-07): <https://ratatoskr.run/lkml/2026/07/17333952/t>
+- **Kernel 7.2.6 on gstammtisch has no proactive-writeback symbols in `/proc/kallsyms`** [M], so the series is
+  **not merged in 7.2 [I]**.
+
+**Mitigation options: PROPOSED, none applied, each awaiting the operator.**
+- **(a)** Raise the game scope's steady `memory.low` to cover its steady set, so global reclaim takes from others first.
+- **(b)** Raise `vm.watermark_scale_factor` (now 50) so kswapd reclaims ahead of demand and the game stays out of direct reclaim.
+- **(c)** Lower `dev.slice` `memory.high` on this 16 GB host, so dev page cache and anon cannot starve the game.
+- **(d)** A userspace chunked governor, once `memory.reclaim source=zswap` is available: write the pool back in
+  small paced pieces before pressure, instead of one unpaced burst.
+
 ## 3. The zstd boot-fallback gotcha (and the real fix)
 
 You will see this at every boot:
