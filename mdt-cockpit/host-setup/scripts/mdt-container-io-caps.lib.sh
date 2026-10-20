@@ -895,6 +895,7 @@ _mdt_apply_writeback_settings() {
     echo "rendered $ufile (disk $dev, derived)"
   elif [ -f "$ufile" ]; then
     rm -f -- "$ufile"; echo "removed $ufile (no queue key is set)"
+    udevadm control --reload-rules >/dev/null 2>&1 || true   # the removed rule must stop applying
   fi
   if [ -f "$sfile" ]; then
     sysctl -p "$sfile" >/dev/null 2>&1 || {
