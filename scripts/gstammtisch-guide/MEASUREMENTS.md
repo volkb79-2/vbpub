@@ -456,7 +456,7 @@ memcg zswap shrinker wrote the game's cold pool back synchronously at 14 MiB/s. 
 scope's `memory.low` is 5000M, below its ~7.5 G footprint, so global reclaim reaches it **[I]**. Trigger,
 per the operator (2026-10-20): **no other load was started at 11:19:34**; this is shrinker behaviour (pages
 become "cold enough" and are written back a few minutes after the server settles, reproducibly). The
-kernel-source analysis is in progress (project `zswap-writeback-governor/`, ZWG-01); the mechanism stays **[I]**
+kernel-source analysis is in progress (project `zswap-writeback-governor/` at the vbpub root, branch `zwg-01-20261020`, ZWG-01); the mechanism stays **[I]**
 until it lands.
 Mechanism and options: [MEMORY-ARCHITECTURE.md, "Burst writeback stall"](MEMORY-ARCHITECTURE.md#burst-writeback-stall-the-zswap-shrinker-has-no-rate-governor).
 

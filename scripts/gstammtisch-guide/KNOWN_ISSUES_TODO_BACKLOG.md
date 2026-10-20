@@ -87,12 +87,14 @@ The instrument scripts are in `tools/io-stall/` but carry gstammtisch literals (
 **Status:** OPEN (filed by SMT-04, 2026-10-20; decisions 2026-10-20 recorded by SMT-05).
 
 **Operator decisions (quoted):** **(a) REJECTED**: "no, far too much, around 4G min is fine as set now. refaults
-stay low at 5G." (steady band stays min 4000M / low 5000M). **(b) ACCEPTED provisionally**:
+stay low at 5G." (followed by "ignore your suggestion."; steady band stays min 4000M / low 5000M). **(b) ACCEPTED provisionally**:
 `vm.watermark_scale_factor` 200, **applied live only**; the repo sysctl file (`99-gstammtisch-memory.conf:16`)
 still says 50, so a reboot or `sysctl --system` reverts it; persisting waits for the measurement of the next
-startup burst (game D-state in `shrink_memcg_cb` versus kswapd, and the fps dip). **(c) REJECTED**: "no, we need
-it." (`dev.slice` `memory.high` stays). **(d) WANTED later**: "yes, we want that at some time"; design in the
-project folder `zswap-writeback-governor/`. Trigger: the operator states no other load was started at
+startup burst (game D-state in `shrink_memcg_cb` versus kswapd, the reclaim caller above it with a deeper stack than
+`kstack(10)`, and the fps dip). Note (b) helps only if the caller is global direct reclaim, not memcg
+`memory.high` reclaim. **(c) REJECTED**: "no, we need
+it" (`dev.slice` `memory.high` stays). **(d) WANTED later**: "yes, we want that at some time"; design in the
+project folder `zswap-writeback-governor/` at the vbpub root (branch `zwg-01-20261020`, in progress). Trigger: the operator states no other load was started at
 11:19:34, it is shrinker behaviour, reproducible a few minutes after the server settles. Details:
 MEMORY-ARCHITECTURE.md. The original option text follows.
 

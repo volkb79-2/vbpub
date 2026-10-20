@@ -87,8 +87,8 @@ The swap-*in* fault is **synchronous**: the game thread blocks until the page is
 
 *Measured 2026-10-20 on gstammtisch (raw data and phases: [MEASUREMENTS.md M8](MEASUREMENTS.md#m8-soulmask-startup-to-steady-state-final-configuration-tmpfs-logs-eatmydata--ksm-bounded-io)); labels as there, [M] measured, [I] inferred.*
 
-**What happens.** [I, from the stacks below] When host memory runs short, **global direct reclaim** reaches the
-game scope; the **memcg zswap shrinker** (`shrink_memcg_cb`) then writes the game's cold zswap pool back to
+**What happens.** [I, from the stacks below] When host memory runs short, **reclaim** reaches the
+game scope (which kind is not established, see "The reclaim caller is unknown" below); the **memcg zswap shrinker** (`shrink_memcg_cb`) then writes the game's cold zswap pool back to
 the swap partitions **synchronously, in the game's own threads**, at whatever rate the device allows:
 ~14 MiB/s here. Nothing paces it: a ~770M pool takes minutes. The game threads each wait < 100 ms on
 `blk_mq_get_tag`, but there are many of them, and the game stalls.
@@ -130,7 +130,7 @@ verify on lore.kernel.org**). Everything below is "posted, under review, not kno
 **Mitigation options and operator decisions (2026-10-20).** The operator's words are quoted. Only (b) is applied,
 and only live and provisionally.
 - **(a) REJECTED** by the operator: *"no, far too much, around 4G min is fine as set now. refaults stay low at
-  5G."* The steady band stays (min 4000M, low 5000M). The analysis follows for the record. Raise the game
+  5G."* (followed by *"ignore your suggestion."*) The steady band stays (min 4000M, low 5000M). The analysis follows for the record. Raise the game
   scope's steady `memory.low` to cover its steady set, so global reclaim takes from others
   first. **It must be set where Wings reads it, or the next start's squeeze (low 9G → 5000M) undoes a runtime
   change.** Where that is (read from the repo, 2026-10-20): the steady band is the per-server egg variables
@@ -148,17 +148,24 @@ and only live and provisionally.
   game stays out of direct reclaim **[I]**. Cost: more kswapd CPU and less usable free memory. **Applied live
   only (50 → 200); the repo sysctl file still says 50.** Measurements, status and the evidence still owed:
   see the subsection under section 4, "`vm.watermark_scale_factor`".
-- **(c) REJECTED** by the operator: *"no, we need it."* `dev.slice` `memory.high` stays. (Analysis: lowering it
+- **(c) REJECTED** by the operator: *"no, we need it"*. `dev.slice` `memory.high` stays. (Analysis: lowering it
   would make dev builds reclaim themselves earlier and run slower **[I]**.)
-- **(d) WANTED later**: *"yes, we want that at some time."* A userspace chunked governor that writes the pool back
+- **(d) WANTED later**: *"yes, we want that at some time"*. A userspace chunked governor that writes the pool back
   in small paced pieces before pressure, instead of one unpaced burst, once `memory.reclaim source=zswap` is
-  available. The design lives in the project folder `zswap-writeback-governor/` (being written).
+  available. The design lives in the project folder `zswap-writeback-governor/` at the vbpub root (branch
+  `zwg-01-20261020`, in progress).
 
 **What triggers the burst: the operator's observation.** The operator states that **no other load was started at
 11:19:34**; this is shrinker behaviour: pages become "cold enough" and are written back a few minutes after the
 server settles, **reproducibly**. This replaces the earlier "what started the pressure was not recorded". The
 mechanism above stays **[I]** until the kernel-source analysis lands; that analysis is in progress in the
-`zswap-writeback-governor/` project (ZWG-01).
+`zswap-writeback-governor/` project (ZWG-01, vbpub root, branch `zwg-01-20261020`).
+
+**The reclaim caller is unknown [M].** The D-state probe recorded only 10 kernel frames (`kstack(10)` in
+`dstall.bt`), so the caller above `shrink_memcg_cb → __list_lru_walk_one → list_lru_walk_one` is not known. It
+could be **global direct reclaim** (a separate 21 s in `try_to_free_pages` was seen) or **memcg `memory.high`
+reclaim** (the game sits near `memory.high` 8000M, and the zswap pool is charged to the memcg). Option (b) helps
+only for the global case. The controller will re-run the probe with a deeper stack.
 
 ## 3. The zstd boot-fallback gotcha (and the real fix)
 
@@ -194,8 +201,9 @@ File: [`99-gstammtisch-memory.conf`](files/etc/sysctl.d/99-gstammtisch-memory.co
 
 **What it does.** It sets the distance between a zone's `min`, `low` and `high` watermarks, in units of 0.01 % of
 RAM. kswapd wakes when free memory falls below `low` and reclaims until `high`; below `min`, allocating tasks
-reclaim for themselves (**direct reclaim**). Direct reclaim is the context in which the game's own threads ran
-the zswap shrinker's synchronous writeback (see "Burst writeback stall" above).
+reclaim for themselves (**direct reclaim**). **[I]** Global direct reclaim is one possible context in which the
+game's own threads ran the zswap shrinker's synchronous writeback (see "Burst writeback stall" above); memcg
+`memory.high` reclaim is the other candidate, and the probe cannot tell them apart.
 
 **Measured on gstammtisch (16 GB), 2026-10-20 ~10:20 UTC, from `/proc/zoneinfo`:** [M]
 
@@ -204,7 +212,10 @@ the zswap shrinker's synchronous writeback (see "Burst writeback stall" above).
 | 50 | 53 / 118 / 183 MiB | 27 / 42 MiB |
 | 200 | 53 / 313 / 572 MiB | 72 / 132 MiB |
 
-So kswapd now wakes at ~385 MiB free instead of ~145 and refills to ~700 MiB instead of ~225.
+So kswapd now wakes at ~385 MiB free instead of ~145 and refills to ~700 MiB instead of ~225. The
+**guaranteed** extra free memory is the difference of the **low** marks: about **240 MiB** (Normal 118 → 313,
+DMA32 27 → 72; per zone). The difference of the **high** marks (~480 MiB: Normal 183 → 572, DMA32 42 → 132) is the
+refill *target*, not a guarantee.
 `watermark_boost_factor` (15000) and `min_free_kbytes` (67584) are unchanged.
 
 **Status: applied LIVE ONLY, provisionally (operator-approved, option (b)).** `/etc/sysctl.d/99-gstammtisch-memory.conf`
@@ -213,17 +224,20 @@ So kswapd now wakes at ~385 MiB free instead of ~145 and refills to ~700 MiB ins
 the measurement below.
 
 **Expected effect on this heavily overcommitted host [I], with the trade-offs:**
-- about 480 MiB more RAM is kept free and is not usable by page cache or anon;
+- at least ~240 MiB more RAM is kept free (the low-mark difference), up to ~480 MiB right after a kswapd pass
+  (the high-mark difference), and it is not usable by page cache or anon;
 - kswapd runs earlier and more often: CPU in kswapd, more zswap compression, cold pages pushed to zswap and swap sooner;
-- in exchange, allocating tasks such as the game's threads enter direct reclaim less often, so the shrinker's
-  synchronous writeback mostly runs in kswapd rather than in the game. The disk is still saturated during a
+- in exchange, allocating tasks such as the game's threads enter **global** direct reclaim less often, so the
+  shrinker's synchronous writeback mostly runs in kswapd rather than in the game. If the caller is memcg
+  `memory.high` reclaim instead, this does not help. The disk is still saturated during a
   burst, so the game's own swap-ins and IO still wait behind it; only its threads stop doing the writeback
   themselves;
 - under sustained overcommit kswapd may run near-continuously.
 
 **The measurement still owed:** the next startup burst with `watermark_scale_factor=200`. The evidence that
-decides it: the game's D-state time in `shrink_memcg_cb` versus the time in kswapd, and the fps dip (compare
-with M8: 455.8 s in `shrink_memcg_cb`, fps 29.9 → 5.9).
+decides it: the game's D-state time in `shrink_memcg_cb` versus the time in kswapd, **the reclaim caller above
+`shrink_memcg_cb` (record a deeper stack than `kstack(10)`)**, and the fps dip (compare with M8: 455.8 s in
+`shrink_memcg_cb`, fps 29.9 → 5.9).
 
 ---
 
