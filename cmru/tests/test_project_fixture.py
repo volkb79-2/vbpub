@@ -338,7 +338,92 @@ def test_canary_control_failure_keeps_the_first_failure_section_in_the_message_a
     assert not evidence.exists()
 
 
-def test_failure_excerpt_starts_at_the_first_failure_section_else_the_tail():
-    assert project_fixture.failure_excerpt("a\n=== FAILURES ===\n__ t __\nE  boom\nFAILED x\n", 12) == "__ t __\nE  b"
-    assert project_fixture.failure_excerpt("x\nERROR collecting y\nrest\n", 100) == "ERROR collecting y\nrest\n"
-    assert project_fixture.failure_excerpt("0123456789", 4) == "6789"
+def _real_pytest_output(tmp_path: Path, source: str) -> str:
+    """The output of a real ``pytest -q`` run over ``source`` (never a hand-made imitation)."""
+    (tmp_path / "test_sample.py").write_text(source, encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--rootdir", str(tmp_path),
+         "-c", "/dev/null", "-o", "addopts=", str(tmp_path / "test_sample.py")],
+        cwd=tmp_path, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+    )
+    assert result.returncode != 0, result.stdout
+    return result.stdout
+
+
+_LONG_FAILING_TEST = "def test_long_block():\n" + "".join(
+    f"    value_{n} = {n}  # padding so pytest prints a long test source\n" for n in range(60)
+) + (
+    "    assert open('/nonexistent/tester-base/Dockerfile').read()\n"
+    "\n\ndef test_second():\n    assert False, 'SECOND-FAILURE'\n"
+)
+
+
+@pytest.mark.parametrize("limit", [2000, 1000])
+def test_failure_excerpt_leads_with_the_cause_of_the_first_failure_even_after_a_long_block(tmp_path, limit):
+    output = _real_pytest_output(tmp_path, _LONG_FAILING_TEST)
+    block = output.split("test_long_block ___", 1)[1].split("test_second ___", 1)[0]
+    assert block.index("E   ") > 3000, block.index("E   ")  # the cause really is deep in the block
+
+    excerpt = project_fixture.failure_excerpt(output, limit)
+
+    assert len(excerpt) <= limit
+    assert excerpt.startswith("_") and "test_long_block" in excerpt.splitlines()[0]
+    assert "FileNotFoundError: [Errno 2] No such file or directory: '/nonexistent/tester-base/Dockerfile'" in excerpt
+    assert "test_sample.py:" in excerpt  # the file:line location of the failing frame
+    assert "SECOND-FAILURE" not in excerpt  # only the first failure
+
+
+def test_failure_excerpt_keeps_the_real_collection_error_cause(tmp_path):
+    output = _real_pytest_output(tmp_path, "import module_that_does_not_exist_anywhere\n")
+
+    excerpt = project_fixture.failure_excerpt(output, 1000)
+
+    assert "ERROR collecting" in excerpt.splitlines()[0]
+    assert "ModuleNotFoundError: No module named 'module_that_does_not_exist_anywhere'" in excerpt
+
+
+def test_failure_excerpt_labels_the_tail_fallback_and_empty_output():
+    assert project_fixture.failure_excerpt("", 100) == "[no output]"
+    labelled = project_fixture.failure_excerpt("0123456789", 4)
+    assert labelled.startswith("[no FAILURES/ERRORS section; last 4 characters of output]")
+    assert labelled.endswith("6789")
+
+
+def _noisy_control(project_root: Path) -> None:
+    (project_root / "noisy_control.py").write_text(
+        "import sys\nprint('=' * 35 + ' FAILURES ' + '=' * 35)\nprint('____ test_cause ____')\n"
+        "print('E   boom')\nsys.exit(1)\n", encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(project_root.parent), "add", "-A"], check=True)
+
+
+def _run_noisy_canary(project_root: Path, evidence: Path) -> None:
+    coverage_canary.run([
+        "--repo-root", str(project_root.parent), "--project-root", str(project_root),
+        "--target", "src/cmru/config.py", "--evidence", str(evidence),
+        "--", sys.executable, "noisy_control.py",
+    ])
+
+
+def test_canary_reports_both_the_control_failure_and_an_unwritable_control_log(tmp_path):
+    project_root = _estate(tmp_path / "repo")
+    _noisy_control(project_root)
+    evidence = tmp_path / "canary.json"
+    (tmp_path / "canary.control.log").mkdir()  # the log path cannot be written as a file
+
+    with pytest.raises(RuntimeError, match="known-good canary control failed with exit 1") as raised:
+        _run_noisy_canary(project_root, evidence)
+
+    assert "could not be written" in str(raised.value)
+    assert "E   boom" in str(raised.value)
+
+
+def test_a_green_canary_control_removes_a_stale_control_log(tmp_path):
+    project_root = _estate(tmp_path / "repo")
+    evidence = tmp_path / "canary.json"
+    stale = tmp_path / "canary.control.log"
+    stale.write_text("an earlier red run\n", encoding="utf-8")
+
+    assert _canary(project_root, evidence, "coverage", "tester-unified/Dockerfile") == 0
+
+    assert not stale.exists()

@@ -78,15 +78,20 @@ def run(argv: Sequence[str] | None = None) -> int:
             repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
         )
         control = _run(test_argv, cwd=copied)
+        log = args.evidence.with_suffix(".control.log")
         if control.returncode != 0:
             # The tail of a pytest run is only the bare FAILED list, so keep the whole
-            # output next to the evidence and quote the first failure section.
-            log = args.evidence.with_suffix(".control.log")
-            log.write_text(control.stdout, encoding="utf-8")
+            # output next to the evidence and quote the cause of the first failure.
+            try:
+                log.write_text(control.stdout, encoding="utf-8")
+                where = f"full output: {log}"
+            except OSError as exc:
+                where = f"the control log {log} could not be written: {exc}"
             raise RuntimeError(
                 f"known-good canary control failed with exit {control.returncode} "
-                f"(full output: {log}): {failure_excerpt(control.stdout, 2000)}"
+                f"({where}): {failure_excerpt(control.stdout, 2000)}"
             )
+        log.unlink(missing_ok=True)  # a green control leaves no stale log from an earlier red run
         target_copy = copied / target
         target_copy.write_text(
             target_copy.read_text(encoding="utf-8")

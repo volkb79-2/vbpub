@@ -65,22 +65,52 @@ ESTATE_CONFIG_FIXTURES = (
 )
 
 
-_FAILURE_SECTION = re.compile(r"^(={3,} (?:FAILURES|ERRORS) ={3,}\n)|^(ERROR collecting)", re.MULTILINE)
+_SECTION_HEADER = re.compile(r"^={3,} (?:FAILURES|ERRORS) ={3,}$", re.MULTILINE)
+_BLOCK_HEADER = re.compile(r"^_{3,} .+ _{3,}$")
+_SUMMARY_HEADER = re.compile(r"^={3,} ")
+_EXCEPTION_LINE = re.compile(r"^E(?: |$)")
+_LOCATION_LINE = re.compile(r"^\S+:\d+: \S")
 
 
 def failure_excerpt(output: str, limit: int) -> str:
-    """Return up to ``limit`` characters starting at the first failure section.
+    """Return the cause of the first failure in pytest ``output``, within ``limit``.
 
     A pytest ``-q`` run ends with a short summary of bare ``FAILED node-id``
-    lines, so the tail of the output names the failing tests but never the
-    reason. Start at the first FAILURES/ERRORS section (or collection error)
-    instead; with neither, fall back to the tail.
+    lines, and each failure block puts its ``E ...`` cause lines at the bottom,
+    after the test source. So the excerpt leads with the first failing block's
+    header, its ``E`` lines and its ``file:line: Error`` location, then adds the
+    rest of that block (the part nearest the cause) as space allows. The cause
+    always fits: the header and location are capped, the ``E`` lines take the
+    remaining budget. Without a FAILURES/ERRORS section the tail is returned,
+    labelled as such.
     """
-    match = _FAILURE_SECTION.search(output)
-    if match is None:
-        return output[-limit:]
-    start = match.end(1) if match.group(1) else match.start(2)
-    return output[start:start + limit]
+    if not output:
+        return "[no output]"
+    section = _SECTION_HEADER.search(output)
+    if section is None:
+        return f"[no FAILURES/ERRORS section; last {min(limit, len(output))} characters of output] {output[-limit:]}"
+    lines = output[section.end():].lstrip("\n").split("\n")
+    block: list[str] = []
+    for index, line in enumerate(lines):
+        if index and (_BLOCK_HEADER.match(line) or _SUMMARY_HEADER.match(line)):
+            break
+        block.append(line)
+    header = block[0][:200]
+    cause = [line for line in block[1:] if _EXCEPTION_LINE.match(line)]
+    location = next((line for line in reversed(block[1:]) if _LOCATION_LINE.match(line)), "")[:300]
+    fixed = len(header) + len(location) + 2
+    cause_text = "\n".join(cause)[: max(limit - fixed, 0)]
+    parts = [header, cause_text]
+    if location:
+        parts.append(location)
+    result = "\n".join(parts)
+    context = [line for line in block[1:] if line not in cause and line != location]
+    room = limit - len(result) - len("\n[context]\n")
+    if room > 0 and context:
+        tail = "\n".join(context).strip("\n")[-room:]
+        if tail:
+            result = f"{result}\n[context]\n{tail}"
+    return result[:limit]
 
 
 def tracked_paths(repo_root: Path, pathspecs: tuple[str, ...] | list[str]) -> list[str]:
