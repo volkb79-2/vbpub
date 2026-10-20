@@ -311,6 +311,14 @@ baseline.
 
 ## MDT-020 - no lane reproduces the live LVM/device-mapper IO-cap defect (MDT-HS-04 review H-33)
 
+**Incident record (MDT-HS-06, 2026-10-20 10:00:01 UTC, gstammtisch, reconcile pid 255787):** the `install.sh --wizard` rollout switched the
+systemd spelling from `/dev/mapper/gstammtisch--vg-root` to `/dev/vda`. dev.slice hit the stale-entry mismatch and the self-heal reload
+verified it; `dev-gates.slice` then showed an empty kernel `io.max`, "reload suppressed: last self-heal reload ... (1s ago)", "IO governance is
+NOT verified", install exit 1, dev-gates uncapped. A manual `daemon-reload` did not restore dev-gates' kernel `io.max`; the next reconcile
+(set-property again) verified all slices. Fixed by MDT-HS-06 (batch apply/verify, one reload, re-apply every unit). The VM lane now also runs a
+two-spelling migration (partition node vs whole-disk node of the guest root, vm-governance-acceptance.sh step 9), real systemd; the
+device-mapper root topology itself is still NOT covered, so this item stays open.
+
 The vm-system guest's root is a plain partition, so nothing exercised the case that failed live
 (2026-10-20, systemd 257: `IOReadBandwidthMax=/dev/mapper/<lv> N` on dev.slice left the kernel `io.max`
 empty, and two spellings of one disk ended with the last entry's value). MDT-HS-04 fixes the spelling and

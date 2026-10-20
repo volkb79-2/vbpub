@@ -715,7 +715,15 @@ mapper path itself works. The best-supported model:
 from the mapper spelling to `/dev/vda`, the reset turns the old mapper entry into a stale all-max entry that
 can win. So `_mdt_io_apply_verify` self-heals ONCE per run: when the read-back shows the intended disk missing
 or at the wrong values while `systemctl show` reports the intended ones, it logs a WARN naming the reason, runs
-one `systemctl daemon-reload`, re-applies and re-verifies; a second mismatch fails. The heal is triggered only
+one `systemctl daemon-reload`, re-applies and re-verifies; a second mismatch fails. **Reload semantics (MDT-HS-06):** the unit of
+work is the BATCH, not the unit. On the live host (2026-10-20 10:00 UTC) the spelling migration left stale entries on several units;
+the heal reloaded for `dev.slice`, then `dev-gates.slice` failed as "reload suppressed ... did not fix it" and the install exited 1 with
+`dev-gates.slice` uncapped. Inferred [I]: a reload rebuilds systemd's lists but does not re-push the kernel state of units applied
+earlier in the same run, and a unit reset AFTER the reload still carries its stale entries. So `_mdt_io_queue_add` applies every managed unit
+(dev.slice and each capped tier), `_mdt_io_queue_flush` verifies ALL of them, and only then, if any disagrees while systemd reports its
+intended values, reloads ONCE (the persisted limiter across runs is kept), re-applies EVERY unit and re-verifies ALL; a mismatch that
+survives that single reload plus re-apply is the failure, with a remedy naming what was tried. A single run never fails a unit because of
+its own reload. The heal is triggered only
 when `systemctl show` reports ALL the intended values. The limiter is persistent, because the timer starts a
 fresh process every minute and a per-process flag would reload PID 1 every minute forever when the heal does not
 help: a stamp file `/run/mdt/io-selfheal-reload.stamp` holds `<epoch> <reason>`, and no further reload happens

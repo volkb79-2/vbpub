@@ -307,7 +307,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_design_guide_records_measured_versus_inferred(self) -> None:
         design = " ".join((ROOT.parent / "docs" / "DESIGN-GUIDE.md").read_text().split())
-        for needle in ("MDT-HS-04", "DEVNAME", "measured", "inferred", "virtio", "PER PATH STRING", "daemon-reload"):
+        for needle in ("MDT-HS-04", "DEVNAME", "measured", "inferred", "virtio", "PER PATH STRING", "daemon-reload", "MDT-HS-06"):
             self.assertIn(needle, design)
         self.assertIn("MDT-HS-04", (ROOT.parent / "CHANGES.md").read_text())
 

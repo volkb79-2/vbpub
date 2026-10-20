@@ -145,4 +145,31 @@ run_reconcile || { cat /tmp/reconcile.out; fail "recovery reconcile exited non-z
 expect dev.slice riops 800; expect dev.slice/dev-gates.slice wiops 200
 ok "recovery: a different value, then the target, each read back from the kernel"
 
+# 9. spelling migration (MDT-HS-06, MDT-020): two spellings of ONE disk in systemd's per-path-string
+# limit lists, the OTHER spelling applied last.  The guest root is a partition, so the partition node
+# (/dev/vda1) and the whole-disk node (/dev/vda) are two spellings systemd resolves to the same 254:0,
+# like the live host's /dev/mapper/<lv> vs /dev/vda.  Whatever real systemd does with the stale entries,
+# the reconcile must end VERIFIED on every capped unit (healing with at most one reload), never leaving
+# a unit uncapped.  Not reproduced here: a device-mapper root (MDT-020 stays open for that topology).
+ROOT_SRC=$(findmnt -no SOURCE --target /)
+WHOLE=$(_mdt_io_systemd_dev "$ROOT_SRC") || fail "cannot derive the whole disk node of $ROOT_SRC"
+if [ "$ROOT_SRC" = "$WHOLE" ]; then
+  echo "VM GOVERNANCE SKIP: the guest root is the whole disk ($ROOT_SRC); there is no second spelling to migrate from"
+else
+  for unit in dev.slice dev-gates.slice; do
+    for spelling in "$WHOLE" "$ROOT_SRC"; do
+      systemctl set-property --runtime "$unit" \
+        "IOReadBandwidthMax=$spelling 1048576" "IOWriteBandwidthMax=$spelling 1048576" \
+        "IOReadIOPSMax=$spelling 10" "IOWriteIOPSMax=$spelling 10"
+    done
+  done
+  run_reconcile || { cat /tmp/reconcile.out; fail "the reconcile did not end verified after a spelling migration"; }
+  expect dev.slice rbps $((80 * MIB)); expect dev.slice riops 800
+  expect dev.slice/dev-gates.slice rbps $((40 * MIB)); expect dev.slice/dev-gates.slice riops 300
+  [ "$(grep -c 'running ONE' /tmp/reconcile.out)" -le 1 ] || fail "more than one self-heal reload in a single run"
+  grep -q "reload suppressed" /tmp/reconcile.out && fail "a unit failed because of the run's own reload"
+  if grep -q 'running ONE' /tmp/reconcile.out; then echo "VM GOVERNANCE NOTE: the stale-entry self-heal ran (one reload, every unit re-applied)"; fi
+  ok "spelling migration ($ROOT_SRC then $WHOLE): every capped unit ends verified, at most one reload"
+fi
+
 echo "VM GOVERNANCE ACCEPTANCE PASSED"
