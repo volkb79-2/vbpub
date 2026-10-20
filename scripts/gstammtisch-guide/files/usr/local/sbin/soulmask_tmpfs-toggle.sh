@@ -56,8 +56,8 @@
 set -euo pipefail
 
 SERVICE="soulmask_tmpfs.service"
-STATE_FILE="/run/soulmask_tmpfs.state"
-RAMDISK="/mnt/soulmask_tmpfs"
+STATE_FILE="${SOULMASK_TMPFS_STATE_FILE:-/run/soulmask_tmpfs.state}"
+RAMDISK="${SOULMASK_TMPFS_RAMDISK:-/mnt/soulmask_tmpfs}"
 INSTANCES_DIR="${GSTAMMTISCH_ETC:-/etc/gstammtisch}/instances.d"
 
 log()   { echo "[soulmask_tmpfs] $*"; }
@@ -121,16 +121,25 @@ _show_status() {
 
   # ── bind mounts ──
   if [ -f "$STATE_FILE" ]; then
-    local count
-    count=$(grep -c 'TARGET=' "$STATE_FILE" 2>/dev/null || echo 0)
+    # grep -c prints 0 AND exits 1 on no match, so `|| echo 0` would print "0\n0":
+    # capture with `|| true` and default instead.
+    local count pi_count uuid n
+    count=$(grep -c '^TARGET=' "$STATE_FILE" 2>/dev/null) || true
+    pi_count=$(grep -c '^PI_TARGET=' "$STATE_FILE" 2>/dev/null) || true
+    count="${count:-0}"; pi_count="${pi_count:-0}"
     log "Bind mounts: $count in state file"
-    if [ "$count" -gt 0 ]; then
-      local uuid
-      for uuid in $(grep 'TARGET=' "$STATE_FILE" | sed 's|.*/volumes/||;s|/.*||' | sort -u); do
-        local n
-        n=$(grep -c "volumes/$uuid/" "$STATE_FILE" 2>/dev/null || echo 0)
-        log "    $uuid: $n paths"
-      done
+    log "Per-instance tmpfs mounts: $pi_count in state file"
+    for uuid in $(grep -E '^(PI_)?TARGET=' "$STATE_FILE" | sed 's|.*/volumes/||;s|/.*||' | sort -u); do
+      n=$(grep -c "^TARGET=.*volumes/$uuid/" "$STATE_FILE" 2>/dev/null) || true
+      pi_n=$(grep -c "^PI_TARGET=.*volumes/$uuid/" "$STATE_FILE" 2>/dev/null) || true
+      log "    $uuid: ${n:-0} bind path(s), ${pi_n:-0} per-instance tmpfs"
+    done
+    # setup exits 75 (unit stays active) when it recorded per-instance errors
+    local pi_err
+    pi_err=$(sed -n 's/^PI_ERRORS=//p' "$STATE_FILE" | tail -n1) || true
+    if [[ "${pi_err:-0}" =~ ^[0-9]+$ ]] && [ "${pi_err:-0}" -gt 0 ]; then
+      warn "last setup run recorded $pi_err per-instance error(s):"
+      while IFS= read -r l; do warn "    ${l#PI_ERROR=}"; done < <(grep '^PI_ERROR=' "$STATE_FILE" || true)
     fi
   else
     log "Bind mounts: no state file"
@@ -229,6 +238,13 @@ _show_status() {
             local t="${line#TARGET=}"
             if ! mountpoint -q "$t" 2>/dev/null; then
               warn "  bind mount missing: $t"
+              issues=$((issues + 1))
+            fi
+            ;;
+          PI_TARGET=*)
+            local pt="${line#PI_TARGET=}"
+            if ! mountpoint -q "$pt" 2>/dev/null; then
+              warn "  per-instance tmpfs missing: $pt"
               issues=$((issues + 1))
             fi
             ;;

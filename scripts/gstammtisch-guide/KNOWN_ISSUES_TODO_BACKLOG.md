@@ -19,3 +19,41 @@ in README.md remains the only authority.
 
 **Oracles.** In the VM lane the test passes with `nsenter` present and FAILS (not skips) when the
 binary is absent; the gate containers report it as deselected, never as passed or skipped.
+
+## GG-2 — per-instance tmpfs: host-side facts still to verify live
+
+**Status:** OPEN (filed by SMT-01, 2026-10-20).
+
+**Measured (not deferred).** `systemd-tmpfiles-clean.timer` on the host is static and active,
+firing 15 min after boot and then every 1 d (read-only check, 2026-10-20, gstammtisch). It is
+no longer relied on: pruning is done by `soulmask_logs-prune.sh` + `soulmask-logs-prune.timer`
+(review SMT-01 R-02: an age rule cannot bound a 256M tmpfs against ~66 MB logs).
+
+**Round 2 (review SMT-01).** Exit 75 + `SuccessExitStatus=75` was chosen over a separate
+per-instance unit (see SOULMASK-TMPFS.md "Failure policy"); its visibility (journal `-p err`,
+failing prune service, toggle warning) has only been exercised against shims — confirm on the
+live host with a deliberately refused target in a test instance, and that the prune service
+actually shows as failed. The policy single source (`/etc/gstammtisch/soulmask_tmpfs.env`) must
+be installed together with the units (a missing file fails both loudly).
+
+**R3-01 (backlog).** The per-instance alarm is pull-only: nothing pushes it. The only standing
+indicators are `systemctl is-failed soulmask-logs-prune.service`, the toggle status warning and
+`journalctl -p err -u soulmask_tmpfs`, and the unit that owns the problem looks healthy
+(deliberate trade-off, see SOULMASK-TMPFS.md "Failure policy"). Fix direction: let
+gstammtisch's own monitoring (`soulmask-monitor`, or an `mdt` check) surface
+`is-failed soulmask-logs-prune.service`, or add an `OnFailure=` notify unit already used on the
+host; plus the live acceptance step above (provoke one refused target on a test instance).
+
+**Deferred.** (1) The `noswap` tmpfs option on the host kernel (7.2.6 here, `noswap` needs
+>= 6.4; the code fails loudly rather than fall back, but no live mount of the
+`[per-instance-noswap]` section has happened because none is configured). (2) The prune
+policy numbers (`KEEP_BACKUPS=1`, `HIGH_WATER_PCT=75`, size 256M) rest on a ~66 MB log; confirm
+with `df` on the live mounts after the first restart cycle and re-tune in BOTH units if the log
+grows. (3) The container-running check in teardown and the mount-namespace behaviour it guards
+against (a host `umount` succeeding while the game keeps its own copy) were not exercised against
+the live host. (4) The remaining mount-to-recheck race (microseconds, between the final
+containment check and the `mount` syscall) cannot be closed in shell.
+
+**Fix direction.** The controller runs the verification steps listed under "Deployment" in
+SOULMASK-TMPFS.md after install; promote any surprise to a test in
+`tests/test_soulmask_tmpfs_per_instance.py`.
