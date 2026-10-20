@@ -38,14 +38,21 @@ from cmru.release import bundle_asset_name
 REPO = Path(__file__).resolve().parents[2]
 SAMPLE_VERSION = "1.2.3-r4"
 
-# The coverage canary (and any project-only snapshot) copies just this project, without its
-# sibling estate projects; the repo-reading checks below then have nothing to read and skip,
-# exactly like the other estate-reading cmru tests (`_estate_complete`, "isolated canary tree").
-# The synthetic controlled-wrong-implementation tests always run.
-ESTATE_PRESENT = all((REPO / name / "cmru.toml").is_file() for name in ("pwmcp", "tls-edge", "ciu"))
+# The coverage canary builds its tree with `tools/project_fixture.py`: it copies `git ls-files`
+# output for explicit pathspecs, so it carries cmru and a few root files but NOT the sibling
+# installer projects, and it has no `.git`. The repo-reading checks skip ONLY on that fact about
+# the tree (not a git checkout). In a real checkout a missing project is a FAILURE, never a skip:
+# "the project went missing" must not be reported as "isolated tree". The synthetic
+# controlled-wrong-implementation tests always run. (This module reads `REPO / name / ...`, a
+# non-literal path, so the fixture-closure scan in test_project_fixture.py does not see it;
+# see the note there.)
+ORCHESTRATION = REPO / "cmru.orchestration.toml"
+IS_CHECKOUT = (REPO / ".git").exists()  # a file in a worktree, a directory in a clone
 needs_estate = pytest.mark.skipif(
-    not ESTATE_PRESENT, reason="estate projects absent (isolated canary tree)"
+    not IS_CHECKOUT, reason="not a git checkout (isolated canary tree)"
 )
+# The floor the scan test asserts; the expected set itself is derived from the orchestration.
+INSTALLER_FLOOR = ("pwmcp", "tls-edge", "ciu")
 
 # project dir -> backlog id of the known "no bundle is produced yet" gap.
 KNOWN_NO_BUNDLE_PRODUCER = {"ciu": "CIU-99"}
@@ -112,19 +119,50 @@ def producer_violations(project_dir: Path) -> list[str]:
     return out
 
 
-def _installer_projects() -> list[Path]:
+def _orchestrated_configs(repo: Path) -> dict[str, Path]:
+    """project name -> its cmru.toml path, as the orchestration declares them."""
+    orchestration = repo / "cmru.orchestration.toml"
+    if not orchestration.is_file():
+        return {}
+    projects = _toml(orchestration).get("orchestration", {}).get("project", {})
+    return {name: repo / entry["config"] for name, entry in projects.items()}
+
+
+def estate_violations(repo: Path, *, is_checkout: bool, floor=INSTALLER_FLOOR) -> list[str]:
+    """What a FULL checkout must carry: the orchestration, every config it names, and the floor
+    installer projects. A non-checkout tree (the isolated canary copy) is exempt: [] there."""
+    if not is_checkout:
+        return []
+    out: list[str] = []
+    configs = _orchestrated_configs(repo)
+    if not configs:
+        out.append("cmru.orchestration.toml is missing or names no projects")
+    out += [f"{name}: {path.relative_to(repo)} is missing from a full checkout"
+            for name, path in sorted(configs.items()) if not path.is_file()]
+    out += [f"{name}: installer project missing from a full checkout"
+            for name in floor if not (repo / name / "cmru.toml").is_file()]
+    return out
+
+
+def _installer_projects(repo: Path = REPO) -> list[Path]:
     found = []
-    for cfg in sorted(REPO.glob("*/cmru.toml")):
-        installer = _toml(cfg).get("project", {}).get("installer")
-        if isinstance(installer, dict) and installer.get("asset_suffix"):
-            found.append(cfg.parent)
+    for path in sorted(_orchestrated_configs(repo).values()):
+        if path.is_file():
+            installer = _toml(path).get("project", {}).get("installer")
+            if isinstance(installer, dict) and installer.get("asset_suffix"):
+                found.append(path.parent)
     return found
+
+
+def test_a_full_checkout_carries_the_installer_projects():
+    """UNSKIPPED: in a git checkout every orchestrated project and the floor must be present."""
+    assert estate_violations(REPO, is_checkout=IS_CHECKOUT) == []
 
 
 @needs_estate
 def test_the_scan_finds_the_known_installer_projects():
     names = {p.name for p in _installer_projects()}
-    assert {"pwmcp", "tls-edge", "ciu"} <= names
+    assert set(INSTALLER_FLOOR) <= names
 
 
 @needs_estate
@@ -181,3 +219,42 @@ def test_a_stale_known_gap_exemption_is_reported(tmp_path, monkeypatch):
     root2 = _synthetic(tmp_path, name="demo2")
     monkeypatch.setitem(KNOWN_NO_BUNDLE_PRODUCER, "demo2", "CIU-99")
     assert producer_violations(root2) == []
+
+
+def _tree(tmp_path: Path, *, git: bool, configs: dict[str, bool]) -> Path:
+    """A tmp estate: orchestration naming every key of ``configs``; value = config present."""
+    root = tmp_path / ("co" if git else "iso")
+    root.mkdir()
+    if git:
+        (root / ".git").write_text("gitdir: elsewhere\n", encoding="utf-8")
+    body = "".join(f'[orchestration.project.{n}]\nconfig = "{n}/cmru.toml"\n' for n in configs)
+    (root / "cmru.orchestration.toml").write_text(body, encoding="utf-8")
+    for name, present in configs.items():
+        if present:
+            (root / name).mkdir()
+            (root / name / "cmru.toml").write_text("[project]\n", encoding="utf-8")
+    return root
+
+
+def test_a_full_checkout_missing_a_project_fails(tmp_path):
+    root = _tree(tmp_path, git=True, configs={"pwmcp": True, "tls-edge": False, "ciu": True})
+    violations = estate_violations(root, is_checkout=True)
+    assert any("tls-edge" in v and "missing" in v for v in violations), violations
+
+
+def test_a_full_checkout_missing_a_floor_project_not_in_the_orchestration_fails(tmp_path):
+    root = _tree(tmp_path, git=True, configs={"pwmcp": True, "ciu": True})  # tls-edge dropped
+    assert any(v.startswith("tls-edge:") for v in estate_violations(root, is_checkout=True))
+
+
+def test_a_complete_full_checkout_passes_the_guard(tmp_path):
+    root = _tree(tmp_path, git=True, configs={n: True for n in INSTALLER_FLOOR})
+    assert estate_violations(root, is_checkout=True) == []
+
+
+def test_a_tree_without_git_is_the_only_way_the_estate_checks_are_bypassed(tmp_path):
+    root = _tree(tmp_path, git=False, configs={"pwmcp": False})
+    assert not (root / ".git").exists()
+    assert estate_violations(root, is_checkout=(root / ".git").exists()) == []
+    # the same missing project in a checkout is a failure, so the exemption is not the absence
+    assert estate_violations(root, is_checkout=True)

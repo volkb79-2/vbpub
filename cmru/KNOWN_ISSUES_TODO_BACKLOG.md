@@ -2298,3 +2298,20 @@ drifted silently. Add a cmru check that, for EVERY project with `[project.instal
 and asserts it equals the committed file, with a controlled stale file that must go red. Until then the
 re-render in this change is the only guard; `pwmcp/get.py` is additionally pinned by sha256 in
 mdt-cockpit.
+
+### KI-90 — `_estate_complete()` skips the real-estate dependency-graph tests when a project is dropped from a FULL checkout
+
+**Status:** OPEN (recorded only). Found 2026-10-20 in review round 4 of PWMCP-07 / KI-89.
+
+**Mechanism.** `tests/test_dependency_levels_pyproject.py:152` `_estate_complete()` returns False when
+ANY project config named by `cmru.orchestration.toml` is missing from the working tree, and
+`TestRealEstate` plus the bootstrap-doc test then skip as "estate projects absent (isolated canary
+tree)". A project renamed, moved or deleted in a real checkout is thereby reported as "skipped", not
+failed: one status stands for two conditions (the intended isolated canary copy, and a real checkout
+that lost a project), so the graph oracle is switched off exactly when it should fire.
+
+**Fix.** Skip only when the tree is not a git checkout (`(REPO_ROOT / ".git").exists()` is False; the
+canary fixture copies `git ls-files` output, no `.git`) and FAIL otherwise, with an unskipped guard test
+and a synthetic test for both polarities, as `tests/test_installer_asset_names.py` now does for its own
+estate reads (KI-89). The same review applies to the other "isolated canary tree" skips (listed in
+`SKIP_GUARDED_MODULES`, `tests/test_project_fixture.py`).
