@@ -76,4 +76,4 @@ volume change or an ENOSPC on a live mount shows up.
 `io.max` caps derived from the ~10 MB/s steady write rate. Nothing is persisted. Needs: the pending
 64/128 KB matrix (§4.4 placeholder), one confirmation run inside the throttled steady state, then a
 host-setup work item (sysctl.d + udev rule keyed on the device behind `/`, values derived not literal).
-Also owed: the generic instrument scripts into `tools/io-stall/` (its README lists them).
+The instrument scripts are in `tools/io-stall/` but carry gstammtisch literals (`/dev/vda`, slice names, constant restore caps, dated file names); parameterising them (derive the disk, read the pre-test caps) is part of this item.
