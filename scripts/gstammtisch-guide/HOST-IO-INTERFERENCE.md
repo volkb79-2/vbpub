@@ -272,13 +272,12 @@ vm.dirty_background_bytes = 4194304
 # INTERIM (2026-10-20, controller, operator-approved): small requests and a short queue on the root disk (vda),
 # so a sync read/write never waits behind many large writeback requests. Must sort AFTER the 60-*bfq* rules:
 # a scheduler change resets nr_requests. Measured: HOST-IO-INTERFERENCE.md §4 (64 KB best for latency; costs
-# sequential reads ~1.2 GB/s -> ~0.25-0.3 GB/s, still ~25x the disk's write rate).
+# O_DIRECT sequential reads ~1.3 GB/s -> ~0.3 GB/s; buffered reads are the same at 64-256 KB, 0.23-0.35 GB/s).
 # To be REPLACED by mdt-cockpit host-setup (MDT-HS-05, derived disk, wizard-asked values); delete this file then.
 ACTION=="add|change", KERNEL=="vda", ATTR{queue/max_sectors_kb}="64", ATTR{queue/nr_requests}="16"
 ```
 
-(The "~25x the write rate" in that file's comment is the dropped comparison above; it is quoted verbatim, not
-endorsed.) The rule sorts **after** the `60-*bfq*` rules on purpose: a scheduler change resets `nr_requests`.
+The rule sorts **after** the `60-*bfq*` rules on purpose: a scheduler change resets `nr_requests`.
 
 These files are not owned by host-setup. They are to be replaced by MDT-HS-05 (host-setup wizard keys plus a
 central benchmark that derives the values; the rule must select the device behind `/`, not `vda`). Until then

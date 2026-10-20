@@ -229,6 +229,6 @@ grep -c ksm-optin /proc/$PID/maps          # > 0 : the shim is mapped
 cat /proc/$PID/ksm_stat                    # ksm_merging_pages, ksm_process_profit, ...
 ```
 
-Measured 2026-10-20 on the live server: `ksm_merging_pages` 302488, `ksm_process_profit` 1173604800
+Measured 2026-10-20 ~08:53 UTC on instance `b87c0a5b-2387-4a1c-8863-ff23e6800a1d` (game pid 3898233), about 7 min after a start, 0 players online: `ksm_merging_pages` 302488, `ksm_process_profit` 1173604800
 (about 1.17 GB saved). What KSM can and cannot merge, and how to estimate the benefit:
 [`MEASUREMENTS.md` M7](../../scripts/gstammtisch-guide/MEASUREMENTS.md#m7-ksm-across-two-soulmask-instances--setup--benefit-measurement).
