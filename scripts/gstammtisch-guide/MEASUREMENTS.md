@@ -191,15 +191,18 @@ rbw 2,149 MB/s / wbw 516 MB/s; p99 4k-read 497µs, 4k-write 1,695µs, 128k-write
 hypervisor-cache artifacts — ramp_time + 4G span + `buffer_compress_percentage=0`
 killed them. These figures belong to that historical sustained-v3 run; the current
 MDT results file is the authoritative source after a fresh identity-bound benchmark.
-Notable: game `io.pressure full avg300` stayed at 0.05 % through the whole
-4-minute saturation run — the BFQ/io.weight arbitration alone nearly fully shielded
-the game even WITHOUT caps on the aggressor (the benchmark ran uncapped in
-system.slice).
+Notable: game `io.pressure full avg300` stayed at 0.05 % through that 4-minute saturation run, with
+the benchmark uncapped in system.slice. **Do not generalise this** (corrected 2026-10-20): that load did not
+contend on the game's fsync/journal path. A load that does (dev writeback sharing the root ext4 journal)
+gave game IO pressure of 24–76 % and 26 s stalls despite BFQ weights; see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §2. Also note
+that 516 MB/s write bandwidth above is ~30× the 14–18 MB/s measured on 2026-10-20 (re-run the baseline
+before trusting any io.cost model derived from it).
 
 Validation that the cap protects the game: run a real build
 (`release-bake.sh` / docker-repack) and watch the game's `io.pressure`
 (`full avg10` < 2) and monitor `rf_d/s` ≈ 0 while `iostat -x 5` shows the
-build pinned at the cap.
+build pinned at the cap. (A cap only binds below the device's real steady write rate, ~10 MB/s on
+gstammtisch; a cap above it proves nothing, see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §4.2 A3.)
 
 Why no host-wide IOPS cap: `io.max` cannot be set on the cgroup root, and
 capping every slice would throttle the game's own DB backups too. The design

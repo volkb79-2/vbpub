@@ -2,11 +2,13 @@
 
 > Game-server-specific operations: priority/protection, orderly shutdown, and
 > RCON administration. General memory architecture is in
-> [MEMORY-ARCHITECTURE.md](MEMORY-ARCHITECTURE.md).
+> [MEMORY-ARCHITECTURE.md](MEMORY-ARCHITECTURE.md). Why host IO stalls the server, and the kernel
+> settings that bound it: [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md). The egg's optional
+> `eatmydata` preload (next to the KSM shim): [`game_stuff/soulmask/README.md`](../../game_stuff/soulmask/README.md#eatmydata-optional-fsync-removal).
 
 ## 1. What we're running
 
-Pterodactyl Wings → Docker → `WSServer-Linux-Shipping` (egg: `egg-soulmask.json`).
+Pterodactyl Wings → Docker → `WSServer-Linux-Shipping` (egg: `game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json`).
 Startup console markers and the measured phase timeline (what Wings' matchers
 see, and the cgroup/activity phase triggers) live in
 [`SOULMASK-STARTUP-MARKERS.md`](SOULMASK-STARTUP-MARKERS.md).
@@ -53,7 +55,10 @@ Soulmask must always preempt dev work and be the last thing reclaimed. Layers:
 | `ionice -c idle` | lowest ioprio class | **ignored** — `[none]` passes I/O straight to device queue without reordering |
 | `io.max` (hard cap) | works via blk-throttle | ✓ works regardless of scheduler |
 
-The I/O issue also isn't primarily bandwidth — it's **device utilization from random seeks**. The benchmark's write pattern (3.4 M write IOs vs 674 K read IOs observed cumulatively) causes many small random seeks that saturate the device queue, raising latency for everyone on the disk. Even at low `%util`, queue contention raises `w_await` and `r_await` for Soulmask's periodic saves.
+> **Superseded 2026-10-20.** An earlier version of this section blamed "device utilization from random
+> seeks". Measurement showed the device is a slow (~14–18 MB/s write), non-rotational virtio disk and the
+> game stalls on the **shared ext4 journal and the queue ahead of it**, not on seeks. Mechanism, evidence and
+> recommended kernel settings: [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md).
 
 ### The fix: BFQ scheduler
 
@@ -78,11 +83,16 @@ Switching to BFQ immediately activates the existing `io.weight` values AND adds 
 | devcontainer (docker-repack) | 1 | **1** (BFQ min) | 80% of measured r/w IOPS + r/w bandwidth | 100 |
 | test-runner / buildkit | 1 | **1** (BFQ min) | 80% of measured r/w IOPS + r/w bandwidth | 100 |
 
-Effective I/O ratio (BFQ): **1000:1**. Bench gets CPU slices on the disk head only when Soulmask's queue is idle.
+Effective I/O ratio (BFQ): **1000:1** between *queued requests of different cgroups*. This ordering does
+not protect the game's `fdatasync`, which waits for a journal commit that carries other cgroups' dirty data
+([HOST-IO-INTERFERENCE.md §2](HOST-IO-INTERFERENCE.md#2-why-the-obvious-metrics-mislead)).
 
 No slice-level `memory.high` is imposed by this game guide — the devcontainer is also the VSCode workspace, and capping its whole interactive slice would kill the IDE. The IO caps are applied by the mdt host-setup companion (`mdt-dev-governance-reconcile.sh`), not from this guide: one formula for all capped citizens — a percentage of every current measured ceiling from `mdt-io-baseline.py` (r-IOPS, w-IOPS, read MB/s, write MB/s), 80% per governed container and 60% for the `dev.slice` tier as a whole. Protection leans on the weight ratios; the headroom keeps the device off saturation. M6 validates.
 
-The `io.max` hard caps are belt-and-suspenders on test-runner/buildkit: they cut the benchmark's 709 r/s burst (observed without caps) to a lower ceiling before it even reaches the BFQ scheduler, ensuring the device queue depth stays clean for Soulmask's periodic DB saves.
+The `io.max` caps cut the benchmark's 709 r/s read burst (observed without caps). They do **not** keep the
+device queue short for the game's writes: measured 2026-10-20, caps at 40 MB/s changed nothing because the
+device saturates at ~15 MB/s first (HOST-IO-INTERFERENCE.md §4.2, A3 vs A2). Caps must be derived from the
+steady write rate; the queue and dirty-data bounds are the fix.
 
 ### Verifying live state
 
@@ -121,7 +131,7 @@ Debian dropped `io.latency` in favour of `io.cost.qos`, which is compiled in:
 CONFIG_BLK_CGROUP_IOCOST=y
 ```
 
-**`io.cost.qos`** (available now at `/sys/fs/cgroup/io.cost.qos`) is the modern replacement. Instead of reacting to exceeded latency, it models the device's capacity as a virtual time budget and distributes tokens proportionally to `io.weight`. With Soulmask at 4950 and bench at 1, Soulmask gets 99.98 % of all tokens. Enabling it is complementary to BFQ:
+**`io.cost.qos`** (available now at `/sys/fs/cgroup/io.cost.qos`) is the nominal replacement. It models the device's capacity as a virtual time budget and distributes tokens proportionally to `io.weight`. Whether it helps the journal-coupled stall is **untested** (candidate only, HOST-IO-INTERFERENCE.md §6). Example, not applied:
 
 ```bash
 # Enable io.cost model on vda (254:0) — auto-tunes device characteristics
@@ -132,7 +142,6 @@ echo "254:0 enable=1 ctrl=auto rpct=95.00 rlat=5000 wpct=95.00 wlat=5000 min=1.0
 cat /sys/fs/cgroup/io.cost.qos
 ```
 
-With BFQ + io.max already in place, `io.cost.qos` is not strictly necessary — but it adds a second enforcement layer and makes the existing io.weight ratio enforceable even at the root cost model level.
 
 **When you'd get native `io.latency`:**
 - Compile a custom kernel with `CONFIG_BLK_CGROUP_IOLATENCY=y`
@@ -148,7 +157,7 @@ With BFQ + io.max already in place, `io.cost.qos` is not strictly necessary — 
 **This silent eviction is the problem on a busy dev host with Docker builds competing for RAM.** The kernel has no obligation to warn the game; the page just isn't there anymore.
 
 When a pak page is missing and the game thread accesses it:
-- **File cache (no ramdisk)**: major page fault → disk read → 1–10 ms per page → sequential stalls when many pages are gone → 3-second "chest open" hang
+- **File cache (no ramdisk)**: major page fault → disk read → 1–10 ms per page → sequential stalls when many pages are gone → 3-second "chest open" hang (a *memory-pressure* stall; the separate *host-IO* stall is in [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md))
 - **With ramdisk (tmpfs/shmem)**: the page CANNOT be silently freed — it must go through zswap first. Worst case: zswap decompress → ~3 µs. Kernel builds compete for RAM → pak pages go to zswap → game accesses warm pak → decompress at 3 µs not 10 ms
 
 The conversion: **store the pak file on tmpfs**. tmpfs pages are shmem (swap-backed). The kernel cannot silently evict them — they must compress to zswap first. This is the guarantee that eliminates the chest stall, not `memory.min` on Soulmask's cgroup.
@@ -598,8 +607,13 @@ The egg description and RCON command semantics reveal a **two-stage pipeline**:
 
 | Stage | Trigger | What it does | RCON equivalent |
 |---|---|---|---|
-| **Save** | `-saving=600` (10 min) | Serializes live UE4 actor graph → **in-memory SQLite DB** (RAM). CPU-intensive; no disk I/O. | `SaveWorld 0` |
+| **Save** | `-saving=600` (10 min) | Serializes live UE4 actor graph → **in-memory SQLite DB** (RAM). CPU-intensive; no disk I/O (per the egg text; not separately verified). | `SaveWorld 0` |
 | **Backup** | `-backup=960` (16 min) | Flushes the in-memory DB → **`world.db` on disk**. Pure sequential write, no game logic. | `BackupDataBase world` |
+
+> **Measured 2026-10-20 (gstammtisch):** with players online, `WS/Saved/world.db` and `account.db` are
+> also written and synced on the shared root ext4 journal, so these writes are exposed to host-IO
+> stalls ([HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)). The "in-memory DB" wording above is the
+> egg's description, not a measured isolation from disk.
 
 Egg variable descriptions confirm this verbatim:
 - `-saving`: *"Specifies the interval for writing game objects to the database"* (in-memory)

@@ -1,5 +1,9 @@
 # Swap Architecture Guide — Gaming Host (Soulmask + Dev)
 
+> **Superseded IO advice (2026-10-20):** the `io.max` examples here (e.g. `rbps=100M wbps=50M`) were not
+> derived from the device, which writes only ~14–18 MB/s. See
+> [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md). The swap/zswap analysis is unaffected.
+
 **System**: Debian 12, kernel 6.12.90, 8 cores, 16 GB RAM, root on LVM (vda5),
 ~60 GB free at end of disk.  
 **Workload**: Soulmask game server (~13–14 GB, 80 % on 1 core, mostly cold) +

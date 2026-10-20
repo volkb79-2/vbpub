@@ -202,6 +202,10 @@ not hard-capped — soulmask simply wins any contention 4:1 over interactive and
 over best-effort. Memory is the scarce resource, so it gets both a **floor** (min, prod
 only) and **hard ceilings** (max, every non-prod tier). IO latency for prod is
 protected by BFQ weight *plus* hard `io.max` on the best-effort noisemakers.
+(Corrected 2026-10-20: this protects against *request-queue* contention only. The multi-second game
+stalls come from the shared ext4 journal and the queue ahead of it, which neither weights nor caps
+above the ~15 MB/s device rate affect; the fix is bounded dirty data and queue depth. See
+[HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md).)
 
 ### 3.2 Where to set each — three placement mechanisms
 
