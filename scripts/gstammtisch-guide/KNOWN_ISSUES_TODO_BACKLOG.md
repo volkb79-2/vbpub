@@ -27,7 +27,7 @@ binary is absent; the gate containers report it as deselected, never as passed o
 **Measured (not deferred).** `systemd-tmpfiles-clean.timer` on the host is static and active,
 firing 15 min after boot and then every 1 d (read-only check, 2026-10-20, gstammtisch). It is
 no longer relied on: pruning is done by `soulmask_logs-prune.sh` + `soulmask-logs-prune.timer`
-(review SMT-01 R-02: an age rule cannot bound a 256M tmpfs against ~66 MB logs).
+(review SMT-01 R-02: an age rule cannot bound the tmpfs against ~66 MB logs).
 
 **Round 2 (review SMT-01).** Exit 75 + `SuccessExitStatus=75` was chosen over a separate
 per-instance unit (see SOULMASK-TMPFS.md "Failure policy"); its visibility (journal `-p err`,
@@ -47,7 +47,7 @@ host; plus the live acceptance step above (provoke one refused target on a test 
 **Deferred.** (1) The `noswap` tmpfs option on the host kernel (7.2.6 here, `noswap` needs
 >= 6.4; the code fails loudly rather than fall back, but no live mount of the
 `[per-instance-noswap]` section has happened because none is configured). (2) The prune
-policy numbers (`KEEP_BACKUPS=1`, `HIGH_WATER_PCT=75`, size 256M) rest on a ~66 MB log; confirm
+policy numbers (`KEEP_BACKUPS=3`, `HIGH_WATER_PCT=75`, size 512M, as shipped in `soulmask_tmpfs.env`) rest on a ~66 MB log; confirm
 with `df` on the live mounts after the first restart cycle and re-tune in BOTH units if the log
 grows. (3) The container-running check in teardown and the mount-namespace behaviour it guards
 against (a host `umount` succeeding while the game keeps its own copy) were not exercised against
@@ -57,3 +57,24 @@ containment check and the `mount` syscall) cannot be closed in shell.
 **Fix direction.** The controller runs the verification steps listed under "Deployment" in
 SOULMASK-TMPFS.md after install; promote any surprise to a test in
 `tests/test_soulmask_tmpfs_per_instance.py`.
+
+## GG-3 — per-instance log tmpfs: operator responsibilities (not engineered)
+
+**Status:** ACCEPTED, operator responsibility (decided 2026-10-20, SMT-02).
+
+The operator chose not to engineer further: (1) the tmpfs size and prune policy must fit the actual log
+volume (the sizes issue is ignored on purpose); (2) sibling logs are not covered: Steam logs, other
+files under `WS/Saved` (the SQLite databases above all), crash dumps. Both are documented in
+SOULMASK-TMPFS.md "Operator responsibilities and known gaps". Nothing to implement; reopen only if a log
+volume change or an ENOSPC on a live mount shows up.
+
+## GG-4 — host IO bounds measured but not applied
+
+**Status:** OPEN (filed by SMT-02, 2026-10-20).
+
+`HOST-IO-INTERFERENCE.md` §5 recommends bounded `vm.dirty_*`, `nr_requests` and `max_sectors_kb`, and dev
+`io.max` caps derived from the ~10 MB/s steady write rate. Nothing is persisted. The 64/128/256 KB matrix is
+in (§4.4): recommended `dirty_bytes` 16 MiB/4 MiB, `nr_requests` 16, `max_sectors_kb=64` (128 as the fallback).
+Needs: a sequential **read-throughput check** at 64 KB vs 4096 KB (the one unmeasured cost, §4.4 finding 5),
+one confirmation run inside the throttled steady state, then a host-setup work item (sysctl.d + udev rule keyed on the device behind `/`, values derived not literal).
+The instrument scripts are in `tools/io-stall/` but carry gstammtisch literals (`/dev/vda`, slice names, constant restore caps, dated file names); parameterising them (derive the disk, read the pre-test caps) is part of this item.

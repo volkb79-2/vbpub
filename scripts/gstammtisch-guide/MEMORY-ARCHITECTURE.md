@@ -67,7 +67,7 @@ For gstammtisch — one process holding lots of cold pages, sharing the box with
 | Swap disk (SSD) | ~100 µs–1 ms | 100 ms–1 s | Noticeable pause |
 | Swap disk (HDD) | ~1–10 ms | 1–10 s | "Chest open" stall |
 
-The swap-*in* fault is **synchronous**: the game thread blocks until the page is back. Disk-backed swap-in is the dominant cause of game stalls; zswap-backed swap-in is 100–2000× faster but still has a cost when many pages are needed at once (area loads, chest contents). `workingset_refault_anon` is the counter that measures exactly this cost.
+The swap-*in* fault is **synchronous**: the game thread blocks until the page is back. Disk-backed swap-in is the dominant cause of *memory-pressure* game stalls (the separate stall from host IO via the shared journal is in [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)); zswap-backed swap-in is 100–2000× faster but still has a cost when many pages are needed at once (area loads, chest contents). `workingset_refault_anon` is the counter that measures exactly this cost.
 
 **Observed refault rate thresholds (Soulmask, 3 players, 2026-06-27):**
 
@@ -176,7 +176,8 @@ be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 > IO caps are now **dynamic**: `setup-cgroups.sh` applies `BE_IO_CAP_PCT`
 > (default 40%) of the measured `io-baseline.env` ceilings at runtime via
 > `systemctl set-property --runtime besteffort.slice`; the unit's static
-> `IO*Max` (31M/100/400) is only a boot-window fallback before that runs.
+> `IO*Max` (31M/100/400) is only a boot-window fallback before that runs. (2026-10-20: these caps are not
+> derived from the device's real ~10–15 MB/s steady write rate; see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §5.)
 >
 > ⚠ **Protection chain (found 2026-07-06):** `memory.min`/`memory.low` are *hierarchical* — a cgroup's effective protection is capped by every ancestor's value. The game scope lives under `system.slice` and the pak slice under `soulmask.slice`; without `MemoryMin` on those ancestors both floors are **ineffective** against global reclaim. Since 2026-07-07 `setup-cgroups.sh` asserts the ancestor floors (table above) via `systemctl set-property`. Do NOT set `system.slice` below the game floor — the parent value silently CAPS the child's effective protection.
 
