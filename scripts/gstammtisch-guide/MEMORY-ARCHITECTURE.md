@@ -227,11 +227,10 @@ line). The 200 trial below (live only, provisional, operator-approved as option 
 its numbers. The operator's target is ~100–300 MB free. The second Soulmask server start on the 200 trial hit
 the boost failure mode described in the next subsection.
 
-**A second measurement of the same zones** (DOCS-FOLD-20261020, Normal zone, 16 GB, in MB): wsf 200: min 54 /
+**A second measurement of the same zones** (Normal zone, 16 GB, in MB): wsf 200: min 54 /
 low 313 / high 573; wsf 50: min 54 / low 118 / high 183. The table above (MiB, 53 / … / 572) comes from the
-earlier ~10:20 UTC read. The facts file gives MB and states no unit for the earlier read being MiB-converted; 573 MB
-would be 546 MiB, not 572, so this may be a unit or rounding artefact rather than a different reading; it is not
-reconciled (the controller was not asked). DMA32 has
+earlier ~10:20 UTC read. The second reading is stated in MB; 573 MB would be 546 MiB, not 572, so the difference
+may be a unit or rounding artefact rather than a different reading; it is not reconciled. DMA32 has
 its own watermarks, and `lowmem_reserve_ratio` keeps part of DMA32 free and unusable for most allocations.
 Observed total free: ~500–700 MB at wsf 200; **expected** ~200–350 MB at wsf 50 **[I]**.
 

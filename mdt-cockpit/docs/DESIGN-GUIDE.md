@@ -904,7 +904,7 @@ knobs to name: `min_free_kbytes`, `watermark_scale_factor`, `watermark_boost_fac
 `compaction_proactiveness`, THP `enabled`/`defrag`.
 
 **Wizard implication (not implemented; backlog MDT-021).** The wizard, and debian-install-v2 which writes the same sysctls, should ask for or derive
-`watermark_boost_factor` (suggest 0 on swap-backed, memory-protected hosts) next to wsf, with the reasoning above. `mdt-host-check.sh` should WARN when
+`watermark_boost_factor` (suggest 0 on swap-backed, memory-protected hosts) next to wsf, with the reasoning in `scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md` ("Watermark boost and the 14:09 UTC failure mode"). `mdt-host-check.sh` should WARN when
 `node_unreclaimable` is 1 or `watermark_boost` is non-zero for long.
 
 ## Per-container memory policy

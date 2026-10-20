@@ -337,8 +337,10 @@ guest before the lane ends.
 
 `vm.watermark_boost_factor` was found stuck-boosting on gstammtisch (2026-10-20 14:09 UTC: ~860 MB held free while all
 reclaim ran in the allocating threads, `node_unreclaimable = 1`); the operator set `vm.watermark_boost_factor = 0` and
-`vm.watermark_scale_factor = 50` by hand (persisted 23:16 UTC). Mechanism, numbers and recovery: `docs/DESIGN-GUIDE.md`,
-"Memory watermarks and watermark boost are kernel settings this host-setup does not own yet". Follow-up:
+`vm.watermark_scale_factor = 50` by hand (persisted 23:16 UTC). Mechanism, numbers and recovery:
+`scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`, "Watermark boost and the 14:09 UTC failure mode"; the decision and
+the wizard follow-up: `docs/DESIGN-GUIDE.md`, "Memory watermarks and watermark boost are kernel settings this
+host-setup does not own yet". Follow-up:
 - the wizard (and `scripts/debian-install-v2`, which writes the same sysctls) should ask for or derive
   `watermark_boost_factor` next to `watermark_scale_factor`, suggesting 0 on swap-backed, memory-protected hosts, with
   that reasoning;

@@ -477,7 +477,7 @@ this repo. Labels: [M] measured, [I] inferred.*
 
 **Shutdown of a swapped-out server.** [M] CLIENT (`6c418fe7…`) was stopped via the Wings API. The stop took **125 s**
 (Wings stop request 23:12:38, container exit 23:14:43 UTC); the observer's own log says 128 s because its sampling
-window began about 3 s earlier (per the controller's review). Exit code 130 is the normal stop-signal path.
+window began about 3 s earlier. Exit code 130 is the normal stop-signal path.
 - **Page-in during shutdown:** 1 724 MiB from disk swap (`pswpin`) plus 805 MiB from zswap (`zswpin`); major faults
   651 k, up to ~5 300 disk swap-ins/s. The scope's anon grew 3083 → 4522 MB before release.
 - **Shutdown save:** `world.db` and `world.db-journal`.
