@@ -291,6 +291,8 @@ gets no equivalent**: `shrink_slab(sc->gfp_mask, nid, memcg, sc->priority)`
 a memcg that is above its low, the shrinker's scan target is unscaled by
 protection; only the priority (pressure) moves it.
 
+(The ~7.5 G example below is the start-up state; the steady state of section 6.1 is *below* low.)
+
 Using the live numbers: a game scope using ~7.5 G with `memory.low` 5000M is
 above its low, so it is not skipped (a), its LRU scan is scaled to ~33% (b),
 and its zswap shrinker runs at full strength. Lowering `memory.min/low` makes
@@ -347,13 +349,15 @@ skip is the whole explanation is **[I]**; the source side is proven, the observa
 the whole zswap LRU. In steady state, *below* low, it writes back nothing. Neither extreme gives a deliberate
 "warm set in zswap, cold set on disk".
 
-**Consequence for sizing [I, still to be verified by measurement].** `memory.low` decides how much of a game's
-footprint stays in RAM, *including its compressed zswap part*. Sizing it near hot working set plus compressed
-warm set means reclaim, and with it the shrinker, acts only on the excess above low; reclaim pressure on a memcg
-is proportional to its usage above low (section 6 (b), for the LRU scan); and zswap writes back from the LRU
-tail (the oldest stores, second chance via the referenced bit, section 2), so the coldest go first. The cost of
-setting low too high is that cold pages are retained in zswap and use RAM for nothing (here ~418 MB in steady
-state). See DESIGN.md, "Steady state versus burst". Manual commands to read this per memcg:
+**Consequence for sizing.** `memory.low` decides how much of a game's footprint stays in RAM, including its
+compressed zswap part, because a memcg at or below its low is not visited by the shrinker (section 6 (a)) **[S]**.
+Above low the shrinker's scan target is not scaled by the excess (section 6 (b)), only by reclaim priority, so
+low alone does not give a graded warm/cold split; the LRU scan, not the shrinker, is proportional to usage above
+low **[S]**. Whether a low sized near hot working set plus compressed warm set improves the steady state is
+**[I]** and needs the measurement. Within whatever the shrinker is allowed to scan, the coldest entries go first
+(LRU tail, second chance via the referenced bit, section 2); that order comes from the zswap LRU, not from low.
+The cost of setting low too high is that cold pages are retained in zswap and use RAM for nothing (here ~418 MB
+in steady state) **[M]**. See DESIGN.md, "Steady state versus burst". Manual commands to read this per memcg:
 [`scripts/gstammtisch-guide/OBSERVATION.md`, "Per-memcg zswap residency"](../../scripts/gstammtisch-guide/OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
 
 ## 7. Reconciling with the operator's claim
@@ -389,7 +393,7 @@ decides.
 2. Whether the arming (flag clearing, section 2) followed by a deep-priority
    episode produces the observed delay distribution, and whether a squeeze
    (`memory.min/low/high` step-down, H2) moves it.
-3. Whether `watermark_scale_factor` 200 moves the work off the game's threads
+3. (Historical, the 200 trial was superseded.) Whether `watermark_scale_factor` 200 moves the work off the game's threads
    (only the global path, H3) or is irrelevant because the caller is
    memory.high (H4).
 4. The 7.2.6-vs-v7.2 source difference (assumed none); the guest kernel must

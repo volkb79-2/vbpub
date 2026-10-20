@@ -274,8 +274,8 @@ cat /sys/fs/cgroup/dev-workloads.slice/memory.zswap.current   # how much zswap t
 cat /sys/fs/cgroup/dev-workloads.slice/{memory.high,memory.max,memory.zswap.writeback}
 cat /sys/fs/cgroup/dev-workloads.slice/io.stat
 # on the Soulmask scope: memory.min, memory.low, memory.zswap.writeback
-# (the live value is 1: operator decision 2026-10-20, writeback=1 and the shrinker are required;
-#  the earlier "want 0" was superseded)
+# (the live value is 1: writeback=1 and the shrinker are required, an operator decision recorded in
+#  HOST-IO-INTERFERENCE.md; the earlier "want 0" was superseded)
 ```
 
 ### Per-memcg zswap residency and charged IO (manual commands)
@@ -298,8 +298,7 @@ done
 ```
 
 Reading it: a game with `memory.current` below `memory.low` and a stable `zswapped` is being left alone (nothing
-reclaims it); `low` in `memory.events` counts reclaim that took pages anyway. (Measured 2026-10-20 ~21:40 UTC:
-MAIN 4227 M against low 5000 M, CLIENT 3577 M against 4000 M, pool 543 MB holding 2.1 GB.)
+reclaims it); `low` in `memory.events` counts reclaim that took pages anyway. (Measured values: KERNEL-ANALYSIS 6.1, linked above.)
 
 **Issuer versus charged cgroup (IO).** The task that *issues* an IO and the cgroup it is *charged to* differ.
 Writeback is issued by `kworker` flush threads but charged to the memcg/blkcg that dirtied the page (cgroup

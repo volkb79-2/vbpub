@@ -134,9 +134,11 @@ kswapd, not in the game's threads. Limits, from source:
   mitigation (b)).
 
 **Update, operator decision 2026-10-20 (~23:16 UTC): `vm.watermark_scale_factor` back to 50, and
-`vm.watermark_boost_factor = 0`, persisted on gstammtisch.** The provisional 200 above is superseded. At 14:09 UTC
-a stuck watermark boost (1.5 × the high watermark, which wsf 200 had raised) held ~860 MB free while all reclaim
-ran in the allocating threads; the mechanism and the recovery are in
+`vm.watermark_boost_factor = 0`, persisted on gstammtisch.** The provisional 200 above is superseded. Observed at
+14:09 UTC **[M]**: a watermark boost of 859 MB, `node_unreclaimable` 1, kswapd asleep, all reclaim running in the
+allocating threads, and a watermark recompute cleared it. How `node_unreclaimable` was reached is **[I]** and
+unexplained (v7.2 does not count a kswapd failure for a pass that started boosted, `vmscan.c:7237-7242`). The
+mechanism, the source-labelled statements and the recovery are in
 [`scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`, "Watermark boost"](../../scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md#watermark-boost-and-the-1409-utc-failure-mode).
 The decision table in section 6 is kept as it was recorded.
 
@@ -149,9 +151,10 @@ back nearly the whole LRU. The pattern is all or nothing.
 
 **Consequence (operator agreed this changes the approach; still to be verified by measurement [I]):**
 - **Steady state is a `memory.low` sizing question.** Low decides how much of a game stays in RAM *including its
-  compressed zswap part*. Sized near hot working set plus compressed warm set, reclaim and the shrinker act only
-  on the excess above low, and the coldest entries go first. Setting it too high keeps cold pages in zswap for
-  nothing (here ~418 MB).
+  compressed zswap part*: the shrinker visits the memcg only above low (KERNEL-ANALYSIS section 6 (a)); its scan is
+  not scaled by the excess (6 (b)); only the LRU scan is proportional to it **[S]**. Low alone therefore gives no
+  graded warm/cold split; whether a low near hot working set plus compressed warm set improves the steady state is
+  **[I]** and needs the measurement. Setting it too high keeps cold pages in zswap for nothing (here ~418 MB).
 - **The burst stays the governor's job.** The chunked, paced writeback of this project remains the answer for the
   startup burst (the memcg is above low then, whatever low is chosen).
 - **Relation to the recorded rejection.** The operator rejected *raising the steady low to cover the whole
@@ -168,11 +171,11 @@ back nearly the whole LRU. The pattern is all or nothing.
 |---|---|---|
 | Raise the game's steady `memory.low` (mitigation (a)) | **REJECTED** | "no, far too much, around 4G min is fine as set now. refaults stay low at 5G. ignore your suggestion." |
 | Lower `dev.slice` `memory.high` (mitigation (c)) | **REJECTED** | "no, we need it" |
-| `vm.watermark_scale_factor` 200 (mitigation (b)) | accepted provisionally; live since ~10:20 UTC, **not persisted** | (no quote recorded; accepted provisionally) |
+| `vm.watermark_scale_factor` 200 (mitigation (b)) | accepted provisionally; live since ~10:20 UTC, **not persisted**; **superseded 2026-10-20 ~23:16 UTC: wsf 50 and `watermark_boost_factor` 0, persisted** | (no quote recorded; accepted provisionally) |
 | Chunked, rate-governed writeback governor | **WANTED later** | "yes, we want that at some time" |
 
 Within those constraints the honest answer for 7.2.6 is: **there is nothing to
-do beyond keeping `vm.watermark_scale_factor` 200 (provisional) and measuring
+do beyond keeping `vm.watermark_scale_factor` 200 (provisional; superseded, see the Update in section 5) and measuring
 the caller.** No userspace lever on 7.2.6 both keeps R1 and prevents the stall
 (section 3); the two other mitigations are rejected. What remains is evidence:
 find the reclaim caller (the synthetic's full-stack sampling, or a real-host

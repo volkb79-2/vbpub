@@ -395,14 +395,10 @@ For Soulmask in production: **min=6G, high=7G** (2026-07-07; 6G/8G interim on 07
 > **Current values and what `memory.low` also decides (2026-10-20).** The values above are the 2026-07
 > calibration. After the Wings steady squeeze the live band is min 4000M, low 5000M, high 8000M
 > ([MEMORY-ARCHITECTURE.md](MEMORY-ARCHITECTURE.md#burst-writeback-stall-the-zswap-shrinker-has-no-rate-governor)).
-> `memory.low` is also the knob that decides whether the zswap shrinker visits the game: `memory.current` includes the
-> game's compressed zswap pool, and a memcg below its low is skipped by reclaim. Observed with only the two games
-> running: both below low (MAIN 4227 M of 5000 M, CLIENT 3577 M of 4000 M), pool stable for hours, nothing written
-> back; above low at server start, nearly the whole pool is written back. Mechanism and sizing consequence:
-> [zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc)
-> and [DESIGN, "Steady state versus burst"](../../zswap-writeback-governor/docs/DESIGN.md#steady-state-versus-burst-what-memorylow-can-and-cannot-do).
-> The sizing effect is inferred and awaits measurement **[I]**. Manual commands:
-> [OBSERVATION.md](OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
+> `memory.low` also decides whether the zswap shrinker visits the game at all (a memcg below its low is skipped,
+> and its zswap pool counts in `memory.current`). Observation, mechanism and the (inferred) sizing consequence:
+> [zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc).
+> Manual commands: [OBSERVATION.md](OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
 
 ### Calibrating memory.min — finding the sweet spot
 
@@ -650,10 +646,8 @@ The `-saving` timer accesses the UE4 actor graph (anon pages). Pages that are zs
 At most 16 minutes of data loss on crash (last disk flush). For 2 players, 600s/960s is fine. Shortening adds CPU serialization spikes more often. On demand: `SaveWorld 0` then `BackupDataBase world` (or just `SaveWorld 1` if confirmed to do both).
 
 **Operational: stopping a swapped-out server pages it back in (measured 2026-10-20).** A server whose memory has
-been pushed to swap is read back from disk and zswap when it is stopped (and saved). Stopping CLIENT took ~2 min,
-reading 1 724 MiB from disk swap and 805 MiB from zswap, with up to ~5 300 disk swap-ins/s; the worst game-thread
-stall was 4.5 s, and the other server had none. Budget the time and the disk read load for a stop; do not stack other
-disk work on it. Numbers: [MEASUREMENTS.md M9](MEASUREMENTS.md#m9-shutdown-of-a-swapped-out-server-eatmydata-writeback-delay-save-cadence).
+been pushed to swap is read back from disk and zswap when it is stopped (and saved); stopping CLIENT took ~2 min.
+Budget the time and the disk read load for a stop; do not stack other disk work on it. Figures: [MEASUREMENTS.md M9](MEASUREMENTS.md#m9-shutdown-of-a-swapped-out-server-eatmydata-writeback-delay-save-cadence).
 **When eatmydata'd writes reach the disk:** within seconds, not the 30 s `dirty_expire` default, because
 `dirty_background_bytes` = 4 MiB starts writeback almost at once (same entry; probe
 `tools/io-stall/wb_delay.bt`).

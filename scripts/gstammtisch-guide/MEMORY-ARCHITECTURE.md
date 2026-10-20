@@ -218,7 +218,7 @@ So kswapd now wakes at ~385 MiB free instead of ~145 and refills to ~700 MiB ins
 **guaranteed** extra free memory is the difference of the **low** marks: about **240 MiB** (Normal 118 → 313,
 DMA32 27 → 72; per zone). The difference of the **high** marks (~480 MiB: Normal 183 → 572, DMA32 42 → 132) is the
 refill *target*, not a guarantee.
-`watermark_boost_factor` (15000) and `min_free_kbytes` (67584) are unchanged.
+`watermark_boost_factor` (15000) and `min_free_kbytes` (67584) were unchanged (at that time).
 
 **Status: superseded by the operator decision of 2026-10-20 (~23:16 UTC): `vm.watermark_scale_factor = 50` and
 `vm.watermark_boost_factor = 0`**, persisted in `/etc/sysctl.d/99-gstammtisch-memory.conf` on gstammtisch (the
@@ -229,7 +229,9 @@ the boost failure mode described in the next subsection.
 
 **A second measurement of the same zones** (DOCS-FOLD-20261020, Normal zone, 16 GB, in MB): wsf 200: min 54 /
 low 313 / high 573; wsf 50: min 54 / low 118 / high 183. The table above (MiB, 53 / … / 572) comes from the
-earlier ~10:20 UTC read; the 1-unit difference in min and high between the two is not reconciled here. DMA32 has
+earlier ~10:20 UTC read. The facts file gives MB and states no unit for the earlier read being MiB-converted; 573 MB
+would be 546 MiB, not 572, so this may be a unit or rounding artefact rather than a different reading; it is not
+reconciled (the controller was not asked). DMA32 has
 its own watermarks, and `lowmem_reserve_ratio` keeps part of DMA32 free and unusable for most allocations.
 Observed total free: ~500–700 MB at wsf 200; **expected** ~200–350 MB at wsf 50 **[I]**.
 
@@ -256,22 +258,30 @@ allocation that would go below min reclaims for itself (direct reclaim, which st
 `vm.min_free_kbytes` sets min; `vm.watermark_scale_factor` sets the low−min and high−low gaps as a fraction of zone
 memory (200 = 2 %, 50 = 0.5 %, default 10).
 
-**The boost mechanism.** On an external-fragmentation event (an allocation steals a pageblock of another
-migratetype), `boost_watermark()` adds one pageblock (2 MB) to `zone->watermark_boost`. The cap is
-high_wmark × `vm.watermark_boost_factor` / 10000; the default 15000 means 1.5 × high. The boost is added to all
-three watermarks and kswapd is woken. Boosted kswapd reclaim runs with `may_swap = 0` and `may_writepage = 0`, i.e.
-clean file pages only; kcompactd then compacts. kswapd removes the boost at the end of its balance run.
+**The boost mechanism [S, kernel v7.2 source].** On an external-fragmentation event (an allocation steals a
+pageblock of another migratetype), `boost_watermark()` adds one pageblock (2 MB) to `zone->watermark_boost`
+(`page_alloc.c:2163-2195`). The cap is high_wmark × `vm.watermark_boost_factor` / 10000; the default 15000 means
+1.5 × high. The boost is added to all three watermarks and kswapd is woken. A boosted kswapd pass runs with
+`may_swap = 0` and `may_writepage = 0`, i.e. clean file pages only (`vmscan.c:7164-7165`); kcompactd then
+compacts. At the end of its run kswapd subtracts the boost it saw at the start (`vmscan.c` ~7248-7260), so boost
+added during the pass remains. The recompute `__setup_per_zone_wmarks()` sets `watermark_boost = 0`
+(`page_alloc.c:6501`).
 
-**The failure seen (2026-10-20 14:09 UTC, second Soulmask server starting):** [M for the numbers, I for the mechanism]
-- Boost 220 008 pages = 1.5 × 146 672 (the high watermark at wsf 200) = 859 MB; the effective min was 912 MB.
-- Boosted reclaim could not make progress: ~1.2 GB of file pages, anon protected by `memory.min`/`low`, swapping
-  not allowed. After 16 failures `node_unreclaimable = 1` and kswapd slept.
-- Because only kswapd clears the boost, it stuck. Every allocation, game threads included, ran direct reclaim
-  (`pgscan_kswapd` 0/s against `pgscan_direct` 11–16 k/s, `allocstall` ~170–200/s), with zswap at its pool limit
-  writing back synchronously.
+**The failure seen (2026-10-20 14:09 UTC, second Soulmask server starting).**
+- **Observed [M]:** boost 220 008 pages = 1.5 × 146 672 (the high watermark at wsf 200) = 859 MB, effective min
+  912 MB; `node_unreclaimable` 1 with kswapd asleep; all reclaim direct (`pgscan_kswapd` 0/s against `pgscan_direct`
+  11–16 k/s, `allocstall` ~170–200/s), with zswap at its pool limit writing back synchronously; ~1.2 GB of file
+  pages, anon protected by `memory.min`/`low`; a watermark recompute cleared it.
+- **How `node_unreclaimable` was reached: [I], unexplained.** The earlier chain "boosted reclaim fails 16 times, so
+  the node goes unreclaimable and kswapd sleeps" is not supported: v7.2 does **not** count a kswapd failure for a
+  pass that started boosted (`vmscan.c:7237-7242`: `if (!sc.nr_reclaimed && !boosted)` before incrementing
+  `kswapd_failures`, "to prevent the kswapd thread from stopping"). The counted failures must have come from
+  passes that began unboosted, or by another route. The observation is [M]; the path is open.
+- Because kswapd was asleep and the boost remained, every allocation, game threads included, entered direct
+  reclaim **[I]**.
 
-**Recovery.** Writing *any* value to `vm.watermark_scale_factor` or `vm.min_free_kbytes` runs
-`setup_per_zone_wmarks()`, which recomputes every zone's watermarks **and resets `watermark_boost` to 0**.
+**Recovery [M].** Writing *any* value to `vm.watermark_scale_factor` or `vm.min_free_kbytes` runs
+`setup_per_zone_wmarks()`, which recomputes every zone's watermarks **and resets `watermark_boost` to 0** [S].
 Rewriting the same wsf (200) cleared the boost: kswapd resumed at once (`node_unreclaimable` 0, direct reclaim 0/s).
 
 **Decision (operator, 2026-10-20):** `vm.watermark_boost_factor = 0` (persisted on gstammtisch at 23:16 UTC) and
@@ -284,17 +294,16 @@ Rewriting the same wsf (200) cleared the boost: kswapd resumed at once (`node_un
 **Drift found:** the gstammtisch host has `vm.swappiness = 10`, while the repo's `99-gstammtisch-memory.conf` says
 100 (table above). Neither was changed; the operator decides (backlog GG-6).
 
-### Steady state: zswap residency against `memory.low` (see also the zswap-writeback-governor project)
+**Wizard and host-check follow-up:** the mdt host-setup does not manage the watermarks yet; backlog MDT-021 and the
+decision summary in [`mdt-cockpit/docs/DESIGN-GUIDE.md`](../../mdt-cockpit/docs/DESIGN-GUIDE.md#memory-watermarks-and-watermark-boost-are-kernel-settings-this-host-setup-does-not-own-yet-follow-up).
 
-Observed 2026-10-20 ~21:40 UTC with only the two games running: host pool 543 MB compressed holding 2.1 GB (3.9×),
-lifetime `written_back_pages` 8.27 M (31.5 GB), `pool_limit_hit` 16 697; MAIN 164 MB / 0.6 GB, CLIENT
-254 MB / 1.2 GB. Both games sat **below** their `memory.low` (4227 M of 5000 M; 3577 M of 4000 M), so reclaim, and
-the shrinker with it, never visited them: the contents stayed resident and `rfz/s` was 0. At server start the memcg is
-above low and the shrinker writes back nearly the whole LRU, hence the all-or-nothing pattern above. `memory.low`
-therefore also decides how much *compressed* warm data stays in RAM; sizing and the governor are in
-[zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc)
-and [DESIGN, "Steady state versus burst"](../../zswap-writeback-governor/docs/DESIGN.md#steady-state-versus-burst-what-memorylow-can-and-cannot-do).
-The effect is inferred and awaits measurement **[I]**. Manual commands: [OBSERVATION.md](OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
+### Steady state: zswap residency against `memory.low`
+
+Below its `memory.low` a game is not visited by the zswap shrinker, so its compressed pool stays resident for hours
+(observed 2026-10-20 ~21:40 UTC); above low at server start it writes back nearly everything, hence the
+all-or-nothing pattern. Numbers, mechanism and the sizing consequence (an inference that needs measurement):
+[zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc).
+Manual commands: [OBSERVATION.md](OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
 
 ---
 

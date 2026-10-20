@@ -107,12 +107,9 @@ lands in besteffort.
 
 ## 6b. Soulmask game servers: steady-state zswap residency (2026-10-20 ~21:40 UTC)
 
-With only the two game servers running for hours: host zswap pool 543 MB compressed holding 2.1 GB (3.9×);
-lifetime `written_back_pages` 8.27 M (31.5 GB), `pool_limit_hit` 16 697 (`max_pool_percent` 25). Per game: MAIN
-164 MB compressed / 0.6 GB original, CLIENT 254 MB / 1.2 GB. Both sat below their `memory.low` (MAIN 4227 M of
-5000 M, CLIENT 3577 M of 4000 M), so reclaim and the zswap shrinker never visited them and `rfz/s` stayed 0. The
-memcg's zswap pool counts in its `memory.current`, so `memory.low` decides how much compressed warm data stays in RAM
-(~418 MB retained here); sizing consequence **[I]**: [zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc).
+With only the two game servers running for hours, both sat below their `memory.low`, so reclaim and the zswap
+shrinker never visited them and their compressed pools stayed resident. Figures, mechanism and the sizing
+consequence (an inference): [zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc).
 Commands: [OBSERVATION.md](OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
 
 ## 7. Pending

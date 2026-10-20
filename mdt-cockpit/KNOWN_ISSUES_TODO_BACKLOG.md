@@ -343,22 +343,26 @@ reclaim ran in the allocating threads, `node_unreclaimable = 1`); the operator s
   `watermark_boost_factor` next to `watermark_scale_factor`, suggesting 0 on swap-backed, memory-protected hosts, with
   that reasoning;
 - `mdt-host-check.sh` should WARN when `node_unreclaimable` is 1, or `watermark_boost` is non-zero for a long time
-  (per zone, `/proc/zoneinfo` and `/proc/vmstat`).
+  (per zone, `/proc/zoneinfo` and `/proc/vmstat`). Note: how `node_unreclaimable` was reached on 2026-10-20 is
+  unexplained (v7.2 does not count a kswapd failure for a boosted pass, `vmscan.c:7237-7242`), so the WARN is a
+  symptom check, not a proof of the boost mechanism.
 
-## MDT-022 - a timed-out lister test left orphaned processes running for 38 hours (2026-10-19 to 2026-10-20)
+## MDT-022 - a timed-out lister test left orphaned processes running for about 39 hours (2026-10-19 to 2026-10-20)
 
 **Status:** OPEN, severity low (it leaks processes on every timeout); recorded only; not fixed.
 
 **What happened.** A test of `host-setup/scripts/mdt-cgroup-io-limits.sh` in worktree `mdt-hostsetup-io-20261019` left the
 chain `bash -x mdt-cgroup-io-limits.sh dev.slice` → `cat …/io.max`, plus `column -t`, running from 2026-10-19 08:27 to
-2026-10-20 ~23:30 UTC (38 h), all reparented to PID 1 after the test's timeout. In the fixture directory
+2026-10-20 ~23:30 UTC (about 39 h), all reparented to PID 1 after the test's timeout. In the fixture directory
 `/tmp/tmpo1i6get1` the file `dev.slice/dev-gates.slice/io.max` was a named pipe (`prw-r--r--`), and `cat` on it blocked
 forever. The controller killed the processes and removed the fixture on 2026-10-20 ~23:30 UTC.
 
 **Where.** `host-setup/tests/test_io_governance.py:548` (`os.mkfifo(path)` in `ListingToolTests._fifo_file`, lines
-546–559): each FIFO is served by a daemon thread of the test process, so once the test process dies or times out
-nothing writes and every later `cat` blocks. The lister is run with `subprocess.run(..., timeout=30)` at lines 583,
-606 and 661; on `TimeoutExpired` Python kills only the direct child (`bash`), not its descendants (`cat`, `column`).
+546–560): each FIFO is served by a daemon thread of the test process, so once the test process dies or times out
+nothing writes and every later `cat` blocks. The FIFO-backed tests run the lister with `subprocess.run(..., timeout=30)`
+at lines 582–583 and 602–606; on `TimeoutExpired` Python kills only the direct child (`bash`), not its descendants
+(`cat`, `column`). Line 632 (`test_unknown_cgroup_is_an_error`) runs the lister with no timeout at all (line 661 is
+`iocost-calibrate.sh`, not the lister).
 (Note: the older copy `modern-debian-tools-python-debug/host-setup/tests/` has no `mkfifo`.)
 
 **Defects.**

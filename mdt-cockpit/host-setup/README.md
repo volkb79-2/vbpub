@@ -632,7 +632,8 @@ log line (a disk re-add or a scheduler switch reverts them); empty keys are neve
 host-setup does not own `vm.watermark_scale_factor`, `vm.watermark_boost_factor` or `vm.min_free_kbytes` yet; on gstammtisch they are set by hand
 (`wsf` 50, `boost` 0 since 2026-10-20), and a stuck watermark boost once forced all reclaim into the allocating threads. The wizard and
 `mdt-host-check.sh` follow-up is recorded as MDT-021 in `KNOWN_ISSUES_TODO_BACKLOG.md`. Why, and the measured failure: DESIGN-GUIDE, "Memory
-watermarks and watermark boost" (linked from `scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`).
+watermarks and watermark boost are kernel settings this host-setup does not own yet", which points at the canonical record in
+`scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`.
 
 ### Pausing the re-assert for IO experiments, and restarting mdt-buildkitd (MDT-HS-07)
 

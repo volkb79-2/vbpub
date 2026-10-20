@@ -89,10 +89,8 @@ cgroup it is *charged to* differ: writeback is issued by `kworker` flush threads
 dirtied the page (cgroup writeback), and swap-out is issued by kswapd or a direct-reclaiming thread but charged to
 the page owner's cgroup as io.cost debt. `systemd-cgtop` shows IO as *charged* (`io.stat`); `iotop`/`iotop-c`,
 `atop` and `htop` show it per process as *issued*. **None of them shows per-memcg zswap residency next to
-`memory.low`, or io.cost vrate and debt. That gap is what topos targets.** Without topos, the manual equivalents
-(read-only) are: `cat /sys/fs/cgroup/<slice>/io.stat` (diff two reads) for charged IO; `grep -o 'cost\.vrate=[0-9]*'
-/sys/fs/cgroup/io.stat` for io.cost; `cat /sys/fs/cgroup/<slice>/io.pressure` for per-cgroup IO pressure; and
-`cat /proc/<pid>/task/*/stack` for tasks in state D. The zswap-residency commands (host and per memcg) are in
+`memory.low`, or io.cost vrate and debt. That gap is what topos targets.** Until topos covers it, the read-only manual
+commands (charged IO, io.cost vrate, per-cgroup IO pressure, D-state stacks, per-memcg zswap residency) are listed in
 [`scripts/gstammtisch-guide/OBSERVATION.md`](../../scripts/gstammtisch-guide/OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands),
 which topos documents already reference for the gstammtisch measurements.
 
