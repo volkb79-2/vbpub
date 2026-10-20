@@ -7,7 +7,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## UNRELEASED
 
 ### Fixed (MDT-HS-03)
-- host-setup: `mdt-buildkit-guard` reads the container id from `Actor.ID` (Docker 29 no longer sends top-level `id`) and no longer crash-loops; disagreeing ids are refused, non-container events ignored, and one malformed event triggers a throttled full reconcile instead of an exit (five in a row, or 20 in 60 s, exit); a container vanishing before inspect is skipped (daemon errors still fail); full 64-hex ids required and the sweep uses `--no-trunc`; `check.sh` reports guard NRestarts and malformed events
+- host-setup: `mdt-buildkit-guard` reads the container id from `Actor.ID` (Docker 29 no longer sends top-level `id`) and no longer crash-loops; disagreeing ids are refused, non-container events ignored, and one malformed event triggers a throttled full reconcile instead of an exit (five in a row, or 20 in 60 s, exit); a container vanishing before inspect is skipped (daemon errors still fail); full 64-hex ids required and the sweep uses `--no-trunc`; `check.sh` reports the guard's state distinctly (not installed / not running / active with N restarts) and a journal it could not read as such, not as zero malformed events; `docker rm -f` of a container already gone is treated as gone
 
 ### Fixed (MDT-HS-02)
 - host-setup: `install.sh` on an existing env file no longer refuses the runtime-optional keys: ONE definition (`host-setup/runtime-optional-keys.re`) is read by both the strict Python validator and the shell helper; present optional keys are still validated, render-time keys still refuse

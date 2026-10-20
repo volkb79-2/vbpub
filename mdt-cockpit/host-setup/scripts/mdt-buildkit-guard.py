@@ -321,6 +321,9 @@ def handle_container(docker: str, info: ContainerInfo, config: GuardConfig) -> D
         )
         return decision
     removed = _docker(docker, ["rm", "-f", info.container_id])
+    if removed.returncode != 0 and _inspect_says_gone(removed.stderr or ""):
+        print(f"[mdt-buildkit-guard] info: {prefix} was already gone before rm", flush=True)
+        return decision
     if removed.returncode != 0:
         detail = (removed.stderr or removed.stdout or "docker rm failed").strip()
         raise GuardError(

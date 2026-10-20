@@ -556,17 +556,41 @@ systemctl is-enabled mdt-dev-governance-reconcile.timer >/dev/null 2>&1 \
 systemctl is-active mdt-container-io-events-watcher.service >/dev/null 2>&1 \
   && ok "mdt-container-io-events-watcher.service active (docker-events reactive per-container IO caps)" \
   || warn "mdt-container-io-events-watcher.service not active — governed Docker scopes and out-of-tree Buildx workers only get capped on the next mdt-dev-governance-reconcile.timer sweep, not instantly on start"
-if [ "$(systemctl show mdt-buildkit-guard.service -p LoadState --value 2>/dev/null)" = loaded ]; then
-  guard_restarts=$(systemctl show mdt-buildkit-guard.service -p NRestarts --value 2>/dev/null)
-  guard_malformed=$(journalctl -u mdt-buildkit-guard.service --since "-1h" -q --no-pager 2>/dev/null | grep -c 'malformed docker event' || true)
-  case "${guard_restarts:-0}" in
-    0) ok "mdt-buildkit-guard.service has not restarted" ;;
-    *) warn "mdt-buildkit-guard.service restarted ${guard_restarts} times — a restart is a window in which created containers are not seen; read its journal (MDT-HS-03 crash-looped on Docker 29 events)" ;;
+# BEGIN guard-status (extracted verbatim by tests/test_guard_events.py)
+check_buildkit_guard() {
+  local unit=mdt-buildkit-guard.service load active sub restarts jrc malformed out
+  load=$(systemctl show "$unit" -p LoadState --value 2>/dev/null) || load=""
+  if [ "$load" != loaded ]; then
+    info "$unit is not installed (LoadState=${load:-unknown}) — the BuildKit guard is not enforcing anything on this host"
+    return 0
+  fi
+  active=$(systemctl show "$unit" -p ActiveState --value 2>/dev/null)
+  sub=$(systemctl show "$unit" -p SubState --value 2>/dev/null)
+  restarts=$(systemctl show "$unit" -p NRestarts --value 2>/dev/null)
+  case "$restarts" in
+    ''|*[!0-9]*) warn "$unit: could not read NRestarts (got '${restarts}')"; restarts="" ;;
   esac
-  [ "${guard_malformed:-0}" = 0 ] \
-    && ok "mdt-buildkit-guard.service logged no malformed docker events in the last hour" \
-    || warn "mdt-buildkit-guard.service logged ${guard_malformed} malformed docker events in the last hour — the daemon's event shape may have changed"
-fi
+  if [ "$active" != active ]; then
+    warn "$unit is installed but NOT running (ActiveState=${active:-unknown} SubState=${sub:-unknown}, ${restarts:-?} restarts) — created containers are not being checked"
+  elif [ "$restarts" = 0 ]; then
+    ok "$unit active, has not restarted"
+  elif [ -n "$restarts" ]; then
+    warn "$unit active but restarted ${restarts} times — a restart is a window in which created containers are not seen; read its journal (MDT-HS-03 crash-looped on Docker 29 events)"
+  fi
+  out=$(journalctl -u "$unit" --since "-1h" -q --no-pager 2>/dev/null); jrc=$?
+  if [ "$jrc" -ne 0 ]; then
+    warn "$unit: could not read its journal (journalctl exit $jrc) — malformed docker events in the last hour are unknown"
+    return 0
+  fi
+  malformed=$(printf '%s\n' "$out" | grep -c 'malformed docker event')
+  if [ "${malformed:-0}" = 0 ]; then
+    ok "$unit logged no malformed docker events in the last hour"
+  else
+    warn "$unit logged ${malformed} malformed docker events in the last hour — the daemon's event shape may have changed"
+  fi
+}
+check_buildkit_guard
+# END guard-status
 memory_leaf_policy_configured=0
 for key in \
   WATCHER_INTERACTIVE_MEMORY_HIGH WATCHER_INTERACTIVE_MEMORY_MAX \

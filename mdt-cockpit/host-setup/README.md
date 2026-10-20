@@ -212,8 +212,9 @@ the guard: it is logged as an ERROR and answered by an immediate full reconcile;
 the guard exit so systemd shows the failure. The immediate reconcile is throttled to once per rescan
 interval. A container that vanishes between listing and `docker inspect` (`No such container` /
 `No such object`) is skipped; any other inspect failure still exits. Events must carry a full
-64-hex id and the sweep lists with `ps -aq --no-trunc`. `check.sh` warns on a non-zero
-`NRestarts` and on malformed events in the last hour.
+64-hex id and the sweep lists with `ps -aq --no-trunc`. `check.sh` reports the guard as not installed, not running, or active with N
+restarts, warns on malformed events in the last hour, and says so when the journal cannot be read. A
+`docker rm -f` that finds the container already gone is treated as gone too.
 
 The wizard's second confirmation is recorded durably in
 `/var/lib/mdt/guard-terminate.confirmed` (policy, BuildKit image, timestamp, and a digest

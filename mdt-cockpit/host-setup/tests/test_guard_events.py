@@ -259,6 +259,93 @@ class InspectRaceTests(unittest.TestCase):
             GUARD.container_id_from_event({"Actor": {"ID": 123456789012}})
 
 
+class RemoveRaceTests(unittest.TestCase):
+    """H-31: the container exits between inspect and `docker rm -f`."""
+
+    def _run(self, stderr: str, rc: int = 1):
+        import subprocess
+        info = GUARD.ContainerInfo if hasattr(GUARD, "ContainerInfo") else None
+        decision = GUARD.Decision("unapproved-buildkit-worker", "x", True)
+        config = GUARD.GuardConfig(policy="terminate", buildkit_image="moby/buildkit:x")
+        fake_info = mock.Mock(container_id=CID, name_="n")
+        fake_info.name = "buildx_buildkit_x0"
+        with mock.patch.object(GUARD, "decide", return_value=decision), \
+             mock.patch.object(GUARD, "_docker", lambda d, a: subprocess.CompletedProcess(a, rc, "", stderr)):
+            return GUARD.handle_container("docker", fake_info, config)
+
+    def test_rm_of_a_vanished_container_is_treated_as_gone(self) -> None:
+        self.assertTrue(self._run("Error response from daemon: No such container: " + CID).enforce)
+
+    def test_any_other_rm_failure_still_fails_loudly(self) -> None:
+        for msg in ("Cannot connect to the Docker daemon", "permission denied", ""):
+            with self.assertRaises(GUARD.GuardError):
+                self._run(msg)
+
+
+class CheckShGuardStatusTests(unittest.TestCase):
+    """check.sh guard block, run with PATH shims for systemctl and journalctl (H-29, H-30)."""
+
+    def _run(self, *, load="loaded", active="active", sub="running", restarts="0",
+             journal="", journal_rc=0):
+        import os, subprocess, tempfile
+        text = (ROOT / "scripts" / "check.sh").read_text()
+        block = text[text.index("# BEGIN guard-status"):text.index("# END guard-status")]
+        with tempfile.TemporaryDirectory() as tmp:
+            bindir = Path(tmp) / "bin"
+            bindir.mkdir()
+            (bindir / "systemctl").write_text(
+                "#!/bin/sh\ncase \"$*\" in\n"
+                f"*LoadState*) echo '{load}';;\n*ActiveState*) echo '{active}';;\n"
+                f"*SubState*) echo '{sub}';;\n*NRestarts*) echo '{restarts}';;\nesac\n")
+            (bindir / "journalctl").write_text(
+                f"#!/bin/sh\ncat <<'EOF'\n{journal}\nEOF\nexit {journal_rc}\n")
+            for f in bindir.iterdir():
+                f.chmod(0o755)
+            harness = Path(tmp) / "h.sh"
+            harness.write_text(
+                "WARN=0\nok(){ echo \"OK $*\"; }\nwarn(){ echo \"WARN $*\"; }\ninfo(){ echo \"INFO $*\"; }\n"
+                + block + "\n")
+            env = dict(os.environ, PATH=f"{bindir}:{os.environ['PATH']}")
+            return subprocess.run(["bash", str(harness)], capture_output=True, text=True, env=env).stdout
+
+    def test_absent_is_reported_not_silent(self) -> None:
+        out = self._run(load="not-found", active="inactive")
+        self.assertIn("INFO", out)
+        self.assertIn("not installed", out)
+        self.assertNotIn("OK", out)
+
+    def test_inactive_or_failed_is_a_warning_never_ok(self) -> None:
+        for state in ("inactive", "failed"):
+            out = self._run(active=state, sub="dead")
+            self.assertIn("WARN", out)
+            self.assertIn("NOT running", out)
+            self.assertNotIn("OK mdt-buildkit-guard.service active", out)
+
+    def test_active_without_restarts_is_ok(self) -> None:
+        out = self._run()
+        self.assertIn("OK mdt-buildkit-guard.service active, has not restarted", out)
+        self.assertIn("OK mdt-buildkit-guard.service logged no malformed", out)
+
+    def test_active_with_restarts_warns_with_the_count(self) -> None:
+        out = self._run(restarts="107")
+        self.assertIn("restarted 107 times", out)
+        self.assertNotIn("has not restarted", out)
+
+    def test_unreadable_restart_counter_is_not_zero(self) -> None:
+        out = self._run(restarts="")
+        self.assertIn("could not read NRestarts", out)
+        self.assertNotIn("has not restarted", out)
+
+    def test_unreadable_journal_is_could_not_read_never_no_malformed(self) -> None:
+        out = self._run(journal_rc=1)
+        self.assertIn("could not read its journal", out)
+        self.assertNotIn("logged no malformed", out)
+
+    def test_malformed_lines_in_the_journal_warn_with_the_count(self) -> None:
+        out = self._run(journal="a\nERROR: malformed docker event (1 in a row): x\nERROR: malformed docker event (2 in a row): y")
+        self.assertIn("logged 2 malformed", out)
+
+
 class DocsTests(unittest.TestCase):
     def test_the_guard_docs_describe_the_event_contract(self) -> None:
         readme = " ".join((ROOT / "README.md").read_text().split())
