@@ -87,9 +87,9 @@ The instrument scripts are in `tools/io-stall/` but carry gstammtisch literals (
 **Status:** OPEN (filed by SMT-04, 2026-10-20), each option awaiting the operator.
 
 Mechanism, evidence and upstream status: MEMORY-ARCHITECTURE.md "Burst writeback stall: the zswap shrinker has
-no rate governor"; data: MEASUREMENTS.md M8. Options: **(a)** raise the game scope's steady `memory.low` in the
-Wings steady-squeeze configuration (`WINGS_CG_STEADY_*`, SOULMASK-STARTUP-MARKERS.md; a runtime change is undone
-by the next start); **(b)** [I] raise `vm.watermark_scale_factor` (cost: kswapd CPU, less usable free memory);
+no rate governor"; data: MEASUREMENTS.md M8. Options: **(a)** raise the game scope's steady `memory.low` through the per-server panel value of
+`WINGS_CG_MEMORY_LOW` (egg default 7G; panel database, not in the repo; a runtime change is undone by the next
+start; details in MEMORY-ARCHITECTURE.md); **(b)** [I] raise `vm.watermark_scale_factor` (cost: kswapd CPU, less usable free memory);
 **(c)** [I] lower `dev.slice` `memory.high` (cost: dev builds slower); **(d)** a userspace chunked governor once
 `memory.reclaim source=zswap` exists (posted upstream, not known to be merged; kernel 7.2.6 evidence is only the
 missing kallsyms symbols; the `memory.reclaim` key probe was inconclusive). Not applied: the operator decision

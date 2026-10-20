@@ -112,8 +112,9 @@ the swap partitions **synchronously, in the game's own threads**, at whatever ra
 pages entering the pool and does not push the existing pool out in controlled pieces. The upstream author of
 the proactive-writeback work argues the same in his replies on why `memory.zswap.max` is insufficient: it only
 acts on a new store, and the writeback per over-limit event is capped
-(<https://lkml.indiana.edu/2605.1/07304.html> and `/09790.html` in the same archive; read by the controller's
-web search 2026-10-20, not re-read by the author of this document).
+(<https://lkml.indiana.edu/2605.1/07304.html> and <https://lkml.indiana.edu/2605.1/09790.html>; the second
+URL is spelled out assuming the same archive directory as the first; read by the controller's web search
+2026-10-20, not re-read by the author of this document).
 
 **Upstream status.** Source: a controller web search on 2026-10-20 of LKML mirror archives (**mirror archives;
 verify on lore.kernel.org**). Everything below is "posted, under review, not known to be merged":
@@ -128,12 +129,21 @@ verify on lore.kernel.org**). Everything below is "posted, under review, not kno
 
 **Mitigation options: PROPOSED, none applied, each awaiting the operator.**
 - **(a)** Raise the game scope's steady `memory.low` to cover its steady set, so global reclaim takes from others
-  first. **It must be done in the Wings steady-squeeze configuration** (the `WINGS_CG_STEADY_*` / steady-band
-  values, see [SOULMASK-STARTUP-MARKERS.md](SOULMASK-STARTUP-MARKERS.md)), otherwise the next start's squeeze
-  (low 9G → 5000M) undoes a runtime change.
+  first. **It must be set where Wings reads it, or the next start's squeeze (low 9G → 5000M) undoes a runtime
+  change.** Where that is (read from the repo, 2026-10-20): the steady band is the per-server egg variables
+  `WINGS_CG_MEMORY_MIN` / `_LOW` / `_HIGH` / `_MAX`, whose egg defaults are 6G / 7G / 7G / 20G in
+  `game_stuff/soulmask/egg-soulmask-rcon-ksm-cgroups.json` (the startup band is the separate `WINGS_CG_STARTUP_*`
+  variables, and `WINGS_CG_STEADY_MATCH` only triggers the switch; see
+  [SOULMASK-STARTUP-MARKERS.md](SOULMASK-STARTUP-MARKERS.md)). A server's value overrides the egg default and is
+  set in the panel (Admin → Servers → the server → Startup), which stores it in the **panel database, not in
+  this repo**. The observed 4000M / 5000M / 8000M are not the egg defaults, so they are per-server panel values
+  **[I]**. The fallback when a server sets nothing is the node's `config.yml`
+  (`/etc/pterodactyl/config.yml`, `docker.per_server_slices.defaults`; host-only, deliberately empty on this
+  node per [WINGS-CGROUPS-ROLLOUT.md](WINGS-CGROUPS-ROLLOUT.md) §2). So (a) means changing the panel value of
+  `WINGS_CG_MEMORY_LOW` for the server.
 - **(b)** **[I]** Raise `vm.watermark_scale_factor` (now 50) so kswapd reclaims ahead of demand and the game stays
   out of direct reclaim. Cost: more kswapd CPU and less usable free memory.
-- **(c)** **[I]** Lower `dev.slice` `memory.high` on this 16 GB host, so dev page cache and anon cannot starve the
+- **(c)** **[I]** Lower the `dev.slice` `memory.high` on this 16 GB host, so dev page cache and anon cannot starve the
   game. Cost: dev builds reclaim themselves earlier and get slower.
 - **(d)** A userspace chunked governor, once `memory.reclaim source=zswap` is available: write the pool back in
   small paced pieces before pressure, instead of one unpaced burst.
