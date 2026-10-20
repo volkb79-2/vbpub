@@ -252,6 +252,11 @@ else
   _mdt_no_device
 fi
 
+# --- scheduler, queue values and io.cost against the env (MDT-HS-07 H-59) --------------------
+# The udev rules and mdt-io-cost.service restore these at boot and on a udev change, but a disk remove/re-add
+# or a scheduler switch between runs reverts them silently; the minute timer verifies and re-applies on drift.
+_mdt_reassert_io_settings || MDT_RC=1
+
 # --- swap coverage (D6) ----------------------------------------------------------
 # Swap-out IO is charged to the page owner's cgroup (kernel behaviour; per kernel
 # source, not measured here — bio_associate_blkg_from_page in mm/page_io.c), so a

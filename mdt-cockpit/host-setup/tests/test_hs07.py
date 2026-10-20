@@ -158,11 +158,132 @@ class SchedulerReadTests(SchedulerFixture):
 
     def test_the_wizard_reads_the_list_of_the_root_disk_never_assumes_one(self) -> None:
         def run(cmd, **kwargs):
-            self.assertIn("_mdt_io_sched_list", cmd[2])
+            self.assertIn("_mdt_io_sched_offered", cmd[2])          # listed OR loadable (H-58)
             self.assertIn("_mdt_root_disk_node", cmd[2])
             return subprocess.CompletedProcess(cmd, 0, "none\nmq-deadline\n", "")
         self.assertEqual(WIZARD.read_scheduler_list(runner=run), ["none", "mq-deadline"])
         self.assertEqual(WIZARD.read_scheduler_list(runner=lambda c, **k: subprocess.CompletedProcess(c, 1, "", "")), [])
+
+
+class ModuleAvailabilityTests(SchedulerFixture):
+    """H-58: queue/scheduler lists only LOADED schedulers; one that is loadable on demand is acceptable."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mods = self.host.base / "lib-modules"
+        (self.mods / "kernel" / "block").mkdir(parents=True)
+        self.sched.write_text("[none] kyber\n")                          # mq-deadline and bfq NOT loaded
+
+    def test_module_files_and_builtins_count_as_available(self) -> None:
+        env = {"MDT_MODULES_DIR": str(self.mods)}
+        self.assertEqual(self.bash("_mdt_sched_module_available mq-deadline", **env).returncode, 1)
+        (self.mods / "kernel" / "block" / "mq-deadline.ko.xz").write_text("")
+        self.assertEqual(self.bash("_mdt_sched_module_available mq-deadline", **env).returncode, 0)
+        (self.mods / "modules.builtin").write_text("kernel/block/bfq.ko\nkernel/block/kyber-iosched.ko\n")
+        self.assertEqual(self.bash("_mdt_sched_module_available bfq", **env).returncode, 0)
+        self.assertEqual(self.bash("_mdt_sched_module_available nonsense", **env).returncode, 1)
+
+    def test_offered_is_the_listed_plus_the_loadable(self) -> None:
+        (self.mods / "kernel" / "block" / "mq-deadline.ko.xz").write_text("")
+        r = self.bash("_mdt_io_sched_offered vda", MDT_MODULES_DIR=str(self.mods))
+        self.assertEqual(sorted(r.stdout.split()), ["kyber", "mq-deadline", "none"])
+        r = self.bash("_mdt_io_sched_offered vda", MDT_MODULES_DIR=str(self.host.base / "no-modules"))
+        self.assertEqual(sorted(r.stdout.split()), ["kyber", "none"])
+        # the shared validator: loadable is accepted, neither listed nor loadable is the only refusal
+        self.assertIsNone(WIZARD.io_scheduler_available_error("mq-deadline", ["kyber", "none", "mq-deadline"]))
+        self.assertIn("not offered", WIZARD.io_scheduler_available_error("mq-deadline", ["kyber", "none"]))
+
+    def test_a_not_yet_loaded_scheduler_is_applied_and_proved_by_the_readback(self) -> None:
+        (self.mods / "kernel" / "block" / "mq-deadline.ko.xz").write_text("")
+        r = self.bash("_mdt_apply_scheduler_settings", IO_ROOT_SCHEDULER="mq-deadline", MDT_MODULES_DIR=str(self.mods))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("[mq-deadline]", self.sched.read_text())
+        # and if the kernel never makes it active, the read-back fails loudly
+        self.sched.write_text("[none] kyber\n")
+        r = self.bash("_mdt_apply_scheduler_settings", IO_ROOT_SCHEDULER="mq-deadline", FAKE_UDEV_NOOP="1")
+        self.assertEqual(r.returncode, 2)
+
+    def test_install_preflight_uses_the_offered_list(self) -> None:
+        install = (ROOT / "install.sh").read_text()
+        self.assertIn("_mdt_io_sched_offered", install)
+        self.assertNotIn('_s_list=$(_mdt_io_sched_list', install)
+
+
+class ReassertTests(SchedulerFixture):
+    """H-59: the minute-by-minute reconcile verifies scheduler, queue and io.cost against the env and re-applies."""
+
+    CFG = {"IO_ROOT_SCHEDULER": "mq-deadline", "IO_COST_MODEL": MODEL, "IO_COST_QOS": QOS,
+           "IO_ROOT_QUEUE_NR_REQUESTS": "16", "FAKE_FINDMNT_SOURCE": "/dev/null"}
+
+    def installed(self) -> None:
+        """A host as install.sh left it: rules rendered, scheduler/queue/io.cost live."""
+        r = self.bash("_mdt_apply_scheduler_settings; _mdt_apply_writeback_settings; _mdt_apply_iocost", **self.CFG)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def reassert(self, **extra: str) -> subprocess.CompletedProcess:
+        script = f'log(){{ echo "LOG $*"; }}; . "{LIB}"; _mdt_reassert_io_settings; echo "rc=$?"'
+        return subprocess.run(["bash", "-c", script], env=self.env(**{**self.CFG, **extra}), text=True, capture_output=True)
+
+    def test_no_drift_is_silent_and_writes_nothing(self) -> None:
+        self.installed()
+        before = {p.name: p.stat().st_mtime_ns for p in (self.cgroot).iterdir()}
+        r = self.reassert()
+        self.assertIn("rc=0", r.stdout)
+        self.assertNotIn("drift", r.stdout)
+        self.assertEqual(before, {p.name: p.stat().st_mtime_ns for p in self.cgroot.iterdir()})
+
+    def test_io_cost_drift_is_logged_and_re_applied(self) -> None:
+        self.installed()
+        (self.cgroot / "io.cost.qos").write_text("254:0 enable=0 ctrl=user rpct=95.00 rlat=5000 wpct=95.00 wlat=20000 min=5.00 max=400.00\n")
+        (self.cgroot / "io.cost.model").write_text("")                    # a re-added disk has no line at all
+        r = self.reassert()
+        self.assertIn("rc=0", r.stdout, r.stdout + r.stderr)
+        self.assertIn("LOG WARN: drift: io.cost qos on 254:0", r.stdout)
+        self.assertIn("LOG WARN: drift: io.cost model on 254:0 is '<no line>'", r.stdout)
+        self.assertIn("enable=1", (self.cgroot / "io.cost.qos").read_text())
+        self.assertIn("rbps=290000000", (self.cgroot / "io.cost.model").read_text())
+
+    def test_the_field_normalised_comparison_does_not_call_kernel_formatting_drift(self) -> None:
+        self.installed()
+        (self.cgroot / "io.cost.qos").write_text(KERNEL_QOS + "\n")
+        (self.cgroot / "io.cost.model").write_text(KERNEL_MODEL + "\n")
+        r = self.reassert()
+        self.assertNotIn("drift", r.stdout)
+
+    def test_scheduler_and_queue_drift_is_re_applied_through_udev(self) -> None:
+        self.installed()
+        self.sched.write_text("[none] mq-deadline kyber bfq\n")          # a scheduler switch
+        (self.queue / "nr_requests").write_text("256\n")                  # ... which also reset nr_requests
+        r = self.reassert()
+        self.assertIn("rc=0", r.stdout, r.stdout + r.stderr)
+        self.assertIn("LOG WARN: drift: scheduler of vda is 'none'", r.stdout)
+        self.assertIn("[mq-deadline]", self.sched.read_text())
+        self.assertEqual((self.queue / "nr_requests").read_text().strip(), "16")
+
+    def test_a_failure_to_re_apply_is_loud(self) -> None:
+        self.installed()
+        self.sched.write_text("[none] mq-deadline kyber bfq\n")
+        r = self.reassert(FAKE_UDEV_NOOP="1")                              # udev cannot restore it
+        self.assertIn("rc=1", r.stdout)
+        self.assertIn("ERROR: live scheduler of vda is none", r.stdout)
+        (self.cgroot / "io.cost.qos").unlink()
+        (self.cgroot / "io.cost.qos").mkdir()
+        r = self.reassert()
+        self.assertIn("rc=1", r.stdout)
+        self.assertIn("ERROR: io.cost re-apply failed", r.stdout)
+
+    def test_unmanaged_keys_are_never_touched(self) -> None:
+        (self.cgroot / "io.cost.qos").write_text("254:0 enable=0\n")
+        r = self.reassert(IO_ROOT_SCHEDULER="", IO_COST_MODEL="", IO_COST_QOS="", IO_ROOT_QUEUE_NR_REQUESTS="")
+        self.assertIn("rc=0", r.stdout)
+        self.assertEqual((self.cgroot / "io.cost.qos").read_text(), "254:0 enable=0\n")
+
+    def test_the_reconcile_calls_it_and_the_docs_say_what_reverts_what(self) -> None:
+        reconcile = (ROOT / "scripts" / "mdt-dev-governance-reconcile.sh").read_text()
+        self.assertIn("_mdt_reassert_io_settings || MDT_RC=1", reconcile)
+        design = " ".join((ROOT.parent / "docs" / "DESIGN-GUIDE.md").read_text().split())
+        for needle in ("disk remove/re-add", "re-applies on drift", "What reverts what"):
+            self.assertIn(needle, design)
 
 
 class RenderTests(SchedulerFixture):
@@ -260,6 +381,28 @@ class ApplySchedulerTests(SchedulerFixture):
         self.assertTrue(lookalike.exists())
         self.assertIn("NOT a byte-identical copy", r.stderr)
         self.assertEqual(r.returncode, 0, "it sorts BEFORE MDT's rule, which wins: a WARN, not a refusal")
+
+    def test_a_kept_non_identical_rule_is_reported_also_when_the_scheduler_is_kernel(self) -> None:
+        foreign = self.ud / "60-bfq-scheduler.rules"
+        foreign.write_text(REPO_BFQ_RULE.read_text() + "# edited\n")
+        r = self.apply(IO_ROOT_SCHEDULER="kernel")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(foreign.exists())
+        self.assertIn("still assigns a scheduler to vda on every udev change event although IO_ROOT_SCHEDULER=kernel", r.stderr)
+
+    def test_the_legacy_path_notices_when_the_live_scheduler_differs_from_what_the_rule_reapplies(self) -> None:
+        install = (ROOT / "install.sh").read_text()
+        legacy = install[install.index("legacy: IO_ROOT_SCHEDULER is not set"):install.index("else\n  echo \"== IO scheduler (MDT-HS-07)")]
+        self.assertIn("the live scheduler of", legacy)
+        self.assertIn("re-applies bfq on every udev change event", legacy)
+        self.assertLess(legacy.index("the live scheduler of"), legacy.index("modules-load.d/bfq.conf"))
+
+    def test_vm_budget_margin_is_at_least_15_minutes(self) -> None:
+        import re
+        lane = (ROOT / "tests" / "run-vm-acceptance.sh").read_text()
+        outer = int(re.search(r'run_with_timeout (\d+)m "\$HARNESS" ssh "\$RUN" -- \\\n\s+"set -eu', lane).group(1))
+        budget = int(re.search(r'\[lanes\.vm-system\].*?budget = "(\d+)m"', (ROOT.parent / "run-gate.toml").read_text(), re.S).group(1))
+        self.assertGreaterEqual(budget - (outer + 15 + 2 + 10 + 12 + 5 + 2 + 5), 15)
 
     def test_kernel_removes_the_rule_with_a_notice_and_leaves_the_running_scheduler(self) -> None:
         self.assertEqual(self.apply(IO_ROOT_SCHEDULER="mq-deadline").returncode, 0)
@@ -409,6 +552,12 @@ class CheckShTests(SchedulerFixture):
         self.assertIn("WARN vda scheduler = mq-deadline is LIVE ONLY, NOT PERSISTED", out)
         self.assertNotIn("OK vda scheduler", out)
 
+    def test_kernel_reports_a_kept_non_mdt_rule(self) -> None:
+        self.sched.write_text("none [mq-deadline] kyber bfq\n")
+        (self.ud / "60-bfq-scheduler.rules").write_text(REPO_BFQ_RULE.read_text())
+        out = self.run_check(IO_ROOT_SCHEDULER="kernel")
+        self.assertIn("60-bfq-scheduler.rules (not installed by MDT) still assigns a scheduler to vda", out)
+
     def test_a_later_or_non_mdt_scheduler_rule_is_noticed(self) -> None:
         self.sched.write_text("none [mq-deadline] kyber bfq\n")
         (self.ud / "60-mdt-io-scheduler.rules").write_text('ACTION=="add|change", KERNEL=="vda", ATTR{queue/scheduler}="mq-deadline"\n')
@@ -480,7 +629,7 @@ class WizardTests(unittest.TestCase):
     def runner(self, schedulers="none\nmq-deadline\n"):
         def run(cmd, **kwargs):
             expr = cmd[2]
-            if "_mdt_io_sched_list" in expr:
+            if "_mdt_io_sched_offered" in expr or "_mdt_io_sched_list" in expr:
                 out, rc = schedulers, 0
             elif "_mdt_root_disk_node" in expr and "_mdt_io_sched_list" not in expr:
                 out, rc = "/dev/vda", 0
@@ -577,8 +726,10 @@ class DocsAndWeightsTests(unittest.TestCase):
         self.assertLess(lane.index("vm-writeback-acceptance.sh"), lane.index("vm-iocost-acceptance.sh"))
         self.assertLess(lane.index("vm-iocost-acceptance.sh"), lane.index("vm-upgrade-acceptance.sh"))
         script = (ROOT / "tests" / "vm-iocost-acceptance.sh").read_text()
-        for needle in ("io.cost.model", "io.cost.qos", "queue/scheduler", "mdt-io-cost.service", "mdt-host-check.sh"):
+        for needle in ("io.cost.model", "io.cost.qos", "queue/scheduler", "mdt-io-cost.service", "mdt-host-check.sh",
+                       "drift", "SCHED=none", "never a refusal-only pass"):
             self.assertIn(needle, script)
+        self.assertNotIn("asserting the REFUSAL path instead", script)
         self.assertTrue(os.access(ROOT / "tests" / "vm-iocost-acceptance.sh", os.X_OK))
 
 

@@ -8,7 +8,7 @@
 #   1. mq-deadline + a linear model + a QoS, with a known-copy non-MDT BFQ rule planted -> live scheduler,
 #      model and QoS match, BFQ rules retired, mdt-io-cost.service enabled, host-check reports io.cost
 #   2. back to kernel / kernel / off -> the rule is removed and QoS reads enable=0
-# If the guest disk does not list mq-deadline, the REFUSAL path is asserted instead and said so.
+# mq-deadline is used when it becomes active after the apply, otherwise none (always listed); never a refusal-only pass.
 # Never run this on a real host.
 set -euo pipefail
 
@@ -43,37 +43,39 @@ mm=$(_mdt_dev_majmin "$node") || fail "cannot derive the whole-disk MAJ:MIN of $
 list=$(_mdt_io_sched_list "$dev") || fail "cannot read the scheduler list of $dev"
 echo "guest root disk: $node ($mm), schedulers: $(echo "$list" | tr '\n' ' ')"
 
-if ! echo "$list" | grep -qx mq-deadline; then
-  echo "VM IOCOST NOTE: this guest disk does not list mq-deadline; asserting the REFUSAL path instead"
-  set_conf IO_ROOT_SCHEDULER mq-deadline
-  set +e
-  out=$(bash "$HS/install.sh" 2>&1); rc=$?
-  set -e
-  [ "$rc" = 2 ] || fail "install.sh did not refuse (rc $rc) an IO_ROOT_SCHEDULER the disk does not list"
-  printf '%s\n' "$out" | grep -q "is not offered by this disk" || fail "the refusal did not name the disk's list"
-  set_conf IO_ROOT_SCHEDULER kernel
-  ok "refusal path asserted (mq-deadline not offered by $dev)"
-  echo "VM IOCOST ACCEPTANCE PASSED"
-  exit 0
-fi
+# queue/scheduler lists only LOADED schedulers (H-58): mq-deadline may be offered as a module. Try it first; if it
+# does not become the active scheduler after the apply, use `none`, which is always listed and works with io.cost.
+# A refusal-only pass is NOT acceptable: whichever scheduler is used, the live apply, the io.cost writes and
+# read-back, the boot unit and check.sh are all proved below.
+SCHED=mq-deadline
 
-# ---- 1. mq-deadline + model + QoS ----------------------------------------------------------------
+# ---- 1. scheduler + model + QoS ------------------------------------------------------------------
 cp "$HS/etc/udev/rules.d/60-bfq-scheduler.rules" "$OLD_FOREIGN"      # a byte-identical known copy, not MDT-installed
-set_conf IO_ROOT_SCHEDULER mq-deadline
 set_conf IO_COST_MODEL "$MODEL"
 set_conf IO_COST_QOS "$QOS"
-out=$(bash "$HS/install.sh" 2>&1) || { printf '%s\n' "$out" | tail -n 40; fail "install.sh exited non-zero with the scheduler and io.cost keys set"; }
+set_conf IO_ROOT_SCHEDULER "$SCHED"
+set +e
+out=$(bash "$HS/install.sh" 2>&1); rc=$?
+set -e
+if [ "$rc" != 0 ] || [ "$(_mdt_io_sched_current "$dev")" != "$SCHED" ]; then
+  echo "VM IOCOST NOTE: $SCHED did not become the active scheduler of $dev (install rc $rc, live '$(_mdt_io_sched_current "$dev")'); using none"
+  SCHED=none
+  set_conf IO_ROOT_SCHEDULER "$SCHED"
+  cp "$HS/etc/udev/rules.d/60-bfq-scheduler.rules" "$OLD_FOREIGN"
+  out=$(bash "$HS/install.sh" 2>&1) || { printf '%s\n' "$out" | tail -n 40; fail "install.sh exited non-zero with IO_ROOT_SCHEDULER=none and the io.cost keys set"; }
+fi
+echo "VM IOCOST NOTE: scheduler under test: $SCHED"
 [ -f "$RULE" ] || fail "$RULE was not rendered"
 grep -q "KERNEL==\"$dev\"" "$RULE" || fail "$RULE does not match the derived disk $dev: $(cat "$RULE")"
 [ ! -e "$OLD_MDT" ] || fail "MDT's old BFQ rule was not retired"
 [ ! -e "$OLD_FOREIGN" ] || fail "the byte-identical non-MDT BFQ rule was not retired"
-[ ! -e /etc/modules-load.d/mdt-bfq.conf ] || fail "the bfq modules-load file is still installed with IO_ROOT_SCHEDULER=mq-deadline"
+[ ! -e /etc/modules-load.d/mdt-bfq.conf ] || fail "the bfq modules-load file is still installed with IO_ROOT_SCHEDULER=$SCHED"
 printf '%s\n' "$out" | grep -q "byte-identical to a known repo copy" || fail "no NOTICE for the retired non-MDT rule"
 ok "install.sh rendered $RULE (disk $dev, derived) and retired both BFQ rules"
 
 cur=$(_mdt_io_sched_current "$dev")
 echo "live /sys/block/$dev/queue/scheduler: $(cat "/sys/block/$dev/queue/scheduler")"
-[ "$cur" = mq-deadline ] || fail "live scheduler of $dev is '$cur', expected mq-deadline"
+[ "$cur" = "$SCHED" ] || fail "live scheduler of $dev is '$cur', expected $SCHED"
 model_line=$(grep -m1 "^$mm " "$CG/io.cost.model" || true)
 qos_line=$(grep -m1 "^$mm " "$CG/io.cost.qos" || true)
 echo "$model_line" | grep -q "rbps=100000000" || fail "live io.cost.model has no rbps=100000000: '$model_line'"
@@ -81,7 +83,7 @@ echo "$model_line" | grep -q "ctrl=user" || fail "live io.cost.model is not ctrl
 echo "$qos_line" | grep -q "enable=1" || fail "live io.cost.qos is not enabled: '$qos_line'"
 echo "$qos_line" | grep -q "rlat=5000" || fail "live io.cost.qos lacks rlat=5000: '$qos_line'"
 systemctl is-enabled --quiet mdt-io-cost.service || fail "mdt-io-cost.service is not enabled (the settings would not survive a reboot)"
-ok "LIVE: scheduler mq-deadline, io.cost.model [$model_line], io.cost.qos [$qos_line], mdt-io-cost.service enabled"
+ok "LIVE: scheduler $SCHED, io.cost.model [$model_line], io.cost.qos [$qos_line], mdt-io-cost.service enabled"
 
 check=$(/usr/local/sbin/mdt-host-check.sh 2>&1 || true)
 printf '%s\n' "$check" | grep -q "OK   $dev weight mechanism: io.cost" || fail "mdt-host-check.sh did not report io.cost as the weight mechanism"
@@ -95,6 +97,15 @@ echo "$mm enable=0" > "$CG/io.cost.qos"
 systemctl restart mdt-io-cost.service || fail "mdt-io-cost.service failed"
 grep -m1 "^$mm " "$CG/io.cost.qos" | grep -q "enable=1" || fail "mdt-io-cost.service did not re-apply the QoS from the env"
 ok "mdt-io-cost.service re-applies the QoS from the env"
+
+# ---- 1b. drift: the minute-by-minute reconcile re-applies (H-59) --------------------------------
+echo "$mm enable=0" > "$CG/io.cost.qos"
+printf 'none' > "/sys/block/$dev/queue/scheduler" || true     # a scheduler switch (resets nr_requests too)
+/usr/local/sbin/mdt-dev-governance-reconcile.sh >/tmp/reconcile-iocost.out 2>&1 || { cat /tmp/reconcile-iocost.out; fail "the reconcile exited non-zero after drift"; }
+grep -q "drift: io.cost qos" /tmp/reconcile-iocost.out || fail "the reconcile did not log the io.cost drift"
+grep -m1 "^$mm " "$CG/io.cost.qos" | grep -q "enable=1" || fail "the reconcile did not re-apply the QoS"
+[ "$(_mdt_io_sched_current "$dev")" = "$SCHED" ] || fail "the reconcile did not restore the scheduler $SCHED (live '$(_mdt_io_sched_current "$dev")')"
+ok "drift (QoS disabled by hand, scheduler switched): the reconcile logged it and re-applied both"
 
 # ---- 2. back to kernel / kernel / off -----------------------------------------------------------
 set_conf IO_ROOT_SCHEDULER kernel

@@ -623,7 +623,9 @@ and, if it would override, the scheduler is not reported as verified), applies t
 `mdt-io-cost.service` (a oneshot after the udev trigger and a settle) re-applies them from the env. With io.cost the weight
 is `io.weight` (1..10000), not `io.bfq.weight`; `mdt-host-check.sh` reports the weight mechanism that is live (io.cost, bfq or
 none), derived from the live files, and the scheduler, model and QoS each as OK, MISMATCH, not managed, could not read or LIVE
-ONLY, NOT PERSISTED, plus a NOTICE for a later or non-MDT scheduler rule. Why: DESIGN-GUIDE (MDT-HS-07).
+ONLY, NOT PERSISTED, plus a NOTICE for a later or non-MDT scheduler rule. A scheduler that `queue/scheduler` does not list yet is accepted when its module is available (the read-back proves it). The minute-by-minute
+reconcile verifies the scheduler, the queue values and the io.cost model and QoS against the env and re-applies on drift with a `WARN: drift:`
+log line (a disk re-add or a scheduler switch reverts them); empty keys are never touched. Why: DESIGN-GUIDE (MDT-HS-07).
 
 ### Optional DAMON_STAT policy
 

@@ -592,7 +592,13 @@ check_io_scheduler() {
   sched="${IO_ROOT_SCHEDULER:-}"
   case "$sched" in
     "") info "$dev scheduler: not managed (IO_ROOT_SCHEDULER not set; a legacy BFQ rule may still apply)" ;;
-    kernel) info "$dev scheduler: not managed (kernel; the kernel's choice is kept)" ;;
+    kernel)
+      info "$dev scheduler: not managed (kernel; the kernel's choice is kept)"
+      while IFS='|' read -r rule after; do
+        [ -n "$rule" ] || continue
+        warn "NOTICE: $rule (not installed by MDT) still assigns a scheduler to $dev on every udev change event although IO_ROOT_SCHEDULER=kernel"
+      done < <(_mdt_io_foreign_sched_rules "$dev" "$MDT_IO_SCHED_UDEV_NAME")
+      ;;
     *)
       if [ -z "$cur" ]; then
         warn "$dev scheduler: could not read the live value — cannot verify IO_ROOT_SCHEDULER=$sched"

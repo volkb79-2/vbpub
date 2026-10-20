@@ -363,7 +363,8 @@ class PreflightBeforeActionTests(unittest.TestCase):
         "_mdt_runtime_optional_re", "_mdt_size_to_bytes", "_mdt_guard_confirmed", "_mdt_guard_digest",
         "_mdt_io_systemd_dev", "_mdt_io_devname_for_majmin", "_mdt_dev_majmin",
         "_mdt_io_queue_keys_set", "_mdt_root_disk_node", "_mdt_io_queue_attr", "_mdt_io_wb_value",
-        "_mdt_io_sched_value", "_mdt_io_sched_list",
+        "_mdt_io_sched_value", "_mdt_io_sched_list", "_mdt_io_sched_offered", "_mdt_sched_module_available",
+        "_mdt_io_sched_current",
     }
     ALLOWED_REDIRECT = re.compile(r'\d*>>?\s*(&\d|/dev/null|"?\$CANDIDATE\w*"?)')
 

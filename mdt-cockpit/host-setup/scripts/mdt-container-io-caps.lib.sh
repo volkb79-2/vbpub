@@ -1096,6 +1096,33 @@ _mdt_io_sched_list() {
   tr -s ' []' '\n' < "$f" | sed '/^$/d'
 }
 
+# _mdt_sched_module_available <scheduler>: true when that scheduler can be loaded on demand, i.e. its module
+# exists for the running kernel or is built in.  queue/scheduler lists only LOADED schedulers (H-58), so a
+# scheduler that is not listed yet is still acceptable when this holds; the post-apply read-back is the proof.
+# Seam: MDT_MODULES_DIR (default /lib/modules/$(uname -r)).
+_mdt_sched_module_available() {
+  local name file dir="${MDT_MODULES_DIR:-/lib/modules/$(uname -r)}"
+  case "$1" in
+    mq-deadline) file=mq-deadline ;;
+    kyber) file=kyber-iosched ;;
+    bfq) file=bfq ;;
+    *) return 1 ;;
+  esac
+  name="kernel/block/$file.ko"
+  compgen -G "$dir/$name*" >/dev/null && return 0
+  [ -r "$dir/modules.builtin" ] && grep -q "^$name\$" "$dir/modules.builtin"
+}
+
+# _mdt_io_sched_offered <devname>: the schedulers the disk LISTS plus those loadable on demand, one per line.
+_mdt_io_sched_offered() {
+  local s
+  _mdt_io_sched_list "$1" || return 1
+  for s in mq-deadline kyber bfq; do
+    _mdt_io_sched_list "$1" 2>/dev/null | grep -qx "$s" && continue
+    ! _mdt_sched_module_available "$s" || echo "$s"
+  done
+}
+
 # _mdt_io_sched_current <devname>: the active (bracketed) scheduler.
 _mdt_io_sched_current() {
   local f="${MDT_SYSFS_ROOT:-/sys}/block/$1/queue/scheduler"
@@ -1173,7 +1200,7 @@ _mdt_verify_scheduler() {
 # Seams: MDT_UDEV_RULES_D, MDT_MODULES_LOAD_D, MDT_SYSFS_ROOT, MDT_UDEV_SCAN_DIRS, HERE.
 _mdt_apply_scheduler_settings() {
   local ud="${MDT_UDEV_RULES_D:-/etc/udev/rules.d}" ml="${MDT_MODULES_LOAD_D:-/etc/modules-load.d}"
-  local v node dev body foreign sha known k
+  local v node dev body foreign sha known k rule
   v=$(_mdt_io_sched_value)
   if ! node=$(_mdt_root_disk_node 2>&1); then
     echo "ERROR: IO_ROOT_SCHEDULER=$v is set but the whole disk under / cannot be derived ($node); nothing was applied. Remedy: run install.sh on the host, or set IO_ROOT_SCHEDULER to empty." >&2
@@ -1197,6 +1224,7 @@ _mdt_apply_scheduler_settings() {
       echo "WARN: $foreign exists, was not installed by MDT and is NOT a byte-identical copy of a known repo copy ($MDT_KNOWN_BFQ_RULE_ORIGIN); it is left in place and, if it matches $dev and sorts after MDT's rule, the scheduler will not be reported as verified." >&2
     fi
   fi
+  case "$v" in mq-deadline) modprobe -q mq-deadline-iosched 2>/dev/null || true ;; esac   # a module not loaded yet (H-58); the read-back proves it
   if [ "$v" = bfq ]; then
     install -m 0644 "$HERE/etc/modules-load.d/bfq.conf" "$ml/$MDT_OLD_BFQ_MODULES_NAME"
     modprobe bfq 2>/dev/null || echo "WARN: modprobe bfq failed" >&2
@@ -1211,11 +1239,70 @@ _mdt_apply_scheduler_settings() {
     rm -f -- "$ud/$MDT_IO_SCHED_UDEV_NAME"
     echo "NOTICE: removed $ud/$MDT_IO_SCHED_UDEV_NAME (IO_ROOT_SCHEDULER=kernel); the running scheduler is unchanged until reboot — MDT does not know the kernel's boot choice and never guesses it"
   fi
+  if [ "$v" = kernel ]; then
+    # MDT renders no rule, so a kept non-MDT rule is the ONLY thing choosing the scheduler: say so (never silent)
+    while IFS='|' read -r rule _; do
+      [ -n "$rule" ] || continue
+      echo "WARN: $rule (not installed by MDT) still assigns a scheduler to $dev on every udev change event although IO_ROOT_SCHEDULER=kernel; MDT does not remove a file it did not install unless it is byte-identical to a known repo copy ($MDT_KNOWN_BFQ_RULE_ORIGIN)." >&2
+    done < <(_mdt_io_foreign_sched_rules "$dev" "$MDT_IO_SCHED_UDEV_NAME")
+  fi
   { udevadm control --reload-rules && udevadm trigger --action=change --sysname-match="$dev" && udevadm settle; } >/dev/null 2>&1 || {
     echo "ERROR: udev reload/trigger/settle failed for $dev. Remedy: udevadm control --reload-rules && udevadm trigger --action=change --sysname-match=$dev" >&2
     return 2; }
   _mdt_verify_scheduler "$dev" || return 2
   return 0
+}
+
+# _mdt_reassert_io_settings (MDT-HS-07 H-59): the minute-by-minute reconcile compares the LIVE scheduler, queue
+# values, io.cost model and QoS with the env and re-applies on drift, with a log line each time.  What reverts
+# what (so the reconcile, not luck, restores it): a disk remove/re-add resets the scheduler, nr_requests,
+# max_sectors_kb and the per-disk io.cost state; a scheduler switch resets nr_requests; a udev change event
+# re-applies the scheduler and queue RULES (60/61) but NOT io.cost, which has no rule.  Re-apply = the same
+# udev trigger install uses (scheduler 60, then queue 61) and the same _mdt_apply_iocost; a failure to
+# re-apply or to verify afterwards is loud (rc 1).  Not managed (empty) keys are not touched.
+_mdt_reassert_io_settings() {
+  local node dev mm rc=0 want live what drift=0 out line
+  if ! node=$(_mdt_root_disk_node 2>/dev/null) || ! mm=$(_mdt_root_disk_majmin 2>/dev/null); then
+    [ -z "${IO_ROOT_SCHEDULER:-}${IO_COST_MODEL:-}${IO_COST_QOS:-}" ] || log "WARN: cannot derive the root disk; the scheduler / io.cost settings were not re-verified this run"
+    return 0
+  fi
+  dev=${node#/dev/}
+  # scheduler + queue values (one trigger restores both, in rule order)
+  case "$(_mdt_io_sched_value)" in
+    mq-deadline|none|bfq)
+      live=$(_mdt_io_sched_current "$dev" 2>/dev/null || true)
+      if [ "$live" != "$(_mdt_io_sched_value)" ]; then
+        log "WARN: drift: scheduler of $dev is '${live:-unreadable}', host-setup.env says $(_mdt_io_sched_value) (a disk re-add or a scheduler switch?); re-applying via udev"
+        drift=1
+      fi ;;
+  esac
+  if _mdt_io_queue_keys_set && ! _mdt_io_wb_readback "$dev" "${MDT_SYSCTL_D:-/etc/sysctl.d}/$MDT_IO_WB_SYSCTL_FILE_NAME" "${MDT_UDEV_RULES_D:-/etc/udev/rules.d}/$MDT_IO_WB_UDEV_FILE_NAME" 2>/dev/null; then
+    log "WARN: drift: the root queue values of $dev differ from host-setup.env; re-applying via udev"
+    drift=1
+  fi
+  if [ "$drift" = 1 ]; then
+    { udevadm trigger --action=change --sysname-match="$dev" && udevadm settle; } >/dev/null 2>&1 \
+      || { log "ERROR: re-apply failed: udevadm trigger/settle for $dev"; rc=1; }
+    out=$(_mdt_verify_scheduler "$dev" 2>&1) || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; rc=1; }
+    if _mdt_io_queue_keys_set; then
+      out=$(_mdt_io_wb_readback "$dev" "${MDT_SYSCTL_D:-/etc/sysctl.d}/$MDT_IO_WB_SYSCTL_FILE_NAME" "${MDT_UDEV_RULES_D:-/etc/udev/rules.d}/$MDT_IO_WB_UDEV_FILE_NAME" 2>&1) \
+        || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; rc=1; }
+    fi
+  fi
+  # io.cost model and QoS: compare field-normalised, re-apply both on any drift
+  drift=0
+  for what in model qos; do
+    want=$("_mdt_iocost_${what}_line" "$mm") || continue
+    live=$(_mdt_iocost_live_line "${MDT_CGROUP_ROOT:-/sys/fs/cgroup}/io.cost.$what" "$mm")
+    if [ -z "$live" ] || ! _mdt_iocost_match "$want" "$live"; then
+      log "WARN: drift: io.cost $what on $mm is '${live:-<no line>}', host-setup.env intends '${want#"$mm "}' (a disk re-add resets it); re-applying"
+      drift=1
+    fi
+  done
+  if [ "$drift" = 1 ]; then
+    out=$(_mdt_apply_iocost 2>&1) || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; log "ERROR: io.cost re-apply failed; the intended io.cost settings are NOT in effect"; rc=1; }
+  fi
+  return "$rc"
 }
 
 # --- io.cost model and QoS (root cgroup files, per whole disk MAJ:MIN) -----------------------------

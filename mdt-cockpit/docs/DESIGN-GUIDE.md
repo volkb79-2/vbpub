@@ -816,6 +816,18 @@ module file `mdt-bfq.conf` is installed only for `bfq`. A non-MDT `/etc/udev/rul
 with a NOTICE; any other rule that assigns the scheduler to the disk is kept with a WARN, and one that sorts after MDT's is a refusal to report
 the scheduler as verified.
 
+**Loadable schedulers.** `queue/scheduler` lists only the schedulers that are LOADED, so `mq-deadline` can be absent from the list although
+its module exists. The choice is accepted when the disk lists it OR it is available as a module for the running kernel (a file under
+`/lib/modules/$(uname -r)/kernel/block/` or an entry in `modules.builtin`); it is refused only when neither applies, and the post-apply read-back is
+the proof that it really became active.
+
+**What reverts what, and the reconcile.** A disk remove/re-add resets the scheduler, `nr_requests`, `max_sectors_kb` and the per-disk io.cost
+state; a scheduler switch resets `nr_requests` (and toggles the writeback throttle); a udev change event re-applies the scheduler and queue RULES
+(60, 61) but not io.cost, which has no rule; a reboot is covered by the rules plus `mdt-io-cost.service`. Between those events the minute-by-minute
+reconcile (`_mdt_reassert_io_settings`) compares the live scheduler, the queue values and the io.cost model and QoS with the env, with the same
+field-normalised comparison, and re-applies on drift with a `WARN: drift:` log line (the same udev trigger and `_mdt_apply_iocost` install uses). A
+failure to re-apply, or a mismatch after it, is an ERROR and a non-zero reconcile exit. Empty (not managed) keys are never touched.
+
 **Boot: a oneshot unit, not a udev RUN.** `io.cost.model` and `io.cost.qos` are cgroup-root files keyed by the disk's MAJ:MIN, not properties of a
 block-device event. A udev RUN would fire on every change event of the disk (including each MDT install's own trigger), execute a shell inside
 udev's restricted sandbox under its timeout, and could not order itself after the scheduler rule it depends on. `mdt-io-cost.service` (Type=oneshot,

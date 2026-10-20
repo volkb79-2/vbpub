@@ -3277,7 +3277,7 @@ _IO_SCHED_EXPLAIN = {
 
 def read_scheduler_list(*, runner=subprocess.run) -> list[str]:
     """The schedulers the ROOT disk lists in queue/scheduler (brackets stripped), via the shared shell library."""
-    out_text = shell_helper('_mdt_io_sched_list "$(basename "$(_mdt_root_disk_node)")"', runner=runner)
+    out_text = shell_helper('_mdt_io_sched_offered "$(basename "$(_mdt_root_disk_node)")"', runner=runner)
     return out_text.split() if out_text else []
 
 

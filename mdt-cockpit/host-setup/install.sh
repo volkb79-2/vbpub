@@ -483,7 +483,7 @@ case "$(_mdt_io_sched_value)" in
       echo "ERROR: IO_ROOT_SCHEDULER is set but the whole disk under / cannot be derived (${_s_node}); nothing was changed. Remedy: run install.sh on the host, or set IO_ROOT_SCHEDULER to empty." >&2
       exit 2
     fi
-    if ! _s_list=$(_mdt_io_sched_list "${_s_node#/dev/}" 2>&1); then
+    if ! _s_list=$(_mdt_io_sched_offered "${_s_node#/dev/}" 2>&1); then
       echo "ERROR: cannot read the scheduler list of ${_s_node} (${_s_list}); nothing was changed." >&2
       exit 2
     fi
@@ -935,6 +935,9 @@ if [ -z "$(_mdt_io_sched_value)" ]; then
   # scheduler for a host that never chose is a hazard); the wizard asks for the key (MDT-HS-07).
   echo "== BFQ scheduler (legacy: IO_ROOT_SCHEDULER is not set) =="
   echo "NOTICE: IO_ROOT_SCHEDULER is not set, so the LEGACY BFQ rule is kept. io.cost (IO_COST_MODEL/IO_COST_QOS) replaces BFQ as the weight mechanism and mq-deadline/none need no module: run install.sh --wizard to choose."
+  if _l_node=$(_mdt_root_disk_node 2>/dev/null) && _l_live=$(_mdt_io_sched_current "${_l_node#/dev/}" 2>/dev/null) && [ -n "$_l_live" ] && [ "$_l_live" != bfq ]; then
+    echo "NOTICE: the live scheduler of ${_l_node#/dev/} is '$_l_live' but the legacy rule re-applies bfq on every udev change event and at boot; set IO_ROOT_SCHEDULER (install.sh --wizard) to keep '$_l_live', or accept bfq."
+  fi
   install -m 0644 "$HERE/etc/modules-load.d/bfq.conf"            /etc/modules-load.d/mdt-bfq.conf
   install -m 0644 "$HERE/etc/udev/rules.d/60-bfq-scheduler.rules" /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
   modprobe bfq 2>/dev/null || echo "WARN: modprobe bfq failed"
