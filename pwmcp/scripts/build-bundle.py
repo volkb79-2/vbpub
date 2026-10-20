@@ -4,7 +4,7 @@
 Reads PWMCP_VERSION from cmru.vars (written by CMRU's pwmcp prepare phase).
 Uses cmru.bundle for the actual archive creation.
 
-Output: pwmcp/dist/pwmcp-<version>.tar.gz
+Output: pwmcp/dist/pwmcp-v<version>.tar.xz  (the contract name <tag><suffix>, PWMCP-07)
 """
 from __future__ import annotations
 

@@ -227,10 +227,13 @@ Every published bundle has a `.sha256` sidecar in the same release:
 
 ```bash
 VERSION="1.63.0-r4"
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
-  -o "pwmcp-${VERSION}.tar.xz.sha256"
-sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-v${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-v${VERSION}.tar.xz.sha256"
 ```
+
+Releases up to and including `1.64.0-r2` use the unprefixed name
+(`pwmcp-${VERSION}.tar.xz.sha256`); later releases use the `v`-prefixed name above.
 
 The SHA256 digest is also embedded in the release notes for a quick manual check.
 

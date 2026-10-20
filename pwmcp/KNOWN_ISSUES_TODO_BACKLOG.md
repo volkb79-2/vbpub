@@ -159,8 +159,8 @@ this lifecycle case.
 
 **Status: FIXED on branch `pwmcp-07-fix-20261020` (A+B+C), not released; registered lanes pending.**
 
-Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; reviewed in
-`review-PWMCP-07.md` (R-01..R-05 folded in below).
+Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; independently reviewed, and the
+review's conclusions (contract, keystone scope, fallback trust, unblock preconditions) are inlined below.
 
 **Evidence.** Stage-2 step 39/55 (`python3 /tmp/install_pwmcp_instance.py`) fails:
 `==> Pinned version: pwmcp-v1.64.0-r2` / `==> Downloading pwmcp-v1.64.0-r2.tar.xz ...` /
@@ -215,7 +215,11 @@ fake release, so the template is compared with itself. `pwmcp/tests/test_script_
 - **C. get.py fallback for the already-published releases:** on a 404 for the canonical name, list the
   release's assets via the GitHub API (one new request, same token handling as the private path) and take
   the single `*{ASSET_SUFFIX}` asset whose sha256 sidecar verifies; zero or several, a variant request, or
-  a failed listing are loud refusals; log the path taken. Trust: the sidecar is integrity, not
+  a failed listing are loud refusals, a `<tag>-<variant>` asset never counts as a legacy name; log the path
+  taken. The checked-in installers (`ciu/get.py`, `tls-edge/get.py`, `pwmcp/get.py`) are re-rendered from
+  the changed template in the same change (`cmru get-py <project> --output <project>/get.py`, run
+  in-process from the worktree's cmru); ciu's byte-identity test depends on it. pwmcp's `get.py` sha256
+  must then be re-pinned in mdt-cockpit for C to reach that build. Trust: the sidecar is integrity, not
   authenticity; the authenticity anchor is the minisign manifest where `manifest_pubkey` is configured,
   and pwmcp configures none, so the fallback adds no trust beyond what the unfixed installer had.
 
