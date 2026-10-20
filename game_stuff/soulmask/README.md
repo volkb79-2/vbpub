@@ -79,13 +79,15 @@ for `EATMYDATA` 0, 1 and unset.
 1. **Find the image's Debian release.** The egg's image `ghcr.io/ptero-eggs/steamcmd:debian` is built
    from `steamcmd/debian/Dockerfile` in github.com/Ptero-Eggs/yolks, which starts `FROM debian:bookworm-slim`
    (read 2026-10-20; Debian 12, glibc 2.36, amd64). That Dockerfile can change, so check the image you
-   actually run:
-   Any container you start on this host must be placed in a cgroup tier (never left at Docker's unconfined
-   default). The value comes from the devcontainer's environment (`CGROUP_PARENT_DEV_BACKGROUND`, set to
+   actually run, with the command below.
+
+   Placement first: any container you start on this host must be placed in a cgroup tier (never left at
+   Docker's unconfined default). The value comes from the devcontainer's environment (`CGROUP_PARENT_DEV_BACKGROUND`, set to
    `dev-background.slice` by its `devcontainer.json`). A bare host shell has no such variable and
    `/etc/mdt/host-setup.env` does not define one (it holds the `DEV_BACKGROUND_*` settings of that slice): there,
    export the slice name the host defines first (check it exists:
-   `systemctl show dev-background.slice -p LoadState`):
+   `systemctl show dev-background.slice -p LoadState`). If your estate has a host-side source for this name,
+   use that instead of typing it:
    ```bash
    export CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice   # only on a bare host; skip inside the devcontainer
    docker run --rm --name "eatmydata-probe-$$" --cgroup-parent="${CGROUP_PARENT_DEV_BACKGROUND:?set CGROUP_PARENT_DEV_BACKGROUND (devcontainer env, or the dev-background slice name)}" \

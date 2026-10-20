@@ -175,7 +175,7 @@ Findings:
    case ≤ 354 ms and the game D-stall ≤ 0.41 s. It holds in both repetitions, so it is above the 2× noise
    floor.
 2. **Smaller requests do not cost the gate-like load anything here.** fio iops 182–210 at 64 KB against
-   155–243 at 256 KB (dirty 16 MiB). Device write throughput is bound by the device (~10 MB/s throttled)
+   123–243 at 256 KB (dirty 16 MiB, q8 and q16). Device write throughput is bound by the device (~10 MB/s throttled)
    in every cell.
 3. **A 32 MiB dirty limit is clearly worse for the gate-like load:** 52–110 iops with a 5–10 s fsync p99,
    against ~200 iops and 1.5–2.6 s at 16 MiB. At 256 KB it is also worse for the probe. Keep
@@ -206,7 +206,7 @@ Findings:
 
 | Knob | Recommended | Reason |
 |---|---|---|
-| `vm.dirty_bytes` / `vm.dirty_background_bytes` | 16 MiB / 4 MiB (measured), 32/8 MiB as an unmeasured midpoint to confirm | bounds the ordered-data backlog a journal commit can wait for: backlog ÷ rate. 256M/64M (A1) was still 21 s |
+| `vm.dirty_bytes` / `vm.dirty_background_bytes` | 16 MiB / 4 MiB (measured). 32/8 MiB was also measured (section 4.4, 90 s, throttled state) and is clearly worse for the gate-like load: keep 16/4 | bounds the ordered-data backlog a journal commit can wait for: backlog ÷ rate. 256M/64M (A1) was still 21 s |
 | `/sys/block/<root disk>/queue/nr_requests` | 8–16 | bounds the device queue; the matrix (section 4.3, same dirty limit) shows q4 gives no further gain over q8–16. **[I]** the A/B's 6 s at 32 (A2) also carried `dirty_bytes` 256M, so it does not isolate `nr_requests` |
 | `/sys/block/<root disk>/queue/max_sectors_kb` | 64 (fallback 128), subject to a read-throughput check | 1 MB requests were the worst cell; 512 KB was no better than 256; 64 KB beat 128 and 256 KB for the small sync in both repetitions (section 4.4). It also caps read requests, which is unmeasured |
 | scheduler | keep `bfq` (measured under it) | `none`/`mq-deadline` untested. **[I]** bfq is what makes the dev tiers' cgroup weights order *queued requests* at all; it does not help the journal wait (section 6) |
