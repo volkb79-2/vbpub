@@ -57,7 +57,14 @@ ok "plain install.sh on an old env file (no optional keys) succeeded with NOTICE
 rm -f "$RECORD"
 sed -i 's|^BUILDX_ACCIDENTAL_CONTAINER_POLICY=.*|BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate|' "$CONF"
 grep -q '^BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate$' "$CONF" || fail "could not set the terminate policy"
-before=$(stat -c '%Y %s' /etc/systemd/system/dev.slice /usr/local/sbin/mdt-dev-governance-reconcile.sh /etc/mdt/buildkitd.toml)
+# a FULL snapshot of every directory install.sh writes (path, type, mode, owner, size, mtime):
+# any new, removed or modified entry, including a config backup (.bak-*), shows up
+snapshot() {
+    find /etc/mdt /etc/systemd/system /etc/tmpfiles.d /etc/docker /usr/local/sbin /usr/local/lib/mdt \
+        /var/lib/mdt /etc/modules-load.d /etc/udev/rules.d /etc/profile.d -xdev \
+        -printf '%p %y %m %U:%G %s %T@\n' 2>/dev/null | sort
+}
+snapshot > /tmp/snapshot.before
 set +e
 out=$(bash "$HS/install.sh" 2>&1); rc=$?
 set -e
@@ -65,14 +72,29 @@ set -e
 printf '%s\n' "$out" | grep -q "has no recorded confirmation" || fail "the refusal does not say why"
 systemctl is-active --quiet mdt-buildkit-guard.service || fail "the refusal tore down the running guard"
 systemctl is-enabled --quiet mdt-buildkit-guard.service || fail "the refusal disabled the guard"
-[ "$before" = "$(stat -c '%Y %s' /etc/systemd/system/dev.slice /usr/local/sbin/mdt-dev-governance-reconcile.sh /etc/mdt/buildkitd.toml)" ] \
-    || fail "the refusal modified installed files (it must refuse before touching anything)"
+snapshot > /tmp/snapshot.after
+diff -u /tmp/snapshot.before /tmp/snapshot.after > /tmp/snapshot.diff \
+    || { head -n 40 /tmp/snapshot.diff; fail "the refusal modified the host (it must refuse before touching anything)"; }
+compgen -G '/etc/mdt/*.bak-*' >/dev/null && fail "the refusal left a config backup behind"
 [ ! -e "$RECORD" ] || fail "a refusal wrote a confirmation record"
 ok "unconfirmed terminate refused (rc 2) before any mutation; the running guard stayed active and enabled"
 
 # ---- 3. the same policy once confirmed (what the wizard records) --------------------
-bash -c "log(){ :; }; . '$LIB'; _mdt_guard_record_write '$RECORD' terminate"
+# shellcheck disable=SC1090
+image=$( . "$CONF"; printf '%s' "$DEV_BUILDKITD_IMAGE" )
+[ -n "$image" ] || fail "no DEV_BUILDKITD_IMAGE in the env"
+bash -c "log(){ :; }; . '$LIB'; _mdt_guard_record_write '$RECORD' terminate '$image'"
 grep -q '^confirmed_at=' "$RECORD" || fail "no timestamp in the confirmation record"
+grep -qx "image=$image" "$RECORD" || fail "the record does not name the confirmed image"
+# the record is bound to what was confirmed: a different BuildKit image is NOT confirmed
+sed -i "s|^DEV_BUILDKITD_IMAGE=.*|DEV_BUILDKITD_IMAGE=\"moby/buildkit:another-image\"|" "$CONF"
+set +e
+out=$(bash "$HS/install.sh" 2>&1); rc=$?
+set -e
+[ "$rc" = 2 ] || fail "a changed BuildKit image reused the old confirmation (exit $rc)"
+printf '%s\n' "$out" | grep -q "has no recorded confirmation" || fail "the changed-image refusal does not say why"
+sed -i "s|^DEV_BUILDKITD_IMAGE=.*|DEV_BUILDKITD_IMAGE=\"$image\"|" "$CONF"
+ok "the confirmation is bound to the BuildKit image: a changed image is refused"
 out=$(bash "$HS/install.sh" 2>&1) || { printf '%s\n' "$out" | tail -n 20; fail "a confirmed terminate policy was refused on re-install"; }
 printf '%s\n' "$out" | grep -q "was already confirmed" || fail "the re-install did not use the recorded confirmation"
 systemctl is-active --quiet mdt-buildkit-guard.service || fail "the guard is not running after a confirmed re-install"
@@ -90,7 +112,11 @@ grep -q '^DAMON_STAT_DISABLE_DEFAULT="yes"$' "$HS/host-setup.env.example" || fai
 [ -f /etc/tmpfiles.d/mdt-damon-stat.conf ] || fail "the DAMON_STAT tmpfiles rule is not installed"
 if [ -e /sys/module/damon_stat/parameters/enabled ]; then
     [ "$(cat /sys/module/damon_stat/parameters/enabled)" = N ] || fail "DAMON_STAT is still enabled"
+    ok "DAMON_STAT is disabled by default (live parameter reads N)"
+else
+    echo "VM UPGRADE NOTE: this guest kernel does not expose /sys/module/damon_stat/parameters/enabled;"
+    echo "VM UPGRADE NOTE: the live DAMON_STAT state is NOT APPLICABLE here (only the installed rule was asserted)"
+    ok "DAMON_STAT rule installed by default (live state not applicable in this guest)"
 fi
-ok "DAMON_STAT is disabled by default"
 
 echo "VM UPGRADE ACCEPTANCE PASSED"

@@ -47,6 +47,7 @@ Usage
   sudo ./install.sh --with-baseline
   sudo ./install.sh --restart-docker
   sudo ./install.sh --observer-only
+  sudo ./install.sh --require-damon-disable   # make a failed DAMON_STAT write fatal
   sudo ./install.sh --help
 
 Options
@@ -196,6 +197,7 @@ RESET=0
 AUTO_RESTART_DOCKER=0
 WIZARD=0
 OBSERVER_ONLY=0
+REQUIRE_DAMON=0
 for arg in "$@"; do
   case "$arg" in
     --wizard) WIZARD=1 ;;
@@ -203,6 +205,7 @@ for arg in "$@"; do
     --with-baseline) WITH_BASELINE=1 ;;
     --reset) RESET=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
+    --require-damon-disable) REQUIRE_DAMON=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
   esac
@@ -368,7 +371,7 @@ fi
 # IO_BASELINE_ROTATIONAL_FLAG) are exempt: for them an absent line means "not
 # set" (a policy default), not "silently unbounded", so a plain install.sh works
 # on an existing env file and prints one NOTICE instead of refusing.  The list is
-# MDT_RUNTIME_OPTIONAL_RE in scripts/mdt-container-io-caps.lib.sh.
+# host-setup/runtime-optional-keys.re, read by the Python validator and the shell helper alike.
 log(){ echo "$*" >&2; }
 # shellcheck source=./scripts/mdt-container-io-caps.lib.sh
 . "$HERE/scripts/mdt-container-io-caps.lib.sh"
@@ -384,7 +387,7 @@ if [ -n "$MISSING_KEYS" ]; then
 fi
 
 GUARD_RECORD=/var/lib/mdt/guard-terminate.confirmed
-GUARD_DECISION=$(_mdt_guard_decision "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" "$WIZARD" "$GUARD_RECORD")
+GUARD_DECISION=$(_mdt_guard_decision "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" "$WIZARD" "$GUARD_RECORD" "${DEV_BUILDKITD_IMAGE:-}")
 case "$GUARD_DECISION" in
   record)
     echo "WARN: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate may remove active Docker-container Buildx workers and interrupt builds; second wizard confirmation received and recorded at the commit point."
@@ -394,7 +397,7 @@ case "$GUARD_DECISION" in
     ;;
   clear) ;;
   refuse)
-    echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate has no recorded confirmation ($GUARD_RECORD): a new or changed terminate setting needs install.sh --wizard and a second explicit confirmation. Nothing was changed: any running mdt-buildkit-guard.service is left exactly as it was." >&2
+    echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate has no recorded confirmation ($GUARD_RECORD): a new or changed terminate setting (policy, BuildKit image or host) needs install.sh --wizard and a second explicit confirmation. Nothing was changed: any running mdt-buildkit-guard.service is left exactly as it was." >&2
     echo "Run ./install.sh --wizard to choose report-only or explicitly confirm terminate." >&2
     exit 2 ;;
   *) echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY must be exactly terminate or report-only" >&2; exit 2 ;;
@@ -645,7 +648,7 @@ if [ "$WIZARD" = 1 ] || [ "$HAD_CONFIG" = 0 ]; then
   install -m 0644 "$CANDIDATE_PATH" "$CONFIG_PATH"
 fi
 case "$GUARD_DECISION" in
-  record) _mdt_guard_record_write "$GUARD_RECORD" terminate ;;
+  record) _mdt_guard_record_write "$GUARD_RECORD" terminate "${DEV_BUILDKITD_IMAGE:-}" ;;
   clear) rm -f -- "$GUARD_RECORD" ;;
 esac
 
@@ -779,7 +782,7 @@ provision_cgprofile_observer /
 # DAMON_STAT is a host-wide consumer that excludes cgprofile's generic DAMON
 # sysfs sessions. Disabled by default (operator decision 2026-10-20); `no` removes the override.
 export DAMON_STAT_TMPFILES=/etc/tmpfiles.d/mdt-damon-stat.conf
-_mdt_apply_damon_policy || exit 2
+_mdt_apply_damon_step "$REQUIRE_DAMON" || exit 2
 
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.

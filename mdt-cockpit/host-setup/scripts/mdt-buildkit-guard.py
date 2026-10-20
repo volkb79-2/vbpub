@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 from mdt_cli import MdtArgumentParser
+import hashlib
 import json
 import re
 import selectors
@@ -104,6 +105,64 @@ def load_config(path: Path) -> GuardConfig:
             "DEV_BUILDKITD_IMAGE is missing or empty; refusing to approve any managed container"
         )
     return GuardConfig(policy=policy, buildkit_image=image)
+
+
+DEFAULT_CONFIRMATION_RECORD = Path("/var/lib/mdt/guard-terminate.confirmed")
+DEFAULT_MACHINE_ID_FILE = Path("/etc/machine-id")
+
+
+def guard_digest(policy: str, image: str, machine_id: str) -> str:
+    """Digest of what the wizard confirmed; MUST equal `_mdt_guard_digest` in
+    scripts/mdt-container-io-caps.lib.sh (a test compares the two)."""
+    text = (
+        f"BUILDX_ACCIDENTAL_CONTAINER_POLICY={policy}\n"
+        f"DEV_BUILDKITD_IMAGE={image}\n"
+        f"machine-id={machine_id or 'none'}\n"
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _read_machine_id(path: Path) -> str:
+    try:
+        return "".join(path.read_text(encoding="utf-8").split())
+    except OSError:
+        return ""
+
+
+def enforce_confirmation(
+    config: GuardConfig,
+    record: Path = DEFAULT_CONFIRMATION_RECORD,
+    machine_id_file: Path = DEFAULT_MACHINE_ID_FILE,
+) -> GuardConfig:
+    """terminate removes containers, so it needs a valid confirmation record: the digest of the
+    current policy + image + this host. Without one the guard runs report-only and says so.
+    A report-only configuration withdraws a stale record (the policy was changed away)."""
+    if config.policy != "terminate":
+        try:
+            if record.exists():
+                record.unlink()
+                print(
+                    f"[mdt-buildkit-guard] policy is {config.policy}: withdrew the stale terminate "
+                    f"confirmation {record}; terminate needs a new wizard confirmation",
+                    flush=True,
+                )
+        except OSError as exc:
+            print(f"[mdt-buildkit-guard] WARN: could not withdraw {record}: {exc}", file=sys.stderr, flush=True)
+        return config
+    expected = guard_digest("terminate", config.buildkit_image, _read_machine_id(machine_id_file))
+    try:
+        lines = record.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    if "policy=terminate" in lines and f"sha256={expected}" in lines:
+        return config
+    print(
+        f"[mdt-buildkit-guard] ERROR: policy=terminate has NO valid confirmation record ({record}) for this "
+        "policy, image and host; running as REPORT-ONLY. Run install.sh --wizard to confirm terminate.",
+        file=sys.stderr,
+        flush=True,
+    )
+    return GuardConfig(policy="report-only", buildkit_image=config.buildkit_image)
 
 
 def is_buildkit_image(image: str) -> bool:
@@ -334,9 +393,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, default=Path("/etc/mdt/host-setup.env"))
     parser.add_argument("--docker", default="/usr/bin/docker")
     parser.add_argument("--verify-managed-container", metavar="CONTAINER_ID")
+    parser.add_argument("--confirmation-record", type=Path, default=DEFAULT_CONFIRMATION_RECORD)
+    parser.add_argument("--machine-id-file", type=Path, default=DEFAULT_MACHINE_ID_FILE)
     args = parser.parse_args(argv)
     try:
-        config = load_config(args.config)
+        config = enforce_confirmation(load_config(args.config), args.confirmation_record, args.machine_id_file)
         print(
             f"[mdt-buildkit-guard] policy={config.policy} image={config.buildkit_image}",
             flush=True,

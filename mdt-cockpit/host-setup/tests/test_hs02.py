@@ -168,37 +168,90 @@ class DamonDefaultTests(unittest.TestCase):
 
 
 class GuardPolicyTests(unittest.TestCase):
-    """Item 3: a confirmed terminate policy survives a non-wizard re-install; refusal touches nothing."""
+    """Item 3: a confirmed terminate policy survives a non-wizard re-install; refusal touches nothing.
+    H-18/H-19: the confirmation is bound to the policy, the BuildKit image and the host."""
 
-    def _decide(self, policy: str, wizard: int, record: Path) -> str:
-        script = (f'log(){{ echo "$*" >&2; }}; . "{LIB}"; _mdt_guard_decision "{policy}" {wizard} "{record}"')
-        return subprocess.run(["bash", "-c", script], text=True, stdout=subprocess.PIPE,
+    IMAGE = "moby/buildkit:buildx-stable-1-rootless"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.machine_id = self.tmp / "machine-id"
+        self.machine_id.write_text("0123456789abcdef0123456789abcdef\n")
+        self.env = {**os.environ, "MDT_MACHINE_ID_FILE": str(self.machine_id)}
+
+    def _decide(self, policy: str, wizard: int, record: Path, image: str | None = None) -> str:
+        image = self.IMAGE if image is None else image
+        script = f'log(){{ echo "$*" >&2; }}; . "{LIB}"; _mdt_guard_decision "{policy}" {wizard} "{record}" "{image}"'
+        return subprocess.run(["bash", "-c", script], text=True, stdout=subprocess.PIPE, env=self.env,
                               stderr=subprocess.DEVNULL).stdout.strip()
 
-    def _record(self, tmp: Path, policy: str = "terminate") -> Path:
-        record = tmp / "guard-terminate.confirmed"
-        r = subprocess.run(["bash", "-c", f'log(){{ :; }}; . "{LIB}"; _mdt_guard_record_write "{record}" "{policy}"'])
+    def _record(self, policy: str = "terminate", image: str | None = None) -> Path:
+        record = self.tmp / "guard-terminate.confirmed"
+        image = self.IMAGE if image is None else image
+        r = subprocess.run(["bash", "-c", f'log(){{ :; }}; . "{LIB}"; _mdt_guard_record_write "{record}" "{policy}" "{image}"'],
+                           env=self.env)
         self.assertEqual(r.returncode, 0)
         return record
 
     def test_three_cases(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp = Path(tmp)
-            missing = tmp / "none"
-            # 1. the wizard just obtained the second confirmation: proceed and record it
-            self.assertEqual(self._decide("terminate", 1, missing), "record")
-            # 2. a non-wizard re-install with an unchanged, already-confirmed terminate policy keeps the guard
-            record = self._record(tmp)
-            self.assertIn("confirmed_at=", record.read_text())
-            self.assertEqual(self._decide("terminate", 0, record), "keep")
-            # 3. a NEW terminate setting without a recorded confirmation is refused
-            self.assertEqual(self._decide("terminate", 0, missing), "refuse")
-            # a tampered or other-policy record is not a confirmation
-            record.write_text("policy=terminate\nconfirmed_at=2026-01-01T00:00:00Z\nsha256=deadbeef\n")
-            self.assertEqual(self._decide("terminate", 0, record), "refuse")
-            # report-only clears any record, so a later terminate needs confirming again
-            self.assertEqual(self._decide("report-only", 0, record), "clear")
-            self.assertEqual(self._decide("report-only", 1, record), "clear")
+        missing = self.tmp / "none"
+        # 1. the wizard just obtained the second confirmation: proceed and record it
+        self.assertEqual(self._decide("terminate", 1, missing), "record")
+        # 2. a non-wizard re-install with an unchanged, already-confirmed terminate policy keeps the guard
+        record = self._record()
+        self.assertIn("confirmed_at=", record.read_text())
+        self.assertIn(f"image={self.IMAGE}", record.read_text())
+        self.assertEqual(self._decide("terminate", 0, record), "keep")
+        # 3. a NEW terminate setting without a recorded confirmation is refused
+        self.assertEqual(self._decide("terminate", 0, missing), "refuse")
+        # a tampered or other-policy record is not a confirmation
+        record.write_text("policy=terminate\nconfirmed_at=2026-01-01T00:00:00Z\nsha256=deadbeef\n")
+        self.assertEqual(self._decide("terminate", 0, record), "refuse")
+        # report-only clears any record, so a later terminate needs confirming again
+        self.assertEqual(self._decide("report-only", 0, record), "clear")
+        self.assertEqual(self._decide("report-only", 1, record), "clear")
+
+    def test_the_record_is_bound_to_the_image_and_to_the_host(self) -> None:
+        """H-18: not a constant string."""
+        record = self._record()
+        self.assertEqual(self._decide("terminate", 0, record), "keep")
+        self.assertEqual(self._decide("terminate", 0, record, image="moby/buildkit:another"), "refuse")
+        self.machine_id.write_text("ffffffffffffffffffffffffffffffff\n")  # the record moved to another host
+        self.assertEqual(self._decide("terminate", 0, record), "refuse")
+
+    def test_shell_and_python_compute_the_same_digest(self) -> None:
+        guard = _load(SCRIPTS / "mdt-buildkit-guard.py", "mdt_guard_hs02")
+        shell = subprocess.run(["bash", "-c", f'log(){{ :; }}; . "{LIB}"; _mdt_guard_digest terminate "{self.IMAGE}"'],
+                               env=self.env, text=True, stdout=subprocess.PIPE).stdout.strip()
+        self.assertEqual(shell, guard.guard_digest("terminate", self.IMAGE, "0123456789abcdef0123456789abcdef"))
+        none = subprocess.run(["bash", "-c", f'log(){{ :; }}; . "{LIB}"; _mdt_guard_digest terminate x'],
+                              env={**os.environ, "MDT_MACHINE_ID_FILE": str(self.tmp / "absent")},
+                              text=True, stdout=subprocess.PIPE).stdout.strip()
+        self.assertEqual(none, guard.guard_digest("terminate", "x", ""))
+
+    def test_the_guard_service_refuses_to_terminate_without_a_valid_record(self) -> None:
+        """H-19 guard side: terminate needs the record; otherwise report-only, loudly; a report-only
+        configuration withdraws a stale record."""
+        guard = _load(SCRIPTS / "mdt-buildkit-guard.py", "mdt_guard_hs02b")
+        record = self.tmp / "rec"
+        config = guard.GuardConfig(policy="terminate", buildkit_image=self.IMAGE)
+        self.assertEqual(guard.enforce_confirmation(config, record, self.machine_id).policy, "report-only")
+        self._record_to(record)
+        self.assertEqual(guard.enforce_confirmation(config, record, self.machine_id).policy, "terminate")
+        other = guard.GuardConfig(policy="terminate", buildkit_image="moby/buildkit:another")
+        self.assertEqual(guard.enforce_confirmation(other, record, self.machine_id).policy, "report-only")
+        away = guard.GuardConfig(policy="report-only", buildkit_image=self.IMAGE)
+        self.assertEqual(guard.enforce_confirmation(away, record, self.machine_id).policy, "report-only")
+        self.assertFalse(record.exists(), "a report-only guard withdraws the stale confirmation")
+        # ... so changing away and back (with the guard restarted in between) needs a new confirmation
+        self.assertEqual(guard.enforce_confirmation(config, record, self.machine_id).policy, "report-only")
+
+    def _record_to(self, record: Path) -> None:
+        r = subprocess.run(["bash", "-c", f'log(){{ :; }}; . "{LIB}"; _mdt_guard_record_write "{record}" terminate "{self.IMAGE}"'],
+                           env=self.env)
+        self.assertEqual(r.returncode, 0)
 
     def test_the_refusal_path_tears_nothing_down_and_precedes_every_mutation(self) -> None:
         install = (ROOT / "install.sh").read_text()
@@ -217,20 +270,152 @@ class GuardPolicyTests(unittest.TestCase):
         commit = install.index("# === COMMIT POINT")
         self.assertIn("_mdt_guard_record_write", install[commit:])
         self.assertIn("/var/lib/mdt/guard-terminate.confirmed", install)
+        self.assertIn('"${DEV_BUILDKITD_IMAGE:-}"', install)
+
+    def test_check_sh_warns_about_terminate_without_a_valid_record(self) -> None:
+        check = (SCRIPTS / "check.sh").read_text()
+        self.assertIn("_mdt_guard_confirmed", check)
+        self.assertIn("NO valid confirmation record", check)
+
+
+class DamonFailureTests(unittest.TestCase):
+    """H-20: an optional DAMON write failure must not abort the install halfway."""
+
+    def _step(self, required: int):
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        bindir = d / "bin"
+        bindir.mkdir()
+        _write_exec(bindir / "systemd-tmpfiles", "#!/usr/bin/env bash\nexit 1\n")
+        param = d / "enabled"
+        param.write_text("Y\n")
+        script = (f'log(){{ echo "$*"; }}; . "{LIB}"; HERE="{ROOT}"; DAMON_STAT_DISABLE_DEFAULT=yes; '
+                  f'DAMON_STAT_TMPFILES="{d / "rule"}"; MDT_DAMON_PARAM="{param}"; _mdt_apply_damon_step {required}; echo rc=$?')
+        return subprocess.run(["bash", "-c", script], env={**os.environ, "PATH": f"{bindir}:/usr/bin:/bin"}, text=True,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT), d / "rule"
+
+    def test_a_failed_write_warns_loudly_and_continues_by_default(self) -> None:
+        r, rule = self._step(0)
+        self.assertIn("rc=0", r.stdout)
+        self.assertIn("DAMON_STAT could NOT be disabled now; the install continues", r.stdout)
+        self.assertTrue(rule.exists(), "the boot-time rule stays installed")
+
+    def test_the_operator_can_make_it_fatal(self) -> None:
+        r, _ = self._step(1)
+        self.assertIn("rc=2", r.stdout)
+        self.assertIn("--require-damon-disable", r.stdout)
+
+    def test_install_passes_the_flag_to_the_step(self) -> None:
+        install = (ROOT / "install.sh").read_text()
+        self.assertIn("--require-damon-disable) REQUIRE_DAMON=1", install)
+        self.assertIn('_mdt_apply_damon_step "$REQUIRE_DAMON"', install)
+
+
+class SharedReaderRuleTests(unittest.TestCase):
+    """H-24: exactly one pattern line, in the shell reader and in the Python reader alike."""
+
+    def test_both_readers_refuse_a_file_with_two_pattern_lines(self) -> None:
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        two = d / "two.re"
+        two.write_text("# c\n^(A)$\n^(B)$\n")
+        shell = subprocess.run(["bash", "-c", f'log(){{ :; }}; . "{LIB}"; MDT_RUNTIME_OPTIONAL_FILE="{two}"; _mdt_runtime_optional_re'],
+                               text=True, stdout=subprocess.PIPE).stdout
+        self.assertEqual(shell.strip(), "")
+        wizard = _load(WIZARD_PATH, "mdt_wizard_hs02_reader")
+        with mock.patch.object(wizard, "RUNTIME_OPTIONAL_KEYS_FILE", two):
+            with self.assertRaises(wizard.TemplateError):
+                wizard.runtime_optional_pattern()
+        one = d / "one.re"
+        one.write_text("# c\n^(A|B)$\n")
+        shell = subprocess.run(["bash", "-c", f'log(){{ :; }}; . "{LIB}"; MDT_RUNTIME_OPTIONAL_FILE="{one}"; _mdt_runtime_optional_re'],
+                               text=True, stdout=subprocess.PIPE).stdout
+        self.assertEqual(shell.strip(), "^(A|B)$")
+        with mock.patch.object(wizard, "RUNTIME_OPTIONAL_KEYS_FILE", one):
+            self.assertTrue(wizard.runtime_optional_pattern().fullmatch("A"))
+
+    def test_stale_text_about_the_old_design_is_gone(self) -> None:
+        self.assertNotIn("MDT_RUNTIME_OPTIONAL_RE", (ROOT / "install.sh").read_text())
+        self.assertNotIn("Installed only", (ROOT / "units" / "mdt-damon-stat.conf").read_text())
+        flat = " ".join((ROOT / "README.md").read_text().split())
+        self.assertNotIn("mdt-damon-stat.conf` (only when selected)", flat)
 
 
 class PreflightBeforeActionTests(unittest.TestCase):
-    """Item 3 audit rule: validate everything first, then act."""
+    """Item 3 audit rule: validate everything first, then act.
 
-    MUTATING = re.compile(r'(?m)^\s*(mkdir\b|install\b|apt-get\b|systemctl\b|rm\s|sed\s+-i|cp\s+--\s+"\$CONFIG_PATH"|'
-                          r'chown\b|chmod\b|modprobe\b|tee\b)')
+    Choice (H-22): a STRUCTURAL scan, not a list of "bad" line starts. Everything between the
+    validated candidate and the COMMIT POINT may call only an allowlist of read-only helpers, may
+    not run any command that mutates the host (a deny-list matched as command words after quoted
+    strings, comments and arithmetic are removed), and may not redirect output anywhere but
+    /dev/null, a file descriptor or the candidate in the temp dir. The allowlisted helpers' own
+    bodies are scanned with the same rules, so a "read-only" helper cannot quietly start writing.
+    Why not run-time enforcement: install.sh refuses to start in a container (the cockpit has no
+    host to protect or test), so a read-only mount probe is only possible in the VM, where
+    vm-upgrade-acceptance.sh step 2 compares a FULL snapshot of every directory the installer
+    writes before and after a refusal. The static scan keeps it from regressing between VM runs.
+    """
 
-    def test_nothing_between_candidate_validation_and_the_commit_point_mutates_the_host(self) -> None:
+    DENY = (r"mkdir|install|apt-get|systemctl|rm|mv|ln|touch|cp|chown|chmod|modprobe|tee|dd|docker|render|"
+            r"truncate|useradd|groupadd|patch|mount|umount|sysctl|udevadm|ip|date -s|hostnamectl|timedatectl")
+    READ_ONLY_HELPERS = {
+        "_mdt_missing_declared_keys", "_mdt_resolve_static_io", "_mdt_io_pin_notice", "_mdt_guard_decision",
+        "_mdt_runtime_optional_re", "_mdt_size_to_bytes", "_mdt_guard_confirmed", "_mdt_guard_digest",
+    }
+    ALLOWED_REDIRECT = re.compile(r'\d*>>?\s*(&\d|/dev/null|"?\$CANDIDATE\w*"?)')
+
+    @classmethod
+    def violations(cls, text: str, helpers: set[str] | None = None) -> list[tuple[str, str]]:
+        helpers = cls.READ_ONLY_HELPERS if helpers is None else helpers
+        found, in_heredoc = [], False
+        for raw in text.splitlines():
+            if in_heredoc:
+                in_heredoc = raw.strip() != "PY"
+                continue
+            if re.search(r"<<'?PY'?\s*$", raw):
+                in_heredoc = True
+            if raw.lstrip().startswith("#"):
+                continue
+            line = cls.ALLOWED_REDIRECT.sub(" ", raw)
+            line = re.sub(r'"(?:\\.|[^"\\])*"', '""', line)
+            line = re.sub(r"'[^']*'", "''", line)
+            line = re.sub(r"\$\(\(.*?\)\)", " ", line)
+            line = re.sub(r"\s#.*$", "", line)
+            if re.search(rf"(^|[\s;&|(`])({cls.DENY})(\s|$|;|\))", line) or re.search(r"\bsed\s+-\w*i", line):
+                found.append(("command", raw.strip()))
+            if re.search(r"(?<![<-])>", line):
+                found.append(("redirection", raw.strip()))
+            for helper in re.findall(r"\b(_mdt_\w+)\b", line):
+                if helper not in helpers:
+                    found.append(("helper", helper))
+        return found
+
+    @staticmethod
+    def function_body(lib: str, name: str) -> str:
+        start = lib.index(f"{name}() {{")
+        return lib[start:lib.index("\n}\n", start)]
+
+    def test_the_scan_is_sensitive_to_every_way_of_mutating(self) -> None:
+        for mutating in ('echo x > /etc/mdt/host-setup.env', 'echo x >> /var/lib/mdt/y', 'mv a b', 'touch /etc/x',
+                         'ln -s a b', 'render "$HERE/units/x.in" /etc/y', 'printf y | tee /etc/z', 'mkdir -p /etc/q',
+                         'sed -i s/a/b/ /etc/f', '_mdt_guard_record_write "$R" terminate', 'docker rm -f x',
+                         '_mdt_apply_damon_step 0', 'cp -- "$CONFIG_PATH" "$backup"', 'x=$(rm -rf /etc/y)'):
+            self.assertTrue(self.violations(mutating), mutating)
+        for harmless in ('echo "install.sh needs systemctl" >&2', 'x=$(nproc 2>/dev/null) || true',
+                         'cores=$(( a > b ? a : b ))', '_mdt_guard_decision a b c d',
+                         'echo hi > "$CANDIDATE_PATH"', '# mkdir /etc is only a comment'):
+            self.assertEqual(self.violations(harmless), [], harmless)
+
+    def test_the_preflight_region_uses_only_read_only_helpers_and_commands(self) -> None:
         install = (ROOT / "install.sh").read_text()
-        start = install.index('. "$CANDIDATE_PATH"')
-        end = install.index("# === COMMIT POINT")
-        region = "\n".join(ln for ln in install[start:end].splitlines() if not ln.lstrip().startswith("#"))
-        self.assertIsNone(self.MUTATING.search(region), self.MUTATING.search(region) and self.MUTATING.search(region).group(0))
+        region = install[install.index('. "$CANDIDATE_PATH"'):install.index("# === COMMIT POINT")]
+        self.assertEqual(self.violations(region), [])
+
+    def test_the_allowlisted_helpers_are_themselves_read_only(self) -> None:
+        lib = LIB.read_text()
+        for helper in sorted(self.READ_ONLY_HELPERS):
+            body = self.function_body(lib, helper)
+            self.assertEqual(self.violations(body), [], helper)
 
     def test_the_installed_config_is_replaced_only_at_the_commit_point(self) -> None:
         install = (ROOT / "install.sh").read_text()

@@ -35,13 +35,33 @@ def _mounts() -> dict[str, dict[str, str]]:
     return result
 
 
+def _dockerfile_group_roots() -> list[str]:
+    match = re.search(r"(?m)^# Group that owns the image-managed tool trees \(([^)]+)\)", DOCKERFILE)
+    return [part.strip() for part in match.group(1).split(",")]
+
+
+def _image_path_prefix() -> list[str]:
+    return re.search(r'(?m)^ENV MDT_PATH_PREFIX="([^"]+)"', DOCKERFILE).group(1).split(":")
+
+
+def _image_home() -> str:
+    suffix = re.search(r'(?m)^ENV MDT_PATH_SUFFIX="([^"]+)"', DOCKERFILE).group(1)
+    return str(Path(suffix).parent.parent)  # <home>/.local/bin -> <home>
+
+
 def test_the_fresh_home_layout_matches_the_initializer() -> None:
+    """Sources: the initializer's constants, its prefix rule and the README's stated modes; the
+    container-side home comes from the image (MDT_PATH_SUFFIX). Literals: none for names or modes."""
     mounts = _mounts()
-    assert mounts["/home/vscode"]["source"] == "${localEnv:HOME}/" + bootstrap.HOME_SOURCE_NAME + "/"
+    assert mounts[_image_home()]["source"] == "${localEnv:HOME}/" + bootstrap.HOME_SOURCE_NAME + "/"
     assert mounts["/tmp"]["source"] == "${localEnv:HOME}/" + bootstrap.TMP_SOURCE_NAME + "/"
-    assert bootstrap.HOME_SOURCE_NAME == "mdt-cockpit-home" and bootstrap.TMP_SOURCE_NAME == "mdt-cockpit-tmp"
-    assert bootstrap.HOME_MODE == 0o700 and bootstrap.TMP_MODE == 0o1777
+    assert bootstrap.HOME_SOURCE_NAME == bootstrap.SOURCE_PREFIX + "home"
+    assert bootstrap.TMP_SOURCE_NAME == bootstrap.SOURCE_PREFIX + "tmp"
+    readme = (ROOT / "templates" / "README.md").read_text(encoding="utf-8")
+    assert f"mode `{bootstrap.HOME_MODE:04o}`" in readme
+    assert f"mode `{bootstrap.TMP_MODE & 0o7777:04o}`" in readme
     assert mounts["/run/mdt/host-ssh"]["source"] == "${localEnv:HOME}/.ssh/"
+    assert bootstrap.MODE_OVERRIDES[".ssh"] == 0o700
     assert "readonly" in mounts["/run/mdt/host-ssh"]
     # every host $HOME source is spelled mdt-cockpit-<purpose> or is the native ~/.ssh
     for fields in mounts.values():
@@ -51,22 +71,25 @@ def test_the_fresh_home_layout_matches_the_initializer() -> None:
 
 
 def test_opt_mdt_and_srv_belong_to_the_mdt_group_in_the_image() -> None:
-    assert "/opt/mdt" in TEMPLATE_TEXT and "/srv" in TEMPLATE_TEXT
-    assert re.search(r"(?m)^# Group that owns the image-managed tool trees \(/opt/mdt, /srv\)", DOCKERFILE)
+    roots = _dockerfile_group_roots()
+    assert roots, "the Dockerfile names the group-owned roots"
+    for root in roots:
+        assert root in TEMPLATE_TEXT, root
     assert 'groupadd -g "${MDT_GID}" mdt' in DOCKERFILE
 
 
 def test_path_order_npm_prefix_and_venv_are_defined_once_by_the_image() -> None:
     env = {**TEMPLATE["containerEnv"], **TEMPLATE.get("remoteEnv", {})}
     assert "PATH" not in env and "NPM_CONFIG_PREFIX" not in env
-    prefix = re.search(r'(?m)^ENV MDT_PATH_PREFIX="([^"]+)"', DOCKERFILE).group(1)
-    assert prefix == "/opt/mdt/bin:/opt/mdt/venv/bin:/opt/mdt/npm/bin:/srv/pwmcp-instance/bin"
-    assert re.search(r'(?m)^ENV NPM_CONFIG_PREFIX="/opt/mdt/npm"$', DOCKERFILE)
+    parts = _image_path_prefix()
     assert re.search(r'(?m)^ENV PATH="\$\{MDT_PATH_PREFIX\}:\$\{PATH\}:\$\{MDT_PATH_SUFFIX\}"$', DOCKERFILE)
-    assert 'ENV MDT_PATH_SUFFIX="/home/vscode/.local/bin"' in DOCKERFILE
-    # the template's explanation names the same order
-    for part in ("/opt/mdt/bin", "/opt/mdt/venv/bin", "/opt/mdt/npm/bin", "/srv/pwmcp-instance/bin"):
-        assert part in TEMPLATE_TEXT
+    # the template explains the order the image defines, in the image's order
+    positions = [TEMPLATE_TEXT.index(part) for part in parts]
+    assert positions == sorted(positions)
+    # the npm prefix and the primary venv are among the image's PATH entries
+    npm = re.search(r'(?m)^ENV NPM_CONFIG_PREFIX="([^"]+)"$', DOCKERFILE).group(1)
+    venv = re.search(r"python3 -m venv (/\S+)", DOCKERFILE).group(1).rstrip(";")
+    assert npm + "/bin" in parts and venv + "/bin" in parts
 
 
 def test_cgroup_env_keys_match_the_initializer_the_units_and_the_daemon_default() -> None:
@@ -90,16 +113,20 @@ def test_the_template_comment_states_which_tiers_must_match_runargs() -> None:
     assert "Only CGROUP_PARENT_DEV_INTERACTIVE must match the --cgroup-parent runArg" in flat
 
 
-def test_every_host_bind_source_is_created_by_a_host_setup_unit() -> None:
+def test_every_host_bind_source_and_socket_comes_from_a_host_setup_unit() -> None:
+    """Sources: docker-api-socket.conf (ListenStream), mdt-cgprofile.conf (d line),
+    mdt-buildkitd.service.in (RuntimeDirectory + --addr) and the builder script (MANAGED_BUILDER)."""
     mounts = _mounts()
-    assert "/run/docker-api" in (HS / "units" / "docker-api-socket.conf").read_text()
-    assert re.search(r"(?m)^d /run/cgprofile ", (HS / "units" / "mdt-cgprofile.conf").read_text())
-    assert "RuntimeDirectory=mdt-buildkitd" in (HS / "units" / "mdt-buildkitd.service.in").read_text()
-    for target in ("/run/docker-api", "/run/cgprofile", "/run/mdt-buildkitd"):
-        assert mounts[target]["source"] == target and mounts[target]["type"] == "bind"
+    listen = re.search(r"(?m)^ListenStream=(/\S+)$", (HS / "units" / "docker-api-socket.conf").read_text()).group(1)
+    cgprofile = re.search(r"(?m)^d (/\S+) ", (HS / "units" / "mdt-cgprofile.conf").read_text()).group(1)
+    unit = (HS / "units" / "mdt-buildkitd.service.in").read_text()
+    runtime_dir = "/run/" + re.search(r"(?m)^RuntimeDirectory=(\S+)$", unit).group(1)
+    socket_name = Path(re.search(r"--addr unix://(/\S+)", unit).group(1)).name
+    for target in (str(Path(listen).parent), cgprofile, runtime_dir):
+        assert mounts[target]["source"] == target and mounts[target]["type"] == "bind", target
     env = TEMPLATE["containerEnv"]
-    assert env["DOCKER_HOST"] == "unix:///run/docker-api/docker.sock"
-    assert env["BUILDKIT_HOST"] == "unix:///run/mdt-buildkitd/buildkitd.sock"
+    assert env["DOCKER_HOST"] == "unix://" + listen
+    assert env["BUILDKIT_HOST"] == "unix://" + runtime_dir + "/" + socket_name
     builder = (ROOT / "scripts" / "mdt_buildkit_builder.py").read_text()
     assert env["BUILDX_BUILDER"] == re.search(r'(?m)^MANAGED_BUILDER = "([^"]+)"', builder).group(1)
 

@@ -523,7 +523,10 @@ _mdt_tier_pin() {
 # Python validator reads too (MDT-HS-02: two copies diverged in effect).
 _mdt_runtime_optional_re() {
   local file="${MDT_RUNTIME_OPTIONAL_FILE:-$(dirname "${BASH_SOURCE[0]}")/../runtime-optional-keys.re}"
-  grep -vE '^[[:space:]]*(#|$)' "$file" 2>/dev/null | head -n 1
+  local patterns
+  patterns=$(grep -vE '^[[:space:]]*(#|$)' "$file" 2>/dev/null)
+  # exactly ONE pattern line, like the Python reader: a second line would make the two disagree
+  [ "$(printf '%s\n' "$patterns" | grep -c .)" = 1 ] && printf '%s\n' "$patterns"
 }
 
 # _mdt_missing_declared_keys <config> <example> <required|optional>: prints the
@@ -577,32 +580,62 @@ _mdt_apply_damon_policy() {
 
 # --- guard (terminate) policy confirmation, recorded durably (MDT-HS-02) -------------------
 # The wizard's second confirmation of BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate is recorded
-# in a root-owned file under /var/lib/mdt with a timestamp and a hash of the confirmed setting.
-# A non-wizard re-install with an unchanged, already-confirmed terminate policy proceeds and
-# keeps the running guard; only a NEW or changed terminate setting without a record refuses,
-# and the refusal tears nothing down.
-_mdt_guard_hash() { printf '%s' "BUILDX_ACCIDENTAL_CONTAINER_POLICY=$1" | sha256sum | cut -d' ' -f1; }
+# in a root-owned file under /var/lib/mdt: the confirmed settings, a timestamp and a digest of
+#   BUILDX_ACCIDENTAL_CONTAINER_POLICY, DEV_BUILDKITD_IMAGE (the identity the guard approves
+#   by) and this host's machine-id.
+# It is an AUDIT TRAIL bound to what was confirmed and where, not an access control (root can
+# write it). A non-wizard re-install with an unchanged, already-confirmed terminate setting on
+# the same host proceeds and keeps the running guard; a changed policy, image or host does not
+# match the record and refuses BEFORE anything is touched. mdt-buildkit-guard.py verifies the
+# same digest before it acts in terminate mode and falls back to report-only, loudly.
+# The algorithm is shared with scripts/mdt-buildkit-guard.py (guard_digest): keep them equal.
+_mdt_guard_digest() { # <policy> <image>
+  local mid
+  mid=$({ tr -d '[:space:]' < "${MDT_MACHINE_ID_FILE:-/etc/machine-id}"; } 2>/dev/null || true)
+  printf 'BUILDX_ACCIDENTAL_CONTAINER_POLICY=%s\nDEV_BUILDKITD_IMAGE=%s\nmachine-id=%s\n' \
+    "$1" "$2" "${mid:-none}" | sha256sum | cut -d' ' -f1
+}
 
-_mdt_guard_record_write() { # <record-file> <policy>
-  local record="$1" policy="$2"
+_mdt_guard_record_write() { # <record-file> <policy> <image>
+  local record="$1" policy="$2" image="$3"
   mkdir -p "$(dirname "$record")" || return 1
-  printf 'policy=%s\nconfirmed_at=%s\nsha256=%s\n' "$policy" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(_mdt_guard_hash "$policy")" \
+  printf 'policy=%s\nimage=%s\nconfirmed_at=%s\nsha256=%s\n' "$policy" "$image" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(_mdt_guard_digest "$policy" "$image")" \
     > "$record.tmp" && mv -f "$record.tmp" "$record"
 }
 
-_mdt_guard_confirmed() { # <record-file> <policy>
-  [ -f "$1" ] && grep -qx "policy=$2" "$1" && grep -qx "sha256=$(_mdt_guard_hash "$2")" "$1"
+_mdt_guard_confirmed() { # <record-file> <policy> <image>
+  [ -f "$1" ] && grep -qx "policy=$2" "$1" && grep -qx "sha256=$(_mdt_guard_digest "$2" "$3")" "$1"
 }
 
-# _mdt_guard_decision <policy> <wizard 0|1> <record-file> -> record | keep | clear | refuse | invalid
+# _mdt_guard_decision <policy> <wizard 0|1> <record-file> <image> -> record | keep | clear | refuse | invalid
 _mdt_guard_decision() {
   case "$1" in
     terminate)
       if [ "$2" = 1 ]; then echo record
-      elif _mdt_guard_confirmed "$3" terminate; then echo keep
+      elif _mdt_guard_confirmed "$3" terminate "${4:-}"; then echo keep
       else echo refuse
       fi ;;
     report-only) echo clear ;;
     *) echo invalid ;;
   esac
+}
+
+# _mdt_apply_damon_step <required 0|1>: the optional DAMON_STAT write must not abort an install
+# halfway (units and config are already replaced, services not yet activated). A failure is a
+# loud WARN and the install continues, unless the operator required it (--require-damon-disable).
+# The boot-time rule is already installed when the immediate write fails.
+_mdt_apply_damon_step() {
+  local required="${1:-0}"
+  if _mdt_apply_damon_policy; then return 0; fi
+  if [ "$required" = 1 ]; then
+    echo "ERROR: DAMON_STAT disable was required (--require-damon-disable) and could not be applied" >&2
+    return 2
+  fi
+  echo "WARN: ********************************************************************" >&2
+  echo "WARN: DAMON_STAT could NOT be disabled now; the install continues. The boot-time rule is installed;" >&2
+  echo "WARN: the cgroup-profiler daemon cannot use the DAMON sysfs interface until DAMON_STAT is off" >&2
+  echo "WARN: (reboot, or: echo N > /sys/module/damon_stat/parameters/enabled). Re-run with --require-damon-disable to make this fatal." >&2
+  echo "WARN: ********************************************************************" >&2
+  return 0
 }

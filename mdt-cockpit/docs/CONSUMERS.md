@@ -102,7 +102,9 @@ aliases for the new clean configuration.
 
 Fresh installs default to `report-only`. If a plain install finds an existing
 `terminate` policy that the wizard already confirmed (recorded in
-`/var/lib/mdt/guard-terminate.confirmed`), it proceeds and keeps the running guard. A new or
+`/var/lib/mdt/guard-terminate.confirmed` with the policy, the BuildKit image and this host's
+machine-id digest), it proceeds and keeps the running guard; the guard itself verifies the record
+before it acts. A new or
 changed `terminate` without that record refuses BEFORE touching anything (the running guard
 is left as it was) until `--wizard` confirms it; the host config stays available for review. During `--wizard`, accepting the default answer
 changes `terminate` to `report-only`.

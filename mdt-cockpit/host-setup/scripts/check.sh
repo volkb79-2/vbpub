@@ -505,6 +505,17 @@ case "${DAMON_STAT_DISABLE_DEFAULT:-}" in
     ;;
 esac
 
+echo "== Buildx guard confirmation =="
+if [ "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" = terminate ]; then
+  if _mdt_guard_confirmed /var/lib/mdt/guard-terminate.confirmed terminate "${DEV_BUILDKITD_IMAGE:-}"; then
+    ok "policy=terminate has a valid confirmation record for this policy, image and host"
+  else
+    warn "policy=terminate has NO valid confirmation record (/var/lib/mdt/guard-terminate.confirmed): the guard runs report-only until install.sh --wizard confirms it"
+  fi
+else
+  info "guard policy is ${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-unset}: no terminate confirmation needed"
+fi
+
 echo "== docker-.scope.d default-limits backstop (D-G8) =="
 if [ -f /etc/systemd/system/docker-.scope.d/50-default-limits.conf ]; then
   ok "backstop drop-in installed"
