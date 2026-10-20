@@ -20,15 +20,17 @@ in README.md remains the only authority.
 **Oracles.** In the VM lane the test passes with `nsenter` present and FAILS (not skips) when the
 binary is absent; the gate containers report it as deselected, never as passed or skipped.
 
-## GG-2 — per-instance tmpfs: host-side facts not verifiable from the dev sandbox
+## GG-2 — per-instance tmpfs: host-side facts still to verify live
 
 **Status:** OPEN (filed by SMT-01, 2026-10-20).
 
-**Deferred.** (1) `systemd-tmpfiles-clean.timer` being enabled on the Debian 13 host (it ships
-static in the systemd package; the dev container has no systemd to ask). (2) The `noswap` tmpfs
+**Measured (not deferred).** `systemd-tmpfiles-clean.timer` on the host is static and active,
+firing 15 min after boot and then every 1 d (read-only check, 2026-10-20, gstammtisch).
+
+**Deferred.** (1) The `noswap` tmpfs
 option on the host kernel (7.2.6 here, `noswap` needs >= 6.4; the code fails loudly rather than
 fall back, but no live mount of the `[per-instance-noswap]` section has happened because none is
-configured). (3) The age/`X` semantics were measured with `systemd-tmpfiles --clean` on a scratch
+configured). (2) The age/`X` semantics were measured with `systemd-tmpfiles --clean` on a scratch
 directory (systemd 257), not on the live mounts.
 
 **Fix direction.** The controller runs the verification steps listed under "Deployment" in

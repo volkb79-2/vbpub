@@ -283,10 +283,11 @@ the age (a quiet server) would be unlinked while the game still holds it open,
 and the log would silently stop being visible. Measured with systemd 257
 (Debian 13): with only the `e` rule, an idle `WS.log` past the age is deleted
 along with the old backups; with the `X` exemption it survives and the old
-backups are still pruned. `systemd-tmpfiles-clean.timer` ships static in
-Debian's systemd package; confirm it is active on the host with
-`systemctl is-enabled systemd-tmpfiles-clean.timer` (it could not be verified
-from the dev sandbox).
+backups are still pruned. Measured on the host (read-only, 2026-10-20,
+gstammtisch): `systemd-tmpfiles-clean.timer` is static and active, firing 15 min
+after boot and then every 1 d, so pruning happens at most daily. The deployment
+check `systemctl is-enabled systemd-tmpfiles-clean.timer` stays as a regression
+guard.
 
 ### Idempotence, refusal, teardown, dry run
 
