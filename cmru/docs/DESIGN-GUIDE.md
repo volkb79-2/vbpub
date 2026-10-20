@@ -1389,3 +1389,34 @@ the controller version, original wheel digest, and installed-file digest. This k
 mechanism itself reviewable and identifies the exact controller if a transaction must be resumed.
 `cmru release --dry-run` remains available from a source checkout because it cannot publish or
 promote anything.
+
+## The bundle asset name is one contract, and producers conform to it (KI-89 / PWMCP-07)
+
+`get.py` downloads `<tag><asset_suffix>` (SPEC S6.3 step 3, CONSUMERS "Publish a bundle").
+That spelling lives in `cmru.release.asset_name_for_tag` / `bundle_asset_name`, which the
+variants publisher and the host resolver (`hosts/github.py`) call; the rendered `get.py` cannot
+import cmru, so it carries `expected_asset_name`, and a test keeps the two equal for plain,
+variant and `+` versions. pwmcp's `bundle.toml` built `pwmcp-<version>.tar.xz` instead, and
+every pwmcp release's own installer answered HTTP 404; cmru's resolver masked it because with
+one candidate asset it returns whichever one exists.
+
+Choices and the rejected alternatives:
+
+- **The producer conforms; the consumer is not changed.** Renaming in the consumer would break
+  tls-edge and the variants path, which follow the documented contract. pwmcp-local is the
+  primary fix (`name_template = "pwmcp-v{version}.tar.xz"`, `find_bundle`).
+- **`publish_versioned` does NOT rename or refuse.** It is the shared keystone behind
+  `wheel-publish` and `tarball-publish`; a wheel's file name is pip's, so an unconditional rename
+  or name check would corrupt or reject every wheel release. Enforcement is instead a check that
+  reads each project's own producer configuration (`tests/test_installer_asset_names.py`), scoped
+  to `[project.installer]` projects, which fails the next project that drifts. A runtime refusal
+  scoped to installer projects remains possible later (then `latest.json`, the release body and
+  the download URL follow the placed name, as in the variants path); it was not needed to close
+  the defect.
+- **A bounded `get.py` fallback for already-published releases**, because immutable releases
+  cannot be republished: on a 404 for the canonical name it lists the release's assets (one new
+  API request, with the same token handling as the private download path) and accepts exactly one
+  `*<asset_suffix>` asset whose `.sha256` sidecar verifies. Zero or several candidates, a
+  variant request, or a failing listing are loud refusals. It adds no trust: a sidecar proves
+  integrity only; authenticity is the signed manifest when `manifest_pubkey` is configured, and
+  pwmcp configures none, exactly as before.

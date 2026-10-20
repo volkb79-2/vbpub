@@ -63,6 +63,24 @@ def version_to_tag(prefix: str, version: str) -> str:
     return f"{prefix}-v{version}".replace("+", "-")
 
 
+def asset_name_for_tag(tag: str, suffix: str, variant: Optional[str] = None) -> str:
+    """The ONE spelling of a release bundle's asset name, from its release tag.
+
+    ``<tag><suffix>`` (``<tag>-<variant><suffix>`` for a per-interpreter variant), e.g.
+    ``tls-edge-v2.0.0.tar.xz``. The producer (:func:`publish_versioned`), the host resolver
+    (``hosts/github.py``) and the rendered ``get.py`` (``expected_asset_name`` in
+    ``templates/get.py.tmpl``, kept equal by a test) all name the asset this way; a project's
+    build-local file name never decides what installers download (KI-89 / PWMCP-07).
+    """
+    return f"{tag}-{variant}{suffix}" if variant else f"{tag}{suffix}"
+
+
+def bundle_asset_name(prefix: str, version: str, suffix: str,
+                      variant: Optional[str] = None) -> str:
+    """Canonical asset name for ``version`` of ``prefix``: ``<prefix>-v<version>[-<variant>]<suffix>``."""
+    return asset_name_for_tag(version_to_tag(prefix, version), suffix, variant)
+
+
 def _semver_key(version: str) -> tuple:
     """Sort key for ``<prefix>-v`` versions. Tolerates suffixes like ``1.61.0-r2``.
 
@@ -759,6 +777,10 @@ def publish_versioned(
 ) -> Dict[str, Any]:
     """Publish ``asset_path`` for ``version`` under the uniform scheme.
 
+    The primary asset keeps its file name (a wheel must never be renamed). For an installer
+    bundle that name must be :func:`bundle_asset_name`; the producer owns that (KI-89:
+    ``tests/test_installer_asset_names.py`` checks every installer project's producer).
+
     ``release_notes`` is the project's curated section for ``version`` (KI-75);
     it follows the generated install/artifact block in the release body.
 
@@ -939,7 +961,7 @@ class VariantArtifact:
 
 def variant_asset_name(prefix: str, version: str, variant: str, suffix: str) -> str:
     """Deterministic per-variant asset name: ``<prefix>-v<version>-<variant><suffix>``."""
-    return f"{version_to_tag(prefix, version)}-{variant}{suffix}"
+    return bundle_asset_name(prefix, version, suffix, variant=variant)
 
 
 def _place_named(src: Path, target_name: str) -> Path:

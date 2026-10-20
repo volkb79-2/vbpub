@@ -2267,19 +2267,25 @@ the test instead of imported from the fixture, and "under `cmru/`" counts as car
 function or per skipif marker (assert the marker is still present); expose the fixture's pathspec list as a function and use
 it in both places; check tracked-ness. Optional: pin the read counts per module (F-06).
 
-### KI-89 — nothing compares the asset name `publish_versioned` publishes with the one the rendered `get.py` downloads
+### KI-89 — nothing compares a project's bundle producer with the asset name its rendered `get.py` downloads
 
-**Status:** OPEN. Filed 2026-10-20 from pwmcp PWMCP-07 (every pwmcp release ships `pwmcp-<ver>.tar.xz`;
-get.py requests `pwmcp-v<ver>.tar.xz` -> HTTP 404).
+**Status:** FIXED on branch `pwmcp-07-fix-20261020`, not released; registered lanes pending. Filed 2026-10-20 from pwmcp PWMCP-07 (every pwmcp release ships
+`pwmcp-<ver>.tar.xz`; get.py requests `pwmcp-v<ver>.tar.xz` -> HTTP 404); same class as CIU-99.
 
-**Mechanism.** The primary asset keeps whatever file name the project's build produced
-(`release.py:745 publish_versioned`), while `templates/get.py.tmpl:614` and `hosts/github.py:101`
-recompute `<tag><suffix>` independently; only the variants path (`release.py:940`) derives the
-name. `resolve_latest` falls back to the lone matching asset, masking the mismatch in cmru's own
-tooling. `tests/installer_fakes.py:138` builds the fake release from the template's own formula,
-so template-vs-template passes.
+**Mechanism.** The contract is `<tag><asset_suffix>` (`docs/CONSUMERS.md:319`, SPEC S6.3). The primary
+asset keeps the file name the project's build produced (`release.py:745 publish_versioned`, used by
+`wheel-publish`, `tarball-publish` and pwmcp's own script), while `templates/get.py.tmpl:614` and
+`hosts/github.py:101` recompute `<tag><suffix>` independently; only the variants path
+(`release.py:940`) derives the name. `resolve_latest` falls back to the lone matching asset, masking a
+mismatch in cmru's own tooling. `tests/installer_fakes.py:138` types the template's formula out in the
+fake release, so template-vs-template passes.
 
-**Fix.** One shared name function used by producer, template and host (see PWMCP-07 for the full
-proposal); `cmru` should also refuse (or warn on) a publish whose primary asset name differs from
-that function. Test: render get.py, publish via the real `publish_versioned` into a fake host, run
-get.py's download against it.
+**Fix (scoped).** One name function (`asset_name_for_tag` / `bundle_asset_name`) used by the variants
+publisher and the host resolver, equality-tested against the rendered get.py's `expected_asset_name`; an
+integration test (render get.py, publish through the real `publish_versioned` into a fake host, run get.py's
+download against it); and a repo-reading oracle (`tests/test_installer_asset_names.py`) that, for every
+project with `[project.installer]` + `asset_suffix`, compares the producer's name (`bundle.toml` template
+or `tarball-publish --glob`) with the contract name, with a controlled wrong implementation that must go
+red and a self-checking exemption list (ciu, CIU-99). `publish_versioned` must not rename or refuse
+unconditionally (wheels). Plus the bounded, sidecar-verified get.py fallback for already-published
+releases (PWMCP-07 fix C).

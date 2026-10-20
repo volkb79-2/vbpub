@@ -489,8 +489,49 @@ def _select_variant(args: argparse.Namespace, root: Path) -> Optional[str]:
 
 # ─── Download (public or private) (S5) ────────────────────────────────────────
 
+class _AssetNotFound(SystemExit):
+    """The release has no asset of that name (HTTP 404 / absent from the asset list).
+
+    A ``SystemExit`` (exit ``EXIT_FAIL``) so a caller that does not handle it, or a test
+    that replaces nothing, still sees the ordinary fatal download failure; only
+    ``download_and_verify`` catches it, to try the bounded legacy-name fallback."""
+
+    def __init__(self, msg: str) -> None:
+        super().__init__(EXIT_FAIL)
+        self.msg = msg
+
+
+def expected_asset_name(tag: str, variant: Optional[str] = None) -> str:
+    """The canonical bundle asset name for ``tag``: ``<tag>[-<variant>]{suffix}``.
+
+    The same spelling as ``cmru.release.asset_name_for_tag`` (the producer's); a test keeps
+    them equal, because this script cannot import cmru."""
+    return f"{tag}-{variant}{ASSET_SUFFIX}" if variant else f"{tag}{ASSET_SUFFIX}"
+
+
+def _legacy_asset_name(tag: str, token: Optional[str], not_found: str) -> str:
+    """Name of the release's single bundle-typed asset, or a loud failure (never a guess)."""
+    status, body = _gh_request(f"{RELEASES_API}/tags/{tag}", token=token)
+    if status >= 400:
+        fatal(f"{not_found} The release's asset list could not be read either "
+              f"(HTTP {status}).", EXIT_FAIL)
+    try:
+        rel = json.loads(body)
+    except ValueError:
+        fatal(f"Release {tag}: GitHub returned invalid JSON.", EXIT_FAIL)
+    assets = rel.get("assets", []) if isinstance(rel, dict) else []
+    names = [a.get("name") for a in assets if isinstance(a, dict) and isinstance(a.get("name"), str)]
+    candidates = [n for n in names if n.endswith(ASSET_SUFFIX)]
+    if len(candidates) != 1:
+        fatal(f"{not_found} The legacy-name fallback needs exactly one *{ASSET_SUFFIX} asset "
+              f"in release {tag}; found {candidates}. Available: {names}", EXIT_FAIL)
+    return candidates[0]
+
+
 def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str]) -> None:
-    """Download a release asset — private path if token present, public URL otherwise."""
+    """Download a release asset — private path if token present, public URL otherwise.
+
+    Raises ``_AssetNotFound`` (a ``SystemExit``) when the release has no such asset."""
     if token:
         # Private path: resolve release → list assets → find by name → download by ID
         status, body = _gh_request(
@@ -505,10 +546,9 @@ def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str])
         assets = rel.get("assets", []) if isinstance(rel, dict) else []
         asset = _find_asset_by_name(assets, asset_name)
         if asset is None:
-            fatal(
+            raise _AssetNotFound(
                 f"Asset {asset_name!r} not found in release {tag}. "
-                f"Available: {[a.get('name') for a in assets]}",
-                EXIT_FAIL,
+                f"Available: {[a.get('name') for a in assets]}"
             )
         # Download by asset ID — the token is never forwarded across the redirect (S5)
         asset_url = (
@@ -524,6 +564,8 @@ def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str])
         )
         status, _ = _gh_request(url, token=None, accept="application/octet-stream",
                                 stream_to=dest, timeout=300, max_bytes=_MAX_DOWNLOAD_BYTES)
+    if status == 404:
+        raise _AssetNotFound(f"Download of {asset_name} failed (HTTP 404).")
     if status != 200:
         fatal(f"Download of {asset_name} failed (HTTP {status}).", EXIT_FAIL)
     if not dest.exists() or dest.stat().st_size == 0:
@@ -600,6 +642,14 @@ def _verify_minisign(manifest: Path, sig: Path, pubkey: str, tag: str, digest: s
     ok("Manifest signature verified (minisign).")
 
 
+def _download_required(tag: str, asset_name: str, dest: Path, token: Optional[str]) -> None:
+    """``_download_asset`` where a missing asset is final (no fallback applies)."""
+    try:
+        _download_asset(tag, asset_name, dest, token)
+    except _AssetNotFound as missing:
+        fatal(missing.msg, EXIT_FAIL)
+
+
 def download_and_verify(
     tag: str,
     workdir: Path,
@@ -611,16 +661,27 @@ def download_and_verify(
     ``variant`` (S-REL.6) selects the per-interpreter asset ``<tag>-<variant>{suffix}``;
     ``None`` uses the single-asset name ``<tag>{suffix}``. The signature and manifest
     are verified separately, from the bundle bytes (`_verify_manifest`)."""
-    asset_name   = f"{tag}-{variant}{ASSET_SUFFIX}" if variant else f"{tag}{ASSET_SUFFIX}"
+    asset_name   = expected_asset_name(tag, variant)
+    info(f"Downloading {asset_name} ...")
+    try:
+        _download_asset(tag, asset_name, workdir / asset_name, token)
+    except _AssetNotFound as missing:
+        if variant:
+            fatal(missing.msg, EXIT_FAIL)
+        # Releases published before KI-89 carry the build's file name (pwmcp:
+        # ``<prefix>-<version>{suffix}``, no "v"). Bounded: exactly one bundle-typed asset.
+        asset_name = _legacy_asset_name(tag, token, missing.msg)
+        warn(f"Release {tag} has no {expected_asset_name(tag, None)}; using its single "
+             f"{ASSET_SUFFIX} asset {asset_name!r} (legacy asset name; its SHA256 sidecar "
+             "must still verify).")
+        info(f"Downloading {asset_name} ...")
+        _download_required(tag, asset_name, workdir / asset_name, token)
     sidecar_name = f"{asset_name}.sha256"
     asset   = workdir / asset_name
     sidecar = workdir / sidecar_name
 
-    info(f"Downloading {asset_name} ...")
-    _download_asset(tag, asset_name, asset, token)
-
     info(f"Downloading {sidecar_name} ...")
-    _download_asset(tag, sidecar_name, sidecar, token)
+    _download_required(tag, sidecar_name, sidecar, token)
 
     info("Verifying SHA256 checksum ...")
     _verify_sha256(asset, sidecar)

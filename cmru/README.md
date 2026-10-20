@@ -847,7 +847,11 @@ installer only: a fail-closed, transactional `install`/`update`/`status`/`rollba
 verifies the SHA-256 sidecar, the manifest (and, when the project pins a `manifest_pubkey`, its
 minisign signature) and every wheel hash, builds each release in its own
 `releases/<tag>-<digest>/` directory with its own venv (offline, `--require-hashes`), swaps
-`current` atomically and keeps the previous release for `rollback` (SPEC S6.3-S6.17, and the
+`current` atomically and keeps the previous release for `rollback`. It downloads exactly
+`<tag><asset_suffix>`; a producer must publish that name (checked for every installer project),
+and for releases published under another name it falls back, bounded and sidecar-verified, to the
+release's single bundle asset ([why](docs/DESIGN-GUIDE.md#the-bundle-asset-name-is-one-contract-and-producers-conform-to-it-ki-89--pwmcp-07))
+(SPEC S6.3-S6.17, and the
 [authoring guide](docs/CONSUMERS.md#authoring-an-installer-for-your-project) in CONSUMERS).
 A project adds its own commands with `[project.installer] extensions =
 ["<relpath>.py"]` fragments that `cmru get-py` inlines verbatim (sha256-banner wrapped, one file,

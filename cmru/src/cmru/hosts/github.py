@@ -16,6 +16,7 @@ from cmru.hosts import ReleaseHost
 from cmru.release import (
     GitHubReleases,
     _semver_key,
+    asset_name_for_tag,
 )
 
 
@@ -98,7 +99,7 @@ class GitHubReleaseHost(ReleaseHost):
             and (not asset_suffix or n.endswith(asset_suffix))
         ]
         if asset_suffix and (len(matching) > 1 or variant):
-            wanted = f"{tag}-{variant}{asset_suffix}" if variant else f"{tag}{asset_suffix}"
+            wanted = asset_name_for_tag(tag, asset_suffix, variant or None)
             if wanted in matching:
                 matching = [wanted]
             else:
