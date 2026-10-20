@@ -117,7 +117,7 @@ class SystemdSpellingTests(Base):
         self.assertNotEqual(r1.returncode, 0, r1.stdout)
         self.assertEqual(n1, 1)
         self.assertIn("ERROR: dev.slice: kernel io.max has NO entry", r1.stdout)
-        self.assertIn("stale-entry heal (one daemon-reload) was tried and did not fix it", r1.stdout)
+        self.assertIn("stale-entry heal (one daemon-reload, then every managed unit re-applied) was tried and did not fix it", r1.stdout)
         self.assertNotIn("Remedy: systemctl daemon-reload", r1.stdout)
         self.assertIn("io controller not enabled", r1.stdout)
         self.assertTrue(self.stamp().exists())
@@ -138,6 +138,61 @@ class SystemdSpellingTests(Base):
         r2, n2 = self._run_at(60)                 # a clean run with no reload ends the window
         self.assertEqual((r2.returncode, n2), (0, 0), r2.stdout)
         self.assertFalse(self.stamp().exists())
+
+    # ---- MDT-HS-06: one reload for the WHOLE batch, never unit by unit -----------------------------------
+    TIERS = ("dev.slice", "dev-gates.slice", "dev-buildkitd.slice")
+
+    def _seed_all(self) -> None:
+        stale = [["/dev/vda", {k: "max" for k in KEYS}], ["/dev/mapper/gstammtisch--vg-root", {k: "max" for k in KEYS}]]
+        self.host.state.write_text(json.dumps({
+            "unit": self.host.unit_static,
+            "paths": {unit: json.loads(json.dumps(stale)) for unit in self.TIERS},
+            "touched": {unit: True for unit in self.TIERS},
+        }))
+        self.host.config_lines += ["DEV_GATES_IO_RBPS_MAX=40M"]
+
+    def test_two_units_with_stale_spellings_are_healed_by_one_global_reload(self) -> None:
+        """The live incident: the reload is ONE global event that clears the kernel state of every unit applied
+        before it.  Healing only the trigger unit left the next unit failing as 'reload suppressed'."""
+        self._seed_all()
+        result, reloads = self._run_at(0, FAKE_RELOAD_CLEARS_KERNEL="1")
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(reloads, 1, self.host.calls())
+        self.assertNotIn("reload suppressed", result.stdout)
+        self.assertNotIn("ERROR", result.stdout)
+        self.assertIn(f"rbps={150 * MIB}", self.host.io_max("dev.slice"))
+        gates = self.host.io_max("dev.slice/dev-gates.slice")
+        self.assertIn(f"rbps={40 * MIB}", gates)
+        self.assertTrue(self.host.io_max("dev.slice/dev-buildkitd.slice"), "the third unit is re-applied too")
+        self.assertIn("EVERY managed unit", result.stdout)
+
+    def test_the_reload_re_applies_every_unit_after_it(self) -> None:
+        self._seed_all()
+        result, _ = self._run_at(0, FAKE_RELOAD_CLEARS_KERNEL="1")
+        calls = self.host.calls()
+        at = calls.index("daemon-reload")
+        after = [c.split()[2] for c in calls[at + 1:] if c.startswith("set-property --runtime")]
+        self.assertEqual(sorted(set(after)), sorted(self.TIERS), "every managed unit is set again after the reload")
+
+    def test_a_second_run_inside_the_window_is_suppressed_but_a_run_never_fails_from_its_own_reload(self) -> None:
+        self._seed_all()
+        r1, n1 = self._run_at(0, FAKE_RELOAD_CLEARS_KERNEL="1")
+        self.assertEqual((r1.returncode, n1), (0, 1), r1.stdout)
+        # the same stale shape again 60 s later (the timer's next run): suppressed, no second reload
+        self._seed_all()
+        r2, n2 = self._run_at(60, FAKE_RELOAD_CLEARS_KERNEL="1")
+        self.assertEqual(n2, 0, "the persisted limiter blocks a reload inside the window")
+        self.assertNotEqual(r2.returncode, 0, r2.stdout)
+        self.assertIn("reload suppressed: last self-heal reload at", r2.stdout)
+
+    def test_a_heal_that_does_not_help_reloads_once_and_every_failing_unit_gets_the_tried_remedy(self) -> None:
+        self._seed_all()
+        result, reloads = self._run_at(0, FAKE_RELOAD_NOOP="1")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(reloads, 1)
+        for unit in ("dev.slice", "dev-gates.slice"):
+            self.assertIn(f"ERROR: {unit}: kernel io.max has NO entry", result.stdout)
+        self.assertGreaterEqual(result.stdout.count("was tried and did not fix it"), 2)
 
     def test_no_reload_when_systemd_itself_does_not_report_the_values(self) -> None:
         """H-40: the kernel is empty and `show` hides the values: not the stale-entry case, so NO reload."""

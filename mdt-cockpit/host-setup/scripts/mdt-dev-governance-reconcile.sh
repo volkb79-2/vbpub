@@ -165,13 +165,17 @@ _mdt_apply_dev_io() {
   fi
   MDT_IO_PROPS=()
   _mdt_io_props "$sd_dev" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"
-  _mdt_io_apply_verify dev.slice "$CG/dev.slice" "$majmin" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"; _rc=$?
-  [ "$_rc" = 1 ] && MDT_RC=1
+  # The whole batch (dev.slice and every capped tier) is applied first and verified TOGETHER; a stale
+  # per-spelling entry is healed by ONE daemon-reload for all of them (MDT-HS-06), never unit by unit.
+  _mdt_io_queue_reset
+  _mdt_io_queue_add dev.slice "$CG/dev.slice" "$majmin" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"
+  _mdt_apply_tier_io "$majmin"
+  _mdt_io_queue_flush || MDT_RC=1
+  _rc=${MDT_IOQ_RC[0]}
   if [ "$_rc" = 0 ]; then
     # "authoritative" is only ever claimed after the kernel agreed
     log "dev.slice: io.max on $sd_dev (from $IO_DEV_PATH) is authoritative: ${DEV_RIOPS}r/${DEV_WIOPS}w IOPS, ${DEV_RBPS}/${DEV_WBPS} B/s r/w [$DEV_IO_SRC; DEV_IO_CAP_PCT=${DEV_IO_CAP_PCT}] — covers every dev.slice child combined"
   fi
-  _mdt_apply_tier_io "$majmin"
 }
 
 # Per-tier caps.  dev-gates.slice/dev-buildkitd.slice always get an IOPS
@@ -185,7 +189,7 @@ _mdt_apply_dev_io() {
 # runtime value (a removed pin must not linger until reboot); it is never
 # written to dev.slice, which is the slice meant to stay capped.
 _mdt_apply_tier_io() {
-  local majmin="$1" sd_dev pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub f sub_ri sub_wi _rc touched
+  local majmin="$1" sd_dev pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub f sub_ri sub_wi touched
   local -A v bad
   local -a props
   for entry in $MDT_IO_TIERS; do
@@ -230,12 +234,11 @@ _mdt_apply_tier_io() {
       fi
     done
     [ "${#props[@]}" -gt 0 ] || continue
-    # shellcheck disable=SC2034  # read by _mdt_io_apply_verify (sourced lib)
+    # shellcheck disable=SC2034  # read by _mdt_io_queue_add (sourced lib)
     MDT_IO_PROPS=("${props[@]}")
-    _mdt_io_apply_verify "$unit" "$CG/dev.slice/$unit" "$majmin" \
+    _mdt_io_queue_add "$unit" "$CG/dev.slice/$unit" "$majmin" \
       "$([ -n "${bad[RBPS]:-}" ] || echo "${v[RBPS]}")" "$([ -n "${bad[WBPS]:-}" ] || echo "${v[WBPS]}")" \
-      "$([ -n "${bad[RIOPS]:-}" ] || echo "${v[RIOPS]}")" "$([ -n "${bad[WIOPS]:-}" ] || echo "${v[WIOPS]}")"; _rc=$?
-    [ "$_rc" = 1 ] && MDT_RC=1
+      "$([ -n "${bad[RIOPS]:-}" ] || echo "${v[RIOPS]}")" "$([ -n "${bad[WIOPS]:-}" ] || echo "${v[WIOPS]}")"
   done
 }
 
