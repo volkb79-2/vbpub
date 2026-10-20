@@ -206,3 +206,25 @@ class TestLegacyNameFallback:
         wd.mkdir()
         with pytest.raises(SystemExit):
             ns["download_and_verify"](TAG, wd, None, "py311")
+
+    def test_a_release_with_only_a_variant_asset_is_refused_not_guessed(self, tmp_path):
+        # <tag>-<variant><suffix> belongs to the variants namespace: it is not a legacy name
+        host = _FakeHost()
+        _put_raw(host, tmp_path, TAG, f"{TAG}-py311.tar.xz", b"variant")
+        ns = _render()
+        _serve(ns, host)
+        wd = tmp_path / "wd"
+        wd.mkdir()
+        with pytest.raises(SystemExit):
+            ns["download_and_verify"](TAG, wd, None)
+        assert not (wd / f"{TAG}-py311.tar.xz").exists()
+
+    def test_a_variant_asset_beside_one_legacy_asset_leaves_the_legacy_one(self, tmp_path):
+        host = _FakeHost()
+        _put_raw(host, tmp_path, TAG, f"{TAG}-py311.tar.xz", b"variant")
+        _put_raw(host, tmp_path, TAG, f"demo-{VERSION}.tar.xz", b"legacy")
+        ns = _render()
+        _serve(ns, host)
+        wd = tmp_path / "wd"
+        wd.mkdir()
+        assert ns["download_and_verify"](TAG, wd, None).name == f"demo-{VERSION}.tar.xz"

@@ -335,10 +335,12 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    ciu, is listed with its backlog id, CIU-99). A release published under another name
    (pwmcp up to `1.64.0-r2` shipped `pwmcp-<version>.tar.xz`) is still installable: when the
    canonical asset answers 404, `get.py` lists the release's assets through the GitHub API and
-   takes the single `*<asset_suffix>` asset (zero or several is a refusal that names them), logs
+   takes the single `*<asset_suffix>` asset (variant-named `<tag>-<variant>` assets never count; zero or several is a refusal that names them), logs
    that it did so, and still requires its `.sha256` sidecar to verify. The fallback never applies
    to a `--variant` request and adds no trust beyond today's: the sidecar is an integrity check,
-   the authenticity anchor stays the signed manifest where `manifest_pubkey` is set. The tarball has exactly ONE top-level directory that holds
+   the authenticity anchor stays the signed manifest where `manifest_pubkey` is set.
+
+   The tarball has exactly ONE top-level directory that holds
    `manifest.json` (and `manifest.json.minisig` when signed), the wheels under their globbed
    paths, and the project files. The manifest is JSON with `schema_version: 1`, `tag`/`version`
    if present equal to the release tag, one `{"sha256": ..., "wheel": ..., "size": ...}` entry

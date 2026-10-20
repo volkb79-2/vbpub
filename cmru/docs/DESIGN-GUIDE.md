@@ -1416,7 +1416,7 @@ Choices and the rejected alternatives:
 - **A bounded `get.py` fallback for already-published releases**, because immutable releases
   cannot be republished: on a 404 for the canonical name it lists the release's assets (one new
   API request, with the same token handling as the private download path) and accepts exactly one
-  `*<asset_suffix>` asset whose `.sha256` sidecar verifies. Zero or several candidates, a
+  `*<asset_suffix>` asset (never a `<tag>-<variant>` one) whose `.sha256` sidecar verifies. Zero or several candidates, a
   variant request, or a failing listing are loud refusals. It adds no trust: a sidecar proves
   integrity only; authenticity is the signed manifest when `manifest_pubkey` is configured, and
   pwmcp configures none, exactly as before.

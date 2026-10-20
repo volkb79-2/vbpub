@@ -11,6 +11,15 @@ publish with :func:`cmru.release.bundle_asset_name`. It runs on every real proje
 declares ``[project.installer]`` with an ``asset_suffix`` and on synthetic projects (a
 deviating producer MUST be reported, a conforming one must not).
 
+Scope, stated honestly: this compares CONFIGURATION, not built bytes (a project's own
+publish script, e.g. pwmcp's ``find_bundle``, needs its own local test); only release
+versions are checked (``X.Y.Z[-rN]``: a ``+`` local version is never published as an
+immutable release, and ``name_template.format`` does not apply ``version_to_tag``'s ``+``
+rewrite, so checking one would be a false alarm); and a ``tarball-publish --glob`` is a
+selector over what the build produced, so it must match the contract name AND must not
+also match the pre-fix spelling ``<prefix>-<version><suffix>`` (a glob such as ``*.tar.xz``
+would publish a wrongly named file without complaint).
+
 A project whose producer cannot be found is a violation unless it is listed in
 ``KNOWN_NO_BUNDLE_PRODUCER`` with its backlog id; the entry is itself checked, so it goes
 red as soon as the project does get a producer (the exemption must then be removed).
@@ -74,6 +83,10 @@ def producer_violations(project_dir: Path) -> list[str]:
                            f"but its get.py downloads {contract!r}")
     for glob in _tarball_globs(cfg):
         produced += 1
+        legacy = f"{prefix[:-2]}-{SAMPLE_VERSION}{suffix}"
+        if fnmatch.fnmatchcase(legacy, glob):
+            out.append(f"{name}: tarball-publish --glob {shlex.quote(glob)} also matches the "
+                       f"non-contract name {legacy!r}")
         if not fnmatch.fnmatchcase(contract, glob):
             out.append(f"{name}: tarball-publish --glob {shlex.quote(glob)} does not match "
                        f"{contract!r}, the name its get.py downloads")
@@ -140,6 +153,8 @@ def test_a_conforming_bundle_producer_passes(tmp_path):
 
 def test_a_deviating_tarball_glob_is_reported_and_a_conforming_one_passes(tmp_path):
     assert producer_violations(_synthetic(tmp_path, glob="demo-1*.tar.xz", name="bad"))
+    broad = producer_violations(_synthetic(tmp_path, glob="*.tar.xz", name="broad"))
+    assert len(broad) == 1 and "also matches" in broad[0]
     assert producer_violations(_synthetic(tmp_path, glob="demo-v*.tar.xz", name="good")) == []
 
 

@@ -521,7 +521,9 @@ def _legacy_asset_name(tag: str, token: Optional[str], not_found: str) -> str:
         fatal(f"Release {tag}: GitHub returned invalid JSON.", EXIT_FAIL)
     assets = rel.get("assets", []) if isinstance(rel, dict) else []
     names = [a.get("name") for a in assets if isinstance(a, dict) and isinstance(a.get("name"), str)]
-    candidates = [n for n in names if n.endswith(ASSET_SUFFIX)]
+    # ``<tag>-<variant>{suffix}`` is the per-interpreter variants namespace, never a legacy name
+    candidates = [n for n in names
+                  if n.endswith(ASSET_SUFFIX) and not n.startswith(f"{tag}-")]
     if len(candidates) != 1:
         fatal(f"{not_found} The legacy-name fallback needs exactly one *{ASSET_SUFFIX} asset "
               f"in release {tag}; found {candidates}. Available: {names}", EXIT_FAIL)
