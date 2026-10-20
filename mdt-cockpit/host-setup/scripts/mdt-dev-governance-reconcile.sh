@@ -151,7 +151,7 @@ _mdt_no_device() {
 }
 
 _mdt_apply_dev_io() {
-  local majmin err _rc sd_dev
+  local majmin _rc sd_dev
   _mdt_resolve_dev_io_caps || MDT_RC=1
   if ! majmin=$(_mdt_dev_majmin "$IO_DEV_PATH" 2>&1); then
     log "ERROR: cannot resolve $IO_DEV_PATH to the whole disk systemd caps: ${majmin:-missing node or no sysfs entry} — IO governance cannot be verified"
@@ -165,12 +165,7 @@ _mdt_apply_dev_io() {
   fi
   MDT_IO_PROPS=()
   _mdt_io_props "$sd_dev" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"
-  if ! err=$(systemctl set-property --runtime dev.slice "${MDT_IO_PROPS[@]}" 2>&1); then
-    log "ERROR: dev.slice set-property failed ($err)"
-    MDT_RC=1
-    return
-  fi
-  _mdt_verify_io_max dev.slice "$CG/dev.slice" "$majmin" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"; _rc=$?
+  _mdt_io_apply_verify dev.slice "$CG/dev.slice" "$majmin" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"; _rc=$?
   [ "$_rc" = 1 ] && MDT_RC=1
   if [ "$_rc" = 0 ]; then
     # "authoritative" is only ever claimed after the kernel agreed
@@ -190,7 +185,7 @@ _mdt_apply_dev_io() {
 # runtime value (a removed pin must not linger until reboot); it is never
 # written to dev.slice, which is the slice meant to stay capped.
 _mdt_apply_tier_io() {
-  local majmin="$1" sd_dev pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub f sub_ri sub_wi err _rc touched
+  local majmin="$1" sd_dev pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub f sub_ri sub_wi _rc touched
   local -A v bad
   local -a props
   for entry in $MDT_IO_TIERS; do
@@ -235,15 +230,12 @@ _mdt_apply_tier_io() {
       fi
     done
     [ "${#props[@]}" -gt 0 ] || continue
-    if err=$(systemctl set-property --runtime "$unit" "${props[@]}" 2>&1); then
-      _mdt_verify_io_max "$unit" "$CG/dev.slice/$unit" "$majmin" \
-        "$([ -n "${bad[RBPS]:-}" ] || echo "${v[RBPS]}")" "$([ -n "${bad[WBPS]:-}" ] || echo "${v[WBPS]}")" \
-        "$([ -n "${bad[RIOPS]:-}" ] || echo "${v[RIOPS]}")" "$([ -n "${bad[WIOPS]:-}" ] || echo "${v[WIOPS]}")"; _rc=$?
-      [ "$_rc" = 1 ] && MDT_RC=1
-    else
-      log "ERROR: $unit IO cap set-property failed ($err)"
-      MDT_RC=1
-    fi
+    # shellcheck disable=SC2034  # read by _mdt_io_apply_verify (sourced lib)
+    MDT_IO_PROPS=("${props[@]}")
+    _mdt_io_apply_verify "$unit" "$CG/dev.slice/$unit" "$majmin" \
+      "$([ -n "${bad[RBPS]:-}" ] || echo "${v[RBPS]}")" "$([ -n "${bad[WBPS]:-}" ] || echo "${v[WBPS]}")" \
+      "$([ -n "${bad[RIOPS]:-}" ] || echo "${v[RIOPS]}")" "$([ -n "${bad[WIOPS]:-}" ] || echo "${v[WIOPS]}")"; _rc=$?
+    [ "$_rc" = 1 ] && MDT_RC=1
   done
 }
 

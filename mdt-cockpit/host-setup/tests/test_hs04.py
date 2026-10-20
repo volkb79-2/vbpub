@@ -66,18 +66,52 @@ class SystemdSpellingTests(Base):
         self.assertEqual(got[got.index("IOReadBandwidthMax=") + 1], f"IOReadBandwidthMax={SD} {40 * MIB}")
         self.assertNotIn("/dev/null", calls[0])
 
+    def _seed(self, paths: list) -> None:
+        self.host.state.write_text(json.dumps({"unit": self.host.unit_static, "paths": {"dev.slice": paths},
+                                               "touched": {"dev.slice": True}}))
+
     def test_a_stale_other_spelling_in_the_runtime_list_is_healed(self) -> None:
-        """A pin made earlier under /dev/vda (or an older reconcile's mapper path) must not shadow
-        the intended cap: the kernel takes the LAST entry of the list."""
-        self.host.state.write_text(json.dumps({"unit": self.host.unit_static, "runtime": {"dev.slice": {
-            k: [["/dev/vda", "1"]] for k in KEYS}}}))
+        """A pin made earlier under /dev/vda must not shadow the intended cap: reset-then-set clears it."""
+        self._seed([["/dev/vda", {k: "1" for k in KEYS}]])
         result = self.host.run()
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(self.host.io_max(),
                          f"254:0 rbps={150 * MIB} wbps={150 * MIB} riops=500 wiops=500\n", result.stdout)
-        runtime = json.loads(self.host.state.read_text())["runtime"]["dev.slice"]
-        for key in KEYS:
-            self.assertEqual([e[0] for e in runtime[key]], [SD], "the stale spelling must be gone, not outvoted")
+        shown = self.show("dev.slice")
+        self.assertNotIn("/dev/vda 1\n", shown)
+
+    def show(self, unit: str) -> str:
+        env = os.environ.copy()
+        env.update({"CG": str(self.host.cg), "FAKE_STATE": str(self.host.state), "FAKE_LOG": str(self.host.log),
+                    "FAKE_UNIT_STATIC": json.dumps(self.host.unit_static)})
+        return subprocess.run([str(self.host.bin / "systemctl"), "show", unit], env=env, text=True,
+                              capture_output=True).stdout
+
+    def test_upgrade_with_a_stale_all_max_entry_after_ours_is_healed_by_one_daemon_reload(self) -> None:
+        """The live defect (inferred, 2026-10-20): the spelling we set already exists earlier in systemd's
+        list and a stale all-max entry for another spelling comes AFTER it.  Reset keeps that entry at max,
+        show hides it, and the apply writes it last -> io.max empty although `show` reports our values."""
+        self._seed([["/dev/vda", {k: "max" for k in KEYS}], ["/dev/mapper/gstammtisch--vg-root", {k: "max" for k in KEYS}]])
+        result = self.host.run()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.host.io_max(),
+                         f"254:0 rbps={150 * MIB} wbps={150 * MIB} riops=500 wiops=500\n", result.stdout)
+        self.assertIn("WARN: dev.slice: systemctl show reports the intended IO limits", result.stdout)
+        self.assertEqual(self.host.calls().count("daemon-reload"), 1, self.host.calls())
+        self.assertNotIn("ERROR", result.stdout)
+
+    def test_the_heal_is_bounded_and_a_second_mismatch_fails_with_the_remedy(self) -> None:
+        self._seed([["/dev/vda", {k: "max" for k in KEYS}], ["/dev/mapper/gstammtisch--vg-root", {k: "max" for k in KEYS}]])
+        result = self.host.run(FAKE_RELOAD_NOOP="1")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.host.calls().count("daemon-reload"), 1, "never a loop")
+        self.assertIn("ERROR: dev.slice: kernel io.max has NO entry", result.stdout)
+        self.assertIn("systemctl daemon-reload", result.stdout)
+
+    def test_no_reload_when_systemd_itself_does_not_report_the_values(self) -> None:
+        result = self.host.run(FAKE_KERNEL_DROPS="1")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(self.host.calls().count("daemon-reload"), 1 if "reports the intended" in result.stdout else 0)
 
     def test_the_old_spelling_would_have_been_dropped_by_systemd(self) -> None:
         """Oracle sensitivity for the measured failure: a spelling systemd drops writes nothing; the
@@ -176,7 +210,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_design_guide_records_measured_versus_inferred(self) -> None:
         design = " ".join((ROOT.parent / "docs" / "DESIGN-GUIDE.md").read_text().split())
-        for needle in ("MDT-HS-04", "DEVNAME", "measured", "inferred", "virtio"):
+        for needle in ("MDT-HS-04", "DEVNAME", "measured", "inferred", "virtio", "PER PATH STRING", "daemon-reload"):
             self.assertIn(needle, design)
         self.assertIn("MDT-HS-04", (ROOT.parent / "CHANGES.md").read_text())
 

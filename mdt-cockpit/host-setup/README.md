@@ -206,7 +206,11 @@ live Buildx build. Missing or invalid policy configuration stops the guard.
 IO caps are handed to systemd as `/dev/<DEVNAME>` of the whole disk (derived from the same MAJ:MIN the
 read-back verifies, via sysfs `uevent`; never the configured mapper node), with every IO key reset and set in the same `set-property` call; see
 [DESIGN-GUIDE](../docs/DESIGN-GUIDE.md) (MDT-HS-04) for the measurement and why. The installer renders the
-`dev.slice` static lines the same way, and the log lines name the path given to systemd.
+`dev.slice` static lines the same way, and the log lines name the path given to systemd. systemd keeps one
+limit entry per path spelling and a reset leaves a stale all-max entry that can override the cap while
+`systemctl show` looks right; when the kernel disagrees with `show`, the reconcile warns, runs ONE
+`systemctl daemon-reload`, re-applies and re-verifies (once per run, then it fails with the remedy:
+`systemctl daemon-reload`, then rerun).
 
 The guard reads each `docker events` line's container id from `Actor.ID`, the documented
 current field: Docker 29 (API 1.56) no longer sends the deprecated top-level `id`/`status`/`from`.

@@ -479,6 +479,8 @@ _mdt_io_max_fields() {
 #      this is indeterminate, not a pass and not a failure (logged)
 _mdt_verify_io_max() {
   local label="$1" dir="$2" majmin="$3" want_rb="$4" want_wb="$5" want_ri="$6" want_wi="$7" got
+  local lvl=ERROR remedy=" Remedy: systemctl daemon-reload, then rerun this reconcile."
+  [ "${MDT_VERIFY_SOFT:-0}" = 1 ] && lvl=WARN
   if [ ! -d "$dir" ]; then
     log "$label: cgroup not active yet — properties recorded but NOT verified (no process is governed until the slice starts; the next run verifies)"
     return 2
@@ -489,7 +491,7 @@ _mdt_verify_io_max() {
       log "$label: verified kernel io.max has no limit for $majmin (cleared values read as unlimited)"
       return 0
     fi
-    log "ERROR: $label: kernel io.max has NO entry for $majmin (content: '$(tr '\n' ';' < "$dir/io.max" 2>/dev/null)') — the intended cap is NOT in effect"
+    log "$lvl: $label: kernel io.max has NO entry for $majmin (content: '$(tr '\n' ';' < "$dir/io.max" 2>/dev/null)') — the intended cap is NOT in effect.$remedy"
     return 1
   fi
   set -- $got
@@ -498,8 +500,58 @@ _mdt_verify_io_max() {
     log "$label: verified kernel io.max $majmin rbps=$1 wbps=$2 riops=$3 wiops=$4"
     return 0
   fi
-  log "ERROR: $label: kernel io.max $majmin is rbps=$1 wbps=$2 riops=$3 wiops=$4 but intended rbps=${want_rb:--} wbps=${want_wb:--} riops=${want_ri:--} wiops=${want_wi:--} — the intended cap is NOT in effect"
+  log "$lvl: $label: kernel io.max $majmin is rbps=$1 wbps=$2 riops=$3 wiops=$4 but intended rbps=${want_rb:--} wbps=${want_wb:--} riops=${want_ri:--} wiops=${want_wi:--} — the intended cap is NOT in effect.$remedy"
   return 1
+}
+
+# _mdt_systemd_reports_io <unit> <rbps> <wbps> <riops> <wiops>: true when `systemctl show` lists at
+# least one of the intended non-empty values, i.e. systemd BELIEVES the cap is set.
+_mdt_systemd_reports_io() {
+  local unit="$1" shown v
+  shown=$(systemctl show "$unit" -p IOReadBandwidthMax -p IOWriteBandwidthMax -p IOReadIOPSMax -p IOWriteIOPSMax 2>/dev/null) || return 1
+  shift
+  for v in "$@"; do
+    case "$v" in ''|max) continue ;; esac
+    grep -Eq "(^|[ =])$v( |\$)" <<<"$shown" && return 0
+  done
+  return 1
+}
+
+# _mdt_io_apply_verify <unit> <cgroup-dir> <maj:min> <rbps> <wbps> <riops> <wiops>
+# The properties are in the array MDT_IO_PROPS.  set-property, read the kernel back, and
+# self-heal ONCE per run (MDT-HS-04, measured 2026-10-20 on systemd 257.13): systemd keeps one
+# in-memory io-device-limit entry per PATH STRING; an empty assignment resets an entry to max
+# but does not delete it, `systemctl show` and the runtime drop-in hide all-max entries, and
+# the apply writes every entry in list order, so a stale all-max entry for another spelling of
+# the same disk silently writes `max` over the cap (inferred from those measurements and the
+# v257 source).  `daemon-reload` rebuilds the list from the drop-in files, which hold only the
+# non-max entries.  So: when the kernel disagrees while systemd reports the intended values,
+# warn loudly, daemon-reload ONCE, re-apply, re-verify; a second mismatch fails as before.
+# Never loops; MDT_IO_RELOADED rate-limits it to one reload per run.
+# Returns the _mdt_verify_io_max code (0 ok, 1 not in effect, 2 not verifiable).
+_mdt_io_apply_verify() {
+  local unit="$1" dir="$2" mm="$3" rb="$4" wb="$5" ri="$6" wi="$7" err rc
+  if ! err=$(systemctl set-property --runtime "$unit" "${MDT_IO_PROPS[@]}" 2>&1); then
+    log "ERROR: $unit IO cap set-property failed ($err)"
+    return 1
+  fi
+  MDT_VERIFY_SOFT=1 _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"; rc=$?
+  [ "$rc" = 1 ] || return "$rc"
+  if [ "${MDT_IO_RELOADED:-0}" = 1 ] || ! _mdt_systemd_reports_io "$unit" "$rb" "$wb" "$ri" "$wi"; then
+    _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"
+    return $?
+  fi
+  MDT_IO_RELOADED=1
+  log "WARN: $unit: systemctl show reports the intended IO limits but the kernel io.max disagrees — a stale per-spelling limit entry inside systemd (invisible in show) overrides it; running ONE 'systemctl daemon-reload' to rebuild systemd's list from its drop-ins, then re-applying (this happens once per run)"
+  if ! err=$(systemctl daemon-reload 2>&1); then
+    log "ERROR: systemctl daemon-reload failed ($err) — the intended cap on $unit is NOT in effect. Remedy: systemctl daemon-reload, then rerun this reconcile."
+    return 1
+  fi
+  if ! err=$(systemctl set-property --runtime "$unit" "${MDT_IO_PROPS[@]}" 2>&1); then
+    log "ERROR: $unit IO cap set-property failed after daemon-reload ($err)"
+    return 1
+  fi
+  _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"
 }
 
 # _mdt_active_swap_count: number of active swap devices that have a disk behind

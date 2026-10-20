@@ -51,30 +51,39 @@ KEYS = [("IOReadBandwidthMax", "rbps"), ("IOWriteBandwidthMax", "wbps"),
 def cgroup_dir(unit):
     return os.path.join(cg, "dev.slice") if unit == "dev.slice" else os.path.join(cg, "dev.slice", unit)
 
-def pairs(v):
-    """Entries are [dev, value] pairs; a legacy flat [dev, value] list is one pair."""
-    if v and not isinstance(v[0], list):
-        return [v]
-    return v
+def paths_of(unit):
+    """systemd keeps ONE in-memory io-device-limit entry PER PATH STRING (inferred, MDT-HS-04).
+    state["paths"][unit] = [[path, {key: value}], ...] in insertion order; "max" = reset."""
+    store = state.setdefault("paths", {})
+    if unit not in store:
+        entries = []
+        for key, _ in KEYS:
+            flat = state["unit"].get(unit, {}).get(key, [])
+            if flat:
+                for e in entries:
+                    if e[0] == flat[0]:
+                        e[1][key] = flat[1]
+                        break
+                else:
+                    entries.append([flat[0], {key: flat[1]}])
+        store[unit] = entries
+    return store[unit]
 
 def recompute(unit):
     d = cgroup_dir(unit)
     if not os.path.isdir(d):
         return
-    values = {}
-    for key, field in KEYS:
-        rt = state["runtime"].get(unit, {})
-        # runtime layer present (even EMPTY) overrides the unit file: this is the
-        # systemd behaviour that wiped dev.slice on the live host.
-        entries = pairs(rt[key] if key in rt else state["unit"].get(unit, {}).get(key, []))
-        # the kernel takes the LAST entry's value (measured, MDT-HS-04); an entry whose
-        # device spelling systemd cannot resolve (FAKE_DROP_SPELLING) writes nothing
-        drop = os.environ.get("FAKE_DROP_SPELLING", "")
-        entries = [e for e in entries if not (drop and e[0] == drop)]
-        values[field] = entries[-1][1] if entries else "max"
-    if os.environ.get("FAKE_KERNEL_DROPS"):
-        text = ""
-    elif all(v == "max" for v in values.values()):
+    # the apply writes EVERY entry in list order, each as a complete MAJ:MIN line; several spellings
+    # resolve to the same disk, so the LAST one applied wins.  A stale all-max entry therefore
+    # silently writes `max` over the cap.  An entry whose spelling systemd cannot resolve
+    # (FAKE_DROP_SPELLING) writes nothing.
+    drop = os.environ.get("FAKE_DROP_SPELLING", "")
+    values = None
+    for path, vals in paths_of(unit):
+        if drop and path == drop:
+            continue
+        values = {field: vals.get(key, "max") for key, field in KEYS}
+    if os.environ.get("FAKE_KERNEL_DROPS") or values is None or all(v == "max" for v in values.values()):
         text = ""
     else:
         mm = os.environ.get("FAKE_KERNEL_MAJMIN", "254:0")
@@ -82,30 +91,54 @@ def recompute(unit):
     with open(os.path.join(d, "io.max"), "w") as f:
         f.write(text)
 
+def save():
+    json.dump(state, open(state_path, "w"))
+
 args = sys.argv[1:]
 if args[:2] == ["set-property", "--runtime"]:
     unit = args[2]
+    entries = paths_of(unit)
+    state.setdefault("touched", {})[unit] = True
     for assignment in args[3:]:
         key, _, val = assignment.partition("=")
         if key not in dict(KEYS):
             continue
-        rt = state["runtime"].setdefault(unit, {})
         if not val:
-            rt[key] = []                       # an empty assignment resets the WHOLE list
-        else:                                  # a non-empty one APPENDS (unit-file entries included)
-            base = rt[key] if key in rt else state["unit"].get(unit, {}).get(key, [])
-            rt[key] = pairs(base) + [val.split()]
+            for e in entries:                  # a reset sets every entry's limit to max; it does NOT delete them
+                e[1][key] = "max"
+        else:
+            path, _, number = val.partition(" ")
+            for e in entries:
+                if e[0] == path:
+                    e[1][key] = number
+                    break
+            else:
+                entries.append([path, {key: number}])
     recompute(unit)
-    json.dump(state, open(state_path, "w"))
+    save()
+elif args == ["daemon-reload"]:
+    # rebuilds every list from the drop-in files, which hold only the NON-max entries
+    for unit, entries in list(state.get("paths", {}).items()):
+        if os.environ.get("FAKE_RELOAD_NOOP"):
+            break
+        kept = []
+        for path, vals in entries:
+            live = {k: v for k, v in vals.items() if v != "max"}
+            if live:
+                kept.append([path, live])
+        state["paths"][unit] = kept
+        recompute(unit)
+    save()
 elif args and args[0] == "show" and os.environ.get("FAKE_SHOW_FAILS"):
     sys.stderr.write("Failed to connect to bus\n")
     sys.exit(1)
 elif args and args[0] == "show":
     unit = args[1]
-    rt = state["runtime"].get(unit, {})
+    # show (and the runtime drop-in) HIDE all-max entries: a stale one is invisible
     for key, _ in KEYS:
-        print("%s=%s" % (key, " ".join(" ".join(e) for e in pairs(rt.get(key, state["unit"].get(unit, {}).get(key, []))))))
-    print("DropInPaths=" + ("/run/systemd/system.control/%s.d/50-IO.conf" % unit if rt else ""))
+        shown = [p + " " + v[key] for p, v in paths_of(unit) if key in v and v[key] != "max"]
+        print("%s=%s" % (key, " ".join(shown)))
+    print("DropInPaths=" + ("/run/systemd/system.control/%s.d/50-IO.conf" % unit if state.get("touched", {}).get(unit) or state.get("runtime", {}).get(unit) else ""))
 sys.exit(0)
 '''
 

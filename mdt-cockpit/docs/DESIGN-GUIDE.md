@@ -669,8 +669,7 @@ understood and systemd should show it. A good event resets the streak. Review fo
 over `vda` 254:0): `systemctl set-property --runtime dev.slice "IOReadBandwidthMax=/dev/mapper/<lv> N"`
 left the kernel's `dev.slice/io.max` empty with nothing logged, while `systemctl show` reported the value;
 the same call with `/dev/vda` or `/dev/block/254:0` wrote `254:0 rbps=N` at once. For `dev-gates.slice`
-the mapper spelling did produce 254:0 entries, but whether that was a real apply or stale kernel state
-is **unproven**. With two spellings of one disk in a runtime list (`/dev/vda N` from a manual pin plus
+the mapper spelling did produce 254:0 entries (see the corrected diagnosis below). With two spellings of one disk in a runtime list (`/dev/vda N` from a manual pin plus
 `/dev/mapper/... M` from the reconcile) the kernel ended with the value of the LAST entry.
 
 **Decision.** The reconcile, the per-container watcher and the installer's rendered `dev.slice` static
@@ -682,7 +681,7 @@ never invented, and no device name is hard-coded. A mapper or partition node is 
 `IOReadBandwidthMax=/dev/vda N`), so a stale entry under another spelling cannot shadow the cap; the reset
 and the set must travel together because an empty assignment alone wipes the unit-file value (MDT-016). Log
 lines name the path actually given to systemd (`io.max on /dev/vda (from /dev/mapper/<lv>)`). Rejected:
-keeping the configured node and only adding the reset (leaves the unexplained mapper drop in place);
+keeping the configured node and only adding the reset (does not address the stale-entry mechanism below, and the mapper spelling was not itself at fault);
 `/dev/block/<maj:min>` (first version of this fix, measured to apply, but a rendered MAJ:MIN is not stable:
 dynamic majors such as virtio 254 and device-mapper 253 can swap across kernel or initramfs changes, so the
 boot-time static line could name another device, and it relies on udev's `/dev/block` symlinks, which are not
@@ -690,15 +689,38 @@ there before udev runs). The kernel name is a devtmpfs node that exists early an
 messages distinguish "no device discovered" from "device found but its whole disk could not be resolved"
 (the static lines are then omitted and the reconcile reports ERROR each run).
 
-**Source reading (systemd v257.13, `src/core/cgroup.c`), inferred rather than measured.**
-`lookup_block_device()` parses `/dev/block/M:N` directly with `device_path_parse_major_minor` (no stat),
-otherwise stats the path, then follows `block_get_originating()` through single-slave `slaves/` links and
-`block_get_whole_disk()`. By that code a mapper node SHOULD resolve to `vda`, and every failure branch logs a
-warning, so the observed silent drop is **not explained** by this lookup; the cause remains unknown (not
-reproduced here). What the source does explain is the last-wins observation:
-`cgroup_apply_io_device_limit()` is called once per list entry (per path spelling) and writes a complete
-`MAJ:MIN rbps= wbps= riops= wiops=` line each time, so a later entry for the same disk overwrites the earlier
-one, including fields the later entry did not set.
+**Corrected diagnosis (2026-10-20 06:25-06:35 UTC, systemd 257.13; inferred from these measurements plus the
+v257 source `src/core/cgroup.c`, not directly observed inside systemd).** The first version of this section
+blamed the `/dev/mapper/<lv>` spelling and called the cause unexplained. Later measurements correct that.
+After the IO matrix (its scripts used `IOxxx=` clears and then `/dev/vda` sets) systemd stopped putting values
+into the kernel: a changed value via `/dev/vda` on dev.slice left `io.max` empty, a changed dev-gates value
+never reached the kernel, and a reconcile run on the mapper path EMPTIED a directly written dev.slice
+`io.max`, although `systemd-analyze dump` showed io realized. After a plain `systemctl daemon-reload` the
+reconcile's own mapper path applied and verified at once (254:0 83886080/41943040/800/600, exit 0). So the
+mapper path itself works. The best-supported model:
+
+- systemd keeps ONE in-memory io-device-limit entry PER PATH STRING.
+- An empty assignment resets that limit to max in every entry but does NOT delete the entries.
+- `systemctl show` and the runtime drop-in omit all-max entries, so a stale one is invisible.
+- `cgroup_apply_io_device_limit()` writes every entry as a complete `MAJ:MIN rbps= wbps= riops= wiops=` line,
+  and several spellings resolve to the same 254:0, so the last one applied wins. A stale all-max entry for
+  another spelling therefore silently writes `max`, which removes the cap.
+- `daemon-reload` rebuilds the list from the drop-in files, which hold only the non-max entries, and clears it.
+
+`lookup_block_device()` parses `/dev/block/M:N` directly and otherwise stats the path and follows
+`block_get_originating()` and `block_get_whole_disk()`, so any of the spellings resolves; the earlier
+`dev-gates` observation is explained by the same stale-entry mechanism.
+
+**Consequence: single spelling and reset-then-set are necessary but do NOT heal an upgrade.** On the upgrade
+from the mapper spelling to `/dev/vda`, the reset turns the old mapper entry into a stale all-max entry that
+can win. So `_mdt_io_apply_verify` self-heals ONCE per run: when the read-back shows the intended disk missing
+or at the wrong values while `systemctl show` reports the intended ones, it logs a WARN naming the reason, runs
+one `systemctl daemon-reload`, re-applies and re-verifies; a second mismatch fails as before. It never loops
+and is rate-limited by `MDT_IO_RELOADED` to one reload per reconcile run. Every refusal names the remedy
+(`systemctl daemon-reload`, then rerun). `install.sh` already ends with a `daemon-reload`; it does not delete
+stale runtime IO drop-ins, so the install relies on this self-heal on the first reconcile instead of duplicating
+its own cleanup (removing `/run/systemd/system.control` files was measured to depend on systemd's naming and
+to race its writes; see the MDT-016 note in the reconcile script).
 
 ## Per-container memory policy
 
