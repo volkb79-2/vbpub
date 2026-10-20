@@ -93,7 +93,7 @@ def build_cli() -> RegisteredCli:
         long_name="stack bundle build",
         description="Build the consumer-facing pwmcp stack bundle into dist/ from the prepared coordinate.",
         handler=_build,
-        preview=lambda _args: "would build dist/pwmcp-<version>.tar.xz from bundle.toml",
+        preview=lambda _args: "would build dist/pwmcp-v<version>.tar.xz from bundle.toml",
     )
 
 

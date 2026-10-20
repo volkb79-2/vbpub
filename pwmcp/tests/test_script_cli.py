@@ -334,7 +334,7 @@ def test_publish_bundle_body(
         module.main([])
     assert "Expected prepared bundle" in capsys.readouterr().err
 
-    (tmp_path / "pwmcp-1.2.3-r4.tar.xz").write_bytes(b"x")
+    (tmp_path / "pwmcp-v1.2.3-r4.tar.xz").write_bytes(b"x")
     calls: list[dict[str, object]] = []
 
     def publish(gh: object, **kwargs: object) -> dict[str, str]:

@@ -325,15 +325,15 @@ curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-latest/la
 # Pin a specific release:
 VERSION="1.63.0-r4"
 mkdir -p services/pwmcp
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
-  -o "pwmcp-${VERSION}.tar.xz"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz" \
+  -o "pwmcp-v${VERSION}.tar.xz"
 
 # Verify the bundle (sidecar lives in the same release):
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
-  -o "pwmcp-${VERSION}.tar.xz.sha256"
-sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-v${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-v${VERSION}.tar.xz.sha256"
 
-tar -xJf "pwmcp-${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
+tar -xJf "pwmcp-v${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
 
 # Read the required Playwright version from the bundle (wire protocol pin):
 PW_VER=$(grep playwright_version services/pwmcp/ciu.defaults.toml.j2 | grep -oP '"\K[^"]+')
@@ -351,12 +351,12 @@ Download a newer bundle, verify it, re-read `playwright_version`, reinstall the 
 
 ```bash
 VERSION="1.63.0-r4"
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz" \
-  -o "pwmcp-${VERSION}.tar.xz"
-curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-${VERSION}.tar.xz.sha256" \
-  -o "pwmcp-${VERSION}.tar.xz.sha256"
-sha256sum -c "pwmcp-${VERSION}.tar.xz.sha256"
-tar -xJf "pwmcp-${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz" \
+  -o "pwmcp-v${VERSION}.tar.xz"
+curl -fsSL "https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v${VERSION}/pwmcp-v${VERSION}.tar.xz.sha256" \
+  -o "pwmcp-v${VERSION}.tar.xz.sha256"
+sha256sum -c "pwmcp-v${VERSION}.tar.xz.sha256"
+tar -xJf "pwmcp-v${VERSION}.tar.xz" --strip-components=1 -C services/pwmcp
 PW_VER=$(grep playwright_version services/pwmcp/ciu.defaults.toml.j2 | grep -oP '"\K[^"]+')
 pip install playwright==${PW_VER}
 ciu -d services/pwmcp

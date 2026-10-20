@@ -52,7 +52,7 @@ def fail(msg: str, status: int | None = None, body: str | None = None) -> None:
 
 
 def find_bundle(dist_dir: Path, pwmcp_version: str) -> Path:
-    expected = dist_dir / f"pwmcp-{pwmcp_version}.tar.xz"
+    expected = dist_dir / f"pwmcp-v{pwmcp_version}.tar.xz"  # the documented contract: <tag><suffix> (PWMCP-07)
     if not expected.exists():
         fail(f"Expected prepared bundle {expected}; run CMRU's pwmcp build phase first.")
     return expected

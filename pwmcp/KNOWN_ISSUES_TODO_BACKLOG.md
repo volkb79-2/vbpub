@@ -157,7 +157,10 @@ this lifecycle case.
 
 ## PWMCP-07 — every published pwmcp release ships a bundle its own `get.py` cannot download (asset name lacks the `v`)
 
-**Status: OPEN — blocks the mdt-cockpit image build.** Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`.
+**Status: FIXED on branch `pwmcp-07-fix-20261020` (A+B+C), not released; registered lanes pending.**
+
+Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; reviewed in
+`review-PWMCP-07.md` (R-01..R-05 folded in below).
 
 **Evidence.** Stage-2 step 39/55 (`python3 /tmp/install_pwmcp_instance.py`) fails:
 `==> Pinned version: pwmcp-v1.64.0-r2` / `==> Downloading pwmcp-v1.64.0-r2.tar.xz ...` /
@@ -165,49 +168,65 @@ this lifecycle case.
 `mdt-cockpit/logs/cmru/build.log`, search `#51 `). Release `pwmcp-v1.64.0-r2` (2026-10-17T19:16:20Z)
 carries `get.py get.py.sha256 pwmcp-1.64.0-r2.tar.xz pwmcp-1.64.0-r2.tar.xz.sha256`; r1
 (`pwmcp-1.64.0-r1.tar.xz`), v1.63.0-r2 and v1.62.0-r3 are named the same way (no `v`).
-For comparison `tls-edge-v2.0.0` carries `tls-edge-v2.0.0.tar.xz`, and its get.py works.
+For comparison `tls-edge-v2.0.0` carries `tls-edge-v2.0.0.tar.xz` (+ sidecar; it ships no `get.py`
+asset): its asset name matches what a get.py requests.
 
-**Mechanism (two sides, two sources, no shared function).**
+**The contract.** The tag-based name is the documented one: `cmru/docs/CONSUMERS.md:319` ("The release
+assets are `<tag>.tar.xz` ... `<tag>.tar.xz.sha256` ... and `get.py`") and SPEC S6.3 step 3; tls-edge
+(`scripts/build-artifact.sh:45`) and the variants publisher follow it. pwmcp is the deviating
+producer; the decision is "producers conform to the documented contract", not a free choice.
+
+**Mechanism (two sources, no shared function).**
 - Producer: `pwmcp/bundle.toml:14` `name_template = "pwmcp-{version}.tar.xz"` (since `82c29e2db`,
-  2026-06-16) -> `pwmcp/scripts/publish-bundle.py:55` (`find_bundle` expects `pwmcp-{version}.tar.xz`)
-  -> `publish_versioned(...)` (`cmru/src/cmru/release.py:745`) uploads `asset_path` under the
-  file's own name; it never renames the primary asset. (Only the variants path,
-  `release.py:940 variant_asset_name`, derives a name, and it derives the tag-based one.)
-- Consumer: the rendered `get.py` (`cmru/src/cmru/templates/get.py.tmpl:614`) hard-computes
-  `f"{tag}{ASSET_SUFFIX}"` = `pwmcp-v1.64.0-r2.tar.xz`; unchanged since the get.py rewrite
-  (`10476a47e`, 2026-06-20). `hosts/github.py:101` has the same tag-based expectation, but only on
-  the ambiguity branch; with exactly one match `resolve_latest` returns whatever single asset is
-  there, so cmru's own resolution masked the mismatch while get.py could not.
+  2026-06-16) -> `pwmcp/scripts/publish-bundle.py:55` (`find_bundle`) ->
+  `publish_versioned(...)` (`cmru/src/cmru/release.py:745`), which uploads `asset_path` under the file's
+  own name (`:865`, `:869`, `:890` all use `asset_path.name`); it never renames. Only the variants path
+  (`release.py:940 variant_asset_name`) derives a name, the tag-based one.
+- Consumer: the rendered `get.py` (`cmru/src/cmru/templates/get.py.tmpl:614`) computes
+  `f"{tag}{ASSET_SUFFIX}"` = `pwmcp-v1.64.0-r2.tar.xz` (tag-based in the rendered get.py, spelled
+  `ASSET_SUFFIX` since `c54e90581`). `hosts/github.py:101` has the same expectation, but only on the
+  ambiguity branch; with exactly one match `resolve_latest` returns whatever single asset exists, so
+  cmru's own resolution masked the mismatch while get.py could not.
 - First exercised only now: pwmcp's get.py began shipping as a release asset with r1 (2026-10-17,
-  `dc4072cf2`) and mdt-cockpit is its first real consumer. The defect is pwmcp-specific in the
-  producer (ciu/tls-edge produce tag-named assets); the missing producer/consumer check is generic
-  (cmru KI-89).
+  `dc4072cf2`) and mdt-cockpit is its first real consumer. Same class as CIU-99 (get.py's
+  `<tag><asset_suffix>` resolves nothing because ciu publishes only a bare wheel, no bundle at all).
+  Generic part: nothing compares any producer with the contract (cmru KI-89).
 
-**Blast radius.** `get.py install` from any pwmcp release, so every release r1..r2 and all earlier
-ones; the mdt-cockpit image (and anything pinning `pwmcp.contract.json`'s release). Not affected:
-the offline `--local-dev-dir` path (it replaces `_download_asset`, and so also hides this bug).
+**Blast radius.** `get.py install` from any pwmcp release (r1..r2 and all earlier), hence the mdt-cockpit
+image and anything pinning `pwmcp.contract.json`'s release. Not affected: the offline
+`--local-dev-dir` path (it replaces `_download_asset`, so it also hides this bug).
 
-**Why no test caught it.** `cmru/tests/installer_fakes.py:138` builds its fake release with the
-template's own name (`<tag>.tar.xz`), so the test compares the template with itself.
-`pwmcp/tests/test_script_cli.py:342` mocks `publish_versioned`. No test compares the name the real
-producer publishes with the name the rendered get.py requests.
+**Why no test caught it.** `cmru/tests/installer_fakes.py:138` types the template's formula out in the
+fake release, so the template is compared with itself. `pwmcp/tests/test_script_cli.py:340-345` mocks
+`publish_versioned`. Nothing compares the name the real producer publishes with the name get.py requests.
 
-**Fix proposal (third version; do not pick a side).** Derive the primary asset name from ONE
-function, `cmru.release.bundle_asset_name(prefix, version, suffix, variant=None)` (generalising
-`variant_asset_name`), and call it from `publish_versioned` (rename via `_place_named`, as the
-variants path already does), from `get.py.tmpl` (rendered into the script, or `tag`-parse), and from
-`hosts/github.py`. Then pwmcp's `name_template`/`find_bundle` become a build-local intermediate
-only. Do not rename already-published assets (immutable, signed-adjacent sidecars); for the
-installed base add a bounded get.py fallback that, on a 404 for the derived name, picks the single
-`*{ASSET_SUFFIX}` asset of the release whose sidecar matches (fail on 0 or >1; never guess).
-Oracle: an integration test renders get.py for a project, publishes through the REAL
-`publish_versioned` against a fake GitHubReleases, then runs get.py's download step against that
-fake; for pwmcp also assert `bundle.toml`'s name equals the function's output. Then release
-pwmcp (r3) so the shipped get.py asset and bundle agree.
+**Fix, in this order (sequencing A, then B, then C).**
+- **A. pwmcp-local (primary; independent of any cmru release):** `bundle.toml` `name_template` becomes
+  `pwmcp-v{version}.tar.xz`, `find_bundle` expects the same, plus the tests and the docs that name the
+  file. Fixes the next pwmcp release (r3).
+- **B. cmru KI-89, so it cannot recur:** one name function (`asset_name_for_tag` / `bundle_asset_name`)
+  used by the variants publisher, `hosts/github.py` and (equality-tested) by the rendered get.py, and an
+  oracle that reads EVERY project with `[project.installer]` + `asset_suffix` and compares the name its
+  producer (`bundle.toml` template or `tarball-publish --glob`) would publish with the contract name.
+  `publish_versioned` is NOT changed to rename or refuse: it is the keystone behind `wheel-publish` and
+  `tarball-publish`, and a wheel's file name is pip's. A runtime refusal, if wanted later, must be scoped
+  to installer projects and make `latest.json`, the release body and the download URL follow the placed
+  name. Cross-reference CIU-99 (ciu is the listed no-producer exemption).
+- **C. get.py fallback for the already-published releases:** on a 404 for the canonical name, list the
+  release's assets via the GitHub API (one new request, same token handling as the private path) and take
+  the single `*{ASSET_SUFFIX}` asset whose sha256 sidecar verifies; zero or several, a variant request, or
+  a failed listing are loud refusals; log the path taken. Trust: the sidecar is integrity, not
+  authenticity; the authenticity anchor is the minisign manifest where `manifest_pubkey` is configured,
+  and pwmcp configures none, so the fallback adds no trust beyond what the unfixed installer had.
 
-**Unblock options for mdt-cockpit (not done here).** (a) release a fixed pwmcp then re-pin
-`pwmcp.contract.json`/`PWMCP_VERSION` and the get.py URL+sha256 in mdt-cockpit; (b) interim, pin a
-commit-pinned get.py that carries the fallback and point `PWMCP_GETPY_URL`/`PWMCP_GETPY_SHA256` at
-it while the contract keeps `pwmcp-v1.64.0-r2` (no republish of the bundle needed); (c) build with
-`MDT_BUILD_MODE=local-dev` (pwmcp-bundle supplied locally) as a stopgap, accepting that it bypasses
-the very download being broken. No existing release works with the current get.py.
+**Unblock options for mdt-cockpit (not done here).**
+- (a) Release pwmcp r3 with fix A (a new tag: mdt-cockpit's `pwmcp.contract.json` version and the
+  `PWMCP_VERSION`/get.py URL+sha256 pins change with it). Sound, and needs only A.
+- (b) Re-pin to a commit-pinned `get.py` that carries fix C and keep `pwmcp-v1.64.0-r2`: needs a cmru
+  release containing C, then pwmcp's `get.py` re-rendered with it and committed; not independent of cmru.
+  It also keeps the broken name for every future pwmcp release until A lands.
+- (c) A local-dev build is not set by hand: `MDT_BUILD_MODE=local-dev` is selected only by
+  `build-push.py --build --local-dev <manifest.toml>`, which supplies artifacts through the
+  `mdt-local-dev` context. Its image is provenance-marked as local-dev and not a releasable image, so (c)
+  unblocks a developer build only.
+No existing release works with the current get.py without C.
