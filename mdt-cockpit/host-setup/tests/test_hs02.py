@@ -361,6 +361,7 @@ class PreflightBeforeActionTests(unittest.TestCase):
     READ_ONLY_HELPERS = {
         "_mdt_missing_declared_keys", "_mdt_resolve_static_io", "_mdt_io_pin_notice", "_mdt_guard_decision",
         "_mdt_runtime_optional_re", "_mdt_size_to_bytes", "_mdt_guard_confirmed", "_mdt_guard_digest",
+        "_mdt_io_systemd_dev", "_mdt_io_devname_for_majmin", "_mdt_dev_majmin",
     }
     ALLOWED_REDIRECT = re.compile(r'\d*>>?\s*(&\d|/dev/null|"?\$CANDIDATE\w*"?)')
 
