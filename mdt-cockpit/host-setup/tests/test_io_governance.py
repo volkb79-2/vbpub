@@ -127,7 +127,9 @@ elif args == ["daemon-reload"]:
             if live:
                 kept.append([path, live])
         state["paths"][unit] = kept
-        recompute(unit)
+        # MDT-HS-06 (live evidence 2026-10-20): a reload rebuilds systemd's lists from the drop-ins but does NOT
+        # re-push kernel io.max (a manual daemon-reload left dev-gates' empty io.max empty; only the next
+        # set-property restored it).  So the kernel is left exactly as it was: only set-property writes it.
     save()
 elif args and args[0] == "show" and os.environ.get("FAKE_SHOW_FAILS"):
     sys.stderr.write("Failed to connect to bus\n")

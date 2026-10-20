@@ -558,53 +558,105 @@ _mdt_io_stamp_clear_if_clean() {
 
 _MDT_IO_OTHER_CAUSES="check the other causes: the io controller not enabled for dev.slice or its parent, the wrong device (IO_DEV_PATH / whole disk), a kernel refusal of the io.max write (dmesg)"
 
-# _mdt_io_apply_verify <unit> <cgroup-dir> <maj:min> <rbps> <wbps> <riops> <wiops>
-# The properties are in the array MDT_IO_PROPS.  set-property, read the kernel back, and
-# self-heal (MDT-HS-04, measured 2026-10-20 on systemd 257.13): systemd keeps one in-memory
-# io-device-limit entry per PATH STRING; an empty assignment resets an entry to max but does not
-# delete it, `systemctl show` and the runtime drop-in hide all-max entries, and the apply writes
-# every entry in list order, so a stale all-max entry for another spelling of the same disk silently
-# writes `max` over the cap (inferred from those measurements and the v257 source).  `daemon-reload`
-# rebuilds the list from the drop-in files, which hold only the non-max entries.  So: when the kernel
-# disagrees while systemd reports ALL the intended values, warn loudly, daemon-reload (at most once
-# per MDT_IO_RELOAD_WINDOW_SECONDS across runs, via the stamp file), re-apply, re-verify.  The remedy
-# text depends on what was actually tried.  Returns the _mdt_verify_io_max code (0 ok, 1 not in
-# effect, 2 not verifiable).
-_mdt_io_apply_verify() {
-  local unit="$1" dir="$2" mm="$3" rb="$4" wb="$5" ri="$6" wi="$7" err rc reason
-  if ! err=$(systemctl set-property --runtime "$unit" "${MDT_IO_PROPS[@]}" 2>&1); then
-    log "ERROR: $unit IO cap set-property failed ($err)"
+# --- batch apply + verify with ONE self-heal reload per run (MDT-HS-04, MDT-HS-06) --------------
+# systemd keeps one in-memory io-device-limit entry per PATH STRING; an empty assignment resets an entry
+# to max but does not delete it, `systemctl show` and the runtime drop-in hide all-max entries, and the
+# apply writes every entry in list order, so a stale all-max entry for another spelling of the same disk
+# silently writes `max` over the cap (inferred from measurements and the v257 source).  `daemon-reload`
+# rebuilds the list from the drop-in files, which hold only the non-max entries.
+#
+# MDT-HS-06 (live incident 2026-10-20 10:00 UTC): the spelling migration left stale entries on SEVERAL
+# units.  Healing one unit and then verifying the next failed it, because the next unit's reset had
+# happened AFTER the reload and (as measured) a reload does not reliably re-push units applied earlier in
+# the run.  So the unit of work is the whole batch: apply EVERY managed unit, verify ALL, and only then,
+# if any disagrees while systemd reports its intended values, reload ONCE (persisted limiter across runs,
+# MDT_IO_RELOAD_WINDOW_SECONDS), re-apply EVERY unit and re-verify ALL.  A mismatch that survives the
+# one reload plus re-apply is the failure.  A single run never fails a unit because of its own reload.
+MDT_IOQ_UNITS=(); MDT_IOQ_DIRS=(); MDT_IOQ_MM=(); MDT_IOQ_WANT=(); MDT_IOQ_PROPS=(); MDT_IOQ_RC=()
+
+_mdt_io_queue_reset() { MDT_IOQ_UNITS=(); MDT_IOQ_DIRS=(); MDT_IOQ_MM=(); MDT_IOQ_WANT=(); MDT_IOQ_PROPS=(); MDT_IOQ_RC=(); }
+
+# _mdt_io_queue_apply <index>: set-property of the recorded properties.  rc 1 = failed (logged).
+_mdt_io_queue_apply() {
+  local i="$1" err
+  local -a props
+  mapfile -t props <<<"${MDT_IOQ_PROPS[$i]}"
+  if ! err=$(systemctl set-property --runtime "${MDT_IOQ_UNITS[$i]}" "${props[@]}" 2>&1); then
+    log "ERROR: ${MDT_IOQ_UNITS[$i]} IO cap set-property failed ($err)"
     return 1
   fi
-  MDT_VERIFY_SOFT=1 _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"; rc=$?
-  [ "$rc" = 1 ] || return "$rc"
-  if ! _mdt_systemd_reports_io "$unit" "$rb" "$wb" "$ri" "$wi"; then
-    MDT_VERIFY_REMEDY="systemd does not report all the intended values either, so this is not the stale-entry case and no reload was attempted; $_MDT_IO_OTHER_CAUSES" \
-      _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"
-    return $?
+}
+
+# _mdt_io_queue_add <unit> <cgroup-dir> <maj:min> <rbps> <wbps> <riops> <wiops>: properties in the array
+# MDT_IO_PROPS.  Applies now (order preserved) and records the unit for the batch verification.
+_mdt_io_queue_add() {
+  local i=${#MDT_IOQ_UNITS[@]}
+  MDT_IOQ_UNITS[i]="$1"; MDT_IOQ_DIRS[i]="$2"; MDT_IOQ_MM[i]="$3"; MDT_IOQ_WANT[i]="$4 $5 $6 $7"
+  MDT_IOQ_PROPS[i]=$(printf '%s\n' "${MDT_IO_PROPS[@]}")
+  MDT_IOQ_RC[i]=0
+  _mdt_io_queue_apply "$i" || MDT_IOQ_RC[i]=1
+}
+
+# _mdt_io_queue_verify <index> <soft 0|1>: sets MDT_IOQ_RC[index] from the kernel read-back (an apply that
+# already failed stays failed).  MDT_VERIFY_REMEDY is honoured by the caller's environment.
+_mdt_io_queue_verify() {
+  local i="$1" soft="$2" rb wb ri wi
+  read -r rb wb ri wi <<<"${MDT_IOQ_WANT[$i]}"
+  MDT_VERIFY_SOFT="$soft" _mdt_verify_io_max "${MDT_IOQ_UNITS[$i]}" "${MDT_IOQ_DIRS[$i]}" "${MDT_IOQ_MM[$i]}" "$rb" "$wb" "$ri" "$wi"
+  MDT_IOQ_RC[i]=$?
+}
+
+# _mdt_io_queue_flush: verify the whole batch, heal at most once, leave each unit's result in MDT_IOQ_RC
+# (0 verified, 1 NOT in effect, 2 not verifiable).  rc 1 when any unit is 1.  Phases: (1) verify ALL;
+# (2) if any disagrees and systemd reports its values and the limiter allows: ONE reload; (3) re-apply
+# ALL; (4) verify ALL again (mirroring phase 1).
+_mdt_io_queue_flush() {
+  local n=${#MDT_IOQ_UNITS[@]} i err rb wb ri wi failed=0 reporting=0 disagree="" apply_failed=0
+  local -a applied_ok
+  for ((i = 0; i < n; i++)); do
+    if [ "${MDT_IOQ_RC[$i]}" = 1 ]; then applied_ok[i]=0; apply_failed=1; continue; fi    # its set-property failed (logged)
+    applied_ok[i]=1
+    MDT_VERIFY_REMEDY="whether this is the stale-entry case is evaluated next; the final message names what was tried" _mdt_io_queue_verify "$i" 1
+  done
+  for ((i = 0; i < n; i++)); do
+    [ "${applied_ok[$i]}" = 1 ] && [ "${MDT_IOQ_RC[$i]}" = 1 ] || continue
+    disagree="$disagree ${MDT_IOQ_UNITS[$i]}"
+    read -r rb wb ri wi <<<"${MDT_IOQ_WANT[$i]}"
+    ! _mdt_systemd_reports_io "${MDT_IOQ_UNITS[$i]}" "$rb" "$wb" "$ri" "$wi" || reporting=1
+  done
+  if [ -z "$disagree" ]; then return "$apply_failed"; fi
+  if [ "$reporting" = 0 ]; then
+    # systemd itself does not report the intended values for any disagreeing unit: not the stale-entry case
+    for ((i = 0; i < n; i++)); do
+      [ "${applied_ok[$i]}" = 1 ] && [ "${MDT_IOQ_RC[$i]}" = 1 ] || continue
+      MDT_VERIFY_REMEDY="systemd does not report all the intended values either, so this is not the stale-entry case and no reload was attempted; $_MDT_IO_OTHER_CAUSES" _mdt_io_queue_verify "$i" 0
+    done
+  elif ! _mdt_io_reload_allowed; then
+    for ((i = 0; i < n; i++)); do
+      [ "${applied_ok[$i]}" = 1 ] && [ "${MDT_IOQ_RC[$i]}" = 1 ] || continue
+      MDT_VERIFY_REMEDY="reload suppressed: $MDT_IO_SUPPRESS_INFO; $_MDT_IO_OTHER_CAUSES" _mdt_io_queue_verify "$i" 0
+    done
+  else
+    MDT_IO_RELOADED=1
+    if ! _mdt_io_stamp_write "units=${disagree# } kernel-disagrees-with-show"; then
+      log "ERROR: cannot record the self-heal reload under $(dirname "$(_mdt_io_stamp_file)") — refusing to reload without a rate limit; fix that directory and rerun"
+    else
+      log "WARN:${disagree}: systemctl show reports the intended IO limits but the kernel io.max disagrees — a stale per-spelling limit entry inside systemd (invisible in show) overrides it; running ONE 'systemctl daemon-reload' to rebuild systemd's list from its drop-ins, then re-applying EVERY managed unit and re-verifying all of them (at most once per ${MDT_IO_RELOAD_WINDOW_SECONDS}s across runs)"
+      if ! err=$(systemctl daemon-reload 2>&1); then
+        log "ERROR: systemctl daemon-reload failed ($err) — the intended caps on${disagree} are NOT in effect; fix the daemon-reload failure and rerun"
+      else
+        for ((i = 0; i < n; i++)); do          # re-apply ALL ...
+          if _mdt_io_queue_apply "$i"; then applied_ok[i]=1; else MDT_IOQ_RC[i]=1; applied_ok[i]=0; fi
+        done
+        for ((i = 0; i < n; i++)); do          # ... then verify ALL (mirrors phase 1)
+          [ "${applied_ok[$i]}" = 1 ] || continue
+          MDT_VERIFY_REMEDY="the stale-entry heal (one daemon-reload, then every managed unit re-applied) was tried and did not fix it; $_MDT_IO_OTHER_CAUSES" _mdt_io_queue_verify "$i" 0
+        done
+      fi
+    fi
   fi
-  if ! _mdt_io_reload_allowed; then
-    MDT_VERIFY_REMEDY="reload suppressed: $MDT_IO_SUPPRESS_INFO; $_MDT_IO_OTHER_CAUSES" \
-      _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"
-    return $?
-  fi
-  MDT_IO_RELOADED=1
-  reason="unit=$unit kernel-disagrees-with-show"
-  if ! _mdt_io_stamp_write "$reason"; then
-    log "ERROR: $unit: cannot record the self-heal reload under $(dirname "$(_mdt_io_stamp_file)") — refusing to reload without a rate limit; fix that directory and rerun"
-    return 1
-  fi
-  log "WARN: $unit: systemctl show reports the intended IO limits but the kernel io.max disagrees — a stale per-spelling limit entry inside systemd (invisible in show) overrides it; running 'systemctl daemon-reload' to rebuild systemd's list from its drop-ins, then re-applying (at most once per ${MDT_IO_RELOAD_WINDOW_SECONDS}s across runs)"
-  if ! err=$(systemctl daemon-reload 2>&1); then
-    log "ERROR: systemctl daemon-reload failed ($err) — the intended cap on $unit is NOT in effect; fix the daemon-reload failure and rerun"
-    return 1
-  fi
-  if ! err=$(systemctl set-property --runtime "$unit" "${MDT_IO_PROPS[@]}" 2>&1); then
-    log "ERROR: $unit IO cap set-property failed after daemon-reload ($err)"
-    return 1
-  fi
-  MDT_VERIFY_REMEDY="the stale-entry heal (one daemon-reload) was tried and did not fix it; $_MDT_IO_OTHER_CAUSES" \
-    _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"
+  for ((i = 0; i < n; i++)); do [ "${MDT_IOQ_RC[$i]}" = 1 ] && failed=1; done
+  return "$failed"
 }
 
 # _mdt_active_swap_count: number of active swap devices that have a disk behind

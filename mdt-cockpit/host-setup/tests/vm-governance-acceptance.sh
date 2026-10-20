@@ -145,4 +145,39 @@ run_reconcile || { cat /tmp/reconcile.out; fail "recovery reconcile exited non-z
 expect dev.slice riops 800; expect dev.slice/dev-gates.slice wiops 200
 ok "recovery: a different value, then the target, each read back from the kernel"
 
+# 9. spelling migration (MDT-HS-06, MDT-020): two spellings of ONE disk in systemd's per-path-string
+# limit lists, the OTHER spelling applied last.  The guest root is a partition, so the partition node
+# (/dev/vda1) and the whole-disk node (/dev/vda) are two spellings systemd resolves to the same 254:0,
+# like the live host's /dev/mapper/<lv> vs /dev/vda.  Whatever real systemd does with the stale entries,
+# the reconcile must end VERIFIED on every capped unit (healing with at most one reload), never leaving
+# a unit uncapped.  Not reproduced here: a device-mapper root (MDT-020 stays open for that topology).
+ROOT_SRC=$(findmnt -no SOURCE --target /)
+WHOLE=$(_mdt_io_systemd_dev "$ROOT_SRC") || fail "cannot derive the whole disk node of $ROOT_SRC"
+if [ "$ROOT_SRC" = "$WHOLE" ]; then
+  echo "VM GOVERNANCE SKIP: the guest root is the whole disk ($ROOT_SRC); there is no second spelling to migrate from"
+else
+  for unit in dev.slice dev-gates.slice dev-buildkitd.slice; do
+    for spelling in "$WHOLE" "$ROOT_SRC"; do
+      systemctl set-property --runtime "$unit" \
+        "IOReadBandwidthMax=$spelling 1048576" "IOWriteBandwidthMax=$spelling 1048576" \
+        "IOReadIOPSMax=$spelling 10" "IOWriteIOPSMax=$spelling 10"
+    done
+  done
+  # what real systemd did with the second spelling: the kernel line the last-applied entry wrote
+  pre_state=$(tr '\n' ';' <"$CG/dev.slice/io.max")
+  run_reconcile || { cat /tmp/reconcile.out; fail "the reconcile did not end verified after a spelling migration (kernel before: $pre_state)"; }
+  # the FINAL state is the only thing that fails this step
+  expect dev.slice rbps $((80 * MIB)); expect dev.slice riops 800
+  expect dev.slice/dev-gates.slice rbps $((40 * MIB)); expect dev.slice/dev-gates.slice riops 300
+  expect dev.slice/dev-buildkitd.slice riops 480; expect dev.slice/dev-buildkitd.slice wiops 360
+  reloads=$(grep -c 'running ONE' /tmp/reconcile.out || true)
+  [ "$reloads" -le 1 ] || fail "more than one self-heal reload in a single run ($reloads)"
+  if [ "$reloads" = 1 ]; then
+    echo "VM GOVERNANCE NOTE: HEAL RAN: real systemd produced the stale per-spelling entry (kernel before the run: $pre_state); one reload, every unit re-applied"
+  else
+    echo "VM GOVERNANCE NOTE: NO STALE ENTRY AROSE: real systemd did not need the self-heal in this guest (kernel before the run: $pre_state); MDT-020's model is unconfirmed for a partition-vs-disk pair"
+  fi
+  ok "spelling migration ($ROOT_SRC then $WHOLE): dev.slice, dev-gates and dev-buildkitd end at their intent, at most one reload"
+fi
+
 echo "VM GOVERNANCE ACCEPTANCE PASSED"
