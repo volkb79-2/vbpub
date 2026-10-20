@@ -416,10 +416,26 @@ check reads "not running".)
 Per-instance tmpfs mounts are found from the state file **and** by their
 `soulmask-pi-<uuid8>` mount source (`findmnt`), so a mount left by a setup that
 was killed before writing its state is still unwound; its instance is taken from
-its path below `VOLUMES_ROOT` and must agree with the tag, otherwise it is
-"unknown" and the teardown is refused. Children are unmounted before parents. A
-target that cannot be unmounted (busy on the host) stays recorded and makes
+its path below `VOLUMES_ROOT` and must agree with the tag. A tagged tmpfs that
+is neither recorded nor attributable that way (outside `VOLUMES_ROOT`, or a tag
+that disagrees with its path) is a **stray**: it is not ours to unmount, so
+teardown logs `WARNING: SKIPPING stray tmpfs <path> ...` with the manual command
+and carries on with everything else (it does not block the teardown). Unmount a
+leftover stray by hand, once its users are stopped: `umount '<path>'`. A
+*recorded* target whose instance cannot be determined is still refused (we made
+it, so a running game must be ruled out). Children are unmounted before parents.
+A target that cannot be unmounted (busy on the host) stays recorded and makes
 teardown exit non-zero.
+
+**Recovery after a refused stop.** When teardown refuses because a game is
+running, `ExecStop` fails and systemd leaves `soulmask_tmpfs.service` in state
+`failed`; a second `systemctl stop` does not run `ExecStop` again (and
+`ExecStopPost` has already restarted wings, harmlessly). Once the game is
+stopped: run `/usr/local/sbin/soulmask_tmpfs-teardown.sh` directly, then
+`systemctl reset-failed soulmask_tmpfs.service`, then `systemctl start
+soulmask_tmpfs.service` (or leave it stopped). `systemctl restart` on the failed
+unit also works but only starts it again after skipping the stop phase, so the
+mounts would be reconciled by setup's kept/refuse logic rather than torn down.
 
 `systemctl restart soulmask_tmpfs.service` / `stop` run this teardown, so both
 are guarded; `soulmask_tmpfs-toggle.sh --stop` additionally refuses while any
@@ -440,13 +456,15 @@ container-check logic is broken.
 1. Confirm no players are online on either instance.
 2. Stop both game servers (`6c418fe7…`, `b87c0a5b…`) — teardown refuses while
    they run.
-3. Install the files to the host
-   (`/usr/local/sbin/soulmask_tmpfs-{setup,teardown,toggle}.sh`,
-   `/usr/local/sbin/soulmask_logs-prune.sh`, `/usr/local/sbin/soulmask-instance-lib.sh`,
-   `/etc/gstammtisch/soulmask_tmpfs-paths.conf`,
-   `/etc/gstammtisch/soulmask_tmpfs.env` (the single policy source),
-   `/etc/systemd/system/{soulmask_tmpfs.service,soulmask-logs-prune.service,soulmask-logs-prune.timer}`),
-   then `systemctl daemon-reload` and
+3. Install the files to the host, **in this order**: first
+   `/etc/gstammtisch/soulmask_tmpfs.env` (the single policy source; both units
+   require it, so without it even the shared tmpfs fails to start), then the
+   scripts (`/usr/local/sbin/soulmask_tmpfs-{setup,teardown,toggle}.sh`,
+   `/usr/local/sbin/soulmask_logs-prune.sh`,
+   `/usr/local/sbin/soulmask-instance-lib.sh`) and
+   `/etc/gstammtisch/soulmask_tmpfs-paths.conf`, then the units
+   (`/etc/systemd/system/{soulmask_tmpfs.service,soulmask-logs-prune.service,soulmask-logs-prune.timer}`),
+   and only then `systemctl daemon-reload` and
    `systemctl enable --now soulmask-logs-prune.timer`.
 4. `systemctl restart soulmask_tmpfs.service` (teardown, setup, restart wings;
    it re-copies ~2.6 GB). The unit must be `active`; read the journal

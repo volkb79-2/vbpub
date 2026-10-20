@@ -133,6 +133,10 @@ fi
 echo "umount: $t: not mounted." >&2
 exit 32
 """,
+    "mv": r"""#!/usr/bin/env bash
+echo "mv $*" >> "$FAKE/mv.log"
+PATH="${PATH#"$SHIMDIR":}" exec mv "$@"
+""",
     "systemctl": r"""#!/usr/bin/env bash
 if [ "${1:-}" = "is-active" ] && [ -e "$FAKE/docker-inactive" ]; then exit 3; fi
 exit 0
@@ -761,12 +765,57 @@ def test_teardown_finds_a_tagged_mount_the_state_file_does_not_know(rig: Rig) ->
     assert t2 in {row[0] for row in rig.mount_table()}
 
 
-def test_a_tag_that_disagrees_with_the_path_leaves_the_instance_unknown_and_refuses(rig: Rig) -> None:
-    t = rig.target(UUID_A)
-    rig.mounts((t, "tmpfs", "soulmask-pi-deadbeef", "rw"))
+@pytest.mark.parametrize("where", ["below-root-wrong-tag", "outside-root"])
+def test_a_stray_tagged_mount_is_skipped_loudly_and_does_not_block_the_teardown(rig: Rig, where: str) -> None:
+    rig.conf(SHARED_AND_PI)
+    assert rig.run(SETUP).returncode == 0
+    if where == "below-root-wrong-tag":
+        stray = str(rig.volumes / UUID_A / "WS" / "stray")
+        src = "soulmask-pi-deadbeef"
+    else:
+        stray = str(rig.root / "elsewhere" / "Logs")
+        src = f"soulmask-pi-{UUID_A[:8]}"
+    rig.mounts((stray, "tmpfs", src, "rw"))
+    td = rig.run(TEARDOWN)
+    assert td.returncode == 0, text(td)
+    assert "WARNING: SKIPPING stray tmpfs" in text(td) and stray in text(td)
+    assert f"umount '{stray}'" in text(td)                 # the manual remedy is printed
+    left = {row[0] for row in rig.mount_table()}
+    assert left == {stray}                                 # everything else was unwound, the stray untouched
+    assert f"umount {stray}" not in rig.calls()
+
+
+def test_a_recorded_target_of_unknown_instance_still_refuses(rig: Rig) -> None:
+    t = str(rig.root / "elsewhere" / "Logs2")
+    rig.mounts((t, "tmpfs", f"soulmask-pi-{UUID_A[:8]}", "rw"))
+    rig.state.write_text(f"PI_TARGET={t}\n")
     td = rig.run(TEARDOWN)
     assert td.returncode == 1 and "cannot tell which instance" in text(td)
-    assert t in {row[0] for row in rig.mount_table()}
+
+
+def test_state_file_is_replaced_atomically_and_leaves_no_temp_file(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    assert rig.run(SETUP).returncode == 0
+    mv_calls = (rig.fake / "mv.log").read_text().splitlines()
+    assert f"mv -f {rig.state}.new {rig.state}" in mv_calls
+    assert not Path(str(rig.state) + ".new").exists()
+    assert rig.state.read_text().startswith("# soulmask_tmpfs state")
+
+
+def test_recorded_error_messages_are_one_line_without_equals_signs(rig: Rig) -> None:
+    rig.conf(f"[per-instance-compressible]\nWS/a=b/Logs\n")
+    d = rig.volumes / UUID_A / "WS"
+    (d / "real").mkdir()
+    (d / "a=b").symlink_to(d / "real")          # a symlink whose NAME contains '='
+    (d / "real" / "Logs").mkdir()
+    r = rig.run(SETUP)
+    assert r.returncode == 75, text(r)
+    msgs = [ln for ln in rig.state.read_text().splitlines() if ln.startswith("PI_ERROR=")]
+    assert msgs and all("=" not in m[len("PI_ERROR="):] and "\n" not in m for m in msgs)
+    assert any("symlink" in m for m in msgs)
+    keys = {ln.split("=", 1)[0] for ln in rig.state.read_text().splitlines() if "=" in ln}
+    assert keys <= {"RAMDISK", "TMPFS_SIZE", "READONLY", "SOURCE_UUID", "PI_ERRORS", "PI_ERROR",
+                    "TARGET", "PI_TARGET", "PI_DERIVED"}
 
 
 def test_setup_refusal_of_an_unrecorded_tagged_mount_names_a_remedy_that_works(rig: Rig) -> None:

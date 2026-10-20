@@ -36,6 +36,14 @@ live host with a deliberately refused target in a test instance, and that the pr
 actually shows as failed. The policy single source (`/etc/gstammtisch/soulmask_tmpfs.env`) must
 be installed together with the units (a missing file fails both loudly).
 
+**R3-01 (backlog).** The per-instance alarm is pull-only: nothing pushes it. The only standing
+indicators are `systemctl is-failed soulmask-logs-prune.service`, the toggle status warning and
+`journalctl -p err -u soulmask_tmpfs`, and the unit that owns the problem looks healthy
+(deliberate trade-off, see SOULMASK-TMPFS.md "Failure policy"). Fix direction: let
+gstammtisch's own monitoring (`soulmask-monitor`, or an `mdt` check) surface
+`is-failed soulmask-logs-prune.service`, or add an `OnFailure=` notify unit already used on the
+host; plus the live acceptance step above (provoke one refused target on a test instance).
+
 **Deferred.** (1) The `noswap` tmpfs option on the host kernel (7.2.6 here, `noswap` needs
 >= 6.4; the code fails loudly rather than fall back, but no live mount of the
 `[per-instance-noswap]` section has happened because none is configured). (2) The prune

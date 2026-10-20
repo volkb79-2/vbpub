@@ -236,7 +236,11 @@ PI_EXIT_CODE=75   # EX_TEMPFAIL: shared part done, per-instance errors; unit has
 pi_error() {
   if [ -n "${JOURNAL_STREAM:-}" ]; then echo "<3>[soulmask_tmpfs] ERROR: $*"; else log "ERROR: $*"; fi
   PI_ERRORS=$(( PI_ERRORS + 1 ))
-  PI_ERROR_MSGS+=("$*")
+  # The recorded copy becomes a `PI_ERROR=<msg>` state-file line that root scripts
+  # parse: one line only, and no '=' (nothing in a message may look like KEY=value).
+  local m="$*"
+  m="${m//$'\n'/ }"; m="${m//$'\r'/ }"; m="${m//=/:}"
+  PI_ERROR_MSGS+=("$m")
 }
 
 # Read the previous state file so a rewrite never orphans live mounts.
@@ -289,7 +293,9 @@ write_state() {
       d="${PI_DERIVED[$t]:-${OLD_PI_DERIVED[$t]:-}}"
       if [ -n "$d" ]; then echo "PI_DERIVED=$t $d"; fi
     done
-  } > "$STATE_FILE"
+  } > "$STATE_FILE.new"
+  # atomic: a reader (prune timer, toggle, teardown) or a kill mid-write never sees a truncated file
+  mv -f "$STATE_FILE.new" "$STATE_FILE"
   return 0
 }
 

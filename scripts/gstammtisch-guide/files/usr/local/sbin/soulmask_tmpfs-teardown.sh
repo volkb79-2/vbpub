@@ -132,6 +132,12 @@ _discover_tagged() {
     _in_list "$tg" "${PI_TARGETS[@]}" && continue
     u=$(_uuid_from_path "$tg")
     if [ -n "$u" ] && [ "soulmask-pi-${u:0:8}" != "$src" ]; then u=""; fi
+    if [ -z "$u" ]; then
+      # Not recorded and not attributable to an instance below VOLUMES_ROOT: it is
+      # not ours to unmount, and it must not block the rest of the teardown.
+      log "WARNING: SKIPPING stray tmpfs $tg (source $src): not in the state file and not below $VOLUMES_ROOT with a matching tag, so it is not ours to unmount. If it is a leftover, unmount it by hand once its users are stopped: umount '$tg'"
+      continue
+    fi
     log "found tagged per-instance tmpfs not in the state file: $tg (source $src)"
     PI_TARGETS+=("$tg")
     PI_UUID_OF["$tg"]="$u"
