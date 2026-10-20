@@ -365,7 +365,6 @@ nothing writes and every later `cat` blocks. The FIFO-backed tests run the liste
 at lines 582–583 and 602–606; on `TimeoutExpired` Python kills only the direct child (`bash`), not its descendants
 (`cat`, `column`). Line 632 (`test_unknown_cgroup_is_an_error`) runs the lister with no timeout at all (line 661 is
 `iocost-calibrate.sh`, not the lister).
-(Note: the older copy `modern-debian-tools-python-debug/host-setup/tests/` has no `mkfifo`.)
 
 **Defects.**
 1. The fixture uses a FIFO with no persistent writer, or the test's timeout does not kill its process group (start the
