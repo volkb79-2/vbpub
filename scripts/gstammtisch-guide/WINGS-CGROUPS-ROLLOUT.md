@@ -128,7 +128,9 @@ but that governs block-layer queueing contention, not this fsync-latency
 mechanism directly. Full measurement, the two failed-experiment lessons, and
 what a real fix (`io.cost`'s device-wide latency QoS, not compiled-in
 `io.latency`) would require: [`wings-cgroups/v1-legacy/README.md`](../../wings-cgroups/v1-legacy/README.md#measured-what-actually-threatens-soulmask-responsiveness)
-(source of record — don't duplicate here).
+(source of record — don't duplicate here). 2026-10-20 follow-up: the mechanism (shared ext4 journal),
+the multi-second magnitude under dev IO, and the kernel-setting fix are in
+[HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md); `io.cost` there is a candidate, not yet shown to help.
 
 ## State assumed at start (verified 2026-07-17)
 

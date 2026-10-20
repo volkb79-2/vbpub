@@ -765,8 +765,9 @@ the game gets ~10× the I/O bandwidth of default-weight cgroups when the block d
 contested.
 
 **`io.bfq.weight = 1000`**: The BFQ (Budget Fair Queueing) scheduler weight (range 1–1000,
-default 100). At 1000 (maximum), BFQ prioritises the game's I/O requests over all other
-cgroups. Requires BFQ scheduler on the block device (`/sys/block/vda/queue/scheduler = bfq`).
+default 100). At 1000 (maximum), BFQ prioritises the game's queued I/O requests over all other
+cgroups (it cannot help a game `fdatasync` that waits on a journal commit carrying other cgroups' data,
+see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)). Requires BFQ scheduler on the block device (`/sys/block/vda/queue/scheduler = bfq`).
 Without BFQ, this file exists but has no effect.
 
 **`io.stat`**: Since container start:

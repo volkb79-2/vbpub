@@ -222,14 +222,14 @@ scheduler = none mq-deadline [bfq]
 ```
 Interpretation:
 - **`DISC-MAX=2G` (and `DISC-GRAN=512B`) ⇒ TRIM/discard is supported ⇒ thin-provisioned backend** (network/SAN/qcow2/LVM-thin). This is the signal that matters → use `discard=once` on swap (TRIM the area at activation; reclaims backing cheaply). Avoid *continuous* `discard` (per-free latency).
-- **`rotational=1` is almost certainly the hypervisor's default, not truth** — don't tune for a spinning disk. Treat as SSD/thin: keep `vm.page-cluster=0`. (Confirmed by `r_await ≈ 0.3 ms` observed with `iostat -x` — typical of SSD-backed thin storage, not the 5–15 ms of a real HDD.)
+- **`rotational=1` is almost certainly the hypervisor's default, not truth** — don't tune for a spinning disk. Treat as SSD/thin: keep `vm.page-cluster=0`. (Confirmed by `r_await ≈ 0.3 ms` observed with `iostat -x` — typical of SSD-backed thin storage, not the 5–15 ms of a real HDD. Writes are the weak side: measured 2026-10-20, the device sustains only ~14–18 MB/s, ~10 MB/s once a burst budget is spent.)
 - **`scheduler [bfq]`** — we switched from the VM default `[none]` to BFQ. Rationale below.
 
 ### Why we use BFQ instead of `[none]`
 
 The conventional advice for VMs is "leave `[none]` — the hypervisor handles scheduling." That is correct for raw throughput. It is **wrong** when you need cgroup I/O priorities: `[none]` passes all I/O to the device queue in arrival order; cgroup `io.weight` and `ionice` classes are entirely ignored.
 
-BFQ (Budget Fair Queueing, `CONFIG_BFQ_GROUP_IOSCHED=y`) is the only multi-queue scheduler that enforces cgroup v2 `io.weight` / `io.bfq.weight`. It also exposes the per-cgroup `io.bfq.weight` knob (range 1–1000). On this host, Soulmask holds `io.bfq.weight=1000` and bench containers hold `io.bfq.weight=1` — a 1000:1 ratio that is only meaningful with BFQ active.
+BFQ (Budget Fair Queueing, `CONFIG_BFQ_GROUP_IOSCHED=y`) is the only multi-queue scheduler that enforces cgroup v2 `io.weight` / `io.bfq.weight`. It also exposes the per-cgroup `io.bfq.weight` knob (range 1–1000). On this host, Soulmask holds `io.bfq.weight=1000` and bench containers hold `io.bfq.weight=1` — a 1000:1 ratio that is only meaningful with BFQ active. It orders requests between cgroups; it does not shorten a wait behind the shared ext4 journal ([HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)).
 
 The thin-provisioned backing storage (`r_await ≈ 0.3 ms`) means BFQ's scheduler overhead is negligible; the benefit of weight enforcement far outweighs the marginal latency.
 

@@ -17,65 +17,21 @@ cannot silently evict them under memory pressure — they must go through zswap
 (compressed RAM) before reaching disk swap. This prevents multi-second game
 stalls when the host is under memory pressure from other workloads.
 
-## Shortcomings of the legacy split-ramdisk design
+## Why the legacy split-ramdisk design was replaced
 
-The original design (2026-07-07, extended 2026-07-21) had two independent
-services, two tmpfs mounts, two sets of scripts, two cgroup slices, and two
-config keys per instance (`PAK_RAMDISK` + `STATIC_RAMDISK`). It suffered from
-three problems:
+The 2026-07-07 design (two services, two tmpfs mounts, `PAK_RAMDISK` + `STATIC_RAMDISK`, files in
+`files/legacy/`) had three defects; each is a reason for a decision below:
 
-### 1. Partial coverage — steam updates could partially corrupt state
-
-The legacy ramdisks covered the `.pak`/`.sig`/`.utoc`/`.ucas` files (pak
-ramdisk) and `Engine/`, `WS/Binaries/`, `linux64/`, `Steam/`, `steamclient.so`,
-`libsteamwebrtc.so` (static ramdisk). But **`steamapps/` (download staging +
-app manifests), `steamcmd/` (the updater itself), and `Manifest_*.txt` (depot
-metadata) were on disk**, not on any ramdisk.
-
-This meant a steam update could:
-1. Download to `steamapps/downloading/` on disk (succeeds)
-2. Delete the old `.pak` from the pak tmpfs (succeeds — tmpfs was writable)
-3. Write the new `.sig` to the pak tmpfs (succeeds — small file)
-4. **Fail to write the new `.pak`** — tmpfs space exhausted because the
-   **running other instance still holds the deleted old `.pak` open** (Unix
-   semantics: deleted files persist until last fd closes, still consuming
-   space)
-
-Result: `.pak` file **gone** from the shared tmpfs, `.sig` updated
-(mismatched), running instance still works (mmap'd the old inode), but any
-**restarting instance cannot start** because there's no `.pak` to mmap.
-
-**This is exactly what happened on 2026-07-29.** The steam content log shows
-`"Disk write failure"` at commit time — steam downloaded 1.65 GiB to staging,
-tried to move it to the tmpfs-backed `WS/Content/Paks/`, and failed because
-the 3G tmpfs had only 1.4G free (the deleted old `.pak` held by the running
-b87c0a5b process consumed 1.67G). The new `.sig` (110K) was small enough to
-write, so the tmpfs ended up with a new `.sig` and NO `.pak`.
-
-### 2. Writable tmpfs — no fail-safe
-
-The legacy tmpfs mounts were **read-write**. Steam inside the container could
-write through the bind mounts. The designers expected this (SOULMASK.md noted
-"steamcmd updates are the only thing that legitimately changes them") but
-didn't account for the **partial-write failure mode**: when the write of the
-large `.pak` fails but the small `.sig` succeeds, the system ends up in an
-**inconsistent state** that the running instance tolerates (old inode held
-open) but a restarting instance cannot survive (file missing).
-
-### 3. No guaranteed source instance
-
-Both legacy setup scripts enumerated instances in filesystem order and picked
-the **first** one that had the required files. There was no guarantee that the
-first instance was the most recently updated (ROLE=main) one. If a client
-instance was enumerated first and had stale files, the ramdisk would be
-populated from stale content.
-
-### 4. Two services, two scripts, duplicated logic
-
-The pak ramdisk and static ramdisk were deliberately kept separate (different
-cgroup slices for independent memory control). But they shared ~80% of their
-logic: instance enumeration, config loading, size checking, bind-mounting,
-state persistence, teardown. Every fix or improvement had to be applied twice.
+1. **Partial coverage, writable tmpfs, no fail-safe.** `steamapps/`, `steamcmd/` and `Manifest_*.txt`
+   stayed on disk while the paks were on a *writable* tmpfs. On 2026-07-29 a steam update downloaded
+   1.65 GiB to disk staging, deleted the old `.pak` from the tmpfs, wrote the small new `.sig`, then
+   failed writing the new `.pak` ("Disk write failure"): the other running instance still held the
+   deleted old `.pak` open and its 1.67G consumed the 3G tmpfs. Result: new `.sig`, no `.pak`; the running
+   instance survived (old inode mmap'd) but a restarting one could not start. Hence: full coverage and
+   a read-only design (below). Note: the host now runs it read-write by an accepted trade-off
+   (`SOULMASK_TMPFS_READONLY=0` since 2026-07-31, Wings' pre-boot chown; see "Current accepted tradeoff").
+2. **No guaranteed source instance** (first instance in filesystem order, possibly stale). Hence `ROLE=main`.
+3. **Duplicated logic** in two scripts. Hence one service, one script, one config.
 
 ## New design — unified read-only tmpfs
 
@@ -207,6 +163,9 @@ ext4 journal (`jbd2_log_wait_commit`, `folio_wait_writeback`,
 log touches no ext4 at all. The operator accepts that these logs are lost on
 service restart or reboot; nothing is copied back.
 
+Why the stall happens at all (the shared journal, the slow device, what bounds it) is in
+[HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md); this tmpfs removes only the *log's* share of it.
+
 ### What a per-instance section is
 
 Every other section of `soulmask_tmpfs-paths.conf` is **shared**: the path is
@@ -318,7 +277,7 @@ loudly; a test asserts both units reference it and carry no copy). Shipped:
 `SIZE=512M`, `KEEP_BACKUPS=3`, `HIGH_WATER_PCT=75`. The scripts have no defaults
 and refuse (exit 2 for the prune script) unless `KEEP_BACKUPS` is an integer >= 0
 and `HIGH_WATER_PCT` an integer in 1..99. After editing the file run
-`systemctl restart soulmask_tmpfs.service` (the size is applied at mount time; a
+`systemctl restart soulmask_tmpfs.service` (a ~10-minute IO-saturating maintenance window, see "Deployment"; the size is applied at mount time; a
 kept mount whose `size=` no longer matches is refused until torn down).
 
 Sizing arithmetic (a log is ~66 MB; the game cgroup has `memory.max` 12 GiB with
@@ -431,7 +390,8 @@ teardown exit non-zero.
 running, `ExecStop` fails and systemd leaves `soulmask_tmpfs.service` in state
 `failed`; a second `systemctl stop` does not run `ExecStop` again (and
 `ExecStopPost` has already restarted wings, harmlessly). Once the game is
-stopped: run `/usr/local/sbin/soulmask_tmpfs-teardown.sh` directly, then
+stopped: run `/usr/local/sbin/soulmask_tmpfs-teardown.sh` directly (it reads no policy variables, only the
+state file, so no env is needed; checked in the script 2026-10-20), then
 `systemctl reset-failed soulmask_tmpfs.service`, then `systemctl start
 soulmask_tmpfs.service` (or leave it stopped). `systemctl restart` on the failed
 unit also works but only starts it again after skipping the stop phase, so the
@@ -440,6 +400,24 @@ mounts would be reconciled by setup's kept/refuse logic rather than torn down.
 `systemctl restart soulmask_tmpfs.service` / `stop` run this teardown, so both
 are guarded; `soulmask_tmpfs-toggle.sh --stop` additionally refuses while any
 Soulmask container runs.
+
+### Operator responsibilities and known gaps
+
+Decided 2026-10-20: the operator chose not to engineer these further. They are the operator's to watch,
+and are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md` (GG-3).
+
+- **Size and prune policy must fit the real log volume.** `SOULMASK_TMPFS_PER_INSTANCE_SIZE`,
+  `..._KEEP_BACKUPS` and `..._HIGH_WATER_PCT` in `/etc/gstammtisch/soulmask_tmpfs.env` rest on a ~66 MB
+  log. If the game logs more (verbose logging, a crash loop, a new game version), re-check with `df` on
+  the live mounts and re-tune; the prune script reports a live log that alone exceeds the mark and exits
+  1, but nothing watches for that on its own (see GG-2 R3-01). Any size mismatch is the operator's call.
+- **Other logs are not covered.** Only `WS/Saved/Logs` is on tmpfs. These still write to the root ext4
+  and still sit behind the shared journal: Steam logs (wherever steamcmd writes them inside the volume), any
+  other file under `WS/Saved` (including the SQLite `world.db`/`account.db`, the largest remaining
+  exposure; see [the eatmydata option](../../game_stuff/soulmask/README.md#eatmydata-optional-fsync-removal)),
+  and crash dumps (location not verified here). Moving more paths is a separate decision.
+- **Logs are lost at restart/reboot** by design (nothing is copied back). A crash log is evidence: copy it
+  out before restarting more than `KEEP_BACKUPS` times.
 
 ### Tests
 
@@ -452,6 +430,21 @@ red when containment, refusal, rollback-relevant, prune-safety or
 container-check logic is broken.
 
 ### Deployment (controller)
+
+> **Maintenance window, expect it (measured 2026-10-20, gstammtisch, live SMT-01 deploy).**
+> `systemctl restart|start soulmask_tmpfs.service` re-copies ~2.6 GB from disk, then restarts Wings, and
+> Wings restores its servers (inferred: steamcmd validate reading the installs). On this ~10 MB/s disk that kept `vda` at
+> 100 % utilisation for about 10 minutes (reads 6–10 MB/s plus writes 8 MB/s, awaits 0.2–1.5 s, from the
+> operator's `iostat`). During that time **every new container start on the host hung**, including other
+> servers Wings tried to boot and unrelated `docker run`. Do it in a quiet window and do not start other
+> container work until `vda` calms (`iostat -x 5`).
+
+> **Run `soulmask_tmpfs-setup.sh` directly only with the policy loaded** (teardown reads no policy variables
+> and needs no env). The unit gets `/etc/gstammtisch/soulmask_tmpfs.env` through `EnvironmentFile=`; a script
+> run by hand does not. Setup has no defaults, so without it the per-instance mounts are refused (the three
+> policy values reported as unset, exit 75, measured 2026-10-20; a real, non-dry run still does the shared
+> part first and records the errors, which also sets the prune alarm until a clean run).
+> Load it first: `set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a; /usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run`.
 
 1. Confirm no players are online on either instance.
 2. Stop both game servers (`6c418fe7…`, `b87c0a5b…`) — teardown refuses while
@@ -467,11 +460,14 @@ container-check logic is broken.
    and only then `systemctl daemon-reload` and
    `systemctl enable --now soulmask-logs-prune.timer`.
 4. `systemctl restart soulmask_tmpfs.service` (teardown, setup, restart wings;
-   it re-copies ~2.6 GB). The unit must be `active`; read the journal
+   it re-copies ~2.6 GB; **a ~10-minute IO-saturating maintenance window, see the warning at the top of this section**). The unit must be `active`; read the journal
    (`journalctl -u soulmask_tmpfs -p err`): any `ERROR` line is a per-instance
    problem (setup exited 75, which the unit accepts — see "Failure policy").
-5. **Second setup run** — `/usr/local/sbin/soulmask_tmpfs-setup.sh` (real run,
-   or `--dry-run`). It must log, for BOTH instances, "per-instance tmpfs already
+5. **Second setup run** — load the env first, then run it (real run or `--dry-run`):
+   `set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a; /usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run`.
+   Run directly WITHOUT the env it reports all three policy values as unset and exits 75 (it refuses, as
+   designed, no script default); measured 2026-10-20 on gstammtisch, with the env: "keeping" for both
+   instances, exit 0. It must log, for BOTH instances, "per-instance tmpfs already
    mounted at ... with the expected options — keeping" and exit 0. This is the
    only live check of the `findmnt` options parsing (size normalisation, mode).
    If it logs "refusing to keep", compare the logged options with the policy file.
@@ -490,6 +486,11 @@ container-check logic is broken.
    - the D-state probe shows no ext4 or jbd2 stacks for `FAsyncWriter_WS`.
 
 ## Manual update procedure
+
+> **Maintenance window, expect it:** `systemctl start soulmask_tmpfs.service` in step 5 saturates `vda` for
+> ~10 minutes and hangs every new container start on the host; see the full measured warning under
+> "Deployment" above. Quiet window; no other container work until `vda` calms.
+> Step 5 below is the heavy one (the re-copy and Wings restart); step 2 is only a stop.
 
 With the tmpfs read-only, game updates **must** follow this procedure:
 
@@ -573,8 +574,8 @@ cat /run/soulmask_tmpfs.state
 # Check a specific bind mount
 findmnt /var/lib/pterodactyl/volumes/<uuid>/WS/Content/Paks
 
-# Dry-run (no changes)
-/usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run
+# Dry-run (no changes); the policy env must be loaded first, or it exits 75
+set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a; /usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run
 
 # Toggle
 soulmask_tmpfs-toggle.sh status

@@ -165,7 +165,8 @@ for free, no wiring needed — real protection today. It governs block-layer
 contention only, though, not the fsync-latency-under-saturation mechanism
 directly measured above; `io.cost`'s device-wide latency QoS target (compiled
 in on this kernel, not turned on) would address the measured mechanism more
-directly than a static weight — see CGROUP-NOTES.md's
+directly than a static weight (**qualified 2026-10-20**: untested for this mechanism, and it does not see the
+shared-journal ordering; see [`HOST-IO-INTERFERENCE.md`](../../scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md#6-cgroup-io-controllers-what-fits-and-what-does-not)) — see CGROUP-NOTES.md's
 [io.cost vs BFQ](../../modern-debian-tools-python-debug/host-setup/CGROUP-NOTES.md#iocost-vs-bfq--an-option-this-host-doesnt-use-yet)
 section for what turning it on would require. `io.latency` (the more directly
 matching controller for "declare Soulmask's target latency") is **not
@@ -183,3 +184,10 @@ fsync calls turn out to target genuinely non-critical files (not
 just those specific paths could be reconsidered — but that needs identifying
 exactly which files via `strace -y` (decorates each fd with its target)
 first, not applied broadly to the whole process. Not investigated further.
+
+**Revisited 2026-10-20 (SMT-02):** shipped anyway as an **opt-in, default-off, admin-only** egg variable
+(`EATMYDATA`, whole game process, so it does cover `world.db`/`account.db`), by operator decision, knowing the
+durability risk stated above (which stands). New evidence: the measured stalls reach 26 s, and `WS.log` is
+already on tmpfs, so the remaining syncs are SQLite. See
+[`game_stuff/soulmask/README.md`](../../game_stuff/soulmask/README.md#eatmydata-optional-fsync-removal) and
+[`HOST-IO-INTERFERENCE.md`](../../scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md).
