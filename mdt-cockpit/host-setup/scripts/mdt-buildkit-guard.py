@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 from mdt_cli import MdtArgumentParser
 import hashlib
+import collections
 import json
 import re
 import selectors
@@ -40,6 +41,65 @@ RESCAN_INTERVAL_SECONDS = 5.0
 
 class GuardError(RuntimeError):
     """Configuration or Docker inspection could not be safely completed."""
+
+
+class MalformedEvent(GuardError):
+    """One `docker events` line that cannot be turned into a container id (MDT-HS-03)."""
+
+
+# A single malformed line must not kill the guard: every restart (RestartSec=5) is a window in
+# which created containers are not seen. It is logged loudly and answered with an immediate full
+# reconcile. Only a PERSISTENT run of them means the daemon's event shape is not understood, and
+# then the guard exits so systemd shows the failure instead of looping quietly.
+MAX_CONSECUTIVE_MALFORMED_EVENTS = 5
+# ...and a trickle of bad lines interleaved with good ones must not hide a broken parser forever
+# (H-26): this many malformed events inside the window exit as well.
+MAX_MALFORMED_IN_WINDOW = 20
+MALFORMED_WINDOW_SECONDS = 60.0
+# Docker events always carry the full 64-hex id (H-27); a shorter prefix can be ambiguous.
+_CONTAINER_ID = re.compile(r"[0-9a-fA-F]{64}")
+
+
+class ContainerGone(GuardError):
+    """`docker inspect` says the container no longer exists (an ephemeral --rm container, H-25)."""
+
+
+def _inspect_says_gone(stderr: str) -> bool:
+    """True only for Docker's explicit not-found answer, so a daemon outage still fails loudly."""
+    text = stderr.lower()
+    return "no such container" in text or "no such object" in text
+
+
+def container_id_from_event(event: object) -> str | None:
+    """The container id of one `docker events --format '{{json .}}'` object, None to ignore it.
+
+    Docker 29 (API 1.56) emits the id only as ``Actor.ID`` and no longer sends the deprecated
+    top-level ``id``/``status``/``from``. The legacy ``id`` (or ``ID``) is accepted only when
+    ``Actor`` is absent (older daemons) or agrees with it; a disagreement is refused, never
+    guessed. The command filters on ``type=container``, so a non-container event cannot occur on
+    a healthy daemon; it carries no container to police and is ignored (the periodic rescan still
+    covers the host)."""
+    if not isinstance(event, dict):
+        raise MalformedEvent(f"event is not a JSON object: {event!r}")
+    event_type = event.get("Type")
+    if event_type is not None and event_type != "container":
+        return None
+    actor = event.get("Actor")
+    raw_actor = actor.get("ID") if isinstance(actor, dict) else None
+    raw_legacy = event.get("id") or event.get("ID")
+    for raw in (raw_actor, raw_legacy):
+        if raw is not None and not isinstance(raw, str):
+            raise MalformedEvent(f"container id is not a string: {raw!r}")
+    actor_id = (raw_actor or "").strip()
+    legacy_id = (raw_legacy or "").strip()
+    if actor_id and legacy_id and actor_id != legacy_id:
+        raise MalformedEvent(f"Actor.ID ({actor_id[:12]}) and the legacy id ({legacy_id[:12]}) disagree")
+    container_id = actor_id or legacy_id
+    if not container_id:
+        raise MalformedEvent("docker events event has no container id (neither Actor.ID nor a legacy id)")
+    if not _CONTAINER_ID.fullmatch(container_id):
+        raise MalformedEvent(f"container id {container_id[:80]!r} is not a full 64-hex id")
+    return container_id
 
 
 @dataclass(frozen=True)
@@ -238,6 +298,8 @@ def inspect_container(docker: str, container_id: str) -> ContainerInfo:
     result = _docker(docker, ["inspect", container_id])
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "inspect failed").strip()
+        if _inspect_says_gone(result.stderr or ""):
+            raise ContainerGone(f"container {container_id[:12]} is gone: {detail[:200]}")
         raise GuardError(f"cannot inspect container {container_id}: {detail[:300]}")
     try:
         payload = json.loads(result.stdout)
@@ -259,6 +321,9 @@ def handle_container(docker: str, info: ContainerInfo, config: GuardConfig) -> D
         )
         return decision
     removed = _docker(docker, ["rm", "-f", info.container_id])
+    if removed.returncode != 0 and _inspect_says_gone(removed.stderr or ""):
+        print(f"[mdt-buildkit-guard] info: {prefix} was already gone before rm", flush=True)
+        return decision
     if removed.returncode != 0:
         detail = (removed.stderr or removed.stdout or "docker rm failed").strip()
         raise GuardError(
@@ -271,8 +336,14 @@ def handle_container(docker: str, info: ContainerInfo, config: GuardConfig) -> D
     return decision
 
 
-def reconcile(docker: str, container_id: str, config: GuardConfig) -> Decision:
-    return handle_container(docker, inspect_container(docker, container_id), config)
+def reconcile(docker: str, container_id: str, config: GuardConfig) -> Decision | None:
+    """Reconcile one container; None when it vanished before inspect (nothing left to police)."""
+    try:
+        info = inspect_container(docker, container_id)
+    except ContainerGone as exc:
+        print(f"[mdt-buildkit-guard] info: skipped, {exc}", flush=True)
+        return None
+    return handle_container(docker, info, config)
 
 
 def reconcile_all(docker: str, config: GuardConfig) -> None:
@@ -293,7 +364,7 @@ def verify_managed_container(docker: str, container_id: str, config: GuardConfig
 
 
 def _container_ids(docker: str) -> list[str]:
-    result = _docker(docker, ["ps", "-aq"])
+    result = _docker(docker, ["ps", "-aq", "--no-trunc"])
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "docker ps failed").strip()
         raise GuardError(f"cannot enumerate containers: {detail[:300]}")
@@ -349,6 +420,9 @@ def watch(
     selector = selector_factory()
     selector.register(process.stdout, selectors.EVENT_READ)
     next_rescan = clock() + rescan_interval
+    malformed = 0
+    malformed_times: collections.deque[float] = collections.deque()
+    last_malformed_sweep: float | None = None
     try:
         while True:
             ready = selector.select(max(0.0, next_rescan - clock()))
@@ -369,12 +443,44 @@ def watch(
                 continue
             if line.strip():
                 try:
-                    event = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    raise GuardError(f"docker events returned invalid JSON: {exc}") from exc
-                container_id = str(event.get("id") or event.get("ID") or "").strip()
-                if not container_id:
-                    raise GuardError(f"docker events event has no container id: {line.strip()!r}")
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise MalformedEvent(f"docker events returned invalid JSON: {exc}") from exc
+                    container_id = container_id_from_event(event)
+                except MalformedEvent as exc:
+                    malformed += 1
+                    stamp = clock()
+                    malformed_times.append(stamp)
+                    while malformed_times and stamp - malformed_times[0] > MALFORMED_WINDOW_SECONDS:
+                        malformed_times.popleft()
+                    print(
+                        f"[mdt-buildkit-guard] ERROR: malformed docker event ({malformed} in a row): {exc}; "
+                        f"line={line.strip()[:300]!r}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    if malformed >= MAX_CONSECUTIVE_MALFORMED_EVENTS:
+                        raise GuardError(
+                            f"{malformed} malformed docker events in a row (last: {exc}); the daemon's event "
+                            "shape is not understood, exiting so the failure is visible"
+                        ) from exc
+                    if len(malformed_times) >= MAX_MALFORMED_IN_WINDOW:
+                        raise GuardError(
+                            f"{len(malformed_times)} malformed docker events within "
+                            f"{MALFORMED_WINDOW_SECONDS:.0f}s (last: {exc}); the daemon's event shape is not "
+                            "understood, exiting so the failure is visible"
+                        ) from exc
+                    # no restart, no missed-event window: look at everything now, but at most once per
+                    # rescan interval (H-28); the periodic rescan covers the rest
+                    if last_malformed_sweep is None or stamp - last_malformed_sweep >= rescan_interval:
+                        last_malformed_sweep = stamp
+                        reconcile_all(docker, config)
+                    continue
+                malformed = 0
+                if container_id is None:
+                    print(f"[mdt-buildkit-guard] ignored non-container event: {line.strip()[:200]!r}", flush=True)
+                    continue
                 reconcile(docker, container_id, config)
     finally:
         selector.unregister(process.stdout)
