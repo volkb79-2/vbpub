@@ -1381,6 +1381,51 @@ _mdt_apply_iocost() {
   return "$rc"
 }
 
+# --- managed BuildKit restart decision (MDT-HS-07 live finding, 2026-10-20) ---------------------------------
+# A plain install.sh used to restart mdt-buildkitd.service UNCONDITIONALLY, which killed a 32-minute no-cache
+# build.  Now: restart only when the rendered unit or config actually CHANGED; and when a restart is needed
+# while a build is (or may be) active, do NOT do it unless --restart-buildkitd is given.  Why refuse rather than
+# only warn: a build is minutes to hours of work, the restart is mid-install (after the commit point) where a
+# warning cannot be acted on in time, and skipping it is safe and recoverable (the old service keeps running its
+# old config until the operator chooses the moment; the install says so and exits non-zero so it is not missed).
+
+# _mdt_buildkitd_busy: rc 0 = a build/worker process is running under the service, 1 = idle (only buildkitd
+# itself), 2 = cannot tell (treated as busy by the caller: fail-safe).  Heuristic, from the live cgroup:
+# any process in the service's cgroup whose comm is not `buildkitd` is a worker/runc exec.  Seams: MDT_CGROUP_ROOT, MDT_PROC_ROOT.
+_mdt_buildkitd_busy() {
+  local cg procs pid comm n=0 root="${MDT_CGROUP_ROOT:-/sys/fs/cgroup}"
+  cg=$(systemctl show mdt-buildkitd.service -p ControlGroup --value 2>/dev/null) || return 2
+  [ -n "$cg" ] || return 2
+  procs="$root$cg/cgroup.procs"
+  [ -r "$procs" ] || return 2
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    comm=$(tr -d '\n' < "${MDT_PROC_ROOT:-/proc}/$pid/comm" 2>/dev/null) || continue
+    [ "$comm" = buildkitd ] || n=$((n + 1))
+  done < "$procs"
+  [ "$n" -gt 0 ]
+}
+
+# _mdt_buildkitd_restart_decision <changed 0|1> <restart-flag 0|1> <active 0|1>: prints
+#   start       the service is not running: enable --now (nothing to interrupt)
+#   unchanged   unit and config unchanged: no restart
+#   restart     changed, and idle or --restart-buildkitd given
+#   pending     changed, a build is (or may be) active, no flag: do NOT restart
+_mdt_buildkitd_restart_decision() {
+  local changed="$1" flag="$2" active="$3" busy_rc
+  [ "$active" = 1 ] || { echo start; return 0; }
+  [ "$changed" = 1 ] || { echo unchanged; return 0; }
+  [ "$flag" = 1 ] && { echo restart; return 0; }
+  _mdt_buildkitd_busy; busy_rc=$?
+  if [ "$busy_rc" = 1 ]; then echo restart; else echo pending; fi
+}
+
+# _mdt_files_digest <files...>: one digest of the contents (absent files count as such).
+_mdt_files_digest() {
+  local f
+  for f in "$@"; do if [ -f "$f" ]; then sha256sum < "$f"; else echo absent; fi; done | sha256sum | cut -d' ' -f1
+}
+
 # --- guard (terminate) policy confirmation, recorded durably (MDT-HS-02) -------------------
 # The wizard's second confirmation of BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate is recorded
 # in a root-owned file under /var/lib/mdt: the confirmed settings, a timestamp and a digest of

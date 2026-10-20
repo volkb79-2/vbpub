@@ -155,10 +155,20 @@ _iops_subceiling_check() {
   fi
   want_r=$(( dev_riops * pct / 100 ))
   want_w=$(( dev_wiops * pct / 100 ))
+  # The reconcile applies min(pct% of dev.slice, the tier's ABSOLUTE pin DEV_<TIER>_IO_{RIOPS,WIOPS}_MAX): compute
+  # the same min() here, or a correct state with a pin below the sub-ceiling would be reported as wrong.
+  local tier pin_r="" pin_w="" basis="${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops"
+  case "$slice" in dev-gates.slice) tier=GATES ;; dev-buildkitd.slice) tier=BUILDKITD ;; *) tier="" ;; esac
+  if [ -n "$tier" ]; then
+    pin_r=$(_mdt_tier_pin "$tier" RIOPS 2>/dev/null) || pin_r=""
+    pin_w=$(_mdt_tier_pin "$tier" WIOPS 2>/dev/null) || pin_w=""
+  fi
+  if [ -n "$pin_r" ] && [ "$pin_r" -lt "$want_r" ]; then want_r=$pin_r; basis="min(${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops, the absolute ${tier} pin)"; fi
+  if [ -n "$pin_w" ] && [ "$pin_w" -lt "$want_w" ]; then want_w=$pin_w; basis="min(${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops, the absolute ${tier} pin)"; fi
   if [ "$sub_riops" -eq "$want_r" ] && [ "$sub_wiops" -eq "$want_w" ]; then
-    ok "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops matches ${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops"
+    ok "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops matches $basis"
   else
-    warn "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops does not match ${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops (want riops=$want_r/wiops=$want_w) — run mdt-dev-governance-reconcile.sh"
+    warn "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops does not match $basis (want riops=$want_r/wiops=$want_w) — run mdt-dev-governance-reconcile.sh"
   fi
 }
 

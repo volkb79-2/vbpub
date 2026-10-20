@@ -845,6 +845,20 @@ equally while wings.slice gets 7800, which is probably intended but unmeasured f
 `mdt-container-io-caps.lib.sh` are inert under io.cost (the `IOWeight=1` set-property is what applies); (4) `mdt-host-check.sh` used to claim "IOWeight is
 inert" without BFQ, which is false under io.cost; it now derives the active mechanism from the scheduler and `io.cost.qos`.
 
+### Two live findings folded into MDT-HS-07 (2026-10-20)
+
+**The sub-ceiling check computes the reconcile's `min()`.** The reconcile applies `min(DEV_SUBSLICE_IOPS_PCT% of dev.slice, the tier's absolute
+pin)` per value. `mdt-host-check.sh` compared only the percentage, so after an operator pinned dev-gates and dev-buildkitd below it, the correct
+5000/1400 was reported as "does not match 60% (want 6000/1680)" with a remedy that would change nothing. The check now computes the same minimum
+(a check is only as strong as its comparison) and recommends no remedy for a correct state.
+
+**A plain `install.sh` no longer restarts `mdt-buildkitd.service` unconditionally.** That killed a 32-minute no-cache build. The rendered unit and
+config are digested before and after rendering; an unchanged service is left alone ("unchanged, not restarted"). When they changed and a build is,
+or may be, active (any process other than `buildkitd` itself in the service's cgroup, or the state cannot be read: fail-safe), the install does NOT
+restart unless `--restart-buildkitd` is given: it prints a prominent WARN, leaves the old service running its old configuration, and exits non-zero
+so the pending restart is not missed. Chosen over warning-then-restarting because the restart happens after the commit point, where a warning cannot
+be acted on in time and a build is minutes to hours of work; skipping is safe and recoverable (the operator restarts at a moment they choose).
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may

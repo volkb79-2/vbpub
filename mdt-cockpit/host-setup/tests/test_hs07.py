@@ -605,6 +605,111 @@ class CheckShTests(SchedulerFixture):
         self.assertIn("could not derive the whole disk under /", out)
 
 
+class SubCeilingCheckTests(SchedulerFixture):
+    """Live finding 1 (2026-10-20): check.sh must compute the same min() as the reconcile."""
+
+    def run_check(self, dev_io: str, sub_io: str, slice_name: str = "dev-gates.slice", **cfg: str) -> str:
+        text = (ROOT / "scripts" / "check.sh").read_text()
+        import re
+        helpers = re.search(r"(?ms)^_slice_path\(\) \{.*?^\}\n", text).group(0)
+        func = re.search(r"(?ms)^_iops_subceiling_check\(\) \{.*?^\}\n", text).group(0)
+        cg = self.host.base / "subcg"
+        (cg / "dev.slice" / slice_name).mkdir(parents=True, exist_ok=True)
+        (cg / "dev.slice" / "io.max").write_text(dev_io + "\n")
+        (cg / "dev.slice" / slice_name / "io.max").write_text(sub_io + "\n")
+        harness = self.host.base / "sub.sh"
+        harness.write_text(
+            'ok(){ echo "OK $*"; }; warn(){ echo "WARN $*"; }; fail(){ echo "FAIL $*"; }; info(){ echo "INFO $*"; }\n'
+            f'log(){{ :; }}; CG="{cg}"; . "{LIB}"\n' + helpers + func + f'_iops_subceiling_check {slice_name}\n')
+        return subprocess.run(["bash", str(harness)], env=self.env(**cfg), text=True, capture_output=True).stdout
+
+    DEV = "254:0 rbps=290000000 wbps=14000000 riops=10000 wiops=2800"
+
+    def test_an_absolute_pin_below_the_sub_ceiling_is_a_correct_state(self) -> None:
+        out = self.run_check(self.DEV, "254:0 rbps=max wbps=max riops=5000 wiops=1400",
+                             DEV_GATES_IO_RIOPS_MAX="5000", DEV_GATES_IO_WIOPS_MAX="1400")
+        self.assertIn("OK dev-gates.slice IOPS sub-ceiling riops=5000/wiops=1400 matches min(", out)
+        self.assertNotIn("WARN", out)
+        self.assertNotIn("run mdt-dev-governance-reconcile", out)
+        out = self.run_check(self.DEV, "254:0 rbps=max wbps=max riops=5000 wiops=1400", "dev-buildkitd.slice",
+                             DEV_BUILDKITD_IO_RIOPS_MAX="5000", DEV_BUILDKITD_IO_WIOPS_MAX="1400")
+        self.assertIn("OK dev-buildkitd.slice IOPS sub-ceiling", out)
+
+    def test_without_a_pin_or_with_a_pin_above_it_the_sub_ceiling_is_the_percentage(self) -> None:
+        self.assertIn("OK dev-gates.slice IOPS sub-ceiling riops=6000/wiops=1680 matches 60%",
+                      self.run_check(self.DEV, "254:0 rbps=max wbps=max riops=6000 wiops=1680"))
+        out = self.run_check(self.DEV, "254:0 rbps=max wbps=max riops=6000 wiops=1680",
+                             DEV_GATES_IO_RIOPS_MAX="9000", DEV_GATES_IO_WIOPS_MAX="2000")
+        self.assertIn("OK dev-gates.slice IOPS sub-ceiling riops=6000/wiops=1680", out)
+
+    def test_a_real_mismatch_still_warns_with_the_remedy(self) -> None:
+        out = self.run_check(self.DEV, "254:0 rbps=max wbps=max riops=4000 wiops=1400",
+                             DEV_GATES_IO_RIOPS_MAX="5000", DEV_GATES_IO_WIOPS_MAX="1400")
+        self.assertIn("WARN dev-gates.slice IOPS sub-ceiling riops=4000/wiops=1400 does not match", out)
+        self.assertIn("want riops=5000/wiops=1400", out)
+        self.assertIn("run mdt-dev-governance-reconcile.sh", out)
+        out = self.run_check(self.DEV, "254:0 rbps=max wbps=max riops=5000 wiops=1400")     # no pin: 60% is the truth
+        self.assertIn("WARN", out)
+        self.assertIn("want riops=6000/wiops=1680", out)
+
+
+class BuildkitdRestartTests(SchedulerFixture):
+    """Live finding 2: a plain install.sh killed a 32-minute build by restarting mdt-buildkitd unconditionally."""
+
+    def decide(self, changed: str, flag: str, active: str, busy: int | None = None) -> str:
+        busy_def = "" if busy is None else f"_mdt_buildkitd_busy() {{ return {busy}; }}; "
+        r = self.bash(f'{busy_def}_mdt_buildkitd_restart_decision {changed} {flag} {active}')
+        return r.stdout.strip()
+
+    def test_decisions(self) -> None:
+        self.assertEqual(self.decide(1, 0, 0, 0), "start")                  # not running: nothing to interrupt
+        self.assertEqual(self.decide(0, 0, 1, 0), "unchanged")               # unchanged: never restarted, even when busy
+        self.assertEqual(self.decide(0, 1, 1, 0), "unchanged")
+        self.assertEqual(self.decide(1, 1, 1, 0), "restart")                 # flag given: restart even though busy
+        self.assertEqual(self.decide(1, 0, 1, 1), "restart")                 # changed and idle
+        self.assertEqual(self.decide(1, 0, 1, 0), "pending")                 # changed and a build is active: NOT restarted
+        self.assertEqual(self.decide(1, 0, 1, 2), "pending")                 # cannot tell: fail-safe, not restarted
+
+    def test_busy_is_derived_from_the_service_cgroup(self) -> None:
+        cg = self.host.base / "bkcg" / "system.slice" / "mdt-buildkitd.service"
+        cg.mkdir(parents=True)
+        proc = self.host.base / "bkproc"
+        for pid, comm in ((10, "buildkitd"), (11, "runc"), (12, "buildkitd")):
+            (proc / str(pid)).mkdir(parents=True)
+            (proc / str(pid) / "comm").write_text(comm + "\n")
+        _write_exec(self.host.bin / "systemctl", "#!/bin/sh\necho /system.slice/mdt-buildkitd.service\n")
+        env = {"MDT_CGROUP_ROOT": str(self.host.base / "bkcg"), "MDT_PROC_ROOT": str(proc)}
+        (cg / "cgroup.procs").write_text("10\n")
+        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "1")      # only buildkitd: idle
+        (cg / "cgroup.procs").write_text("10\n11\n")
+        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "0")      # a runc worker: busy
+        (cg / "cgroup.procs").unlink()
+        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "2")      # unreadable: unknown
+
+    def test_changed_is_detected_by_content(self) -> None:
+        a, b = self.host.base / "a", self.host.base / "b"
+        a.write_text("one\n")
+        before = self.bash(f'_mdt_files_digest "{a}" "{b}"').stdout
+        self.assertEqual(self.bash(f'_mdt_files_digest "{a}" "{b}"').stdout, before)
+        a.write_text("two\n")
+        self.assertNotEqual(self.bash(f'_mdt_files_digest "{a}" "{b}"').stdout, before)
+        b.write_text("x\n")
+        self.assertNotEqual(self.bash(f'_mdt_files_digest "{a}" "{b}"').stdout, self.bash(f'_mdt_files_digest "{a}" "{self.host.base / "c"}"').stdout)
+
+    def test_install_sh_no_longer_restarts_unconditionally(self) -> None:
+        install = (ROOT / "install.sh").read_text()
+        self.assertNotIn('echo "restarting mdt-buildkitd.service; active builds will be interrupted"\n  systemctl restart', install)
+        for needle in ("--restart-buildkitd", "RESTART_BUILDKITD", "unit and config unchanged, not restarted",
+                       "BUILDKITD_RESTART_PENDING=1", "_mdt_buildkitd_restart_decision", "_mdt_files_digest"):
+            self.assertIn(needle, install)
+        decision = install[install.index("_mdt_buildkitd_restart_decision"):]
+        self.assertIn("pending)", decision)
+        self.assertLess(install.index("_BK_DIGEST_BEFORE=$("), install.index('render "$HERE/units/mdt-buildkitd.service.in"'))
+        self.assertIn("exit 2", install[install.index('if [ "${BUILDKITD_RESTART_PENDING:-0}" = 1 ]'):])
+        design = " ".join((ROOT.parent / "docs" / "DESIGN-GUIDE.md").read_text().split())
+        self.assertIn("restart-buildkitd", design)
+
+
 class WizardTests(unittest.TestCase):
     DEVNO = "254:0"
 

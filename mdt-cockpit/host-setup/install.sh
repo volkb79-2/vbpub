@@ -75,6 +75,11 @@ Options
                       the policy. This disrupts running containers. Without
                       it, changed Docker daemon defaults take effect after
                       a later deliberate restart.
+  --restart-buildkitd Allow restarting mdt-buildkitd.service when its rendered unit
+                      or config CHANGED while a build may be active. Without it an
+                      unchanged service is left alone, and a needed restart during
+                      an active build is NOT done (the install says so and exits
+                      non-zero; re-run with this flag at a moment you choose).
   --observer-only     Install the cgprofile-observer group and its dedicated
                       /run/cgprofile/observer tmpfiles rule. Requires the
                       existing /run/cgprofile control directory to be a
@@ -195,6 +200,7 @@ provision_cgprofile_observer() {
 WITH_BASELINE=0
 RESET=0
 AUTO_RESTART_DOCKER=0
+RESTART_BUILDKITD=0
 WIZARD=0
 OBSERVER_ONLY=0
 REQUIRE_DAMON=0
@@ -205,6 +211,7 @@ for arg in "$@"; do
     --with-baseline) WITH_BASELINE=1 ;;
     --reset) RESET=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
+    --restart-buildkitd) RESTART_BUILDKITD=1 ;;
     --require-damon-disable) REQUIRE_DAMON=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
@@ -779,10 +786,13 @@ render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interacti
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
 render "$HERE/units/dev-memory_min_guaranteed.slice.in" \
   /etc/systemd/system/dev-memory_min_guaranteed.slice
+_BK_FILES=(/etc/systemd/system/mdt-buildkitd.service /etc/mdt/buildkitd.toml)
+_BK_DIGEST_BEFORE=$(_mdt_files_digest "${_BK_FILES[@]}")
 render "$HERE/units/dev-gates.slice.in"        /etc/systemd/system/dev-gates.slice
 render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/buildkitd.toml.in"              /etc/mdt/buildkitd.toml
+[ "$(_mdt_files_digest "${_BK_FILES[@]}")" = "$_BK_DIGEST_BEFORE" ] && BUILDKITD_CHANGED=0 || BUILDKITD_CHANGED=1
 render "$HERE/units/mdt-dev-governance-reconcile.timer.in"  /etc/systemd/system/mdt-dev-governance-reconcile.timer
 install -m 0644 "$HERE/units/mdt-dev-governance-reconcile.service" /etc/systemd/system/mdt-dev-governance-reconcile.service
 if [ "${INOTIFY_OK:-}" = 1 ]; then
@@ -993,12 +1003,25 @@ systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_
   dev-gates.slice dev-buildkitd.slice
 systemctl enable mdt-dev-governance-reconcile.service          # boot-time apply
 systemctl enable --now mdt-dev-governance-reconcile.timer      # periodic sweep
-if systemctl is-active --quiet mdt-buildkitd.service; then
-  echo "restarting mdt-buildkitd.service; active builds will be interrupted"
-  systemctl restart mdt-buildkitd.service
-else
-  systemctl enable --now mdt-buildkitd.service
-fi
+BUILDKITD_RESTART_PENDING=0
+_bk_active=0; systemctl is-active --quiet mdt-buildkitd.service && _bk_active=1
+case "$(_mdt_buildkitd_restart_decision "$BUILDKITD_CHANGED" "$RESTART_BUILDKITD" "$_bk_active")" in
+  start)
+    systemctl enable --now mdt-buildkitd.service ;;
+  unchanged)
+    echo "mdt-buildkitd.service: unit and config unchanged, not restarted (a running build is not interrupted)" ;;
+  restart)
+    echo "restarting mdt-buildkitd.service (its unit or config changed); active builds will be interrupted"
+    systemctl restart mdt-buildkitd.service ;;
+  pending)
+    BUILDKITD_RESTART_PENDING=1
+    echo "WARN: ********************************************************************" >&2
+    echo "WARN: mdt-buildkitd.service's unit or config CHANGED but a build is (or may be) active, so it was NOT restarted;" >&2
+    echo "WARN: it keeps running its OLD configuration until you restart it. Re-run install.sh --restart-buildkitd (or" >&2
+    echo "WARN: systemctl restart mdt-buildkitd.service) when no build is running. This install exits non-zero so it is not missed." >&2
+    echo "WARN: ********************************************************************" >&2
+    systemctl enable mdt-buildkitd.service ;;
+esac
 systemctl enable mdt-buildkitd.service
 for _attempt in $(seq 1 30); do
   [ -S /run/mdt-buildkitd/buildkitd.sock ] && break
@@ -1094,6 +1117,10 @@ else
   echo "   docker.socket alone (which just rebinds) is not enough. Same disruption as"
   echo "   the daemon.json restart above; batch them into the same window. Not done"
   echo "   automatically by this script (use --restart-docker flag to enable)."
+fi
+if [ "${BUILDKITD_RESTART_PENDING:-0}" = 1 ]; then
+  echo "ERROR: mdt-buildkitd.service was not restarted although its unit/config changed (a build may be active); the rest of the install completed. Re-run install.sh --restart-buildkitd when no build is running." >&2
+  exit 2
 fi
 if [ "$SCHEDULER_FAILED" = 1 ] || [ "$IOCOST_FAILED" = 1 ]; then
   echo "ERROR: the IO scheduler / io.cost settings were NOT verified live (see the ERROR lines above); the rest of the install completed. Fix the named cause and re-run install.sh." >&2
