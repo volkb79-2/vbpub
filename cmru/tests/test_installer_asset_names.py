@@ -38,6 +38,15 @@ from cmru.release import bundle_asset_name
 REPO = Path(__file__).resolve().parents[2]
 SAMPLE_VERSION = "1.2.3-r4"
 
+# The coverage canary (and any project-only snapshot) copies just this project, without its
+# sibling estate projects; the repo-reading checks below then have nothing to read and skip,
+# exactly like the other estate-reading cmru tests (`_estate_complete`, "isolated canary tree").
+# The synthetic controlled-wrong-implementation tests always run.
+ESTATE_PRESENT = all((REPO / name / "cmru.toml").is_file() for name in ("pwmcp", "tls-edge", "ciu"))
+needs_estate = pytest.mark.skipif(
+    not ESTATE_PRESENT, reason="estate projects absent (isolated canary tree)"
+)
+
 # project dir -> backlog id of the known "no bundle is produced yet" gap.
 KNOWN_NO_BUNDLE_PRODUCER = {"ciu": "CIU-99"}
 
@@ -112,11 +121,13 @@ def _installer_projects() -> list[Path]:
     return found
 
 
+@needs_estate
 def test_the_scan_finds_the_known_installer_projects():
     names = {p.name for p in _installer_projects()}
     assert {"pwmcp", "tls-edge", "ciu"} <= names
 
 
+@needs_estate
 @pytest.mark.parametrize("project", _installer_projects(), ids=lambda p: p.name)
 def test_every_installer_project_publishes_the_contract_name(project):
     assert producer_violations(project) == []
