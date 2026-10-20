@@ -36,7 +36,7 @@ Soulmask must always preempt dev work and be the last thing reclaimed. Layers:
 2. **cgroup protection** — [`setup-cgroups.sh`](files/usr/local/sbin/setup-cgroups.sh) sets on the Soulmask scope:
    - `memory.min` = **measured hot+warm set** (DAMON — see [OBSERVATION.md §8](OBSERVATION.md)); the "RAM never swapped" guarantee.
    - `memory.low` = 12G (best-effort).
-   - `memory.zswap.writeback = 0` — its pages stay in the fast compressed pool, never proactively to disk (no fault-back stutter).
+   - `memory.zswap.writeback` — **live value is 1** (measured 2026-10-20: the game cgroup `wings.slice/docker-<id>.scope` has `memory.zswap.writeback=1`, `memory.zswap.max=max`; operator decision: writeback=1 and the zswap shrinker are required). The older design here said 0 (pages never to disk); it was superseded, see [MEMORY-ARCHITECTURE.md §5](MEMORY-ARCHITECTURE.md). Consequence: swap-in of written-back pages can queue behind host writeback ([HOST-IO-INTERFERENCE.md §4.6](HOST-IO-INTERFERENCE.md#46-live-b0b1-and-the-read-cost-of-small-requests)). Other `writeback=0` mentions in this file (the 2026-06/07 measurement runs, the retired `setup-cgroups.sh` design) are history and are not individually rewritten.
    - `io.weight = 4950`, `io.bfq.weight = 1000` — top I/O priority under BFQ (see §2b).
    - `cpu.weight = 800` — CPU preemption headroom over default-weight containers.
 3. **dev work is fenced off** in `besteffort.slice` (low weight, IO-capped, OOM-first) and `interactive.slice` (the devcontainer/IDE). Both are installed by the mdt host-setup companion, not by this guide — see [README §Scope](README.md#scope) and [MEMORY-ARCHITECTURE.md §5](MEMORY-ARCHITECTURE.md).
@@ -632,7 +632,7 @@ exec-soulmask-rcon.sh BackupDataBase world  # flush in-memory DB → world.db on
 - Both paths are on real LVM (`WS/Saved/`), completely separate from the pak ramdisk (`Content/Paks/`). They do not interact.
 
 **Do saves warm the LRU / prevent zswap eviction?**
-The `-saving` timer accesses the UE4 actor graph (anon pages). Pages that are zswap'd get decompressed back into RAM when touched, resetting their LRU clock. But Soulmask almost certainly does delta saves — only recently dirtied actors are serialized. Cold regions stay cold. In any case, with `memory.zswap.writeback=0` on Soulmask, no pages reach disk regardless of save frequency. The right lever for protecting the working set is `memory.min` height, not save cadence.
+The `-saving` timer accesses the UE4 actor graph (anon pages). Pages that are zswap'd get decompressed back into RAM when touched, resetting their LRU clock. But Soulmask almost certainly does delta saves — only recently dirtied actors are serialized. Cold regions stay cold. In any case, with `memory.zswap.writeback=0` (the 2026-06 test setup; the live value is now 1, see §2), no pages reached disk regardless of save frequency. The right lever for protecting the working set is `memory.min` height, not save cadence.
 
 **Should saves be more frequent?**
 At most 16 minutes of data loss on crash (last disk flush). For 2 players, 600s/960s is fine. Shortening adds CPU serialization spikes more often. On demand: `SaveWorld 0` then `BackupDataBase world` (or just `SaveWorld 1` if confirmed to do both).

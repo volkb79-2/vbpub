@@ -67,7 +67,7 @@ For gstammtisch — one process holding lots of cold pages, sharing the box with
 | Swap disk (SSD) | ~100 µs–1 ms | 100 ms–1 s | Noticeable pause |
 | Swap disk (HDD) | ~1–10 ms | 1–10 s | "Chest open" stall |
 
-The swap-*in* fault is **synchronous**: the game thread blocks until the page is back. Disk-backed swap-in is the dominant cause of *memory-pressure* game stalls (the separate stall from host IO via the shared journal is in [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)); zswap-backed swap-in is 100–2000× faster but still has a cost when many pages are needed at once (area loads, chest contents). `workingset_refault_anon` is the counter that measures exactly this cost.
+The swap-*in* fault is **synchronous**: the game thread blocks until the page is back. Disk-backed swap-in is the dominant cause of *memory-pressure* game stalls (the stall from host IO is a separate mechanism, but it also reaches swap-in: with `writeback=1`, swap-in of pages zswap wrote back queues behind dev writeback, see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §4.6); zswap-backed swap-in is 100–2000× faster but still has a cost when many pages are needed at once (area loads, chest contents). `workingset_refault_anon` is the counter that measures exactly this cost.
 
 **Observed refault rate thresholds (Soulmask, 3 players, 2026-06-27):**
 
@@ -141,7 +141,7 @@ be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 - `memory.low` (**best-effort**) — abundant memory → game keeps up to 12 G; under pressure the kernel reclaims unprotected cgroups first; the game is reclaimed *last*, never immune.
 - `memory.high` (**throttle**) — dev slice over 8 G → allocations throttle + reclaim *within the slice*; slows the offender without killing.
 - `memory.max` (**hard cap → OOM**) — dev slice hits 14 G → OOM kills the largest process *inside dev.slice*; the game is never considered.
-- `memory.zswap.writeback` — `1` everywhere since 2026-07-07 (and for `interactive.slice` too since 2026-07-20, closing the last exception): zswap's LRU means only the coldest-of-cold pages drain to disk, freeing pool RAM. The game observably carries a ~4G genuinely-cold tail. Gate: if login latency regresses, set the game back to `0` (`SOULMASK_WRITEBACK=0`, see MEASUREMENTS.md M4). The pak slice goes further: `memory.zswap.max=0` (pak is zstd-incompressible, 1.006× — zswap would waste CPU+RAM on it; cold pak goes straight to disk).
+- `memory.zswap.writeback` — `1` everywhere since 2026-07-07 (and for `interactive.slice` too since 2026-07-20, closing the last exception): zswap's LRU means only the coldest-of-cold pages drain to disk, freeing pool RAM. The game observably carries a ~4G genuinely-cold tail. ~~Gate: if login latency regresses, set the game back to `0`~~ **Superseded by the operator decision of 2026-10-20: writeback=1 and the zswap shrinker are required; do not set the game's writeback to 0** (see MEASUREMENTS.md M4 for the history). The pak slice goes further: `memory.zswap.max=0` (pak is zstd-incompressible, 1.006× — zswap would waste CPU+RAM on it; cold pak goes straight to disk).
 - `cpu.weight` / `io.weight` — proportional under contention only; idle CPU/IO is always available to dev.
 
 **Why swap-IN latency drives these choices:** swap-*out* is async/background; swap-*in* is a synchronous page fault that blocks the process. So protecting the game = keeping its *hot* pages where fault-in is fastest: uncompressed RAM via a correctly-sized (and chain-effective) `memory.min`, warm pages in zswap (µs faults), and only the genuinely-cold tail on disk. The monitor's `rf_d/s` column (disk refaults) is the alarm that cold-tail paging is touching pages that aren't actually cold.
@@ -156,7 +156,7 @@ be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 | `memory.low` | soft floor ↑ | Best-effort: cgroup reclaimed last, not immune | Exceeded under severe pressure; good for "prefer to keep" |
 | `memory.high` | soft ceiling ↓ | Throttles allocs + aggressive reclaim; process survives | Useful for test pressure; never use on production game |
 | `memory.max` | hard ceiling ↓ | OOM kill inside the cgroup | One step too far = crash; don't use for live calibration |
-| `memory.zswap.writeback` | 0 / 1 | 0 = pages stay in zswap pool forever (never to disk) | 1 everywhere since 2026-07-07 (cold tail → disk); revert game to 0 if logins regress (MEASUREMENTS.md M4) |
+| `memory.zswap.writeback` | 0 / 1 | 0 = pages stay in zswap pool forever (never to disk) | 1 everywhere since 2026-07-07 (cold tail → disk); ~~revert game to 0 if logins regress~~ superseded 2026-10-20: writeback=1 and the shrinker are required, do not set 0 (history: MEASUREMENTS.md M4) |
 
 **gstammtisch deployed values:**
 

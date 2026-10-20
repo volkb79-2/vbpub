@@ -68,13 +68,16 @@ files under `WS/Saved` (the SQLite databases above all), crash dumps. Both are d
 SOULMASK-TMPFS.md "Operator responsibilities and known gaps". Nothing to implement; reopen only if a log
 volume change or an ENOSPC on a live mount shows up.
 
-## GG-4 — host IO bounds measured but not applied
+## GG-4 — host IO bounds: applied as an interim, not yet owned by host-setup
 
 **Status:** OPEN (filed by SMT-02, 2026-10-20).
 
 `HOST-IO-INTERFERENCE.md` §5 recommends bounded `vm.dirty_*`, `nr_requests` and `max_sectors_kb`, and dev
-`io.max` caps derived from the ~10 MB/s steady write rate. Nothing is persisted. The 64/128/256 KB matrix is
-in (§4.4): recommended `dirty_bytes` 16 MiB/4 MiB, `nr_requests` 16, `max_sectors_kb=64` (128 as the fallback).
-Needs: a sequential **read-throughput check** at 64 KB vs 4096 KB (the one unmeasured cost, §4.4 finding 5),
-one confirmation run inside the throttled steady state, then a host-setup work item (sysctl.d + udev rule keyed on the device behind `/`, values derived not literal).
+`io.max` caps derived from the ~10 MB/s steady write rate. The 64/128/256 KB matrix is
+in (§4.4), the live B0/B1 run and the read-throughput check are in (§4.6: 64 KB accepted). **Applied
+2026-10-20 as an interim** on gstammtisch (§4.7): `/etc/sysctl.d/90-mdt-io-writeback-interim.conf` (dirty
+16M/4M) and `/etc/udev/rules.d/61-mdt-io-queue-interim.rules` (vda: `max_sectors_kb` 64, `nr_requests` 16,
+sorted after the `60-*bfq*` rules). Needs: MDT-HS-05 to replace them (host-setup wizard keys plus a central
+benchmark; udev rule keyed on the device behind `/`, values derived not literal); the dev `io.max` caps
+derived from the ~10 MB/s steady rate are still open.
 The instrument scripts are in `tools/io-stall/` but carry gstammtisch literals (`/dev/vda`, slice names, constant restore caps, dated file names); parameterising them (derive the disk, read the pre-test caps) is part of this item.
