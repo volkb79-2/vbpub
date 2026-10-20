@@ -41,6 +41,17 @@ state, OpenCode, Pi, Reasonix, OpenClaw, GitHub CLI, shell history, `.config`,
 `CODEX_SQLITE_HOME=/home/vscode/.codex/sqlite-shared` and
 `shutdownAction: "none"`. See [Codex profile state and container lifetime](../docs/CONSUMERS.md#codex-profile-state-and-container-lifetime).
 
+A Docker Hub login also persists: `docker login docker.io` writes `~/.docker/config.json` in the
+persisted home (or uses a credential helper), so it survives rebuilds and is shared by `docker`,
+`buildx`, `crane` and `regctl`. Log in once with a read-only token; see
+[Docker Hub login](../docs/CONSUMERS.md#docker-hub-login).
+
+The host-side dev-tier IO governance (pinned caps, read-back, `UNCAPPED SWAP`) needs nothing
+from this template: nothing extra is mounted or passed. To inspect what is really in force from
+inside a cockpit, use the host-exec helper:
+`host-escape -- /usr/local/sbin/mdt-cgroup-io-limits.sh dev.slice --all --systemd`
+([Host commands from an MDT devcontainer](../docs/CONSUMERS.md#host-commands-from-an-mdt-devcontainer)).
+
 The template deliberately sets neither `PATH` nor `NPM_CONFIG_PREFIX`: the image
 defines both once ([One PATH order](../docs/DESIGN-GUIDE.md#one-path-order)).
 

@@ -778,7 +778,7 @@ provision_cgprofile_observer /
 
 # DAMON_STAT is a host-wide consumer that excludes cgprofile's generic DAMON
 # sysfs sessions. Disabled by default (operator decision 2026-10-20); `no` removes the override.
-DAMON_STAT_TMPFILES=/etc/tmpfiles.d/mdt-damon-stat.conf
+export DAMON_STAT_TMPFILES=/etc/tmpfiles.d/mdt-damon-stat.conf
 _mdt_apply_damon_policy || exit 2
 
 # Post-render fixups:

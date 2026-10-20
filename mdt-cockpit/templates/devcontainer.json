@@ -144,12 +144,15 @@
     // This is the ONE place every dev-tier slice name is declared — every
     // tool that spawns a container (cmru's tester-gate, ciu's governance
     // mechanism, run-gate, ...) reads these instead of hardcoding a slice
-    // name. The first two MUST stay in sync with the --cgroup-parent value
-    // in runArgs below (two keys, one file — there is no cross-reference
-    // between containerEnv and runArgs substitution contexts: runArgs is
-    // evaluated host-side, containerEnv applies inside the running
-    // container); this devcontainer itself never joins dev-gates.slice, so
-    // that one has no runArgs counterpart.
+    // name.
+    // Only CGROUP_PARENT_DEV_INTERACTIVE must match the --cgroup-parent runArg
+    // below (two spellings, one file — there is no cross-reference between
+    // the containerEnv and runArgs substitution contexts: runArgs is evaluated
+    // host-side, containerEnv applies inside the running container).
+    // CGROUP_PARENT_DEV_BACKGROUND is the Docker daemon's default parent that
+    // host-setup writes to daemon.json (DOCKER_DAEMON_CGROUP_PARENT). This
+    // devcontainer never joins the background or gates slice, so those two
+    // have no runArgs counterpart.
     //
     // CGROUP_PARENT_DEV_GATES (RG-55 D-19/D-24): gate/lane containers, the
     // admission capacity object — see host-setup/README.md "dev-gates: why".
@@ -186,7 +189,9 @@
   "runArgs": [
     "--hostname", "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",
     "--name", "${localWorkspaceFolderBasename}-devcontainer-${localEnv:USER}",
-    // DOCKER_GID must be exported in the host shell before launch (see repo docs).
+    // DOCKER_GID must be exported in the host shell before launch:
+    //   export DOCKER_GID=$(getent group docker | cut -d: -f3)
+    // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
     "--group-add", "${localEnv:DOCKER_GID}",
     // sshfs / mount(2) inside container
     "--cap-add", "SYS_ADMIN",

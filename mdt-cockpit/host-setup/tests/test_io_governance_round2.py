@@ -126,7 +126,7 @@ class VmLaneBudgetTests(unittest.TestCase):
                                (ROOT / "tests" / "vm-install-with-diagnostics.sh").read_text()).group(1))
         unit = (ROOT / "units" / "mdt-buildkitd.service.in").read_text()
         start_min = int(re.search(r"(?m)^TimeoutStartSec=(\d+)min$", unit).group(1))
-        inner = pull_s / 60 + start_min + 15  # + install.sh's other work and the governance script
+        inner = pull_s / 60 + start_min + 15 + 15  # + install.sh's other work, the governance script, 3 re-installs
         self.assertGreaterEqual(outer, inner + 5, f"outer {outer}m vs inner {inner}m")
         budget = re.search(r'\[lanes\.vm-system\].*?budget = "(\d+)m"', (ROOT.parent / "run-gate.toml").read_text(), re.S)
         self.assertGreater(int(budget.group(1)), outer + 15 + 2 + 10 + 12 + 5 + 2 + 5)  # the steps before it

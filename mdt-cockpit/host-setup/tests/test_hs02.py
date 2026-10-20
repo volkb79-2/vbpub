@@ -209,12 +209,12 @@ class GuardPolicyTests(unittest.TestCase):
         self.assertIn("exit 2", refuse)
         self.assertIn("left exactly as it was", refuse)
         # the old code disabled the running guard before refusing
-        self.assertNotIn("disable --now mdt-buildkit-guard.service", install[:install.index("COMMIT POINT")])
-        self.assertLess(a, install.index("COMMIT POINT"))
+        self.assertNotIn("disable --now mdt-buildkit-guard.service", install[:install.index("# === COMMIT POINT")])
+        self.assertLess(a, install.index("# === COMMIT POINT"))
 
     def test_the_confirmation_is_recorded_durably_at_the_commit_point(self) -> None:
         install = (ROOT / "install.sh").read_text()
-        commit = install.index("COMMIT POINT")
+        commit = install.index("# === COMMIT POINT")
         self.assertIn("_mdt_guard_record_write", install[commit:])
         self.assertIn("/var/lib/mdt/guard-terminate.confirmed", install)
 
@@ -228,15 +228,31 @@ class PreflightBeforeActionTests(unittest.TestCase):
     def test_nothing_between_candidate_validation_and_the_commit_point_mutates_the_host(self) -> None:
         install = (ROOT / "install.sh").read_text()
         start = install.index('. "$CANDIDATE_PATH"')
-        end = install.index("COMMIT POINT")
+        end = install.index("# === COMMIT POINT")
         region = "\n".join(ln for ln in install[start:end].splitlines() if not ln.lstrip().startswith("#"))
         self.assertIsNone(self.MUTATING.search(region), self.MUTATING.search(region) and self.MUTATING.search(region).group(0))
 
     def test_the_installed_config_is_replaced_only_at_the_commit_point(self) -> None:
         install = (ROOT / "install.sh").read_text()
-        commit = install.index("COMMIT POINT")
+        commit = install.index("# === COMMIT POINT")
         self.assertGreater(install.index('install -m 0644 "$CANDIDATE_PATH" "$CONFIG_PATH"'), commit)
         self.assertGreater(install.index('mkdir -p "$CONFIG_DIR"'), commit)
+
+
+class VmUpgradeStepTests(unittest.TestCase):
+    """The VM lane always installed from a fresh, complete env; the upgrade step covers the real path."""
+
+    def test_the_lane_runs_the_upgrade_acceptance_after_the_governance_script(self) -> None:
+        lane = (ROOT / "tests" / "run-vm-acceptance.sh").read_text()
+        self.assertLess(lane.index("vm-governance-acceptance.sh"), lane.index("vm-upgrade-acceptance.sh"))
+
+    def test_the_upgrade_script_removes_the_optional_keys_and_runs_a_plain_install(self) -> None:
+        script = (ROOT / "tests" / "vm-upgrade-acceptance.sh").read_text()
+        self.assertIn("runtime-optional-keys.re", script)
+        self.assertRegex(script, r'bash "\$HS/install\.sh"')
+        self.assertNotIn("--wizard", script.replace("# ", ""))  # a plain install, never the wizard
+        for needle in ("has no recorded confirmation", "was already confirmed", "stayed active", "DAMON_STAT"):
+            self.assertIn(needle, script)
 
 
 if __name__ == "__main__":
