@@ -325,6 +325,8 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    `v` in:
 
    ```toml
+   schema_version = 1
+
    [archive]
    name_template = "myproj-v{version}.tar.xz"   # NOT "myproj-{version}.tar.xz"
    ```
