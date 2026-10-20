@@ -23,6 +23,9 @@ from measurements, not itself tested). The "Recommended settings" section is app
   dirty data attached to the transaction, including other workloads' data. The game blocks in
   `jbd2_log_wait_commit`, `folio_wait_writeback` and `ext4_dirty_inode` → `wait_transaction_locked`,
   behind dev writeback it never issued.
+- **The same queue is reached through a second door once `WS.log` is off ext4:** swap-in of anonymous pages
+  that zswap wrote back (section 4.6). The mechanism (a request waiting behind a long writeback queue) is
+  shared; the door differs. **[I]**
 - **The stall length is a queueing wait:** (bytes ahead of it) ÷ (device write rate). [M 2026-10-20
   gstammtisch, A/B below] The ahead-of-it bytes are the ordered dirty data in the running
   transaction plus the requests in the block queue.
@@ -43,7 +46,7 @@ from measurements, not itself tested). The "Recommended settings" section is app
 | iostat `%util` | On a parallel virtio disk 100 % only means "at least one request was always in flight". Read `aqu-sz` and `r_await`/`w_await`, on `dm-0` (the LVM layer, where buffered writeback queues up) **and** `vda`. |
 | Per-cgroup `io.max` / `io.bfq.weight` | They limit throughput or order requests per cgroup. They do not shorten a wait behind the shared journal. Throttling the other side can even lengthen the wait (priority inversion: the throttled task holds the transaction open). [M 2026-10-20 for `io.max`: A3 vs A2; the inversion itself is **[I]**] |
 | The July "BFQ shielded the game" result | A 4-minute fio run in `system.slice` with no journal sharing showed game `io.pressure full avg300` 0.05 % (MEASUREMENTS M6). That load did not contend on the game's fsync path. The 2026-10-20 runs, which did, gave game `io.pressure some` 23–48 % (A0–A3) while the *host* `io.pressure full` reached 69–76 %. Different load shape and different PSI kinds (`some` vs `full`, game vs host), not a contradiction. |
-| Game-cgroup memory PSI | Stayed ~0 during the stalls (`memory.min` protects the working set). The stall is not memory. [M 2026-10-20] |
+| Game-cgroup memory PSI | Stayed ~0 during the stalls (`memory.min` protects the working set), so it is not memory *pressure* of the game cgroup. [M 2026-10-20] It can still be IO waits caused by swap-in of pages zswap wrote back (section 4.6, with `memory.zswap.writeback=1` on the game cgroup): memory PSI does not show those. |
 
 ## 3. Instruments and how to read a D-state stack
 
@@ -181,9 +184,8 @@ Findings:
    against ~200 iops and 1.5–2.6 s at 16 MiB. At 256 KB it is also worse for the probe. Keep
    16 MiB / 4 MiB.
 4. **Queue depth 8 vs 16 at 64 KB is within the noise.**
-5. **Read-throughput impact (not measured in this matrix; measured later, section 4.6).** `max_sectors_kb` also caps read requests (the sequential
-   reads of builds and image layers). Before persisting 64 KB, measure sequential read MB/s at 64 KB
-   against 4096 KB.
+5. **Read-throughput impact (not measured in this matrix; measured in section 4.6).** `max_sectors_kb` also caps read requests (the sequential
+   reads of builds and image layers); section 4.6 measured sequential read MB/s at 64 KB against 4096 KB.
 
 **Recommendation (since applied as an interim, section 4.7):** `vm.dirty_bytes=16777216`, `vm.dirty_background_bytes=4194304`,
 `nr_requests=16` (8 is also fine), `max_sectors_kb=64`, subject to the read-throughput check
@@ -221,11 +223,21 @@ and the same standard load as section 4.
 B0's `do_swap_page` → `__folio_lock_or_retry` took 229 s in total, and `blk_mq_get_tag` in `swap_read_folio`
 7.5 s: anonymous pages that zswap had written back are read again behind the dev writeback queue. This is the
 same queueing mechanism as section 1, reached through a different door (swap-in instead of `fsync`). B1's
-residual waits are small: `ext4_sync_file` fsync ~0.4 s in total and swap-in ~0.25 s. The bounded settings
-therefore also cure the swap-in wait, and the tmpfs for `WS.log` alone would not have.
+residual waits are small: `ext4_sync_file` fsync ~0.4 s in total and swap-in ~0.25 s.
 
-**Sequential-read cost of `max_sectors_kb`** (the unmeasured cost in 4.4 finding 5). [M 2026-10-20
-gstammtisch, root LV read-only, two repetitions each.]
+"Dominant" is meant literally: in the B0 window the game's D-state totals were **229.4 s in `do_swap_page`**
+and **7.5 s in `blk_mq_get_tag` (`swap_read_folio`)**, with **no other stack above 1 s** (so no `jbd2` or
+`wait_transaction_locked` stack reached that total). [M] Host fact, measured 2026-10-20: the game cgroup
+(`wings.slice/docker-<id>.scope`) has `memory.zswap.writeback=1` and `memory.zswap.max=max`; the operator
+decision is that writeback=1 and the zswap shrinker are required (this contradicts the older
+`SOULMASK.md` statement of 0, corrected there). Inferences, **[I]**: that these are pages zswap wrote back
+and that they queue behind the dev writeback follow from B0 vs B1 (the wait vanishes when writeback is
+bounded), not from tracing each page; that the bounded settings therefore also cure the swap-in wait is
+inferred from the same pair; and that the `WS.log` tmpfs alone would not have is a counterfactual.
+
+**Sequential-read cost of `max_sectors_kb`** (the cost 4.4 finding 5 left open). [M 2026-10-20
+gstammtisch, root LV read-only, two repetitions each. Regime: raw LV reads at ≥600 GiB offsets on an
+80 %-full filesystem, each region read once; a provider-side cache cannot be excluded.]
 
 | `max_sectors_kb` | direct, QD4 | buffered (readahead) |
 |---|---|---|
@@ -234,16 +246,39 @@ gstammtisch, root LV read-only, two repetitions each.]
 | 128 | 0.47 / 0.47 GB/s | 0.33 / 0.23 GB/s |
 | 64 | 0.30 / 0.29 GB/s | 0.24 / 0.24 GB/s |
 
-**Decision: 64 KB.** Buffered reads are about equal across 64–256 KB (0.24 vs 0.27–0.35 GB/s), and even the
-slowest figure is ~25× the disk's ~10 MB/s write rate, so reads are not the bottleneck. Direct large reads do
-lose (1.3 → 0.3 GB/s), which is the accepted cost.
+**Decision: 64 KB.** Buffered sequential reads are the same at 64–256 KB (0.23–0.35 GB/s); only O_DIRECT
+large reads lose (1.3 → 0.3 GB/s), which is the accepted cost. (An earlier draft compared these read figures
+with the disk's write rate; that comparison is not valid and is dropped. Reads of builds and image pulls also
+share the queue with dev writeback.)
 
 ### 4.7 Interim persistence (live on gstammtisch)
 
-Applied 2026-10-20 as an **interim**, replacing the runtime-only trial:
-- `/etc/sysctl.d/90-mdt-io-writeback-interim.conf`: `vm.dirty_bytes` 16 MiB, `vm.dirty_background_bytes` 4 MiB.
-- `/etc/udev/rules.d/61-mdt-io-queue-interim.rules`: `vda` gets `max_sectors_kb` 64 and `nr_requests` 16. The
-  rule sorts **after** the `60-*bfq*` rules on purpose: a scheduler change resets `nr_requests`.
+[M 2026-10-20 gstammtisch.] Applied as an **interim**, replacing the runtime-only trial. The two files, verbatim
+(they are not in the repo; MDT-HS-05 removes them):
+
+`/etc/sysctl.d/90-mdt-io-writeback-interim.conf`
+```
+# INTERIM (2026-10-20, controller, operator-approved): bounded writeback so a dev writer cannot queue seconds of
+# dirty data ahead of the game's swap-in reads and fsyncs on the shared root disk (~10-18 MB/s write).
+# Measured on gstammtisch: vbpub scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md §4 (A/B, matrix, B0/B1) and
+# /home/vscode/vbpub-release-program-20261019/IO-STALL-TESTING-GUIDE.md §6-§9.
+# To be REPLACED by mdt-cockpit host-setup (MDT-HS-05: wizard-asked, benchmark-derived values); delete this file then.
+vm.dirty_bytes = 16777216
+vm.dirty_background_bytes = 4194304
+```
+
+`/etc/udev/rules.d/61-mdt-io-queue-interim.rules`
+```
+# INTERIM (2026-10-20, controller, operator-approved): small requests and a short queue on the root disk (vda),
+# so a sync read/write never waits behind many large writeback requests. Must sort AFTER the 60-*bfq* rules:
+# a scheduler change resets nr_requests. Measured: HOST-IO-INTERFERENCE.md §4 (64 KB best for latency; costs
+# sequential reads ~1.2 GB/s -> ~0.25-0.3 GB/s, still ~25x the disk's write rate).
+# To be REPLACED by mdt-cockpit host-setup (MDT-HS-05, derived disk, wizard-asked values); delete this file then.
+ACTION=="add|change", KERNEL=="vda", ATTR{queue/max_sectors_kb}="64", ATTR{queue/nr_requests}="16"
+```
+
+(The "~25x the write rate" in that file's comment is the dropped comparison above; it is quoted verbatim, not
+endorsed.) The rule sorts **after** the `60-*bfq*` rules on purpose: a scheduler change resets `nr_requests`.
 
 These files are not owned by host-setup. They are to be replaced by MDT-HS-05 (host-setup wizard keys plus a
 central benchmark that derives the values; the rule must select the device behind `/`, not `vda`). Until then
@@ -255,7 +290,7 @@ they carry gstammtisch literals, which is why the rules in section 5 ("derive, n
 |---|---|---|
 | `vm.dirty_bytes` / `vm.dirty_background_bytes` | 16 MiB / 4 MiB (measured). 32/8 MiB was also measured (section 4.4, 90 s, throttled state) and is clearly worse for the gate-like load: keep 16/4 | bounds the ordered-data backlog a journal commit can wait for: backlog ÷ rate. 256M/64M (A1) was still 21 s |
 | `/sys/block/<root disk>/queue/nr_requests` | 8–16 | bounds the device queue; the matrix (section 4.3, same dirty limit) shows q4 gives no further gain over q8–16. **[I]** the A/B's 6 s at 32 (A2) also carried `dirty_bytes` 256M, so it does not isolate `nr_requests` |
-| `/sys/block/<root disk>/queue/max_sectors_kb` | 64 (read-throughput check done, section 4.6) | 1 MB requests were the worst cell; 512 KB was no better than 256; 64 KB beat 128 and 256 KB for the small sync in both repetitions (section 4.4). It also caps read requests, which is unmeasured |
+| `/sys/block/<root disk>/queue/max_sectors_kb` | 64 (read-throughput check done, section 4.6) | 1 MB requests were the worst cell; 512 KB was no better than 256; 64 KB beat 128 and 256 KB for the small sync in both repetitions (section 4.4). It also caps read requests; the read cost is measured in 4.6 |
 | scheduler | keep `bfq` (measured under it) | `none`/`mq-deadline` untested. **[I]** bfq is what makes the dev tiers' cgroup weights order *queued requests* at all; it does not help the journal wait (section 6) |
 | dev `io.max` | derive from the ~10 MB/s steady state; do not pin literals | at the 40M cap the device saturated first, so the cap never bound (A3). Caps are the second line, after the queue bounds |
 
@@ -329,7 +364,7 @@ Runtime, reversible, **CHANGES STATE**, outside a game session:
 ROOTDEV=<that disk name>
 sysctl vm.dirty_bytes=16777216 vm.dirty_background_bytes=4194304
 echo 16  > /sys/block/$ROOTDEV/queue/nr_requests
-echo 64  > /sys/block/$ROOTDEV/queue/max_sectors_kb   # trial value; 128 is the fallback if sequential reads suffer
+echo 64  > /sys/block/$ROOTDEV/queue/max_sectors_kb   # accepted value (read cost measured, section 4.6)
 ```
 
 The interim persistence (section 4.7) is already live on gstammtisch; the permanent owner is host-setup

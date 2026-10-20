@@ -99,10 +99,24 @@ for `EATMYDATA` 0, 1 and unset.
 2. **Get a `libeatmydata.so` for that release.** Take the library from that release's own package, so it
    matches the container's glibc (Debian bookworm package `libeatmydata1`, file
    `/usr/lib/x86_64-linux-gnu/libeatmydata.so.1.3.0`). Extract it inside the same image into a scratch
-   directory (not the live volume):
+   directory (not the live volume).
+
+   **Host path first (devcontainer).** The Docker daemon is the host's, so `-v` must name the HOST path of
+   the output directory, not the devcontainer's. Derive it, never type it: find the host source of the mount
+   that contains your scratch dir and append the relative part. Measured 2026-10-20: the devcontainer's `/tmp`
+   is the host's `/home/vb/mdt--mounted-folders/tmp` (a measurement, do not copy it). The block below is the
+   general form (not run by the author as written; `$(hostname)` is the container id only if the devcontainer
+   does not override its hostname):
    ```bash
-   OUT=<a scratch dir>          # where YOU read the result (see "Host path" below)
-   mkdir -p "$OUT"
+   OUT=/tmp/eatmydata-out                     # where YOU read the result
+   mkdir -p "$OUT"                            # must exist first, or Docker creates the bind source as root
+   HOST_TMP=$(docker inspect "$(hostname)" --format '{{range .Mounts}}{{if eq .Destination "/tmp"}}{{.Source}}{{end}}{{end}}')
+   : "${HOST_TMP:?could not derive the host path of /tmp}"
+   HOST_OUT="$HOST_TMP/eatmydata-out"         # the same directory, as the Docker daemon sees it
+   # On a bare host there is no translation:  HOST_OUT="$OUT"
+   ```
+   Then extract (both variables are now defined):
+   ```bash
    docker run --rm --name "eatmydata-extract-$$" --cgroup-parent="${CGROUP_PARENT_DEV_BACKGROUND:?set CGROUP_PARENT_DEV_BACKGROUND (devcontainer env, or the dev-background slice name)}" \
      -u 0 --entrypoint bash -v "$HOST_OUT":/out ghcr.io/ptero-eggs/steamcmd:debian -c \
      'apt-get update -qq && cd /tmp && apt-get download libeatmydata1 && dpkg-deb -x libeatmydata1_*.deb x \
@@ -114,17 +128,6 @@ for `EATMYDATA` 0, 1 and unset.
    require newer symbols. *Alternative: build from source* the way `ksm-optin.c` is built
    (`gcc -shared -fPIC`): upstream is autotools (`autoreconf -fi && ./configure && make` in the image
    with `autoconf automake libtool` installed); not verified here, the package route is simpler.
-
-   **Host path (devcontainer).** The Docker daemon is the host's, so `-v` must name the HOST path of the
-   output directory, not the devcontainer's. Derive it, never type it: find the host source of a mount that
-   contains your scratch dir, then append the relative part. Measured 2026-10-20: the devcontainer's `/tmp` is
-   the host's `/home/vb/mdt--mounted-folders/tmp`. The general form (not run by the author as written):
-   ```bash
-   HOST_TMP=$(docker inspect "$(hostname)" --format '{{range .Mounts}}{{if eq .Destination "/tmp"}}{{.Source}}{{end}}{{end}}')
-   : "${HOST_TMP:?could not derive the host path of /tmp}"
-   OUT=/tmp/eatmydata-out; HOST_OUT="$HOST_TMP/eatmydata-out"
-   ```
-   On a bare host `OUT` and `HOST_OUT` are the same path.
 
    **Measured result 2026-10-20 (gstammtisch):** package `libeatmydata1_130-2+b1_amd64.deb`, file
    `libeatmydata.so.1.3.0` (14240 bytes), sha256
@@ -149,19 +152,30 @@ for `EATMYDATA` 0, 1 and unset.
 
 #### Verify
 
-First check that the container got the NEW startup, without dumping its environment (it holds passwords:
-grep only the two keys, and trim):
+Never print the whole environment: it holds passwords. Print only the facts, with exact matches, and never
+slice a long line by character count (the `LD_PRELOAD` text sits ~350 characters into `STARTUP`, so a slice
+like `cut -c1-200` hides exactly what you are checking, and a literal secret an admin put into a Startup
+Command would print if you did slice).
 
-```bash
-docker inspect <uuid> --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E '^EATMYDATA=|LD_PRELOAD' | cut -c1-200
-# expect EATMYDATA=1 and a STARTUP line containing LD_PRELOAD=/home/container/ksm-optin.so$( [ ... EATMYDATA ...
-```
-
-Then the process:
+**1. The running game's own preload (primary check; safe and exact):**
 
 ```bash
 PID=$(docker top <uuid> | awk '/WSServer-Linux-Shipping/{print $2; exit}')
-tr '\0' '\n' < /proc/$PID/environ | grep ^LD_PRELOAD=   # the game's own LD_PRELOAD (not the whole environ: it holds passwords)
+tr '\0' '\n' < /proc/$PID/environ | grep -E '^(LD_PRELOAD|EATMYDATA)='
+# expect with EATMYDATA on: LD_PRELOAD=/home/container/ksm-optin.so:/home/container/libeatmydata.so  and  EATMYDATA=1
+```
+
+**2. Did the recreated container get the NEW Startup Command** (the pitfall in step 4), extracting only the
+`LD_PRELOAD` token and a yes/no count:
+
+```bash
+docker inspect <uuid> --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^STARTUP=' | grep -o 'LD_PRELOAD=[^ ]*' | head -1
+docker inspect <uuid> --format '{{range .Config.Env}}{{println .}}{{end}}' | grep '^STARTUP=' | grep -c EATMYDATA   # 1 = new text, 0 = OLD startup
+```
+
+**3. The mapped libraries and the sync syscalls:**
+
+```bash
 grep -c libeatmydata /proc/$PID/maps       # > 0 : the library is mapped into the game
 grep -c ksm-optin    /proc/$PID/maps       # > 0 : KSM shim still there
 # count the game's sync syscalls for 60 s: with eatmydata working this prints 0

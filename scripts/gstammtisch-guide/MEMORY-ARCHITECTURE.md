@@ -67,7 +67,7 @@ For gstammtisch — one process holding lots of cold pages, sharing the box with
 | Swap disk (SSD) | ~100 µs–1 ms | 100 ms–1 s | Noticeable pause |
 | Swap disk (HDD) | ~1–10 ms | 1–10 s | "Chest open" stall |
 
-The swap-*in* fault is **synchronous**: the game thread blocks until the page is back. Disk-backed swap-in is the dominant cause of *memory-pressure* game stalls (the separate stall from host IO via the shared journal is in [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)); zswap-backed swap-in is 100–2000× faster but still has a cost when many pages are needed at once (area loads, chest contents). `workingset_refault_anon` is the counter that measures exactly this cost.
+The swap-*in* fault is **synchronous**: the game thread blocks until the page is back. Disk-backed swap-in is the dominant cause of *memory-pressure* game stalls (the stall from host IO is a separate mechanism, but it also reaches swap-in: with `writeback=1`, swap-in of pages zswap wrote back queues behind dev writeback, see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §4.6); zswap-backed swap-in is 100–2000× faster but still has a cost when many pages are needed at once (area loads, chest contents). `workingset_refault_anon` is the counter that measures exactly this cost.
 
 **Observed refault rate thresholds (Soulmask, 3 players, 2026-06-27):**
 

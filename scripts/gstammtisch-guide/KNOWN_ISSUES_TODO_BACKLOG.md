@@ -73,7 +73,7 @@ volume change or an ENOSPC on a live mount shows up.
 **Status:** OPEN (filed by SMT-02, 2026-10-20).
 
 `HOST-IO-INTERFERENCE.md` §5 recommends bounded `vm.dirty_*`, `nr_requests` and `max_sectors_kb`, and dev
-`io.max` caps derived from the ~10 MB/s steady write rate. Nothing is persisted. The 64/128/256 KB matrix is
+`io.max` caps derived from the ~10 MB/s steady write rate. The 64/128/256 KB matrix is
 in (§4.4), the live B0/B1 run and the read-throughput check are in (§4.6: 64 KB accepted). **Applied
 2026-10-20 as an interim** on gstammtisch (§4.7): `/etc/sysctl.d/90-mdt-io-writeback-interim.conf` (dirty
 16M/4M) and `/etc/udev/rules.d/61-mdt-io-queue-interim.rules` (vda: `max_sectors_kb` 64, `nr_requests` 16,
