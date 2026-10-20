@@ -299,7 +299,7 @@ they carry gstammtisch literals, which is why the rules in section 5 ("derive, n
 | scheduler | keep `bfq` (measured under it) | `none`/`mq-deadline` untested. **[I]** bfq is what makes the dev tiers' cgroup weights order *queued requests* at all; it does not help the journal wait (section 6) |
 | dev `io.max` | derive from the ~10 MB/s steady state; do not pin literals | at the 40M cap the device saturated first, so the cap never bound (A3). Caps are the second line, after the queue bounds |
 
-Related `vm.*` knob, not an IO knob: `vm.watermark_scale_factor` (live 200, repo file 50, provisional) governs
+Related `vm.*` knob, not an IO knob: `vm.watermark_scale_factor` (50, with `watermark_boost_factor` 0 since the operator decision of 2026-10-20; a 200 trial was superseded) governs
 when the game's threads enter direct reclaim; see
 [MEMORY-ARCHITECTURE.md §4](MEMORY-ARCHITECTURE.md#vmwatermark_scale_factor--what-it-does-what-we-measured-status).
 

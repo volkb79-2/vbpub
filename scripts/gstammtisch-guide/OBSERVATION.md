@@ -273,7 +273,54 @@ cat /sys/fs/cgroup/dev-workloads.slice/memory.current
 cat /sys/fs/cgroup/dev-workloads.slice/memory.zswap.current   # how much zswap this slice uses
 cat /sys/fs/cgroup/dev-workloads.slice/{memory.high,memory.max,memory.zswap.writeback}
 cat /sys/fs/cgroup/dev-workloads.slice/io.stat
-# on the Soulmask scope: memory.min, memory.low, memory.zswap.writeback (want 0)
+# on the Soulmask scope: memory.min, memory.low, memory.zswap.writeback
+# (the live value is 1: operator decision 2026-10-20, writeback=1 and the shrinker are required;
+#  the earlier "want 0" was superseded)
+```
+
+### Per-memcg zswap residency and charged IO (manual commands)
+
+For when topos is unavailable. Why these quantities matter: a game's zswap pool is charged to its own memcg
+(`memory.current` includes it), and reclaim, with the zswap shrinker, skips a memcg that is below its
+`memory.low`; so residency against low is what to read
+([zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc)).
+Read-only. `/sys/kernel/debug` needs root.
+
+```bash
+grep -E '^(Zswap|Zswapped)' /proc/meminfo                       # host: compressed bytes in RAM / original bytes
+grep -r . /sys/kernel/debug/zswap/                              # pool_total_size, stored_pages, written_back_pages, pool_limit_hit, reject_*
+grep -E '^(zswpin|zswpout|zswpwb|pswpin|pswpout) ' /proc/vmstat # host rates (diff two reads)
+for d in /sys/fs/cgroup/wings.slice/docker-*.scope; do
+  echo "$d cur=$(cat $d/memory.current) low=$(cat $d/memory.low)"
+  grep -E '^(anon|file|zswap|zswapped|zswpin|zswpout|zswpwb|workingset_refault_anon) ' $d/memory.stat
+  grep -E '^low ' $d/memory.events          # times reclaimed despite being under low
+done
+```
+
+Reading it: a game with `memory.current` below `memory.low` and a stable `zswapped` is being left alone (nothing
+reclaims it); `low` in `memory.events` counts reclaim that took pages anyway. (Measured 2026-10-20 ~21:40 UTC:
+MAIN 4227 M against low 5000 M, CLIENT 3577 M against 4000 M, pool 543 MB holding 2.1 GB.)
+
+**Issuer versus charged cgroup (IO).** The task that *issues* an IO and the cgroup it is *charged to* differ.
+Writeback is issued by `kworker` flush threads but charged to the memcg/blkcg that dirtied the page (cgroup
+writeback); swap-out is issued by kswapd or a direct-reclaiming thread but charged to the page owner's cgroup, as
+io.cost debt. Tools, and what each answers:
+
+| Tool | Shows | Note |
+|---|---|---|
+| `systemd-cgtop -d 2 -i --depth=4` | per-slice/scope IO as *charged* (`io.stat`) | the at-a-glance "where does the IO belong"; installed |
+| `iotop -oPa` / `iotop-c` | per-process IO as *issued* | `iotop-c` is trixie-backports 1.31; SWAPIN/IO% need `sysctl kernel.task_delayacct=1` |
+| `atop` 2.11 | per-process disk, a cgroup view, PSI, and a recorder (`atop -w file` / `atop -r file`) to replay an incident | installable; its zswap fields are unverified **[I]** |
+| `htop` | `IO_READ_RATE`/`IO_WRITE_RATE` and `CGROUP` columns per process | |
+| `below` (Meta) | cgroup-first with history | not packaged in Debian |
+
+None of them shows per-memcg zswap residency next to `memory.low`, or io.cost vrate/debt; the manual equivalents:
+
+```bash
+cat /sys/fs/cgroup/<slice>/io.stat                       # charged IO per cgroup (diff two reads)
+grep -o 'cost\.vrate=[0-9]*' /sys/fs/cgroup/io.stat      # io.cost vrate
+cat /sys/fs/cgroup/<slice>/io.pressure                   # per-cgroup IO pressure
+cat /proc/<pid>/task/*/stack                             # D-state stacks, for tasks in state D (root)
 ```
 
 ---

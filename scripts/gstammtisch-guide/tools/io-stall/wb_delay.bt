@@ -1,0 +1,21 @@
+// How long after a game process write()s a file does writeback put it on disk? (eatmydata: fsync is a no-op, so the
+// game considers the save done when write() returns.) ext4 files only (tmpfs logs never reach disk).
+// Usage: bpftrace wb_delay.bt <tgid1> <tgid2>
+kprobe:vfs_write /pid == $1 || pid == $2/
+{
+  $f = (struct file *)arg0;
+  if ($f->f_inode->i_sb->s_magic == 0xEF53) {
+    $ino = $f->f_inode->i_ino;
+    if (@first[$ino] == 0) { @first[$ino] = nsecs; @name[$ino] = str($f->f_path.dentry->d_name.name); @who[$ino] = pid; }
+    @last[$ino] = nsecs;
+    @bytes[$ino] += arg2;
+  }
+}
+tracepoint:writeback:writeback_single_inode /@first[args->ino]/
+{
+  $ino = args->ino;
+  time("%H:%M:%S ");
+  printf("pid=%d file=%s first_write->writeback=%d ms last_write->writeback=%d ms game_bytes=%d wrote_pages=%d\n",
+         @who[$ino], @name[$ino], (nsecs - @first[$ino]) / 1000000, (nsecs - @last[$ino]) / 1000000, @bytes[$ino], args->wrote);
+  delete(@first[$ino]); delete(@last[$ino]); delete(@bytes[$ino]); delete(@who[$ino]); delete(@name[$ino]);
+}

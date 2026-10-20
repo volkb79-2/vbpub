@@ -133,6 +133,33 @@ kswapd, not in the game's threads. Limits, from source:
 - Cost: more kswapd CPU and less usable free memory (MEMORY-ARCHITECTURE.md
   mitigation (b)).
 
+**Update, operator decision 2026-10-20 (~23:16 UTC): `vm.watermark_scale_factor` back to 50, and
+`vm.watermark_boost_factor = 0`, persisted on gstammtisch.** The provisional 200 above is superseded. At 14:09 UTC
+a stuck watermark boost (1.5 × the high watermark, which wsf 200 had raised) held ~860 MB free while all reclaim
+ran in the allocating threads; the mechanism and the recovery are in
+[`scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`, "Watermark boost"](../../scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md#watermark-boost-and-the-1409-utc-failure-mode).
+The decision table in section 6 is kept as it was recorded.
+
+## Steady state versus burst: what `memory.low` can and cannot do
+
+Observation 2026-10-20 ~21:40 UTC ([KERNEL-ANALYSIS section 6.1](KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc)):
+with both games *below* their `memory.low` the shrinker writes back nothing and the zswap contents stay resident
+for hours (543 MB pool holding 2.1 GB); at server start, *above* low and under escalating priority, it writes
+back nearly the whole LRU. The pattern is all or nothing.
+
+**Consequence (operator agreed this changes the approach; still to be verified by measurement [I]):**
+- **Steady state is a `memory.low` sizing question.** Low decides how much of a game stays in RAM *including its
+  compressed zswap part*. Sized near hot working set plus compressed warm set, reclaim and the shrinker act only
+  on the excess above low, and the coldest entries go first. Setting it too high keeps cold pages in zswap for
+  nothing (here ~418 MB).
+- **The burst stays the governor's job.** The chunked, paced writeback of this project remains the answer for the
+  startup burst (the memcg is above low then, whatever low is chosen).
+- **Relation to the recorded rejection.** The operator rejected *raising the steady low to cover the whole
+  ~7.5 G footprint* ("far too much", section 6 table), and measured that "around 4G min is fine… refaults stay low
+  at 5G"; that is consistent with this section: low 5000 M for MAIN is already in the range where the steady state
+  does not write back. What is new is the reading of low as the *residency knob* for the compressed part, to be
+  sized by measurement, not a request to raise it.
+
 ## 6. Recommendation
 
 ## Operator decisions (2026-10-20, recorded verbatim)

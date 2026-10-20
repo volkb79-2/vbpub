@@ -889,6 +889,40 @@ counts as busy. The VM lane asserts that the guest's idle mdt-buildkitd classifi
 expiry further out is a WARN and ignored. The file must be a regular file (lstat; a symlink or special file is refused) owned by the user the reconcile
 runs as (root in production, so a file an unprivileged user could create is refused), not group/world-writable, in a directory with the same properties.
 
+## Memory watermarks and watermark boost are kernel settings this host-setup does not own yet (follow-up)
+
+**Status.** host-setup manages `vm.dirty_*` and the root queue (MDT-HS-05) and the scheduler and io.cost (MDT-HS-07). It does **not** yet manage the
+memory watermarks. On gstammtisch they are set by hand in `/etc/sysctl.d/99-gstammtisch-memory.conf` (the repo copy is
+`scripts/gstammtisch-guide/files/etc/sysctl.d/99-gstammtisch-memory.conf`); `scripts/debian-install-v2` writes the same sysctls on a fresh install. The
+facts below are measured on gstammtisch (16 GB), 2026-10-20; mechanism statements are labelled [I]. The full write-up and the failure record are in
+`scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md` ("Watermark boost and the 14:09 UTC failure mode").
+
+**How the watermarks work.** Each zone has min < low < high. kswapd wakes below low and reclaims to high. An allocation that would go below min reclaims
+for itself (direct reclaim, which stalls the allocating thread). `vm.min_free_kbytes` sets min; `vm.watermark_scale_factor` sets the low−min and high−low
+gaps as a fraction of zone memory (200 = 2 %, 50 = 0.5 %, default 10). Measured, Normal zone: wsf 200 gives min 54 / low 313 / high 573 MB; wsf 50 gives
+min 54 / low 118 / high 183 MB; DMA32 has its own, and `lowmem_reserve_ratio` keeps part of DMA32 free and unusable for most allocations. Observed total
+free ~500–700 MB at wsf 200, expected ~200–350 MB at wsf 50 [I].
+
+**Boost.** On an external-fragmentation event `boost_watermark()` adds one pageblock (2 MB) to `zone->watermark_boost`, capped at high_wmark ×
+`watermark_boost_factor` / 10000 (default 15000 = 1.5 × high). The boost is added to all three watermarks and kswapd is woken; boosted kswapd reclaim runs
+with `may_swap = 0` and `may_writepage = 0` (clean file pages only), then kcompactd compacts. kswapd clears the boost at the end of its balance run.
+
+**The failure (2026-10-20 14:09 UTC, second Soulmask server starting).** Boost 220 008 pages = 1.5 × 146 672 (the high watermark at wsf 200) = 859 MB; the
+effective min was 912 MB. Boosted reclaim could not progress (~1.2 GB file, anon protected by `memory.min`/`low`, no swapping); after 16 failures
+`node_unreclaimable = 1` and kswapd slept. Only kswapd clears the boost, so it stuck: every allocation, game threads included, ran direct reclaim
+(`pgscan_kswapd` 0/s against `pgscan_direct` 11–16 k/s, `allocstall` ~170–200/s) with zswap at its pool limit writing back synchronously. **Recovery:**
+writing any value to `vm.watermark_scale_factor` or `vm.min_free_kbytes` runs `setup_per_zone_wmarks()`, which recomputes the watermarks and resets
+`watermark_boost` to 0; rewriting wsf 200 cleared it and kswapd resumed at once.
+
+**Decision (operator, 2026-10-20):** `vm.watermark_boost_factor = 0` (persisted on gstammtisch at 23:16 UTC) and `vm.watermark_scale_factor = 50`; the target is
+~100–300 MB free. Cost of boost 0: more fragmentation, little impact with THP=`madvise`. Watch `allocstall_*` in `/proc/vmstat` during a server start.
+Related knobs to name: `min_free_kbytes`, `watermark_scale_factor`, `watermark_boost_factor`, `lowmem_reserve_ratio`, `extfrag_threshold`,
+`compaction_proactiveness`, THP `enabled`/`defrag`.
+
+**Wizard implication (not implemented; backlog MDT-021).** The wizard, and debian-install-v2 which writes the same sysctls, should ask for or derive
+`watermark_boost_factor` (suggest 0 on swap-backed, memory-protected hosts) next to wsf, with the reasoning above. `mdt-host-check.sh` should WARN when
+`node_unreclaimable` is 1 or `watermark_boost` is non-zero for long.
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may

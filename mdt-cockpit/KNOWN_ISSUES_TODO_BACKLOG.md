@@ -330,3 +330,40 @@ the cap, plus a deliberately stale runtime entry under another spelling (`/dev/v
 afterwards. Also assert in the guest, after a reboot and before the first reconcile, that the rendered
 static `dev.slice` line produced an `io.max` entry. Cleanup must `dmsetup remove` and detach the loop in the
 guest before the lane ends.
+
+## MDT-021 - the wizard and host-check do not know the memory watermarks or watermark boost (DOCS-FOLD-01, 2026-10-20)
+
+**Status:** OPEN, recorded only; not implemented.
+
+`vm.watermark_boost_factor` was found stuck-boosting on gstammtisch (2026-10-20 14:09 UTC: ~860 MB held free while all
+reclaim ran in the allocating threads, `node_unreclaimable = 1`); the operator set `vm.watermark_boost_factor = 0` and
+`vm.watermark_scale_factor = 50` by hand (persisted 23:16 UTC). Mechanism, numbers and recovery: `docs/DESIGN-GUIDE.md`,
+"Memory watermarks and watermark boost are kernel settings this host-setup does not own yet". Follow-up:
+- the wizard (and `scripts/debian-install-v2`, which writes the same sysctls) should ask for or derive
+  `watermark_boost_factor` next to `watermark_scale_factor`, suggesting 0 on swap-backed, memory-protected hosts, with
+  that reasoning;
+- `mdt-host-check.sh` should WARN when `node_unreclaimable` is 1, or `watermark_boost` is non-zero for a long time
+  (per zone, `/proc/zoneinfo` and `/proc/vmstat`).
+
+## MDT-022 - a timed-out lister test left orphaned processes running for 38 hours (2026-10-19 to 2026-10-20)
+
+**Status:** OPEN, severity low (it leaks processes on every timeout); recorded only; not fixed.
+
+**What happened.** A test of `host-setup/scripts/mdt-cgroup-io-limits.sh` in worktree `mdt-hostsetup-io-20261019` left the
+chain `bash -x mdt-cgroup-io-limits.sh dev.slice` → `cat …/io.max`, plus `column -t`, running from 2026-10-19 08:27 to
+2026-10-20 ~23:30 UTC (38 h), all reparented to PID 1 after the test's timeout. In the fixture directory
+`/tmp/tmpo1i6get1` the file `dev.slice/dev-gates.slice/io.max` was a named pipe (`prw-r--r--`), and `cat` on it blocked
+forever. The controller killed the processes and removed the fixture on 2026-10-20 ~23:30 UTC.
+
+**Where.** `host-setup/tests/test_io_governance.py:548` (`os.mkfifo(path)` in `ListingToolTests._fifo_file`, lines
+546–559): each FIFO is served by a daemon thread of the test process, so once the test process dies or times out
+nothing writes and every later `cat` blocks. The lister is run with `subprocess.run(..., timeout=30)` at lines 583,
+606 and 661; on `TimeoutExpired` Python kills only the direct child (`bash`), not its descendants (`cat`, `column`).
+(Note: the older copy `modern-debian-tools-python-debug/host-setup/tests/` has no `mkfifo`.)
+
+**Defects.**
+1. The fixture uses a FIFO with no persistent writer, or the test's timeout does not kill its process group (start the
+   child with `start_new_session=True` and `os.killpg` on timeout, or use `terminate`/`kill` on the whole group).
+2. The script has no read timeout on cgroup files (`scripts/mdt-cgroup-io-limits.sh:66,108,110`: `cat "$cur/io.max"`,
+   `cat "$cg/io.latency"`, `cat "$cg/io.max"`). On a real host a hung cgroup read would block the same way; a bounded
+   read (for example `timeout 5 cat`) would turn that into a visible error.

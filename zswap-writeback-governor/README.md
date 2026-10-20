@@ -72,9 +72,16 @@ Docs triad: this README is WHAT; `docs/DESIGN.md` is WHY; HOW to adopt
   cannot be excluded; the operator reports the pattern without load after every
   settle. Both are recorded facts, and H1 tests the operator's observation.
   (inferred; to be decided by the synthetic)
-- Recommendation: on 7.2.6 there is nothing beyond keeping
-  `vm.watermark_scale_factor` 200 (provisional) and measuring the reclaim
-  caller; later the userspace governor on `memory.reclaim source=zswap`
+- Steady state versus burst (2026-10-20 ~21:40 UTC): with both games *below*
+  their `memory.low` the shrinker writes back nothing and a 543 MB pool holding
+  2.1 GB stays resident for hours; above low at server start it writes back
+  nearly the whole LRU. So `memory.low` is the residency knob for the steady state
+  (sizing, to be verified by measurement, inferred) and the governor is the answer
+  for the burst. KERNEL-ANALYSIS section 6.1, DESIGN "Steady state versus burst".
+- Recommendation (as recorded; the provisional `vm.watermark_scale_factor` 200 was
+  superseded by the operator on 2026-10-20 ~23:16 UTC: wsf 50 and
+  `watermark_boost_factor` 0, see DESIGN section 5): on 7.2.6 there is nothing
+  beyond measuring the reclaim caller; later the userspace governor on `memory.reclaim source=zswap`
   together with a per-pass budget/rate pursued upstream. See DESIGN section 6.
 
 ## Operator decisions (2026-10-20, verbatim)

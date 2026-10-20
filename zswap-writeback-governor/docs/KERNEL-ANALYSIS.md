@@ -319,6 +319,43 @@ this repo; if `RAM` is `memory.current`, the game sat ~500M below `memory.high`
 8000M, which would not by itself trigger memory.high reclaim without growth
 (transient excursions are not visible at 5 s sampling).
 
+### 6.1 Steady-state zswap residency below `memory.low` (observation 2026-10-20 ~21:40 UTC)
+
+**Observation [M]** (gstammtisch; two Soulmask servers were the only load for hours):
+
+| What | Value |
+|---|---|
+| Host zswap pool | 543 MB compressed, holding 2.1 GB (3.9×) |
+| Lifetime counters | `written_back_pages` 8.27 M (31.5 GB); `pool_limit_hit` 16 697 (`max_pool_percent` 25) |
+| Game MAIN | 164 MB compressed / 0.6 GB original |
+| Game CLIENT | 254 MB compressed / 1.2 GB original |
+| Operator's Soulmask monitor | 148 MB + 235 MB zpool, stable for hours, `rfz/s` = 0, with the shrinker enabled |
+| Usage against low | MAIN 4227 M against `memory.low` 5000 M; CLIENT 3577 M against 4000 M |
+
+**Why the contents stay resident [S + I].** The shrinker runs only from memory reclaim, as a per-memcg
+`shrink_slab` inside `shrink_node` (sections 1 and 6). Reclaim skips a memcg whose usage is below its
+`memory.low` (section 6 (a)), unless every cgroup is protected and the second "low breach" pass runs.
+`memory.current` includes the memcg's own zswap pool (section 6, last paragraph). Both games were below their
+low, so nothing reclaimed them, the shrinker never ran for them, and their zswap contents stayed. That the
+skip is the whole explanation is **[I]**; the source side is proven, the observation fits it.
+
+**Why `rfz` is 0 [I].** Those pages were compressed because they were cold, and nothing has touched them since.
+
+**The "all or nothing" pattern [S + I].** At server start (2026-10-20 09:19–09:22 UTC: zpool 769 MB → 0, swap
++2.1 GB, see MEASUREMENTS.md M8) the memcg was *above* its low and under escalating reclaim priority.
+`shrink_slab` scans `freeable >> priority` (section 5), so as the priority drops the shrinker writes back nearly
+the whole zswap LRU. In steady state, *below* low, it writes back nothing. Neither extreme gives a deliberate
+"warm set in zswap, cold set on disk".
+
+**Consequence for sizing [I, still to be verified by measurement].** `memory.low` decides how much of a game's
+footprint stays in RAM, *including its compressed zswap part*. Sizing it near hot working set plus compressed
+warm set means reclaim, and with it the shrinker, acts only on the excess above low; reclaim pressure on a memcg
+is proportional to its usage above low (section 6 (b), for the LRU scan); and zswap writes back from the LRU
+tail (the oldest stores, second chance via the referenced bit, section 2), so the coldest go first. The cost of
+setting low too high is that cold pages are retained in zswap and use RAM for nothing (here ~418 MB in steady
+state). See DESIGN.md, "Steady state versus burst". Manual commands to read this per memcg:
+[`scripts/gstammtisch-guide/OBSERVATION.md`, "Per-memcg zswap residency"](../../scripts/gstammtisch-guide/OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
+
 ## 7. Reconciling with the operator's claim
 
 Operator claim: "no other load; a few minutes after the server settles, the

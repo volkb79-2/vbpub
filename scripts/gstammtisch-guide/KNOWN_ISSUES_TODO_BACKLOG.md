@@ -88,8 +88,9 @@ The instrument scripts are in `tools/io-stall/` but carry gstammtisch literals (
 
 **Operator decisions (quoted):** **(a) REJECTED**: "no, far too much, around 4G min is fine as set now. refaults
 stay low at 5G." (followed by "ignore your suggestion."; steady band stays min 4000M / low 5000M). **(b) ACCEPTED provisionally**:
-`vm.watermark_scale_factor` 200, **applied live only**; the repo sysctl file (`99-gstammtisch-memory.conf:16`)
-still says 50, so a reboot or `sysctl --system` reverts it; persisting waits for the measurement of the next
+`vm.watermark_scale_factor` 200, **applied live only** (**superseded the same day, ~23:16 UTC: the operator
+settled on wsf 50 and `watermark_boost_factor` 0, persisted; the 200 trial hit a stuck boost, see
+MEMORY-ARCHITECTURE.md "Watermark boost"**); what was owed for the 200 trial was the measurement of the next
 startup burst (game D-state in `shrink_memcg_cb` versus kswapd, the reclaim caller above it with a deeper stack than
 `kstack(10)`, and the fps dip). Note (b) helps only if the caller is global direct reclaim, not memcg
 `memory.high` reclaim. **(c) REJECTED**: "no, we need
@@ -106,3 +107,12 @@ start; details in MEMORY-ARCHITECTURE.md); **(b)** [I] raise `vm.watermark_scale
 `memory.reclaim source=zswap` exists (posted upstream, not known to be merged; kernel 7.2.6 evidence is only the
 missing kallsyms symbols; the `memory.reclaim` key probe was inconclusive). Not applied: the operator decision
 that `writeback=1` and the shrinker are required stands.
+
+## GG-6 — swappiness drift: host 10 versus repo 100
+
+**Status:** OPEN, operator to decide (filed by DOCS-FOLD-01, 2026-10-20). Neither value was changed.
+
+The gstammtisch host runs `vm.swappiness = 10`, while the repo's `files/etc/sysctl.d/99-gstammtisch-memory.conf` says
+100 (reasoning in MEMORY-ARCHITECTURE.md §4: with zswap, reclaiming anon pages is cheap, so high swappiness keeps file
+cache resident). Which one is intended, and whether the repo or the host should move, is the operator's call; until
+then the repo file and the host disagree, and `sysctl --system` from the repo would change the live value.

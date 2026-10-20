@@ -627,6 +627,13 @@ ONLY, NOT PERSISTED, plus a NOTICE for a later or non-MDT scheduler rule. A sche
 reconcile verifies the scheduler, the queue values and the io.cost model and QoS against the env and re-applies on drift with a `WARN: drift:`
 log line (a disk re-add or a scheduler switch reverts them); empty keys are never touched. Why: DESIGN-GUIDE (MDT-HS-07).
 
+### Memory watermarks and boost (not managed yet)
+
+host-setup does not own `vm.watermark_scale_factor`, `vm.watermark_boost_factor` or `vm.min_free_kbytes` yet; on gstammtisch they are set by hand
+(`wsf` 50, `boost` 0 since 2026-10-20), and a stuck watermark boost once forced all reclaim into the allocating threads. The wizard and
+`mdt-host-check.sh` follow-up is recorded as MDT-021 in `KNOWN_ISSUES_TODO_BACKLOG.md`. Why, and the measured failure: DESIGN-GUIDE, "Memory
+watermarks and watermark boost" (linked from `scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`).
+
 ### Pausing the re-assert for IO experiments, and restarting mdt-buildkitd (MDT-HS-07)
 
 The minute-by-minute reconcile re-applies the scheduler and queue values (udev trigger), `vm.dirty_*` (`sysctl -p`) and the io.cost model and QoS
