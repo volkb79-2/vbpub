@@ -16,8 +16,8 @@ from measurements, not itself tested). Nothing in the "Recommended settings" sec
 
 - **The game is compute-only.** [M 2026-10-20 gstammtisch] Its main threads make `futex`, `poll`,
   `clock_nanosleep` and `epoll` syscalls. Its only ext4 writes are `WS/Saved/Logs/WS.log` (thread
-  `FAsyncWriter_WS`, with `fdatasync`) and, with players online, the SQLite files `WS/Saved/world.db`
-  and `account.db`.
+  `FAsyncWriter_WS`, with `fdatasync`) and, with players online, the SQLite files under `WS/Saved` (`world.db`,
+  `account.db`).
 - **The stall comes from the shared root ext4 journal, not from the game's own IO.** [M 2026-10-20
   gstammtisch] Root is ext4 in `data=ordered` mode. In that mode a journal commit first writes the
   dirty data attached to the transaction, including other workloads' data. The game blocks in
@@ -42,7 +42,7 @@ from measurements, not itself tested). Nothing in the "Recommended settings" sec
 | The game's `io.stat` says "no IO" | True, and irrelevant: it blocks on *other* workloads' queue. Look at where its threads block, not at how much IO it issues. [M 2026-10-20] |
 | iostat `%util` | On a parallel virtio disk 100 % only means "at least one request was always in flight". Read `aqu-sz` and `r_await`/`w_await`, on `dm-0` (the LVM layer, where buffered writeback queues up) **and** `vda`. |
 | Per-cgroup `io.max` / `io.bfq.weight` | They limit throughput or order requests per cgroup. They do not shorten a wait behind the shared journal. Throttling the other side can even lengthen the wait (priority inversion: the throttled task holds the transaction open). [M 2026-10-20 for `io.max`: A3 vs A2; the inversion itself is **[I]**] |
-| The July "BFQ shielded the game" result | A 4-minute fio run in `system.slice` with no journal sharing showed game `io.pressure full avg300` 0.05 % (MEASUREMENTS M6). That load did not contend on the game's fsync path. The 2026-10-20 runs, which did, gave 24–76 % PSI. Different load shape, not a contradiction. |
+| The July "BFQ shielded the game" result | A 4-minute fio run in `system.slice` with no journal sharing showed game `io.pressure full avg300` 0.05 % (MEASUREMENTS M6). That load did not contend on the game's fsync path. The 2026-10-20 runs, which did, gave game `io.pressure some` 23–48 % (A0–A3) while the *host* `io.pressure full` reached 69–76 %. Different load shape and different PSI kinds (`some` vs `full`, game vs host), not a contradiction. |
 | Game-cgroup memory PSI | Stayed ~0 during the stalls (`memory.min` protects the working set). The stall is not memory. [M 2026-10-20] |
 
 ## 3. Instruments and how to read a D-state stack
@@ -99,9 +99,9 @@ filesystem. All settings restored afterwards and verified.
 
 Reading it:
 
-1. **Bounding the bytes in flight removes the stall without losing throughput** (A4 had the highest
-   loaded-phase throughput). Dev writers are throttled in `balance_dirty_pages` (their own process)
-   instead of in the shared journal. Game IO pressure fell from 24–48 % to 1.7 %.
+1. **Bounding the bytes in flight removes the stall without losing throughput** (A4 17.6 MB/s against
+   A0's unbounded 18.3: the same device throughput, within run noise). Dev writers are throttled in `balance_dirty_pages` (their own process)
+   instead of in the shared journal. Game `io.pressure some` fell from 23–48 % (A0–A3) to 1.7 %.
 2. **The dev caps changed almost nothing** (A3 vs A2): the device saturates below the cap, so `io.max`
    never binds.
 3. **`write()` latency is the price.** Plain `write()` p99 was 0.1 ms in A1 but 80–400 ms in A2–A4
@@ -171,9 +171,9 @@ values in section 5.
 | Knob | Recommended | Reason |
 |---|---|---|
 | `vm.dirty_bytes` / `vm.dirty_background_bytes` | 16 MiB / 4 MiB (measured), 32/8 MiB as an unmeasured midpoint to confirm | bounds the ordered-data backlog a journal commit can wait for: backlog ÷ rate. 256M/64M (A1) was still 21 s |
-| `/sys/block/<root disk>/queue/nr_requests` | 8–16 | bounds the device queue; 4 gave no further gain, 32 (A2) was 6 s |
+| `/sys/block/<root disk>/queue/nr_requests` | 8–16 | bounds the device queue; the matrix (section 4.3, same dirty limit) shows q4 gives no further gain over q8–16. **[I]** the A/B's 6 s at 32 (A2) also carried `dirty_bytes` 256M, so it does not isolate `nr_requests` |
 | `/sys/block/<root disk>/queue/max_sectors_kb` | 256 or smaller (pending section 4.4) | 1 MB requests were the worst cell; 512 KB was no better than 256 |
-| scheduler | keep `bfq` (measured under it) | `none`/`mq-deadline` untested; bfq is needed for the cgroup weights of the dev tiers |
+| scheduler | keep `bfq` (measured under it) | `none`/`mq-deadline` untested. **[I]** bfq is what makes the dev tiers' cgroup weights order *queued requests* at all; it does not help the journal wait (section 6) |
 | dev `io.max` | derive from the ~10 MB/s steady state; do not pin literals | at the 40M cap the device saturated first, so the cap never bound (A3). Caps are the second line, after the queue bounds |
 
 Rules for whoever implements it:
@@ -183,9 +183,12 @@ Rules for whoever implements it:
 - Derive the values from a device-rate measurement and a target wait bound (e.g. (dirty + in-flight)
   ÷ steady rate ≤ 2 s), not as literals. A faster host (r1002) needs different numbers.
 - Each value gets a documented reason per knob (see the estate version-policy rule for floors).
-- The existing July advice in this guide (200 MB/s `io.max`, 31M/100/400 besteffort caps) predates
-  this and was never derived from the steady write rate; see the "Superseded" notes in
-  [GAMINGHOST-SWAP-2.md](GAMINGHOST-SWAP-2.md) and [MEASUREMENTS.md M6](MEASUREMENTS.md).
+- The existing July advice in this guide predates this and was never derived from the steady write
+  rate: the 200 MB/s `io.max` (see the banner in [GAMINGHOST-SWAP-2.md](GAMINGHOST-SWAP-2.md)), the
+  40 % `BE_IO_CAP_PCT` dynamic caps of the 516 MB/s baseline (table row and note in
+  [plan-host-resource-governance.md](plan-host-resource-governance.md) §3.1, [MEASUREMENTS.md M6](MEASUREMENTS.md)),
+  and the 31M/100/400 boot fallback (`IOWriteBandwidthMax=/dev/vda 31M` and its siblings in the unit
+  listing of `plan-host-resource-governance.md`, also quoted in `MEMORY-ARCHITECTURE.md` §5).
 
 ## 6. Cgroup IO controllers: what fits and what does not
 
@@ -212,7 +215,7 @@ Rules for whoever implements it:
 | `eatmydata` in the game's `LD_PRELOAD` | removes the game's own sync waits (mainly SQLite) | not crash-consistent across host crash/power loss; plain `write()` still waits on the journal. See [the egg doc](../../game_stuff/soulmask/README.md#eatmydata-optional-fsync-removal) |
 | separate filesystem for game data (own journal) | dev writeback no longer shares the game's journal | migration of the Wings volumes, an extra device or LV; the shared device queue stays, so the queue bounds are still needed |
 | root `data=writeback` | commits stop carrying the ordered data | weaker crash semantics for all root files (stale blocks after a crash); cannot be switched by remount on a mounted root, so needs fstab plus a reboot |
-| loop devices | (not an option) | **never on prod**: loop-device swap caused a real host hang and reboot on 2026-09-09 (see the incident record `cgroupns-host-loop-device-host-hang`) |
+| loop devices | (not an option) | **never on prod**: a `--commit` loop-device swap that was detached without `swapoff` caused a real host hang and reboot on 2026-09-09, which also hit the production game server |
 
 ## 8. What to monitor
 
@@ -241,3 +244,32 @@ echo 256 > /sys/block/$ROOTDEV/queue/max_sectors_kb
 Persist through `sysctl.d` and a udev rule only after the confirmation run in section 4.5. Revert
 values (defaults on this host): `dirty_bytes` 0 (ratio mode 20/10), `nr_requests` 256,
 `max_sectors_kb` 4096.
+
+## 10. What this doc superseded (removal ledger, SMT-02, 2026-10-20)
+
+Each wrong or stale IO claim found in the guide, where it was, and what happened to it. No operator
+command or still-valid procedure was removed; every removed claim has a one-line pointer here.
+
+| File, section | Claim | Action |
+|---|---|---|
+| `SOULMASK.md` §2b "The problem that existed" | the IO issue is "device utilization from random seeks" (3.4 M vs 674 K IO counts) | removed; "Superseded 2026-10-20" note |
+| `SOULMASK.md` §2b "Live settings" | BFQ 1000:1 means the bench gets the disk only when the game's queue is idle | rewritten: ordering of queued requests only, no help for the journal wait |
+| `SOULMASK.md` §2b "Live settings" | `io.max` caps keep the device queue clean for DB saves; headroom keeps the device off saturation | rewritten with the A3 vs A2 evidence (caps never bind, device saturates at ~15 MB/s) |
+| `SOULMASK.md` §2b "Why `io.latency` is absent" | `io.cost.qos` gives the game 99.98 % of tokens and is a "second enforcement layer" | condensed to "candidate, untested"; the example command is kept, marked not applied |
+| `SOULMASK.md` "Soulmask save & backup mechanism" | save is in-memory, "no disk I/O" | kept, hedged "per the egg text"; measured note added that the SQLite files are synced on the shared journal with players online |
+| `SOULMASK.md` §2c | the chest-open stall is the file-cache stall | kept; one clause separates it from the host-IO stall |
+| `SOULMASK.md` §1 | egg named `egg-soulmask.json` | corrected to the real egg file |
+| `MEASUREMENTS.md` M6 | BFQ/io.weight alone "nearly fully shielded" the game (PSI 0.05 %) | kept as history; "do not generalise" correction; 516 MB/s write figure flagged as ~30× the measured rate; cap-validation recipe kept with a qualifier |
+| `plan-host-resource-governance.md` §3.1 table row `io.max`, the rationale paragraph, the §7 step-5 text, the unit listing | 40 % dynamic caps, 31M/100/400 fallback, "IO latency protected by BFQ weight plus io.max" | kept as design history, each qualified with a correction note |
+| `MEMORY-ARCHITECTURE.md` §3 and §5 | disk swap-in is "the dominant cause of game stalls"; 31M/100/400 fallback | scoped to memory-pressure stalls; note on the caps |
+| `OBSERVATION.md` BFQ section | BFQ 1000:1 protects the game; `r_await` 0.3 ms means a fast disk | qualified; the weak write rate added |
+| `CGROUP-MONITORING.md` `io.bfq.weight` | BFQ prioritises the game over all other cgroups | qualified |
+| `WINGS-CGROUPS-ROLLOUT.md` finding 4 | `io.cost` is the real fix | kept (still valid measurement); pointer added, `io.cost` marked candidate |
+| `wings-cgroups/v1-legacy/README.md` | `io.cost` "would address the mechanism more directly"; eatmydata "considered and rejected" | both qualified with pointers; the rejection's reasoning is kept as the risk statement, the 2026-10-20 opt-in is recorded |
+| `GAMINGHOST-SWAP-1.md`, `GAMINGHOST-SWAP-2.md` | `io.max` 200 MB/s and 100M/50M examples | "Superseded IO advice" banner; the swap analysis is untouched |
+| `SOULMASK-TMPFS.md` "Shortcomings of the legacy split-ramdisk design" (~55 lines) | history of the 2026-07 design | condensed to three defects; the 2026-07-29 incident and the decisions it motivated are kept (the step-by-step Unix-semantics walk-through is dropped) |
+| `KNOWN_ISSUES_TODO_BACKLOG.md` GG-2 | policy numbers KEEP_BACKUPS=1, 256M | synced to the shipped `soulmask_tmpfs.env` (3, 512M) |
+
+**Kept, unsure** (condensed or annotated, not deleted): the "Migration from legacy" procedure and the
+legacy-vs-unified table in `SOULMASK-TMPFS.md`; the July baseline and cap numbers in the two `plan-*`
+documents; the bodies of the two `GAMINGHOST-SWAP` guides.

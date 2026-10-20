@@ -51,6 +51,12 @@ tail -f /var/log/mdt-stall/ab-phases.log        # phase markers and the RESTORED
 | `ab_matrix.sh` | 13-cell matrix, 60 s cells (§4.3) | dirty limit x queue depth x request size, REF first and last |
 | `ab_matrix2.sh` | 16-cell matrix, 90 s cells, two repetitions, 64/128/256 KB requests (§4.4) | same method, small request sizes |
 
+**Restore hazard on a persisted bound.** `ab_runner.sh` and `ab_a4.sh` do NOT refuse to start when
+`vm.dirty_bytes` is already set, and their `restore()` writes `vm.dirty_ratio`/`vm.dirty_background_ratio`,
+which in the kernel resets `dirty_bytes` to 0 (ratio mode). Once the recommended bounds are persisted
+(GG-4), running either script silently reverts them until the next reboot and installs the constant dev
+caps below. Only the matrix scripts refuse (exit 2) on a non-zero `dirty_bytes`.
+
 Cell method (`ab_matrix*.sh`): set the knobs, read them back and skip the cell on a mismatch, drain
 dirty and writeback below 4 MiB, 20 s quiet, then the load. The matrix scripts refuse to start (exit
 2) when `vm.dirty_bytes`/`vm.dirty_background_bytes` are already non-zero. `LOAD_SECS`, `QUIET_SECS`

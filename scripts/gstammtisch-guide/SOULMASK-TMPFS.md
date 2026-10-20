@@ -28,7 +28,8 @@ The 2026-07-07 design (two services, two tmpfs mounts, `PAK_RAMDISK` + `STATIC_R
    failed writing the new `.pak` ("Disk write failure"): the other running instance still held the
    deleted old `.pak` open and its 1.67G consumed the 3G tmpfs. Result: new `.sig`, no `.pak`; the running
    instance survived (old inode mmap'd) but a restarting one could not start. Hence: full coverage and
-   read-only by default (below).
+   a read-only design (below). Note: the host now runs it read-write by an accepted trade-off
+   (`SOULMASK_TMPFS_READONLY=0` since 2026-07-31, Wings' pre-boot chown; see "Current accepted tradeoff").
 2. **No guaranteed source instance** (first instance in filesystem order, possibly stale). Hence `ROLE=main`.
 3. **Duplicated logic** in two scripts. Hence one service, one script, one config.
 

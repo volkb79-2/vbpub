@@ -87,7 +87,7 @@ Effective I/O ratio (BFQ): **1000:1** between *queued requests of different cgro
 not protect the game's `fdatasync`, which waits for a journal commit that carries other cgroups' dirty data
 ([HOST-IO-INTERFERENCE.md §2](HOST-IO-INTERFERENCE.md#2-why-the-obvious-metrics-mislead)).
 
-No slice-level `memory.high` is imposed by this game guide — the devcontainer is also the VSCode workspace, and capping its whole interactive slice would kill the IDE. The IO caps are applied by the mdt host-setup companion (`mdt-dev-governance-reconcile.sh`), not from this guide: one formula for all capped citizens — a percentage of every current measured ceiling from `mdt-io-baseline.py` (r-IOPS, w-IOPS, read MB/s, write MB/s), 80% per governed container and 60% for the `dev.slice` tier as a whole. Protection leans on the weight ratios; the headroom keeps the device off saturation. M6 validates.
+No slice-level `memory.high` is imposed by this game guide — the devcontainer is also the VSCode workspace, and capping its whole interactive slice would kill the IDE. The IO caps are applied by the mdt host-setup companion (`mdt-dev-governance-reconcile.sh`), not from this guide: one formula for all capped citizens — a percentage of every current measured ceiling from `mdt-io-baseline.py` (r-IOPS, w-IOPS, read MB/s, write MB/s), 80% per governed container and 60% for the `dev.slice` tier as a whole. Protection leans on the weight ratios; the headroom was meant to keep the device off saturation (**not so for writes**: the device saturates at ~15 MB/s, far below caps derived from the July baseline; see paragraph below and [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §4.2). M6 validates.
 
 The `io.max` caps cut the benchmark's 709 r/s read burst (observed without caps). They do **not** keep the
 device queue short for the game's writes: measured 2026-10-20, caps at 40 MB/s changed nothing because the
@@ -610,7 +610,7 @@ The egg description and RCON command semantics reveal a **two-stage pipeline**:
 | **Save** | `-saving=600` (10 min) | Serializes live UE4 actor graph → **in-memory SQLite DB** (RAM). CPU-intensive; no disk I/O (per the egg text; not separately verified). | `SaveWorld 0` |
 | **Backup** | `-backup=960` (16 min) | Flushes the in-memory DB → **`world.db` on disk**. Pure sequential write, no game logic. | `BackupDataBase world` |
 
-> **Measured 2026-10-20 (gstammtisch):** with players online, `WS/Saved/world.db` and `account.db` are
+> **Measured 2026-10-20 (gstammtisch):** with players online, the SQLite files under `WS/Saved` (`world.db`, `account.db`) are
 > also written and synced on the shared root ext4 journal, so these writes are exposed to host-IO
 > stalls ([HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)). The "in-memory DB" wording above is the
 > egg's description, not a measured isolation from disk.

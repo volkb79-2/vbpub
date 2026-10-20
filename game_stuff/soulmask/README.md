@@ -30,7 +30,7 @@ so they do not conflict, and the order does not matter. Wherever a `.so` is miss
 ### eatmydata (optional fsync removal)
 
 **Why.** The game is compute-only; its ext4 writes are `WS.log` (now on tmpfs, SMT-01) and, with players
-online, the SQLite files `world.db`/`account.db`. Their `fsync`s wait for a journal commit shared with
+online, the SQLite files under `WS/Saved` (`world.db`, `account.db`). Their `fsync`s wait for a journal commit shared with
 every other workload on the root filesystem, which stalled the server for up to 26 s under dev IO load
 (measured 2026-10-20). Full mechanism and evidence:
 [`HOST-IO-INTERFERENCE.md`](../../scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md). eatmydata removes
@@ -41,12 +41,23 @@ Measured with the probe: `write()` max 3.6 s on kernel defaults, ~0.1–0.4 s wi
 settings. The bounded kernel settings (`HOST-IO-INTERFERENCE.md` section 5) remain the main fix;
 eatmydata only removes the sync waits.
 
+**Decision record.** `eatmydata` was considered and rejected on 2026-08-28 on durability grounds
+(`wings-cgroups/v1-legacy/README.md`, "Considered and rejected": it makes the game's `fsync` lie, so a crash
+or power loss can lose the latest save/journal state entirely). **The operator decided on 2026-10-20 to offer
+it as an opt-in, default off, admin-only, knowing that risk.** What changed is the evidence: `fsync` waits on
+the shared host journal stalled the game for up to 26 s (measured 2026-10-20), and `WS.log`, the other
+syncing writer, already moved to tmpfs (SMT-01), so the remaining syncs are the SQLite files. The old
+rejection's reasoning is the risk statement below; it is not withdrawn, only accepted per server.
+
 **Risk, stated plainly.** With `fsync` a no-op the SQLite databases are **not crash-consistent across a
 host crash or power loss**: corruption is possible, not just the loss of the last minutes. A crash of the
 game process alone is fine, the data is still in the page cache. A clean host `reboot` is fine too
 (the kernel flushes the page cache at shutdown; inferred, not tested). Mitigations: the game's own
 `-backup=` interval (egg variable `BACKUP_TIME`, default 960 s) and Wings backups, see
-`scripts/gstammtisch-guide/SOULMASK-BACKUP.md`. The variable is admin-only on purpose.
+`scripts/gstammtisch-guide/SOULMASK-BACKUP.md`. These reduce logical loss only: the backups are written
+without `fsync` too, so a host crash that tears the live file and a recent backup in the same window is not
+covered. The variable is admin-only on purpose. Verify on first use (the bpftrace check below) that nothing
+else reads an environment variable of this name.
 
 #### The startup change
 
@@ -69,8 +80,16 @@ for `EATMYDATA` 0, 1 and unset.
    from `steamcmd/debian/Dockerfile` in github.com/Ptero-Eggs/yolks, which starts `FROM debian:bookworm-slim`
    (read 2026-10-20; Debian 12, glibc 2.36, amd64). That Dockerfile can change, so check the image you
    actually run:
+   Any container you start on this host must be placed in a cgroup tier (never left at Docker's unconfined
+   default). The value comes from the devcontainer's environment (`CGROUP_PARENT_DEV_BACKGROUND`, set to
+   `dev-background.slice` by its `devcontainer.json`). A bare host shell has no such variable and
+   `/etc/mdt/host-setup.env` does not define one (it holds the `DEV_BACKGROUND_*` settings of that slice): there,
+   export the slice name the host defines first (check it exists:
+   `systemctl show dev-background.slice -p LoadState`):
    ```bash
-   docker run --rm --entrypoint sh ghcr.io/ptero-eggs/steamcmd:debian -c '. /etc/os-release; echo $PRETTY_NAME; ldd --version | head -1'
+   export CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice   # only on a bare host; skip inside the devcontainer
+   docker run --rm --name "eatmydata-probe-$$" --cgroup-parent="${CGROUP_PARENT_DEV_BACKGROUND:?set CGROUP_PARENT_DEV_BACKGROUND (devcontainer env, or the dev-background slice name)}" \
+     --entrypoint sh ghcr.io/ptero-eggs/steamcmd:debian -c '. /etc/os-release; echo $PRETTY_NAME; ldd --version | head -1'
    ```
 2. **Get a `libeatmydata.so` for that release.** Take the library from that release's own package, so it
    matches the container's glibc (Debian bookworm package `libeatmydata1`, file
@@ -78,12 +97,13 @@ for `EATMYDATA` 0, 1 and unset.
    directory (not the live volume):
    ```bash
    mkdir -p /root/eatmydata-out
-   docker run --rm -u 0 --entrypoint bash -v /root/eatmydata-out:/out ghcr.io/ptero-eggs/steamcmd:debian -c \
+   docker run --rm --name "eatmydata-extract-$$" --cgroup-parent="${CGROUP_PARENT_DEV_BACKGROUND:?set CGROUP_PARENT_DEV_BACKGROUND (devcontainer env, or the dev-background slice name)}" \
+     -u 0 --entrypoint bash -v /root/eatmydata-out:/out ghcr.io/ptero-eggs/steamcmd:debian -c \
      'apt-get update -qq && cd /tmp && apt-get download libeatmydata1 && dpkg-deb -x libeatmydata1_*.deb x \
       && cp -L x/usr/lib/x86_64-linux-gnu/libeatmydata.so.1 /out/libeatmydata.so'
    ```
-   The container is throwaway (`--rm`), but it starts a container on the host: place it in the right
-   cgroup tier like any other (`--cgroup-parent="$CGROUP_PARENT_DEV_BACKGROUND"`). Do not use a
+   The container is throwaway (`--rm`, unique `--name`) and placed by the `--cgroup-parent` shown (the
+   `${VAR:?}` makes the command refuse to run if it is empty). Do not use a
    `libeatmydata` from the host's own (Debian 13) package for a bookworm image: a newer-glibc build can
    require newer symbols. *Alternative: build from source* the way `ksm-optin.c` is built
    (`gcc -shared -fPIC`): upstream is autotools (`autoreconf -fi && ./configure && make` in the image

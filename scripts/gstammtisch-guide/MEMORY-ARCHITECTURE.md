@@ -176,7 +176,8 @@ be applied at runtime, are documented in that companion's `CGROUP-NOTES.md`.
 > IO caps are now **dynamic**: `setup-cgroups.sh` applies `BE_IO_CAP_PCT`
 > (default 40%) of the measured `io-baseline.env` ceilings at runtime via
 > `systemctl set-property --runtime besteffort.slice`; the unit's static
-> `IO*Max` (31M/100/400) is only a boot-window fallback before that runs.
+> `IO*Max` (31M/100/400) is only a boot-window fallback before that runs. (2026-10-20: these caps are not
+> derived from the device's real ~10–15 MB/s steady write rate; see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §5.)
 >
 > ⚠ **Protection chain (found 2026-07-06):** `memory.min`/`memory.low` are *hierarchical* — a cgroup's effective protection is capped by every ancestor's value. The game scope lives under `system.slice` and the pak slice under `soulmask.slice`; without `MemoryMin` on those ancestors both floors are **ineffective** against global reclaim. Since 2026-07-07 `setup-cgroups.sh` asserts the ancestor floors (table above) via `systemctl set-property`. Do NOT set `system.slice` below the game floor — the parent value silently CAPS the child's effective protection.
 

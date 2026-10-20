@@ -1,0 +1,7 @@
+Vendored UNCHANGED (MIT, Matthew Penner) from the image source of ghcr.io/ptero-eggs/steamcmd:debian:
+  https://github.com/Ptero-Eggs/yolks/blob/main/steamcmd/entrypoint.sh
+Read 2026-10-20 via the GitHub contents API: git blob sha ff11716af2aa2882e475920a11482cd0ca51d0ce,
+last changed in commit 0d5ecd665858db8f120f95392bf3c0af5e148444 (2025-04-21), repo main at 1c0801172d6b.
+The steamcmd/debian/Dockerfile there copies this file to /entrypoint.sh and runs it as CMD.
+test_soulmask_egg_startup.py checks the blob sha, so a silent edit of the fixture fails the test.
+When upstream changes, refresh the fixture and re-run: the test renders the egg through it.

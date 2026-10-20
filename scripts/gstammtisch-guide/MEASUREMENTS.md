@@ -194,7 +194,7 @@ MDT results file is the authoritative source after a fresh identity-bound benchm
 Notable: game `io.pressure full avg300` stayed at 0.05 % through that 4-minute saturation run, with
 the benchmark uncapped in system.slice. **Do not generalise this** (corrected 2026-10-20): that load did not
 contend on the game's fsync/journal path. A load that does (dev writeback sharing the root ext4 journal)
-gave game IO pressure of 24–76 % and 26 s stalls despite BFQ weights; see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §2. Also note
+gave game `io.pressure some` of 23–48 % (host `full` up to 76 %) and 26 s stalls despite BFQ weights; see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) §2. Also note
 that 516 MB/s write bandwidth above is ~30× the 14–18 MB/s measured on 2026-10-20 (re-run the baseline
 before trusting any io.cost model derived from it).
 
