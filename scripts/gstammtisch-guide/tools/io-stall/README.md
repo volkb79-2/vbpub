@@ -33,6 +33,16 @@ lines carrying `epoch` and `games[].fps`; check your monitor's output has them.
 
 ## A/B runners — **CHANGES STATE**
 
+> **HAZARD (found 2026-10-20): run `systemctl daemon-reload` after every `ab_*` script, then let the MDT
+> reconcile re-verify.** systemd 257 keeps one in-memory IO limit entry per device path spelling. The
+> scripts clear the slice limits and restore them via `/dev/vda`, while the MDT reconcile uses
+> `/dev/mapper/…-root`; the cleared entry stays behind as a stale all-`max` entry, and on the live host it
+> won at apply time: `dev.slice`'s kernel `io.max` was left **empty, silently uncapped**. `daemon-reload`
+> rebuilds the list from the drop-ins. The scripts are the recorded instruments and are deliberately not
+> edited; this is a documented post-run step. Check afterwards: `cat /sys/fs/cgroup/dev.slice/io.max`
+> must show the expected caps (`systemctl show` hides all-max entries, so it cannot confirm this).
+> Details: [HOST-IO-INTERFERENCE.md §6](../../HOST-IO-INTERFERENCE.md#6-cgroup-io-controllers-what-fits-and-what-does-not).
+
 These **change host state** and restore it on exit (an `EXIT` trap). They set `vm.dirty_*`,
 `nr_requests`, `max_sectors_kb` and the `io.max` of `dev.slice` and `dev-gates.slice`, and start
 write load (a dd loop plus fio) and an fdatasync probe unit. They create `/var/tmp/mdt-loadtest`
@@ -42,6 +52,9 @@ as a transient unit, outside player hours, and read the log:
 ```bash
 systemd-run --unit=mdt-ab --property=RuntimeMaxSec=14400 /var/log/mdt-stall/ab_matrix.sh
 tail -f /var/log/mdt-stall/ab-phases.log        # phase markers and the RESTORED line
+# after the RESTORED line (post-run steps, mandatory):
+systemctl daemon-reload                         # drops the stale per-spelling IO limit entries
+cat /sys/fs/cgroup/dev.slice/io.max             # confirm the caps are back; wait for/trigger the MDT reconcile to verify
 ```
 
 | Script | Experiment (guide section) | Phases |
@@ -49,7 +62,7 @@ tail -f /var/log/mdt-stall/ab-phases.log        # phase markers and the RESTORED
 | `ab_runner.sh` | A/B, 240 s phases (§4.2) | BASELINE, A0 defaults, A1 `dirty_bytes` 256M/64M, A2 + `nr_requests` 32, A3 + dev caps |
 | `ab_a4.sh` | A4 (§4.2): bounded bytes in flight | `dirty_bytes` 64M/16M, `nr_requests` 16, `max_sectors_kb` 256, no caps |
 | `ab_matrix.sh` | 13-cell matrix, 60 s cells (§4.3) | dirty limit x queue depth x request size, REF first and last |
-| `ab_matrix2.sh` | 16-cell matrix, 90 s cells, two repetitions, 64/128/256 KB requests (§4.4) | same method, small request sizes |
+| `ab_matrix2.sh` | 16-cell run (8 settings × 2 repetitions), 90 s cells, 64/128/256 KB requests (§4.4) | same method, small request sizes |
 
 **Restore hazard on a persisted bound.** `ab_runner.sh` and `ab_a4.sh` do NOT refuse to start when
 `vm.dirty_bytes` is already set, and their `restore()` writes `vm.dirty_ratio`/`vm.dirty_background_ratio`,

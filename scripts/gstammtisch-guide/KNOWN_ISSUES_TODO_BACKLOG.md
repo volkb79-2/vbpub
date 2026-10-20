@@ -73,7 +73,8 @@ volume change or an ENOSPC on a live mount shows up.
 **Status:** OPEN (filed by SMT-02, 2026-10-20).
 
 `HOST-IO-INTERFERENCE.md` §5 recommends bounded `vm.dirty_*`, `nr_requests` and `max_sectors_kb`, and dev
-`io.max` caps derived from the ~10 MB/s steady write rate. Nothing is persisted. Needs: the pending
-64/128 KB matrix (§4.4 placeholder), one confirmation run inside the throttled steady state, then a
-host-setup work item (sysctl.d + udev rule keyed on the device behind `/`, values derived not literal).
+`io.max` caps derived from the ~10 MB/s steady write rate. Nothing is persisted. The 64/128/256 KB matrix is
+in (§4.4): recommended `dirty_bytes` 16 MiB/4 MiB, `nr_requests` 16, `max_sectors_kb=64` (128 as the fallback).
+Needs: a sequential **read-throughput check** at 64 KB vs 4096 KB (the one unmeasured cost, §4.4 finding 5),
+one confirmation run inside the throttled steady state, then a host-setup work item (sysctl.d + udev rule keyed on the device behind `/`, values derived not literal).
 The instrument scripts are in `tools/io-stall/` but carry gstammtisch literals (`/dev/vda`, slice names, constant restore caps, dated file names); parameterising them (derive the disk, read the pre-test caps) is part of this item.

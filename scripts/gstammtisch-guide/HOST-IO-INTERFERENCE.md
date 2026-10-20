@@ -146,13 +146,48 @@ Findings:
    no other writer; matches a drained burst budget **[I]**). The worst cell sits at that transition,
    so part of its 12 s may be throttling onset; its ranking stays the same either way.
 
-### 4.4 Matrix with 64/128 KB requests (§9 of the working guide)
+### 4.4 Matrix with 64/128/256 KB requests
 
-<!-- SMT-02 PLACEHOLDER: the controller supplies the measured numbers; do not invent them. -->
-**PENDING (controller).** A second matrix with `max_sectors_kb` 64 and 128 is being measured. Until
-its table is pasted here, the recommendation below is `max_sectors_kb=256` "or smaller, pending
-this table". Fill in: cell table, which request size wins, and whether it changes the recommended
-values in section 5.
+[M 2026-10-20 05:51–06:23 UTC gstammtisch.] `ab_matrix2.sh`: 8 settings × 2 repetitions (a, b), 90 s
+cells, interleaved (the a-order, then the b-order reversed). Same load, probe, drain and quiet gap as
+section 4.3; no dev caps. The device was in its throttled state (~10 MB/s) for almost every cell.
+Restore verified (`dirty_ratio` 20/10, `nr_requests` 256, `max_sectors_kb` 4096); the dev.slice cap had to
+be re-applied afterwards (see the systemd hazard in section 6). Each cell shows a / b. `d` = `dirty_bytes`
+MiB, `q` = `nr_requests`, `r` = `max_sectors_kb`.
+
+| setting | probe fdatasync p50 | p99 | max | game D max | fio iops | fio fsync p99 |
+|---|---|---|---|---|---|---|
+| **d16 q16 r64** | 3.7 / 1.9 ms | 104 / 203 ms | 165 / 354 ms | 0.09 / 0.11 s | 210 / 203 | 1.65 / 1.74 s |
+| **d16 q8 r64** | 16 / 2.0 ms | 129 / 127 ms | 255 / 133 ms | 0.41 / 0.09 s | 182 / 206 | 1.89 / 1.65 s |
+| d16 q8 r128 | 3.7 / 21 ms | 105 / 221 ms | 124 / 461 ms | 0.19 / 0.30 s | 236 / 209 | 2.11 / 2.40 s |
+| d16 q16 r128 | 33 / 35 ms | 280 / 466 ms | 352 / 559 ms | 0.18 / 0.51 s | 234 / 189 | 2.40 / 2.57 s |
+| d16 q16 r256 | 26 / 62 ms | 342 / 523 ms | 401 ms / 1.20 s | 0.20 / 0.52 s | 243 / 155 | 1.47 / 2.87 s |
+| d16 q8 r256 | 69 / 70 ms | 898 / 545 ms | 1.95 / 1.05 s | 1.62 / 0.84 s | 123 / 145 | 3.61 / 3.41 s |
+| d32 q16 r128 | 61 / 85 ms | 199 / 570 ms | 202 / 643 ms | 0.10 / 0.23 s | **79 / 110** | **7.0 / 5.2 s** |
+| d32 q16 r256 | 200 / 132 ms | 1.49 s / 553 ms | 2.08 s / 728 ms | 1.86 / 0.33 s | **52 / 91** | **10.0 / 4.7 s** |
+
+All cells kept fps ≥ 28.9.
+
+Findings:
+
+1. **Smaller requests lower the latency of the small sync, monotonically: 64 KB < 128 KB < 256 KB.** With
+   64 KB requests the probe's median fdatasync is 2–4 ms (25–70 ms at 256 KB), p99 100–200 ms, the worst
+   case ≤ 354 ms and the game D-stall ≤ 0.41 s. It holds in both repetitions, so it is above the 2× noise
+   floor.
+2. **Smaller requests do not cost the gate-like load anything here.** fio iops 182–210 at 64 KB against
+   155–243 at 256 KB (dirty 16 MiB). Device write throughput is bound by the device (~10 MB/s throttled)
+   in every cell.
+3. **A 32 MiB dirty limit is clearly worse for the gate-like load:** 52–110 iops with a 5–10 s fsync p99,
+   against ~200 iops and 1.5–2.6 s at 16 MiB. At 256 KB it is also worse for the probe. Keep
+   16 MiB / 4 MiB.
+4. **Queue depth 8 vs 16 at 64 KB is within the noise.**
+5. **Not measured: read-throughput impact.** `max_sectors_kb` also caps read requests (the sequential
+   reads of builds and image layers). Before persisting 64 KB, measure sequential read MB/s at 64 KB
+   against 4096 KB.
+
+**Recommendation (not applied):** `vm.dirty_bytes=16777216`, `vm.dirty_background_bytes=4194304`,
+`nr_requests=16` (8 is also fine), `max_sectors_kb=64`, **subject to the read-throughput check**
+(finding 5). 128 KB is the fallback if reads suffer.
 
 ### 4.5 Caveats (not proven)
 
@@ -163,6 +198,7 @@ values in section 5.
   interleaved, inside the throttled steady state, ~12 min) is still to run.
 - **Everything ran under BFQ.** `none` and `mq-deadline` are untested. BFQ keeps its own internal
   queueing, so how `nr_requests` interacts with it is **[I]** from the numbers, not from the code.
+- **Read throughput at small `max_sectors_kb` is unmeasured** (section 4.4 finding 5).
 - **Nothing is persisted.** All values were applied at runtime and restored.
 - **`vm.dirty_bytes` is host-global** and also bounds every production container's writeback.
 
@@ -172,7 +208,7 @@ values in section 5.
 |---|---|---|
 | `vm.dirty_bytes` / `vm.dirty_background_bytes` | 16 MiB / 4 MiB (measured), 32/8 MiB as an unmeasured midpoint to confirm | bounds the ordered-data backlog a journal commit can wait for: backlog ÷ rate. 256M/64M (A1) was still 21 s |
 | `/sys/block/<root disk>/queue/nr_requests` | 8–16 | bounds the device queue; the matrix (section 4.3, same dirty limit) shows q4 gives no further gain over q8–16. **[I]** the A/B's 6 s at 32 (A2) also carried `dirty_bytes` 256M, so it does not isolate `nr_requests` |
-| `/sys/block/<root disk>/queue/max_sectors_kb` | 256 or smaller (pending section 4.4) | 1 MB requests were the worst cell; 512 KB was no better than 256 |
+| `/sys/block/<root disk>/queue/max_sectors_kb` | 64 (fallback 128), subject to a read-throughput check | 1 MB requests were the worst cell; 512 KB was no better than 256; 64 KB beat 128 and 256 KB for the small sync in both repetitions (section 4.4). It also caps read requests, which is unmeasured |
 | scheduler | keep `bfq` (measured under it) | `none`/`mq-deadline` untested. **[I]** bfq is what makes the dev tiers' cgroup weights order *queued requests* at all; it does not help the journal wait (section 6) |
 | dev `io.max` | derive from the ~10 MB/s steady state; do not pin literals | at the 40M cap the device saturated first, so the cap never bound (A3). Caps are the second line, after the queue bounds |
 
@@ -194,6 +230,14 @@ Rules for whoever implements it:
 
 - **`io.max` (dev tiers).** Useful as a throughput ceiling only if derived from the steady state.
   Does not shorten the journal wait. [M 2026-10-20: A3 vs A2]
+- **systemd spelling hazard for any script that touches slice IO limits.** [M 2026-10-20 gstammtisch,
+  systemd 257] systemd keeps one in-memory IO limit entry *per device path spelling*. An empty
+  `IOReadBandwidthMax=` resets an entry to `max` but keeps it, and `systemctl show` hides all-max entries.
+  After the matrix scripts cleared and re-set limits via `/dev/vda` while the MDT reconcile sets them via
+  `/dev/mapper/…-root`, a stale all-max entry won at apply time and `dev.slice`'s kernel `io.max` was
+  **empty (uncapped), silently**. `systemctl daemon-reload` rebuilt the list from the drop-ins and the
+  reconcile then verified again. Rule: use the same spelling as the MDT reconcile, or run
+  `systemctl daemon-reload` afterwards. The MDT-HS-04 fix adds a one-shot self-heal.
 - **`io.bfq.weight`.** Orders requests between cgroups at the scheduler. Does not help once the
   game's `fdatasync` waits for a journal commit carrying other cgroups' data. [I]
 - **`io.latency`: does not fit.** Not compiled in on Debian 13 (`CONFIG_BLK_CGROUP_IOLATENCY` not set;
@@ -238,7 +282,7 @@ Runtime, reversible, **CHANGES STATE**, outside a game session:
 ROOTDEV=<that disk name>
 sysctl vm.dirty_bytes=16777216 vm.dirty_background_bytes=4194304
 echo 16  > /sys/block/$ROOTDEV/queue/nr_requests
-echo 256 > /sys/block/$ROOTDEV/queue/max_sectors_kb
+echo 64  > /sys/block/$ROOTDEV/queue/max_sectors_kb   # trial value; 128 is the fallback if sequential reads suffer
 ```
 
 Persist through `sysctl.d` and a udev rule only after the confirmation run in section 4.5. Revert
