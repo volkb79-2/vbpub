@@ -208,8 +208,12 @@ current field: Docker 29 (API 1.56) no longer sends the deprecated top-level `id
 A legacy top-level `id` is accepted only when `Actor` is absent (older daemons) or agrees with it;
 a disagreement is refused loudly and neither id is acted on. The command filters on
 `type=container`, so a non-container event is logged and ignored. One malformed line does not kill
-the guard: it is logged as an ERROR and answered by an immediate full reconcile; five in a row make
-the guard exit so systemd shows the failure.
+the guard: it is logged as an ERROR and answered by an immediate full reconcile; five in a row, or 20 within 60 seconds, make
+the guard exit so systemd shows the failure. The immediate reconcile is throttled to once per rescan
+interval. A container that vanishes between listing and `docker inspect` (`No such container` /
+`No such object`) is skipped; any other inspect failure still exits. Events must carry a full
+64-hex id and the sweep lists with `ps -aq --no-trunc`. `check.sh` warns on a non-zero
+`NRestarts` and on malformed events in the last hour.
 
 The wizard's second confirmation is recorded durably in
 `/var/lib/mdt/guard-terminate.confirmed` (policy, BuildKit image, timestamp, and a digest

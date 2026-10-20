@@ -44,7 +44,7 @@ NO_ID = json.dumps({"Type": "container", "Action": "create", "Actor": {"Attribut
 NOT_JSON = "Error response from daemon: boom"
 
 
-def run_watch(lines: list[str]):
+def run_watch(lines: list[str], step: float = 0.0):
     """Feed `lines` to watch() through fakes; return (reconciled ids, reconcile_all calls, raised error)."""
     queue = collections.deque(lines)
     reconciled: list[str] = []
@@ -90,6 +90,12 @@ def run_watch(lines: list[str]):
             pass
 
     process = Process()
+    now = [0.0]
+
+    def clock():
+        now[0] += step
+        return now[0]
+
     config = GUARD.GuardConfig(policy="report-only", buildkit_image="moby/buildkit:x")
     error = None
     with mock.patch.object(GUARD, "reconcile_all", side_effect=lambda d, c: full_scans.__setitem__(0, full_scans[0] + 1)), \
@@ -97,7 +103,7 @@ def run_watch(lines: list[str]):
          mock.patch("sys.stderr"):
         try:
             GUARD.watch("docker", config, rescan_interval=3600.0, popen=lambda *a, **k: process,
-                        clock=lambda: 0.0, selector_factory=Selector)
+                        clock=clock, selector_factory=Selector)
         except GUARD.GuardError as exc:
             error = str(exc)
     return reconciled, full_scans[0], error
@@ -164,7 +170,25 @@ class ResilienceTests(unittest.TestCase):
         reconciled, full_scans, error = run_watch([NO_ID] * 20)
         self.assertIn("malformed", error)
         self.assertIn(str(GUARD.MAX_CONSECUTIVE_MALFORMED_EVENTS), error)
-        self.assertEqual(full_scans, 1 + GUARD.MAX_CONSECUTIVE_MALFORMED_EVENTS - 1)
+        self.assertEqual(full_scans, 2, "sweeps are throttled to one per rescan interval (H-28)")
+
+    def test_interleaved_malformed_events_trip_the_rolling_window(self) -> None:
+        """H-26: bad,good,bad,good never reaches the consecutive limit but must not hide a broken parser."""
+        reconciled, _, error = run_watch([NO_ID, DOCKER_29] * 50)
+        self.assertIn("within", error)
+        self.assertIn(str(GUARD.MAX_MALFORMED_IN_WINDOW), error)
+
+    def test_a_slow_trickle_outside_the_window_does_not_exit(self) -> None:
+        reconciled, _, error = run_watch([NO_ID, DOCKER_29] * 50, step=4.0)
+        self.assertTrue(error.startswith(ENDED), error)
+        self.assertEqual(len(reconciled), 50)
+
+    def test_interleaved_flood_does_not_storm_reconcile_all(self) -> None:
+        """H-28: 19 interleaved bad lines (under the window limit) cost one sweep, not nineteen."""
+        lines = [NO_ID, DOCKER_29] * (GUARD.MAX_MALFORMED_IN_WINDOW - 1)
+        _, full_scans, error = run_watch(lines)
+        self.assertTrue(error.startswith(ENDED), error)
+        self.assertEqual(full_scans, 2)
 
     def test_a_good_event_resets_the_malformed_streak(self) -> None:
         n = GUARD.MAX_CONSECUTIVE_MALFORMED_EVENTS
@@ -172,6 +196,67 @@ class ResilienceTests(unittest.TestCase):
         reconciled, _, error = run_watch(lines)
         self.assertEqual(reconciled, [CID] * 3)
         self.assertTrue(error.startswith(ENDED), error)
+
+
+class InspectRaceTests(unittest.TestCase):
+    """H-25: an ephemeral container may vanish between listing/event and inspect."""
+
+    @staticmethod
+    def _docker(stderr: str, rc: int = 1):
+        import subprocess
+        return lambda docker, args: subprocess.CompletedProcess([docker, *args], rc, "", stderr)
+
+    def test_vanished_container_is_skipped_not_fatal(self) -> None:
+        config = GUARD.GuardConfig(policy="terminate", buildkit_image="moby/buildkit:x")
+        for msg in ("Error response from daemon: No such container: " + CID,
+                    "Error: No such object: " + CID):
+            with mock.patch.object(GUARD, "_docker", self._docker(msg)):
+                self.assertIsNone(GUARD.reconcile("docker", CID, config))
+
+    def test_daemon_error_still_fails_loudly(self) -> None:
+        config = GUARD.GuardConfig(policy="terminate", buildkit_image="moby/buildkit:x")
+        for msg in ("Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?",
+                    "permission denied while trying to connect to the Docker daemon socket", ""):
+            with mock.patch.object(GUARD, "_docker", self._docker(msg)):
+                with self.assertRaises(GUARD.GuardError) as ctx:
+                    GUARD.reconcile("docker", CID, config)
+                self.assertNotIsInstance(ctx.exception, GUARD.ContainerGone)
+
+    def test_sweep_survives_a_container_vanishing_midway(self) -> None:
+        import subprocess
+        config = GUARD.GuardConfig(policy="report-only", buildkit_image="moby/buildkit:x")
+        seen = []
+
+        def fake(docker, args):
+            if args[0] == "ps":
+                return subprocess.CompletedProcess(args, 0, CID + "\n" + OTHER + "\n", "")
+            seen.append(args[-1])
+            if args[-1] == CID:
+                return subprocess.CompletedProcess(args, 1, "", "Error: No such object: " + CID)
+            return subprocess.CompletedProcess(args, 1, "", "daemon exploded")
+
+        with mock.patch.object(GUARD, "_docker", fake):
+            with self.assertRaises(GUARD.GuardError):
+                GUARD.reconcile_all("docker", config)
+        self.assertEqual(seen, [CID, OTHER], "the vanished one is skipped, the real failure then raises")
+
+    def test_sweep_lists_full_ids(self) -> None:
+        import subprocess
+        calls = []
+
+        def fake(docker, args):
+            calls.append(list(args))
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch.object(GUARD, "_docker", fake):
+            GUARD._container_ids("docker")
+        self.assertIn("--no-trunc", calls[0])
+
+    def test_short_event_ids_are_refused(self) -> None:
+        with self.assertRaises(GUARD.MalformedEvent):
+            GUARD.container_id_from_event({"Actor": {"ID": CID[:12]}})
+        with self.assertRaises(GUARD.MalformedEvent):
+            GUARD.container_id_from_event({"Actor": {"ID": 123456789012}})
 
 
 class DocsTests(unittest.TestCase):

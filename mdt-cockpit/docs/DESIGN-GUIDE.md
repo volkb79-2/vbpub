@@ -661,7 +661,7 @@ filter guarantees container events and a stray event has no container to police.
 logged, counted and answered by an immediate `reconcile_all()`: a restart (`RestartSec=5`) is a window in
 which created containers are not seen, so a single bad line must not cost one. Only
 `MAX_CONSECUTIVE_MALFORMED_EVENTS` (5) in a row exit non-zero, because that means the event shape is not
-understood and systemd should show it. A good event resets the streak.
+understood and systemd should show it. A good event resets the streak. Review follow-ups: a rolling window (20 within 60 s) also exits, so bad/good interleaving cannot hide a broken parser; the immediate sweep runs at most once per rescan interval so an interleaved flood cannot storm the Docker API; a container vanishing between listing and inspect (ephemeral `--rm`) is skipped only on Docker's explicit `No such container`/`No such object`, so a daemon outage still fails loudly; event ids must be full 64-hex and the sweep uses `ps -aq --no-trunc` so a container named like another's short id cannot shadow it.
 
 ## Per-container memory policy
 

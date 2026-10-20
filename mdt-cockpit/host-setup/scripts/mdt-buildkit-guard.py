@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 from mdt_cli import MdtArgumentParser
 import hashlib
+import collections
 import json
 import re
 import selectors
@@ -51,7 +52,22 @@ class MalformedEvent(GuardError):
 # reconcile. Only a PERSISTENT run of them means the daemon's event shape is not understood, and
 # then the guard exits so systemd shows the failure instead of looping quietly.
 MAX_CONSECUTIVE_MALFORMED_EVENTS = 5
-_CONTAINER_ID = re.compile(r"[0-9a-fA-F]{12,64}")
+# ...and a trickle of bad lines interleaved with good ones must not hide a broken parser forever
+# (H-26): this many malformed events inside the window exit as well.
+MAX_MALFORMED_IN_WINDOW = 20
+MALFORMED_WINDOW_SECONDS = 60.0
+# Docker events always carry the full 64-hex id (H-27); a shorter prefix can be ambiguous.
+_CONTAINER_ID = re.compile(r"[0-9a-fA-F]{64}")
+
+
+class ContainerGone(GuardError):
+    """`docker inspect` says the container no longer exists (an ephemeral --rm container, H-25)."""
+
+
+def _inspect_says_gone(stderr: str) -> bool:
+    """True only for Docker's explicit not-found answer, so a daemon outage still fails loudly."""
+    text = stderr.lower()
+    return "no such container" in text or "no such object" in text
 
 
 def container_id_from_event(event: object) -> str | None:
@@ -69,15 +85,20 @@ def container_id_from_event(event: object) -> str | None:
     if event_type is not None and event_type != "container":
         return None
     actor = event.get("Actor")
-    actor_id = str(actor.get("ID") or "").strip() if isinstance(actor, dict) else ""
-    legacy_id = str(event.get("id") or event.get("ID") or "").strip()
+    raw_actor = actor.get("ID") if isinstance(actor, dict) else None
+    raw_legacy = event.get("id") or event.get("ID")
+    for raw in (raw_actor, raw_legacy):
+        if raw is not None and not isinstance(raw, str):
+            raise MalformedEvent(f"container id is not a string: {raw!r}")
+    actor_id = (raw_actor or "").strip()
+    legacy_id = (raw_legacy or "").strip()
     if actor_id and legacy_id and actor_id != legacy_id:
         raise MalformedEvent(f"Actor.ID ({actor_id[:12]}) and the legacy id ({legacy_id[:12]}) disagree")
     container_id = actor_id or legacy_id
     if not container_id:
         raise MalformedEvent("docker events event has no container id (neither Actor.ID nor a legacy id)")
     if not _CONTAINER_ID.fullmatch(container_id):
-        raise MalformedEvent(f"container id {container_id[:80]!r} is not a hex id")
+        raise MalformedEvent(f"container id {container_id[:80]!r} is not a full 64-hex id")
     return container_id
 
 
@@ -277,6 +298,8 @@ def inspect_container(docker: str, container_id: str) -> ContainerInfo:
     result = _docker(docker, ["inspect", container_id])
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "inspect failed").strip()
+        if _inspect_says_gone(result.stderr or ""):
+            raise ContainerGone(f"container {container_id[:12]} is gone: {detail[:200]}")
         raise GuardError(f"cannot inspect container {container_id}: {detail[:300]}")
     try:
         payload = json.loads(result.stdout)
@@ -310,8 +333,14 @@ def handle_container(docker: str, info: ContainerInfo, config: GuardConfig) -> D
     return decision
 
 
-def reconcile(docker: str, container_id: str, config: GuardConfig) -> Decision:
-    return handle_container(docker, inspect_container(docker, container_id), config)
+def reconcile(docker: str, container_id: str, config: GuardConfig) -> Decision | None:
+    """Reconcile one container; None when it vanished before inspect (nothing left to police)."""
+    try:
+        info = inspect_container(docker, container_id)
+    except ContainerGone as exc:
+        print(f"[mdt-buildkit-guard] info: skipped, {exc}", flush=True)
+        return None
+    return handle_container(docker, info, config)
 
 
 def reconcile_all(docker: str, config: GuardConfig) -> None:
@@ -332,7 +361,7 @@ def verify_managed_container(docker: str, container_id: str, config: GuardConfig
 
 
 def _container_ids(docker: str) -> list[str]:
-    result = _docker(docker, ["ps", "-aq"])
+    result = _docker(docker, ["ps", "-aq", "--no-trunc"])
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "docker ps failed").strip()
         raise GuardError(f"cannot enumerate containers: {detail[:300]}")
@@ -389,6 +418,8 @@ def watch(
     selector.register(process.stdout, selectors.EVENT_READ)
     next_rescan = clock() + rescan_interval
     malformed = 0
+    malformed_times: collections.deque[float] = collections.deque()
+    last_malformed_sweep: float | None = None
     try:
         while True:
             ready = selector.select(max(0.0, next_rescan - clock()))
@@ -416,6 +447,10 @@ def watch(
                     container_id = container_id_from_event(event)
                 except MalformedEvent as exc:
                     malformed += 1
+                    stamp = clock()
+                    malformed_times.append(stamp)
+                    while malformed_times and stamp - malformed_times[0] > MALFORMED_WINDOW_SECONDS:
+                        malformed_times.popleft()
                     print(
                         f"[mdt-buildkit-guard] ERROR: malformed docker event ({malformed} in a row): {exc}; "
                         f"line={line.strip()[:300]!r}",
@@ -427,8 +462,17 @@ def watch(
                             f"{malformed} malformed docker events in a row (last: {exc}); the daemon's event "
                             "shape is not understood, exiting so the failure is visible"
                         ) from exc
-                    # no restart, no missed-event window: look at everything now
-                    reconcile_all(docker, config)
+                    if len(malformed_times) >= MAX_MALFORMED_IN_WINDOW:
+                        raise GuardError(
+                            f"{len(malformed_times)} malformed docker events within "
+                            f"{MALFORMED_WINDOW_SECONDS:.0f}s (last: {exc}); the daemon's event shape is not "
+                            "understood, exiting so the failure is visible"
+                        ) from exc
+                    # no restart, no missed-event window: look at everything now, but at most once per
+                    # rescan interval (H-28); the periodic rescan covers the rest
+                    if last_malformed_sweep is None or stamp - last_malformed_sweep >= rescan_interval:
+                        last_malformed_sweep = stamp
+                        reconcile_all(docker, config)
                     continue
                 malformed = 0
                 if container_id is None:

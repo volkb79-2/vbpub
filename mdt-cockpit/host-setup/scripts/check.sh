@@ -556,6 +556,17 @@ systemctl is-enabled mdt-dev-governance-reconcile.timer >/dev/null 2>&1 \
 systemctl is-active mdt-container-io-events-watcher.service >/dev/null 2>&1 \
   && ok "mdt-container-io-events-watcher.service active (docker-events reactive per-container IO caps)" \
   || warn "mdt-container-io-events-watcher.service not active — governed Docker scopes and out-of-tree Buildx workers only get capped on the next mdt-dev-governance-reconcile.timer sweep, not instantly on start"
+if [ "$(systemctl show mdt-buildkit-guard.service -p LoadState --value 2>/dev/null)" = loaded ]; then
+  guard_restarts=$(systemctl show mdt-buildkit-guard.service -p NRestarts --value 2>/dev/null)
+  guard_malformed=$(journalctl -u mdt-buildkit-guard.service --since "-1h" -q --no-pager 2>/dev/null | grep -c 'malformed docker event' || true)
+  case "${guard_restarts:-0}" in
+    0) ok "mdt-buildkit-guard.service has not restarted" ;;
+    *) warn "mdt-buildkit-guard.service restarted ${guard_restarts} times — a restart is a window in which created containers are not seen; read its journal (MDT-HS-03 crash-looped on Docker 29 events)" ;;
+  esac
+  [ "${guard_malformed:-0}" = 0 ] \
+    && ok "mdt-buildkit-guard.service logged no malformed docker events in the last hour" \
+    || warn "mdt-buildkit-guard.service logged ${guard_malformed} malformed docker events in the last hour — the daemon's event shape may have changed"
+fi
 memory_leaf_policy_configured=0
 for key in \
   WATCHER_INTERACTIVE_MEMORY_HIGH WATCHER_INTERACTIVE_MEMORY_MAX \
