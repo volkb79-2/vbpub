@@ -252,6 +252,20 @@ else
   _mdt_no_device
 fi
 
+# --- scheduler, queue values and io.cost against the env (MDT-HS-07 H-59) --------------------
+# The udev rules and mdt-io-cost.service restore these at boot and on a udev change, but a disk remove/re-add
+# or a scheduler switch between runs reverts them silently; the minute timer verifies and re-applies on drift.
+_mdt_reassert_io_settings || MDT_RC=1
+# a restart of mdt-buildkitd pending from an earlier install is a standing condition, not an error: one WARN per hour
+if systemctl is-active --quiet mdt-buildkitd.service 2>/dev/null && _bk_why=$(_mdt_buildkitd_pending); then
+  _bk_logged="${MDT_STATE_DIR:-/run/mdt}/buildkitd-pending.logged"
+  _bk_last=$(cat "$_bk_logged" 2>/dev/null || echo 0)
+  if [ $(( $(_mdt_now) - ${_bk_last:-0} )) -ge 3600 ]; then
+    log "WARN: mdt-buildkitd.service RESTART PENDING: ${_bk_why}; restart it when no build is running (install.sh --restart-buildkitd)"
+    mkdir -p "$(dirname "$_bk_logged")" 2>/dev/null && _mdt_now > "$_bk_logged" 2>/dev/null || true
+  fi
+fi
+
 # --- swap coverage (D6) ----------------------------------------------------------
 # Swap-out IO is charged to the page owner's cgroup (kernel behaviour; per kernel
 # source, not measured here — bio_associate_blkg_from_page in mm/page_io.c), so a

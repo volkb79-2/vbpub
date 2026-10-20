@@ -607,6 +607,43 @@ runtime): reboot or set it by hand. `mdt-host-check.sh` reports each key as OK, 
 Why these values and what they cost (sequential reads fell from about 1.2-1.4 GB/s to 0.25-0.3 GB/s at 64 KB): see the
 DESIGN-GUIDE section on MDT-HS-05 and `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` sections 4.2-4.5 and 5.
 
+### IO scheduler and io.cost (MDT-HS-07)
+
+The wizard (section j, after the writeback keys) asks three more keys and install.sh renders, applies and verifies them:
+`IO_ROOT_SCHEDULER` (`mq-deadline`, `none`, `bfq` or `kernel`; it must be one the derived root disk lists in
+`queue/scheduler`), `IO_COST_MODEL` (`kernel`, which writes `ctrl=auto`, or the six linear coefficients `rbps rseqiops
+rrandiops wbps wseqiops wrandiops`, quoted) and `IO_COST_QOS` (`off`, which writes `enable=0`, or `rpct rlat wpct wlat min
+max`, quoted; the policy default is `off`). They are runtime-optional: EMPTY or ABSENT means not managed, an old env file
+keeps the legacy BFQ rule and writes no io.cost line until the wizard is run (a NOTICE says so). The wizard proposes the
+model from an identity-verified IOB-02 benchmark result, else the existing value, else `kernel`; the gstammtisch values are a
+labelled example only. install.sh renders `60-mdt-io-scheduler.rules` for the derived whole disk (replacing the BFQ rule;
+a non-MDT `60-bfq-scheduler.rules` is retired only when it is byte-identical to a known repo copy, otherwise kept with a WARN
+and, if it would override, the scheduler is not reported as verified), applies the queue rule (61) after it, then writes
+`/sys/fs/cgroup/io.cost.model` and `io.cost.qos` for the whole disk's MAJ:MIN and reads both back field by field. At boot
+`mdt-io-cost.service` (a oneshot after the udev trigger and a settle) re-applies them from the env. With io.cost the weight
+is `io.weight` (1..10000), not `io.bfq.weight`; `mdt-host-check.sh` reports the weight mechanism that is live (io.cost, bfq or
+none), derived from the live files, and the scheduler, model and QoS each as OK, MISMATCH, not managed, could not read or LIVE
+ONLY, NOT PERSISTED, plus a NOTICE for a later or non-MDT scheduler rule. A scheduler that `queue/scheduler` does not list yet is accepted when its module is available (the read-back proves it). The minute-by-minute
+reconcile verifies the scheduler, the queue values and the io.cost model and QoS against the env and re-applies on drift with a `WARN: drift:`
+log line (a disk re-add or a scheduler switch reverts them); empty keys are never touched. Why: DESIGN-GUIDE (MDT-HS-07).
+
+### Pausing the re-assert for IO experiments, and restarting mdt-buildkitd (MDT-HS-07)
+
+The minute-by-minute reconcile re-applies the scheduler and queue values (udev trigger), `vm.dirty_*` (`sysctl -p`) and the io.cost model and QoS
+(`_mdt_apply_iocost`) whenever they drift from `host-setup.env`, so a hand change is undone within a minute. To run an IO experiment on a managed
+host, pause it for a bounded time: `mdt-io-reassert-pause <minutes 1..240> <reason>` (also `--status`, `--clear`). While the pause is valid the
+reconcile logs "paused until ... (reason)" every minute and re-asserts none of those four; the io.max caps stay enforced. The pause is the file
+`/run/mdt/io-reassert.pause` (`<expiry-epoch> <reason>`, gone at reboot); an expired file is removed and a malformed one is ignored, each with a
+WARN, and `mdt-host-check.sh` shows an active pause. The reconcile enforces the 240-minute bound itself (an expiry further out is ignored with a WARN)
+and only trusts a regular file (no symlink) owned by the user the reconcile runs as (root) in a directory that is not group/world-writable. A re-assert that did not fix the drift is one ERROR and then backs off for 30 minutes (no
+per-minute trigger storm).
+
+`install.sh` restarts `mdt-buildkitd.service` only when its rendered unit/config changed or the running service was started from different content
+(the start stamp `/run/mdt/buildkitd.started-digest`; a service that predates the stamp counts as pending once). While a build may be active (any
+process other than the idle daemon chain `rootlesskit` -> `exe` -> `buildkitd` (matched by name AND parent chain, as measured with `docker top`) in the buildkitd CONTAINER scope under `dev-buildkitd.slice`, notably any `buildkit-runc`, or the state cannot be read) it is NOT restarted: the
+install prints a WARN, keeps the old service and exits 2 until you re-run it with `--restart-buildkitd` at a moment you choose. `mdt-host-check.sh`
+and the reconcile report "restart pending" until the running service matches.
+
 ### Optional DAMON_STAT policy
 
 The wizard asks whether to disable the kernel-wide `DAMON_STAT` monitor so
@@ -664,7 +701,7 @@ the test stacks.
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | shared Linux-derived `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound benchmark results) |
 | `mdt-host-setup-wizard.py` (a sibling of `install.sh`, not under `scripts/`, because it is never installed onto the host) | not installed — run from this directory via `install.sh --wizard`, or directly as `sudo ./mdt-host-setup-wizard.py` to reconfigure an already-installed host | interactive `/etc/mdt/host-setup.env` builder (see Quick start); template surgery on `host-setup.env.example`, never generated from scratch |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
-| `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | BFQ at boot so IO weights bite |
+| `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | the LEGACY BFQ path, kept only while `IO_ROOT_SCHEDULER` is not set; with it set, `60-mdt-io-scheduler.rules` replaces it and the module file is installed only for `bfq` |
 | (merged, not copied) | `/etc/docker/daemon.json` | `cgroup-parent` (D-G7 default) + `live-restore`/log rotation — this is the file's ONE owner now; every key is merged in, nothing else in the file is touched |
 
 ## Persistence model — why units AND a service/timer

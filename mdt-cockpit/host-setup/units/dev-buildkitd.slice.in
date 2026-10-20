@@ -37,7 +37,8 @@ CPUWeight=@DEV_BUILDKITD_CPU_WEIGHT@
 # overrides the auto-detected one — same treatment every sibling child gets.
 CPUQuota=@DEV_BUILDKITD_CPU_QUOTA@
 # See the IOWeight note in dev-interactive.slice/dev-background.slice:
-# KEEP <= 100 ON A BFQ HOST or the BFQ rescaling silently changes the ratio.
+# On a BFQ host KEEP <= 100 or the BFQ rescaling silently changes the ratio; with
+# io.cost enabled io.weight is used directly (1..10000).
 IOWeight=@DEV_BUILDKITD_IO_WEIGHT@
 
 # NO absolute bandwidth cap here — inherits dev.slice's DEV_IO_CAP_PCT-derived

@@ -155,10 +155,20 @@ _iops_subceiling_check() {
   fi
   want_r=$(( dev_riops * pct / 100 ))
   want_w=$(( dev_wiops * pct / 100 ))
+  # The reconcile applies min(pct% of dev.slice, the tier's ABSOLUTE pin DEV_<TIER>_IO_{RIOPS,WIOPS}_MAX): compute
+  # the same min() here, or a correct state with a pin below the sub-ceiling would be reported as wrong.
+  local tier pin_r="" pin_w="" basis="${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops"
+  case "$slice" in dev-gates.slice) tier=GATES ;; dev-buildkitd.slice) tier=BUILDKITD ;; *) tier="" ;; esac
+  if [ -n "$tier" ]; then
+    pin_r=$(_mdt_tier_pin "$tier" RIOPS 2>/dev/null) || pin_r=""
+    pin_w=$(_mdt_tier_pin "$tier" WIOPS 2>/dev/null) || pin_w=""
+  fi
+  if [ -n "$pin_r" ] && [ "$pin_r" -lt "$want_r" ]; then want_r=$pin_r; basis="min(${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops, the absolute ${tier} pin)"; fi
+  if [ -n "$pin_w" ] && [ "$pin_w" -lt "$want_w" ]; then want_w=$pin_w; basis="min(${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops, the absolute ${tier} pin)"; fi
   if [ "$sub_riops" -eq "$want_r" ] && [ "$sub_wiops" -eq "$want_w" ]; then
-    ok "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops matches ${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops"
+    ok "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops matches $basis"
   else
-    warn "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops does not match ${pct}% of dev.slice's own riops=$dev_riops/wiops=$dev_wiops (want riops=$want_r/wiops=$want_w) — run mdt-dev-governance-reconcile.sh"
+    warn "$slice IOPS sub-ceiling riops=$sub_riops/wiops=$sub_wiops does not match $basis (want riops=$want_r/wiops=$want_w) — run mdt-dev-governance-reconcile.sh"
   fi
 }
 
@@ -537,17 +547,126 @@ else
   warn "no baseline ($IO_BASELINE_ENV) — tight unit statics in force; run mdt-io-baseline.py"
 fi
 
-echo "== IO scheduler (weights need BFQ; io.max works on any) =="
-found_bfq=0
+echo "== IO scheduler and weight mechanism =="
 for f in /sys/block/*/queue/scheduler; do
   d=${f#/sys/block/}; d=${d%%/*}
   case "$d" in loop*|sr*|ram*|zram*) continue ;; esac
-  sched=$(cat "$f")
-  printf '  %-8s %s\n' "$d" "$sched"
-  case "$sched" in *"[bfq]"*) found_bfq=1 ;; esac
+  printf '  %-8s %s\n' "$d" "$(cat "$f" 2>/dev/null)"
 done
-[ "$found_bfq" = 1 ] && ok "at least one disk uses BFQ" \
-  || warn "no disk uses BFQ — IOWeight is inert, only the io.max caps enforce. Expected on NVMe (the shipped udev rule matches vd*/sd* only, on purpose); on vd*/sd* it means the rule or the module did not load"
+# BEGIN io-sched-check (extracted verbatim by tests/test_hs07.py)
+# The weight mechanism ACTIVE on the root disk, derived from the live files and never assumed (MDT-HS-07):
+# io.cost enabled (the root io.cost.qos line for the disk says enable=1) enforces io.weight; the bfq scheduler
+# enforces io.bfq.weight; neither = IOWeight is inert and only the io.max caps enforce.
+_check_cost_one() { # <label> <wanted-line> <live-file> <maj:min> <persisted 0|1>
+  local label="$1" want="$2" file="$3" mm="$4" persisted="$5" live
+  if [ ! -r "$file" ]; then
+    warn "$label: could not read $file — cannot tell whether the intended setting is in force"
+    return 0
+  fi
+  live=$(grep -m1 "^$mm " "$file" 2>/dev/null || true)
+  if [ -z "$live" ]; then
+    fail "$label MISMATCH: $file has no line for $mm, but host-setup.env intends: ${want#"$mm "} — re-run install.sh"
+  elif ! _mdt_iocost_match "$want" "$live"; then
+    fail "$label MISMATCH: live '${live#"$mm "}', host-setup.env intends '${want#"$mm "}' — re-run install.sh (read-back source: $file)"
+  elif [ "$persisted" = 1 ]; then
+    ok "$label verified: ${live#"$mm "} (matches host-setup.env, re-applied at boot by mdt-io-cost.service)"
+  else
+    warn "$label = ${live#"$mm "} is LIVE ONLY, NOT PERSISTED: mdt-io-cost.service is not enabled, so a reboot loses it — re-run install.sh"
+  fi
+}
+# the re-assert pause (MDT-HS-07): shown, never hidden
+check_io_pause() {
+  local msg rc
+  msg=$(_mdt_io_pause_state); rc=$?
+  case "$rc" in
+    0) warn "re-assert PAUSED $msg — the scheduler, queue values, vm.dirty_* and io.cost are not being re-asserted (io.max caps still enforced); end it with: mdt-io-reassert-pause --clear" ;;
+    2) warn "re-assert pause is ignored: $msg" ;;
+    *) info "re-assert: active (no pause)" ;;
+  esac
+}
+# the managed BuildKit: does the RUNNING service match the rendered unit + config? (H-66)
+check_buildkitd_pending() {
+  local why
+  if ! systemctl is-active --quiet mdt-buildkitd.service 2>/dev/null; then
+    info "mdt-buildkitd.service is not running; nothing to compare with the rendered files"
+  elif why=$(_mdt_buildkitd_pending); then
+    warn "mdt-buildkitd.service RESTART PENDING: $why — restart it when no build is running (systemctl restart mdt-buildkitd.service, or install.sh --restart-buildkitd)"
+  else
+    ok "mdt-buildkitd.service runs the rendered unit and config (start stamp matches)"
+  fi
+}
+check_io_scheduler() {
+  local sysroot="${MDT_SYSFS_ROOT:-/sys}" cgroot="${MDT_CGROUP_ROOT:-/sys/fs/cgroup}" ud="${MDT_UDEV_RULES_D:-/etc/udev/rules.d}"
+  local node dev mm cur qos enable want persisted=0 sched rule after
+  if ! node=$(_mdt_root_disk_node 2>&1) || ! mm=$(_mdt_root_disk_majmin 2>&1); then
+    warn "root disk: could not derive the whole disk under / (${node:-}${mm:-}) — the weight mechanism and the scheduler/io.cost settings cannot be verified"
+    return 0
+  fi
+  dev=${node#/dev/}
+  cur=$(_mdt_io_sched_current "$dev" 2>/dev/null || true)
+  qos=$(grep -m1 "^$mm " "$cgroot/io.cost.qos" 2>/dev/null || true)
+  enable=$(printf '%s' "$qos" | sed -n 's/.*[[:space:]]enable=\([01]\).*/\1/p')
+  if [ -z "$cur" ]; then
+    warn "$dev: could not read the live scheduler ($sysroot/block/$dev/queue/scheduler) — the weight mechanism cannot be determined"
+  elif [ "$enable" = 1 ] && [ "$cur" = bfq ]; then
+    warn "$dev weight mechanism: io.cost is enabled AND the scheduler is bfq — both enforce weights (io.weight and io.bfq.weight); choose one (IO_ROOT_SCHEDULER / IO_COST_QOS)"
+  elif [ "$enable" = 1 ]; then
+    ok "$dev weight mechanism: io.cost (io.cost.qos enable=1, scheduler $cur) — io.weight 1..10000 is enforced"
+  elif [ "$cur" = bfq ]; then
+    ok "$dev weight mechanism: bfq (scheduler bfq) — io.bfq.weight is enforced; keep IOWeight <= 100"
+  elif [ ! -r "$cgroot/io.cost.qos" ]; then
+    warn "$dev: scheduler $cur, and could not read $cgroot/io.cost.qos — cannot tell whether io.cost enforces io.weight"
+  else
+    warn "$dev weight mechanism: NONE — scheduler $cur and io.cost not enabled (${qos:-no io.cost.qos line for $mm}); IOWeight is inert, only the io.max caps enforce"
+  fi
+  # scheduler against IO_ROOT_SCHEDULER
+  sched="${IO_ROOT_SCHEDULER:-}"
+  case "$sched" in
+    "") info "$dev scheduler: not managed (IO_ROOT_SCHEDULER not set; a legacy BFQ rule may still apply)" ;;
+    kernel)
+      info "$dev scheduler: not managed (kernel; the kernel's choice is kept)"
+      while IFS='|' read -r rule after; do
+        [ -n "$rule" ] || continue
+        warn "NOTICE: $rule (not installed by MDT) still assigns a scheduler to $dev on every udev change event although IO_ROOT_SCHEDULER=kernel"
+      done < <(_mdt_io_foreign_sched_rules "$dev" "$MDT_IO_SCHED_UDEV_NAME")
+      ;;
+    *)
+      if [ -z "$cur" ]; then
+        warn "$dev scheduler: could not read the live value — cannot verify IO_ROOT_SCHEDULER=$sched"
+      elif [ "$cur" != "$sched" ]; then
+        fail "$dev scheduler MISMATCH: live $cur, host-setup.env says $sched — re-run install.sh"
+      elif grep -qF "ATTR{queue/scheduler}=\"$sched\"" "$ud/$MDT_IO_SCHED_UDEV_NAME" 2>/dev/null; then
+        ok "$dev scheduler = $cur (matches host-setup.env, persisted in $ud/$MDT_IO_SCHED_UDEV_NAME)"
+      else
+        warn "$dev scheduler = $cur is LIVE ONLY, NOT PERSISTED: $ud/$MDT_IO_SCHED_UDEV_NAME does not carry it, so a reboot loses it — re-run install.sh"
+      fi
+      while IFS='|' read -r rule after; do
+        [ -n "$rule" ] || continue
+        if [ "$after" = 1 ]; then
+          warn "NOTICE: $rule (not installed by MDT) also sets the scheduler for $dev and sorts after MDT's $MDT_IO_SCHED_UDEV_NAME, so it overrides it on every udev change event"
+        else
+          warn "NOTICE: $rule (not installed by MDT) also sets the scheduler for $dev; it sorts before MDT's rule, which wins, but removing MDT's rule would let it apply"
+        fi
+      done < <(_mdt_io_foreign_sched_rules "$dev" "$MDT_IO_SCHED_UDEV_NAME")
+      ;;
+  esac
+  # io.cost model and QoS against IO_COST_MODEL / IO_COST_QOS
+  systemctl is-enabled --quiet mdt-io-cost.service 2>/dev/null && persisted=1
+  if want=$(_mdt_iocost_model_line "$mm"); then
+    _check_cost_one "io.cost model" "$want" "$cgroot/io.cost.model" "$mm" "$persisted"
+  else
+    info "io.cost model: not managed (IO_COST_MODEL not set)"
+  fi
+  if want=$(_mdt_iocost_qos_line "$mm"); then
+    _check_cost_one "io.cost qos" "$want" "$cgroot/io.cost.qos" "$mm" "$persisted"
+  else
+    info "io.cost qos: not managed (IO_COST_QOS not set)"
+  fi
+}
+check_io_pause
+check_buildkitd_pending
+check_io_scheduler
+# END io-sched-check
 
 echo "== sweep service/timer =="
 systemctl is-enabled mdt-dev-governance-reconcile.timer >/dev/null 2>&1 \

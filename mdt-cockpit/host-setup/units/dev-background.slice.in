@@ -29,9 +29,10 @@ CPUWeight=@DEV_BACKGROUND_CPU_WEIGHT@
 # parent budget" reasoning as dev.slice's own CPUQuota — see
 # units/dev.slice.in.
 CPUQuota=@DEV_BACKGROUND_CPU_QUOTA@
-# On a BFQ host this is only a true ratio against dev-interactive.slice
-# because both weights are <= 100 (systemd compresses IOWeight > 100 into
-# BFQ's 1..1000 range). See CGROUP-NOTES.md §BFQ before raising it.
+# With io.cost enabled io.weight (1..10000) is used directly, so any ratio against
+# dev-interactive.slice is exact. On a BFQ host it is only a true ratio because both
+# weights are <= 100 (systemd compresses IOWeight > 100 into BFQ's 1..1000 range);
+# see CGROUP-NOTES.md §BFQ before raising it there. Neither mechanism: inert.
 IOWeight=@DEV_BACKGROUND_IO_WEIGHT@
 
 # NO absolute IO cap here — the shared parent dev.slice carries the one

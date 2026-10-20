@@ -788,6 +788,107 @@ benchmark; a corrupt, newer-schema, aborted, implausible or other-disk result is
 target-missed proposal is shown with that label. Full identity validation belongs to `iobench check` once it exists; the reader only
 compares the disk's device number.
 
+## io.cost is the weight mechanism and host-setup owns the scheduler (MDT-HS-07)
+
+**Why io.cost over BFQ.** Measured on gstammtisch (2026-10-20, `IO-STALL-TESTING-GUIDE.md` section 11, same load as sections 6 and 10).
+C0 = bfq, C1 = mq-deadline, C2 = mq-deadline + io.cost. Game D-state total / max: 1.15 s / 96 ms (C0), 0.61 s / 75 ms (C1), 0 / 0 (C2).
+Probe fdatasync p99: 205 ms, 491 ms, 290 ms. Gate-like fio: 208, 174, 199 iops. mq-deadline alone is worse than bfq for sync writes
+(the kernel also enables the writeback throttle, wbt, 75 ms, when leaving bfq); io.cost with a measured model and QoS removes the game's IO
+waits entirely at no gate cost, and enabling io.cost turns wbt off. **io.latency is not available**: `CONFIG_BLK_CGROUP_IOLATENCY` is not set in
+Debian's 7.2.6 kernel, while `CONFIG_BLK_CGROUP_IOCOST=y`. io.cost does not address the zswap shrinker burst (that writeback is charged to
+the game's own cgroup). Operator decision 2026-10-20: stop using bfq, switch to io.cost.
+
+**The keys.** `IO_ROOT_SCHEDULER` (mq-deadline | none | bfq | kernel, checked against the root disk's `queue/scheduler` list, which the
+wizard reads and never assumes), `IO_COST_MODEL` (`kernel` = `ctrl=auto`, the kernel's rotational/ssd heuristic, or the six linear
+coefficients) and `IO_COST_QOS` (`off` = `enable=0`, or `rpct rlat wpct wlat min max`). Bounds are the kernel's, from `block/blk-iocost.c`
+`ioc_qos_write` (Linux v6.12): percentiles at most 100.00 with 2 decimals (refused above), latencies unsigned microseconds, `min`/`max`
+2-decimal percentages the kernel silently CLAMPS to 1.00..10000.00 (so the validator refuses outside, because a clamp would read back
+different) and refuses when `min > max`. The model source is the IOB-02 result's `proposals.iocost_model` (rule R6), used only when the
+result is identity-verified by the MDT-HS-05 rules (device number plus at least one of model/serial/size/wwn); an all-zero placeholder is
+"not measured", never a model; the QoS has no benchmark source, so its proposal is the existing value or the explicit policy default `off`.
+Empty or absent = not managed, deliberately: an old env file must not silently change the scheduler or switch io.cost on or off.
+
+**Scheduler and ordering.** `60-mdt-io-scheduler.rules` (`KERNEL=="<DEVNAME>"` of the derived whole disk) replaces
+`60-mdt-bfq-scheduler.rules`, which is retired. Order: scheduler (60), then the queue rule (61, unchanged), then io.cost. A scheduler change
+resets `nr_requests`, so install.sh verifies the scheduler once more after the queue settings and the read-back covers all of them. The
+module file `mdt-bfq.conf` is installed only for `bfq`. A non-MDT `/etc/udev/rules.d/60-bfq-scheduler.rules` (origin:
+`scripts/gstammtisch-guide/files/etc/udev/rules.d/60-bfq-scheduler.rules`) is retired only when byte-identical (sha256) to a known repo copy,
+with a NOTICE; any other rule that assigns the scheduler to the disk is kept with a WARN, and one that sorts after MDT's is a refusal to report
+the scheduler as verified.
+
+**Loadable schedulers.** `queue/scheduler` lists only the schedulers that are LOADED, so `mq-deadline` can be absent from the list although
+its module exists. The choice is accepted when the disk lists it OR it is available as a module for the running kernel (a file under
+`/lib/modules/$(uname -r)/kernel/block/` or an entry in `modules.builtin`); it is refused only when neither applies, and the post-apply read-back is
+the proof that it really became active.
+
+**What reverts what, and the reconcile.** A disk remove/re-add resets the scheduler, `nr_requests`, `max_sectors_kb` and the per-disk io.cost
+state; a scheduler switch resets `nr_requests` (and toggles the writeback throttle); a udev change event re-applies the scheduler and queue RULES
+(60, 61) but not io.cost, which has no rule; a reboot is covered by the rules plus `mdt-io-cost.service`. Between those events the minute-by-minute
+reconcile (`_mdt_reassert_io_settings`) compares the live scheduler, the queue values and the io.cost model and QoS with the env, with the same
+field-normalised comparison, and re-applies on drift with a `WARN: drift:` log line (the same udev trigger and `_mdt_apply_iocost` install uses). A
+failure to re-apply, or a mismatch after it, is an ERROR and a non-zero reconcile exit. Empty (not managed) keys are never touched.
+
+**Boot: a oneshot unit, not a udev RUN.** `io.cost.model` and `io.cost.qos` are cgroup-root files keyed by the disk's MAJ:MIN, not properties of a
+block-device event. A udev RUN would fire on every change event of the disk (including each MDT install's own trigger), execute a shell inside
+udev's restricted sandbox under its timeout, and could not order itself after the scheduler rule it depends on. `mdt-io-cost.service` (Type=oneshot,
+RemainAfterExit) runs after `local-fs.target` and `systemd-udev-trigger.service` with an explicit `udevadm settle`, and calls the same
+`_mdt_apply_iocost` that install.sh calls, with the values read from `/etc/mdt/host-setup.env` (never literals), so the two paths cannot drift.
+The read-back compares field by field with kernel formatting normalised (`95` reads back as `95.00`) and only the keys MDT wrote (after `enable=0`
+or `ctrl=auto` the kernel keeps the other fields).
+
+**Weights.** With io.cost the weight is `io.weight` (1..10000, used directly); BFQ used `io.bfq.weight` (1..1000) and systemd compressed values above
+100. Every IOWeight comment (env example, the four tier units) is now mechanism-conditional rather than wrong for either. No weight VALUE changed.
+Findings, for the operator (not changed here): (1) the "keep <= 100" rule is a BFQ artefact; under io.cost the tier ratios of 100:10:20 can be raised
+without rescaling, but the measured gains are with the root weights unchanged (wings.slice 7800, dev.slice 100, system.slice 100) and the probe in
+system.slice is NOT protected by weight; (2) dev.slice and system.slice share weight 100 at the root, so under io.cost they split a contended disk
+equally while wings.slice gets 7800, which is probably intended but unmeasured for builds; (3) the per-scope `io.bfq.weight` raw writes in
+`mdt-container-io-caps.lib.sh` are inert under io.cost (the `IOWeight=1` set-property is what applies); (4) `mdt-host-check.sh` used to claim "IOWeight is
+inert" without BFQ, which is false under io.cost; it now derives the active mechanism from the scheduler and `io.cost.qos`.
+
+### Two live findings folded into MDT-HS-07 (2026-10-20)
+
+**The sub-ceiling check computes the reconcile's `min()`.** The reconcile applies `min(DEV_SUBSLICE_IOPS_PCT% of dev.slice, the tier's absolute
+pin)` per value. `mdt-host-check.sh` compared only the percentage, so after an operator pinned dev-gates and dev-buildkitd below it, the correct
+5000/1400 was reported as "does not match 60% (want 6000/1680)" with a remedy that would change nothing. The check now computes the same minimum
+(a check is only as strong as its comparison) and recommends no remedy for a correct state.
+
+**A plain `install.sh` no longer restarts `mdt-buildkitd.service` unconditionally.** That killed a 32-minute no-cache build. The rendered unit and
+config are digested before and after rendering; an unchanged service is left alone ("unchanged, not restarted"). When they changed and a build is,
+or may be, active (any process other than `buildkitd` itself in the service's cgroup, or the state cannot be read: fail-safe), the install does NOT
+restart unless `--restart-buildkitd` is given: it prints a prominent WARN, leaves the old service running its old configuration, and exits non-zero
+so the pending restart is not missed. Chosen over warning-then-restarting because the restart happens after the commit point, where a warning cannot
+be acted on in time and a build is minutes to hours of work; skipping is safe and recoverable (the operator restarts at a moment they choose).
+
+### Re-assert mechanisms, back-off, pause, and the buildkitd start stamp (MDT-HS-07 review round 2)
+
+**Split by mechanism (H-65).** Scheduler and queue drift is repaired by the udev trigger, `vm.dirty_*` drift by `sysctl -p` of MDT's file, io.cost
+drift by `_mdt_apply_iocost`, each gated on its own keys, so one broken mechanism no longer triggers the others. A re-apply that does not fix
+the drift is ONE loud ERROR, then the mechanism backs off for 30 minutes (a stamp in `/run/mdt`); each minute inside the window logs "backing
+off ..." instead of firing another trigger, and a clean verify lifts it.
+
+**The pause.** The re-assert fights hand changes within a minute, so there is an explicit, time-bounded way out: `mdt-io-reassert-pause <minutes>
+<reason>` writes `/run/mdt/io-reassert.pause` (`<expiry-epoch> <reason>`). While valid the reconcile logs "paused until ... (reason)" and re-asserts
+none of the scheduler, queue values, `vm.dirty_*` or io.cost; io.max is still enforced. It is capped at 240 minutes and needs a reason (no silent,
+forever, unexplained pause), is runtime state that disappears at reboot, and an expired or malformed file is ignored with a WARN. This is the way
+to run IO experiments on a managed host.
+
+**Which restart is pending (H-66), and what counts as busy (H-67).** What the running buildkitd was started from is the one fact install.sh cannot
+derive from the files, so `ExecStartPost` records the digest of the rendered unit and config in `/run/mdt/buildkitd.started-digest`. `/run` is
+deliberate: the fact is "what THIS process was started from", it must not outlive a reboot (a reboot restarts the service from the current files
+and rewrites the stamp), unlike a `/var/lib` stamp that would go stale. install.sh, check.sh and the reconcile compare the rendered digest with it
+and report "restart pending" until it matches; a plain install with an unchanged render but a pending restart says so and exits 2; "unchanged" is
+only printed when nothing changed AND the running service matches. A service that predates the stamp counts as pending once, because what it runs
+cannot be shown to match. Busy detection reads the container the unit starts (`--name` in the unit, id from `docker inspect`, scope from the
+container's own cgroup, sub-cgroups included), not the service cgroup that holds only the `docker run` client; unreadable counts as busy. Idle is exactly the
+persistent daemon chain MEASURED on the live host during a build (`docker top mdt-buildkitd`, 2026-10-20): `rootlesskit` (the container init's child),
+its child `exe` (`/proc/self/exe buildkitd ...`) and that child's child `buildkitd`, each matched by comm AND parent chain from `/proc/<pid>/stat`. Build work
+is anything else, notably `buildkit-runc` (a child of buildkitd) and its descendants; a layout that does not match (another image, a stray `buildkitd`)
+counts as busy. The VM lane asserts that the guest's idle mdt-buildkitd classifies as idle.
+
+**The pause reader is its own gatekeeper (H-69).** The 240-minute bound is enforced where the file is READ, not only where the helper writes it: an
+expiry further out is a WARN and ignored. The file must be a regular file (lstat; a symlink or special file is refused) owned by the user the reconcile
+runs as (root in production, so a file an unprivileged user could create is refused), not group/world-writable, in a directory with the same properties.
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may

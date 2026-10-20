@@ -78,7 +78,7 @@ environment = "bare-host"
 argv = ["bash", "host-setup/tests/run-vm-acceptance.sh"]
 clean_tree = true
 required_env = ["CGROUP_PARENT_DEV_GATES", "CGROUP_PARENT_DEV_INTERACTIVE", "BUILDX_BUILDER", "BUILDX_CONFIG", "DOCKER_HOST"]
-budget = "130m"
+budget = "155m"
 
 # Runtime acceptance of the BUILT images (MDT-010, MDTC-01 D10). The driver only
 # orchestrates (the vm-system precedent): the subject runs in its own containers

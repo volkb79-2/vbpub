@@ -31,8 +31,9 @@ MemoryMax=@DEV_GATES_MEMORY_MAX@
 # dev.slice's own derived ceiling) unless set explicitly — see
 # host-setup.env.example.
 MemorySwapMax=@DEV_GATES_MEMORY_SWAP_MAX@
-# See the IOWeight note in dev-background.slice.in: keep <= 100 on a BFQ
-# host, or the ratio against sibling tiers silently stops being what it says.
+# See the IOWeight note in dev-background.slice.in: on a BFQ host keep <= 100, or
+# the ratio against sibling tiers silently stops being what it says; with io.cost
+# enabled io.weight is used directly (1..10000).
 CPUWeight=@DEV_GATES_CPU_WEIGHT@
 IOWeight=@DEV_GATES_IO_WEIGHT@
 # Absolute CPU ceiling too, same "single tier can't alone claim the whole

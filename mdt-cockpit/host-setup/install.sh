@@ -75,6 +75,11 @@ Options
                       the policy. This disrupts running containers. Without
                       it, changed Docker daemon defaults take effect after
                       a later deliberate restart.
+  --restart-buildkitd Allow restarting mdt-buildkitd.service when its rendered unit
+                      or config CHANGED while a build may be active. Without it an
+                      unchanged service is left alone, and a needed restart during
+                      an active build is NOT done (the install says so and exits
+                      non-zero; re-run with this flag at a moment you choose).
   --observer-only     Install the cgprofile-observer group and its dedicated
                       /run/cgprofile/observer tmpfiles rule. Requires the
                       existing /run/cgprofile control directory to be a
@@ -195,6 +200,7 @@ provision_cgprofile_observer() {
 WITH_BASELINE=0
 RESET=0
 AUTO_RESTART_DOCKER=0
+RESTART_BUILDKITD=0
 WIZARD=0
 OBSERVER_ONLY=0
 REQUIRE_DAMON=0
@@ -205,6 +211,7 @@ for arg in "$@"; do
     --with-baseline) WITH_BASELINE=1 ;;
     --reset) RESET=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
+    --restart-buildkitd) RESTART_BUILDKITD=1 ;;
     --require-damon-disable) REQUIRE_DAMON=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
@@ -472,6 +479,27 @@ if [ -n "${IO_DEV_PATH:-}" ]; then
 else
   echo "WARN: findmnt did not expose a host /dev block-device node — static IO caps will be omitted"
 fi
+
+# IO scheduler (MDT-HS-07), PRE-FLIGHT part: read-only. The choice must be one the derived root disk lists in
+# queue/scheduler (bfq is exempt: its module is loaded at apply time and the read-back verifies); the check is the
+# shared Python module's, with the list read from the disk.
+case "$(_mdt_io_sched_value)" in
+  ""|kernel|bfq) ;;
+  *)
+    if ! _s_node=$(_mdt_root_disk_node 2>&1); then
+      echo "ERROR: IO_ROOT_SCHEDULER is set but the whole disk under / cannot be derived (${_s_node}); nothing was changed. Remedy: run install.sh on the host, or set IO_ROOT_SCHEDULER to empty." >&2
+      exit 2
+    fi
+    if ! _s_list=$(_mdt_io_sched_offered "${_s_node#/dev/}" 2>&1); then
+      echo "ERROR: cannot read the scheduler list of ${_s_node} (${_s_list}); nothing was changed." >&2
+      exit 2
+    fi
+    if ! python3 "$HERE/mdt-host-setup-wizard.py" --check-scheduler "$(_mdt_io_sched_value)" --available-schedulers "$(echo "$_s_list" | tr '\n' ' ')"; then
+      echo "ERROR: IO_ROOT_SCHEDULER=$(_mdt_io_sched_value) is not valid for ${_s_node}; nothing was changed." >&2
+      exit 2
+    fi
+    ;;
+esac
 
 # The static fallback in the rendered dev.slice unit comes from the SAME
 # resolution the runtime reconcile uses (scripts/mdt-container-io-caps.lib.sh):
@@ -758,10 +786,13 @@ render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interacti
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
 render "$HERE/units/dev-memory_min_guaranteed.slice.in" \
   /etc/systemd/system/dev-memory_min_guaranteed.slice
+_BK_DIGEST_BEFORE=$(_mdt_files_digest "${MDT_BUILDKITD_FILES[@]}")
 render "$HERE/units/dev-gates.slice.in"        /etc/systemd/system/dev-gates.slice
 render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/buildkitd.toml.in"              /etc/mdt/buildkitd.toml
+[ "$(_mdt_files_digest "${MDT_BUILDKITD_FILES[@]}")" = "$_BK_DIGEST_BEFORE" ] && BUILDKITD_CHANGED=0 || BUILDKITD_CHANGED=1
+install -m 0755 "$HERE/scripts/mdt-buildkitd-stamp.sh" /usr/local/sbin/mdt-buildkitd-stamp.sh
 render "$HERE/units/mdt-dev-governance-reconcile.timer.in"  /etc/systemd/system/mdt-dev-governance-reconcile.timer
 install -m 0644 "$HERE/units/mdt-dev-governance-reconcile.service" /etc/systemd/system/mdt-dev-governance-reconcile.service
 if [ "${INOTIFY_OK:-}" = 1 ]; then
@@ -908,13 +939,25 @@ if [ "$INOTIFY_OK" = 1 ]; then
   install -m 0755 "$HERE/scripts/mdt-container-memory-inotify-watcher.py" /usr/local/sbin/mdt-container-memory-inotify-watcher.py
 fi
 
-echo "== BFQ scheduler (io.weight needs it; io.max caps work on any scheduler) =="
-install -m 0644 "$HERE/etc/modules-load.d/bfq.conf"            /etc/modules-load.d/mdt-bfq.conf
-install -m 0644 "$HERE/etc/udev/rules.d/60-bfq-scheduler.rules" /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
-modprobe bfq 2>/dev/null || echo "WARN: modprobe bfq failed"
-udevadm control --reload-rules 2>/dev/null \
-  && udevadm trigger --action=change --subsystem-match=block 2>/dev/null \
-  || echo "WARN: udev reload/trigger failed — set the scheduler manually"
+SCHEDULER_FAILED=0
+if [ -z "$(_mdt_io_sched_value)" ]; then
+  # IO_ROOT_SCHEDULER absent or empty = NOT MANAGED: an old env file keeps the legacy BFQ rule (changing the
+  # scheduler for a host that never chose is a hazard); the wizard asks for the key (MDT-HS-07).
+  echo "== BFQ scheduler (legacy: IO_ROOT_SCHEDULER is not set) =="
+  echo "NOTICE: IO_ROOT_SCHEDULER is not set, so the LEGACY BFQ rule is kept. io.cost (IO_COST_MODEL/IO_COST_QOS) replaces BFQ as the weight mechanism and mq-deadline/none need no module: run install.sh --wizard to choose."
+  if _l_node=$(_mdt_root_disk_node 2>/dev/null) && _l_live=$(_mdt_io_sched_current "${_l_node#/dev/}" 2>/dev/null) && [ -n "$_l_live" ] && [ "$_l_live" != bfq ]; then
+    echo "NOTICE: the live scheduler of ${_l_node#/dev/} is '$_l_live' but the legacy rule re-applies bfq on every udev change event and at boot; set IO_ROOT_SCHEDULER (install.sh --wizard) to keep '$_l_live', or accept bfq."
+  fi
+  install -m 0644 "$HERE/etc/modules-load.d/bfq.conf"            /etc/modules-load.d/mdt-bfq.conf
+  install -m 0644 "$HERE/etc/udev/rules.d/60-bfq-scheduler.rules" /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
+  modprobe bfq 2>/dev/null || echo "WARN: modprobe bfq failed"
+  udevadm control --reload-rules 2>/dev/null \
+    && udevadm trigger --action=change --subsystem-match=block 2>/dev/null \
+    || echo "WARN: udev reload/trigger failed — set the scheduler manually"
+else
+  echo "== IO scheduler (MDT-HS-07) =="
+  _mdt_apply_scheduler_settings || SCHEDULER_FAILED=1
+fi
 
 echo "== writeback and root-queue settings (MDT-HS-05) =="
 # After the BFQ block on purpose: a scheduler change resets nr_requests, so the queue rule
@@ -922,6 +965,18 @@ echo "== writeback and root-queue settings (MDT-HS-05) =="
 # abort the half-finished install; it is reported and the install exits non-zero at the end.
 WRITEBACK_FAILED=0
 _mdt_apply_writeback_settings || WRITEBACK_FAILED=1
+# The queue rule (61) runs after the scheduler rule (60), and a scheduler change resets nr_requests: verify the
+# scheduler once more after the queue settings were applied, so the final state is what is reported.
+if [ "$SCHEDULER_FAILED" = 0 ] && [ -n "$(_mdt_io_sched_value)" ] && _f_node=$(_mdt_root_disk_node 2>/dev/null); then
+  _mdt_verify_scheduler "${_f_node#/dev/}" || SCHEDULER_FAILED=1
+fi
+
+echo "== io.cost model and QoS (MDT-HS-07) =="
+install -m 0755 "$HERE/scripts/mdt-io-cost-apply.sh" /usr/local/sbin/mdt-io-cost-apply.sh
+install -m 0755 "$HERE/scripts/mdt-io-reassert-pause.sh" /usr/local/sbin/mdt-io-reassert-pause
+install -m 0644 "$HERE/units/mdt-io-cost.service" /etc/systemd/system/mdt-io-cost.service
+IOCOST_FAILED=0
+_mdt_apply_iocost || IOCOST_FAILED=1
 
 echo "== activate =="
 systemctl daemon-reload
@@ -949,12 +1004,27 @@ systemctl start dev.slice dev-interactive.slice dev-background.slice dev-memory_
   dev-gates.slice dev-buildkitd.slice
 systemctl enable mdt-dev-governance-reconcile.service          # boot-time apply
 systemctl enable --now mdt-dev-governance-reconcile.timer      # periodic sweep
-if systemctl is-active --quiet mdt-buildkitd.service; then
-  echo "restarting mdt-buildkitd.service; active builds will be interrupted"
-  systemctl restart mdt-buildkitd.service
-else
-  systemctl enable --now mdt-buildkitd.service
-fi
+BUILDKITD_RESTART_PENDING=0
+_bk_active=0; systemctl is-active --quiet mdt-buildkitd.service && _bk_active=1
+_bk_pending=0; _bk_why=""
+if [ "$_bk_active" = 1 ] && _bk_why=$(_mdt_buildkitd_pending); then _bk_pending=1; fi
+case "$(_mdt_buildkitd_restart_decision "$BUILDKITD_CHANGED" "$RESTART_BUILDKITD" "$_bk_active" "$_bk_pending")" in
+  start)
+    systemctl enable --now mdt-buildkitd.service ;;
+  unchanged)
+    echo "mdt-buildkitd.service: unit and config unchanged and the running service matches them, not restarted (a running build is not interrupted)" ;;
+  restart)
+    echo "restarting mdt-buildkitd.service (${_bk_why:-its unit or config changed}); active builds will be interrupted"
+    systemctl restart mdt-buildkitd.service ;;
+  pending)
+    BUILDKITD_RESTART_PENDING=1
+    echo "WARN: ********************************************************************" >&2
+    echo "WARN: mdt-buildkitd.service RESTART PENDING (${_bk_why:-its unit or config changed}) but a build is (or may be) active, so it was NOT restarted;" >&2
+    echo "WARN: it keeps running its OLD configuration until you restart it. Re-run install.sh --restart-buildkitd (or" >&2
+    echo "WARN: systemctl restart mdt-buildkitd.service) when no build is running. This install exits non-zero so it is not missed." >&2
+    echo "WARN: ********************************************************************" >&2
+    systemctl enable mdt-buildkitd.service ;;
+esac
 systemctl enable mdt-buildkitd.service
 for _attempt in $(seq 1 30); do
   [ -S /run/mdt-buildkitd/buildkitd.sock ] && break
@@ -1024,6 +1094,9 @@ if [ "$MEMORY_WATCHER_CONFIGURED" = 1 ]; then
   systemctl restart mdt-container-memory-inotify-watcher.service
 fi
 systemctl restart mdt-container-io-events-watcher.service
+if [ -n "${IO_COST_MODEL:-}${IO_COST_QOS:-}" ]; then
+  systemctl enable mdt-io-cost.service >/dev/null 2>&1 || echo "WARN: could not enable mdt-io-cost.service; io.cost will not be re-applied at boot" >&2
+fi
 
 # Optional: automatically restart docker if requested (--restart-docker flag)
 if [ "$AUTO_RESTART_DOCKER" = 1 ]; then
@@ -1047,6 +1120,14 @@ else
   echo "   docker.socket alone (which just rebinds) is not enough. Same disruption as"
   echo "   the daemon.json restart above; batch them into the same window. Not done"
   echo "   automatically by this script (use --restart-docker flag to enable)."
+fi
+if [ "${BUILDKITD_RESTART_PENDING:-0}" = 1 ]; then
+  echo "ERROR: mdt-buildkitd.service was not restarted although its unit/config changed (a build may be active); the rest of the install completed. Re-run install.sh --restart-buildkitd when no build is running." >&2
+  exit 2
+fi
+if [ "$SCHEDULER_FAILED" = 1 ] || [ "$IOCOST_FAILED" = 1 ]; then
+  echo "ERROR: the IO scheduler / io.cost settings were NOT verified live (see the ERROR lines above); the rest of the install completed. Fix the named cause and re-run install.sh." >&2
+  exit 2
 fi
 if [ "$WRITEBACK_FAILED" = 1 ]; then
   echo "ERROR: the writeback / root-queue settings were NOT verified live (see the ERROR lines above); the rest of the install completed. Fix the named cause and re-run install.sh." >&2
