@@ -2,16 +2,18 @@
 # Keeps the per-instance log tmpfs mounts (soulmask_tmpfs.service) below their
 # size cap. Started by soulmask-logs-prune.timer; it is a no-op until
 # soulmask_tmpfs.service has recorded per-instance mounts in its state file.
+# It also FAILS (exit 1) while the state file records per-instance setup errors
+# (PI_ERRORS>0): `systemctl is-failed soulmask-logs-prune.service` is the
+# standing alarm for a setup run that exited 75 (see soulmask_tmpfs.service).
 [Unit]
 Description=Prune Soulmask per-instance log tmpfs (old WS-backup-*.log, never the live WS.log)
 Documentation=file:///home/vb/volkb79-2/vbpub/scripts/gstammtisch-guide/SOULMASK-TMPFS.md
 
 [Service]
 Type=oneshot
-# MUST equal soulmask_tmpfs.service's values (a test asserts it); the script has
-# no defaults and refuses to run without them.
-Environment=SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS=1
-Environment=SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT=75
+# The SAME policy file soulmask_tmpfs.service reads (one source); the script has
+# no defaults and refuses to run without valid values.
+EnvironmentFile=/etc/gstammtisch/soulmask_tmpfs.env
 ExecStart=/usr/local/sbin/soulmask_logs-prune.sh
 Nice=10
 StandardOutput=journal

@@ -34,6 +34,7 @@ SHIPPED_CONF = ETC / "gstammtisch" / "soulmask_tmpfs-paths.conf"
 UNITS = ETC / "systemd" / "system"
 SHIPPED_UNIT = UNITS / "soulmask_tmpfs.service"
 PRUNE_UNIT = UNITS / "soulmask-logs-prune.service"
+POLICY_ENV = ETC / "gstammtisch" / "soulmask_tmpfs.env"
 PRUNE_TIMER = UNITS / "soulmask-logs-prune.timer"
 
 UUID_A = "aaaaaaaa-1111-4111-8111-111111111111"  # ROLE=main
@@ -46,15 +47,20 @@ SHIMS = {
 awk -F'\t' -v t="$1" '$1==t{f=1} END{exit !f}' "$FAKE/mounts.tsv"
 """,
     "findmnt": r"""#!/usr/bin/env bash
-field=""; target=""
+field=""; target=""; ftype=""
 while [ $# -gt 0 ]; do
   case "$1" in
     -no) field="$2"; shift 2 ;;
-    -nl|-n) shift ;;
+    -nl|-n|-rn|-r) shift ;;
+    -t) ftype="$2"; shift 2 ;;
     -o|--source) shift 2 ;;
     *) target="$1"; shift ;;
   esac
 done
+if [ -z "$target" ] && [ -n "$ftype" ]; then   # list mode: findmnt -rn -t tmpfs -o TARGET,SOURCE
+  awk -F'\t' -v t="$ftype" '$2==t{print $1" "$3}' "$FAKE/mounts.tsv"
+  exit 0
+fi
 line=$(awk -F'\t' -v t="$target" '$1==t' "$FAKE/mounts.tsv" | tail -n1)
 [ -n "$line" ] || exit 1
 IFS=$'\t' read -r tg fs src opts <<< "$line"
@@ -68,6 +74,8 @@ esac
     # Models the kernel: a tmpfs mount reports its options normalised (size in KiB) and with rw/relatime.
     "mount": r"""#!/usr/bin/env bash
 echo "mount $*" >> "$FAKE/calls.log"
+# what the state file recorded BEFORE this mount (proves it is written after every mount)
+{ echo "--"; grep '^PI_TARGET=' "$SOULMASK_TMPFS_STATE_FILE" 2>/dev/null || true; } >> "$FAKE/state-snapshots.log"
 fstype=none; opts=""; pos=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -537,8 +545,11 @@ def test_foreign_mount_at_target_is_refused_not_stacked_and_others_proceed(rig: 
     rig.conf(SHARED_AND_PI)
     rig.mounts((rig.target(UUID_A), "ext4", "/dev/sda1", "rw"))
     r = rig.run(SETUP)
-    assert r.returncode != 0, r.stdout
+    # EX_TEMPFAIL: shared part done, per-instance error recorded (the unit's SuccessExitStatus=75)
+    assert r.returncode == 75, text(r)
     assert "refus" in text(r).lower()
+    st = rig.state.read_text().splitlines()
+    assert "PI_ERRORS=1" in st and any(ln.startswith("PI_ERROR=") and "not ours" in ln for ln in st)
     tmpfs_calls = [c for c in rig.calls() if c.startswith("mount -t tmpfs") and "soulmask-pi-" in c]
     assert len(tmpfs_calls) == 1 and tmpfs_calls[0].endswith(rig.target(UUID_B))  # A never stacked
     assert sum(1 for row in rig.mount_table() if row[0] == rig.target(UUID_A)) == 1
@@ -712,13 +723,71 @@ def test_teardown_refuses_a_target_whose_container_is_running(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
     assert rig.run(SETUP).returncode == 0
     rig.running(UUID_A, "some-other-container")
+    table_before = rig.mount_table()
+    state_before = rig.state.read_text()
+    calls_before = rig.calls()
     td = rig.run(TEARDOWN)
-    assert td.returncode != 0
+    assert td.returncode == 1
     assert "RUNNING" in text(td) and UUID_A in text(td)
-    still = {row[0] for row in rig.mount_table()}
-    assert rig.target(UUID_A) in still and rig.target(UUID_B) not in still
-    assert f"umount {rig.target(UUID_A)}" not in rig.calls()   # refused BEFORE any umount
-    assert f"PI_TARGET={rig.target(UUID_A)}" in rig.state.read_text()
+    # R2-05: the WHOLE teardown is refused before anything is unmounted — the
+    # other instance's tmpfs, the shared binds and the ramdisk included
+    assert rig.mount_table() == table_before
+    assert [c for c in rig.calls()[len(calls_before):] if c.startswith("umount")] == []
+    assert rig.state.read_text() == state_before
+
+
+def test_teardown_refuses_when_only_a_shared_bind_target_belongs_to_a_running_game(rig: Rig) -> None:
+    rig.conf("[compressible]\nEngine\n")
+    assert rig.run(SETUP).returncode == 0
+    table_before = rig.mount_table()
+    rig.running(UUID_A)
+    td = rig.run(TEARDOWN)
+    assert td.returncode == 1 and "RUNNING" in text(td)
+    assert rig.mount_table() == table_before
+
+
+def test_teardown_finds_a_tagged_mount_the_state_file_does_not_know(rig: Rig) -> None:
+    # setup was killed between the mount and the state write
+    t = rig.own_mount(UUID_A, in_state=False)
+    td = rig.run(TEARDOWN)
+    assert td.returncode == 0, text(td)
+    assert "found tagged per-instance tmpfs not in the state file" in text(td)
+    assert t not in {row[0] for row in rig.mount_table()}
+    # ... and it is refused while that instance's game runs
+    t2 = rig.own_mount(UUID_A, in_state=False)
+    rig.running(UUID_A)
+    td2 = rig.run(TEARDOWN)
+    assert td2.returncode == 1 and "RUNNING" in text(td2)
+    assert t2 in {row[0] for row in rig.mount_table()}
+
+
+def test_a_tag_that_disagrees_with_the_path_leaves_the_instance_unknown_and_refuses(rig: Rig) -> None:
+    t = rig.target(UUID_A)
+    rig.mounts((t, "tmpfs", "soulmask-pi-deadbeef", "rw"))
+    td = rig.run(TEARDOWN)
+    assert td.returncode == 1 and "cannot tell which instance" in text(td)
+    assert t in {row[0] for row in rig.mount_table()}
+
+
+def test_setup_refusal_of_an_unrecorded_tagged_mount_names_a_remedy_that_works(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    rig.own_mount(UUID_A, in_state=False)
+    r = rig.run(SETUP)
+    assert r.returncode == 75 and "not recorded" in text(r)
+    assert "soulmask_tmpfs-teardown.sh" in text(r) and "also finds tagged mounts" in text(r)
+    # and that remedy really works: teardown removes it, the next setup mounts it
+    assert rig.run(TEARDOWN).returncode == 0
+    assert rig.run(SETUP).returncode == 0
+    assert rig.target(UUID_A) in {row[0] for row in rig.mount_table()}
+
+
+def test_state_is_written_after_every_per_instance_mount(rig: Rig) -> None:
+    rig.conf(f"[per-instance-compressible]\n{LOGS}\n")
+    assert rig.run(SETUP).returncode == 0
+    segments = (rig.fake / "state-snapshots.log").read_text().split("--\n")[1:]
+    assert len(segments) == 2                        # one snapshot before each of the two mounts
+    assert f"PI_TARGET={rig.target(UUID_A)}" not in segments[0]
+    assert f"PI_TARGET={rig.target(UUID_A)}" in segments[1]   # A recorded before B was mounted
 
 
 def test_teardown_container_check_is_an_exact_name_match(rig: Rig) -> None:
@@ -742,12 +811,12 @@ def test_teardown_with_unreachable_docker_refuses_unless_the_daemon_is_down(rig:
     assert not any(row[2].startswith("soulmask-pi-") for row in rig.mount_table())
 
 
-def test_teardown_without_a_recorded_instance_refuses(rig: Rig) -> None:
-    t = rig.target(UUID_A)
+def test_teardown_without_a_known_instance_refuses(rig: Rig) -> None:
+    t = str(rig.root / "elsewhere" / "Logs")       # not below VOLUMES_ROOT and not recorded
     rig.mounts((t, "tmpfs", f"soulmask-pi-{UUID_A[:8]}", "rw"))
     rig.state.write_text(f"PI_TARGET={t}\n")
     td = rig.run(TEARDOWN)
-    assert td.returncode != 0 and "does not record which instance" in text(td)
+    assert td.returncode == 1 and "cannot tell which instance" in text(td)
     assert t in {row[0] for row in rig.mount_table()}
 
 
@@ -931,6 +1000,30 @@ def test_prune_has_no_policy_defaults(rig: Rig) -> None:
     assert r.returncode == 2 and b.exists()
 
 
+def test_a_clean_setup_records_zero_errors_and_exits_zero(rig: Rig) -> None:
+    rig.conf(SHARED_AND_PI)
+    r = rig.run(SETUP)
+    assert r.returncode == 0, text(r)
+    assert "PI_ERRORS=0" in rig.state.read_text().splitlines()
+
+
+def test_prune_keeps_failing_while_the_last_setup_recorded_per_instance_errors(rig: Rig) -> None:
+    d = _prune_rig(rig)
+    live = _backup(d, "WS.log", 10, 0)
+    old = _backup(d, "WS-backup-a.log", 10, 100)
+    new = _backup(d, "WS-backup-b.log", 10, 50)
+    with rig.state.open("a") as f:
+        f.write("PI_ERRORS=2\nPI_ERROR=refusing per-instance mount: X is a symlink\nPI_ERROR=second problem\n")
+    r = rig.run(PRUNE)
+    assert r.returncode == 1, text(r)
+    assert "recorded 2 per-instance error" in text(r) and "X is a symlink" in text(r)
+    # it still did its pruning work
+    assert live.exists() and new.exists() and not old.exists()
+    # a clean setup run (PI_ERRORS=0) makes it pass again
+    rig.state.write_text(rig.state.read_text().replace("PI_ERRORS=2", "PI_ERRORS=0"))
+    assert rig.run(PRUNE).returncode == 0
+
+
 def test_prune_dry_run_deletes_nothing_and_says_what_it_would(rig: Rig) -> None:
     d = _prune_rig(rig)
     live = _backup(d, "WS.log", 10, 0)
@@ -957,6 +1050,15 @@ def test_toggle_status_counts_are_single_lines_and_exclude_pi_targets_from_bind_
     assert "[soulmask_tmpfs] Per-instance tmpfs mounts: 2 in state file" in lines
     assert "0" not in lines                                    # the old "0\n0" glitch
     assert any(f"{UUID_A}: 0 bind path(s), 1 per-instance tmpfs" in ln for ln in lines)
+
+
+def test_toggle_status_warns_about_recorded_per_instance_errors(rig: Rig) -> None:
+    rig.state.write_text("READONLY=0\nPI_ERRORS=1\nPI_ERROR=refusing per-instance mount: X is a symlink\n")
+    rig.ramdisk.mkdir()
+    rig.mounts((str(rig.ramdisk), "tmpfs", "tmpfs", "rw"))
+    out = rig.run(TOGGLE).stdout
+    assert "WARNING: last setup run recorded 1 per-instance error(s):" in out
+    assert "X is a symlink" in out
 
 
 def test_toggle_status_with_no_per_instance_targets_prints_zero_once(rig: Rig) -> None:
@@ -1001,14 +1103,54 @@ def test_shipped_conf_puts_the_game_log_dir_per_instance_and_nowhere_shared() ->
     assert not any(LOGS in v for k, v in sec.items() if not k.startswith("per-instance"))
 
 
-def test_shipped_units_carry_the_policy_and_agree_with_each_other() -> None:
-    main, prune = _env(SHIPPED_UNIT), _env(PRUNE_UNIT)
-    assert main["SOULMASK_TMPFS_PER_INSTANCE_SIZE"] == "256M"
-    for k in ("SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS", "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT"):
-        assert main[k] == prune[k], k
-    assert main["SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT"] == "75"
-    assert "SOULMASK_TMPFS_PER_INSTANCE_MAX_AGE" not in main  # no second (age) mechanism
+POLICY_KEYS = (
+    "SOULMASK_TMPFS_PER_INSTANCE_SIZE",
+    "SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS",
+    "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT",
+)
+
+
+def _envfile(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#"):
+            k, _, v = line.partition("=")
+            out[k] = v
+    return out
+
+
+def test_policy_has_one_source_read_by_every_unit_that_needs_it() -> None:
+    policy = _envfile(POLICY_ENV)
+    assert policy == {
+        "SOULMASK_TMPFS_PER_INSTANCE_SIZE": "512M",
+        "SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS": "3",
+        "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT": "75",
+    }
+    for unit in (SHIPPED_UNIT, PRUNE_UNIT):
+        body = unit.read_text()
+        # mandatory (no '-' prefix) so a missing file fails the unit loudly
+        assert re.search(r"^EnvironmentFile=/etc/gstammtisch/soulmask_tmpfs\.env$", body, re.M), unit
+        env = _env(unit)
+        assert not any(k in env for k in POLICY_KEYS), f"{unit.name} carries its own copy of the policy"
+        assert "MAX_AGE" not in body.replace("max_age", "")  # no second (age) mechanism
     assert "soulmask_logs-prune.sh" in PRUNE_UNIT.read_text()
+
+
+def test_policy_values_pass_the_scripts_own_validators() -> None:
+    policy = _envfile(POLICY_ENV)
+    src = ". " + str(LIB) + "\n" + "".join(f'export {k}="{v}"\n' for k, v in policy.items())
+    r = subprocess.run(
+        ["bash", "-c", src + 'soulmask_pi_validate_prune_env && soulmask_pi_size_kib "$SOULMASK_TMPFS_PER_INSTANCE_SIZE"'],
+        capture_output=True, text=True, check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == str(512 * 1024)
+
+
+def test_the_unit_treats_exit_75_as_success_and_setup_uses_that_code() -> None:
+    assert re.search(r"^SuccessExitStatus=75$", SHIPPED_UNIT.read_text(), re.M)
+    assert re.search(r"^PI_EXIT_CODE=75\b", SETUP.read_text(), re.M)
     timer = PRUNE_TIMER.read_text()
     assert re.search(r"^OnUnitActiveSec=10min$", timer, re.M) and "WantedBy=timers.target" in timer
 

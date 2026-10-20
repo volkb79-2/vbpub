@@ -46,6 +46,7 @@ gstammtisch-guide/
 │   ├── etc/tmpfiles.d/thp.conf              # THP=madvise
 │   ├── etc/tmpfiles.d/ksm.conf              # KSM (optional)
 │   ├── etc/gstammtisch/instance-defaults.env      # per-instance defaults (N-instance, see SOULMASK.md §9b)
+│   ├── etc/gstammtisch/soulmask_tmpfs.env          # per-instance log tmpfs policy: size, backups kept, high-water (single source, SMT-01)
 │   ├── etc/gstammtisch/instances.d/*.env(.example) # per-instance overrides (one file per server UUID)
 │   ├── etc/systemd/system/zswap-config.service        # zstd post-boot fix
 │   ├── etc/systemd/system/soulmask-graceful-stop.service

@@ -134,6 +134,13 @@ _show_status() {
       pi_n=$(grep -c "^PI_TARGET=.*volumes/$uuid/" "$STATE_FILE" 2>/dev/null) || true
       log "    $uuid: ${n:-0} bind path(s), ${pi_n:-0} per-instance tmpfs"
     done
+    # setup exits 75 (unit stays active) when it recorded per-instance errors
+    local pi_err
+    pi_err=$(sed -n 's/^PI_ERRORS=//p' "$STATE_FILE" | tail -n1) || true
+    if [[ "${pi_err:-0}" =~ ^[0-9]+$ ]] && [ "${pi_err:-0}" -gt 0 ]; then
+      warn "last setup run recorded $pi_err per-instance error(s):"
+      while IFS= read -r l; do warn "    ${l#PI_ERROR=}"; done < <(grep '^PI_ERROR=' "$STATE_FILE" || true)
+    fi
   else
     log "Bind mounts: no state file"
   fi

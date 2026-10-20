@@ -143,7 +143,7 @@ canary pi-symlink-component-accepted files/usr/local/sbin/soulmask_tmpfs-setup.s
 # 10. Teardown must not unmount a per-instance tmpfs while its game container
 #     runs (a successful host umount does not stop the game writing).
 canary pi-teardown-ignores-running-container files/usr/local/sbin/soulmask_tmpfs-teardown.sh \
-  'rc=0; _container_running "$uuid" || rc=$?' \
+  'rc=0; _container_running "$u" || rc=$?' \
   'rc=1' \
   tests/test_soulmask_tmpfs_per_instance.py::test_teardown_refuses_a_target_whose_container_is_running
 

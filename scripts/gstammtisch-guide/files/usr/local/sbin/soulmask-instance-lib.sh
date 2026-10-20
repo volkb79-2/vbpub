@@ -159,18 +159,18 @@ soulmask_select_instance() {
 # --- per-instance tmpfs (SMT-01) ----------------------------------------------
 # Shared by soulmask_tmpfs-setup.sh and soulmask_logs-prune.sh so the two can
 # never disagree about what a valid value is. No defaults here: the values come
-# from the unit Environment (soulmask_tmpfs.service / soulmask-logs-prune.service).
+# from /etc/gstammtisch/soulmask_tmpfs.env (EnvironmentFile= of soulmask_tmpfs.service and soulmask-logs-prune.service).
 
 # Validate the prune policy env. Prints one line per problem on stderr, returns
 # 1 if any. KEEP_BACKUPS: integer >= 0. HIGH_WATER_PCT: integer 1..99.
 soulmask_pi_validate_prune_env() {
   local bad=0
   if ! [[ "${SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS:-}" =~ ^[0-9]+$ ]]; then
-    echo "SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS='${SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS:-}' is unset or not an integer >= 0 (set in the unit Environment; no script default)" >&2
+    echo "SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS='${SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS:-}' is unset or not an integer >= 0 (set in /etc/gstammtisch/soulmask_tmpfs.env; no script default)" >&2
     bad=1
   fi
   if ! [[ "${SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT:-}" =~ ^[1-9][0-9]?$ ]]; then
-    echo "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT='${SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT:-}' is unset or not an integer in 1..99 (set in the unit Environment; no script default)" >&2
+    echo "SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT='${SOULMASK_TMPFS_PER_INSTANCE_HIGH_WATER_PCT:-}' is unset or not an integer in 1..99 (set in /etc/gstammtisch/soulmask_tmpfs.env; no script default)" >&2
     bad=1
   fi
   return $bad

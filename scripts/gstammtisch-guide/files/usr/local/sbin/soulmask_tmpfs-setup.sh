@@ -43,7 +43,7 @@
 # and the pages are charged to the memcg of the task that writes them (the
 # game container's cgroup), NOT to the soulmask_tmpfs-* slices. Owner and mode
 # are derived from the on-disk directory; size comes from
-# SOULMASK_TMPFS_PER_INSTANCE_SIZE (defaulted in the unit file). Contents are
+# SOULMASK_TMPFS_PER_INSTANCE_SIZE (from /etc/gstammtisch/soulmask_tmpfs.env). Contents are
 # lost on restart/reboot by design; soulmask_logs-prune.sh (run once at the end
 # of setup and every 10 min by soulmask-logs-prune.timer) keeps the tmpfs below
 # its cap by deleting old WS-backup-*.log files, never the live log. A
@@ -84,7 +84,7 @@ TMPFS_SIZE="${SOULMASK_TMPFS_SIZE:-5G}"   # ~2.6G payload (2026-07-29) + generou
 READONLY="${SOULMASK_TMPFS_READONLY:-0}"
 STATE_FILE="${SOULMASK_TMPFS_STATE_FILE:-/run/soulmask_tmpfs.state}"
 # Per-instance sections: deliberately NO default for size / KEEP_BACKUPS /
-# HIGH_WATER_PCT here — the unit file (soulmask_tmpfs.service) owns them; setup
+# HIGH_WATER_PCT here — /etc/gstammtisch/soulmask_tmpfs.env owns them; setup
 # (and soulmask_logs-prune.sh) refuse without them.
 PI_SIZE="${SOULMASK_TMPFS_PER_INSTANCE_SIZE:-}"
 INSTANCES_DIR="${GSTAMMTISCH_ETC:-/etc/gstammtisch}/instances.d"
@@ -229,7 +229,15 @@ PI_ERRORS=0
 PI_APPLIED=0
 PRUNE_SCRIPT="${SOULMASK_PRUNE_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/soulmask_logs-prune.sh}"
 
-pi_error() { log "ERROR: $*"; PI_ERRORS=$(( PI_ERRORS + 1 )); }
+declare -a PI_ERROR_MSGS=()
+PI_EXIT_CODE=75   # EX_TEMPFAIL: shared part done, per-instance errors; unit has SuccessExitStatus=75
+# Journal priority <3> (err) only when stdout is the journal (systemd sets
+# JOURNAL_STREAM), so `journalctl -p err` shows it and a terminal stays clean.
+pi_error() {
+  if [ -n "${JOURNAL_STREAM:-}" ]; then echo "<3>[soulmask_tmpfs] ERROR: $*"; else log "ERROR: $*"; fi
+  PI_ERRORS=$(( PI_ERRORS + 1 ))
+  PI_ERROR_MSGS+=("$*")
+}
 
 # Read the previous state file so a rewrite never orphans live mounts.
 load_old_state() {
@@ -271,6 +279,10 @@ write_state() {
     echo "TMPFS_SIZE=$TMPFS_SIZE"
     echo "READONLY=$READONLY"
     echo "SOURCE_UUID=${SOURCE_UUID:-}"
+    # Per-instance errors of THIS run (0 = clean). Read by the prune service
+    # (fails while > 0) and by soulmask_tmpfs-toggle.sh status.
+    echo "PI_ERRORS=$PI_ERRORS"
+    for t in "${PI_ERROR_MSGS[@]:0:20}"; do echo "PI_ERROR=$t"; done
     for t in "${bound[@]}"; do echo "TARGET=$t"; done
     for t in "${pib[@]}"; do echo "PI_TARGET=$t"; done
     for t in "${pib[@]}"; do
@@ -363,7 +375,7 @@ _pi_plan_one() {
     # exactly the options this run would have mounted.
     d="${OLD_PI_DERIVED[$target]:-}"
     if [ -z "$d" ]; then
-      pi_error "refusing per-instance mount: $target carries our tag but is not recorded in $STATE_FILE — not ours to keep. Unmount it (soulmask_tmpfs-teardown.sh or umount) and re-run."
+      pi_error "refusing per-instance mount: $target carries our tag but is not recorded in $STATE_FILE — not ours to keep. This happens if an earlier setup was killed between the mount and the state write. With the game STOPPED run soulmask_tmpfs-teardown.sh (it also finds tagged mounts that are not in the state file) or 'umount' it, then re-run."
       return 0
     fi
     read -r uid gid mode _ <<< "$d"
@@ -407,7 +419,7 @@ pi_plan() {
   [ "${#all_pi[@]}" -gt 0 ] || return 0
 
   if ! PI_KIB=$(soulmask_pi_size_kib "$PI_SIZE"); then
-    pi_error "SOULMASK_TMPFS_PER_INSTANCE_SIZE='$PI_SIZE' is unset or invalid: expected a positive integer with optional k/m/g suffix (e.g. 256M). 0 means UNLIMITED to tmpfs and a percentage is relative to RAM, so both are refused; set it in soulmask_tmpfs.service (no script default)"
+    pi_error "SOULMASK_TMPFS_PER_INSTANCE_SIZE='$PI_SIZE' is unset or invalid: expected a positive integer with optional k/m/g suffix (e.g. 256M). 0 means UNLIMITED to tmpfs and a percentage is relative to RAM, so both are refused; set it in /etc/gstammtisch/soulmask_tmpfs.env (no script default)"
     bad=1
   fi
   mapfile -t errs < <(soulmask_pi_validate_prune_env 2>&1 >/dev/null)
@@ -476,6 +488,7 @@ pi_apply() {
       failed=1; continue
     fi
     PI_BOUND+=("$target"); PI_MADE+=("$target")
+    write_state   # record each mount right away: a kill before the end must not leave an unrecorded mount
   done
   if [ $failed -eq 1 ] && [ "${#PI_MADE[@]}" -gt 0 ]; then
     log "rolling back the ${#PI_MADE[@]} per-instance mount(s) made in this run"
@@ -537,8 +550,8 @@ _on_exit() {
     write_state
   fi
   if [ $rc -eq 0 ] && [ $PI_ERRORS -gt 0 ]; then
-    log "FAILED: $PI_ERRORS per-instance error(s) (see ERROR lines above); the shared part completed"
-    rc=1
+    log "$PI_ERRORS per-instance error(s) recorded (see ERROR lines above and PI_ERROR= in $STATE_FILE); the shared part completed — exiting $PI_EXIT_CODE (unit: SuccessExitStatus=$PI_EXIT_CODE; the prune service now fails until a clean run)"
+    rc=$PI_EXIT_CODE
   fi
   exit $rc
 }

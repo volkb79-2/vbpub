@@ -4,7 +4,7 @@
 # once at the end of soulmask_tmpfs-setup.sh.
 #
 # WHY this and not a systemd-tmpfiles age rule: an age rule cannot bound size
-# (a 66 MB log plus three same-day backups already overflows a 256M tmpfs, and
+# (a 66 MB log plus three same-day backups already overflows a small tmpfs, and
 # tmpfiles-clean runs daily), and with an age rule an idle live log is deleted
 # under the running game. This is the single pruning mechanism.
 #
@@ -18,7 +18,7 @@
 #   The live log WS.log, and everything else, is never deleted: it does not
 #   match the pattern.
 #
-# POLICY (both values from the unit Environment, validated here, no defaults):
+# POLICY (both values from /etc/gstammtisch/soulmask_tmpfs.env, validated here, no defaults):
 #   1. keep only the newest SOULMASK_TMPFS_PER_INSTANCE_KEEP_BACKUPS backups
 #      (by mtime); delete the older ones;
 #   2. then, while the tmpfs usage is above
@@ -133,4 +133,15 @@ while IFS= read -r line; do
     log "$t: ok ($(( used * 100 / size ))% used, ${#backups[@]} backup(s) kept, $deleted removed)"
   fi
 done < "$STATE_FILE"
+
+# Standing alarm: the last setup run recorded per-instance errors (it exited 75,
+# which the unit treats as success so that the shared tmpfs and the wings restart
+# are not lost). Keep failing until a clean setup run rewrites the state.
+pi_errors=$(sed -n 's/^PI_ERRORS=//p' "$STATE_FILE" | tail -n1)
+if [[ "${pi_errors:-0}" =~ ^[0-9]+$ ]] && [ "${pi_errors:-0}" -gt 0 ]; then
+  log "ERROR: the last soulmask_tmpfs setup run recorded $pi_errors per-instance error(s):"
+  while IFS= read -r l; do log "  - ${l#PI_ERROR=}"; done < <(grep '^PI_ERROR=' "$STATE_FILE")
+  log "  fix the cause and re-run soulmask_tmpfs-setup.sh (or restart soulmask_tmpfs.service with the game stopped)"
+  rc=1
+fi
 exit $rc

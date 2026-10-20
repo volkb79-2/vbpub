@@ -29,6 +29,13 @@ firing 15 min after boot and then every 1 d (read-only check, 2026-10-20, gstamm
 no longer relied on: pruning is done by `soulmask_logs-prune.sh` + `soulmask-logs-prune.timer`
 (review SMT-01 R-02: an age rule cannot bound a 256M tmpfs against ~66 MB logs).
 
+**Round 2 (review SMT-01).** Exit 75 + `SuccessExitStatus=75` was chosen over a separate
+per-instance unit (see SOULMASK-TMPFS.md "Failure policy"); its visibility (journal `-p err`,
+failing prune service, toggle warning) has only been exercised against shims — confirm on the
+live host with a deliberately refused target in a test instance, and that the prune service
+actually shows as failed. The policy single source (`/etc/gstammtisch/soulmask_tmpfs.env`) must
+be installed together with the units (a missing file fails both loudly).
+
 **Deferred.** (1) The `noswap` tmpfs option on the host kernel (7.2.6 here, `noswap` needs
 >= 6.4; the code fails loudly rather than fall back, but no live mount of the
 `[per-instance-noswap]` section has happened because none is configured). (2) The prune
