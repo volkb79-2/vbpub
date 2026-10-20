@@ -2214,3 +2214,55 @@ recomputes its age or reports a newer eligible version.
 **Fix direction:** support a non-OCI, per-architecture package target in `cmru versions` (or an HTTP/apt-pool source),
 register the compose pin, and add its version to the pin test. Related: tester-base TB-05 (verify the sums against
 Docker's signed `Packages` index). Check CHANGES.md and the versions design before choosing the source type.
+
+### KI-86 — `cmru abandon` withholds failed feature-source (`--from-worktree`) transactions: "release source record is malformed or does not match"
+
+**Status:** open; severity: minor (retained worktrees and origin branches accumulate; nothing is blocked). Filed
+2026-10-20 from CMRU-REL-01.
+
+**Observed:** with the bootstrap wheel 6.1.1.dev810+g59ff3e30f (current main), `cmru abandon --dry-run` and
+`cmru abandon cmru-release-20261018_020837-cmru-fvsibz --yes` (and `...042508-cmru-6ddr11`) exit 4 with
+"one or more selected release transactions are ambiguous or published; nothing was abandoned". Both are failed,
+unpublished 6.2.0 attempts (scope cmru, origin branch only, no tag or release evidence). Their
+`.git/cmru-release-scopes/<token>.source.json` is well-formed (schema 1, mode worktree, source_ref
+`refs/heads/cmru-candidate-integrated-20261017`, source_commit `3266b10fa1bb...`), so the refusal comes from
+`read_release_source` (`transaction.py`) comparing `source_commit` with `workspace.base` (the transaction's recorded
+base) and treating any mismatch as malformed. The same message withholds the published run-gate-project
+transactions of 2026-10-17/18, so it is a general condition of feature-source transactions, not specific to cmru.
+
+**Impact:** the supported verb cannot retire these transactions and the only alternative is hand-deleting worktrees,
+branches and sidecars, which AGENTS.md forbids. A new `cmru release` is NOT blocked by them (verified with
+`cmru release cmru --minor --dry-run`).
+
+**Fix direction:** establish which value `workspace.base` carries for a feature-source transaction after a failed gate
+(it differs from the recorded `source_commit`), and either compare the right field or make `abandon` distinguish
+"source record does not match" (still abandonable when no publication/promotion evidence exists) from "record absent
+or unreadable". Split the single error message so it names which comparison failed. Test with a retained
+`--from-worktree` transaction whose gate failed.
+
+### KI-87 — the mutation campaign's known-good control keeps no log and only a bounded output tail
+
+**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-03).
+
+**Observed:** `mutation_campaign.py` reads the control's output through `_read_output_tail` (the last 1 MiB), so for a very
+large output the FAILURES section may already be cut off, and `failure_excerpt` then returns a labelled tail. Unlike the
+coverage canary (which writes `<evidence stem>.control.log`), the mutation control persists nothing, so a failing control
+cannot be inspected after the run.
+
+**Fix direction:** persist the baseline output beside the mutation evidence with the same unlink-on-success rule and name
+the file in the error message; stream to the file instead of keeping only the tail in memory.
+
+### KI-88 — the fixture-closure scan test only sees literal `REPO_ROOT / "..."` reads and exempts whole modules
+
+**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-05).
+
+**Observed:** `test_fixture_carries_every_repo_root_file_the_suite_reads` (tests/test_project_fixture.py) matches only the
+identifier `REPO_ROOT` followed by string literals. Reads spelled `REPO / ...`, `Path(__file__).resolve().parents[N] / ...`,
+`REPO_ROOT.joinpath(...)` or `REPO_ROOT / variable` are invisible (all carried or guarded today, checked by hand). Modules in
+`SKIP_GUARDED_MODULES` are excluded entirely, so a new unguarded test in one of them that reads an uncarried file passes the
+scan and fails only in the real canary; `UNCARRIED_PATHS` applies to every scanned module; the pathspec list is re-derived in
+the test instead of imported from the fixture, and "under `cmru/`" counts as carried without checking it is tracked.
+
+**Fix direction:** an AST walk resolving `Name / "lit"` chains for every repository-root spelling; exclusions per test
+function or per skipif marker (assert the marker is still present); expose the fixture's pathspec list as a function and use
+it in both places; check tracked-ness. Optional: pin the read counts per module (F-06).
