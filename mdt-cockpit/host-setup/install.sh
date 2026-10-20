@@ -378,7 +378,7 @@ log(){ echo "$*" >&2; }
 MISSING_KEYS=$(_mdt_missing_declared_keys "$CANDIDATE_PATH" "$HERE/host-setup.env.example" required | sed 's/^/ /' | tr -d '\n')
 MISSING_OPTIONAL=$(_mdt_missing_declared_keys "$CANDIDATE_PATH" "$HERE/host-setup.env.example" optional | wc -l)
 if [ "$MISSING_OPTIONAL" -gt 0 ]; then
-  echo "NOTICE: $MISSING_OPTIONAL runtime-optional key(s) are absent from $CONFIG_PATH (the DEV_IO_*_MAX pins and IO_BASELINE_ROTATIONAL_FLAG); they are treated as NOT SET. Run install.sh --wizard to review and add them." >&2
+  echo "NOTICE: $MISSING_OPTIONAL runtime-optional key(s) are absent from $CONFIG_PATH (the DEV_IO_*_MAX pins, IO_BASELINE_ROTATIONAL_FLAG and the IO_WRITEBACK_*/IO_ROOT_QUEUE_* writeback keys, which read as `kernel`); they are treated as NOT SET. Run install.sh --wizard to review and add them." >&2
 fi
 if [ -n "$MISSING_KEYS" ]; then
   echo "ERROR: /etc/mdt/host-setup.env is missing declared keys:${MISSING_KEYS}" >&2
@@ -485,6 +485,30 @@ fi
 DEV_STATIC_RBW="$MDT_STATIC_RBPS"; DEV_STATIC_WBW="$MDT_STATIC_WBPS"
 DEV_STATIC_RIOPS="$MDT_STATIC_RIOPS"; DEV_STATIC_WIOPS="$MDT_STATIC_WIOPS"
 _mdt_io_pin_notice >&2
+
+# Writeback / root-queue settings (MDT-HS-05), PRE-FLIGHT part: read-only. The queue keys need the
+# whole disk under / (derived, never typed) and max_sectors_kb must not exceed that disk's
+# max_hw_sectors_kb; the grammar and dirty_background < dirty were already checked by the shared
+# Python validator (--validate-config above), and the bound is checked by the SAME module.
+WB_DEV=""
+if _mdt_io_queue_keys_set; then
+  if ! _wb_node=$(_mdt_root_disk_node 2>&1); then
+    echo "ERROR: IO_ROOT_QUEUE_* is set but the whole disk under / cannot be derived (${_wb_node}); nothing was changed. Remedy: run install.sh on the host, or set IO_ROOT_QUEUE_NR_REQUESTS and IO_ROOT_QUEUE_MAX_SECTORS_KB to kernel." >&2
+    exit 2
+  fi
+  WB_DEV=${_wb_node#/dev/}
+  _wb_max_sectors=$(_mdt_io_wb_value IO_ROOT_QUEUE_MAX_SECTORS_KB)
+  if [ -n "$_wb_max_sectors" ]; then
+    if ! _wb_hw=$(_mdt_io_queue_attr "$WB_DEV" max_hw_sectors_kb 2>&1); then
+      echo "ERROR: cannot read max_hw_sectors_kb of $WB_DEV (${_wb_hw}), so IO_ROOT_QUEUE_MAX_SECTORS_KB=$_wb_max_sectors cannot be bounded; nothing was changed." >&2
+      exit 2
+    fi
+    if ! python3 "$HERE/mdt-host-setup-wizard.py" --check-max-sectors-kb "$_wb_max_sectors" --max-hw-sectors-kb "$_wb_hw"; then
+      echo "ERROR: IO_ROOT_QUEUE_MAX_SECTORS_KB=$_wb_max_sectors is not valid for $WB_DEV (max_hw_sectors_kb=$_wb_hw); nothing was changed." >&2
+      exit 2
+    fi
+  fi
+fi
 
 # CPUQuota, absolute ceilings mirroring the IO one: auto-
 # detected from nproc when left unset in host-setup.env, floored at 1 core —
@@ -888,6 +912,13 @@ udevadm control --reload-rules 2>/dev/null \
   && udevadm trigger --action=change --subsystem-match=block 2>/dev/null \
   || echo "WARN: udev reload/trigger failed — set the scheduler manually"
 
+echo "== writeback and root-queue settings (MDT-HS-05) =="
+# After the BFQ block on purpose: a scheduler change resets nr_requests, so the queue rule
+# (61-mdt-io-queue.rules) is applied once the scheduler is settled. A failed read-back does not
+# abort the half-finished install; it is reported and the install exits non-zero at the end.
+WRITEBACK_FAILED=0
+_mdt_apply_writeback_settings || WRITEBACK_FAILED=1
+
 echo "== activate =="
 systemctl daemon-reload
 # Slices activate on demand, but starting them now makes the cgroups exist so
@@ -1012,4 +1043,8 @@ else
   echo "   docker.socket alone (which just rebinds) is not enough. Same disruption as"
   echo "   the daemon.json restart above; batch them into the same window. Not done"
   echo "   automatically by this script (use --restart-docker flag to enable)."
+fi
+if [ "$WRITEBACK_FAILED" = 1 ]; then
+  echo "ERROR: the writeback / root-queue settings were NOT verified live (see the ERROR lines above); the rest of the install completed. Fix the named cause and re-run install.sh." >&2
+  exit 2
 fi

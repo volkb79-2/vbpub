@@ -591,6 +591,44 @@ check_buildkit_guard() {
 }
 check_buildkit_guard
 # END guard-status
+# BEGIN io-writeback-check (extracted verbatim by tests/test_hs05.py)
+# Writeback and root-queue settings (MDT-HS-05): the live value against host-setup.env, each state
+# distinct: OK, MISMATCH, not managed (`kernel`/empty), could not read (never reported as OK).
+_check_io_one() { # <label> <wanted> <live-file>
+  local label="$1" want="$2" file="$3" live
+  case "$want" in
+    ""|kernel) info "$label: not managed (host-setup.env says kernel or nothing; the kernel's own value is kept)"; return 0 ;;
+  esac
+  if ! live=$(tr -d '[:space:]' < "$file" 2>/dev/null) || [ -z "$live" ]; then
+    warn "$label: could not read $file — cannot tell whether the intended $want is in force"
+    return 0
+  fi
+  if [ "$live" = "$want" ]; then
+    ok "$label = $live (matches host-setup.env)"
+  else
+    fail "$label MISMATCH: live $live, host-setup.env says $want — re-run install.sh (read-back source: $file)"
+  fi
+}
+check_io_writeback() {
+  local proc="${MDT_PROC_ROOT:-/proc}" sysroot="${MDT_SYSFS_ROOT:-/sys}" node dev n m
+  _check_io_one vm.dirty_bytes "${IO_WRITEBACK_DIRTY_BYTES:-}" "$proc/sys/vm/dirty_bytes"
+  _check_io_one vm.dirty_background_bytes "${IO_WRITEBACK_DIRTY_BACKGROUND_BYTES:-}" "$proc/sys/vm/dirty_background_bytes"
+  n="${IO_ROOT_QUEUE_NR_REQUESTS:-}"; m="${IO_ROOT_QUEUE_MAX_SECTORS_KB:-}"
+  case "$n$m" in
+    ""|kernel|kernelkernel)
+      info "root disk nr_requests: not managed (kernel)"; info "root disk max_sectors_kb: not managed (kernel)"; return 0 ;;
+  esac
+  if ! node=$(_mdt_root_disk_node 2>&1); then
+    warn "root disk queue: could not derive the whole disk under / ($node) — nr_requests/max_sectors_kb cannot be verified"
+    return 0
+  fi
+  dev=${node#/dev/}
+  _check_io_one "$dev nr_requests" "$n" "$sysroot/block/$dev/queue/nr_requests"
+  _check_io_one "$dev max_sectors_kb" "$m" "$sysroot/block/$dev/queue/max_sectors_kb"
+}
+echo "== writeback and root-queue settings =="
+check_io_writeback
+# END io-writeback-check
 memory_leaf_policy_configured=0
 for key in \
   WATCHER_INTERACTIVE_MEMORY_HIGH WATCHER_INTERACTIVE_MEMORY_MAX \

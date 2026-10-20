@@ -728,6 +728,44 @@ stale runtime IO drop-ins, so the install relies on this self-heal on the first 
 its own cleanup (removing `/run/systemd/system.control` files was measured to depend on systemd's naming and
 to race its writes; see the MDT-016 note in the reconcile script).
 
+## Writeback and root-queue settings are host-setup keys, not a runbook (MDT-HS-05)
+
+**Why.** On a slow shared disk, fsync and journal commits wait behind the dirty backlog and the device queue. The
+measured fix on gstammtisch (2026-10-20, `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` sections 4.2 A/B, 4.3 and 4.4
+matrices, recommendations in section 5): `vm.dirty_bytes` 16 MiB, `vm.dirty_background_bytes` 4 MiB, root disk
+`nr_requests` 16, `max_sectors_kb` 64 took the game thread's D-state maximum from 26.9 s to 0.14 s, the probe fsync maximum
+from 39 s to 0.5 s and the gate fio from 5 to 173 iops under the same load. These were applied by hand and by interim files; the operator
+asked for them to be permanent and for the wizard to ask. They are now four env keys that install.sh renders, applies and verifies.
+
+**Grammar and the one validator.** A key is a positive integer (bytes; KB for `max_sectors_kb`) or `kernel` (an explicit
+policy default: leave the kernel's value untouched, render no line); empty means `kernel`. The grammar and the
+`dirty_background < dirty` relation live in ONE place, the Python validator in `mdt-host-setup-wizard.py`, which both the wizard
+prompts and `install.sh --validate-config` use; the disk-dependent bound `max_sectors_kb <= max_hw_sectors_kb` is checked by the
+same module (`--check-max-sectors-kb`), with the live value read from the derived disk in the installer's read-only preflight.
+The keys are runtime-optional (`runtime-optional-keys.re`): an absent line means `kernel`, which cannot leave anything
+unbounded, so an old env file is not refused; it gets the usual NOTICE.
+
+**What is rendered, and the systemd/udev ordering.** `90-mdt-io-writeback.conf` (sysctl.d) holds only the set keys.
+`61-mdt-io-queue.rules` matches `KERNEL=="<DEVNAME>"` of the whole disk under `/`, derived (`_mdt_root_disk_node`, which reuses
+the MDT-HS-04 helpers; never typed). It sorts after `60-mdt-bfq-scheduler.rules` because a scheduler change resets `nr_requests`.
+The interim files sort BEFORE the final ones (`-interim` before `.`), so both coexist harmlessly until the interim files are retired;
+sysctl.d likewise lets the later file win. install.sh applies them after the BFQ block (`sysctl -p`, udev reload, trigger with
+`--sysname-match`, settle), reads the live values back and fails non-zero on any mismatch or unreadable value, naming the file and the
+remedy; the rest of the install still completes. Only after the verified read-back are the interim files removed.
+
+**Read-cost trade-off.** `max_sectors_kb` also caps read requests: sequential reads fell from about 1.2-1.4 GB/s to about
+0.25-0.3 GB/s at 64 KB (buffered reads were equal across 64-256 KB). That is why the wizard prints the cost next to the key and
+proposes `kernel` unless a measurement says otherwise. `vm.dirty_bytes` is host-global and also bounds every production container's
+writeback (section 4.5). A setting returned to `kernel` removes MDT's line but cannot restore the kernel's boot value at runtime;
+install.sh says so in a NOTICE and never guesses the old value.
+
+**Where proposals come from.** Precedence per key: a current benchmark result, then the existing configured value, then `kernel`;
+the gstammtisch values are shown as a labelled example only. The benchmark reader is coupled to the documented IOB-02 `result.json`
+schema (schema 1, `run.status`, `quality.plausible`, `identity.disk.devno`, `proposals.writeback`) and nothing else: absent means no
+benchmark; a corrupt, newer-schema, aborted, implausible or other-disk result is reported and not used; a formula-only, limited or
+target-missed proposal is shown with that label. Full identity validation belongs to `iobench check` once it exists; the reader only
+compares the disk's device number.
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may

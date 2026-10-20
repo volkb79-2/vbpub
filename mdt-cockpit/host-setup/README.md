@@ -578,6 +578,28 @@ at install time. All four memory controls may be omitted. The manual path requir
 complete valid config; the wizard writes its candidate only after the prompts
 complete and the installer backs up any existing config only after validation.
 
+### Writeback and root-queue settings (MDT-HS-05)
+
+The wizard (section i, after the IO settings) asks for four host-global keys and install.sh renders, applies and
+verifies them: `IO_WRITEBACK_DIRTY_BYTES` and `IO_WRITEBACK_DIRTY_BACKGROUND_BYTES` (`vm.dirty_bytes`,
+`vm.dirty_background_bytes`), and `IO_ROOT_QUEUE_NR_REQUESTS` and `IO_ROOT_QUEUE_MAX_SECTORS_KB` (the root disk's
+`queue/nr_requests` and `queue/max_sectors_kb`). Each is a positive integer (bytes; KB for `max_sectors_kb`) or the
+word `kernel` (leave the kernel's value untouched and render no line; empty means the same). They are
+runtime-optional: an env file without them reads as `kernel`. Bounds: `dirty_background_bytes` below `dirty_bytes`,
+`nr_requests` at least 4, `max_sectors_kb` between 4 and the disk's `max_hw_sectors_kb` (read from the derived disk at
+install time). The wizard proposes from a current benchmark result when one exists (the IOB-02 `result.json`,
+`/var/lib/iobench/result.json` or `$IOBENCH_RESULT`; absent means no benchmark), else the existing value, else
+`kernel`; the gstammtisch-measured values are printed as a labelled example, never a default. install.sh writes
+`/etc/sysctl.d/90-mdt-io-writeback.conf` (only the set keys) and `/etc/udev/rules.d/61-mdt-io-queue.rules` (matching
+`KERNEL==<DEVNAME>` of the whole disk under `/`, derived with the MDT-HS-04 helpers; it sorts after
+`60-mdt-bfq-scheduler.rules` because a scheduler change resets `nr_requests`), applies them, reads `/proc/sys/vm/*` and
+`/sys/block/<disk>/queue/*` back and exits non-zero on a mismatch, naming the file and the remedy. Only after that does
+it remove the interim files `90-mdt-io-writeback-interim.conf` and `61-mdt-io-queue-interim.rules`, with a NOTICE. A
+key set back to `kernel` loses MDT's line but its running value cannot be restored (the kernel's boot value is unknown at
+runtime): reboot or set it by hand. `mdt-host-check.sh` reports each key as OK, MISMATCH, not managed, or could not read.
+Why these values and what they cost (sequential reads fell from about 1.2-1.4 GB/s to 0.25-0.3 GB/s at 64 KB): see the
+DESIGN-GUIDE section on MDT-HS-05 and `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` sections 4.2-4.5 and 5.
+
 ### Optional DAMON_STAT policy
 
 The wizard asks whether to disable the kernel-wide `DAMON_STAT` monitor so

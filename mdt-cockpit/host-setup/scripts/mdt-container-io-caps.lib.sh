@@ -732,6 +732,199 @@ _mdt_apply_damon_policy() {
   return 0
 }
 
+# --- writeback and root-queue settings (MDT-HS-05) -------------------------------------------
+# Keys (host-setup.env): IO_WRITEBACK_DIRTY_BYTES, IO_WRITEBACK_DIRTY_BACKGROUND_BYTES,
+# IO_ROOT_QUEUE_NR_REQUESTS, IO_ROOT_QUEUE_MAX_SECTORS_KB.  Grammar (validated ONCE, by the Python
+# validator in mdt-host-setup-wizard.py that both the wizard and install.sh --validate-config run;
+# the disk-dependent upper bound max_sectors_kb <= max_hw_sectors_kb through the same module):
+# a positive integer, or `kernel` / empty = leave the kernel's own value untouched, render nothing.
+# Why and how measured: scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md sections 4.2-4.5 and 5.
+MDT_IO_WB_SYSCTL_FILE_NAME=90-mdt-io-writeback.conf
+MDT_IO_WB_UDEV_FILE_NAME=61-mdt-io-queue.rules
+MDT_IO_WB_INTERIM_SYSCTL_NAME=90-mdt-io-writeback-interim.conf
+MDT_IO_WB_INTERIM_UDEV_NAME=61-mdt-io-queue-interim.rules
+
+# _mdt_io_wb_value <KEY>: the numeric value, or nothing for `kernel`, empty or unset.
+_mdt_io_wb_value() {
+  local v="${!1:-}"
+  case "$v" in kernel|"") ;; *) printf '%s\n' "$v" ;; esac
+}
+
+# _mdt_io_queue_keys_set: success when either queue key carries a number.
+_mdt_io_queue_keys_set() {
+  [ -n "$(_mdt_io_wb_value IO_ROOT_QUEUE_NR_REQUESTS)$(_mdt_io_wb_value IO_ROOT_QUEUE_MAX_SECTORS_KB)" ]
+}
+
+# _mdt_root_disk_node: `/dev/<DEVNAME>` of the WHOLE disk under `/`, derived (never typed) with the
+# MDT-HS-04 helpers; the udev rule matches KERNEL==<DEVNAME> of exactly this disk.  Test seam:
+# MDT_ROOT_TARGET (default /).  rc 1 with the reason on stderr.
+_mdt_root_disk_node() {
+  local src
+  src=$(findmnt -no SOURCE --target "${MDT_ROOT_TARGET:-/}" 2>/dev/null) || {
+    echo "findmnt could not name the filesystem source of ${MDT_ROOT_TARGET:-/}" >&2; return 1; }
+  src=${src%%\[*}                      # btrfs: /dev/vda2[/@] -> /dev/vda2
+  case "$src" in
+    /dev/?*) ;;
+    *) echo "the source of ${MDT_ROOT_TARGET:-/} is '$src', not a /dev block node" >&2; return 1 ;;
+  esac
+  _mdt_io_systemd_dev "$src"
+}
+
+# _mdt_io_queue_attr <devname> <attr>: the live value of /sys/block/<devname>/queue/<attr>.
+_mdt_io_queue_attr() {
+  local f="${MDT_SYSFS_ROOT:-/sys}/block/$1/queue/$2"
+  [ -r "$f" ] || { echo "cannot read $f" >&2; return 1; }
+  tr -d '[:space:]' < "$f"
+}
+
+# _mdt_render_writeback_sysctl: the sysctl.d file body, ONLY the keys that are set; rc 1 (no output)
+# when none is.
+_mdt_render_writeback_sysctl() {
+  local d b
+  d=$(_mdt_io_wb_value IO_WRITEBACK_DIRTY_BYTES)
+  b=$(_mdt_io_wb_value IO_WRITEBACK_DIRTY_BACKGROUND_BYTES)
+  [ -n "$d$b" ] || return 1
+  cat <<EOF
+# Managed by MDT host-setup (install.sh): do not edit; change IO_WRITEBACK_* in /etc/mdt/host-setup.env
+# and re-run install.sh. Only keys that are set appear here; \`kernel\` renders no line.
+# Why and how measured: scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md sections 4.2-4.5 and 5
+# (host-global: these also bound every production container's writeback, section 4.5).
+EOF
+  [ -z "$b" ] || echo "vm.dirty_background_bytes = $b"
+  [ -z "$d" ] || echo "vm.dirty_bytes = $d"
+}
+
+# _mdt_render_queue_udev <devname>: the udev rule body for that whole disk, ONLY the attributes that are
+# set; rc 1 (no output) when none is.
+_mdt_render_queue_udev() {
+  local dev="$1" n m attrs=""
+  n=$(_mdt_io_wb_value IO_ROOT_QUEUE_NR_REQUESTS)
+  m=$(_mdt_io_wb_value IO_ROOT_QUEUE_MAX_SECTORS_KB)
+  [ -n "$n$m" ] || return 1
+  [ -z "$n" ] || attrs="$attrs, ATTR{queue/nr_requests}=\"$n\""
+  [ -z "$m" ] || attrs="$attrs, ATTR{queue/max_sectors_kb}=\"$m\""
+  cat <<EOF
+# Managed by MDT host-setup (install.sh): do not edit; change IO_ROOT_QUEUE_* in /etc/mdt/host-setup.env
+# and re-run install.sh. The disk (KERNEL==$dev) was DERIVED as the whole disk under /, never typed.
+# Sorts AFTER 60-mdt-bfq-scheduler.rules ON PURPOSE: a scheduler change resets nr_requests, so the
+# scheduler rule must run first. Why and how measured: scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md
+# sections 4.3-4.5 and 5.
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="$dev"$attrs
+EOF
+}
+
+# _mdt_io_wb_check_one <label> <wanted> <live> <where> <remedy>: one comparison.  An empty <live> is
+# "could not read" (never certified), an empty <wanted> is "not managed" (nothing to compare).
+_mdt_io_wb_check_one() {
+  [ -n "$2" ] || return 0
+  if [ -z "$3" ]; then
+    echo "ERROR: could not read the live $1 ($4) — cannot verify the intended $2. Remedy: $5" >&2
+    return 1
+  fi
+  if [ "$3" != "$2" ]; then
+    echo "ERROR: live $1 is $3 but the intended value is $2 ($4). Remedy: $5" >&2
+    return 1
+  fi
+  return 0
+}
+
+_mdt_io_cat() { tr -d '[:space:]' < "$1" 2>/dev/null; }
+
+# _mdt_io_wb_readback <devname-or-empty> <sysctl-file> <udev-file>: compare the LIVE values with the
+# intended ones; every mismatch or unreadable value is named with its file and remedy.  rc 1 on any.
+_mdt_io_wb_readback() {
+  local dev="$1" sfile="$2" ufile="$3" bad=0 proc="${MDT_PROC_ROOT:-/proc}" live
+  local sremedy="a later file in /etc/sysctl.d or /run/sysctl.d may override $sfile (check: sysctl vm.dirty_bytes vm.dirty_background_bytes), fix it and re-run install.sh"
+  local uremedy="check that no later udev rule overrides $ufile (ls /etc/udev/rules.d), that KERNEL==$dev matches, then udevadm trigger --action=change --sysname-match=$dev and re-run install.sh"
+  live=$(_mdt_io_cat "$proc/sys/vm/dirty_bytes")
+  _mdt_io_wb_check_one vm.dirty_bytes "$(_mdt_io_wb_value IO_WRITEBACK_DIRTY_BYTES)" "$live" "$proc/sys/vm/dirty_bytes, written by $sfile" "$sremedy" || bad=1
+  live=$(_mdt_io_cat "$proc/sys/vm/dirty_background_bytes")
+  _mdt_io_wb_check_one vm.dirty_background_bytes "$(_mdt_io_wb_value IO_WRITEBACK_DIRTY_BACKGROUND_BYTES)" "$live" "$proc/sys/vm/dirty_background_bytes, written by $sfile" "$sremedy" || bad=1
+  if [ -n "$dev" ]; then
+    live=$(_mdt_io_queue_attr "$dev" nr_requests 2>/dev/null) || live=""
+    _mdt_io_wb_check_one "/sys/block/$dev/queue/nr_requests" "$(_mdt_io_wb_value IO_ROOT_QUEUE_NR_REQUESTS)" "$live" "written by $ufile" "$uremedy" || bad=1
+    live=$(_mdt_io_queue_attr "$dev" max_sectors_kb 2>/dev/null) || live=""
+    _mdt_io_wb_check_one "/sys/block/$dev/queue/max_sectors_kb" "$(_mdt_io_wb_value IO_ROOT_QUEUE_MAX_SECTORS_KB)" "$live" "written by $ufile" "$uremedy" || bad=1
+  fi
+  return "$bad"
+}
+
+# _mdt_apply_writeback_settings: render, apply, READ BACK, and only then retire the interim files.
+# Test seams: MDT_SYSCTL_D, MDT_UDEV_RULES_D (defaults /etc/sysctl.d, /etc/udev/rules.d), MDT_PROC_ROOT,
+# MDT_SYSFS_ROOT, MDT_ROOT_TARGET, and PATH shims for sysctl/udevadm.  rc 0 ok, 2 refused/failed.
+# A key changed back to `kernel` loses MDT's line but the runtime value cannot be restored here
+# (the kernel's boot value is unknown at runtime; never guessed): a NOTICE says so.
+_mdt_apply_writeback_settings() {
+  local sd="${MDT_SYSCTL_D:-/etc/sysctl.d}" ud="${MDT_UDEV_RULES_D:-/etc/udev/rules.d}"
+  local sfile="$sd/$MDT_IO_WB_SYSCTL_FILE_NAME" ufile="$ud/$MDT_IO_WB_UDEV_FILE_NAME"
+  local isfile="$sd/$MDT_IO_WB_INTERIM_SYSCTL_NAME" iufile="$ud/$MDT_IO_WB_INTERIM_UDEV_NAME"
+  local dev="" node body k prev_dropped=""
+  if _mdt_io_queue_keys_set; then
+    if ! node=$(_mdt_root_disk_node 2>&1); then
+      echo "ERROR: IO_ROOT_QUEUE_* is set but the whole disk under / cannot be derived ($node); nothing was applied. Remedy: run on the host, or set both queue keys to kernel." >&2
+      return 2
+    fi
+    dev=${node#/dev/}
+  fi
+  # which keys did MDT's (or the interim) files hold before? (for the "back to kernel" NOTICE)
+  for k in vm.dirty_bytes vm.dirty_background_bytes; do
+    if grep -qs "^${k}[[:space:]]*=" "$sfile" "$isfile"; then
+      case "$k" in
+        vm.dirty_bytes) [ -n "$(_mdt_io_wb_value IO_WRITEBACK_DIRTY_BYTES)" ] || prev_dropped="$prev_dropped $k" ;;
+        *) [ -n "$(_mdt_io_wb_value IO_WRITEBACK_DIRTY_BACKGROUND_BYTES)" ] || prev_dropped="$prev_dropped $k" ;;
+      esac
+    fi
+  done
+  for k in nr_requests max_sectors_kb; do
+    if grep -qs "queue/$k" "$ufile" "$iufile"; then
+      case "$k" in
+        nr_requests) [ -n "$(_mdt_io_wb_value IO_ROOT_QUEUE_NR_REQUESTS)" ] || prev_dropped="$prev_dropped $k" ;;
+        *) [ -n "$(_mdt_io_wb_value IO_ROOT_QUEUE_MAX_SECTORS_KB)" ] || prev_dropped="$prev_dropped $k" ;;
+      esac
+    fi
+  done
+  mkdir -p "$sd" "$ud" || return 2
+  if body=$(_mdt_render_writeback_sysctl); then
+    printf '%s\n' "$body" > "$sfile.tmp" && mv -f "$sfile.tmp" "$sfile" || return 2
+    echo "rendered $sfile"
+  elif [ -f "$sfile" ]; then
+    rm -f -- "$sfile"; echo "removed $sfile (no writeback key is set)"
+  fi
+  if [ -n "$dev" ] && body=$(_mdt_render_queue_udev "$dev"); then
+    printf '%s\n' "$body" > "$ufile.tmp" && mv -f "$ufile.tmp" "$ufile" || return 2
+    echo "rendered $ufile (disk $dev, derived)"
+  elif [ -f "$ufile" ]; then
+    rm -f -- "$ufile"; echo "removed $ufile (no queue key is set)"
+  fi
+  if [ -f "$sfile" ]; then
+    sysctl -p "$sfile" >/dev/null 2>&1 || {
+      echo "ERROR: sysctl -p $sfile failed; the interim files were left in place. Remedy: run 'sysctl -p $sfile' by hand and read its error." >&2
+      return 2; }
+  fi
+  if [ -n "$dev" ]; then
+    { udevadm control --reload-rules && udevadm trigger --action=change --sysname-match="$dev" && udevadm settle; } >/dev/null 2>&1 || {
+      echo "ERROR: udev reload/trigger/settle failed for $dev; the interim files were left in place. Remedy: udevadm control --reload-rules && udevadm trigger --action=change --sysname-match=$dev" >&2
+      return 2; }
+  fi
+  if ! _mdt_io_wb_readback "$dev" "$sfile" "$ufile"; then
+    echo "ERROR: the live writeback/queue values do not match host-setup.env after install; the interim files were left in place (still holding the previous values)." >&2
+    return 2
+  fi
+  # verified: only now retire the interim files (the udev one needs a rules reload to stop applying)
+  local removed=0
+  [ -f "$isfile" ] && { rm -f -- "$isfile"; echo "NOTICE: removed the interim file $isfile; $sfile replaces it"; removed=1; }
+  if [ -f "$iufile" ]; then
+    rm -f -- "$iufile"; echo "NOTICE: removed the interim file $iufile; $ufile replaces it"; removed=1
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+  fi
+  [ "$removed" = 0 ] || true
+  if [ -n "$prev_dropped" ]; then
+    echo "NOTICE: now set to kernel, MDT no longer renders:$prev_dropped. The running value is unchanged: MDT cannot restore the kernel's boot value at runtime (it does not know it). Reboot, or set the value by hand, to return to the kernel default." >&2
+  fi
+  return 0
+}
+
+
 # --- guard (terminate) policy confirmation, recorded durably (MDT-HS-02) -------------------
 # The wizard's second confirmation of BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate is recorded
 # in a root-owned file under /var/lib/mdt: the confirmed settings, a timestamp and a digest of
