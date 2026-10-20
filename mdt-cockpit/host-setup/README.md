@@ -203,6 +203,14 @@ closed vocabulary: `report-only` (default) detects and logs without removal;
 `terminate` removes an unapproved BuildKit worker and is an explicit opt-in.
 The wizard asks for a second confirmation because termination can interrupt a
 live Buildx build. Missing or invalid policy configuration stops the guard.
+The guard reads each `docker events` line's container id from `Actor.ID`, the documented
+current field: Docker 29 (API 1.56) no longer sends the deprecated top-level `id`/`status`/`from`.
+A legacy top-level `id` is accepted only when `Actor` is absent (older daemons) or agrees with it;
+a disagreement is refused loudly and neither id is acted on. The command filters on
+`type=container`, so a non-container event is logged and ignored. One malformed line does not kill
+the guard: it is logged as an ERROR and answered by an immediate full reconcile; five in a row make
+the guard exit so systemd shows the failure.
+
 The wizard's second confirmation is recorded durably in
 `/var/lib/mdt/guard-terminate.confirmed` (policy, BuildKit image, timestamp, and a digest
 of policy + image + this host's machine-id; an audit trail, not an access control).

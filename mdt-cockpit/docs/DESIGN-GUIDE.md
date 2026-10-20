@@ -650,6 +650,19 @@ previously confirmed guard and only then refused, removing live protection). The
 installer is split into pre-flight (reads the validated candidate, may refuse, mutates
 nothing) and a COMMIT POINT: validate everything first, then act.
 
+### The guard reads `Actor.ID`, and one bad event does not restart it (MDT-HS-03)
+
+From 2026-10-02 the host guard crash-looped (restart counter 107+): `docker events` on Docker 29.9.1
+(API 1.56) no longer emits the deprecated top-level `id`/`status`/`from`, only `Actor.ID`, and the
+guard's `event.get("id") or event.get("ID")` raised on every container create. The parser now takes
+`Actor.ID`; a legacy `id` is accepted only when `Actor` is absent or agrees (a disagreement is refused,
+never guessed); `Type` other than `container` is ignored, because the command's `type=container`
+filter guarantees container events and a stray event has no container to police. A malformed line is
+logged, counted and answered by an immediate `reconcile_all()`: a restart (`RestartSec=5`) is a window in
+which created containers are not seen, so a single bad line must not cost one. Only
+`MAX_CONSECUTIVE_MALFORMED_EVENTS` (5) in a row exit non-zero, because that means the event shape is not
+understood and systemd should show it. A good event resets the streak.
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may
