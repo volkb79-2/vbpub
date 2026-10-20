@@ -10,7 +10,7 @@ how-to for operators is the "Applying" section here plus [SOULMASK-TMPFS.md](SOU
 [the egg doc](../../game_stuff/soulmask/README.md)).
 
 **Evidence labels.** Every claim carries one: **[M date host]** measured, **[I]** inferred (reasoned
-from measurements, not itself tested). Nothing in the "Recommended settings" section is applied yet.
+from measurements, not itself tested). The "Recommended settings" section is applied on gstammtisch **as an interim** (section 4.7), not yet owned by host-setup.
 
 ## 1. The mechanism
 
@@ -181,13 +181,13 @@ Findings:
    against ~200 iops and 1.5–2.6 s at 16 MiB. At 256 KB it is also worse for the probe. Keep
    16 MiB / 4 MiB.
 4. **Queue depth 8 vs 16 at 64 KB is within the noise.**
-5. **Not measured: read-throughput impact.** `max_sectors_kb` also caps read requests (the sequential
+5. **Read-throughput impact (not measured in this matrix; measured later, section 4.6).** `max_sectors_kb` also caps read requests (the sequential
    reads of builds and image layers). Before persisting 64 KB, measure sequential read MB/s at 64 KB
    against 4096 KB.
 
-**Recommendation (not applied):** `vm.dirty_bytes=16777216`, `vm.dirty_background_bytes=4194304`,
-`nr_requests=16` (8 is also fine), `max_sectors_kb=64`, **subject to the read-throughput check**
-(finding 5). 128 KB is the fallback if reads suffer.
+**Recommendation (since applied as an interim, section 4.7):** `vm.dirty_bytes=16777216`, `vm.dirty_background_bytes=4194304`,
+`nr_requests=16` (8 is also fine), `max_sectors_kb=64`, subject to the read-throughput check
+(finding 5), which section 4.6 has since done: 64 KB is accepted.
 
 ### 4.5 Caveats (not proven)
 
@@ -198,17 +198,64 @@ Findings:
   interleaved, inside the throttled steady state, ~12 min) is still to run.
 - **Everything ran under BFQ.** `none` and `mq-deadline` are untested. BFQ keeps its own internal
   queueing, so how `nr_requests` interacts with it is **[I]** from the numbers, not from the code.
-- **Read throughput at small `max_sectors_kb` is unmeasured** (section 4.4 finding 5).
-- **Nothing is persisted.** All values were applied at runtime and restored.
+- **Read throughput at small `max_sectors_kb`** was unmeasured in 4.4; measured in 4.6.
+- **Persistence:** the A/B and matrix values were applied at runtime and restored; the interim in 4.7 is
+  the first persisted state.
 - **`vm.dirty_bytes` is host-global** and also bounds every production container's writeback.
 
-## 5. Recommended settings (NOT APPLIED; a host-setup work item)
+### 4.6 Live B0/B1 and the read cost of small requests
+
+**B0 vs B1, live.** [M 2026-10-20 07:42–07:58 UTC gstammtisch.] With `WS.log` already on tmpfs (SMT-01)
+and the same standard load as section 4.
+
+| | B0: defaults (`dirty_ratio` 20/10, `nr_requests` 256, 4096 KB) | B1: bounded (dirty 16M/4M, `nr_requests` 16, 64 KB) |
+|---|---|---|
+| game D-state max | 26.9 s | 0.139 s |
+| windows with D > 1 s | 27 | 0 |
+| probe fdatasync p50 / p99 / max | 0.67 / 24.9 / 39.3 s | 0.027 / 0.214 / 0.497 s |
+| probe `write()` p99 / max | 20.9 / 31.5 s | 0.064 / 0.111 s |
+| fio gate-like | 5 iops, fsync p99 17.1 s | 173 iops, fsync p99 1.23 s |
+| host load average | 62 | ~3 |
+
+**New finding: with `WS.log` off ext4 the dominant game wait under defaults is swap-in, not the journal.**
+B0's `do_swap_page` → `__folio_lock_or_retry` took 229 s in total, and `blk_mq_get_tag` in `swap_read_folio`
+7.5 s: anonymous pages that zswap had written back are read again behind the dev writeback queue. This is the
+same queueing mechanism as section 1, reached through a different door (swap-in instead of `fsync`). B1's
+residual waits are small: `ext4_sync_file` fsync ~0.4 s in total and swap-in ~0.25 s. The bounded settings
+therefore also cure the swap-in wait, and the tmpfs for `WS.log` alone would not have.
+
+**Sequential-read cost of `max_sectors_kb`** (the unmeasured cost in 4.4 finding 5). [M 2026-10-20
+gstammtisch, root LV read-only, two repetitions each.]
+
+| `max_sectors_kb` | direct, QD4 | buffered (readahead) |
+|---|---|---|
+| 4096 | 1.29 / 1.40 GB/s | 1.13 / 1.19 GB/s |
+| 256 | 0.78 / 0.72 GB/s | 0.35 / 0.27 GB/s |
+| 128 | 0.47 / 0.47 GB/s | 0.33 / 0.23 GB/s |
+| 64 | 0.30 / 0.29 GB/s | 0.24 / 0.24 GB/s |
+
+**Decision: 64 KB.** Buffered reads are about equal across 64–256 KB (0.24 vs 0.27–0.35 GB/s), and even the
+slowest figure is ~25× the disk's ~10 MB/s write rate, so reads are not the bottleneck. Direct large reads do
+lose (1.3 → 0.3 GB/s), which is the accepted cost.
+
+### 4.7 Interim persistence (live on gstammtisch)
+
+Applied 2026-10-20 as an **interim**, replacing the runtime-only trial:
+- `/etc/sysctl.d/90-mdt-io-writeback-interim.conf`: `vm.dirty_bytes` 16 MiB, `vm.dirty_background_bytes` 4 MiB.
+- `/etc/udev/rules.d/61-mdt-io-queue-interim.rules`: `vda` gets `max_sectors_kb` 64 and `nr_requests` 16. The
+  rule sorts **after** the `60-*bfq*` rules on purpose: a scheduler change resets `nr_requests`.
+
+These files are not owned by host-setup. They are to be replaced by MDT-HS-05 (host-setup wizard keys plus a
+central benchmark that derives the values; the rule must select the device behind `/`, not `vda`). Until then
+they carry gstammtisch literals, which is why the rules in section 5 ("derive, never pin") still stand.
+
+## 5. Recommended settings (applied as an INTERIM on gstammtisch, section 4.7; to be owned by host-setup, MDT-HS-05)
 
 | Knob | Recommended | Reason |
 |---|---|---|
 | `vm.dirty_bytes` / `vm.dirty_background_bytes` | 16 MiB / 4 MiB (measured). 32/8 MiB was also measured (section 4.4, 90 s, throttled state) and is clearly worse for the gate-like load: keep 16/4 | bounds the ordered-data backlog a journal commit can wait for: backlog ÷ rate. 256M/64M (A1) was still 21 s |
 | `/sys/block/<root disk>/queue/nr_requests` | 8–16 | bounds the device queue; the matrix (section 4.3, same dirty limit) shows q4 gives no further gain over q8–16. **[I]** the A/B's 6 s at 32 (A2) also carried `dirty_bytes` 256M, so it does not isolate `nr_requests` |
-| `/sys/block/<root disk>/queue/max_sectors_kb` | 64 (fallback 128), subject to a read-throughput check | 1 MB requests were the worst cell; 512 KB was no better than 256; 64 KB beat 128 and 256 KB for the small sync in both repetitions (section 4.4). It also caps read requests, which is unmeasured |
+| `/sys/block/<root disk>/queue/max_sectors_kb` | 64 (read-throughput check done, section 4.6) | 1 MB requests were the worst cell; 512 KB was no better than 256; 64 KB beat 128 and 256 KB for the small sync in both repetitions (section 4.4). It also caps read requests, which is unmeasured |
 | scheduler | keep `bfq` (measured under it) | `none`/`mq-deadline` untested. **[I]** bfq is what makes the dev tiers' cgroup weights order *queued requests* at all; it does not help the journal wait (section 6) |
 | dev `io.max` | derive from the ~10 MB/s steady state; do not pin literals | at the 40M cap the device saturated first, so the cap never bound (A3). Caps are the second line, after the queue bounds |
 
@@ -285,7 +332,8 @@ echo 16  > /sys/block/$ROOTDEV/queue/nr_requests
 echo 64  > /sys/block/$ROOTDEV/queue/max_sectors_kb   # trial value; 128 is the fallback if sequential reads suffer
 ```
 
-Persist through `sysctl.d` and a udev rule only after the confirmation run in section 4.5. Revert
+The interim persistence (section 4.7) is already live on gstammtisch; the permanent owner is host-setup
+(MDT-HS-05). Revert
 values (defaults on this host): `dirty_bytes` 0 (ratio mode 20/10), `nr_requests` 256,
 `max_sectors_kb` 4096.
 
