@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import shutil
 import os
 import subprocess
@@ -33,6 +34,8 @@ SHARED_LIBRARIES = (
 # - .gitignore: test_release_gate's clean-source check uses the estate rules;
 # - run-gate-project/cmru.toml: test_release_gate's provider-prefix check;
 # - assay/src: run_release_gate's isolated component loader imports Assay there;
+# - tester-base/Dockerfile: test_installed_wheel_subprocess's _bootstrap_tree
+#   copies it into the throw-away tree it bootstraps (the script hashes it);
 # - docs/BOOTSTRAP-FROM-ZERO.md: linked from CMRU's README, DESIGN-GUIDE and
 #   CONSUMERS (test_docs_config_examples' cross-document link oracle).
 SUITE_COLLECTION_INPUTS = (
@@ -43,6 +46,7 @@ SUITE_COLLECTION_INPUTS = (
     Path("run-gate-project/cmru.toml"),
     Path("assay/src"),
     Path("docs/BOOTSTRAP-FROM-ZERO.md"),
+    Path("tester-base/Dockerfile"),
 )
 # mutation_campaign fingerprints and dirty-checks exactly the pathspecs of the
 # four fixture constants, so the collection inputs join this one rather than
@@ -59,6 +63,56 @@ ESTATE_CONFIG_FIXTURES = (
     Path("topos/cmru.toml"),
     Path("nyxloom/cmru.toml"),
 )
+
+
+_SECTION_HEADER = re.compile(r"^={3,} (?:FAILURES|ERRORS) ={3,}$", re.MULTILINE)
+# pytest pads a long test name down to one underscore a side, but a frame separator
+# ("_ _ _ _") has no name in the middle: require a non-underscore, non-space character.
+_BLOCK_HEADER = re.compile(r"^_+ (?=.*[^_ ]).+ _+$")
+_SUMMARY_HEADER = re.compile(r"^={3,} ")
+_EXCEPTION_LINE = re.compile(r"^E(?: |$)")
+_LOCATION_LINE = re.compile(r"^\S+:\d+: \S")
+
+
+def failure_excerpt(output: str, limit: int) -> str:
+    """Return the cause of the first failure in pytest ``output``, within ``limit``.
+
+    A pytest ``-q`` run ends with a short summary of bare ``FAILED node-id``
+    lines, and each failure block puts its ``E ...`` cause lines at the bottom,
+    after the test source. So the excerpt leads with the first failing block's
+    header, its ``E`` lines and its ``file:line: Error`` location, then adds the
+    rest of that block (the part nearest the cause) as space allows. The cause
+    always fits: the header and location are capped, the ``E`` lines take the
+    remaining budget. Without a FAILURES/ERRORS section the tail is returned,
+    labelled as such.
+    """
+    if not output:
+        return "[no output]"
+    section = _SECTION_HEADER.search(output)
+    if section is None:
+        return f"[no FAILURES/ERRORS section; last {min(limit, len(output))} characters of output] {output[-limit:]}"
+    lines = output[section.end():].lstrip("\n").split("\n")
+    block: list[str] = []
+    for index, line in enumerate(lines):
+        if index and (_BLOCK_HEADER.match(line) or _SUMMARY_HEADER.match(line)):
+            break
+        block.append(line)
+    header = block[0][:200]
+    cause = [line for line in block[1:] if _EXCEPTION_LINE.match(line)]
+    location = next((line for line in reversed(block[1:]) if _LOCATION_LINE.match(line)), "")[:300]
+    fixed = len(header) + len(location) + 2
+    cause_text = "\n".join(cause)[: max(limit - fixed, 0)]
+    parts = [header, cause_text]
+    if location:
+        parts.append(location)
+    result = "\n".join(parts)
+    context = [line for line in block[1:] if line not in cause and line != location]
+    room = limit - len(result) - len("\n[context]\n")
+    if room > 0 and context:
+        tail = "\n".join(context).strip("\n")[-room:]
+        if tail:
+            result = f"{result}\n[context]\n{tail}"
+    return result[:limit]
 
 
 def tracked_paths(repo_root: Path, pathspecs: tuple[str, ...] | list[str]) -> list[str]:

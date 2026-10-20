@@ -2239,3 +2239,30 @@ branches and sidecars, which AGENTS.md forbids. A new `cmru release` is NOT bloc
 "source record does not match" (still abandonable when no publication/promotion evidence exists) from "record absent
 or unreadable". Split the single error message so it names which comparison failed. Test with a retained
 `--from-worktree` transaction whose gate failed.
+
+### KI-87 — the mutation campaign's known-good control keeps no log and only a bounded output tail
+
+**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-03).
+
+**Observed:** `mutation_campaign.py` reads the control's output through `_read_output_tail` (the last 1 MiB), so for a very
+large output the FAILURES section may already be cut off, and `failure_excerpt` then returns a labelled tail. Unlike the
+coverage canary (which writes `<evidence stem>.control.log`), the mutation control persists nothing, so a failing control
+cannot be inspected after the run.
+
+**Fix direction:** persist the baseline output beside the mutation evidence with the same unlink-on-success rule and name
+the file in the error message; stream to the file instead of keeping only the tail in memory.
+
+### KI-88 — the fixture-closure scan test only sees literal `REPO_ROOT / "..."` reads and exempts whole modules
+
+**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-05).
+
+**Observed:** `test_fixture_carries_every_repo_root_file_the_suite_reads` (tests/test_project_fixture.py) matches only the
+identifier `REPO_ROOT` followed by string literals. Reads spelled `REPO / ...`, `Path(__file__).resolve().parents[N] / ...`,
+`REPO_ROOT.joinpath(...)` or `REPO_ROOT / variable` are invisible (all carried or guarded today, checked by hand). Modules in
+`SKIP_GUARDED_MODULES` are excluded entirely, so a new unguarded test in one of them that reads an uncarried file passes the
+scan and fails only in the real canary; `UNCARRIED_PATHS` applies to every scanned module; the pathspec list is re-derived in
+the test instead of imported from the fixture, and "under `cmru/`" counts as carried without checking it is tracked.
+
+**Fix direction:** an AST walk resolving `Name / "lit"` chains for every repository-root spelling; exclusions per test
+function or per skipif marker (assert the marker is still present); expose the fixture's pathspec list as a function and use
+it in both places; check tracked-ness. Optional: pin the read counts per module (F-06).

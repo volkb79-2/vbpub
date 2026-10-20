@@ -12,9 +12,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 try:
-    from .project_fixture import copy_project_fixture
+    from .project_fixture import copy_project_fixture, failure_excerpt
 except ImportError:  # direct ``python tools/coverage_canary.py`` execution
-    from project_fixture import copy_project_fixture
+    from project_fixture import copy_project_fixture, failure_excerpt
 EXPECTED_REASON = "Required test coverage of 100% not reached"
 
 
@@ -78,11 +78,23 @@ def run(argv: Sequence[str] | None = None) -> int:
             repo_root=repo_root, project_root=project_root, workspace=Path(temporary)
         )
         control = _run(test_argv, cwd=copied)
+        log = args.evidence.with_suffix(".control.log")
         if control.returncode != 0:
+            # The tail of a pytest run is only the bare FAILED list, so keep the whole
+            # output next to the evidence and quote the cause of the first failure.
+            try:
+                log.write_text(control.stdout, encoding="utf-8")
+                where = f"full output: {log}"
+            except OSError as exc:
+                where = f"the control log {log} could not be written: {exc}"
             raise RuntimeError(
-                f"known-good canary control failed with exit {control.returncode}: "
-                f"{control.stdout[-2000:]}"
+                f"known-good canary control failed with exit {control.returncode} "
+                f"({where}): {failure_excerpt(control.stdout, 2000)}"
             )
+        try:
+            log.unlink(missing_ok=True)  # a green control leaves no stale log from an earlier red run
+        except OSError as exc:
+            raise RuntimeError(f"could not remove the stale control log {log}: {exc}") from exc
         target_copy = copied / target
         target_copy.write_text(
             target_copy.read_text(encoding="utf-8")
