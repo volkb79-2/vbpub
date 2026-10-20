@@ -788,6 +788,51 @@ benchmark; a corrupt, newer-schema, aborted, implausible or other-disk result is
 target-missed proposal is shown with that label. Full identity validation belongs to `iobench check` once it exists; the reader only
 compares the disk's device number.
 
+## io.cost is the weight mechanism and host-setup owns the scheduler (MDT-HS-07)
+
+**Why io.cost over BFQ.** Measured on gstammtisch (2026-10-20, `IO-STALL-TESTING-GUIDE.md` section 11, same load as sections 6 and 10).
+C0 = bfq, C1 = mq-deadline, C2 = mq-deadline + io.cost. Game D-state total / max: 1.15 s / 96 ms (C0), 0.61 s / 75 ms (C1), 0 / 0 (C2).
+Probe fdatasync p99: 205 ms, 491 ms, 290 ms. Gate-like fio: 208, 174, 199 iops. mq-deadline alone is worse than bfq for sync writes
+(the kernel also enables the writeback throttle, wbt, 75 ms, when leaving bfq); io.cost with a measured model and QoS removes the game's IO
+waits entirely at no gate cost, and enabling io.cost turns wbt off. **io.latency is not available**: `CONFIG_BLK_CGROUP_IOLATENCY` is not set in
+Debian's 7.2.6 kernel, while `CONFIG_BLK_CGROUP_IOCOST=y`. io.cost does not address the zswap shrinker burst (that writeback is charged to
+the game's own cgroup). Operator decision 2026-10-20: stop using bfq, switch to io.cost.
+
+**The keys.** `IO_ROOT_SCHEDULER` (mq-deadline | none | bfq | kernel, checked against the root disk's `queue/scheduler` list, which the
+wizard reads and never assumes), `IO_COST_MODEL` (`kernel` = `ctrl=auto`, the kernel's rotational/ssd heuristic, or the six linear
+coefficients) and `IO_COST_QOS` (`off` = `enable=0`, or `rpct rlat wpct wlat min max`). Bounds are the kernel's, from `block/blk-iocost.c`
+`ioc_qos_write` (Linux v6.12): percentiles at most 100.00 with 2 decimals (refused above), latencies unsigned microseconds, `min`/`max`
+2-decimal percentages the kernel silently CLAMPS to 1.00..10000.00 (so the validator refuses outside, because a clamp would read back
+different) and refuses when `min > max`. The model source is the IOB-02 result's `proposals.iocost_model` (rule R6), used only when the
+result is identity-verified by the MDT-HS-05 rules (device number plus at least one of model/serial/size/wwn); an all-zero placeholder is
+"not measured", never a model; the QoS has no benchmark source, so its proposal is the existing value or the explicit policy default `off`.
+Empty or absent = not managed, deliberately: an old env file must not silently change the scheduler or switch io.cost on or off.
+
+**Scheduler and ordering.** `60-mdt-io-scheduler.rules` (`KERNEL=="<DEVNAME>"` of the derived whole disk) replaces
+`60-mdt-bfq-scheduler.rules`, which is retired. Order: scheduler (60), then the queue rule (61, unchanged), then io.cost. A scheduler change
+resets `nr_requests`, so install.sh verifies the scheduler once more after the queue settings and the read-back covers all of them. The
+module file `mdt-bfq.conf` is installed only for `bfq`. A non-MDT `/etc/udev/rules.d/60-bfq-scheduler.rules` (origin:
+`scripts/gstammtisch-guide/files/etc/udev/rules.d/60-bfq-scheduler.rules`) is retired only when byte-identical (sha256) to a known repo copy,
+with a NOTICE; any other rule that assigns the scheduler to the disk is kept with a WARN, and one that sorts after MDT's is a refusal to report
+the scheduler as verified.
+
+**Boot: a oneshot unit, not a udev RUN.** `io.cost.model` and `io.cost.qos` are cgroup-root files keyed by the disk's MAJ:MIN, not properties of a
+block-device event. A udev RUN would fire on every change event of the disk (including each MDT install's own trigger), execute a shell inside
+udev's restricted sandbox under its timeout, and could not order itself after the scheduler rule it depends on. `mdt-io-cost.service` (Type=oneshot,
+RemainAfterExit) runs after `local-fs.target` and `systemd-udev-trigger.service` with an explicit `udevadm settle`, and calls the same
+`_mdt_apply_iocost` that install.sh calls, with the values read from `/etc/mdt/host-setup.env` (never literals), so the two paths cannot drift.
+The read-back compares field by field with kernel formatting normalised (`95` reads back as `95.00`) and only the keys MDT wrote (after `enable=0`
+or `ctrl=auto` the kernel keeps the other fields).
+
+**Weights.** With io.cost the weight is `io.weight` (1..10000, used directly); BFQ used `io.bfq.weight` (1..1000) and systemd compressed values above
+100. Every IOWeight comment (env example, the four tier units) is now mechanism-conditional rather than wrong for either. No weight VALUE changed.
+Findings, for the operator (not changed here): (1) the "keep <= 100" rule is a BFQ artefact; under io.cost the tier ratios of 100:10:20 can be raised
+without rescaling, but the measured gains are with the root weights unchanged (wings.slice 7800, dev.slice 100, system.slice 100) and the probe in
+system.slice is NOT protected by weight; (2) dev.slice and system.slice share weight 100 at the root, so under io.cost they split a contended disk
+equally while wings.slice gets 7800, which is probably intended but unmeasured for builds; (3) the per-scope `io.bfq.weight` raw writes in
+`mdt-container-io-caps.lib.sh` are inert under io.cost (the `IOWeight=1` set-property is what applies); (4) `mdt-host-check.sh` used to claim "IOWeight is
+inert" without BFQ, which is false under io.cost; it now derives the active mechanism from the scheduler and `io.cost.qos`.
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may

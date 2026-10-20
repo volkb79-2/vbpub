@@ -276,10 +276,16 @@ systemd does not manage them, the raw write is *not* wiped by a reload.
 
 ## BFQ caveats
 
-We select BFQ (`etc/udev/rules.d/60-bfq-scheduler.rules`) because it is the
-only multi-queue scheduler that enforces cgroup v2 proportional IO at all:
-under `none` or `mq-deadline`, `IOWeight` is completely inert. Four things
-about that are not obvious.
+**MDT-HS-07:** BFQ is no longer the only weight mechanism. With `IO_COST_QOS` enabled,
+**io.cost** enforces `io.weight` (1..10000, no rescaling) on `mq-deadline` or `none`;
+the sections below stay true when `IO_ROOT_SCHEDULER=bfq` (or while the legacy rule
+is kept because `IO_ROOT_SCHEDULER` is not set). `mdt-host-check.sh` reports which
+mechanism is live. See the DESIGN-GUIDE section on MDT-HS-07.
+
+We select BFQ (`etc/udev/rules.d/60-bfq-scheduler.rules`, legacy path) because it is the
+only multi-queue *scheduler* that enforces cgroup v2 proportional IO by itself:
+under `none` or `mq-deadline` WITHOUT io.cost, `IOWeight` is completely inert. Four
+things about that are not obvious.
 
 ### 1. `IOWeight` is rescaled — ratios above 100 are not what you wrote
 

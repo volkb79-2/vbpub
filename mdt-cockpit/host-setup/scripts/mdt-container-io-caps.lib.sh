@@ -822,6 +822,21 @@ _mdt_root_disk_node() {
   _mdt_io_systemd_dev "$src"
 }
 
+# _mdt_root_disk_majmin: the MAJ:MIN of the WHOLE disk under `/`, derived from the same filesystem source as
+# _mdt_root_disk_node (the source node, not the derived /dev/<DEVNAME>, so a fixture without that devtmpfs
+# node resolves the same way the kernel-facing derivation does).  rc 1 with the reason on stderr.
+_mdt_root_disk_majmin() {
+  local src
+  src=$(findmnt -no SOURCE --target "${MDT_ROOT_TARGET:-/}" 2>/dev/null) || {
+    echo "findmnt could not name the filesystem source of ${MDT_ROOT_TARGET:-/}" >&2; return 1; }
+  src=${src%%\[*}
+  case "$src" in
+    /dev/?*) ;;
+    *) echo "the source of ${MDT_ROOT_TARGET:-/} is '$src', not a /dev block node" >&2; return 1 ;;
+  esac
+  _mdt_dev_majmin "$src"
+}
+
 # _mdt_io_queue_attr <devname> <attr>: the live value of /sys/block/<devname>/queue/<attr>.
 _mdt_io_queue_attr() {
   local f="${MDT_SYSFS_ROOT:-/sys}/block/$1/queue/$2"
@@ -1053,6 +1068,231 @@ _mdt_apply_writeback_settings() {
   return 0
 }
 
+
+# --- IO scheduler and io.cost (MDT-HS-07) -----------------------------------------------------
+# Keys (host-setup.env): IO_ROOT_SCHEDULER (mq-deadline | none | bfq | kernel; empty/absent = NOT managed,
+# the legacy BFQ rule is kept), IO_COST_MODEL (kernel = ctrl=auto | six linear coefficients) and
+# IO_COST_QOS (off = enable=0 | rpct rlat wpct wlat min max).  Grammar and bounds are validated ONCE, by the
+# Python module of the wizard that install.sh --validate-config runs (kernel bounds cited there).  Why io.cost
+# instead of BFQ: IO-STALL-TESTING-GUIDE.md section 11 (C0/C1/C2) and this repo's DESIGN-GUIDE (MDT-HS-07).
+MDT_IO_SCHED_UDEV_NAME=60-mdt-io-scheduler.rules
+MDT_OLD_BFQ_RULE_NAME=60-mdt-bfq-scheduler.rules
+MDT_OLD_BFQ_MODULES_NAME=mdt-bfq.conf
+MDT_FOREIGN_BFQ_RULE_NAME=60-bfq-scheduler.rules
+# sha256 of the repo copies of the BFQ rule that MAY be retired byte-for-byte (a file MDT did not install is
+# only ever removed when its content is identical to one of these):
+#   163d55ac…  mdt-cockpit/host-setup/etc/udev/rules.d/60-bfq-scheduler.rules (and its modern-debian-tools copy)
+#   fa2f64be…  scripts/gstammtisch-guide/files/etc/udev/rules.d/60-bfq-scheduler.rules
+MDT_KNOWN_BFQ_RULE_SHA256="163d55acd4cdfb32c7186670546ffca1bf2f6034568d7b969f3bcfc75f25711e fa2f64be189fb492148e60eff197fd240299604af9f977f80fb0627c13032fd5"
+MDT_KNOWN_BFQ_RULE_ORIGIN="scripts/gstammtisch-guide/files/etc/udev/rules.d/60-bfq-scheduler.rules (gstammtisch-guide) or mdt-cockpit/host-setup/etc/udev/rules.d/60-bfq-scheduler.rules"
+
+# _mdt_io_sched_value: the configured scheduler, or nothing when NOT managed (empty/unset).
+_mdt_io_sched_value() { printf '%s\n' "${IO_ROOT_SCHEDULER:-}"; }
+
+# _mdt_io_sched_list <devname>: the schedulers queue/scheduler lists, one per line, brackets stripped.
+_mdt_io_sched_list() {
+  local f="${MDT_SYSFS_ROOT:-/sys}/block/$1/queue/scheduler"
+  [ -r "$f" ] || { echo "cannot read $f" >&2; return 1; }
+  tr -s ' []' '\n' < "$f" | sed '/^$/d'
+}
+
+# _mdt_io_sched_current <devname>: the active (bracketed) scheduler.
+_mdt_io_sched_current() {
+  local f="${MDT_SYSFS_ROOT:-/sys}/block/$1/queue/scheduler"
+  [ -r "$f" ] || return 1
+  sed -n 's/.*\[\([^]]*\)\].*/\1/p' "$f"
+}
+
+# _mdt_render_scheduler_udev <devname>: the udev rule body; rc 1 (no output) for `kernel`/unset.
+_mdt_render_scheduler_udev() {
+  local dev="$1" v
+  v=$(_mdt_io_sched_value)
+  case "$v" in mq-deadline|none|bfq) ;; *) return 1 ;; esac
+  cat <<EOF
+# Managed by MDT host-setup (install.sh): do not edit; change IO_ROOT_SCHEDULER in /etc/mdt/host-setup.env and
+# re-run install.sh. The disk (KERNEL==$dev) was DERIVED as the whole disk under /, never typed.
+# Replaces 60-mdt-bfq-scheduler.rules. Sorts BEFORE 61-mdt-io-queue.rules on purpose: a scheduler change resets
+# nr_requests, so the queue rule must run after it. Why: IO-STALL-TESTING-GUIDE.md section 11; DESIGN-GUIDE (MDT-HS-07).
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="$dev", ATTR{queue/scheduler}="$v"
+EOF
+}
+
+# _mdt_io_foreign_sched_rules <devname> <ours-basename>: udev rules NOT installed by MDT that assign
+# queue/scheduler to a KERNEL pattern matching the disk; prints "<path>|<1 if it sorts AFTER ours, else 0>".
+# Dirs: MDT_UDEV_SCAN_DIRS (default the four udev rule dirs).
+_mdt_io_foreign_sched_rules() {
+  local dev="$1" ours="$2" d f b line pat after
+  for d in $(printf '%s' "${MDT_UDEV_SCAN_DIRS:-/etc/udev/rules.d:/run/udev/rules.d:/usr/lib/udev/rules.d:/lib/udev/rules.d}" | tr ':' ' '); do
+    [ -d "$d" ] || continue
+    for f in "$d"/*.rules; do
+      [ -f "$f" ] || continue
+      b=$(basename "$f")
+      case "$b" in "$ours"|"$MDT_OLD_BFQ_RULE_NAME"|61-mdt-io-queue*.rules) continue ;; esac
+      while IFS= read -r line; do
+        case "$line" in *"ATTR{queue/scheduler}"*) ;; *) continue ;; esac
+        pat=$(printf '%s' "$line" | sed -n 's/.*KERNEL=="\([^"]*\)".*/\1/p')
+        [ -n "$pat" ] || continue
+        # shellcheck disable=SC2053
+        [[ "$dev" == $pat ]] || continue
+        after=0
+        [ "$(printf '%s\n%s\n' "$ours" "$b" | LC_ALL=C sort | tail -n 1)" = "$b" ] && [ "$b" != "$ours" ] && after=1
+        printf '%s|%s\n' "$f" "$after"
+        break
+      done < <(grep -v '^[[:space:]]*#' "$f" 2>/dev/null)
+    done
+  done
+}
+
+# _mdt_verify_scheduler <devname>: the live scheduler against IO_ROOT_SCHEDULER, and no later foreign rule
+# that would override it.  rc 0 ok / not managed, 1 mismatch or override.  Reports each state distinctly.
+_mdt_verify_scheduler() {
+  local dev="$1" v live bad=0 rule after
+  v=$(_mdt_io_sched_value)
+  case "$v" in ""|kernel) return 0 ;; esac
+  if ! live=$(_mdt_io_sched_current "$dev") || [ -z "$live" ]; then
+    echo "ERROR: could not read the live scheduler of $dev (queue/scheduler) — cannot verify IO_ROOT_SCHEDULER=$v. Remedy: check /sys/block/$dev/queue/scheduler, then re-run install.sh." >&2
+    bad=1
+  elif [ "$live" != "$v" ]; then
+    echo "ERROR: live scheduler of $dev is $live but IO_ROOT_SCHEDULER=$v (written by ${MDT_UDEV_RULES_D:-/etc/udev/rules.d}/$MDT_IO_SCHED_UDEV_NAME). Remedy: check that no later udev rule sets the scheduler for $dev (ls /etc/udev/rules.d), then udevadm trigger --action=change --sysname-match=$dev and re-run install.sh." >&2
+    bad=1
+  fi
+  while IFS='|' read -r rule after; do
+    [ -n "$rule" ] || continue
+    if [ "$after" = 1 ]; then
+      echo "ERROR: $rule (not installed by MDT) also sets queue/scheduler for $dev and sorts AFTER MDT's $MDT_IO_SCHED_UDEV_NAME, so it overrides IO_ROOT_SCHEDULER=$v on every udev change event; the scheduler is NOT reported as verified. Remedy: remove or rename $rule (origin of the known copy: $MDT_KNOWN_BFQ_RULE_ORIGIN)." >&2
+      bad=1
+    fi
+  done < <(_mdt_io_foreign_sched_rules "$dev" "$MDT_IO_SCHED_UDEV_NAME")
+  return "$bad"
+}
+
+# _mdt_apply_scheduler_settings: for a MANAGED scheduler only (the caller keeps the legacy BFQ block when
+# IO_ROOT_SCHEDULER is empty).  Retires MDT's old BFQ rule, retires the non-MDT 60-bfq-scheduler.rules only when
+# byte-identical to a known repo copy, installs/removes the bfq modules-load file, renders
+# 60-mdt-io-scheduler.rules for the derived disk, reloads udev and READS THE SCHEDULER BACK.  rc 0 / 2.
+# Seams: MDT_UDEV_RULES_D, MDT_MODULES_LOAD_D, MDT_SYSFS_ROOT, MDT_UDEV_SCAN_DIRS, HERE.
+_mdt_apply_scheduler_settings() {
+  local ud="${MDT_UDEV_RULES_D:-/etc/udev/rules.d}" ml="${MDT_MODULES_LOAD_D:-/etc/modules-load.d}"
+  local v node dev body foreign sha known k
+  v=$(_mdt_io_sched_value)
+  if ! node=$(_mdt_root_disk_node 2>&1); then
+    echo "ERROR: IO_ROOT_SCHEDULER=$v is set but the whole disk under / cannot be derived ($node); nothing was applied. Remedy: run install.sh on the host, or set IO_ROOT_SCHEDULER to empty." >&2
+    return 2
+  fi
+  dev=${node#/dev/}
+  mkdir -p "$ud" "$ml" || return 2
+  if [ -f "$ud/$MDT_OLD_BFQ_RULE_NAME" ]; then
+    rm -f -- "$ud/$MDT_OLD_BFQ_RULE_NAME"
+    echo "NOTICE: retired MDT's old BFQ rule $ud/$MDT_OLD_BFQ_RULE_NAME; $ud/$MDT_IO_SCHED_UDEV_NAME replaces it"
+  fi
+  foreign="$ud/$MDT_FOREIGN_BFQ_RULE_NAME"
+  if [ -f "$foreign" ]; then
+    sha=$(sha256sum < "$foreign" | cut -d' ' -f1)
+    known=0
+    for k in $MDT_KNOWN_BFQ_RULE_SHA256; do [ "$sha" = "$k" ] && known=1; done
+    if [ "$known" = 1 ]; then
+      rm -f -- "$foreign"
+      echo "NOTICE: retired $foreign: byte-identical to a known repo copy ($MDT_KNOWN_BFQ_RULE_ORIGIN), not installed by MDT's host-setup"
+    else
+      echo "WARN: $foreign exists, was not installed by MDT and is NOT a byte-identical copy of a known repo copy ($MDT_KNOWN_BFQ_RULE_ORIGIN); it is left in place and, if it matches $dev and sorts after MDT's rule, the scheduler will not be reported as verified." >&2
+    fi
+  fi
+  if [ "$v" = bfq ]; then
+    install -m 0644 "$HERE/etc/modules-load.d/bfq.conf" "$ml/$MDT_OLD_BFQ_MODULES_NAME"
+    modprobe bfq 2>/dev/null || echo "WARN: modprobe bfq failed" >&2
+  elif [ -f "$ml/$MDT_OLD_BFQ_MODULES_NAME" ]; then
+    rm -f -- "$ml/$MDT_OLD_BFQ_MODULES_NAME"
+    echo "NOTICE: removed $ml/$MDT_OLD_BFQ_MODULES_NAME (the bfq module is loaded at boot only when IO_ROOT_SCHEDULER=bfq)"
+  fi
+  if body=$(_mdt_render_scheduler_udev "$dev"); then
+    printf '%s\n' "$body" > "$ud/$MDT_IO_SCHED_UDEV_NAME.tmp" && mv -f "$ud/$MDT_IO_SCHED_UDEV_NAME.tmp" "$ud/$MDT_IO_SCHED_UDEV_NAME" || return 2
+    echo "rendered $ud/$MDT_IO_SCHED_UDEV_NAME (disk $dev, derived)"
+  elif [ -f "$ud/$MDT_IO_SCHED_UDEV_NAME" ]; then
+    rm -f -- "$ud/$MDT_IO_SCHED_UDEV_NAME"
+    echo "NOTICE: removed $ud/$MDT_IO_SCHED_UDEV_NAME (IO_ROOT_SCHEDULER=kernel); the running scheduler is unchanged until reboot — MDT does not know the kernel's boot choice and never guesses it"
+  fi
+  { udevadm control --reload-rules && udevadm trigger --action=change --sysname-match="$dev" && udevadm settle; } >/dev/null 2>&1 || {
+    echo "ERROR: udev reload/trigger/settle failed for $dev. Remedy: udevadm control --reload-rules && udevadm trigger --action=change --sysname-match=$dev" >&2
+    return 2; }
+  _mdt_verify_scheduler "$dev" || return 2
+  return 0
+}
+
+# --- io.cost model and QoS (root cgroup files, per whole disk MAJ:MIN) -----------------------------
+# _mdt_iocost_model_line / _mdt_iocost_qos_line <maj:min>: the exact line written; rc 1 = not managed.
+_mdt_iocost_model_line() {
+  local mm="$1" v="${IO_COST_MODEL:-}" rbps rseq rrand wbps wseq wrand
+  case "$v" in
+    "") return 1 ;;
+    kernel) printf '%s ctrl=auto\n' "$mm" ;;
+    *) read -r rbps rseq rrand wbps wseq wrand <<<"$v"
+       printf '%s ctrl=user model=linear rbps=%s rseqiops=%s rrandiops=%s wbps=%s wseqiops=%s wrandiops=%s\n' \
+         "$mm" "$rbps" "$rseq" "$rrand" "$wbps" "$wseq" "$wrand" ;;
+  esac
+}
+_mdt_iocost_qos_line() {
+  local mm="$1" v="${IO_COST_QOS:-}" rpct rlat wpct wlat vmin vmax
+  case "$v" in
+    "") return 1 ;;
+    off) printf '%s enable=0\n' "$mm" ;;
+    *) read -r rpct rlat wpct wlat vmin vmax <<<"$v"
+       printf '%s enable=1 ctrl=user rpct=%s rlat=%s wpct=%s wlat=%s min=%s max=%s\n' \
+         "$mm" "$rpct" "$rlat" "$wpct" "$wlat" "$vmin" "$vmax" ;;
+  esac
+}
+
+# _mdt_iocost_match "<wanted line>" "<live line>": field-by-field, the kernel normalises formatting
+# (`95` reads back as `95.00`, `5` as `5.00`), so numeric fields compare as numbers.  Only the keys WE wrote are
+# compared (after `enable=0` or `ctrl=auto` the kernel keeps other fields at their previous values).
+_mdt_iocost_match() {
+  awk -v want="$1" -v got="$2" 'BEGIN {
+    n = split(want, w, " "); m = split(got, g, " ")
+    for (i = 2; i <= m; i++) { split(g[i], kv, "="); live[kv[1]] = kv[2] }
+    for (i = 2; i <= n; i++) {
+      split(w[i], kv, "="); k = kv[1]; v = kv[2]
+      if (!(k in live)) exit 1
+      if (v ~ /^[0-9.]+$/ && live[k] ~ /^[0-9.]+$/) { if ((v + 0) != (live[k] + 0)) exit 1 }
+      else if (v != live[k]) exit 1
+    }
+    exit 0 }'
+}
+
+# _mdt_iocost_live_line <file> <maj:min>: the kernel's line for that disk, or nothing.
+_mdt_iocost_live_line() { grep -m1 "^$2 " "$1" 2>/dev/null || true; }
+
+# _mdt_apply_iocost: write io.cost.model, then io.cost.qos, for the derived whole disk, and READ BACK both
+# field by field.  Values come from the environment (IO_COST_MODEL / IO_COST_QOS), never literals.  Empty = not
+# managed (nothing written).  Seams: MDT_CGROUP_ROOT, MDT_SYSFS_ROOT, MDT_ROOT_TARGET.  rc 0 / 2.
+_mdt_apply_iocost() {
+  local root="${MDT_CGROUP_ROOT:-/sys/fs/cgroup}" node mm what file line live rc=0
+  [ -n "${IO_COST_MODEL:-}${IO_COST_QOS:-}" ] || { echo "io.cost: IO_COST_MODEL and IO_COST_QOS are not set; nothing is managed"; return 0; }
+  if ! node=$(_mdt_root_disk_node 2>&1) || ! mm=$(_mdt_root_disk_majmin 2>&1); then
+    echo "ERROR: io.cost is configured but the whole disk under / cannot be derived (${node:-}${mm:-}); nothing was written. Remedy: run on the host, or set IO_COST_MODEL and IO_COST_QOS to empty." >&2
+    return 2
+  fi
+  for what in model qos; do
+    file="$root/io.cost.$what"
+    line=$("_mdt_iocost_${what}_line" "$mm") || continue
+    if [ "$what" = model ] && [ "${IO_COST_MODEL:-}" = kernel ]; then
+      echo "NOTICE: IO_COST_MODEL=kernel writes ctrl=auto: the kernel's default model is a rotational/ssd HEURISTIC and does not know this disk's real rates; a measured model (the wizard proposes one from a benchmark) is what makes io.cost throttle at the right rate (IO-STALL-TESTING-GUIDE.md section 11)."
+    fi
+    if ! printf '%s\n' "$line" > "$file" 2>/dev/null; then
+      echo "ERROR: could not write '$line' to $file (the kernel rejected it or io.cost is unavailable). Remedy: check CONFIG_BLK_CGROUP_IOCOST and that $mm is a blk-mq disk (dmesg), then re-run." >&2
+      rc=2; continue
+    fi
+    live=$(_mdt_iocost_live_line "$file" "$mm")
+    if [ -z "$live" ]; then
+      echo "ERROR: $file has no line for $mm after writing '$line' — cannot verify. Remedy: cat $file; check the disk is blk-mq." >&2
+      rc=2
+    elif ! _mdt_iocost_match "$line" "$live"; then
+      echo "ERROR: $file reads back '$live' but '$line' was written (compared field by field, kernel formatting normalised) — the intended io.cost $what is NOT in effect. Remedy: cat $file and compare; a kernel that clamps or refuses a field shows here." >&2
+      rc=2
+    else
+      echo "io.cost $what verified on $mm: $live"
+    fi
+  done
+  return "$rc"
+}
 
 # --- guard (terminate) policy confirmation, recorded durably (MDT-HS-02) -------------------
 # The wizard's second confirmation of BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate is recorded

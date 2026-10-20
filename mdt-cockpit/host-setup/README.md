@@ -607,6 +607,24 @@ runtime): reboot or set it by hand. `mdt-host-check.sh` reports each key as OK, 
 Why these values and what they cost (sequential reads fell from about 1.2-1.4 GB/s to 0.25-0.3 GB/s at 64 KB): see the
 DESIGN-GUIDE section on MDT-HS-05 and `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` sections 4.2-4.5 and 5.
 
+### IO scheduler and io.cost (MDT-HS-07)
+
+The wizard (section j, after the writeback keys) asks three more keys and install.sh renders, applies and verifies them:
+`IO_ROOT_SCHEDULER` (`mq-deadline`, `none`, `bfq` or `kernel`; it must be one the derived root disk lists in
+`queue/scheduler`), `IO_COST_MODEL` (`kernel`, which writes `ctrl=auto`, or the six linear coefficients `rbps rseqiops
+rrandiops wbps wseqiops wrandiops`, quoted) and `IO_COST_QOS` (`off`, which writes `enable=0`, or `rpct rlat wpct wlat min
+max`, quoted; the policy default is `off`). They are runtime-optional: EMPTY or ABSENT means not managed, an old env file
+keeps the legacy BFQ rule and writes no io.cost line until the wizard is run (a NOTICE says so). The wizard proposes the
+model from an identity-verified IOB-02 benchmark result, else the existing value, else `kernel`; the gstammtisch values are a
+labelled example only. install.sh renders `60-mdt-io-scheduler.rules` for the derived whole disk (replacing the BFQ rule;
+a non-MDT `60-bfq-scheduler.rules` is retired only when it is byte-identical to a known repo copy, otherwise kept with a WARN
+and, if it would override, the scheduler is not reported as verified), applies the queue rule (61) after it, then writes
+`/sys/fs/cgroup/io.cost.model` and `io.cost.qos` for the whole disk's MAJ:MIN and reads both back field by field. At boot
+`mdt-io-cost.service` (a oneshot after the udev trigger and a settle) re-applies them from the env. With io.cost the weight
+is `io.weight` (1..10000), not `io.bfq.weight`; `mdt-host-check.sh` reports the weight mechanism that is live (io.cost, bfq or
+none), derived from the live files, and the scheduler, model and QoS each as OK, MISMATCH, not managed, could not read or LIVE
+ONLY, NOT PERSISTED, plus a NOTICE for a later or non-MDT scheduler rule. Why: DESIGN-GUIDE (MDT-HS-07).
+
 ### Optional DAMON_STAT policy
 
 The wizard asks whether to disable the kernel-wide `DAMON_STAT` monitor so
@@ -664,7 +682,7 @@ the test stacks.
 | `scripts/mdt-io-baseline.py` | `/usr/local/sbin/` | shared Linux-derived `io.cost` coefficient matrix against a persistent file → `/var/lib/mdt/io-baseline.env` (identity-bound benchmark results) |
 | `mdt-host-setup-wizard.py` (a sibling of `install.sh`, not under `scripts/`, because it is never installed onto the host) | not installed — run from this directory via `install.sh --wizard`, or directly as `sudo ./mdt-host-setup-wizard.py` to reconfigure an already-installed host | interactive `/etc/mdt/host-setup.env` builder (see Quick start); template surgery on `host-setup.env.example`, never generated from scratch |
 | `scripts/check.sh` | `/usr/local/sbin/mdt-host-check.sh` | health check, non-zero exit on failure |
-| `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | BFQ at boot so IO weights bite |
+| `etc/modules-load.d/bfq.conf`, `etc/udev/rules.d/60-bfq-scheduler.rules` | `/etc/…` (`mdt-` prefixed) | the LEGACY BFQ path, kept only while `IO_ROOT_SCHEDULER` is not set; with it set, `60-mdt-io-scheduler.rules` replaces it and the module file is installed only for `bfq` |
 | (merged, not copied) | `/etc/docker/daemon.json` | `cgroup-parent` (D-G7 default) + `live-restore`/log rotation — this is the file's ONE owner now; every key is merged in, nothing else in the file is touched |
 
 ## Persistence model — why units AND a service/timer

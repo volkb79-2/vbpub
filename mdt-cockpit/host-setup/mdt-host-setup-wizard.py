@@ -807,6 +807,9 @@ def _config_value_validators() -> dict[str, Validator]:
         "IO_WRITEBACK_DIRTY_BACKGROUND_BYTES": validate_io_dirty_bytes,
         "IO_ROOT_QUEUE_NR_REQUESTS": validate_io_nr_requests,
         "IO_ROOT_QUEUE_MAX_SECTORS_KB": validate_io_max_sectors_kb,
+        "IO_ROOT_SCHEDULER": validate_io_root_scheduler,
+        "IO_COST_MODEL": validate_io_cost_model,
+        "IO_COST_QOS": validate_io_cost_qos,
         "DEV_BUILDKITD_IMAGE": validate_buildkit_image,
         "DEV_BUILDKITD_MAX_PARALLELISM": validate_positive_int,
         "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
@@ -1390,6 +1393,69 @@ def io_max_sectors_hw_error(value: str, max_hw_kb: int, logical_block_size: int 
             f"max_sectors_kb {number} is not a multiple of this disk's logical block size ({logical_block_size} bytes); "
             f"the kernel would round it down to {(number * 1024) // logical_block_size * logical_block_size // 1024} KB"
         )
+    return None
+
+
+# --- IO scheduler and io.cost (MDT-HS-07) -----------------------------------------------------
+# IO_ROOT_SCHEDULER: mq-deadline | none | bfq | kernel (empty = not managed); the disk-dependent part (the
+# value must be one the derived root disk lists in queue/scheduler) is io_scheduler_available_error.
+# IO_COST_MODEL: kernel (= ctrl=auto written) | six positive integers "rbps rseqiops rrandiops wbps
+# wseqiops wrandiops" (the kernel's linear model, block/blk-iocost.c ioc_cost_model_write).
+# IO_COST_QOS: off (= enable=0) | "rpct rlat wpct wlat min max".  Bounds from block/blk-iocost.c ioc_qos_write
+# (Linux v6.12): rpct/wpct are parsed with 2 decimals and refused above 100.00 (`v > 10000` in hundredths);
+# rlat/wlat are unsigned microseconds; min/max are 2-decimal percentages that the kernel CLAMPS silently to
+# [1.00, 10000.00] (VRATE_MIN_PPM=10000, VRATE_MAX_PPM=100000000) and refuses when min > max.  A silent clamp would
+# read back different from what was written, so the validator refuses outside the clamp instead.
+IO_SCHEDULER_VALUES = ("mq-deadline", "none", "bfq", "kernel")
+_DECIMAL2 = r"(?:0|[1-9][0-9]*)(?:\.[0-9]{1,2})?"
+_UINT = r"[1-9][0-9]*"
+
+
+def validate_io_root_scheduler(value: str) -> str | None:
+    if value == "" or value in IO_SCHEDULER_VALUES:
+        return None
+    return f"{value!r} is not one of {', '.join(IO_SCHEDULER_VALUES)} (or empty = not managed)"
+
+
+def io_scheduler_available_error(value: str, available: list[str]) -> str | None:
+    """The value must be one of the schedulers the root disk lists in queue/scheduler.  `bfq` is exempt here
+    (its module may not be loaded yet; install.sh loads it and the read-back verifies)."""
+    if value in ("", "kernel", "bfq"):
+        return None
+    if value not in available:
+        return f"{value!r} is not offered by this disk (queue/scheduler lists: {' '.join(available) or 'nothing'})"
+    return None
+
+
+def validate_io_cost_model(value: str) -> str | None:
+    if value in ("", "kernel"):
+        return None
+    if not re.fullmatch(rf"{_UINT}(?: {_UINT}){{5}}", value):
+        return (
+            "expected `kernel` or six positive whole numbers separated by single spaces: "
+            "rbps rseqiops rrandiops wbps wseqiops wrandiops"
+        )
+    return None
+
+
+def validate_io_cost_qos(value: str) -> str | None:
+    if value in ("", "off"):
+        return None
+    match = re.fullmatch(rf"({_DECIMAL2}) ({_UINT}) ({_DECIMAL2}) ({_UINT}) ({_DECIMAL2}) ({_DECIMAL2})", value)
+    if not match:
+        return (
+            "expected `off` or six numbers: rpct rlat wpct wlat min max (percentiles with at most 2 decimals, "
+            "latencies in whole microseconds >= 1, min/max with at most 2 decimals)"
+        )
+    rpct, _rlat, wpct, _wlat, vmin, vmax = match.groups()
+    for name, pct in (("rpct", rpct), ("wpct", wpct)):
+        if float(pct) > 100:
+            return f"{name} {pct} is above 100 (the kernel refuses it)"
+    for name, number in (("min", vmin), ("max", vmax)):
+        if not 1 <= float(number) <= 10000:
+            return f"{name} {number} is outside 1.00..10000.00 (the kernel would silently clamp it)"
+    if float(vmin) > float(vmax):
+        return f"min {vmin} is above max {vmax} (the kernel refuses it)"
     return None
 
 
@@ -2944,7 +3010,7 @@ def derive_disk_facts(*, runner=subprocess.run) -> dict:
     if not node:
         return facts
     name = node.removeprefix("/dev/")
-    majmin = shell_helper('_mdt_dev_majmin "$1"', node, runner=runner)
+    majmin = shell_helper("_mdt_root_disk_majmin", runner=runner)
     if majmin:
         facts["majmin"] = majmin
     for fact, attr in (("max_hw_kb", "max_hw_sectors_kb"), ("logical_block_size", "logical_block_size")):
@@ -2974,10 +3040,8 @@ class IobenchProposals:
 IOBENCH_IDENTITY_FIELDS = ("model", "serial", "size_bytes", "wwn")
 
 
-def load_iobench_writeback(
-    path: Path | None, live_devno: str | None, live_identity: dict | None = None
-) -> IobenchProposals:
-    """Read `proposals.writeback` from the IOB-02 result.json.  Coupled to the schema file only (no
+def _load_iobench(path, live_devno, live_identity, section, extract) -> IobenchProposals:
+    """Read `proposals.<section>` from the IOB-02 result.json.  Coupled to the schema file only (no
     iobench import, no subprocess).  A proposal is offered as a default only for state `ok`: schema 1,
     run.status complete, quality.plausible, and the result's disk identity equal to the ROOT disk's: the
     device number AND at least one more IOB-02 identity field (model/serial/size/wwn) present on both sides
@@ -3005,10 +3069,10 @@ def load_iobench_writeback(
     try:
         status = doc["run"]["status"]
         plausible = doc["quality"]["plausible"]
-        writeback = doc["proposals"]["writeback"]
+        section_obj = doc["proposals"][section]
         devno = doc["identity"]["disk"]["devno"]
     except (KeyError, TypeError):
-        return IobenchProposals("incomplete", f"{path} lacks run.status, quality.plausible, identity.disk.devno or proposals.writeback")
+        return IobenchProposals("incomplete", f"{path} lacks run.status, quality.plausible, identity.disk.devno or proposals.{section}")
     if status != "complete":
         return IobenchProposals("incomplete", f"the benchmark run status is {status!r}, not complete")
     if plausible is not True:
@@ -3032,20 +3096,9 @@ def load_iobench_writeback(
         caution.append("target missed")
     if notes_src.get("limits"):
         caution.append("limits: " + "; ".join(str(x) for x in notes_src["limits"]))
-    values: dict[str, str] = {}
-    labels: dict[str, str] = {}
-    for name, key in IOBENCH_KEY_MAP.items():
-        entry = writeback.get(name) if isinstance(writeback, dict) else None
-        value = entry.get("value") if isinstance(entry, dict) else None
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            continue
-        label = [f"benchmark rule {entry.get('rule', '?')}", str(entry.get("confidence", "unlabelled"))]
-        label += [str(flag) for flag in entry.get("flags", []) or []]
-        label += caution
-        values[key] = str(value)
-        labels[key] = ", ".join(label)
+    values, labels = extract(section_obj, caution)
     if not values:
-        return IobenchProposals("incomplete", "the result carries no usable proposals.writeback value")
+        return IobenchProposals("incomplete", f"the result carries no usable proposals.{section} value")
     if compared == 0:
         labels = {k: f"{v}, not verified for this disk" for k, v in labels.items()}
         return IobenchProposals(
@@ -3055,6 +3108,52 @@ def load_iobench_writeback(
             labels,
         )
     return IobenchProposals("ok", "", values, labels)
+
+
+def _extract_writeback(section_obj, caution):
+    values: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    for name, key in IOBENCH_KEY_MAP.items():
+        entry = section_obj.get(name) if isinstance(section_obj, dict) else None
+        value = entry.get("value") if isinstance(entry, dict) else None
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            continue
+        label = [f"benchmark rule {entry.get('rule', '?')}", str(entry.get("confidence", "unlabelled"))]
+        label += [str(flag) for flag in entry.get("flags", []) or []]
+        label += caution
+        values[key] = str(value)
+        labels[key] = ", ".join(label)
+    return values, labels
+
+
+IOCOST_MODEL_FIELDS = ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops")
+
+
+def _extract_iocost(section_obj, caution):
+    """proposals.iocost_model (IOB-02 rule R6): the six linear coefficients; ALL must be positive integers
+    (the schema's all-zero placeholder is "not measured", never a model)."""
+    values: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    if not isinstance(section_obj, dict):
+        return values, labels
+    numbers = [section_obj.get(f) for f in IOCOST_MODEL_FIELDS]
+    if any(isinstance(n, bool) or not isinstance(n, int) or n <= 0 for n in numbers):
+        return values, labels
+    values["IO_COST_MODEL"] = " ".join(str(n) for n in numbers)
+    labels["IO_COST_MODEL"] = ", ".join([f"benchmark rule {section_obj.get('rule', '?')}", *caution])
+    return values, labels
+
+
+def load_iobench_writeback(
+    path: Path | None, live_devno: str | None, live_identity: dict | None = None
+) -> IobenchProposals:
+    return _load_iobench(path, live_devno, live_identity, "writeback", _extract_writeback)
+
+
+def load_iobench_iocost(
+    path: Path | None, live_devno: str | None, live_identity: dict | None = None
+) -> IobenchProposals:
+    return _load_iobench(path, live_devno, live_identity, "iocost_model", _extract_iocost)
 
 
 _IO_WRITEBACK_EXPLAIN = {
@@ -3148,6 +3247,88 @@ def step_io_writeback(
         else:
             validate = _config_value_validators()[key]
         chosen[key] = ask(f"{_IO_WRITEBACK_LABEL[key]} ({key})", default, validate=validate, default_source=source)
+    return chosen
+
+
+GSTAMMTISCH_IOCOST_EXAMPLE = {
+    "IO_ROOT_SCHEDULER": "mq-deadline",
+    "IO_COST_MODEL": "290000000 4900 4900 14680064 2800 2800",
+    "IO_COST_QOS": "95 5000 95 20000 5 400",
+}
+_IO_SCHED_EXPLAIN = {
+    "IO_ROOT_SCHEDULER": (
+        "The root disk's IO scheduler. io.cost (below) replaces BFQ as the weight mechanism, and BFQ's own cost was "
+        "never needed for it: mq-deadline alone was WORSE than BFQ for sync writes (probe fdatasync p99 491 ms vs 205 ms) "
+        "but with io.cost on top the game saw 0 D-state time. `kernel` leaves the kernel's choice untouched. "
+        "IO-STALL-TESTING-GUIDE.md section 11 (C0/C1/C2)."
+    ),
+    "IO_COST_MODEL": (
+        "io.cost's device cost model (linear). Without a model the kernel uses a rotational/ssd heuristic (`kernel` = ctrl=auto), "
+        "which does not know this virtual disk's real rates. The gstammtisch model was derived from the flat write cap and "
+        "the observed rates (guide section 11). A wrong model makes io.cost throttle at the wrong rate."
+    ),
+    "IO_COST_QOS": (
+        "io.cost's QoS: `off` disables it (enable=0). On gstammtisch `95 5000 95 20000 5 400` (rpct rlat wpct wlat min max, "
+        "latencies in microseconds) removed the game's IO waits entirely at no gate cost; enabling it also turns the "
+        "writeback throttle (wbt) off. io.latency is not available in Debian's kernel. Guide section 11."
+    ),
+}
+
+
+def read_scheduler_list(*, runner=subprocess.run) -> list[str]:
+    """The schedulers the ROOT disk lists in queue/scheduler (brackets stripped), via the shared shell library."""
+    out_text = shell_helper('_mdt_io_sched_list "$(basename "$(_mdt_root_disk_node)")"', runner=runner)
+    return out_text.split() if out_text else []
+
+
+def step_io_scheduler_and_cost(
+    cfg_current: dict[str, str],
+    example_defaults: dict[str, str],
+    *,
+    iobench_result: Path | None = None,
+    runner=subprocess.run,
+) -> dict[str, str]:
+    """Ask IO_ROOT_SCHEDULER, IO_COST_MODEL and IO_COST_QOS.  The scheduler list is read from the root disk,
+    never assumed.  Proposals: model = a current identity-verified IOB-02 result > the existing value > `kernel`;
+    scheduler and QoS = the existing value > the explicit policy default (`kernel` / `off`).  The gstammtisch
+    values are a labelled example only."""
+    out("\n-- j. IO scheduler and io.cost --")
+    out(
+        "io.cost enforces cgroup `io.weight` (1..10000) with a device cost model and QoS targets, replacing BFQ's `io.bfq.weight` "
+        "(1..1000) as the weight mechanism. Measured on gstammtisch (IO-STALL-TESTING-GUIDE.md section 11): bfq 1.15 s game "
+        "D-state, mq-deadline 0.61 s, mq-deadline + io.cost 0 s."
+    )
+    available = read_scheduler_list(runner=runner)
+    if available:
+        out(f"The root disk offers these schedulers: {' '.join(available)}.")
+    else:
+        out("The root disk's scheduler list could not be read here; install.sh checks the choice against the live disk.")
+    facts = derive_disk_facts(runner=runner)
+    bench = load_iobench_iocost(iobench_result, facts.get("majmin"), facts.get("identity"))
+    if bench.state != "ok":
+        out(f"No usable benchmark io.cost model ({bench.state}: {bench.reason}).")
+    ex = GSTAMMTISCH_IOCOST_EXAMPLE
+    out(
+        "Example, NOT a default (measured on gstammtisch 2026-10-20; your disk may differ): "
+        f"scheduler={ex['IO_ROOT_SCHEDULER']} model=\"{ex['IO_COST_MODEL']}\" qos=\"{ex['IO_COST_QOS']}\"."
+    )
+    chosen: dict[str, str] = {}
+    policy = {"IO_ROOT_SCHEDULER": "kernel", "IO_COST_MODEL": "kernel", "IO_COST_QOS": "off"}
+    for key in ("IO_ROOT_SCHEDULER", "IO_COST_MODEL", "IO_COST_QOS"):
+        out(_IO_SCHED_EXPLAIN[key], indent="  ", hang="  ")
+        if key == "IO_COST_MODEL" and bench.state == "ok" and bench.values and key in bench.values:
+            default, source = bench.values[key], bench.labels[key]
+        elif cfg_current.get(key, "") != "":
+            default, source = cfg_current[key], "existing"
+        else:
+            default, source = policy[key], "policy default"
+        base = _config_value_validators()[key]
+        if key == "IO_ROOT_SCHEDULER":
+            def validate(value: str, _avail=available, _base=base) -> str | None:
+                return _base(value) or (io_scheduler_available_error(value, _avail) if _avail else None)
+        else:
+            validate = base
+        chosen[key] = ask(f"{key}", default, validate=validate, default_source=source)
     return chosen
 
 
@@ -3329,6 +3510,18 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="internal (install.sh): check IO_ROOT_QUEUE_MAX_SECTORS_KB against --max-hw-sectors-kb and exit",
     )
     parser.add_argument(
+        "--check-scheduler",
+        metavar="VALUE",
+        default=None,
+        help="internal (install.sh): check IO_ROOT_SCHEDULER against --available-schedulers and exit",
+    )
+    parser.add_argument(
+        "--available-schedulers",
+        default="",
+        metavar="LIST",
+        help="internal (install.sh): the space-separated queue/scheduler list of the root disk",
+    )
+    parser.add_argument(
         "--logical-block-size",
         type=int,
         default=None,
@@ -3387,6 +3580,15 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.check_scheduler is not None:
+        error = validate_io_root_scheduler(args.check_scheduler) or io_scheduler_available_error(
+            args.check_scheduler, args.available_schedulers.split()
+        )
+        if error:
+            print(f"ERROR: IO_ROOT_SCHEDULER: {error}", file=sys.stderr)
+            return 2
+        return 0
 
     if args.check_max_sectors_kb is not None:
         if args.max_hw_sectors_kb is None:
@@ -3540,6 +3742,9 @@ def main(argv: list[str] | None = None) -> int:
         walked.update(step_io_settings(cfg_current, example_defaults, baseline_results))
         walked.update(
             step_io_writeback(cfg_current, example_defaults, iobench_result=args.iobench_result)
+        )
+        walked.update(
+            step_io_scheduler_and_cost(cfg_current, example_defaults, iobench_result=args.iobench_result)
         )
     except (ValueError, EOFError) as exc:
         abort_io_baseline(baseline_job)

@@ -6,6 +6,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## UNRELEASED
 
+### Added (MDT-HS-07)
+- host-setup: `IO_ROOT_SCHEDULER` (mq-deadline | none | bfq | kernel, checked against the root disk's scheduler list), `IO_COST_MODEL` (`kernel` = ctrl=auto, or six coefficients) and `IO_COST_QOS` (`off` = enable=0, or six numbers within the kernel's bounds), runtime-optional (empty/absent = not managed, the legacy BFQ rule is kept), asked by the wizard (model from an identity-verified IOB-02 result > existing > `kernel`; QoS existing > `off`). install.sh renders `60-mdt-io-scheduler.rules` for the derived disk (replacing the BFQ rule; a non-MDT BFQ rule only when byte-identical to a known repo copy), writes `io.cost.model` and `io.cost.qos` for the whole disk's MAJ:MIN and reads both back field by field; `mdt-io-cost.service` re-applies them at boot from the env. BFQ is retired as the weight mechanism: IOWeight comments are scheduler-conditional. `mdt-host-check.sh` reports the live weight mechanism (io.cost / bfq / none) from the live files and the scheduler, model and QoS states, and no longer claims "IOWeight is inert" under io.cost
+
 ### Fixed (MDT-HS-06)
 - host-setup: the IO reconcile applies every managed unit (dev.slice and each capped tier), verifies ALL, reloads systemd ONCE if any disagrees while `systemctl show` reports the intended values, re-applies EVERY unit and re-verifies all; the persisted reload limiter stays. Live incident 2026-10-20: healing one unit reloaded, the next unit then failed as "reload suppressed" and was left uncapped. The VM lane gained a two-spelling migration step; MDT-020 (device-mapper root) stays open with the incident recorded
 

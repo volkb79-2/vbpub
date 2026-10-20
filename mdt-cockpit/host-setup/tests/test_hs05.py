@@ -469,7 +469,7 @@ class WizardProposalTests(unittest.TestCase):
             self.calls.append(expr + " " + " ".join(cmd[5:]))
             if "_mdt_root_disk_node" in expr:
                 out, rc = "/dev/vda", 0
-            elif "_mdt_dev_majmin" in expr:
+            elif "_mdt_root_disk_majmin" in expr or "_mdt_dev_majmin" in expr:
                 out, rc = (majmin or ""), (0 if majmin else 1)
             elif "_mdt_io_disk_identity" in expr:
                 out, rc = "\n".join(f"{k}={v}" for k, v in ident.items()), 0

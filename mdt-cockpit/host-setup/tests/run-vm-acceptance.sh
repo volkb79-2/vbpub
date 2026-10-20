@@ -59,8 +59,8 @@ run_with_timeout 5m "$HARNESS" copy "$RUN" /source/scripts/debian-install-v2/ "$
 
 # The guest step contains: a pre-pull (<= 10 min), install.sh (buildkitd start <= 10 min plus the
 # rest), the governance script, the writeback script (three install.sh runs: MDT-HS-05) and the
-# upgrade script (three more install.sh runs); 75 minutes covers their sum with margin.
-run_with_timeout 75m "$HARNESS" ssh "$RUN" -- \
+# upgrade script (three more install.sh runs); the io.cost script (two more: MDT-HS-07) and 85 minutes cover their sum with margin.
+run_with_timeout 85m "$HARNESS" ssh "$RUN" -- \
     "set -eu
      cd '$GUEST_ROOT'
      test \"\$(ps -p 1 -o comm=)\" = systemd
@@ -114,5 +114,6 @@ PY
      sudo docker buildx version
      sudo bash host-setup/tests/vm-governance-acceptance.sh
      sudo bash host-setup/tests/vm-writeback-acceptance.sh
+     sudo bash host-setup/tests/vm-iocost-acceptance.sh
      sudo bash host-setup/tests/vm-upgrade-acceptance.sh
      echo 'MDT VM acceptance: systemd, cgroup2, Docker, rendered slices, host check, and IO governance passed'"

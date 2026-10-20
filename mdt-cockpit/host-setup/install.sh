@@ -473,6 +473,27 @@ else
   echo "WARN: findmnt did not expose a host /dev block-device node — static IO caps will be omitted"
 fi
 
+# IO scheduler (MDT-HS-07), PRE-FLIGHT part: read-only. The choice must be one the derived root disk lists in
+# queue/scheduler (bfq is exempt: its module is loaded at apply time and the read-back verifies); the check is the
+# shared Python module's, with the list read from the disk.
+case "$(_mdt_io_sched_value)" in
+  ""|kernel|bfq) ;;
+  *)
+    if ! _s_node=$(_mdt_root_disk_node 2>&1); then
+      echo "ERROR: IO_ROOT_SCHEDULER is set but the whole disk under / cannot be derived (${_s_node}); nothing was changed. Remedy: run install.sh on the host, or set IO_ROOT_SCHEDULER to empty." >&2
+      exit 2
+    fi
+    if ! _s_list=$(_mdt_io_sched_list "${_s_node#/dev/}" 2>&1); then
+      echo "ERROR: cannot read the scheduler list of ${_s_node} (${_s_list}); nothing was changed." >&2
+      exit 2
+    fi
+    if ! python3 "$HERE/mdt-host-setup-wizard.py" --check-scheduler "$(_mdt_io_sched_value)" --available-schedulers "$(echo "$_s_list" | tr '\n' ' ')"; then
+      echo "ERROR: IO_ROOT_SCHEDULER=$(_mdt_io_sched_value) is not valid for ${_s_node}; nothing was changed." >&2
+      exit 2
+    fi
+    ;;
+esac
+
 # The static fallback in the rendered dev.slice unit comes from the SAME
 # resolution the runtime reconcile uses (scripts/mdt-container-io-caps.lib.sh):
 # the operator-pinned DEV_IO_{RBPS,WBPS,RIOPS,WIOPS}_MAX when set, else
@@ -908,13 +929,22 @@ if [ "$INOTIFY_OK" = 1 ]; then
   install -m 0755 "$HERE/scripts/mdt-container-memory-inotify-watcher.py" /usr/local/sbin/mdt-container-memory-inotify-watcher.py
 fi
 
-echo "== BFQ scheduler (io.weight needs it; io.max caps work on any scheduler) =="
-install -m 0644 "$HERE/etc/modules-load.d/bfq.conf"            /etc/modules-load.d/mdt-bfq.conf
-install -m 0644 "$HERE/etc/udev/rules.d/60-bfq-scheduler.rules" /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
-modprobe bfq 2>/dev/null || echo "WARN: modprobe bfq failed"
-udevadm control --reload-rules 2>/dev/null \
-  && udevadm trigger --action=change --subsystem-match=block 2>/dev/null \
-  || echo "WARN: udev reload/trigger failed — set the scheduler manually"
+SCHEDULER_FAILED=0
+if [ -z "$(_mdt_io_sched_value)" ]; then
+  # IO_ROOT_SCHEDULER absent or empty = NOT MANAGED: an old env file keeps the legacy BFQ rule (changing the
+  # scheduler for a host that never chose is a hazard); the wizard asks for the key (MDT-HS-07).
+  echo "== BFQ scheduler (legacy: IO_ROOT_SCHEDULER is not set) =="
+  echo "NOTICE: IO_ROOT_SCHEDULER is not set, so the LEGACY BFQ rule is kept. io.cost (IO_COST_MODEL/IO_COST_QOS) replaces BFQ as the weight mechanism and mq-deadline/none need no module: run install.sh --wizard to choose."
+  install -m 0644 "$HERE/etc/modules-load.d/bfq.conf"            /etc/modules-load.d/mdt-bfq.conf
+  install -m 0644 "$HERE/etc/udev/rules.d/60-bfq-scheduler.rules" /etc/udev/rules.d/60-mdt-bfq-scheduler.rules
+  modprobe bfq 2>/dev/null || echo "WARN: modprobe bfq failed"
+  udevadm control --reload-rules 2>/dev/null \
+    && udevadm trigger --action=change --subsystem-match=block 2>/dev/null \
+    || echo "WARN: udev reload/trigger failed — set the scheduler manually"
+else
+  echo "== IO scheduler (MDT-HS-07) =="
+  _mdt_apply_scheduler_settings || SCHEDULER_FAILED=1
+fi
 
 echo "== writeback and root-queue settings (MDT-HS-05) =="
 # After the BFQ block on purpose: a scheduler change resets nr_requests, so the queue rule
@@ -922,6 +952,17 @@ echo "== writeback and root-queue settings (MDT-HS-05) =="
 # abort the half-finished install; it is reported and the install exits non-zero at the end.
 WRITEBACK_FAILED=0
 _mdt_apply_writeback_settings || WRITEBACK_FAILED=1
+# The queue rule (61) runs after the scheduler rule (60), and a scheduler change resets nr_requests: verify the
+# scheduler once more after the queue settings were applied, so the final state is what is reported.
+if [ "$SCHEDULER_FAILED" = 0 ] && [ -n "$(_mdt_io_sched_value)" ] && _f_node=$(_mdt_root_disk_node 2>/dev/null); then
+  _mdt_verify_scheduler "${_f_node#/dev/}" || SCHEDULER_FAILED=1
+fi
+
+echo "== io.cost model and QoS (MDT-HS-07) =="
+install -m 0755 "$HERE/scripts/mdt-io-cost-apply.sh" /usr/local/sbin/mdt-io-cost-apply.sh
+install -m 0644 "$HERE/units/mdt-io-cost.service" /etc/systemd/system/mdt-io-cost.service
+IOCOST_FAILED=0
+_mdt_apply_iocost || IOCOST_FAILED=1
 
 echo "== activate =="
 systemctl daemon-reload
@@ -1024,6 +1065,9 @@ if [ "$MEMORY_WATCHER_CONFIGURED" = 1 ]; then
   systemctl restart mdt-container-memory-inotify-watcher.service
 fi
 systemctl restart mdt-container-io-events-watcher.service
+if [ -n "${IO_COST_MODEL:-}${IO_COST_QOS:-}" ]; then
+  systemctl enable mdt-io-cost.service >/dev/null 2>&1 || echo "WARN: could not enable mdt-io-cost.service; io.cost will not be re-applied at boot" >&2
+fi
 
 # Optional: automatically restart docker if requested (--restart-docker flag)
 if [ "$AUTO_RESTART_DOCKER" = 1 ]; then
@@ -1047,6 +1091,10 @@ else
   echo "   docker.socket alone (which just rebinds) is not enough. Same disruption as"
   echo "   the daemon.json restart above; batch them into the same window. Not done"
   echo "   automatically by this script (use --restart-docker flag to enable)."
+fi
+if [ "$SCHEDULER_FAILED" = 1 ] || [ "$IOCOST_FAILED" = 1 ]; then
+  echo "ERROR: the IO scheduler / io.cost settings were NOT verified live (see the ERROR lines above); the rest of the install completed. Fix the named cause and re-run install.sh." >&2
+  exit 2
 fi
 if [ "$WRITEBACK_FAILED" = 1 ]; then
   echo "ERROR: the writeback / root-queue settings were NOT verified live (see the ERROR lines above); the rest of the install completed. Fix the named cause and re-run install.sh." >&2

@@ -1,0 +1,20 @@
+# io.cost model and QoS for the root disk, applied at boot from /etc/mdt/host-setup.env (MDT-HS-07).
+# A oneshot unit and not a udev RUN rule, on purpose: io.cost.model and io.cost.qos are cgroup-ROOT files keyed by the
+# disk's MAJ:MIN, not a property of a block-device event. A udev RUN would fire on EVERY change event of the disk
+# (including each MDT install's own trigger), run a shell in udev's restricted sandbox with a timeout, and could not
+# order itself after the scheduler rule it depends on. Here the ordering is explicit: after the udev coldplug trigger
+# (which applies 60-mdt-io-scheduler.rules and 61-mdt-io-queue.rules) and an explicit settle.
+[Unit]
+Description=MDT io.cost model and QoS for the root disk (host-setup IO_COST_*)
+Documentation=file:///usr/local/sbin/mdt-io-cost-apply.sh
+After=local-fs.target systemd-udev-trigger.service
+ConditionPathExists=/sys/fs/cgroup/io.cost.model
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/usr/bin/udevadm settle --timeout=30
+ExecStart=/usr/local/sbin/mdt-io-cost-apply.sh
+
+[Install]
+WantedBy=multi-user.target
