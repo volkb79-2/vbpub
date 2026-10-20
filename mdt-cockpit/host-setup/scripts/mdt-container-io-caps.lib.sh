@@ -371,17 +371,31 @@ _mdt_resolve_dev_io_caps() {
   return $rc
 }
 
-# _mdt_io_systemd_dev <device-path>: the device spelling handed to systemd's IO*Max=
-# properties, always `/dev/block/<maj:min>` of the originating WHOLE disk (the one
-# _mdt_dev_majmin derives, the one the kernel io.max is keyed on).  Never a mapper or
-# partition node and never a hard-coded name (MDT-HS-04, measured 2026-10-20 on
-# systemd 257: `IOReadBandwidthMax=/dev/mapper/<lv> N` on dev.slice left the kernel
-# io.max empty, while /dev/vda and /dev/block/254:0 wrote at once).  Prints the path
-# or returns 1 with the reason on stderr.
+# _mdt_io_devname_for_majmin <maj:min>: the devtmpfs node of that whole disk, `/dev/<DEVNAME>`,
+# read from sysfs `dev/block/<maj:min>/uevent`.  This is THE spelling handed to systemd's IO*Max=
+# properties (MDT-HS-04/H-34): systemd resolves a /dev node it can stat, the kernel name is
+# stable across dynamic major renumbering (virtio 254 vs device-mapper 253 can swap between
+# kernels or initramfs changes, which a rendered MAJ:MIN would not survive), and it exists
+# before udev creates /dev/block symlinks.  Refuses (rc 1, reason on stderr) when DEVNAME is
+# missing or the node does not exist -- never invents a name.
+_mdt_io_devname_for_majmin() {
+  local mm="$1" sysroot="${MDT_SYSFS_ROOT:-/sys}" name
+  name=$(sed -n 's/^DEVNAME=//p' "$sysroot/dev/block/$mm/uevent" 2>/dev/null | head -n1)
+  if [ -z "$name" ]; then
+    echo "sysfs has no DEVNAME for block device $mm ($sysroot/dev/block/$mm/uevent)" >&2
+    return 1
+  fi
+  printf '/dev/%s\n' "$name"
+}
+
+# _mdt_io_systemd_dev <device-path>: resolve to the originating WHOLE disk (_mdt_dev_majmin, the
+# value the kernel io.max is keyed on and the read-back verifies), then its /dev node.  Never a
+# mapper or partition node (measured 2026-10-20, systemd 257: IOReadBandwidthMax=/dev/mapper/<lv>
+# left dev.slice's io.max empty while the whole-disk node wrote at once).
 _mdt_io_systemd_dev() {
   local mm
   mm=$(_mdt_dev_majmin "$1") || return 1
-  printf '/dev/block/%s\n' "$mm"
+  _mdt_io_devname_for_majmin "$mm"
 }
 
 # _mdt_io_props <systemd-dev> <rbps> <wbps> <riops> <wiops>: appends the IO set-property

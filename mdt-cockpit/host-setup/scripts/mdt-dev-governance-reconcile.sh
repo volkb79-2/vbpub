@@ -158,7 +158,11 @@ _mdt_apply_dev_io() {
     MDT_RC=1
     return
   fi
-  sd_dev="/dev/block/$majmin"
+  if ! sd_dev=$(_mdt_io_devname_for_majmin "$majmin" 2>&1); then
+    log "ERROR: cannot name the whole disk $majmin for systemd: $sd_dev — IO governance cannot be applied"
+    MDT_RC=1
+    return
+  fi
   MDT_IO_PROPS=()
   _mdt_io_props "$sd_dev" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"
   if ! err=$(systemctl set-property --runtime dev.slice "${MDT_IO_PROPS[@]}" 2>&1); then
@@ -211,7 +215,11 @@ _mdt_apply_tier_io() {
     # nothing configured for a tier that is not a sub-ceiling tier: leave it alone
     [ -n "$touched" ] || continue
     props=()
-    sd_dev="/dev/block/$majmin"
+    sd_dev=$(_mdt_io_devname_for_majmin "$majmin" 2>&1) || {
+      log "ERROR: $unit: cannot name the whole disk $majmin for systemd: $sd_dev — tier IO cap not applied"
+      MDT_RC=1
+      continue
+    }
     for f in RBPS WBPS RIOPS WIOPS; do
       case "$f" in
         RBPS) key=IOReadBandwidthMax ;; WBPS) key=IOWriteBandwidthMax ;;

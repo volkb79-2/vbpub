@@ -308,3 +308,17 @@ guarded since MDT-016 (no write, ERROR when limits exist); the container sweep i
 existing no-baseline sweep test depends on the strip, and a guard needs the same "carries limits" probe per
 scope. Fix: skip `_mdt_clear_container_caps` when the device is merely undiscovered, keep it for a missing
 baseline.
+
+## MDT-020 - no lane reproduces the live LVM/device-mapper IO-cap defect (MDT-HS-04 review H-33)
+
+The vm-system guest's root is a plain partition, so nothing exercised the case that failed live
+(2026-10-20, systemd 257: `IOReadBandwidthMax=/dev/mapper/<lv> N` on dev.slice left the kernel `io.max`
+empty, and two spellings of one disk ended with the last entry's value). MDT-HS-04 fixes the spelling and
+covers it with fakes only; the cause of the silent mapper drop is still unexplained. Add a VM-lane case INSIDE
+THE GUEST ONLY (never on the host, never a privileged container: see the loop-device host-hang incident of
+2026-09-09): stack a device-mapper linear device on a loop device or a second virtio disk, point
+`IO_DEV_PATH` at the mapper node, run the reconcile, and assert that the whole disk's kernel `io.max` holds
+the cap, plus a deliberately stale runtime entry under another spelling (`/dev/vda`) that must be gone
+afterwards. Also assert in the guest, after a reboot and before the first reconcile, that the rendered
+static `dev.slice` line produced an `io.max` entry. Cleanup must `dmsetup remove` and detach the loop in the
+guest before the lane ends.

@@ -663,7 +663,7 @@ which created containers are not seen, so a single bad line must not cost one. O
 `MAX_CONSECUTIVE_MALFORMED_EVENTS` (5) in a row exit non-zero, because that means the event shape is not
 understood and systemd should show it. A good event resets the streak. Review follow-ups: a rolling window (20 within 60 s) also exits, so bad/good interleaving cannot hide a broken parser; the immediate sweep runs at most once per rescan interval so an interleaved flood cannot storm the Docker API; a container vanishing between listing and inspect (ephemeral `--rm`) is skipped only on Docker's explicit `No such container`/`No such object`, so a daemon outage still fails loudly; event ids must be full 64-hex and the sweep uses `ps -aq --no-trunc` so a container named like another's short id cannot shadow it.
 
-### IO caps are given to systemd as `/dev/block/MAJ:MIN` of the whole disk, reset-then-set (MDT-HS-04)
+### IO caps are given to systemd as the whole disk's `/dev/<DEVNAME>`, reset-then-set (MDT-HS-04)
 
 **Measured on gstammtisch** (systemd 257.13, kernel 7.2.6, root on a device-mapper LV `dm-0` 253:0
 over `vda` 254:0): `systemctl set-property --runtime dev.slice "IOReadBandwidthMax=/dev/mapper/<lv> N"`
@@ -674,17 +674,21 @@ is **unproven**. With two spellings of one disk in a runtime list (`/dev/vda N` 
 `/dev/mapper/... M` from the reconcile) the kernel ended with the value of the LAST entry.
 
 **Decision.** The reconcile, the per-container watcher and the installer's rendered `dev.slice` static
-lines all hand systemd `/dev/block/<maj:min>` of the whole disk, derived by `_mdt_dev_majmin` (the same
-value the read-back verifies), via `_mdt_io_systemd_dev`; no device name is hard-coded and a mapper or
-partition node is never passed. Every IO `set-property` resets each key and then sets it in ONE call
-(`IOReadBandwidthMax=` then `IOReadBandwidthMax=/dev/block/254:0 N`), so a stale entry under another
-spelling cannot shadow the cap; the reset and the set must travel together because an empty assignment
-alone wipes the unit-file value (MDT-016). Log lines name the path actually given to systemd
-(`io.max on /dev/block/254:0 (from /dev/mapper/<lv>)`). Rejected: keeping the configured node and only
-adding the reset (leaves the unexplained mapper drop in place); a device name derived from sysfs
-(`/dev/vda`: works, but is a second spelling to keep consistent). Trade-off: MAJ:MIN of a SCSI/NVMe disk
-can change across boots, so the boot-time static line may briefly name another disk; the reconcile re-asserts
-the correct one every minute.
+lines all hand systemd `/dev/<DEVNAME>` of the whole disk (`/dev/vda` on the measured host). It is derived
+from the SAME MAJ:MIN `_mdt_dev_majmin` yields for the read-back, then named by `DEVNAME=` in
+`/sys/dev/block/<maj:min>/uevent` (`_mdt_io_systemd_dev`, single-sourced); a missing `DEVNAME` is refused,
+never invented, and no device name is hard-coded. A mapper or partition node is never passed. Every IO
+`set-property` resets each key and then sets it in ONE call (`IOReadBandwidthMax=` then
+`IOReadBandwidthMax=/dev/vda N`), so a stale entry under another spelling cannot shadow the cap; the reset
+and the set must travel together because an empty assignment alone wipes the unit-file value (MDT-016). Log
+lines name the path actually given to systemd (`io.max on /dev/vda (from /dev/mapper/<lv>)`). Rejected:
+keeping the configured node and only adding the reset (leaves the unexplained mapper drop in place);
+`/dev/block/<maj:min>` (first version of this fix, measured to apply, but a rendered MAJ:MIN is not stable:
+dynamic majors such as virtio 254 and device-mapper 253 can swap across kernel or initramfs changes, so the
+boot-time static line could name another device, and it relies on udev's `/dev/block` symlinks, which are not
+there before udev runs). The kernel name is a devtmpfs node that exists early and follows the disk. Install
+messages distinguish "no device discovered" from "device found but its whole disk could not be resolved"
+(the static lines are then omitted and the reconcile reports ERROR each run).
 
 **Source reading (systemd v257.13, `src/core/cgroup.c`), inferred rather than measured.**
 `lookup_block_device()` parses `/dev/block/M:N` directly with `device_path_parse_major_minor` (no stat),

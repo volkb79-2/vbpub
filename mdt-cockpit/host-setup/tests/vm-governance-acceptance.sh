@@ -60,7 +60,7 @@ for cgdir in dev.slice dev.slice/dev-gates.slice; do
 done
 
 # 1. install.sh rendered the unit file static fallback (plain byte counts).
-grep -Eq "^IOReadBandwidthMax=/dev/block/$MAJMIN [0-9]+$" /etc/systemd/system/dev.slice \
+grep -Eq "^IOReadBandwidthMax=$(_mdt_io_devname_for_majmin "$MAJMIN") [0-9]+$" /etc/systemd/system/dev.slice \
   || fail "dev.slice unit lacks a rendered byte-count IOReadBandwidthMax static: $(grep IO /etc/systemd/system/dev.slice | tr '\n' ';')"
 ok "install.sh rendered the dev.slice static fallback"
 

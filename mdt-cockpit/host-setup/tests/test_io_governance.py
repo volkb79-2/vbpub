@@ -159,6 +159,8 @@ class Host:
         (dev / "vda" / "vda1" / "partition").write_text("1\n")
         (dev / "vdb" / "vdb1").mkdir(parents=True)
         (dev / "vdb" / "dev").write_text("8:16\n")
+        (dev / "vda" / "uevent").write_text("MAJOR=254\nMINOR=0\nDEVNAME=vda\nDEVTYPE=disk\n")
+        (dev / "vdb" / "uevent").write_text("MAJOR=8\nMINOR=16\nDEVNAME=vdb\nDEVTYPE=disk\n")
         (dev / "vdb" / "vdb1" / "dev").write_text("1:5\n")
         (dev / "vdb" / "vdb1" / "partition").write_text("1\n")
         blk = self.sys / "dev" / "block"
@@ -284,7 +286,7 @@ class ReconcileIoGovernanceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("verified kernel io.max 254:0", result.stdout)
         self.assertIn("is authoritative", result.stdout)
-        self.assertIn("io.max on /dev/block/254:0 (from /dev/null)", result.stdout)  # the resolved whole disk, not the node
+        self.assertIn("io.max on /dev/vda (from /dev/null)", result.stdout)  # the resolved whole disk, not the node
 
     def test_an_empty_kernel_io_max_fails_and_is_never_certified(self) -> None:
         result = self.host.run(FAKE_KERNEL_DROPS="1")

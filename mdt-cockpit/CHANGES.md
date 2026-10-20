@@ -7,7 +7,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## UNRELEASED
 
 ### Fixed (MDT-HS-04)
-- host-setup: IO caps are given to systemd as `/dev/block/<maj:min>` of the derived whole disk (reconcile, per-container watcher, rendered `dev.slice` static lines) because `/dev/mapper/<lv>` left the kernel `io.max` empty on systemd 257; every IO `set-property` resets then sets each key in one call so a stale spelling cannot shadow the cap; log lines name the path given to systemd
+- host-setup: IO caps are given to systemd as `/dev/<DEVNAME>` of the derived whole disk (from sysfs uevent; survives dynamic major renumbering) (reconcile, per-container watcher, rendered `dev.slice` static lines) because `/dev/mapper/<lv>` left the kernel `io.max` empty on systemd 257; every IO `set-property` resets then sets each key in one call so a stale spelling cannot shadow the cap; log lines name the path given to systemd
 
 ### Fixed (MDT-HS-03)
 - host-setup: `mdt-buildkit-guard` reads the container id from `Actor.ID` (Docker 29 no longer sends top-level `id`) and no longer crash-loops; disagreeing ids are refused, non-container events ignored, and one malformed event triggers a throttled full reconcile instead of an exit (five in a row, or 20 in 60 s, exit); a container vanishing before inspect is skipped (daemon errors still fail); full 64-hex ids required and the sweep uses `--no-trunc`; `check.sh` reports the guard's state distinctly (not installed / not running / active with N restarts) and a journal it could not read as such, not as zero malformed events; `docker rm -f` of a container already gone is treated as gone

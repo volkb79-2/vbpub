@@ -1,4 +1,4 @@
-"""MDT-HS-04: systemd gets the whole-disk node as /dev/block/MAJ:MIN, and every IO set-property
+"""MDT-HS-04: systemd gets the whole-disk /dev/<DEVNAME> (from sysfs uevent), and every IO set-property
 resets the list in the SAME call.
 
 Measured on gstammtisch (systemd 257, root on a device-mapper LV over vda): `set-property --runtime
@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_io_governance import Host, LIB, MIB, ROOT, SCRIPTS  # noqa: E402
 
 KEYS = ("IOReadBandwidthMax", "IOWriteBandwidthMax", "IOReadIOPSMax", "IOWriteIOPSMax")
-SD = "/dev/block/254:0"   # the fixture's /dev/null is a partition of whole disk 254:0
+SD = "/dev/vda"   # the fixture's /dev/null is a partition of whole disk 254:0, DEVNAME=vda
 
 
 def _split(call: str) -> list[str]:
@@ -124,18 +124,59 @@ class ContainerCapsTests(Base):
         self.assertIn("rc=1", result.stdout)
 
 
+class DevnameTests(Base):
+    def _helper(self, expr: str, sysroot: Path | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["bash", "-c", f'log(){{ :; }}; . "{LIB}"; {expr}; echo rc=$?'],
+            env=dict(os.environ, MDT_SYSFS_ROOT=str(sysroot or self.host.sys)), text=True, capture_output=True)
+
+    def test_the_node_is_read_from_the_sysfs_uevent_of_the_derived_majmin(self) -> None:
+        r = self._helper("_mdt_io_systemd_dev /dev/null")
+        self.assertIn("/dev/vda", r.stdout)
+        self.assertIn("rc=0", r.stdout)
+
+    def test_a_major_renumbering_does_not_change_the_spelling(self) -> None:
+        """virtio 254 vs dm 253 can swap across kernels: the DEVNAME follows the disk, not the number."""
+        (self.host.sys / "devices" / "vda" / "dev").write_text("253:0\n")
+        (self.host.sys / "dev" / "block" / "254:0").unlink()
+        (self.host.sys / "dev" / "block" / "253:0").symlink_to("../../devices/vda")
+        r = self._helper("_mdt_io_systemd_dev /dev/null")
+        self.assertIn("/dev/vda", r.stdout)
+
+    def test_missing_devname_is_refused_not_invented(self) -> None:
+        (self.host.sys / "devices" / "vda" / "uevent").write_text("MAJOR=254\nMINOR=0\n")
+        r = self._helper("_mdt_io_systemd_dev /dev/null")
+        self.assertIn("rc=1", r.stdout)
+        self.assertIn("no DEVNAME", r.stderr)
+        self.assertNotIn("/dev/", r.stdout.replace("rc=1", ""))
+
+    def test_reconcile_fails_loudly_when_devname_is_missing(self) -> None:
+        (self.host.sys / "devices" / "vda" / "uevent").write_text("MAJOR=254\nMINOR=0\n")
+        result = self.host.run()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("cannot name the whole disk 254:0", result.stdout)
+        self.assertEqual(self.calls_for("dev.slice"), [])
+
+
 class InstallerTests(unittest.TestCase):
     def test_static_unit_lines_use_the_derived_block_node(self) -> None:
         unit = (ROOT / "units" / "dev.slice.in").read_text()
         self.assertIn("IOReadBandwidthMax=@IO_SD_DEV@ ", unit)
         self.assertNotIn("@IO_DEV_PATH@", unit)
+        self.assertNotIn("/dev/block/", unit)
         install = (ROOT / "install.sh").read_text()
         self.assertIn("_mdt_io_systemd_dev", install)
         self.assertIn("IO_DEV_PATH IO_SD_DEV", install)
 
+    def test_install_messages_distinguish_unresolvable_from_no_device(self) -> None:
+        install = (ROOT / "install.sh").read_text()
+        self.assertIn("was found but its whole disk could not be resolved", install)
+        self.assertIn("no host block device was discovered", install)
+        self.assertIn("IO_SD_STATE", install)
+
     def test_design_guide_records_measured_versus_inferred(self) -> None:
         design = " ".join((ROOT.parent / "docs" / "DESIGN-GUIDE.md").read_text().split())
-        for needle in ("MDT-HS-04", "/dev/block/", "measured", "inferred"):
+        for needle in ("MDT-HS-04", "DEVNAME", "measured", "inferred", "virtio"):
             self.assertIn(needle, design)
         self.assertIn("MDT-HS-04", (ROOT.parent / "CHANGES.md").read_text())
 
