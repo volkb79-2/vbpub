@@ -20,7 +20,23 @@ import collections
 import json
 import os
 import threading
+import sys
 import time
+
+def require_harness_guest() -> None:
+    """Refuse unless run-synthetic.sh marked this guest (same check as guest/lib-guard.sh)."""
+    run, nonce = os.environ.get("ZWG_RUN", ""), os.environ.get("ZWG_NONCE", "")
+    want = f"zwg-harness-guest run={run} nonce={nonce}"
+    try:
+        st = os.stat("/etc/zwg-harness-guest")
+        with open("/etc/zwg-harness-guest") as f:
+            got = f.read().strip()
+    except OSError:
+        got, st = None, None
+    if not run or not nonce or st is None or st.st_uid != 0 or got != want:
+        print("zwg-guard: REFUSING: not a guest marked by run-synthetic.sh", file=sys.stderr)
+        raise SystemExit(97)
+
 
 VMSTAT_KEYS = ("zswpout", "zswpin", "zswpwb", "pswpin", "pswpout", "pgscan_kswapd",
                "pgscan_direct", "pgsteal_kswapd", "pgsteal_direct", "allocstall_normal",
@@ -183,6 +199,7 @@ def stack_sampler(cg, out_path, stop):
 
 
 def main():
+    require_harness_guest()
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--cg", required=True, help="the game cgroup directory")

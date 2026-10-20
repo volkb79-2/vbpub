@@ -19,6 +19,7 @@ Two parts:
 Exit by SIGTERM. Never run on the live host.
 """
 import argparse
+import os
 import ctypes
 import mmap
 import signal
@@ -27,6 +28,21 @@ import threading
 import time
 
 PAGE = 4096
+
+
+def require_harness_guest() -> None:
+    """Refuse unless run-synthetic.sh marked this guest (same check as guest/lib-guard.sh)."""
+    run, nonce = os.environ.get("ZWG_RUN", ""), os.environ.get("ZWG_NONCE", "")
+    want = f"zwg-harness-guest run={run} nonce={nonce}"
+    try:
+        st = os.stat("/etc/zwg-harness-guest")
+        with open("/etc/zwg-harness-guest") as f:
+            got = f.read().strip()
+    except OSError:
+        got, st = None, None
+    if not run or not nonce or st is None or st.st_uid != 0 or got != want:
+        print("zwg-guard: REFUSING: not a guest marked by run-synthetic.sh", file=sys.stderr)
+        raise SystemExit(97)
 
 
 def memfree_mb() -> int:
@@ -38,6 +54,7 @@ def memfree_mb() -> int:
 
 
 def main() -> int:
+    require_harness_guest()
     ap = argparse.ArgumentParser()
     ap.add_argument("--ballast-mb", type=int, required=True)
     ap.add_argument("--churn-mb", type=int, required=True)

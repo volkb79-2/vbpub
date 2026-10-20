@@ -26,7 +26,11 @@ the synthetic): it fails if a mutating script lacks the guard call or calls it
 after its first mutating command, if `swapoff -a` or `systemd-detect-virt`
 appears, if the marker/nonce/foreign-swap checks are removed from the lib, or if
 the driver stops writing the marker. It was exercised both ways (passes on the
-tree, fails on a copy with the guard call deleted).
+tree, fails on a copy with the guard call deleted). The three Python helpers
+(`workload.py`, `bgpressure.py`, `sampler.py`) carry the same marker check and
+exit 97 without it. **Limits:** `check-guards.sh` is not yet part of any gate lane
+(run it by hand), and its mutation regex misses writes made through variables
+(for example `echo x > "$path"` or `$cmd`), so it is a tripwire, not a proof.
 
 ## What it reproduces
 

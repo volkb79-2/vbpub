@@ -9,7 +9,8 @@
 #   G3  `systemd-detect-virt` is used in a guest script (production is a KVM guest too: it proves nothing);
 #   G4  lib-guard.sh lost the marker path, the nonce comparison, or the refuse-foreign-swap check;
 #   G5  the driver stopped writing the marker, or passes no ZWG_NONCE to a guest script;
-#   G6  a Python helper touches swap or sysctls.
+#   G6  a Python helper touches swap or sysctls;
+#   G7  a Python helper (workload, bgpressure, sampler) lacks or never calls its marker check.
 # Run: bash check-guards.sh   (also lint-clean under `shellcheck`)
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -54,6 +55,11 @@ done
 
 for f in "$HERE"/guest/*.py; do
     if noncomment "$f" | grep -Eq 'swapon|swapoff|sysctl|/proc/sys/vm'; then bad "G6 $f touches swap or sysctls"; fi
+done
+
+for f in "$HERE"/guest/*.py; do
+    noncomment "$f" | grep -q 'require_harness_guest()' || bad "G7 $f has no require_harness_guest"
+    [ "$(noncomment "$f" | grep -c 'require_harness_guest()')" -ge 2 ] || bad "G7 $f defines but never calls require_harness_guest"
 done
 
 if [ "$fail" = 0 ]; then echo "check-guards: ok"; fi
