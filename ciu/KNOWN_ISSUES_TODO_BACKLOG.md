@@ -595,6 +595,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-146 | `ciu down --profile NAME` (and `--phases`) stops EVERY project container: `action_stop` matches the whole `^{project}-{env}-` prefix and never reads the selection, while `ciu down --help` says `--profile` restricts to the named host profile | High | OPEN. Filed 2026-10-15 from dstdns (deep-review run, main 02ed2c8b), ciu 7.16.0. See the CIU-146 section |
 | CIU-147 | `ciu up` reports success for a stack whose rendered, bind-mounted config file changed, while the running container keeps serving the OLD config: Compose's recreate diff hashes the service definition, not the content of a bind-mounted file, and CIU never forces a recreate or warns | Medium | OPEN |
 | CIU-148 | `docs/SPEC.md` S15.20 and `docs/DESIGN-NOTES.md` D8 cite dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`, which dstdns merged into `docs/RESOURCE-GOVERNANCE.md` (dstdns docs-sync W20) | Low | OPEN |
+| CIU-149 | `tests/tests/test_ciu_cli_worktree.py::TestWorktreeCreateDispatch::test_forwards_all_options` fails in the registered `ciu` lane (and on origin/main): `--profile` without `--root-folder` hits the S16 selected-root refusal because ciu's own directory is not a CIU root, so `--maxfail=1` ends the lane as EMPTY_COVERAGE | Medium |
 
 
 The approved milestone decisions and serial package order are in
@@ -5486,3 +5487,15 @@ It printed `Active service profile(s): apps,worker-io,worker-db,identity,observa
 **Oracles.** `grep -rn KSM-OPTIN-MEASUREMENTS docs` in ciu is empty.
 
 **SPEC owner.** S15.20.
+
+## CIU-149 — `test_forwards_all_options` trips the S16 selected-root refusal, so the registered `ciu` lane fails fast with EMPTY_COVERAGE
+
+**Evidence (2026-10-20).** `run-gate ciu` fails with `R0: FAIL (first failing test: TestWorktreeCreateDispatch.test_forwards_all_options)`, `NO_MEASUREMENT/EMPTY_COVERAGE (exit 3)`, both on a pwmcp-07 branch (`cce3488e4`) and on an origin/main-equivalent worktree (`e334720d3`, ciu code identical to main): logs `/tmp/run-gate/lanes/ciu/051ee6b1ef567417b628a3d8e355e715.log` and `/tmp/run-gate/lanes/ciu/b0096705ee70c4693ca19aecfe97e9ed.log`. Reproduced outside the lane: the test fails with `assert 2 == 0` and stderr `[S16] initial overlay and existing-network options require a selected CIU root; run from that root or pass its path with --root-folder`.
+
+**Mechanism.** The test calls `cli._worktree(["create", "mypkg", "--base", "develop", "--profile", "core,db", ...])` with no `--root-folder`. `ciu/src/ciu/cli.py` (~line 1990) refuses `--profile` and the network/shared-infra options when `_resolve_worktree_ciu_root_cli` finds no CIU root from the working directory; a clean checkout has no `ciu.toml` at the repository root or in `ciu/`, so no CIU root resolves from either working directory and the test (cwd-dependent, never given a root) always hits the refusal. The lane's `--maxfail=1` then stops at the first failure, which leaves the declared coverage artifact unwritten, so Assay reports EMPTY_COVERAGE instead of the test failure (its own warning: "pytest --maxfail can stop the suite after failures and leave the declared coverage artifact incomplete").
+
+**Not caused by** the pwmcp-07 / KI-89 change (no ciu source or test touched; only `ciu/get.py` was re-rendered, and the byte-identity test `TestRenderedInstaller::test_render_is_byte_identical_to_the_committed_file` passes in-process). It also means the byte-identity test has no gate evidence while this stands, because the lane stops before reaching it.
+
+**Required contract.** Give the test an explicit root (`--root-folder` to a temp CIU root, or `monkeypatch.chdir` into one), so it asserts option forwarding rather than cwd luck; consider dropping `--maxfail=1` from the lane (or declaring the failure honestly) so one failure cannot masquerade as an empty-coverage measurement.
+
+**Oracles.** `run-gate ciu` completes with a verdict that reflects the whole suite; the test passes from the lane's cwd.
