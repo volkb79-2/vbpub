@@ -2217,7 +2217,7 @@ Docker's signed `Packages` index). Check CHANGES.md and the versions design befo
 
 ### KI-87 — the mutation campaign's known-good control keeps no log and only a bounded output tail
 
-**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-03). (KI-86 is on branch `cmru-rel-ki-20261020`.)
+**Status:** open; severity: minor. Filed 2026-10-20 from review CMRU-FIX-01 (F-03).
 
 **Observed:** `mutation_campaign.py` reads the control's output through `_read_output_tail` (the last 1 MiB), so for a very
 large output the FAILURES section may already be cut off, and `failure_excerpt` then returns a labelled tail. Unlike the

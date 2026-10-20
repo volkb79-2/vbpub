@@ -66,7 +66,9 @@ ESTATE_CONFIG_FIXTURES = (
 
 
 _SECTION_HEADER = re.compile(r"^={3,} (?:FAILURES|ERRORS) ={3,}$", re.MULTILINE)
-_BLOCK_HEADER = re.compile(r"^_{3,} .+ _{3,}$")
+# pytest pads a long test name down to one underscore a side, but a frame separator
+# ("_ _ _ _") has no name in the middle: require a non-underscore, non-space character.
+_BLOCK_HEADER = re.compile(r"^_+ (?=.*[^_ ]).+ _+$")
 _SUMMARY_HEADER = re.compile(r"^={3,} ")
 _EXCEPTION_LINE = re.compile(r"^E(?: |$)")
 _LOCATION_LINE = re.compile(r"^\S+:\d+: \S")

@@ -373,6 +373,29 @@ def test_failure_excerpt_leads_with_the_cause_of_the_first_failure_even_after_a_
     assert "SECOND-FAILURE" not in excerpt  # only the first failure
 
 
+_LONG_NAME_A = "test_" + "a_very_long_test_name_that_makes_pytest_pad_its_header_down_to_single_underscores_first"
+_LONG_NAME_B = "test_" + "a_very_long_test_name_that_makes_pytest_pad_its_header_down_to_single_underscores_second"
+_LONG_NAME_SOURCE = (
+    "def helper():\n    raise KeyError('FIRST-CAUSE')\n\n\n"
+    f"def {_LONG_NAME_A}():\n    helper()\n\n\n"
+    f"def {_LONG_NAME_B}():\n    raise ValueError('SECOND-CAUSE')\n"
+)
+
+
+def test_failure_excerpt_handles_single_underscore_block_headers_and_frame_separators(tmp_path):
+    output = _real_pytest_output(tmp_path, _LONG_NAME_SOURCE)
+    headers = [line for line in output.splitlines() if _LONG_NAME_A[:20] in line or _LONG_NAME_B[:20] in line]
+    assert headers and headers[0].startswith("_ ") and headers[0].endswith(" _"), headers  # real padding
+    assert any(line.startswith("_ _ _") for line in output.splitlines())  # a frame separator is present
+
+    excerpt = project_fixture.failure_excerpt(output, 2000)
+
+    assert _LONG_NAME_A in excerpt.splitlines()[0]
+    assert "KeyError: 'FIRST-CAUSE'" in excerpt
+    assert re.search(r"^test_sample\.py:\d+: KeyError", excerpt, re.MULTILINE), excerpt  # the first test's location
+    assert "SECOND-CAUSE" not in excerpt and _LONG_NAME_B not in excerpt  # the second failure is another block
+
+
 def test_failure_excerpt_keeps_the_real_collection_error_cause(tmp_path):
     output = _real_pytest_output(tmp_path, "import module_that_does_not_exist_anywhere\n")
 
@@ -427,3 +450,13 @@ def test_a_green_canary_control_removes_a_stale_control_log(tmp_path):
     assert _canary(project_root, evidence, "coverage", "tester-unified/Dockerfile") == 0
 
     assert not stale.exists()
+
+
+def test_an_unremovable_stale_control_log_is_reported_not_ignored(tmp_path):
+    project_root = _estate(tmp_path / "repo")
+    stale = tmp_path / "canary.control.log"
+    stale.mkdir()
+    (stale / "occupied").write_text("x", encoding="utf-8")  # unlink() of a non-empty directory fails
+
+    with pytest.raises(RuntimeError, match="could not remove the stale control log"):
+        _canary(project_root, tmp_path / "canary.json", "coverage", "tester-unified/Dockerfile")

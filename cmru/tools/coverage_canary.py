@@ -91,7 +91,10 @@ def run(argv: Sequence[str] | None = None) -> int:
                 f"known-good canary control failed with exit {control.returncode} "
                 f"({where}): {failure_excerpt(control.stdout, 2000)}"
             )
-        log.unlink(missing_ok=True)  # a green control leaves no stale log from an earlier red run
+        try:
+            log.unlink(missing_ok=True)  # a green control leaves no stale log from an earlier red run
+        except OSError as exc:
+            raise RuntimeError(f"could not remove the stale control log {log}: {exc}") from exc
         target_copy = copied / target
         target_copy.write_text(
             target_copy.read_text(encoding="utf-8")
