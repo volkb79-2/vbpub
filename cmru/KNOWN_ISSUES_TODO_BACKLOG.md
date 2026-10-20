@@ -2289,3 +2289,12 @@ or `tarball-publish --glob`) with the contract name, with a controlled wrong imp
 red and a self-checking exemption list (ciu, CIU-99). `publish_versioned` must not rename or refuse
 unconditionally (wheels). Plus the bounded, sidecar-verified get.py fallback for already-published
 releases (PWMCP-07 fix C).
+
+**Follow-up (review round 3): a committed `get.py` must equal a fresh render.** A template change
+left `ciu/get.py`, `tls-edge/get.py` and `pwmcp/get.py` stale, and only ciu has a byte-identity test
+(`ciu/tests/tests/test_ciu_host_enroll.py::TestRenderedInstaller`), so tls-edge and pwmcp would have
+drifted silently. Add a cmru check that, for EVERY project with `[project.installer]`, renders its
+`get.py` from the checkout's own `cmru/src` template (`cmru get-py <project> --output-dir`, in-process)
+and asserts it equals the committed file, with a controlled stale file that must go red. Until then the
+re-render in this change is the only guard; `pwmcp/get.py` is additionally pinned by sha256 in
+mdt-cockpit.
