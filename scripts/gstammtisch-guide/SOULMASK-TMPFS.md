@@ -277,7 +277,7 @@ loudly; a test asserts both units reference it and carry no copy). Shipped:
 `SIZE=512M`, `KEEP_BACKUPS=3`, `HIGH_WATER_PCT=75`. The scripts have no defaults
 and refuse (exit 2 for the prune script) unless `KEEP_BACKUPS` is an integer >= 0
 and `HIGH_WATER_PCT` an integer in 1..99. After editing the file run
-`systemctl restart soulmask_tmpfs.service` (the size is applied at mount time; a
+`systemctl restart soulmask_tmpfs.service` (a ~10-minute IO-saturating maintenance window, see "Deployment"; the size is applied at mount time; a
 kept mount whose `size=` no longer matches is refused until torn down).
 
 Sizing arithmetic (a log is ~66 MB; the game cgroup has `memory.max` 12 GiB with
@@ -390,7 +390,8 @@ teardown exit non-zero.
 running, `ExecStop` fails and systemd leaves `soulmask_tmpfs.service` in state
 `failed`; a second `systemctl stop` does not run `ExecStop` again (and
 `ExecStopPost` has already restarted wings, harmlessly). Once the game is
-stopped: run `/usr/local/sbin/soulmask_tmpfs-teardown.sh` directly, then
+stopped: load the policy (`set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a`) and run
+`/usr/local/sbin/soulmask_tmpfs-teardown.sh` directly, then
 `systemctl reset-failed soulmask_tmpfs.service`, then `systemctl start
 soulmask_tmpfs.service` (or leave it stopped). `systemctl restart` on the failed
 unit also works but only starts it again after skipping the stop phase, so the
@@ -430,6 +431,19 @@ container-check logic is broken.
 
 ### Deployment (controller)
 
+> **Maintenance window, expect it (measured 2026-10-20, gstammtisch, live SMT-01 deploy).**
+> `systemctl restart|start soulmask_tmpfs.service` re-copies ~2.6 GB from disk, then restarts Wings, and
+> Wings restores its servers (steamcmd validate reads the installs). On this ~10 MB/s disk that kept `vda` at
+> 100 % utilisation for about 10 minutes (reads 6–10 MB/s plus writes 8 MB/s, awaits 0.2–1.5 s, from the
+> operator's `iostat`). During that time **every new container start on the host hung**, including other
+> servers Wings tried to boot and unrelated `docker run`. Do it in a quiet window and do not start other
+> container work until `vda` calms (`iostat -x 5`).
+
+> **Run the scripts directly only with the policy loaded.** The unit gets `/etc/gstammtisch/soulmask_tmpfs.env`
+> through `EnvironmentFile=`; a script run by hand does not. The scripts have no defaults, so without it
+> they report the three policy values as unset and exit 75 (measured 2026-10-20; the refusal is correct).
+> Load it first: `set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a; /usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run`.
+
 1. Confirm no players are online on either instance.
 2. Stop both game servers (`6c418fe7…`, `b87c0a5b…`) — teardown refuses while
    they run.
@@ -444,11 +458,14 @@ container-check logic is broken.
    and only then `systemctl daemon-reload` and
    `systemctl enable --now soulmask-logs-prune.timer`.
 4. `systemctl restart soulmask_tmpfs.service` (teardown, setup, restart wings;
-   it re-copies ~2.6 GB). The unit must be `active`; read the journal
+   it re-copies ~2.6 GB; **a ~10-minute IO-saturating maintenance window, see the warning at the top of this section**). The unit must be `active`; read the journal
    (`journalctl -u soulmask_tmpfs -p err`): any `ERROR` line is a per-instance
    problem (setup exited 75, which the unit accepts — see "Failure policy").
-5. **Second setup run** — `/usr/local/sbin/soulmask_tmpfs-setup.sh` (real run,
-   or `--dry-run`). It must log, for BOTH instances, "per-instance tmpfs already
+5. **Second setup run** — load the env first, then run it (real run or `--dry-run`):
+   `set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a; /usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run`.
+   Run directly WITHOUT the env it reports all three policy values as unset and exits 75 (it refuses, as
+   designed, no script default); measured 2026-10-20 on gstammtisch, with the env: "keeping" for both
+   instances, exit 0. It must log, for BOTH instances, "per-instance tmpfs already
    mounted at ... with the expected options — keeping" and exit 0. This is the
    only live check of the `findmnt` options parsing (size normalisation, mode).
    If it logs "refusing to keep", compare the logged options with the policy file.
@@ -467,6 +484,15 @@ container-check logic is broken.
    - the D-state probe shows no ext4 or jbd2 stacks for `FAsyncWriter_WS`.
 
 ## Manual update procedure
+
+> **Maintenance window, expect it (measured 2026-10-20, gstammtisch, live SMT-01 deploy).**
+> `systemctl restart|start soulmask_tmpfs.service` re-copies ~2.6 GB from disk, then restarts Wings, and
+> Wings restores its servers (steamcmd validate reads the installs). On this ~10 MB/s disk that kept `vda` at
+> 100 % utilisation for about 10 minutes (reads 6–10 MB/s plus writes 8 MB/s, awaits 0.2–1.5 s, from the
+> operator's `iostat`). During that time **every new container start on the host hung**, including other
+> servers Wings tried to boot and unrelated `docker run`. Do it in a quiet window and do not start other
+> container work until `vda` calms (`iostat -x 5`).
+> Steps 2 and 5 below are exactly that: step 5 is the heavy one.
 
 With the tmpfs read-only, game updates **must** follow this procedure:
 
@@ -550,8 +576,8 @@ cat /run/soulmask_tmpfs.state
 # Check a specific bind mount
 findmnt /var/lib/pterodactyl/volumes/<uuid>/WS/Content/Paks
 
-# Dry-run (no changes)
-/usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run
+# Dry-run (no changes); the policy env must be loaded first, or it exits 75
+set -a; . /etc/gstammtisch/soulmask_tmpfs.env; set +a; /usr/local/sbin/soulmask_tmpfs-setup.sh --dry-run
 
 # Toggle
 soulmask_tmpfs-toggle.sh status
