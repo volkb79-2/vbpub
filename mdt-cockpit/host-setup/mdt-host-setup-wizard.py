@@ -42,6 +42,7 @@ from __future__ import annotations
 import argparse
 from mdt_cli import MdtArgumentParser
 import importlib.util
+import json
 import os
 import re
 import signal
@@ -802,6 +803,10 @@ def _config_value_validators() -> dict[str, Validator]:
         "DEV_SUBSLICE_IOPS_PCT": validate_pct_1_100,
         "DEV_ZSWAP_WRITEBACK": validate_yes_no,
         "DAMON_STAT_DISABLE_DEFAULT": validate_yes_no,
+        "IO_WRITEBACK_DIRTY_BYTES": validate_io_dirty_bytes_floor,
+        "IO_WRITEBACK_DIRTY_BACKGROUND_BYTES": validate_io_dirty_bytes,
+        "IO_ROOT_QUEUE_NR_REQUESTS": validate_io_nr_requests,
+        "IO_ROOT_QUEUE_MAX_SECTORS_KB": validate_io_max_sectors_kb,
         "DEV_BUILDKITD_IMAGE": validate_buildkit_image,
         "DEV_BUILDKITD_MAX_PARALLELISM": validate_positive_int,
         "BUILDX_ACCIDENTAL_CONTAINER_POLICY": validate_guard_policy,
@@ -957,6 +962,9 @@ def validate_host_setup_values(
         raise TemplateError(
             f"{meminfo_label} has no positive MemTotal; cannot validate host-sized memory policy"
         )
+    writeback_errors = io_writeback_relation_errors(values)
+    if writeback_errors:
+        raise TemplateError("invalid IO writeback settings: " + "; ".join(writeback_errors))
     relationship_errors = memory_relationship_errors(values)
     if relationship_errors:
         raise TemplateError(
@@ -1280,6 +1288,108 @@ def validate_positive_int(value: str) -> str | None:
         return error
     if int(value) <= 0:
         return "a positive whole number is required"
+    return None
+
+
+# --- writeback / root-queue settings (MDT-HS-05) --------------------------------------------
+# THE one validator source for IO_WRITEBACK_* and IO_ROOT_QUEUE_*: the wizard prompts use it, and so
+# does install.sh through `--validate-config` (grammar and the dirty_background < dirty relation) and
+# `--check-max-sectors-kb` (the disk-dependent upper bound).  Grammar: a positive whole number
+# (bytes; KB for max_sectors_kb), or the word `kernel` (leave the kernel's value untouched; no line is
+# rendered), or empty (= kernel).  Measured basis: scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md
+# sections 4.2-4.5 and 5.
+IO_WRITEBACK_KEYS = (
+    "IO_WRITEBACK_DIRTY_BYTES",
+    "IO_WRITEBACK_DIRTY_BACKGROUND_BYTES",
+    "IO_ROOT_QUEUE_NR_REQUESTS",
+    "IO_ROOT_QUEUE_MAX_SECTORS_KB",
+)
+IO_NR_REQUESTS_MIN = 4
+
+
+def _page_size() -> int:
+    """This host's page size (the kernel's floors below are expressed in pages)."""
+    try:
+        return int(os.sysconf("SC_PAGE_SIZE"))
+    except (ValueError, OSError):
+        return 4096
+
+
+def io_dirty_bytes_min() -> int:
+    """Two pages. Kernel Documentation/admin-guide/sysctl/vm.rst (v6.12), dirty_bytes: "the minimum value
+    allowed for dirty_bytes is two pages (in bytes); any value lower than this limit will be ignored and
+    the old configuration will be retained" -- a lower value would be a silent no-op, never applied."""
+    return 2 * _page_size()
+
+
+def io_max_sectors_kb_min() -> int:
+    """One page, in KB (at least 4). Kernel block/blk-settings.c blk_validate_limits (v6.12) rejects a user
+    max_sectors below PAGE_SIZE / SECTOR_SIZE sectors."""
+    return max(4, _page_size() // 1024)
+
+
+_POSITIVE_NO_ZEROS = re.compile(r"[1-9][0-9]*")
+
+
+def _validate_kernel_or_number(value: str, minimum: int, what: str) -> str | None:
+    if value in ("", "kernel"):
+        return None
+    if not _POSITIVE_NO_ZEROS.fullmatch(value):
+        return (
+            f"{value!r} is not a positive whole number without leading zeros ({what}) or the word `kernel`"
+        )
+    if int(value) < minimum:
+        return f"{what} must be at least {minimum} (or the word `kernel`)"
+    return None
+
+
+def validate_io_dirty_bytes(value: str) -> str | None:
+    return _validate_kernel_or_number(value, 1, "bytes")
+
+
+def validate_io_dirty_bytes_floor(value: str) -> str | None:
+    """vm.dirty_bytes only: also at least two pages (see io_dirty_bytes_min)."""
+    return _validate_kernel_or_number(value, io_dirty_bytes_min(), "bytes; the kernel ignores a vm.dirty_bytes below two pages")
+
+
+def validate_io_nr_requests(value: str) -> str | None:
+    return _validate_kernel_or_number(value, IO_NR_REQUESTS_MIN, "a request count")
+
+
+def validate_io_max_sectors_kb(value: str) -> str | None:
+    return _validate_kernel_or_number(value, io_max_sectors_kb_min(), "KB (at least one page)")
+
+
+def _io_number(value: str) -> int | None:
+    return int(value) if _POSITIVE_NO_ZEROS.fullmatch(value or "") else None
+
+
+def io_writeback_relation_errors(values: dict[str, str]) -> list[str]:
+    """dirty_background_bytes must be below dirty_bytes when BOTH are set (a number)."""
+    dirty = _io_number(values.get("IO_WRITEBACK_DIRTY_BYTES", ""))
+    background = _io_number(values.get("IO_WRITEBACK_DIRTY_BACKGROUND_BYTES", ""))
+    if dirty is not None and background is not None and background >= dirty:
+        return [
+            f"IO_WRITEBACK_DIRTY_BACKGROUND_BYTES ({background}) must be below IO_WRITEBACK_DIRTY_BYTES ({dirty})"
+        ]
+    return []
+
+
+def io_max_sectors_hw_error(value: str, max_hw_kb: int, logical_block_size: int | None = None) -> str | None:
+    """The disk-dependent bounds: max_sectors_kb may not exceed the disk's max_hw_sectors_kb, and must be a
+    multiple of its logical block size. The kernel does not refuse the latter: blk_validate_limits (v6.12)
+    does `max_sectors = round_down(min(max_hw, user), logical_block_size >> 9)`, so an unaligned value
+    would read back LOWER than configured and the install's read-back would fail; refuse it up front."""
+    number = _io_number(value)
+    if number is None:
+        return None
+    if number > max_hw_kb:
+        return f"max_sectors_kb {number} exceeds this disk's max_hw_sectors_kb ({max_hw_kb})"
+    if logical_block_size and (number * 1024) % logical_block_size:
+        return (
+            f"max_sectors_kb {number} is not a multiple of this disk's logical block size ({logical_block_size} bytes); "
+            f"the kernel would round it down to {(number * 1024) // logical_block_size * logical_block_size // 1024} KB"
+        )
     return None
 
 
@@ -2788,6 +2898,259 @@ def step_damon_stat_policy(
     return {key: answer}
 
 
+# ─── writeback and root-queue settings (MDT-HS-05) ────────────────────────────────────────
+
+IOBENCH_DEFAULT_RESULT = Path("/var/lib/iobench/result.json")
+IOBENCH_SUPPORTED_SCHEMA = 1
+IO_LIB = HOST_SETUP_DIR / "scripts" / "mdt-container-io-caps.lib.sh"
+# result.json proposals.writeback name -> host-setup.env key (IOB-02 design, section 4)
+IOBENCH_KEY_MAP = {
+    "dirty_bytes": "IO_WRITEBACK_DIRTY_BYTES",
+    "dirty_background_bytes": "IO_WRITEBACK_DIRTY_BACKGROUND_BYTES",
+    "nr_requests": "IO_ROOT_QUEUE_NR_REQUESTS",
+    "max_sectors_kb": "IO_ROOT_QUEUE_MAX_SECTORS_KB",
+}
+# Labelled example, NEVER a default (measured on gstammtisch 2026-10-20; HOST-IO-INTERFERENCE.md 4.2-4.4)
+GSTAMMTISCH_EXAMPLE = {
+    "IO_WRITEBACK_DIRTY_BYTES": "16777216",
+    "IO_WRITEBACK_DIRTY_BACKGROUND_BYTES": "4194304",
+    "IO_ROOT_QUEUE_NR_REQUESTS": "16",
+    "IO_ROOT_QUEUE_MAX_SECTORS_KB": "64",
+}
+
+
+def shell_helper(expression: str, *args: str, runner=subprocess.run, env: dict[str, str] | None = None) -> str | None:
+    """Run one function of the shared shell library (the ONE derivation of the whole disk and its
+    queue attributes) and return its stdout, or None on any failure.  Never re-derive in Python."""
+    try:
+        result = runner(
+            ["bash", "-c", f'log(){{ :; }}; . "$1"; shift; {expression}', "mdt-wizard", str(IO_LIB), *args],
+            capture_output=True, text=True, check=False, env={**os.environ, **(env or {})},
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def derive_disk_facts(*, runner=subprocess.run) -> dict:
+    """Facts of the WHOLE DISK UNDER `/` (what install.sh and check.sh act on), derived through the shared
+    shell library's `_mdt_root_disk_node` -- NOT from IO_DEV_PATH, which names the Docker-data device and
+    may be another disk (MDT-HS-05 H-47).  Keys: majmin, max_hw_kb, logical_block_size, identity (model,
+    serial, size_bytes, wwn where sysfs has them).  Absent keys mean "could not be derived": never guessed."""
+    facts: dict = {"identity": {}}
+    node = shell_helper("_mdt_root_disk_node", runner=runner)
+    if not node:
+        return facts
+    name = node.removeprefix("/dev/")
+    majmin = shell_helper('_mdt_dev_majmin "$1"', node, runner=runner)
+    if majmin:
+        facts["majmin"] = majmin
+    for fact, attr in (("max_hw_kb", "max_hw_sectors_kb"), ("logical_block_size", "logical_block_size")):
+        raw = shell_helper('_mdt_io_queue_attr "$1" "$2"', name, attr, runner=runner)
+        if raw and raw.isdigit():
+            facts[fact] = int(raw)
+    ident = shell_helper('_mdt_io_disk_identity "$1"', name, runner=runner)
+    for line in (ident or "").splitlines():
+        key, _, value = line.partition("=")
+        if key and value:
+            facts["identity"][key] = int(value) if key == "size_bytes" and value.isdigit() else value
+    return facts
+
+
+@dataclass
+class IobenchProposals:
+    """What the benchmark result offers, read ONLY through the documented result.json schema
+    (IOB-02 design section 4): `absent` = no benchmark = fall through, never an error."""
+
+    state: str  # absent | corrupt | unsupported | incomplete | implausible | unverified | stale | unverified-identity | ok
+    reason: str = ""
+    values: dict[str, str] | None = None  # env key -> value
+    labels: dict[str, str] | None = None  # env key -> provenance shown next to the proposal
+
+
+# identity fields IOB-02 defines under identity.disk (design section 4) and the live sysfs counterpart
+IOBENCH_IDENTITY_FIELDS = ("model", "serial", "size_bytes", "wwn")
+
+
+def load_iobench_writeback(
+    path: Path | None, live_devno: str | None, live_identity: dict | None = None
+) -> IobenchProposals:
+    """Read `proposals.writeback` from the IOB-02 result.json.  Coupled to the schema file only (no
+    iobench import, no subprocess).  A proposal is offered as a default only for state `ok`: schema 1,
+    run.status complete, quality.plausible, and the result's disk identity equal to the ROOT disk's: the
+    device number AND at least one more IOB-02 identity field (model/serial/size/wwn) present on both sides
+    and equal, none differing.  A result matching on the device number alone is `unverified-identity`: its
+    values are carried for display ("not verified for this disk") but never defaulted.  Full identity
+    validation belongs to `iobench check`, which this reader does not replace."""
+    path = path or Path(os.environ.get("IOBENCH_RESULT") or IOBENCH_DEFAULT_RESULT)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return IobenchProposals("absent", f"no benchmark result at {path}")
+    except OSError as exc:
+        return IobenchProposals("corrupt", f"cannot read {path}: {exc}")
+    try:
+        doc = json.loads(raw)
+        schema = doc["schema"]
+    except (ValueError, KeyError, TypeError):
+        return IobenchProposals("corrupt", f"{path} is not a result document (no schema)")
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema < 1:
+        return IobenchProposals("corrupt", f"{path} has an invalid schema {schema!r}")
+    if schema > IOBENCH_SUPPORTED_SCHEMA:
+        return IobenchProposals(
+            "unsupported", f"{path} is schema {schema}; this wizard knows schema {IOBENCH_SUPPORTED_SCHEMA} (never guessed)"
+        )
+    try:
+        status = doc["run"]["status"]
+        plausible = doc["quality"]["plausible"]
+        writeback = doc["proposals"]["writeback"]
+        devno = doc["identity"]["disk"]["devno"]
+    except (KeyError, TypeError):
+        return IobenchProposals("incomplete", f"{path} lacks run.status, quality.plausible, identity.disk.devno or proposals.writeback")
+    if status != "complete":
+        return IobenchProposals("incomplete", f"the benchmark run status is {status!r}, not complete")
+    if plausible is not True:
+        return IobenchProposals("implausible", "the benchmark marked its own result implausible (quality.plausible is not true)")
+    if live_devno is None:
+        return IobenchProposals("unverified", "this host's root disk could not be derived, so the result's identity cannot be compared")
+    if devno != live_devno:
+        return IobenchProposals("stale", f"the result is for disk {devno}, this host's root disk is {live_devno}")
+    result_identity = doc["identity"]["disk"]
+    compared = 0
+    for field in IOBENCH_IDENTITY_FIELDS:
+        theirs, mine = result_identity.get(field), (live_identity or {}).get(field)
+        if theirs in (None, "") or mine in (None, ""):
+            continue
+        if str(theirs).strip() != str(mine).strip():
+            return IobenchProposals("stale", f"the result's disk {field} ({theirs}) differs from this host's root disk ({mine})")
+        compared += 1
+    notes_src = doc.get("quality", {})
+    caution = []
+    if doc.get("proposals", {}).get("target_missed"):
+        caution.append("target missed")
+    if notes_src.get("limits"):
+        caution.append("limits: " + "; ".join(str(x) for x in notes_src["limits"]))
+    values: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    for name, key in IOBENCH_KEY_MAP.items():
+        entry = writeback.get(name) if isinstance(writeback, dict) else None
+        value = entry.get("value") if isinstance(entry, dict) else None
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            continue
+        label = [f"benchmark rule {entry.get('rule', '?')}", str(entry.get("confidence", "unlabelled"))]
+        label += [str(flag) for flag in entry.get("flags", []) or []]
+        label += caution
+        values[key] = str(value)
+        labels[key] = ", ".join(label)
+    if not values:
+        return IobenchProposals("incomplete", "the result carries no usable proposals.writeback value")
+    if compared == 0:
+        labels = {k: f"{v}, not verified for this disk" for k, v in labels.items()}
+        return IobenchProposals(
+            "unverified-identity",
+            "the result matches this disk's device number only; no model/serial/size/wwn could be compared",
+            values,
+            labels,
+        )
+    return IobenchProposals("ok", "", values, labels)
+
+
+_IO_WRITEBACK_EXPLAIN = {
+    "IO_WRITEBACK_DIRTY_BYTES": (
+        "vm.dirty_bytes: the most dirty page-cache data the kernel lets accumulate before writers are throttled. "
+        "A smaller limit bounds how long a journal commit or fsync can wait behind that backlog (measured 26.9 s -> 0.14 s "
+        "game-thread stalls); the cost is more write throttling for bulk writers. HOST-GLOBAL: it also bounds every "
+        "production container's writeback. HOST-IO-INTERFERENCE.md 4.2, 4.3, 4.5, 5."
+    ),
+    "IO_WRITEBACK_DIRTY_BACKGROUND_BYTES": (
+        "vm.dirty_background_bytes: when background writeback starts. Must be below dirty_bytes; 1/4 of it was measured. "
+        "HOST-IO-INTERFERENCE.md 4.3, 5."
+    ),
+    "IO_ROOT_QUEUE_NR_REQUESTS": (
+        "queue/nr_requests of the root disk: how many requests the device queue holds. Fewer bounds the in-flight backlog "
+        "(8-16 measured; 4 gave no further gain). Needs at least 4. A scheduler change resets it, so it is applied by a "
+        "udev rule that sorts after the scheduler rule. HOST-IO-INTERFERENCE.md 4.3, 5."
+    ),
+    "IO_ROOT_QUEUE_MAX_SECTORS_KB": (
+        "queue/max_sectors_kb of the root disk: the largest single request. 64 KB beat 128 and 256 KB for small sync writes. "
+        "COST: it also caps read requests, and sequential reads fell from ~1.2-1.4 GB/s to ~0.25-0.3 GB/s at 64 KB "
+        "(buffered reads were equal across 64-256 KB). Bounded by the disk's max_hw_sectors_kb. HOST-IO-INTERFERENCE.md 4.4, 5."
+    ),
+}
+_IO_WRITEBACK_LABEL = {
+    "IO_WRITEBACK_DIRTY_BYTES": "vm.dirty_bytes (bytes, or `kernel`)",
+    "IO_WRITEBACK_DIRTY_BACKGROUND_BYTES": "vm.dirty_background_bytes (bytes, or `kernel`)",
+    "IO_ROOT_QUEUE_NR_REQUESTS": "root disk nr_requests (count >= 4, or `kernel`)",
+    "IO_ROOT_QUEUE_MAX_SECTORS_KB": "root disk max_sectors_kb (KB, or `kernel`)",
+}
+
+
+def step_io_writeback(
+    cfg_current: dict[str, str],
+    example_defaults: dict[str, str],
+    *,
+    iobench_result: Path | None = None,
+    runner=subprocess.run,
+) -> dict[str, str]:
+    """Ask for the four writeback / root-queue keys.  Default precedence per key: a CURRENT benchmark
+    proposal > the existing configured value > `kernel` (an explicit policy default: leave the
+    kernel's value untouched).  The gstammtisch values are shown as a labelled example, never defaulted."""
+    out("\n-- i. writeback and root-queue settings --")
+    out(
+        "These bound how much a slow shared disk can hold in flight, so an fsync or journal commit does not wait "
+        "behind a long backlog. Every key accepts a number or the word `kernel` (leave the kernel's value untouched). "
+        "Measurement method and results: scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md sections 4 and 5."
+    )
+    facts = derive_disk_facts(runner=runner)
+    max_hw_kb = facts.get("max_hw_kb")
+    lbs = facts.get("logical_block_size")
+    bench = load_iobench_writeback(iobench_result, facts.get("majmin"), facts.get("identity"))
+    if bench.state == "ok":
+        out("A current benchmark result is available; its proposals are the defaults below (with their rule and confidence).")
+    elif bench.state == "unverified-identity":
+        out(f"A benchmark result exists but is {bench.reason}; its values are shown as labelled hints, NOT defaulted.")
+    else:
+        out(f"No usable benchmark ({bench.state}: {bench.reason}); proposing from the existing value, else `kernel`.")
+    ex = GSTAMMTISCH_EXAMPLE
+    out(
+        "Example, NOT a default (measured on gstammtisch 2026-10-20; your disk may differ): "
+        f"dirty_bytes={ex['IO_WRITEBACK_DIRTY_BYTES']} dirty_background_bytes={ex['IO_WRITEBACK_DIRTY_BACKGROUND_BYTES']} "
+        f"nr_requests={ex['IO_ROOT_QUEUE_NR_REQUESTS']} max_sectors_kb={ex['IO_ROOT_QUEUE_MAX_SECTORS_KB']}."
+    )
+    if max_hw_kb is None:
+        out("The root disk's max_hw_sectors_kb could not be read here; install.sh checks the max_sectors_kb bound against the live disk.")
+    chosen: dict[str, str] = {}
+    for key in IO_WRITEBACK_KEYS:
+        out(_IO_WRITEBACK_EXPLAIN[key], indent="  ", hang="  ")
+        if bench.state == "unverified-identity" and bench.values and key in bench.values:
+            out(f"hint (not verified for this disk, not defaulted): {bench.values[key]} ({bench.labels[key]})", indent="  ")
+        if bench.state == "ok" and bench.values and key in bench.values:
+            default, source = bench.values[key], bench.labels[key]
+        elif cfg_current.get(key, "") != "":
+            default, source = cfg_current[key], "existing"
+        else:
+            default, source = "kernel", "policy default (leave the kernel's value untouched)"
+        if key == "IO_WRITEBACK_DIRTY_BACKGROUND_BYTES":
+            def validate(value: str, _chosen=chosen) -> str | None:
+                error = validate_io_dirty_bytes(value)
+                if error:
+                    return error
+                relation = io_writeback_relation_errors({**_chosen, key: value})
+                return relation[0] if relation else None
+        elif key == "IO_ROOT_QUEUE_MAX_SECTORS_KB":
+            def validate(value: str, _hw=max_hw_kb, _lbs=lbs) -> str | None:
+                error = validate_io_max_sectors_kb(value)
+                if error or _hw is None:
+                    return error
+                return io_max_sectors_hw_error(value, _hw, _lbs)
+        else:
+            validate = _config_value_validators()[key]
+        chosen[key] = ask(f"{_IO_WRITEBACK_LABEL[key]} ({key})", default, validate=validate, default_source=source)
+    return chosen
+
+
 # ─── orchestration ─────────────────────────────────────────────────────────
 
 
@@ -2960,6 +3323,33 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="PATH", help="swap source if Meminfo lacks SwapTotal (default: /proc/swaps)",
     )
     parser.add_argument(
+        "--check-max-sectors-kb",
+        metavar="VALUE",
+        default=None,
+        help="internal (install.sh): check IO_ROOT_QUEUE_MAX_SECTORS_KB against --max-hw-sectors-kb and exit",
+    )
+    parser.add_argument(
+        "--logical-block-size",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="internal (install.sh): the live disk's logical block size for --check-max-sectors-kb",
+    )
+    parser.add_argument(
+        "--max-hw-sectors-kb",
+        type=int,
+        default=None,
+        metavar="KB",
+        help="internal (install.sh): the live disk's max_hw_sectors_kb for --check-max-sectors-kb",
+    )
+    parser.add_argument(
+        "--iobench-result",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="benchmark result.json for the writeback proposals (default: $IOBENCH_RESULT, then /var/lib/iobench/result.json)",
+    )
+    parser.add_argument(
         "--skip-run-offer",
         action="store_true",
         help=(
@@ -2997,6 +3387,18 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+
+    if args.check_max_sectors_kb is not None:
+        if args.max_hw_sectors_kb is None:
+            print("ERROR: --check-max-sectors-kb needs --max-hw-sectors-kb", file=sys.stderr)
+            return 2
+        error = validate_io_max_sectors_kb(args.check_max_sectors_kb) or io_max_sectors_hw_error(
+            args.check_max_sectors_kb, args.max_hw_sectors_kb, args.logical_block_size
+        )
+        if error:
+            print(f"ERROR: IO_ROOT_QUEUE_MAX_SECTORS_KB: {error}", file=sys.stderr)
+            return 2
+        return 0
 
     if args.validate_config is not None:
         try:
@@ -3136,6 +3538,9 @@ def main(argv: list[str] | None = None) -> int:
         if not baseline_results:
             baseline_results = read_baseline_results(Path(baseline_env))
         walked.update(step_io_settings(cfg_current, example_defaults, baseline_results))
+        walked.update(
+            step_io_writeback(cfg_current, example_defaults, iobench_result=args.iobench_result)
+        )
     except (ValueError, EOFError) as exc:
         abort_io_baseline(baseline_job)
         sys.stdout.flush()

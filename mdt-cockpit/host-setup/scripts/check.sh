@@ -591,6 +591,76 @@ check_buildkit_guard() {
 }
 check_buildkit_guard
 # END guard-status
+# BEGIN io-writeback-check (extracted verbatim by tests/test_hs05.py)
+# Writeback and root-queue settings (MDT-HS-05): the live value against host-setup.env, each state
+# distinct: OK, MISMATCH, not managed (`kernel`/empty), could not read (never reported as OK).
+_check_io_one() { # <label> <wanted> <live-file> <persist-file> <persist-regex>
+  local label="$1" want="$2" file="$3" pfile="$4" pre="$5" live
+  case "$want" in
+    ""|kernel) info "$label: not managed (host-setup.env says kernel or nothing; the kernel's own value is kept)"; return 0 ;;
+  esac
+  if ! live=$(tr -d '[:space:]' < "$file" 2>/dev/null) || [ -z "$live" ]; then
+    warn "$label: could not read $file — cannot tell whether the intended $want is in force"
+    return 0
+  fi
+  if [ "$live" != "$want" ]; then
+    fail "$label MISMATCH: live $live, host-setup.env says $want — re-run install.sh (read-back source: $file)"
+  elif grep -qE "$pre" "$pfile" 2>/dev/null; then
+    ok "$label = $live (matches host-setup.env, persisted in $pfile)"
+  else
+    warn "$label = $live is LIVE ONLY, NOT PERSISTED: $pfile does not carry it, so a reboot loses it — re-run install.sh"
+  fi
+}
+# a file that sorts AFTER MDT's own and sets the same key overrides it at boot (sysctl.d / udev rules: the
+# later file wins; /etc/sysctl.conf is applied last)
+_check_io_override() { # <scan-dirs ':'-list> <glob> <ours-basename> <grep-regex> <what>
+  local dirs="$1" glob="$2" ours="$3" re="$4" what="$5" d f b
+  for d in ${dirs//:/ }; do
+    [ -d "$d" ] || continue
+    for f in "$d"/$glob; do
+      [ -f "$f" ] || continue
+      b=$(basename "$f")
+      [ "$b" != "$ours" ] || continue
+      [ "$(printf '%s\n%s\n' "$ours" "$b" | LC_ALL=C sort | tail -n 1)" = "$b" ] || continue
+      grep -qE "$re" "$f" 2>/dev/null \
+        && warn "NOTICE: $f also sets $what and sorts after MDT's $ours, so it overrides MDT's value at boot"
+    done
+  done
+}
+check_io_writeback() {
+  local proc="${MDT_PROC_ROOT:-/proc}" sysroot="${MDT_SYSFS_ROOT:-/sys}" node dev n m qattrs=""
+  local sctl="${MDT_SYSCTL_D:-/etc/sysctl.d}/$MDT_IO_WB_SYSCTL_FILE_NAME" rule="${MDT_UDEV_RULES_D:-/etc/udev/rules.d}/$MDT_IO_WB_UDEV_FILE_NAME" managed=""
+  _check_io_one vm.dirty_bytes "${IO_WRITEBACK_DIRTY_BYTES:-}" "$proc/sys/vm/dirty_bytes" "$sctl" "^[[:space:]]*vm\\.dirty_bytes[[:space:]]*=[[:space:]]*${IO_WRITEBACK_DIRTY_BYTES:-x}[[:space:]]*\$"
+  _check_io_one vm.dirty_background_bytes "${IO_WRITEBACK_DIRTY_BACKGROUND_BYTES:-}" "$proc/sys/vm/dirty_background_bytes" "$sctl" "^[[:space:]]*vm\\.dirty_background_bytes[[:space:]]*=[[:space:]]*${IO_WRITEBACK_DIRTY_BACKGROUND_BYTES:-x}[[:space:]]*\$"
+  case "${IO_WRITEBACK_DIRTY_BYTES:-}" in ""|kernel) ;; *) managed="${managed}vm\\.dirty_bytes|" ;; esac
+  case "${IO_WRITEBACK_DIRTY_BACKGROUND_BYTES:-}" in ""|kernel) ;; *) managed="${managed}vm\\.dirty_background_bytes|" ;; esac
+  if [ -n "$managed" ]; then
+    _check_io_override "${MDT_SYSCTL_SCAN_DIRS:-/etc/sysctl.d:/run/sysctl.d:/usr/lib/sysctl.d:/lib/sysctl.d}" "*.conf" \
+      "$MDT_IO_WB_SYSCTL_FILE_NAME" "^[[:space:]]*(${managed%|})[[:space:]]*=" "a key MDT manages ($(echo "${managed%|}" | tr -d '\\'))"
+    if [ -f "${MDT_SYSCTL_CONF:-/etc/sysctl.conf}" ] && grep -qE "^[[:space:]]*(${managed%|})[[:space:]]*=" "${MDT_SYSCTL_CONF:-/etc/sysctl.conf}"; then
+      warn "NOTICE: ${MDT_SYSCTL_CONF:-/etc/sysctl.conf} also sets a key MDT manages and is applied after every sysctl.d file, so it overrides MDT's value at boot"
+    fi
+  fi
+  n="${IO_ROOT_QUEUE_NR_REQUESTS:-}"; m="${IO_ROOT_QUEUE_MAX_SECTORS_KB:-}"
+  case "$n$m" in
+    ""|kernel|kernelkernel)
+      info "root disk nr_requests: not managed (kernel)"; info "root disk max_sectors_kb: not managed (kernel)"; return 0 ;;
+  esac
+  if ! node=$(_mdt_root_disk_node 2>&1); then
+    warn "root disk queue: could not derive the whole disk under / ($node) — nr_requests/max_sectors_kb cannot be verified"
+    return 0
+  fi
+  dev=${node#/dev/}
+  _check_io_one "$dev nr_requests" "$n" "$sysroot/block/$dev/queue/nr_requests" "$rule" "ATTR\\{queue/nr_requests\\}=\"${n:-x}\""
+  _check_io_one "$dev max_sectors_kb" "$m" "$sysroot/block/$dev/queue/max_sectors_kb" "$rule" "ATTR\\{queue/max_sectors_kb\\}=\"${m:-x}\""
+  case "$n" in ""|kernel) ;; *) qattrs="${qattrs}queue/nr_requests|" ;; esac
+  case "$m" in ""|kernel) ;; *) qattrs="${qattrs}queue/max_sectors_kb|" ;; esac
+  _check_io_override "${MDT_UDEV_SCAN_DIRS:-/etc/udev/rules.d:/run/udev/rules.d:/usr/lib/udev/rules.d:/lib/udev/rules.d}" "*.rules" \
+    "$MDT_IO_WB_UDEV_FILE_NAME" "ATTR\\{(${qattrs%|})\\}" "a queue attribute MDT manages (${qattrs%|})"
+}
+echo "== writeback and root-queue settings =="
+check_io_writeback
+# END io-writeback-check
 memory_leaf_policy_configured=0
 for key in \
   WATCHER_INTERACTIVE_MEMORY_HIGH WATCHER_INTERACTIVE_MEMORY_MAX \

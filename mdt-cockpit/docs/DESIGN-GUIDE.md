@@ -728,6 +728,58 @@ stale runtime IO drop-ins, so the install relies on this self-heal on the first 
 its own cleanup (removing `/run/systemd/system.control` files was measured to depend on systemd's naming and
 to race its writes; see the MDT-016 note in the reconcile script).
 
+## Writeback and root-queue settings are host-setup keys, not a runbook (MDT-HS-05)
+
+**Why.** On a slow shared disk, fsync and journal commits wait behind the dirty backlog and the device queue. The
+measured fix on gstammtisch (2026-10-20, `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` sections 4.2 A/B, 4.3 and 4.4
+matrices, recommendations in section 5): `vm.dirty_bytes` 16 MiB, `vm.dirty_background_bytes` 4 MiB, root disk
+`nr_requests` 16, `max_sectors_kb` 64 took the game thread's D-state maximum from 26.9 s to 0.14 s, the probe fsync maximum
+from 39 s to 0.5 s and the gate fio from 5 to 173 iops under the same load. These were applied by hand and by interim files; the operator
+asked for them to be permanent and for the wizard to ask. They are now four env keys that install.sh renders, applies and verifies.
+
+**Grammar and the one validator.** A key is a positive integer (bytes; KB for `max_sectors_kb`) or `kernel` (an explicit
+policy default: leave the kernel's value untouched, render no line); empty means `kernel`. The grammar and the
+`dirty_background < dirty` relation live in ONE place, the Python validator in `mdt-host-setup-wizard.py`, which both the wizard
+prompts and `install.sh --validate-config` use; the disk-dependent bound `max_sectors_kb <= max_hw_sectors_kb` is checked by the
+same module (`--check-max-sectors-kb`), with the live value read from the derived disk in the installer's read-only preflight.
+The keys are runtime-optional (`runtime-optional-keys.re`): an absent line means `kernel`, which cannot leave anything
+unbounded, so an old env file is not refused; it gets the usual NOTICE.
+
+**What is rendered, and the systemd/udev ordering.** `90-mdt-io-writeback.conf` (sysctl.d) holds only the set keys.
+`61-mdt-io-queue.rules` matches `KERNEL=="<DEVNAME>"` of the whole disk under `/`, derived (`_mdt_root_disk_node`, which reuses
+the MDT-HS-04 helpers; never typed). It sorts after `60-mdt-bfq-scheduler.rules` because a scheduler change resets `nr_requests`.
+The interim files sort BEFORE the final ones (`-interim` before `.`), so both coexist harmlessly until the interim files are retired;
+sysctl.d likewise lets the later file win. install.sh applies them after the BFQ block (`sysctl -p`, udev reload, trigger with
+`--sysname-match`, settle), reads the live values back and fails non-zero on any mismatch or unreadable value, naming the file and the
+remedy; the rest of the install still completes. An interim file is retired only when MDT's own file carries EVERY key the interim file sets (parsed from it, never
+assumed) and each is verified live; otherwise it is kept with a WARN naming the missing keys and the remedy, because with every key
+at `kernel` the interim file is the only thing persisting the live values (the state of gstammtisch when this shipped), and
+retiring it would silently lose the tuning at the next reboot (review H-46).
+
+**Strict values, derived disk, verified identity.** Values are positive integers without leading zeros. `vm.dirty_bytes` must be
+at least two pages: kernel `Documentation/admin-guide/sysctl/vm.rst` (v6.12) says a lower value "will be ignored and the old
+configuration will be retained", i.e. a silent no-op. `max_sectors_kb` must be at least one page (`blk_validate_limits`, v6.12, rejects a
+smaller user value), at most `max_hw_sectors_kb`, and a multiple of the logical block size: the same function does
+`round_down(min(max_hw, user), logical_block_size >> 9)`, so an unaligned value would read back lower and fail the read-back; it is refused up
+front. The wizard derives the root disk with `_mdt_root_disk_node`, like install.sh and check.sh, not from `IO_DEV_PATH` (the
+Docker-data device may be another disk). A benchmark result is defaulted only when the device number and at least one more IOB-02
+identity field (model, serial, size, wwn: read from sysfs, present on both sides) are equal; a device-number-only match is shown as
+"not verified for this disk" and not defaulted. `mdt-host-check.sh` separates "live only, not persisted" from OK and notices a later
+sysctl.d, `/etc/sysctl.conf` or udev rule that would override MDT's value at boot (later file wins).
+
+**Read-cost trade-off.** `max_sectors_kb` also caps read requests: sequential reads fell from about 1.2-1.4 GB/s to about
+0.25-0.3 GB/s at 64 KB (buffered reads were equal across 64-256 KB). That is why the wizard prints the cost next to the key and
+proposes `kernel` unless a measurement says otherwise. `vm.dirty_bytes` is host-global and also bounds every production container's
+writeback (section 4.5). A setting returned to `kernel` removes MDT's line but cannot restore the kernel's boot value at runtime;
+install.sh says so in a NOTICE and never guesses the old value.
+
+**Where proposals come from.** Precedence per key: a current benchmark result, then the existing configured value, then `kernel`;
+the gstammtisch values are shown as a labelled example only. The benchmark reader is coupled to the documented IOB-02 `result.json`
+schema (schema 1, `run.status`, `quality.plausible`, `identity.disk.devno`, `proposals.writeback`) and nothing else: absent means no
+benchmark; a corrupt, newer-schema, aborted, implausible or other-disk result is reported and not used; a formula-only, limited or
+target-missed proposal is shown with that label. Full identity validation belongs to `iobench check` once it exists; the reader only
+compares the disk's device number.
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may
