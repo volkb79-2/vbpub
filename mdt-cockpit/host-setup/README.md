@@ -627,6 +627,22 @@ ONLY, NOT PERSISTED, plus a NOTICE for a later or non-MDT scheduler rule. A sche
 reconcile verifies the scheduler, the queue values and the io.cost model and QoS against the env and re-applies on drift with a `WARN: drift:`
 log line (a disk re-add or a scheduler switch reverts them); empty keys are never touched. Why: DESIGN-GUIDE (MDT-HS-07).
 
+### Pausing the re-assert for IO experiments, and restarting mdt-buildkitd (MDT-HS-07)
+
+The minute-by-minute reconcile re-applies the scheduler and queue values (udev trigger), `vm.dirty_*` (`sysctl -p`) and the io.cost model and QoS
+(`_mdt_apply_iocost`) whenever they drift from `host-setup.env`, so a hand change is undone within a minute. To run an IO experiment on a managed
+host, pause it for a bounded time: `mdt-io-reassert-pause <minutes 1..240> <reason>` (also `--status`, `--clear`). While the pause is valid the
+reconcile logs "paused until ... (reason)" every minute and re-asserts none of those four; the io.max caps stay enforced. The pause is the file
+`/run/mdt/io-reassert.pause` (`<expiry-epoch> <reason>`, gone at reboot); an expired file is removed and a malformed one is ignored, each with a
+WARN, and `mdt-host-check.sh` shows an active pause. A re-assert that did not fix the drift is one ERROR and then backs off for 30 minutes (no
+per-minute trigger storm).
+
+`install.sh` restarts `mdt-buildkitd.service` only when its rendered unit/config changed or the running service was started from different content
+(the start stamp `/run/mdt/buildkitd.started-digest`; a service that predates the stamp counts as pending once). While a build may be active (any
+process other than `buildkitd` in the buildkitd CONTAINER scope under `dev-buildkitd.slice`, or the state cannot be read) it is NOT restarted: the
+install prints a WARN, keeps the old service and exits 2 until you re-run it with `--restart-buildkitd` at a moment you choose. `mdt-host-check.sh`
+and the reconcile report "restart pending" until the running service matches.
+
 ### Optional DAMON_STAT policy
 
 The wizard asks whether to disable the kernel-wide `DAMON_STAT` monitor so

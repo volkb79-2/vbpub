@@ -57,8 +57,10 @@ set_conf IO_ROOT_SCHEDULER "$SCHED"
 set +e
 out=$(bash "$HS/install.sh" 2>&1); rc=$?
 set -e
-if [ "$rc" != 0 ] || [ "$(_mdt_io_sched_current "$dev")" != "$SCHED" ]; then
-  echo "VM IOCOST NOTE: $SCHED did not become the active scheduler of $dev (install rc $rc, live '$(_mdt_io_sched_current "$dev")'); using none"
+# an install FAILURE is a failure; only a SUCCESSFUL apply that left another scheduler active falls back to none
+[ "$rc" = 0 ] || { printf '%s\n' "$out" | tail -n 40; fail "install.sh exited $rc with IO_ROOT_SCHEDULER=$SCHED and the io.cost keys set"; }
+if [ "$(_mdt_io_sched_current "$dev")" != "$SCHED" ]; then
+  echo "VM IOCOST NOTE: $SCHED did not become the active scheduler of $dev after a successful apply (live '$(_mdt_io_sched_current "$dev")'); using none"
   SCHED=none
   set_conf IO_ROOT_SCHEDULER "$SCHED"
   cp "$HS/etc/udev/rules.d/60-bfq-scheduler.rules" "$OLD_FOREIGN"
@@ -100,12 +102,16 @@ ok "mdt-io-cost.service re-applies the QoS from the env"
 
 # ---- 1b. drift: the minute-by-minute reconcile re-applies (H-59) --------------------------------
 echo "$mm enable=0" > "$CG/io.cost.qos"
-printf 'none' > "/sys/block/$dev/queue/scheduler" || true     # a scheduler switch (resets nr_requests too)
+# a scheduler switch to a DIFFERENT scheduler than the one under test, so the drift is never a no-op
+DRIFT_SCHED=$(echo "$list" | grep -vx "$SCHED" | head -n1)
+[ -n "$DRIFT_SCHED" ] || fail "the disk lists no scheduler other than $SCHED to drift to"
+printf '%s' "$DRIFT_SCHED" > "/sys/block/$dev/queue/scheduler" || fail "could not switch $dev to $DRIFT_SCHED for the drift step"
+[ "$(_mdt_io_sched_current "$dev")" = "$DRIFT_SCHED" ] || fail "the drift scheduler $DRIFT_SCHED did not become active"
 /usr/local/sbin/mdt-dev-governance-reconcile.sh >/tmp/reconcile-iocost.out 2>&1 || { cat /tmp/reconcile-iocost.out; fail "the reconcile exited non-zero after drift"; }
 grep -q "drift: io.cost qos" /tmp/reconcile-iocost.out || fail "the reconcile did not log the io.cost drift"
 grep -m1 "^$mm " "$CG/io.cost.qos" | grep -q "enable=1" || fail "the reconcile did not re-apply the QoS"
 [ "$(_mdt_io_sched_current "$dev")" = "$SCHED" ] || fail "the reconcile did not restore the scheduler $SCHED (live '$(_mdt_io_sched_current "$dev")')"
-ok "drift (QoS disabled by hand, scheduler switched): the reconcile logged it and re-applied both"
+ok "drift (QoS disabled by hand, scheduler switched $SCHED -> $DRIFT_SCHED): the reconcile logged it and re-applied both"
 
 # ---- 2. back to kernel / kernel / off -----------------------------------------------------------
 set_conf IO_ROOT_SCHEDULER kernel

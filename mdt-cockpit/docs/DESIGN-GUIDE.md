@@ -859,6 +859,28 @@ restart unless `--restart-buildkitd` is given: it prints a prominent WARN, leave
 so the pending restart is not missed. Chosen over warning-then-restarting because the restart happens after the commit point, where a warning cannot
 be acted on in time and a build is minutes to hours of work; skipping is safe and recoverable (the operator restarts at a moment they choose).
 
+### Re-assert mechanisms, back-off, pause, and the buildkitd start stamp (MDT-HS-07 review round 2)
+
+**Split by mechanism (H-65).** Scheduler and queue drift is repaired by the udev trigger, `vm.dirty_*` drift by `sysctl -p` of MDT's file, io.cost
+drift by `_mdt_apply_iocost`, each gated on its own keys, so one broken mechanism no longer triggers the others. A re-apply that does not fix
+the drift is ONE loud ERROR, then the mechanism backs off for 30 minutes (a stamp in `/run/mdt`); each minute inside the window logs "backing
+off ..." instead of firing another trigger, and a clean verify lifts it.
+
+**The pause.** The re-assert fights hand changes within a minute, so there is an explicit, time-bounded way out: `mdt-io-reassert-pause <minutes>
+<reason>` writes `/run/mdt/io-reassert.pause` (`<expiry-epoch> <reason>`). While valid the reconcile logs "paused until ... (reason)" and re-asserts
+none of the scheduler, queue values, `vm.dirty_*` or io.cost; io.max is still enforced. It is capped at 240 minutes and needs a reason (no silent,
+forever, unexplained pause), is runtime state that disappears at reboot, and an expired or malformed file is ignored with a WARN. This is the way
+to run IO experiments on a managed host.
+
+**Which restart is pending (H-66), and what counts as busy (H-67).** What the running buildkitd was started from is the one fact install.sh cannot
+derive from the files, so `ExecStartPost` records the digest of the rendered unit and config in `/run/mdt/buildkitd.started-digest`. `/run` is
+deliberate: the fact is "what THIS process was started from", it must not outlive a reboot (a reboot restarts the service from the current files
+and rewrites the stamp), unlike a `/var/lib` stamp that would go stale. install.sh, check.sh and the reconcile compare the rendered digest with it
+and report "restart pending" until it matches; a plain install with an unchanged render but a pending restart says so and exits 2; "unchanged" is
+only printed when nothing changed AND the running service matches. A service that predates the stamp counts as pending once, because what it runs
+cannot be shown to match. Busy detection reads the container the unit starts (`--name` in the unit, id from `docker inspect`, scope from the
+container's own cgroup, sub-cgroups included), not the service cgroup that holds only the `docker run` client; unreadable counts as busy.
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may

@@ -574,6 +574,27 @@ _check_cost_one() { # <label> <wanted-line> <live-file> <maj:min> <persisted 0|1
     warn "$label = ${live#"$mm "} is LIVE ONLY, NOT PERSISTED: mdt-io-cost.service is not enabled, so a reboot loses it — re-run install.sh"
   fi
 }
+# the re-assert pause (MDT-HS-07): shown, never hidden
+check_io_pause() {
+  local msg rc
+  msg=$(_mdt_io_pause_state); rc=$?
+  case "$rc" in
+    0) warn "re-assert PAUSED $msg — the scheduler, queue values, vm.dirty_* and io.cost are not being re-asserted (io.max caps still enforced); end it with: mdt-io-reassert-pause --clear" ;;
+    2) warn "re-assert pause is ignored: $msg" ;;
+    *) info "re-assert: active (no pause)" ;;
+  esac
+}
+# the managed BuildKit: does the RUNNING service match the rendered unit + config? (H-66)
+check_buildkitd_pending() {
+  local why
+  if ! systemctl is-active --quiet mdt-buildkitd.service 2>/dev/null; then
+    info "mdt-buildkitd.service is not running; nothing to compare with the rendered files"
+  elif why=$(_mdt_buildkitd_pending); then
+    warn "mdt-buildkitd.service RESTART PENDING: $why — restart it when no build is running (systemctl restart mdt-buildkitd.service, or install.sh --restart-buildkitd)"
+  else
+    ok "mdt-buildkitd.service runs the rendered unit and config (start stamp matches)"
+  fi
+}
 check_io_scheduler() {
   local sysroot="${MDT_SYSFS_ROOT:-/sys}" cgroot="${MDT_CGROUP_ROOT:-/sys/fs/cgroup}" ud="${MDT_UDEV_RULES_D:-/etc/udev/rules.d}"
   local node dev mm cur qos enable want persisted=0 sched rule after
@@ -642,6 +663,8 @@ check_io_scheduler() {
     info "io.cost qos: not managed (IO_COST_QOS not set)"
   fi
 }
+check_io_pause
+check_buildkitd_pending
 check_io_scheduler
 # END io-sched-check
 

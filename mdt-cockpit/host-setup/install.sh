@@ -786,13 +786,13 @@ render "$HERE/units/dev-interactive.slice.in"  /etc/systemd/system/dev-interacti
 render "$HERE/units/dev-background.slice.in"   /etc/systemd/system/dev-background.slice
 render "$HERE/units/dev-memory_min_guaranteed.slice.in" \
   /etc/systemd/system/dev-memory_min_guaranteed.slice
-_BK_FILES=(/etc/systemd/system/mdt-buildkitd.service /etc/mdt/buildkitd.toml)
-_BK_DIGEST_BEFORE=$(_mdt_files_digest "${_BK_FILES[@]}")
+_BK_DIGEST_BEFORE=$(_mdt_files_digest "${MDT_BUILDKITD_FILES[@]}")
 render "$HERE/units/dev-gates.slice.in"        /etc/systemd/system/dev-gates.slice
 render "$HERE/units/dev-buildkitd.slice.in"    /etc/systemd/system/dev-buildkitd.slice
 render "$HERE/units/mdt-buildkitd.service.in"  /etc/systemd/system/mdt-buildkitd.service
 render "$HERE/buildkitd.toml.in"              /etc/mdt/buildkitd.toml
-[ "$(_mdt_files_digest "${_BK_FILES[@]}")" = "$_BK_DIGEST_BEFORE" ] && BUILDKITD_CHANGED=0 || BUILDKITD_CHANGED=1
+[ "$(_mdt_files_digest "${MDT_BUILDKITD_FILES[@]}")" = "$_BK_DIGEST_BEFORE" ] && BUILDKITD_CHANGED=0 || BUILDKITD_CHANGED=1
+install -m 0755 "$HERE/scripts/mdt-buildkitd-stamp.sh" /usr/local/sbin/mdt-buildkitd-stamp.sh
 render "$HERE/units/mdt-dev-governance-reconcile.timer.in"  /etc/systemd/system/mdt-dev-governance-reconcile.timer
 install -m 0644 "$HERE/units/mdt-dev-governance-reconcile.service" /etc/systemd/system/mdt-dev-governance-reconcile.service
 if [ "${INOTIFY_OK:-}" = 1 ]; then
@@ -973,6 +973,7 @@ fi
 
 echo "== io.cost model and QoS (MDT-HS-07) =="
 install -m 0755 "$HERE/scripts/mdt-io-cost-apply.sh" /usr/local/sbin/mdt-io-cost-apply.sh
+install -m 0755 "$HERE/scripts/mdt-io-reassert-pause.sh" /usr/local/sbin/mdt-io-reassert-pause
 install -m 0644 "$HERE/units/mdt-io-cost.service" /etc/systemd/system/mdt-io-cost.service
 IOCOST_FAILED=0
 _mdt_apply_iocost || IOCOST_FAILED=1
@@ -1005,18 +1006,20 @@ systemctl enable mdt-dev-governance-reconcile.service          # boot-time apply
 systemctl enable --now mdt-dev-governance-reconcile.timer      # periodic sweep
 BUILDKITD_RESTART_PENDING=0
 _bk_active=0; systemctl is-active --quiet mdt-buildkitd.service && _bk_active=1
-case "$(_mdt_buildkitd_restart_decision "$BUILDKITD_CHANGED" "$RESTART_BUILDKITD" "$_bk_active")" in
+_bk_pending=0; _bk_why=""
+if [ "$_bk_active" = 1 ] && _bk_why=$(_mdt_buildkitd_pending); then _bk_pending=1; fi
+case "$(_mdt_buildkitd_restart_decision "$BUILDKITD_CHANGED" "$RESTART_BUILDKITD" "$_bk_active" "$_bk_pending")" in
   start)
     systemctl enable --now mdt-buildkitd.service ;;
   unchanged)
-    echo "mdt-buildkitd.service: unit and config unchanged, not restarted (a running build is not interrupted)" ;;
+    echo "mdt-buildkitd.service: unit and config unchanged and the running service matches them, not restarted (a running build is not interrupted)" ;;
   restart)
-    echo "restarting mdt-buildkitd.service (its unit or config changed); active builds will be interrupted"
+    echo "restarting mdt-buildkitd.service (${_bk_why:-its unit or config changed}); active builds will be interrupted"
     systemctl restart mdt-buildkitd.service ;;
   pending)
     BUILDKITD_RESTART_PENDING=1
     echo "WARN: ********************************************************************" >&2
-    echo "WARN: mdt-buildkitd.service's unit or config CHANGED but a build is (or may be) active, so it was NOT restarted;" >&2
+    echo "WARN: mdt-buildkitd.service RESTART PENDING (${_bk_why:-its unit or config changed}) but a build is (or may be) active, so it was NOT restarted;" >&2
     echo "WARN: it keeps running its OLD configuration until you restart it. Re-run install.sh --restart-buildkitd (or" >&2
     echo "WARN: systemctl restart mdt-buildkitd.service) when no build is running. This install exits non-zero so it is not missed." >&2
     echo "WARN: ********************************************************************" >&2

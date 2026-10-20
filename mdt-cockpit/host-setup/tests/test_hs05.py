@@ -132,6 +132,7 @@ class Fixture(unittest.TestCase):
         # ATTR assignments into the fake sysfs; FAKE_SYSCTL_NOOP / FAKE_UDEV_NOOP make them lie
         _write_exec(self.host.bin / "sysctl", """#!__PY__
 import os, sys, re
+if os.environ.get("FAKE_CALLS"): open(os.environ["FAKE_CALLS"], "a").write("sysctl " + " ".join(sys.argv[1:]) + "\\n")
 if os.environ.get("FAKE_SYSCTL_NOOP"): sys.exit(0)
 args = sys.argv[1:]
 if args[:1] == ["-p"]:

@@ -1253,55 +1253,147 @@ _mdt_apply_scheduler_settings() {
   return 0
 }
 
-# _mdt_reassert_io_settings (MDT-HS-07 H-59): the minute-by-minute reconcile compares the LIVE scheduler, queue
-# values, io.cost model and QoS with the env and re-applies on drift, with a log line each time.  What reverts
-# what (so the reconcile, not luck, restores it): a disk remove/re-add resets the scheduler, nr_requests,
-# max_sectors_kb and the per-disk io.cost state; a scheduler switch resets nr_requests; a udev change event
-# re-applies the scheduler and queue RULES (60/61) but NOT io.cost, which has no rule.  Re-apply = the same
-# udev trigger install uses (scheduler 60, then queue 61) and the same _mdt_apply_iocost; a failure to
-# re-apply or to verify afterwards is loud (rc 1).  Not managed (empty) keys are not touched.
+# --- minute-by-minute re-assert (MDT-HS-07 H-59, H-65) --------------------------------------------------
+# The reconcile compares the LIVE scheduler / queue values, vm.dirty_* and the io.cost model + QoS with the env
+# and re-applies on drift, with a log line each time.  The mechanisms are SPLIT and each is gated on its OWN keys:
+#   scheduler + queue values  -> the udev trigger (rules 60 then 61)
+#   vm.dirty_*                -> `sysctl -p` of MDT's file
+#   io.cost model / QoS       -> _mdt_apply_iocost
+# What reverts what: a disk remove/re-add resets the scheduler, nr_requests, max_sectors_kb and the per-disk io.cost
+# state; a scheduler switch resets nr_requests; a udev change event re-applies the rules (60, 61) but not io.cost
+# or sysctl; a reboot is covered by the rules, sysctl.d and mdt-io-cost.service.  A re-assert that did NOT fix the
+# drift is one loud ERROR, then BACKS OFF for MDT_IO_REASSERT_BACKOFF_SECONDS (no per-minute trigger storm); the
+# back-off is logged each minute and lifts when the window ends or the mechanism verifies clean.
+# A time-bounded PAUSE (mdt-io-reassert-pause) suspends all four for hand experiments; io.max stays enforced.
+MDT_IO_REASSERT_BACKOFF_SECONDS=1800
+# shellcheck disable=SC2034  # read by mdt-io-reassert-pause.sh
+MDT_IO_REASSERT_PAUSE_MAX_MINUTES=240
+_mdt_io_pause_file() { printf '%s/io-reassert.pause\n' "${MDT_STATE_DIR:-/run/mdt}"; }
+
+# _mdt_io_pause_state: rc 0 = paused (prints "until <ts> (<reason>)"), 1 = no pause, 2 = ignored (prints why):
+# malformed, or expired (an expired file is removed).  File format: "<expiry-epoch> <reason...>".
+_mdt_io_pause_state() {
+  local f exp reason now
+  f=$(_mdt_io_pause_file)
+  [ -e "$f" ] || return 1
+  read -r exp reason < "$f" 2>/dev/null || exp=""
+  case "$exp" in ''|*[!0-9]*) echo "malformed pause file $f (expected '<expiry-epoch> <reason>'); ignoring it"; return 2 ;; esac
+  if [ -z "$reason" ]; then echo "malformed pause file $f (no reason); ignoring it"; return 2; fi
+  now=$(_mdt_now)
+  if [ "$now" -ge "$exp" ]; then
+    rm -f -- "$f" 2>/dev/null || true
+    echo "pause expired at $(date -u -d "@$exp" +%FT%TZ 2>/dev/null || echo "$exp") ($reason); removed, re-asserting again"
+    return 2
+  fi
+  echo "until $(date -u -d "@$exp" +%FT%TZ 2>/dev/null || echo "$exp") ($reason)"
+  return 0
+}
+
+_mdt_reassert_failed_file() { printf '%s/io-reassert-%s.failed\n' "${MDT_STATE_DIR:-/run/mdt}" "$1"; }
+# _mdt_reassert_backoff <mech>: rc 0 = may try now; rc 1 = backing off (logged)
+_mdt_reassert_backoff() {
+  local f at now
+  f=$(_mdt_reassert_failed_file "$1")
+  [ -e "$f" ] || return 0
+  read -r at < "$f" 2>/dev/null || at=""
+  case "$at" in ''|*[!0-9]*) return 0 ;; esac
+  now=$(_mdt_now)
+  if [ $((now - at)) -lt "$MDT_IO_REASSERT_BACKOFF_SECONDS" ]; then
+    log "WARN: backing off: the last $1 re-apply at $(date -u -d "@$at" +%FT%TZ 2>/dev/null || echo "$at") did not fix the drift; not retried for another $((MDT_IO_REASSERT_BACKOFF_SECONDS - (now - at)))s (fix the cause, or pause with mdt-io-reassert-pause)"
+    return 1
+  fi
+  return 0
+}
+_mdt_reassert_mark_failed() { mkdir -p "$(dirname "$(_mdt_reassert_failed_file "$1")")" 2>/dev/null; _mdt_now > "$(_mdt_reassert_failed_file "$1")" 2>/dev/null || true; }
+_mdt_reassert_mark_ok() { rm -f -- "$(_mdt_reassert_failed_file "$1")" 2>/dev/null || true; }
+
+# scheduler + queue values -> the udev trigger
+_mdt_reassert_udev() {
+  local dev="$1" live drift=0 out line sfile ufile
+  sfile="${MDT_SYSCTL_D:-/etc/sysctl.d}/$MDT_IO_WB_SYSCTL_FILE_NAME"; ufile="${MDT_UDEV_RULES_D:-/etc/udev/rules.d}/$MDT_IO_WB_UDEV_FILE_NAME"
+  case "$(_mdt_io_sched_value)" in
+    mq-deadline|none|bfq)
+      live=$(_mdt_io_sched_current "$dev" 2>/dev/null || true)
+      if [ "$live" != "$(_mdt_io_sched_value)" ]; then
+        log "WARN: drift: scheduler of $dev is '${live:-unreadable}', host-setup.env says $(_mdt_io_sched_value) (a disk re-add or a scheduler switch?)"
+        drift=1
+      fi ;;
+  esac
+  if _mdt_io_queue_keys_set && ! IO_WRITEBACK_DIRTY_BYTES="" IO_WRITEBACK_DIRTY_BACKGROUND_BYTES="" _mdt_io_wb_readback "$dev" "$sfile" "$ufile" 2>/dev/null; then
+    log "WARN: drift: the root queue values of $dev differ from host-setup.env"
+    drift=1
+  fi
+  [ "$drift" = 1 ] || { _mdt_reassert_mark_ok udev; return 0; }
+  _mdt_reassert_backoff udev || return 1
+  log "WARN: re-applying the scheduler / queue rules of $dev via udev"
+  { udevadm trigger --action=change --sysname-match="$dev" && udevadm settle; } >/dev/null 2>&1 \
+    || { log "ERROR: re-apply failed: udevadm trigger/settle for $dev; backing off"; _mdt_reassert_mark_failed udev; return 1; }
+  out=$(_mdt_verify_scheduler "$dev" 2>&1) || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; log "ERROR: the udev re-apply did not restore the scheduler of $dev; backing off"; _mdt_reassert_mark_failed udev; return 1; }
+  if _mdt_io_queue_keys_set; then
+    out=$(IO_WRITEBACK_DIRTY_BYTES="" IO_WRITEBACK_DIRTY_BACKGROUND_BYTES="" _mdt_io_wb_readback "$dev" "$sfile" "$ufile" 2>&1) \
+      || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; log "ERROR: the udev re-apply did not restore the queue values of $dev; backing off"; _mdt_reassert_mark_failed udev; return 1; }
+  fi
+  _mdt_reassert_mark_ok udev
+  return 0
+}
+
+# vm.dirty_* -> sysctl -p of MDT's file
+_mdt_reassert_sysctl() {
+  local sfile ufile out line
+  sfile="${MDT_SYSCTL_D:-/etc/sysctl.d}/$MDT_IO_WB_SYSCTL_FILE_NAME"; ufile="${MDT_UDEV_RULES_D:-/etc/udev/rules.d}/$MDT_IO_WB_UDEV_FILE_NAME"
+  [ -n "$(_mdt_io_wb_value IO_WRITEBACK_DIRTY_BYTES)$(_mdt_io_wb_value IO_WRITEBACK_DIRTY_BACKGROUND_BYTES)" ] || return 0
+  if IO_ROOT_QUEUE_NR_REQUESTS="" IO_ROOT_QUEUE_MAX_SECTORS_KB="" _mdt_io_wb_readback "" "$sfile" "$ufile" 2>/dev/null; then
+    _mdt_reassert_mark_ok sysctl; return 0
+  fi
+  log "WARN: drift: vm.dirty_bytes / vm.dirty_background_bytes differ from host-setup.env"
+  _mdt_reassert_backoff sysctl || return 1
+  if [ ! -f "$sfile" ]; then
+    log "ERROR: $sfile is missing, so sysctl cannot re-apply the writeback settings; re-run install.sh; backing off"
+    _mdt_reassert_mark_failed sysctl; return 1
+  fi
+  sysctl -p "$sfile" >/dev/null 2>&1 || { log "ERROR: sysctl -p $sfile failed; backing off"; _mdt_reassert_mark_failed sysctl; return 1; }
+  out=$(IO_ROOT_QUEUE_NR_REQUESTS="" IO_ROOT_QUEUE_MAX_SECTORS_KB="" _mdt_io_wb_readback "" "$sfile" "$ufile" 2>&1) \
+    || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; log "ERROR: sysctl -p did not restore the writeback settings; backing off"; _mdt_reassert_mark_failed sysctl; return 1; }
+  log "sysctl re-applied $sfile"
+  _mdt_reassert_mark_ok sysctl
+  return 0
+}
+
+# io.cost model + QoS -> _mdt_apply_iocost
+_mdt_reassert_iocost() {
+  local mm="$1" what want live drift=0 out line
+  for what in model qos; do
+    want=$("_mdt_iocost_${what}_line" "$mm") || continue
+    live=$(_mdt_iocost_live_line "${MDT_CGROUP_ROOT:-/sys/fs/cgroup}/io.cost.$what" "$mm")
+    if [ -z "$live" ] || ! _mdt_iocost_match "$want" "$live"; then
+      log "WARN: drift: io.cost $what on $mm is '${live:-<no line>}', host-setup.env intends '${want#"$mm "}' (a disk re-add resets it)"
+      drift=1
+    fi
+  done
+  [ "$drift" = 1 ] || { _mdt_reassert_mark_ok iocost; return 0; }
+  _mdt_reassert_backoff iocost || return 1
+  out=$(_mdt_apply_iocost 2>&1) || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; log "ERROR: io.cost re-apply failed; the intended io.cost settings are NOT in effect; backing off"; _mdt_reassert_mark_failed iocost; return 1; }
+  log "io.cost re-applied"
+  _mdt_reassert_mark_ok iocost
+  return 0
+}
+
+# _mdt_reassert_io_settings: the orchestrator (pause, derivation, the three mechanisms).  rc 1 = any failed.
 _mdt_reassert_io_settings() {
-  local node dev mm rc=0 want live what drift=0 out line
+  local node dev mm rc=0 msg prc
+  msg=$(_mdt_io_pause_state); prc=$?
+  case "$prc" in
+    0) log "re-assert PAUSED $msg: the scheduler, queue values, vm.dirty_* and io.cost are NOT re-asserted this run (the io.max caps are still enforced)"; return 0 ;;
+    2) log "WARN: $msg" ;;
+  esac
   if ! node=$(_mdt_root_disk_node 2>/dev/null) || ! mm=$(_mdt_root_disk_majmin 2>/dev/null); then
     [ -z "${IO_ROOT_SCHEDULER:-}${IO_COST_MODEL:-}${IO_COST_QOS:-}" ] || log "WARN: cannot derive the root disk; the scheduler / io.cost settings were not re-verified this run"
     return 0
   fi
   dev=${node#/dev/}
-  # scheduler + queue values (one trigger restores both, in rule order)
-  case "$(_mdt_io_sched_value)" in
-    mq-deadline|none|bfq)
-      live=$(_mdt_io_sched_current "$dev" 2>/dev/null || true)
-      if [ "$live" != "$(_mdt_io_sched_value)" ]; then
-        log "WARN: drift: scheduler of $dev is '${live:-unreadable}', host-setup.env says $(_mdt_io_sched_value) (a disk re-add or a scheduler switch?); re-applying via udev"
-        drift=1
-      fi ;;
-  esac
-  if _mdt_io_queue_keys_set && ! _mdt_io_wb_readback "$dev" "${MDT_SYSCTL_D:-/etc/sysctl.d}/$MDT_IO_WB_SYSCTL_FILE_NAME" "${MDT_UDEV_RULES_D:-/etc/udev/rules.d}/$MDT_IO_WB_UDEV_FILE_NAME" 2>/dev/null; then
-    log "WARN: drift: the root queue values of $dev differ from host-setup.env; re-applying via udev"
-    drift=1
-  fi
-  if [ "$drift" = 1 ]; then
-    { udevadm trigger --action=change --sysname-match="$dev" && udevadm settle; } >/dev/null 2>&1 \
-      || { log "ERROR: re-apply failed: udevadm trigger/settle for $dev"; rc=1; }
-    out=$(_mdt_verify_scheduler "$dev" 2>&1) || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; rc=1; }
-    if _mdt_io_queue_keys_set; then
-      out=$(_mdt_io_wb_readback "$dev" "${MDT_SYSCTL_D:-/etc/sysctl.d}/$MDT_IO_WB_SYSCTL_FILE_NAME" "${MDT_UDEV_RULES_D:-/etc/udev/rules.d}/$MDT_IO_WB_UDEV_FILE_NAME" 2>&1) \
-        || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; rc=1; }
-    fi
-  fi
-  # io.cost model and QoS: compare field-normalised, re-apply both on any drift
-  drift=0
-  for what in model qos; do
-    want=$("_mdt_iocost_${what}_line" "$mm") || continue
-    live=$(_mdt_iocost_live_line "${MDT_CGROUP_ROOT:-/sys/fs/cgroup}/io.cost.$what" "$mm")
-    if [ -z "$live" ] || ! _mdt_iocost_match "$want" "$live"; then
-      log "WARN: drift: io.cost $what on $mm is '${live:-<no line>}', host-setup.env intends '${want#"$mm "}' (a disk re-add resets it); re-applying"
-      drift=1
-    fi
-  done
-  if [ "$drift" = 1 ]; then
-    out=$(_mdt_apply_iocost 2>&1) || { printf '%s\n' "$out" | while IFS= read -r line; do log "$line"; done; log "ERROR: io.cost re-apply failed; the intended io.cost settings are NOT in effect"; rc=1; }
-  fi
+  if [ -n "$(_mdt_io_sched_value)" ] || _mdt_io_queue_keys_set; then _mdt_reassert_udev "$dev" || rc=1; fi
+  _mdt_reassert_sysctl || rc=1
+  if [ -n "${IO_COST_MODEL:-}${IO_COST_QOS:-}" ]; then _mdt_reassert_iocost "$mm" || rc=1; fi
   return "$rc"
 }
 
@@ -1381,49 +1473,86 @@ _mdt_apply_iocost() {
   return "$rc"
 }
 
-# --- managed BuildKit restart decision (MDT-HS-07 live finding, 2026-10-20) ---------------------------------
-# A plain install.sh used to restart mdt-buildkitd.service UNCONDITIONALLY, which killed a 32-minute no-cache
-# build.  Now: restart only when the rendered unit or config actually CHANGED; and when a restart is needed
-# while a build is (or may be) active, do NOT do it unless --restart-buildkitd is given.  Why refuse rather than
-# only warn: a build is minutes to hours of work, the restart is mid-install (after the commit point) where a
-# warning cannot be acted on in time, and skipping it is safe and recoverable (the old service keeps running its
-# old config until the operator chooses the moment; the install says so and exits non-zero so it is not missed).
+# --- managed BuildKit restart decision (MDT-HS-07 live finding, 2026-10-20; review H-66, H-67) -------------
+# A plain install.sh used to restart mdt-buildkitd.service UNCONDITIONALLY, which killed a 32-minute build.
+# Now: a restart is NEEDED when the rendered unit/config CHANGED, or when the RUNNING service was started from
+# different content than what is rendered now (a restart pending from an earlier install, or a service that
+# predates the stamp).  What the running service was started from is recorded at every (re)start by
+# ExecStartPost (mdt-buildkitd-stamp.sh) in /run/mdt/buildkitd.started-digest.  /run is the right home: the
+# fact is "what THIS process was started from", it must NOT survive a reboot (a reboot restarts the service
+# from the then-current files and rewrites the stamp), and a stamp in /var/lib would go stale across a reboot
+# that did not run the unit.  A needed restart is done when idle or when --restart-buildkitd is given; while a
+# build may be active it is NOT done (the old service keeps its old config, the install exits non-zero), and a
+# pending restart is never reported as "unchanged".
 
-# _mdt_buildkitd_busy: rc 0 = a build/worker process is running under the service, 1 = idle (only buildkitd
-# itself), 2 = cannot tell (treated as busy by the caller: fail-safe).  Heuristic, from the live cgroup:
-# any process in the service's cgroup whose comm is not `buildkitd` is a worker/runc exec.  Seams: MDT_CGROUP_ROOT, MDT_PROC_ROOT.
-_mdt_buildkitd_busy() {
-  local cg procs pid comm n=0 root="${MDT_CGROUP_ROOT:-/sys/fs/cgroup}"
-  cg=$(systemctl show mdt-buildkitd.service -p ControlGroup --value 2>/dev/null) || return 2
-  [ -n "$cg" ] || return 2
-  procs="$root$cg/cgroup.procs"
-  [ -r "$procs" ] || return 2
-  while read -r pid; do
-    [ -n "$pid" ] || continue
-    comm=$(tr -d '\n' < "${MDT_PROC_ROOT:-/proc}/$pid/comm" 2>/dev/null) || continue
-    [ "$comm" = buildkitd ] || n=$((n + 1))
-  done < "$procs"
-  [ "$n" -gt 0 ]
-}
-
-# _mdt_buildkitd_restart_decision <changed 0|1> <restart-flag 0|1> <active 0|1>: prints
-#   start       the service is not running: enable --now (nothing to interrupt)
-#   unchanged   unit and config unchanged: no restart
-#   restart     changed, and idle or --restart-buildkitd given
-#   pending     changed, a build is (or may be) active, no flag: do NOT restart
-_mdt_buildkitd_restart_decision() {
-  local changed="$1" flag="$2" active="$3" busy_rc
-  [ "$active" = 1 ] || { echo start; return 0; }
-  [ "$changed" = 1 ] || { echo unchanged; return 0; }
-  [ "$flag" = 1 ] && { echo restart; return 0; }
-  _mdt_buildkitd_busy; busy_rc=$?
-  if [ "$busy_rc" = 1 ]; then echo restart; else echo pending; fi
-}
+MDT_BUILDKITD_FILES=(/etc/systemd/system/mdt-buildkitd.service /etc/mdt/buildkitd.toml)
+_mdt_buildkitd_stamp_file() { printf '%s/buildkitd.started-digest\n' "${MDT_STATE_DIR:-/run/mdt}"; }
 
 # _mdt_files_digest <files...>: one digest of the contents (absent files count as such).
 _mdt_files_digest() {
   local f
   for f in "$@"; do if [ -f "$f" ]; then sha256sum < "$f"; else echo absent; fi; done | sha256sum | cut -d' ' -f1
+}
+
+# _mdt_buildkitd_pending: rc 0 = the running service was NOT started from what is rendered now (or no stamp:
+# started before stamping, cannot be shown to match), rc 1 = matches.  Prints the reason on stdout.
+_mdt_buildkitd_pending() {
+  local stamp rendered running
+  stamp=$(_mdt_buildkitd_stamp_file)
+  rendered=$(_mdt_files_digest "${MDT_BUILDKITD_FILES[@]}")
+  if [ ! -r "$stamp" ]; then
+    echo "no start stamp ($stamp): the running service predates stamping or was started outside the unit; what it runs cannot be shown to match the rendered files"
+    return 0
+  fi
+  running=$(tr -d '[:space:]' < "$stamp")
+  if [ "$running" != "$rendered" ]; then
+    echo "the running service was started from different unit/config content than what is rendered now"
+    return 0
+  fi
+  return 1
+}
+
+# _mdt_buildkitd_container_id: the id of the container the unit starts, resolved from the unit (`--name`), not guessed.
+_mdt_buildkitd_container_id() {
+  local unit="${MDT_BUILDKITD_UNIT:-/etc/systemd/system/mdt-buildkitd.service}" name
+  name=$(sed -n 's/^ExecStart=.*docker run.*--name[ =]\([A-Za-z0-9_.-]*\).*/\1/p' "$unit" 2>/dev/null | head -n1)
+  [ -n "$name" ] || return 1
+  docker inspect -f '{{.Id}}' "$name" 2>/dev/null
+}
+
+# _mdt_buildkitd_busy: rc 0 = a build/worker process runs INSIDE the buildkitd CONTAINER scope
+# (dev-buildkitd.slice/docker-<id>.scope, its sub-cgroups included), 1 = idle (only `buildkitd` itself),
+# 2 = cannot tell (the caller treats it as busy: fail-safe).  The container, not the systemd service cgroup:
+# the service cgroup holds only the `docker run` client; the builds live in the container's scope.
+# Seams: MDT_CGROUP_ROOT, MDT_PROC_ROOT, MDT_BUILDKITD_UNIT.
+_mdt_buildkitd_busy() {
+  local cid scope f pid comm n=0
+  cid=$(_mdt_buildkitd_container_id) || return 2
+  [ -n "$cid" ] || return 2
+  scope=$(CG="${MDT_CGROUP_ROOT:-${CG:-/sys/fs/cgroup}}" _mdt_scope_path "$cid") || return 2
+  [ -n "$scope" ] && [ -d "$scope" ] || return 2
+  while IFS= read -r f; do
+    while read -r pid; do
+      [ -n "$pid" ] || continue
+      comm=$(tr -d '\n' < "${MDT_PROC_ROOT:-/proc}/$pid/comm" 2>/dev/null) || continue
+      [ "$comm" = buildkitd ] || n=$((n + 1))
+    done < "$f"
+  done < <(find "$scope" -name cgroup.procs 2>/dev/null)
+  [ "$n" -gt 0 ]
+}
+
+# _mdt_buildkitd_restart_decision <changed 0|1> <restart-flag 0|1> <active 0|1> [<pending 0|1>]: prints
+#   start       the service is not running: enable --now (nothing to interrupt)
+#   unchanged   NOTHING changed and the running service matches the rendered files: no restart
+#   restart     a restart is needed, and idle or --restart-buildkitd given
+#   pending     a restart is needed, a build is (or may be) active, no flag: do NOT restart
+_mdt_buildkitd_restart_decision() {
+  local changed="$1" flag="$2" active="$3" pending="${4:-0}" busy_rc
+  [ "$active" = 1 ] || { echo start; return 0; }
+  [ "$changed" = 1 ] || [ "$pending" = 1 ] || { echo unchanged; return 0; }
+  [ "$flag" = 1 ] && { echo restart; return 0; }
+  _mdt_buildkitd_busy; busy_rc=$?
+  if [ "$busy_rc" = 1 ]; then echo restart; else echo pending; fi
 }
 
 # --- guard (terminate) policy confirmation, recorded durably (MDT-HS-02) -------------------

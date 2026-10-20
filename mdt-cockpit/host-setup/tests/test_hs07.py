@@ -109,6 +109,7 @@ class SchedulerFixture(Fixture):
         _write_exec(self.host.bin / "udevadm", """#!__PY__
 import os, sys, re, glob
 args = sys.argv[1:]
+if os.environ.get("FAKE_CALLS"): open(os.environ["FAKE_CALLS"], "a").write("udevadm " + " ".join(args) + "\\n")
 if args[:1] == ["trigger"] and not os.environ.get("FAKE_UDEV_NOOP"):
     sysroot = os.environ["MDT_SYSFS_ROOT"]
     sched = None
@@ -136,7 +137,9 @@ sys.exit(0)
         env = super().env(**cfg)
         for key in ("IO_ROOT_SCHEDULER", "IO_COST_MODEL", "IO_COST_QOS"):
             env.pop(key, None)
-        env.update({"MDT_MODULES_LOAD_D": str(self.modules), "MDT_CGROUP_ROOT": str(self.cgroot),
+        self.calls_log = self.host.base / "calls.log"
+        env.update({"MDT_STATE_DIR": str(self.host.base / "state"), "FAKE_CALLS": str(self.calls_log), "MDT_FAKE_NOW": "1000000",
+                    "MDT_MODULES_LOAD_D": str(self.modules), "MDT_CGROUP_ROOT": str(self.cgroot),
                     "MDT_UDEV_SCAN_DIRS": str(self.ud), "HERE": str(ROOT)})
         env.update(cfg)
         return env
@@ -213,7 +216,7 @@ class ReassertTests(SchedulerFixture):
     """H-59: the minute-by-minute reconcile verifies scheduler, queue and io.cost against the env and re-applies."""
 
     CFG = {"IO_ROOT_SCHEDULER": "mq-deadline", "IO_COST_MODEL": MODEL, "IO_COST_QOS": QOS,
-           "IO_ROOT_QUEUE_NR_REQUESTS": "16", "FAKE_FINDMNT_SOURCE": "/dev/null"}
+           "IO_ROOT_QUEUE_NR_REQUESTS": "16", "IO_WRITEBACK_DIRTY_BYTES": "16777216", "FAKE_FINDMNT_SOURCE": "/dev/null"}
 
     def installed(self) -> None:
         """A host as install.sh left it: rules rendered, scheduler/queue/io.cost live."""
@@ -272,9 +275,122 @@ class ReassertTests(SchedulerFixture):
         self.assertIn("rc=1", r.stdout)
         self.assertIn("ERROR: io.cost re-apply failed", r.stdout)
 
+    def calls(self) -> list[str]:
+        return self.calls_log.read_text().splitlines() if self.calls_log.exists() else []
+
+    def test_each_mechanism_is_repaired_by_its_own_tool_only(self) -> None:
+        self.installed()
+        self.calls_log.write_text("")
+        (self.vm / "dirty_bytes").write_text("0\n")                        # ONLY sysctl drift
+        r = self.reassert(IO_WRITEBACK_DIRTY_BYTES="16777216")
+        self.assertIn("rc=0", r.stdout, r.stdout + r.stderr)
+        self.assertIn("drift: vm.dirty_bytes", r.stdout)
+        self.assertEqual([c.split()[0] for c in self.calls()], ["sysctl"], self.calls())
+        self.assertEqual((self.vm / "dirty_bytes").read_text().strip(), "16777216")
+        self.calls_log.write_text("")
+        self.sched.write_text("[none] mq-deadline kyber bfq\n")             # ONLY scheduler drift
+        r = self.reassert(IO_WRITEBACK_DIRTY_BYTES="16777216")
+        self.assertIn("rc=0", r.stdout, r.stdout + r.stderr)
+        self.assertEqual({c.split()[0] for c in self.calls()}, {"udevadm"}, self.calls())
+        self.calls_log.write_text("")
+        (self.cgroot / "io.cost.qos").write_text("254:0 enable=0\n")        # ONLY io.cost drift
+        r = self.reassert(IO_WRITEBACK_DIRTY_BYTES="16777216")
+        self.assertIn("rc=0", r.stdout, r.stdout + r.stderr)
+        self.assertEqual(self.calls(), [], "io.cost is written directly: no sysctl, no udev")
+        self.assertIn("enable=1", (self.cgroot / "io.cost.qos").read_text())
+
+    def test_a_mechanism_whose_keys_are_unset_is_never_triggered(self) -> None:
+        self.installed()
+        self.calls_log.write_text("")
+        self.sched.write_text("[none] mq-deadline kyber bfq\n")
+        r = self.reassert(IO_ROOT_SCHEDULER="", IO_ROOT_QUEUE_NR_REQUESTS="")
+        self.assertIn("rc=0", r.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_a_failed_reassert_is_one_loud_error_then_a_logged_backoff_not_a_storm(self) -> None:
+        self.installed()
+        self.sched.write_text("[none] mq-deadline kyber bfq\n")
+        self.calls_log.write_text("")
+        r1 = self.reassert(FAKE_UDEV_NOOP="1")
+        self.assertIn("rc=1", r1.stdout)
+        self.assertIn("ERROR: the udev re-apply did not restore the scheduler of vda; backing off", r1.stdout)
+        first = len(self.calls())
+        self.assertGreater(first, 0)
+        for minute in range(1, 30):
+            r = self.reassert(FAKE_UDEV_NOOP="1", MDT_FAKE_NOW=str(1_000_000 + minute * 60))
+            self.assertIn("rc=1", r.stdout)
+            self.assertIn("backing off", r.stdout)
+            self.assertNotIn("ERROR: the udev re-apply", r.stdout)
+        self.assertEqual(len(self.calls()), first, "no further trigger inside the back-off window")
+        r = self.reassert(MDT_FAKE_NOW=str(1_000_000 + 1801))                # window over, and udev works again
+        self.assertIn("rc=0", r.stdout, r.stdout + r.stderr)
+        self.assertGreater(len(self.calls()), first)
+        self.assertFalse((self.host.base / "state" / "io-reassert-udev.failed").exists(), "a clean verify lifts the back-off")
+
+    def test_the_pause_suspends_all_four_but_not_io_max(self) -> None:
+        self.installed()
+        self.calls_log.write_text("")
+        (self.vm / "dirty_bytes").write_text("0\n")
+        self.sched.write_text("[none] mq-deadline kyber bfq\n")
+        (self.cgroot / "io.cost.qos").write_text("254:0 enable=0\n")
+        pause = self.host.base / "state" / "io-reassert.pause"
+        pause.write_text(f"{1_000_000 + 600} hand IO experiment\n")
+        r = self.reassert(IO_WRITEBACK_DIRTY_BYTES="16777216")
+        self.assertIn("rc=0", r.stdout)
+        self.assertIn("re-assert PAUSED until", r.stdout)
+        self.assertIn("(hand IO experiment)", r.stdout)
+        self.assertEqual(self.calls(), [])
+        self.assertEqual((self.vm / "dirty_bytes").read_text().strip(), "0")
+        self.assertIn("enable=0", (self.cgroot / "io.cost.qos").read_text())
+        reconcile = (ROOT / "scripts" / "mdt-dev-governance-reconcile.sh").read_text()
+        self.assertLess(reconcile.index("_mdt_apply_dev_io"), reconcile.index("_mdt_reassert_io_settings"),
+                        "io.max is applied by the IO section regardless of the pause")
+
+    def test_an_expired_or_malformed_pause_is_ignored_with_a_warning(self) -> None:
+        self.installed()
+        pause = self.host.base / "state" / "io-reassert.pause"
+        pause.write_text(f"{1_000_000 - 5} old experiment\n")
+        (self.cgroot / "io.cost.qos").write_text("254:0 enable=0\n")
+        r = self.reassert()
+        self.assertIn("WARN: pause expired at", r.stdout)
+        self.assertFalse(pause.exists())
+        self.assertIn("enable=1", (self.cgroot / "io.cost.qos").read_text(), "re-asserting again")
+        for bad in ("garbage\n", f"{1_000_000 + 600}\n", "abc reason\n"):
+            pause.write_text(bad)
+            (self.cgroot / "io.cost.qos").write_text("254:0 enable=0\n")
+            r = self.reassert()
+            self.assertIn("WARN: malformed pause file", r.stdout, bad)
+            self.assertIn("enable=1", (self.cgroot / "io.cost.qos").read_text(), bad)
+
+    def test_the_pause_helper_validates_and_check_sh_shows_the_pause(self) -> None:
+        helper = ROOT / "scripts" / "mdt-io-reassert-pause.sh"
+        env = {**self.env(), "LIB": str(LIB)}
+
+        def run(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(["bash", str(helper), *args], env=env, text=True, capture_output=True)
+
+        self.assertEqual(run("30", "build", "benchmark").returncode, 0)
+        content = (self.host.base / "state" / "io-reassert.pause").read_text().split(None, 1)
+        self.assertEqual(content[0], str(1_000_000 + 1800))
+        self.assertEqual(content[1].strip(), "build benchmark")
+        self.assertIn("PAUSED until", run("--status").stdout)
+        for bad in (["0", "r"], ["241", "r"], ["x", "r"], ["30"], []):
+            self.assertEqual(run(*bad).returncode, 2, bad)
+        text = (ROOT / "scripts" / "check.sh").read_text()
+        block = text[text.index("# BEGIN io-sched-check"):text.index("# END io-sched-check")]
+        harness = self.host.base / "h2.sh"
+        harness.write_text('ok(){ echo "OK $*"; }; warn(){ echo "WARN $*"; }; fail(){ echo "FAIL $*"; }; info(){ echo "INFO $*"; }\n'
+                           f'log(){{ :; }}; . "{LIB}"\n' + block.split("check_io_scheduler() {")[0] + "\ncheck_io_pause\n")
+        out = subprocess.run(["bash", str(harness)], env=env, text=True, capture_output=True).stdout
+        self.assertIn("WARN re-assert PAUSED until", out)
+        self.assertIn("(build benchmark)", out)
+        self.assertEqual(run("--clear").returncode, 0)
+        out = subprocess.run(["bash", str(harness)], env=env, text=True, capture_output=True).stdout
+        self.assertIn("INFO re-assert: active (no pause)", out)
+
     def test_unmanaged_keys_are_never_touched(self) -> None:
         (self.cgroot / "io.cost.qos").write_text("254:0 enable=0\n")
-        r = self.reassert(IO_ROOT_SCHEDULER="", IO_COST_MODEL="", IO_COST_QOS="", IO_ROOT_QUEUE_NR_REQUESTS="")
+        r = self.reassert(IO_ROOT_SCHEDULER="", IO_COST_MODEL="", IO_COST_QOS="", IO_ROOT_QUEUE_NR_REQUESTS="", IO_WRITEBACK_DIRTY_BYTES="")
         self.assertIn("rc=0", r.stdout)
         self.assertEqual((self.cgroot / "io.cost.qos").read_text(), "254:0 enable=0\n")
 
@@ -656,9 +772,9 @@ class SubCeilingCheckTests(SchedulerFixture):
 class BuildkitdRestartTests(SchedulerFixture):
     """Live finding 2: a plain install.sh killed a 32-minute build by restarting mdt-buildkitd unconditionally."""
 
-    def decide(self, changed: str, flag: str, active: str, busy: int | None = None) -> str:
+    def decide(self, changed: str, flag: str, active: str, busy: int | None = None, pending: int = 0) -> str:
         busy_def = "" if busy is None else f"_mdt_buildkitd_busy() {{ return {busy}; }}; "
-        r = self.bash(f'{busy_def}_mdt_buildkitd_restart_decision {changed} {flag} {active}')
+        r = self.bash(f'{busy_def}_mdt_buildkitd_restart_decision {changed} {flag} {active} {pending}')
         return r.stdout.strip()
 
     def test_decisions(self) -> None:
@@ -669,22 +785,67 @@ class BuildkitdRestartTests(SchedulerFixture):
         self.assertEqual(self.decide(1, 0, 1, 1), "restart")                 # changed and idle
         self.assertEqual(self.decide(1, 0, 1, 0), "pending")                 # changed and a build is active: NOT restarted
         self.assertEqual(self.decide(1, 0, 1, 2), "pending")                 # cannot tell: fail-safe, not restarted
+        # H-66: unchanged render but a restart still PENDING from before: never "unchanged"
+        self.assertEqual(self.decide(0, 0, 1, 0, pending=1), "pending")
+        self.assertEqual(self.decide(0, 0, 1, 1, pending=1), "restart")      # idle: do it
+        self.assertEqual(self.decide(0, 1, 1, 0, pending=1), "restart")      # flag given
+        self.assertEqual(self.decide(0, 0, 1, 0, pending=0), "unchanged")    # nothing changed AND the running service matches
 
-    def test_busy_is_derived_from_the_service_cgroup(self) -> None:
-        cg = self.host.base / "bkcg" / "system.slice" / "mdt-buildkitd.service"
-        cg.mkdir(parents=True)
+    def test_busy_is_derived_from_the_buildkitd_container_scope(self) -> None:
+        """H-67: the real layout, dev.slice/dev-buildkitd.slice/docker-<id>.scope (sub-cgroups inside), id from the unit's --name."""
+        cid = "ab" * 32
+        cgroot = self.host.base / "bkcg"
+        scope = cgroot / "dev.slice" / "dev-buildkitd.slice" / f"docker-{cid}.scope"
+        (scope / "buildkit" / "step1").mkdir(parents=True)
+        service_cg = cgroot / "system.slice" / "mdt-buildkitd.service"
+        service_cg.mkdir(parents=True)
         proc = self.host.base / "bkproc"
-        for pid, comm in ((10, "buildkitd"), (11, "runc"), (12, "buildkitd")):
+        for pid, comm in ((10, "buildkitd"), (11, "runc"), (12, "docker"), (777, "init")):
             (proc / str(pid)).mkdir(parents=True)
             (proc / str(pid) / "comm").write_text(comm + "\n")
-        _write_exec(self.host.bin / "systemctl", "#!/bin/sh\necho /system.slice/mdt-buildkitd.service\n")
-        env = {"MDT_CGROUP_ROOT": str(self.host.base / "bkcg"), "MDT_PROC_ROOT": str(proc)}
-        (cg / "cgroup.procs").write_text("10\n")
-        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "1")      # only buildkitd: idle
-        (cg / "cgroup.procs").write_text("10\n11\n")
-        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "0")      # a runc worker: busy
-        (cg / "cgroup.procs").unlink()
-        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "2")      # unreadable: unknown
+        (proc / "777" / "cgroup").write_text(f"0::/dev.slice/dev-buildkitd.slice/docker-{cid}.scope\n")
+        unit = self.host.base / "mdt-buildkitd.service"
+        unit.write_text("[Service]\nExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \\\n  --cgroup-parent=dev-buildkitd.slice \\\n  image\n")
+        _write_exec(self.host.bin / "docker", "#!/bin/sh\ncase \"$*\" in\n  *'{{.Id}}'*) echo " + cid + " ;;\n  *'.State.Pid'*) echo 777 ;;\nesac\n")
+        env = {"MDT_CGROUP_ROOT": str(cgroot), "MDT_PROC_ROOT": str(proc), "MDT_BUILDKITD_UNIT": str(unit)}
+        (scope / "cgroup.procs").write_text("10\n")
+        (service_cg / "cgroup.procs").write_text("12\n")                  # the docker run CLIENT lives in the service cgroup: not a build
+        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "1")      # only buildkitd in the container: idle
+        (scope / "buildkit" / "step1" / "cgroup.procs").write_text("11\n")                            # a runc step in a SUB-cgroup
+        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "0")
+        __import__("shutil").rmtree(scope)                                                              # scope not there: unknown
+        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "2")
+        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **{**env, "MDT_BUILDKITD_UNIT": str(self.host.base / "nope")}).stdout.strip(), "2")
+
+    def test_pending_is_what_the_running_service_was_started_from(self) -> None:
+        a, b = self.host.base / "unit", self.host.base / "toml"
+        a.write_text("u\n"); b.write_text("t\n")
+        stamp = self.host.base / "state" / "buildkitd.started-digest"
+        files = f'MDT_BUILDKITD_FILES=("{a}" "{b}"); '
+        r = self.bash(files + "_mdt_buildkitd_pending; echo rc=$?")
+        self.assertIn("no start stamp", r.stdout)                       # predates stamping: cannot be shown to match
+        self.assertIn("rc=0", r.stdout)
+        digest = self.bash(files + '_mdt_files_digest "${MDT_BUILDKITD_FILES[@]}"').stdout.strip()
+        stamp.write_text(digest + "\n")
+        self.assertIn("rc=1", self.bash(files + "_mdt_buildkitd_pending; echo rc=$?").stdout)       # matches
+        a.write_text("changed\n")                                                                  # rendered content moved on
+        r = self.bash(files + "_mdt_buildkitd_pending; echo rc=$?")
+        self.assertIn("different unit/config content", r.stdout)
+        self.assertIn("rc=0", r.stdout)
+
+    def test_the_start_stamp_script_records_the_same_digest(self) -> None:
+        a, b = self.host.base / "unit2", self.host.base / "toml2"
+        a.write_text("u\n"); b.write_text("t\n")
+        want = self.bash(f'MDT_BUILDKITD_FILES=("{a}" "{b}"); _mdt_files_digest "${{MDT_BUILDKITD_FILES[@]}}"').stdout.strip()
+        text = (ROOT / "scripts" / "mdt-buildkitd-stamp.sh").read_text().replace(
+            'stamp=$(_mdt_buildkitd_stamp_file)', f'MDT_BUILDKITD_FILES=("{a}" "{b}"); stamp=$(_mdt_buildkitd_stamp_file)')
+        script_path = self.host.base / "stamp.sh"
+        _write_exec(script_path, text)
+        r = subprocess.run(["bash", str(script_path)], env={**self.env(), "LIB": str(LIB)}, text=True, capture_output=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.host.base / "state" / "buildkitd.started-digest").read_text().strip(), want)
+        unit = (ROOT / "units" / "mdt-buildkitd.service.in").read_text()
+        self.assertIn("ExecStartPost=-/usr/local/sbin/mdt-buildkitd-stamp.sh", unit)
 
     def test_changed_is_detected_by_content(self) -> None:
         a, b = self.host.base / "a", self.host.base / "b"
@@ -696,10 +857,19 @@ class BuildkitdRestartTests(SchedulerFixture):
         b.write_text("x\n")
         self.assertNotEqual(self.bash(f'_mdt_files_digest "{a}" "{b}"').stdout, self.bash(f'_mdt_files_digest "{a}" "{self.host.base / "c"}"').stdout)
 
+    def test_check_sh_reports_a_pending_buildkitd_restart(self) -> None:
+        text = (ROOT / "scripts" / "check.sh").read_text()
+        self.assertIn("check_buildkitd_pending", text)
+        self.assertIn("RESTART PENDING", text)
+        reconcile = (ROOT / "scripts" / "mdt-dev-governance-reconcile.sh").read_text()
+        self.assertIn("RESTART PENDING", reconcile)
+        self.assertIn("_mdt_buildkitd_pending", reconcile)
+
     def test_install_sh_no_longer_restarts_unconditionally(self) -> None:
         install = (ROOT / "install.sh").read_text()
         self.assertNotIn('echo "restarting mdt-buildkitd.service; active builds will be interrupted"\n  systemctl restart', install)
-        for needle in ("--restart-buildkitd", "RESTART_BUILDKITD", "unit and config unchanged, not restarted",
+        for needle in ("--restart-buildkitd", "RESTART_BUILDKITD", "unit and config unchanged and the running service matches them, not restarted",
+                       '"$_bk_pending"', "_mdt_buildkitd_pending",
                        "BUILDKITD_RESTART_PENDING=1", "_mdt_buildkitd_restart_decision", "_mdt_files_digest"):
             self.assertIn(needle, install)
         decision = install[install.index("_mdt_buildkitd_restart_decision"):]
@@ -832,7 +1002,7 @@ class DocsAndWeightsTests(unittest.TestCase):
         self.assertLess(lane.index("vm-iocost-acceptance.sh"), lane.index("vm-upgrade-acceptance.sh"))
         script = (ROOT / "tests" / "vm-iocost-acceptance.sh").read_text()
         for needle in ("io.cost.model", "io.cost.qos", "queue/scheduler", "mdt-io-cost.service", "mdt-host-check.sh",
-                       "drift", "SCHED=none", "never a refusal-only pass"):
+                       "drift", "SCHED=none", "never a refusal-only pass", "DRIFT_SCHED", "did not become the active scheduler of $dev after a successful apply"):
             self.assertIn(needle, script)
         self.assertNotIn("asserting the REFUSAL path instead", script)
         self.assertTrue(os.access(ROOT / "tests" / "vm-iocost-acceptance.sh", os.X_OK))
