@@ -1271,11 +1271,25 @@ MDT_IO_REASSERT_PAUSE_MAX_MINUTES=240
 _mdt_io_pause_file() { printf '%s/io-reassert.pause\n' "${MDT_STATE_DIR:-/run/mdt}"; }
 
 # _mdt_io_pause_state: rc 0 = paused (prints "until <ts> (<reason>)"), 1 = no pause, 2 = ignored (prints why):
-# malformed, or expired (an expired file is removed).  File format: "<expiry-epoch> <reason...>".
+# malformed, expired (removed), over the 240-minute bound / far in the future, or not trustworthy.  File format:
+# "<expiry-epoch> <reason...>".  The reader enforces the bound ITSELF (the helper is not the only writer) and
+# only trusts a regular file (lstat: no symlink) owned by the user running the reconcile (root in production, so a
+# file an unprivileged user could create is refused) in a directory that is not group/world-writable.
 _mdt_io_pause_state() {
-  local f exp reason now
+  local f exp reason now dir uid mode
   f=$(_mdt_io_pause_file)
-  [ -e "$f" ] || return 1
+  [ -e "$f" ] || [ -L "$f" ] || return 1
+  if [ -L "$f" ] || [ ! -f "$f" ]; then echo "pause file $f is not a regular file (symlinks and special files are refused); ignoring it"; return 2; fi
+  uid=$(stat -c %u "$f" 2>/dev/null || echo "?")
+  if [ "$uid" != "$(id -u)" ]; then echo "pause file $f is owned by uid $uid, not by the reconcile's user $(id -u) (root in production); ignoring it"; return 2; fi
+  mode=$(stat -c %a "$f" 2>/dev/null || echo 777)
+  if [ $(( 8#$mode & 8#022 )) -ne 0 ]; then echo "pause file $f has mode $mode (group/world-writable); ignoring it"; return 2; fi
+  dir=$(dirname "$f")
+  mode=$(stat -c %a "$dir" 2>/dev/null || echo 777)
+  uid=$(stat -c %u "$dir" 2>/dev/null || echo "?")
+  if [ "$uid" != "$(id -u)" ] || [ $(( 8#$mode & 8#022 )) -ne 0 ]; then
+    echo "directory $dir (uid $uid, mode $mode) is not owned by the reconcile's user or is group/world-writable; ignoring the pause file"; return 2
+  fi
   read -r exp reason < "$f" 2>/dev/null || exp=""
   case "$exp" in ''|*[!0-9]*) echo "malformed pause file $f (expected '<expiry-epoch> <reason>'); ignoring it"; return 2 ;; esac
   if [ -z "$reason" ]; then echo "malformed pause file $f (no reason); ignoring it"; return 2; fi
@@ -1283,6 +1297,10 @@ _mdt_io_pause_state() {
   if [ "$now" -ge "$exp" ]; then
     rm -f -- "$f" 2>/dev/null || true
     echo "pause expired at $(date -u -d "@$exp" +%FT%TZ 2>/dev/null || echo "$exp") ($reason); removed, re-asserting again"
+    return 2
+  fi
+  if [ $((exp - now)) -gt $((MDT_IO_REASSERT_PAUSE_MAX_MINUTES * 60)) ]; then
+    echo "pause file $f expires more than $MDT_IO_REASSERT_PAUSE_MAX_MINUTES minutes from now (until $(date -u -d "@$exp" +%FT%TZ 2>/dev/null || echo "$exp"), $reason); the bound is enforced here, ignoring it"
     return 2
   fi
   echo "until $(date -u -d "@$exp" +%FT%TZ 2>/dev/null || echo "$exp") ($reason)"
@@ -1520,13 +1538,26 @@ _mdt_buildkitd_container_id() {
   docker inspect -f '{{.Id}}' "$name" 2>/dev/null
 }
 
-# _mdt_buildkitd_busy: rc 0 = a build/worker process runs INSIDE the buildkitd CONTAINER scope
-# (dev-buildkitd.slice/docker-<id>.scope, its sub-cgroups included), 1 = idle (only `buildkitd` itself),
-# 2 = cannot tell (the caller treats it as busy: fail-safe).  The container, not the systemd service cgroup:
-# the service cgroup holds only the `docker run` client; the builds live in the container's scope.
-# Seams: MDT_CGROUP_ROOT, MDT_PROC_ROOT, MDT_BUILDKITD_UNIT.
+# _mdt_proc_ppid <pid>: the parent pid from /proc/<pid>/stat (field 4; the comm field may contain spaces/parens).
+_mdt_proc_ppid() {
+  local line
+  line=$(cat "${MDT_PROC_ROOT:-/proc}/$1/stat" 2>/dev/null) || return 1
+  line=${line##*) }
+  set -- $line
+  printf '%s\n' "${2:-}"
+}
+_mdt_proc_comm() { tr -d '\n' < "${MDT_PROC_ROOT:-/proc}/$1/comm" 2>/dev/null; }
+
+# _mdt_buildkitd_busy: rc 0 = something OTHER than the idle daemon chain runs inside the buildkitd CONTAINER scope
+# (dev-buildkitd.slice/docker-<id>.scope, its sub-cgroups included), 1 = idle, 2 = cannot tell (the caller treats
+# it as busy: fail-safe).  The persistent daemon of the rootless image is exactly three processes, MEASURED live
+# (2026-10-20, docker top mdt-buildkitd): `rootlesskit`, its child `exe` (/proc/self/exe buildkitd ...) and that
+# child's child `buildkitd`.  Idle = only those, each matched by comm AND parent chain.  Anything else is work,
+# especially `buildkit-runc` (a child of buildkitd) and its descendants.  A layout that does not match (another
+# image, a stray `buildkitd`) therefore counts as busy: fail-safe.  The container, not the systemd service cgroup,
+# which holds only the `docker run` client.  Seams: MDT_CGROUP_ROOT, MDT_PROC_ROOT, MDT_BUILDKITD_UNIT.
 _mdt_buildkitd_busy() {
-  local cid scope f pid comm n=0
+  local cid scope f pid comm ppid pcomm gcomm n=0
   cid=$(_mdt_buildkitd_container_id) || return 2
   [ -n "$cid" ] || return 2
   scope=$(CG="${MDT_CGROUP_ROOT:-${CG:-/sys/fs/cgroup}}" _mdt_scope_path "$cid") || return 2
@@ -1534,8 +1565,21 @@ _mdt_buildkitd_busy() {
   while IFS= read -r f; do
     while read -r pid; do
       [ -n "$pid" ] || continue
-      comm=$(tr -d '\n' < "${MDT_PROC_ROOT:-/proc}/$pid/comm" 2>/dev/null) || continue
-      [ "$comm" = buildkitd ] || n=$((n + 1))
+      comm=$(_mdt_proc_comm "$pid") || continue
+      [ -n "$comm" ] || continue
+      case "$comm" in
+        rootlesskit) continue ;;
+        exe)
+          ppid=$(_mdt_proc_ppid "$pid"); pcomm=$(_mdt_proc_comm "${ppid:-0}")
+          [ "$pcomm" = rootlesskit ] && continue ;;
+        buildkitd)
+          ppid=$(_mdt_proc_ppid "$pid"); pcomm=$(_mdt_proc_comm "${ppid:-0}")
+          if [ "$pcomm" = exe ]; then
+            gcomm=$(_mdt_proc_comm "$(_mdt_proc_ppid "$ppid")")
+            [ "$gcomm" = rootlesskit ] && continue
+          fi ;;
+      esac
+      n=$((n + 1))
     done < "$f"
   done < <(find "$scope" -name cgroup.procs 2>/dev/null)
   [ "$n" -gt 0 ]

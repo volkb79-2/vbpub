@@ -634,12 +634,13 @@ The minute-by-minute reconcile re-applies the scheduler and queue values (udev t
 host, pause it for a bounded time: `mdt-io-reassert-pause <minutes 1..240> <reason>` (also `--status`, `--clear`). While the pause is valid the
 reconcile logs "paused until ... (reason)" every minute and re-asserts none of those four; the io.max caps stay enforced. The pause is the file
 `/run/mdt/io-reassert.pause` (`<expiry-epoch> <reason>`, gone at reboot); an expired file is removed and a malformed one is ignored, each with a
-WARN, and `mdt-host-check.sh` shows an active pause. A re-assert that did not fix the drift is one ERROR and then backs off for 30 minutes (no
+WARN, and `mdt-host-check.sh` shows an active pause. The reconcile enforces the 240-minute bound itself (an expiry further out is ignored with a WARN)
+and only trusts a regular file (no symlink) owned by the user the reconcile runs as (root) in a directory that is not group/world-writable. A re-assert that did not fix the drift is one ERROR and then backs off for 30 minutes (no
 per-minute trigger storm).
 
 `install.sh` restarts `mdt-buildkitd.service` only when its rendered unit/config changed or the running service was started from different content
 (the start stamp `/run/mdt/buildkitd.started-digest`; a service that predates the stamp counts as pending once). While a build may be active (any
-process other than `buildkitd` in the buildkitd CONTAINER scope under `dev-buildkitd.slice`, or the state cannot be read) it is NOT restarted: the
+process other than the idle daemon chain `rootlesskit` -> `exe` -> `buildkitd` (matched by name AND parent chain, as measured with `docker top`) in the buildkitd CONTAINER scope under `dev-buildkitd.slice`, notably any `buildkit-runc`, or the state cannot be read) it is NOT restarted: the
 install prints a WARN, keeps the old service and exits 2 until you re-run it with `--restart-buildkitd` at a moment you choose. `mdt-host-check.sh`
 and the reconcile report "restart pending" until the running service matches.
 

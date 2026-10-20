@@ -94,6 +94,19 @@ printf '%s\n' "$check" | grep -q "OK   io.cost qos verified" || fail "mdt-host-c
 printf '%s\n' "$check" | grep -q "no disk uses BFQ" && fail "mdt-host-check.sh still prints the BFQ-only warning"
 ok "mdt-host-check.sh reports the weight mechanism io.cost and verifies model and QoS"
 
+# the buildkitd daemon chain of THIS image (rootlesskit -> exe -> buildkitd) must classify as IDLE (H-71, measured on
+# the host: docker top mdt-buildkitd). If the guest runs another image/process set this fails loudly and shows it.
+if docker inspect mdt-buildkitd >/dev/null 2>&1; then
+  set +e; _mdt_buildkitd_busy; busy_rc=$?; set -e
+  if [ "$busy_rc" != 1 ]; then
+    docker top mdt-buildkitd || true
+    fail "_mdt_buildkitd_busy returned $busy_rc for an idle mdt-buildkitd (expected 1): the guest's daemon process chain differs from rootlesskit -> exe -> buildkitd"
+  fi
+  ok "the idle mdt-buildkitd container classifies as idle (rootlesskit -> exe -> buildkitd, no buildkit-runc)"
+else
+  echo "VM IOCOST NOTE: no mdt-buildkitd container in the guest; the idle classification was not exercised here"
+fi
+
 # the boot unit re-applies from the env (a oneshot: restart it after drifting the QoS by hand)
 echo "$mm enable=0" > "$CG/io.cost.qos"
 systemctl restart mdt-io-cost.service || fail "mdt-io-cost.service failed"

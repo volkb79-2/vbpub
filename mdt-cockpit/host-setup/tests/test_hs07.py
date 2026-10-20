@@ -362,6 +362,53 @@ class ReassertTests(SchedulerFixture):
             self.assertIn("WARN: malformed pause file", r.stdout, bad)
             self.assertIn("enable=1", (self.cgroot / "io.cost.qos").read_text(), bad)
 
+    def test_the_pause_reader_enforces_the_bound_and_trusts_only_a_root_owned_regular_file(self) -> None:
+        """H-69."""
+        self.installed()
+        state = self.host.base / "state"
+        pause = state / "io-reassert.pause"
+        state.chmod(0o755)
+
+        def paused(**extra: str) -> str:
+            (self.cgroot / "io.cost.qos").write_text("254:0 enable=0\n")
+            return self.reassert(**extra).stdout
+
+        pause.write_text(f"{1_000_000 + 240 * 60} exactly the bound\n"); pause.chmod(0o644)
+        self.assertIn("re-assert PAUSED until", paused())                                  # 240 minutes is allowed
+        pause.write_text(f"{1_000_000 + 240 * 60 + 1} too far\n")
+        out = paused()
+        self.assertIn("expires more than 240 minutes from now", out)                       # over the bound: WARN, ignored
+        self.assertIn("enable=1", (self.cgroot / "io.cost.qos").read_text())
+        pause.write_text(f"{10**12} forever\n")
+        self.assertIn("expires more than 240 minutes from now", paused())
+        # a symlink (even to a perfectly valid file) is refused
+        real = self.host.base / "real.pause"
+        real.write_text(f"{1_000_000 + 600} via symlink\n"); real.chmod(0o644)
+        pause.unlink(); pause.symlink_to(real)
+        out = paused()
+        self.assertIn("is not a regular file", out)
+        self.assertIn("enable=1", (self.cgroot / "io.cost.qos").read_text())
+        pause.unlink()
+        pause.mkdir()                                                                       # a directory is not a regular file
+        self.assertIn("is not a regular file", paused())
+        pause.rmdir()
+        # group/world-writable file or directory
+        pause.write_text(f"{1_000_000 + 600} loose\n"); pause.chmod(0o666)
+        self.assertIn("group/world-writable", paused())
+        pause.chmod(0o644); state.chmod(0o777)
+        self.assertIn("group/world-writable", paused())
+        state.chmod(0o755)
+        # a file owned by someone else than the reconcile's user (root in production)
+        _write_exec(self.host.bin / "stat", """#!/bin/sh
+case "$*" in *'%u'*io-reassert.pause*) [ -n "$FAKE_PAUSE_UID" ] && { echo "$FAKE_PAUSE_UID"; exit 0; } ;; esac
+if [ "${1:-}" = -c ] && [ "${2:-}" = %d ]; then echo 111; exit 0; fi
+exec /usr/bin/stat "$@"
+""")
+        out = paused(FAKE_PAUSE_UID="4242")
+        self.assertIn("is owned by uid 4242", out)
+        self.assertIn("enable=1", (self.cgroot / "io.cost.qos").read_text())
+        self.assertIn("re-assert PAUSED until", paused())                                  # and the same file is fine for its owner
+
     def test_the_pause_helper_validates_and_check_sh_shows_the_pause(self) -> None:
         helper = ROOT / "scripts" / "mdt-io-reassert-pause.sh"
         env = {**self.env(), "LIB": str(LIB)}
@@ -792,7 +839,8 @@ class BuildkitdRestartTests(SchedulerFixture):
         self.assertEqual(self.decide(0, 0, 1, 0, pending=0), "unchanged")    # nothing changed AND the running service matches
 
     def test_busy_is_derived_from_the_buildkitd_container_scope(self) -> None:
-        """H-67: the real layout, dev.slice/dev-buildkitd.slice/docker-<id>.scope (sub-cgroups inside), id from the unit's --name."""
+        """H-67/H-71: the real layout (dev.slice/dev-buildkitd.slice/docker-<id>.scope, sub-cgroups inside) and the MEASURED idle
+        daemon chain rootlesskit -> exe -> buildkitd, matched by comm AND parent chain; anything else (buildkit-runc, ...) is busy."""
         cid = "ab" * 32
         cgroot = self.host.base / "bkcg"
         scope = cgroot / "dev.slice" / "dev-buildkitd.slice" / f"docker-{cid}.scope"
@@ -800,21 +848,50 @@ class BuildkitdRestartTests(SchedulerFixture):
         service_cg = cgroot / "system.slice" / "mdt-buildkitd.service"
         service_cg.mkdir(parents=True)
         proc = self.host.base / "bkproc"
-        for pid, comm in ((10, "buildkitd"), (11, "runc"), (12, "docker"), (777, "init")):
-            (proc / str(pid)).mkdir(parents=True)
+
+        def process(pid: int, comm: str, ppid: int) -> None:
+            (proc / str(pid)).mkdir(parents=True, exist_ok=True)
             (proc / str(pid) / "comm").write_text(comm + "\n")
+            (proc / str(pid) / "stat").write_text(f"{pid} ({comm}) S {ppid} {pid} {pid} 0 -1 4194560 100 0 0 0 1 1 0 0 20 0 1 0 1000 1 1 18446744073709551615\n")
+
+        process(777, "init", 1)
+        process(20, "rootlesskit", 5)            # PPID = the container's init side
+        process(21, "exe", 20)                    # /proc/self/exe buildkitd ..., the rootlesskit child
+        process(22, "buildkitd", 21)
+        process(12, "docker", 1)                  # the `docker run` client in the SERVICE cgroup: never a build
         (proc / "777" / "cgroup").write_text(f"0::/dev.slice/dev-buildkitd.slice/docker-{cid}.scope\n")
         unit = self.host.base / "mdt-buildkitd.service"
         unit.write_text("[Service]\nExecStart=/usr/bin/docker run --rm --name mdt-buildkitd \\\n  --cgroup-parent=dev-buildkitd.slice \\\n  image\n")
         _write_exec(self.host.bin / "docker", "#!/bin/sh\ncase \"$*\" in\n  *'{{.Id}}'*) echo " + cid + " ;;\n  *'.State.Pid'*) echo 777 ;;\nesac\n")
         env = {"MDT_CGROUP_ROOT": str(cgroot), "MDT_PROC_ROOT": str(proc), "MDT_BUILDKITD_UNIT": str(unit)}
-        (scope / "cgroup.procs").write_text("10\n")
-        (service_cg / "cgroup.procs").write_text("12\n")                  # the docker run CLIENT lives in the service cgroup: not a build
-        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "1")      # only buildkitd in the container: idle
-        (scope / "buildkit" / "step1" / "cgroup.procs").write_text("11\n")                            # a runc step in a SUB-cgroup
-        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "0")
-        __import__("shutil").rmtree(scope)                                                              # scope not there: unknown
-        self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip(), "2")
+        busy = lambda: self.bash("_mdt_buildkitd_busy; echo $?", **env).stdout.strip()   # noqa: E731
+        (scope / "cgroup.procs").write_text("20\n21\n22\n")
+        (service_cg / "cgroup.procs").write_text("12\n")
+        self.assertEqual(busy(), "1", "only the daemon chain: idle")
+        process(23, "buildkit-runc", 22)                                                  # a build step, child of buildkitd
+        (scope / "buildkit" / "step1" / "cgroup.procs").write_text("23\n")                # ... in a SUB-cgroup
+        self.assertEqual(busy(), "0")
+        process(24, "bash", 23)
+        (scope / "buildkit" / "step1" / "cgroup.procs").write_text("23\n24\n")
+        self.assertEqual(busy(), "0")
+        (scope / "buildkit" / "step1" / "cgroup.procs").write_text("")
+        self.assertEqual(busy(), "1", "the step finished: idle again")
+        # matched by the PARENT CHAIN, not the name alone
+        process(25, "buildkitd", 20)                                                      # a buildkitd whose parent is rootlesskit, not exe
+        (scope / "cgroup.procs").write_text("20\n21\n22\n25\n")
+        self.assertEqual(busy(), "0")
+        process(25, "buildkitd", 21)
+        process(26, "exe", 777)                                                           # an exe not under rootlesskit
+        (scope / "cgroup.procs").write_text("20\n21\n22\n26\n")
+        self.assertEqual(busy(), "0")
+        (scope / "cgroup.procs").write_text("21\n22\n")                                  # the chain minus rootlesskit: exe has no rootlesskit parent present
+        process(21, "exe", 999)
+        self.assertEqual(busy(), "0")
+        process(21, "exe", 20)
+        (scope / "cgroup.procs").write_text("20\n21\n22\n")
+        self.assertEqual(busy(), "1")
+        __import__("shutil").rmtree(scope)                                                # scope not there: unknown
+        self.assertEqual(busy(), "2")
         self.assertEqual(self.bash("_mdt_buildkitd_busy; echo $?", **{**env, "MDT_BUILDKITD_UNIT": str(self.host.base / "nope")}).stdout.strip(), "2")
 
     def test_pending_is_what_the_running_service_was_started_from(self) -> None:

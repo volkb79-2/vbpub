@@ -879,7 +879,15 @@ and rewrites the stamp), unlike a `/var/lib` stamp that would go stale. install.
 and report "restart pending" until it matches; a plain install with an unchanged render but a pending restart says so and exits 2; "unchanged" is
 only printed when nothing changed AND the running service matches. A service that predates the stamp counts as pending once, because what it runs
 cannot be shown to match. Busy detection reads the container the unit starts (`--name` in the unit, id from `docker inspect`, scope from the
-container's own cgroup, sub-cgroups included), not the service cgroup that holds only the `docker run` client; unreadable counts as busy.
+container's own cgroup, sub-cgroups included), not the service cgroup that holds only the `docker run` client; unreadable counts as busy. Idle is exactly the
+persistent daemon chain MEASURED on the live host during a build (`docker top mdt-buildkitd`, 2026-10-20): `rootlesskit` (the container init's child),
+its child `exe` (`/proc/self/exe buildkitd ...`) and that child's child `buildkitd`, each matched by comm AND parent chain from `/proc/<pid>/stat`. Build work
+is anything else, notably `buildkit-runc` (a child of buildkitd) and its descendants; a layout that does not match (another image, a stray `buildkitd`)
+counts as busy. The VM lane asserts that the guest's idle mdt-buildkitd classifies as idle.
+
+**The pause reader is its own gatekeeper (H-69).** The 240-minute bound is enforced where the file is READ, not only where the helper writes it: an
+expiry further out is a WARN and ignored. The file must be a regular file (lstat; a symlink or special file is refused) owned by the user the reconcile
+runs as (root in production, so a file an unprivileged user could create is refused), not group/world-writable, in a directory with the same properties.
 
 ## Per-container memory policy
 

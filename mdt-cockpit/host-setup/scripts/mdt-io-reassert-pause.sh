@@ -26,6 +26,7 @@ case "$minutes" in ''|*[!0-9]*) usage ;; esac
 reason="$*"
 [ -n "$reason" ] || { log "a reason is required"; usage; }
 mkdir -p "$(dirname "$file")" || exit 1
+chmod go-w "$(dirname "$file")" 2>/dev/null || true
 expiry=$(( $(_mdt_now) + minutes * 60 ))
-printf '%s %s\n' "$expiry" "$reason" > "$file.tmp" && mv -f "$file.tmp" "$file" || exit 1
+( umask 022; printf '%s %s\n' "$expiry" "$reason" > "$file.tmp" ) && mv -f "$file.tmp" "$file" || exit 1
 echo "re-assert paused for $minutes minute(s) until $(date -u -d "@$expiry" +%FT%TZ 2>/dev/null || echo "$expiry") ($reason); the io.max caps stay enforced. End early: mdt-io-reassert-pause --clear"
