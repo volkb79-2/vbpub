@@ -117,7 +117,7 @@ class SystemdSpellingTests(Base):
         self.assertNotEqual(r1.returncode, 0, r1.stdout)
         self.assertEqual(n1, 1)
         self.assertIn("ERROR: dev.slice: kernel io.max has NO entry", r1.stdout)
-        self.assertIn("stale-entry heal (one daemon-reload) was tried and did not fix it", r1.stdout)
+        self.assertIn("stale-entry heal (one daemon-reload, then every managed unit re-applied) was tried and did not fix it", r1.stdout)
         self.assertNotIn("Remedy: systemctl daemon-reload", r1.stdout)
         self.assertIn("io controller not enabled", r1.stdout)
         self.assertTrue(self.stamp().exists())
@@ -138,6 +138,58 @@ class SystemdSpellingTests(Base):
         r2, n2 = self._run_at(60)                 # a clean run with no reload ends the window
         self.assertEqual((r2.returncode, n2), (0, 0), r2.stdout)
         self.assertFalse(self.stamp().exists())
+
+    # ---- MDT-HS-06: one reload for the WHOLE batch, never unit by unit -----------------------------------
+    # The live precondition (2026-10-20): an earlier install rendered the NEW spelling (/dev/vda) into each unit
+    # and earlier runtime applies left the OLD spelling (/dev/mapper/<lv>) AFTER it, both with real non-max
+    # values.  The reconcile's reset turns the old entry into a stale all-max entry that is applied LAST.  The
+    # modelled reload rebuilds systemd's lists from the drop-ins and leaves the kernel's io.max as it is (a
+    # manual reload left the live dev-gates io.max empty); only set-property writes kernel state.
+    TIERS = ("dev.slice", "dev-gates.slice", "dev-buildkitd.slice")
+    EXPECT = {
+        "dev.slice": f"254:0 rbps={150 * MIB} wbps={150 * MIB} riops=500 wiops=500\n",
+        "dev-gates.slice": "254:0 rbps=max wbps=max riops=300 wiops=300\n",
+        "dev-buildkitd.slice": "254:0 rbps=max wbps=max riops=300 wiops=300\n",
+    }
+
+    def _seed_migration(self) -> None:
+        old = {"IOReadBandwidthMax": "52428800", "IOWriteBandwidthMax": "52428800", "IOReadIOPSMax": "111", "IOWriteIOPSMax": "112"}
+        new = {"IOReadBandwidthMax": "104857600", "IOWriteBandwidthMax": "104857600", "IOReadIOPSMax": "211", "IOWriteIOPSMax": "212"}
+        self.host.state.write_text(json.dumps({
+            "unit": self.host.unit_static,
+            "paths": {unit: [["/dev/vda", dict(new)], ["/dev/mapper/gstammtisch--vg-root", dict(old)]] for unit in self.TIERS},
+            "touched": {unit: True for unit in self.TIERS},
+        }))
+        for unit in self.TIERS:     # the kernel holds the last-applied (old-spelling) values from before the install
+            rel = "dev.slice" if unit == "dev.slice" else f"dev.slice/{unit}"
+            (self.host.cg / rel / "io.max").write_text("254:0 rbps=52428800 wbps=52428800 riops=111 wiops=112\n")
+
+    def _final(self) -> dict[str, str]:
+        return {u: self.host.io_max("dev.slice" if u == "dev.slice" else f"dev.slice/{u}") for u in self.TIERS}
+
+    def test_migration_from_the_old_spelling_ends_with_every_unit_at_its_intent(self) -> None:
+        """BEHAVIOUR only: every unit's final kernel io.max equals the intent, at most one reload, nothing fails."""
+        self._seed_migration()
+        result, reloads = self._run_at(0)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertLessEqual(reloads, 1, self.host.calls())
+        self.assertEqual(self._final(), self.EXPECT)
+
+    def test_a_second_run_inside_the_window_cannot_reload_again(self) -> None:
+        self._seed_migration()
+        r1, n1 = self._run_at(0)
+        self.assertEqual((r1.returncode, self._final()), (0, self.EXPECT), r1.stdout)
+        self.assertLessEqual(n1, 1)
+        self._seed_migration()                      # the same stale shape reappears on the timer's next run
+        r2, n2 = self._run_at(60)
+        self.assertEqual(n2, 0, "the persisted limiter blocks a second reload inside the window")
+
+    def test_a_heal_that_does_not_help_reloads_once_and_fails(self) -> None:
+        self._seed_migration()
+        result, reloads = self._run_at(0, FAKE_RELOAD_NOOP="1")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(reloads, 1)
+        self.assertNotEqual(self._final(), self.EXPECT)
 
     def test_no_reload_when_systemd_itself_does_not_report_the_values(self) -> None:
         """H-40: the kernel is empty and `show` hides the values: not the stale-entry case, so NO reload."""
@@ -252,7 +304,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_design_guide_records_measured_versus_inferred(self) -> None:
         design = " ".join((ROOT.parent / "docs" / "DESIGN-GUIDE.md").read_text().split())
-        for needle in ("MDT-HS-04", "DEVNAME", "measured", "inferred", "virtio", "PER PATH STRING", "daemon-reload"):
+        for needle in ("MDT-HS-04", "DEVNAME", "measured", "inferred", "virtio", "PER PATH STRING", "daemon-reload", "MDT-HS-06"):
             self.assertIn(needle, design)
         self.assertIn("MDT-HS-04", (ROOT.parent / "CHANGES.md").read_text())
 
