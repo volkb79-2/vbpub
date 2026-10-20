@@ -207,7 +207,7 @@ Findings:
 
 ### 4.6 Live B0/B1 and the read cost of small requests
 
-**B0 vs B1, live.** [M 2026-10-20 07:42–07:58 UTC gstammtisch.] With `WS.log` already on tmpfs (SMT-01)
+**B0 vs B1, live.** [M 2026-10-20 07:42–07:58 UTC gstammtisch; source: `IO-STALL-TESTING-GUIDE.md` §10, program directory.] With `WS.log` already on tmpfs (SMT-01)
 and the same standard load as section 4.
 
 | | B0: defaults (`dirty_ratio` 20/10, `nr_requests` 256, 4096 KB) | B1: bounded (dirty 16M/4M, `nr_requests` 16, 64 KB) |
@@ -226,7 +226,7 @@ same queueing mechanism as section 1, reached through a different door (swap-in 
 residual waits are small: `ext4_sync_file` fsync ~0.4 s in total and swap-in ~0.25 s.
 
 "Dominant" is meant literally: in the B0 window the game's D-state totals were **229.4 s in `do_swap_page`**
-and **7.5 s in `blk_mq_get_tag` (`swap_read_folio`)**, with **no other stack above 1 s** (so no `jbd2` or
+and **7.5 s in `blk_mq_get_tag` (`swap_read_folio`)**, with **no other stack above 1 s** (log: `/var/log/mdt-stall/dstate-20261020-pid2955344.log` on gstammtisch; so no `jbd2` or
 `wait_transaction_locked` stack reached that total). [M] Host fact, measured 2026-10-20: the game cgroup
 (`wings.slice/docker-<id>.scope`) has `memory.zswap.writeback=1` and `memory.zswap.max=max`; the operator
 decision is that writeback=1 and the zswap shrinker are required (this contradicts the older
@@ -235,7 +235,7 @@ and that they queue behind the dev writeback follow from B0 vs B1 (the wait vani
 bounded), not from tracing each page; that the bounded settings therefore also cure the swap-in wait is
 inferred from the same pair; and that the `WS.log` tmpfs alone would not have is a counterfactual.
 
-**Sequential-read cost of `max_sectors_kb`** (the cost 4.4 finding 5 left open). [M 2026-10-20
+**Sequential-read cost of `max_sectors_kb`** (the cost 4.4 finding 5 left open; source: `IO-STALL-TESTING-GUIDE.md` §10). [M 2026-10-20
 gstammtisch, root LV read-only, two repetitions each. Regime: raw LV reads at ≥600 GiB offsets on an
 80 %-full filesystem, each region read once; a provider-side cache cannot be excluded.]
 
@@ -246,7 +246,7 @@ gstammtisch, root LV read-only, two repetitions each. Regime: raw LV reads at �
 | 128 | 0.47 / 0.47 GB/s | 0.33 / 0.23 GB/s |
 | 64 | 0.30 / 0.29 GB/s | 0.24 / 0.24 GB/s |
 
-**Decision: 64 KB.** Buffered sequential reads are the same at 64–256 KB (0.23–0.35 GB/s); only O_DIRECT
+**Decision: 64 KB.** Buffered sequential reads are within ~30 % of each other at 64–256 KB (0.23–0.35 GB/s); only O_DIRECT
 large reads lose (1.3 → 0.3 GB/s), which is the accepted cost. (An earlier draft compared these read figures
 with the disk's write rate; that comparison is not valid and is dropped. Reads of builds and image pulls also
 share the queue with dev writeback.)

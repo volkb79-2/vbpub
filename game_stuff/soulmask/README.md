@@ -110,10 +110,13 @@ for `EATMYDATA` 0, 1 and unset.
    ```bash
    OUT=/tmp/eatmydata-out                     # where YOU read the result
    mkdir -p "$OUT"                            # must exist first, or Docker creates the bind source as root
-   HOST_TMP=$(docker inspect "$(hostname)" --format '{{range .Mounts}}{{if eq .Destination "/tmp"}}{{.Source}}{{end}}{{end}}')
-   : "${HOST_TMP:?could not derive the host path of /tmp}"
-   HOST_OUT="$HOST_TMP/eatmydata-out"         # the same directory, as the Docker daemon sees it
-   # On a bare host there is no translation:  HOST_OUT="$OUT"
+   if [ -f /.dockerenv ]; then                # inside a container (the devcontainer): translate to the host path
+     HOST_TMP=$(docker inspect "$(hostname)" --format '{{range .Mounts}}{{if eq .Destination "/tmp"}}{{.Source}}{{end}}{{end}}')
+     : "${HOST_TMP:?could not derive the host path of /tmp}"
+     HOST_OUT="$HOST_TMP/eatmydata-out"       # the same directory, as the Docker daemon sees it
+   else                                       # bare host: no translation
+     HOST_OUT="$OUT"
+   fi
    ```
    Then extract (both variables are now defined):
    ```bash
@@ -187,7 +190,10 @@ An empty map at exit means 0 syscalls. Compare with `EATMYDATA=0`, where `fdatas
 idle server syncs rarely.
 
 **Baseline measured 2026-10-20 (eatmydata effectively off):** 41 and 28 `fdatasync` per 60 s with 0 players
-online and `WS.log` on tmpfs. After numbers: *pending, to be added when eatmydata is live.*
+online and `WS.log` on tmpfs. **After, measured 2026-10-20 09:08 UTC** (new game pid 4040733,
+`LD_PRELOAD=/home/container/ksm-optin.so:/home/container/libeatmydata.so`, libeatmydata mapped (5 maps),
+ksm-optin mapped): **0** `fsync`/`fdatasync`/`msync`/`sync_file_range` syscalls in 60 s, against 41 and 28
+without it.
 
 #### Disable
 
