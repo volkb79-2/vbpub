@@ -255,5 +255,14 @@ class VmUpgradeStepTests(unittest.TestCase):
             self.assertIn(needle, script)
 
 
+class BuildkitdSocketWaitTests(unittest.TestCase):
+    def test_the_socket_wait_tolerates_a_slow_emulated_guest(self) -> None:
+        """The 4th restart in one vm-system run failed at the old 10 s (100 x 0.1 s) limit."""
+        unit = (ROOT / "units" / "mdt-buildkitd.service.in").read_text()
+        match = re.search(r'while \[ "\$attempt" -lt (\d+) \]; do socket=/run/mdt-buildkitd/buildkitd\.sock', unit)
+        self.assertIsNotNone(match)
+        self.assertGreaterEqual(int(match.group(1)) * 0.1, 60)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -80,7 +80,7 @@ ok "an unchanged, already-confirmed terminate policy proceeds and keeps the guar
 
 # back to report-only: the record is removed, so a later terminate needs confirming again
 sed -i 's|^BUILDX_ACCIDENTAL_CONTAINER_POLICY=.*|BUILDX_ACCIDENTAL_CONTAINER_POLICY=report-only|' "$CONF"
-bash "$HS/install.sh" >/dev/null 2>&1 || fail "install.sh with report-only failed"
+out=$(bash "$HS/install.sh" 2>&1) || { printf '%s\n' "$out" | tail -n 30; fail "install.sh with report-only failed"; }
 [ ! -e "$RECORD" ] || fail "report-only did not clear the confirmation record"
 ok "report-only clears the record"
 
