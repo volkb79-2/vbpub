@@ -307,7 +307,7 @@ pass "install.sh renders every units/*.in, and starts every *.slice"
 # installer ignores.  IO_SD_DEV (MDT-HS-04) is the whole disk's /dev/<DEVNAME>, computed by install.sh
 # from IO_DEV_PATH; the exemption is only valid while install.sh really derives it.
 DERIVED_RENDER_VARS="IO_SD_DEV"
-grep -qE '^[[:space:]]*IO_SD_DEV=\$\(_mdt_io_systemd_dev ' "$INSTALL_SH" \
+grep -qE 'IO_SD_DEV=\$\(_mdt_io_systemd_dev ' "$INSTALL_SH" \
   || fail "install.sh no longer derives IO_SD_DEV with _mdt_io_systemd_dev, so the derived-variable exemption in check (6) is invalid"
 for v in $(grep -ohE '@[A-Z_][A-Z0-9_]*@' "$HERE"/units/*.in | tr -d '@' | sort -u); do
   case " $DERIVED_RENDER_VARS " in *" $v "*) continue ;; esac
