@@ -105,6 +105,13 @@ this is precisely the intended failure mode: the best-effort tier absorbs all th
 waiting, prod feels nothing. Only worth revisiting if a *latency-sensitive* service ever
 lands in besteffort.
 
+## 6b. Soulmask game servers: steady-state zswap residency (2026-10-20 ~21:40 UTC)
+
+With only the two game servers running for hours, both sat below their `memory.low`, so reclaim and the zswap
+shrinker never visited them and their compressed pools stayed resident. Figures, mechanism and the sizing
+consequence (an inference): [zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc).
+Commands: [OBSERVATION.md](OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
+
 ## 7. Pending
 
 - controller / worker-io / worker-db DAMON profiles **under load** (see §5)

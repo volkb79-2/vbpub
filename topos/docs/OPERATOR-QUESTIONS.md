@@ -74,13 +74,25 @@ slice owner, its CPU/memory/IO rates, and the device/slice cap it is approaching
 | `free`, `vmstat`, `swapon` | Available/cache/swap decomposition, paging/reclaim/run-queue/context-switch rates, backend-aware zswap/zram/disk behavior. |
 | `df -h`, `df -i`, `mount` | Mount byte/inode capacity, read-only/error state, backing device and recent growth; hand off to `du`/filesystem tooling for unbounded path attribution. |
 | `iostat`, cgroup IO files | Per-device throughput/IOPS/utilization/queue/await where derivable, cgroup I/O rates/PSI/cap saturation, and lightweight per-process read/write/cancelled-write rates. Exact process-to-device attribution is an optional privileged capability. |
-| `sar`, `atop` | Immediate daemon-history series and window summaries with coverage, gaps, resets, source and persistence state. |
+| `sar`, `atop` (incl. the `atop -w file` / `atop -r file` recorder) | Immediate daemon-history series and window summaries with coverage, gaps, resets, source and persistence state. `atop` 2.11 is installable and has per-process disk, a cgroup view and PSI; its zswap fields are unverified. |
+| `iotop -oPa`, `iotop-c` (trixie-backports 1.31): which process issues the IO? | Per-process IO as *issued* (lightweight read/write/cancelled-write rates), kept distinct from IO as *charged* to a cgroup (see the note below). `iotop`'s SWAPIN/IO% columns need `sysctl kernel.task_delayacct=1`. |
+| `htop` IO_READ_RATE / IO_WRITE_RATE and CGROUP columns; `below` (Meta, cgroup-first with history, not packaged in Debian) | The per-process IO rates and cgroup ownership of `htop`, and the cgroup-first history of `below`, inside one verdict-first view. |
 | `ss`, `lsof -i` | On-demand listening socket inventory mapped to process/cgroup/container; address, protocol, port, namespace, queue and connection count. |
 | `lsof`, `/proc/*/fd`, file limits | On-demand per-process file-descriptor use versus limit, host file-table pressure, owning workload and coverage/permission limits; no arbitrary content browsing. |
 | `ps` state/wchan, blocked-task checks | D-state/blocked-process inventory, elapsed blocked time where available, cgroup owner and correlated device I/O pressure; do not claim an exact root cause from state alone. |
 | `ip -s`, `tc`, `ethtool` | Interface rates/errors/drops/backlog plus source-labelled per-entity attribution where a provider can prove it. |
 | `journalctl`, `dmesg`, container logs | Findings-driven, time-aligned, strictly bounded and redacted evidence; no continuous arbitrary-log ingestion by default. |
 | `systemctl status`, Docker health | Failed/unhealthy/restarting state and duration as lifecycle facts, correlated with resource findings. |
+
+**Issuer versus charged cgroup, and what none of the familiar tools shows.** The task that *issues* an IO and the
+cgroup it is *charged to* differ: writeback is issued by `kworker` flush threads but charged to the memcg/blkcg that
+dirtied the page (cgroup writeback), and swap-out is issued by kswapd or a direct-reclaiming thread but charged to
+the page owner's cgroup as io.cost debt. `systemd-cgtop` shows IO as *charged* (`io.stat`); `iotop`/`iotop-c`,
+`atop` and `htop` show it per process as *issued*. **None of them shows per-memcg zswap residency next to
+`memory.low`, or io.cost vrate and debt. That gap is what topos targets.** Until topos covers it, the read-only manual
+commands (charged IO, io.cost vrate, per-cgroup IO pressure, D-state stacks, per-memcg zswap residency) are listed in
+[`scripts/gstammtisch-guide/OBSERVATION.md`](../../scripts/gstammtisch-guide/OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands),
+which topos documents already reference for the gstammtisch measurements.
 
 Per-listening-port byte/packet attribution is not available from ordinary
 procfs socket inventory. It requires an optional privileged network provider

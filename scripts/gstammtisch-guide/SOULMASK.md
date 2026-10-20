@@ -392,6 +392,14 @@ Pak and game anon pages are **not separately tracked within the same cgroup** �
 
 For Soulmask in production: **min=6G, high=7G** (2026-07-07; 6G/8G interim on 07-06, 5G/6G before — see §2d). At rest the game uses ~5.8–6.4G; login and area-load transients briefly need more, and the ceiling must give them headroom instead of throttling (the old 6G ceiling caused failed player logins that only succeeded after retries). 7G keeps 1G of transient headroom while the ceiling still pre-compresses the cold tail during calm periods; if login issues reappear, go back to 8G. `memory.low=12G` is a best-effort global hint that rarely triggers (the game never reaches 12G). `memory.max=max` stays off to avoid OOM kills.
 
+> **Current values and what `memory.low` also decides (2026-10-20).** The values above are the 2026-07
+> calibration. After the Wings steady squeeze the live band is min 4000M, low 5000M, high 8000M
+> ([MEMORY-ARCHITECTURE.md](MEMORY-ARCHITECTURE.md#burst-writeback-stall-the-zswap-shrinker-has-no-rate-governor)).
+> `memory.low` also decides whether the zswap shrinker visits the game at all (a memcg below its low is skipped,
+> and its zswap pool counts in `memory.current`). Observation, mechanism and the (inferred) sizing consequence:
+> [zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc).
+> Manual commands: [OBSERVATION.md](OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
+
 ### Calibrating memory.min — finding the sweet spot
 
 **Goal**: hot working set in uncompressed RAM, cold/unexplored areas in zswap. The game self-limits — it will not expand to fill available RAM beyond its actual working set.
@@ -636,6 +644,13 @@ The `-saving` timer accesses the UE4 actor graph (anon pages). Pages that are zs
 
 **Should saves be more frequent?**
 At most 16 minutes of data loss on crash (last disk flush). For 2 players, 600s/960s is fine. Shortening adds CPU serialization spikes more often. On demand: `SaveWorld 0` then `BackupDataBase world` (or just `SaveWorld 1` if confirmed to do both).
+
+**Operational: stopping a swapped-out server pages it back in (measured 2026-10-20).** A server whose memory has
+been pushed to swap is read back from disk and zswap when it is stopped (and saved); stopping CLIENT took ~2 min.
+Budget the time and the disk read load for a stop; do not stack other disk work on it. Figures: [MEASUREMENTS.md M9](MEASUREMENTS.md#m9-shutdown-of-a-swapped-out-server-eatmydata-writeback-delay-save-cadence).
+**When eatmydata'd writes reach the disk:** within seconds, not the 30 s `dirty_expire` default, because
+`dirty_background_bytes` = 4 MiB starts writeback almost at once (same entry; probe
+`tools/io-stall/wb_delay.bt`).
 
 ## 2e. Cgroup observability — tools
 

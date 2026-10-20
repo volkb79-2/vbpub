@@ -1,5 +1,9 @@
 # Plan — Host Resource Governance for `gstammtisch`
 
+> Historical plan: values as planned in July. The live `memory.zswap.writeback` of the game cgroup is **1** (not the 0
+> shown in the tables below), and the IO-cap rows predate the 2026-10-20 findings; see
+> [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md) and [MEMORY-ARCHITECTURE.md](MEMORY-ARCHITECTURE.md).
+
 Status: PLAN ONLY (nothing applied). Authored 2026-07-01 against live host state.
 Scope: tiered cgroup-v2 resource governance (CPU / memory / IO) for a mixed-use
 16 GB host running one live game server (PROD), one interactive devcontainer, and

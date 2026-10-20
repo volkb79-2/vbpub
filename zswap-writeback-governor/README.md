@@ -72,9 +72,13 @@ Docs triad: this README is WHAT; `docs/DESIGN.md` is WHY; HOW to adopt
   cannot be excluded; the operator reports the pattern without load after every
   settle. Both are recorded facts, and H1 tests the operator's observation.
   (inferred; to be decided by the synthetic)
-- Recommendation: on 7.2.6 there is nothing beyond keeping
-  `vm.watermark_scale_factor` 200 (provisional) and measuring the reclaim
-  caller; later the userspace governor on `memory.reclaim source=zswap`
+- Steady state versus burst: below `memory.low` the shrinker writes back nothing,
+  above it at server start nearly everything; `memory.low` alone gives no graded
+  split. KERNEL-ANALYSIS section 6.1, DESIGN "Steady state versus burst".
+- Recommendation (as recorded; the provisional `vm.watermark_scale_factor` 200 was
+  superseded by the operator on 2026-10-20 ~23:16 UTC: wsf 50 and
+  `watermark_boost_factor` 0, see DESIGN section 5): on 7.2.6 there is nothing
+  beyond measuring the reclaim caller; later the userspace governor on `memory.reclaim source=zswap`
   together with a per-pass budget/rate pursued upstream. See DESIGN section 6.
 
 ## Operator decisions (2026-10-20, verbatim)
@@ -83,7 +87,7 @@ Docs triad: this README is WHAT; `docs/DESIGN.md` is WHY; HOW to adopt
 |---|---|---|
 | Raise the game's steady `memory.low` (mitigation (a)) | **REJECTED** | "no, far too much, around 4G min is fine as set now. refaults stay low at 5G. ignore your suggestion." |
 | Lower `dev.slice` `memory.high` (mitigation (c)) | **REJECTED** | "no, we need it" |
-| `vm.watermark_scale_factor` 200 (mitigation (b)) | accepted provisionally; live since ~10:20 UTC, **not persisted** | (no quote recorded; accepted provisionally) |
+| `vm.watermark_scale_factor` 200 (mitigation (b)) | accepted provisionally; live since ~10:20 UTC, **not persisted**; **superseded 2026-10-20 ~23:16 UTC: wsf 50 and `watermark_boost_factor` 0, persisted** | (no quote recorded; accepted provisionally) |
 | Chunked, rate-governed writeback governor | **WANTED later** | "yes, we want that at some time" |
 
 ## Upstream references

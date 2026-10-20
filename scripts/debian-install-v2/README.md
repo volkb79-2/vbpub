@@ -302,6 +302,11 @@ sysctl file carries a one-line "why" per value:
   safety net. An already-saved resume state keeps its saved value.
 - `vm.watermark_scale_factor = 50`, `vm.vfs_cache_pressure = 50`,
   `vm.page-cluster = 0`, `vm.dirty_ratio = 15`, `vm.dirty_background_ratio = 5`.
+- `vm.watermark_boost_factor` is **not written** by this installer (the kernel default, 15000, applies). On the
+  gstammtisch host the operator set it to `0` on 2026-10-20 after a stuck boost forced all reclaim into the
+  allocating threads; whether this installer should ask for or derive it (suggest 0 on swap-backed,
+  memory-protected hosts) is an open follow-up (mdt-cockpit backlog MDT-021). Reasoning and the measured failure:
+  [`scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`](../gstammtisch-guide/MEMORY-ARCHITECTURE.md#watermark-boost-and-the-1409-utc-failure-mode).
 - `vm.admin_reserve_kbytes = 65536`.
 - `vm.min_free_kbytes`: a FLOOR of 65536, applied by the boot-time
   `vbpub-min-free-floor.service` only when the kernel's computed value is

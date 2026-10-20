@@ -127,8 +127,8 @@ verify on lore.kernel.org**). Everything below is "posted, under review, not kno
   A probe of `memory.reclaim` keys on an empty throwaway cgroup returned **EIO for every key, including a bogus
   one**, so it was inconclusive and proves nothing either way.
 
-**Mitigation options and operator decisions (2026-10-20).** The operator's words are quoted. Only (b) is applied,
-and only live and provisionally.
+**Mitigation options and operator decisions (2026-10-20).** The operator's words are quoted. Only (b) was applied,
+live and provisionally, and it was later superseded (wsf 50, boost 0; see section 4).
 - **(a) REJECTED** by the operator: *"no, far too much, around 4G min is fine as set now. refaults stay low at
   5G."* (followed by *"ignore your suggestion."*) The steady band stays (min 4000M, low 5000M). The analysis follows for the record. Raise the game
   scope's steady `memory.low` to cover its steady set, so global reclaim takes from others
@@ -145,9 +145,10 @@ and only live and provisionally.
   node per [WINGS-CGROUPS-ROLLOUT.md](WINGS-CGROUPS-ROLLOUT.md) §2). So (a) means changing the panel value of
   `WINGS_CG_MEMORY_LOW` for the server.
 - **(b) ACCEPTED provisionally**: *raise `vm.watermark_scale_factor`* so kswapd reclaims ahead of demand and the
-  game stays out of direct reclaim **[I]**. Cost: more kswapd CPU and less usable free memory. **Applied live
-  only (50 → 200); the repo sysctl file still says 50.** Measurements, status and the evidence still owed:
-  see the subsection under section 4, "`vm.watermark_scale_factor`".
+  game stays out of direct reclaim **[I]**. Cost: more kswapd CPU and less usable free memory. **It was applied live
+  only (50 → 200); later that day the operator settled on wsf 50 with `watermark_boost_factor` 0 (the 200 trial
+  hit a stuck-boost failure).** Measurements and status: the subsection under section 4,
+  "`vm.watermark_scale_factor`", and "Watermark boost".
 - **(c) REJECTED** by the operator: *"no, we need it"*. `dev.slice` `memory.high` stays. (Analysis: lowering it
   would make dev builds reclaim themselves earlier and run slower **[I]**.)
 - **(d) WANTED later**: *"yes, we want that at some time"*. A userspace chunked governor that writes the pool back
@@ -193,7 +194,8 @@ File: [`99-gstammtisch-memory.conf`](files/etc/sysctl.d/99-gstammtisch-memory.co
 |---|---|---|
 | `vm.swappiness` | **100** | With zswap, reclaiming anon pages is cheap (compressed RAM, not disk). High swappiness pushes cold anon into the pool and keeps file cache (Docker layers, build cache) resident. **SWAP-1's 30 was backwards** — it would hoard cold anon in uncompressed RAM and evict useful cache. *Do not use swappiness to protect the game* — that's `memory.min`'s job (cgroup v2 has no per-cgroup swappiness). |
 | `vm.vfs_cache_pressure` | **50** | Keep dentry/inode caches; Docker does huge amounts of path lookup during create/teardown/builds. |
-| `vm.watermark_scale_factor` | **50** (repo file); **200 LIVE ONLY** on gstammtisch since 2026-10-20, provisional | Wake kswapd earlier → background reclaim starts before pressure is acute → less blocking direct reclaim under build storms. See the subsection below: the live value differs from this file. |
+| `vm.watermark_scale_factor` | **50** | Wake kswapd earlier → background reclaim starts before pressure is acute → less blocking direct reclaim under build storms. A 200 trial (2026-10-20) was superseded; see the subsection below. |
+| `vm.watermark_boost_factor` | **0** (operator decision 2026-10-20) | The kernel default 15000 lets a fragmentation event raise every watermark by up to 1.5 × high until kswapd clears it; on this swap-backed, memory-protected host the boost stuck once and forced all reclaim into the allocating threads. See "Watermark boost" below. |
 | `vm.page-cluster` | **0** | No swap readahead. Wasteful on SSD/thin backing and on zswap fault-back (random access). |
 | `vm.admin_reserve_kbytes` | **65536** | ~64 MB so root can always SSH in and act under OOM. |
 
@@ -216,14 +218,23 @@ So kswapd now wakes at ~385 MiB free instead of ~145 and refills to ~700 MiB ins
 **guaranteed** extra free memory is the difference of the **low** marks: about **240 MiB** (Normal 118 → 313,
 DMA32 27 → 72; per zone). The difference of the **high** marks (~480 MiB: Normal 183 → 572, DMA32 42 → 132) is the
 refill *target*, not a guarantee.
-`watermark_boost_factor` (15000) and `min_free_kbytes` (67584) are unchanged.
+`watermark_boost_factor` (15000) and `min_free_kbytes` (67584) were unchanged (at that time).
 
-**Status: applied LIVE ONLY, provisionally (operator-approved, option (b)).** `/etc/sysctl.d/99-gstammtisch-memory.conf`
-(repo copy `files/etc/sysctl.d/99-gstammtisch-memory.conf`, line 16) **still says 50**, so a reboot or
-`sysctl --system` reverts the live value. The repo file is deliberately not changed: persisting 200 waits for
-the measurement below.
+**Status: superseded by the operator decision of 2026-10-20 (~23:16 UTC): `vm.watermark_scale_factor = 50` and
+`vm.watermark_boost_factor = 0`**, persisted in `/etc/sysctl.d/99-gstammtisch-memory.conf` on gstammtisch (the
+repo copy `files/etc/sysctl.d/99-gstammtisch-memory.conf` carries wsf 50 and, since DOCS-FOLD-01, the boost
+line). The 200 trial below (live only, provisional, operator-approved as option (b)) is kept as history, with
+its numbers. The operator's target is ~100–300 MB free. The second Soulmask server start on the 200 trial hit
+the boost failure mode described in the next subsection.
 
-**Expected effect on this heavily overcommitted host [I], with the trade-offs:**
+**A second measurement of the same zones** (Normal zone, 16 GB, in MB): wsf 200: min 54 /
+low 313 / high 573; wsf 50: min 54 / low 118 / high 183. The table above (MiB, 53 / … / 572) comes from the
+earlier ~10:20 UTC read. The second reading is stated in MB; 573 MB would be 546 MiB, not 572, so the difference
+may be a unit or rounding artefact rather than a different reading; it is not reconciled. DMA32 has
+its own watermarks, and `lowmem_reserve_ratio` keeps part of DMA32 free and unusable for most allocations.
+Observed total free: ~500–700 MB at wsf 200; **expected** ~200–350 MB at wsf 50 **[I]**.
+
+**Expected effect of the 200 trial on this heavily overcommitted host [I], with the trade-offs (historical):**
 - at least ~240 MiB more RAM is kept free (the low-mark difference), up to ~480 MiB right after a kswapd pass
   (the high-mark difference), and it is not usable by page cache or anon;
 - kswapd runs earlier and more often: CPU in kswapd, more zswap compression, cold pages pushed to zswap and swap sooner;
@@ -234,10 +245,64 @@ the measurement below.
   themselves;
 - under sustained overcommit kswapd may run near-continuously.
 
-**The measurement still owed:** the next startup burst with `watermark_scale_factor=200`. The evidence that
-decides it: the game's D-state time in `shrink_memcg_cb` versus the time in kswapd, **the reclaim caller above
-`shrink_memcg_cb` (record a deeper stack than `kstack(10)`)**, and the fps dip (compare with M8: 455.8 s in
-`shrink_memcg_cb`, fps 29.9 → 5.9).
+**The measurement that was owed for the 200 trial** (the next startup burst: the game's D-state time in
+`shrink_memcg_cb` versus kswapd, **the reclaim caller above `shrink_memcg_cb`, recorded with a deeper stack than
+`kstack(10)`**, and the fps dip; compare with M8: 455.8 s in `shrink_memcg_cb`, fps 29.9 → 5.9) is still the
+evidence that decides whether any watermark setting helps the burst; the caller is still the open question.
+
+### Watermark boost and the 14:09 UTC failure mode
+
+**How the watermarks work.** Each zone has min < low < high. kswapd wakes below low and reclaims up to high. An
+allocation that would go below min reclaims for itself (direct reclaim, which stalls the allocating thread).
+`vm.min_free_kbytes` sets min; `vm.watermark_scale_factor` sets the low−min and high−low gaps as a fraction of zone
+memory (200 = 2 %, 50 = 0.5 %, default 10).
+
+**The boost mechanism [S, kernel v7.2 source].** On an external-fragmentation event (an allocation steals a
+pageblock of another migratetype), `boost_watermark()` adds one pageblock (2 MB) to `zone->watermark_boost`
+(`page_alloc.c:2163-2195`). The cap is high_wmark × `vm.watermark_boost_factor` / 10000; the default 15000 means
+1.5 × high. The boost is added to all three watermarks and kswapd is woken. A boosted kswapd pass runs with
+`may_swap = 0` and `may_writepage = 0`, i.e. clean file pages only (`vmscan.c:7164-7165`); kcompactd then
+compacts. At the end of its run kswapd subtracts the boost it saw at the start (`vmscan.c` ~7248-7260), so boost
+added during the pass remains. The recompute `__setup_per_zone_wmarks()` sets `watermark_boost = 0`
+(`page_alloc.c:6501`).
+
+**The failure seen (2026-10-20 14:09 UTC, second Soulmask server starting).**
+- **Observed [M]:** boost 220 008 pages = 1.5 × 146 672 (the high watermark at wsf 200) = 859 MB, effective min
+  912 MB; `node_unreclaimable` 1 with kswapd asleep; all reclaim direct (`pgscan_kswapd` 0/s against `pgscan_direct`
+  11–16 k/s, `allocstall` ~170–200/s), with zswap at its pool limit writing back synchronously; ~1.2 GB of file
+  pages, anon protected by `memory.min`/`low`; a watermark recompute cleared it.
+- **How `node_unreclaimable` was reached: [I], unexplained.** The earlier chain "boosted reclaim fails 16 times, so
+  the node goes unreclaimable and kswapd sleeps" is not supported: v7.2 does **not** count a kswapd failure for a
+  pass that started boosted (`vmscan.c:7237-7242`: `if (!sc.nr_reclaimed && !boosted)` before incrementing
+  `kswapd_failures`, "to prevent the kswapd thread from stopping"). The counted failures must have come from
+  passes that began unboosted, or by another route. The observation is [M]; the path is open.
+- Because kswapd was asleep and the boost remained, every allocation, game threads included, entered direct
+  reclaim **[I]**.
+
+**Recovery [M].** Writing *any* value to `vm.watermark_scale_factor` or `vm.min_free_kbytes` runs
+`setup_per_zone_wmarks()`, which recomputes every zone's watermarks **and resets `watermark_boost` to 0** [S].
+Rewriting the same wsf (200) cleared the boost: kswapd resumed at once (`node_unreclaimable` 0, direct reclaim 0/s).
+
+**Decision (operator, 2026-10-20):** `vm.watermark_boost_factor = 0` (persisted on gstammtisch at 23:16 UTC) and
+`vm.watermark_scale_factor = 50`. **Cost of boost 0:** more fragmentation, little impact with THP=`madvise`.
+**Watch:** `allocstall_*` in `/proc/vmstat` during a server start shows whether wsf 50 leaves enough kswapd headroom.
+
+**Related knobs:** `min_free_kbytes`, `watermark_scale_factor`, `watermark_boost_factor`, `lowmem_reserve_ratio`,
+`extfrag_threshold`, `compaction_proactiveness`, THP `enabled`/`defrag`.
+
+**Drift found:** the gstammtisch host has `vm.swappiness = 10`, while the repo's `99-gstammtisch-memory.conf` says
+100 (table above). Neither was changed; the operator decides (backlog GG-6).
+
+**Wizard and host-check follow-up:** the mdt host-setup does not manage the watermarks yet; backlog MDT-021 and the
+decision summary in [`mdt-cockpit/docs/DESIGN-GUIDE.md`](../../mdt-cockpit/docs/DESIGN-GUIDE.md#memory-watermarks-and-watermark-boost-are-kernel-settings-this-host-setup-does-not-own-yet-follow-up).
+
+### Steady state: zswap residency against `memory.low`
+
+Below its `memory.low` a game is not visited by the zswap shrinker, so its compressed pool stays resident for hours
+(observed 2026-10-20 ~21:40 UTC); above low at server start it writes back nearly everything, hence the
+all-or-nothing pattern. Numbers, mechanism and the sizing consequence (an inference that needs measurement):
+[zswap-writeback-governor KERNEL-ANALYSIS 6.1](../../zswap-writeback-governor/docs/KERNEL-ANALYSIS.md#61-steady-state-zswap-residency-below-memorylow-observation-2026-10-20-2140-utc).
+Manual commands: [OBSERVATION.md](OBSERVATION.md#per-memcg-zswap-residency-and-charged-io-manual-commands).
 
 ---
 

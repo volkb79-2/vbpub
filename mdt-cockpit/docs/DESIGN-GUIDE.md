@@ -889,6 +889,24 @@ counts as busy. The VM lane asserts that the guest's idle mdt-buildkitd classifi
 expiry further out is a WARN and ignored. The file must be a regular file (lstat; a symlink or special file is refused) owned by the user the reconcile
 runs as (root in production, so a file an unprivileged user could create is refused), not group/world-writable, in a directory with the same properties.
 
+## Memory watermarks and watermark boost are kernel settings this host-setup does not own yet (follow-up)
+
+**Status.** host-setup manages `vm.dirty_*` and the root queue (MDT-HS-05) and the scheduler and io.cost (MDT-HS-07). It does **not** yet manage the
+memory watermarks. On gstammtisch they are set by hand in `/etc/sysctl.d/99-gstammtisch-memory.conf` (the repo copy is
+`scripts/gstammtisch-guide/files/etc/sysctl.d/99-gstammtisch-memory.conf`); `scripts/debian-install-v2` writes the same sysctls on a fresh install. The
+mechanism, the measured numbers, the source-labelled statements and the 14:09 UTC failure record are canonical in
+`scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`, "Watermark boost and the 14:09 UTC failure mode" (not repeated here, to avoid drift).
+
+**What the wizard needs from it.** On gstammtisch a watermark boost of 859 MB was observed holding free memory while all reclaim ran in the allocating
+threads [M]; a watermark recompute cleared it. **Decision (operator, 2026-10-20):** `vm.watermark_boost_factor = 0` (persisted on gstammtisch at 23:16
+UTC) and `vm.watermark_scale_factor = 50`, target ~100–300 MB free; the cost of boost 0 is more fragmentation, little impact with THP=`madvise`. Related
+knobs to name: `min_free_kbytes`, `watermark_scale_factor`, `watermark_boost_factor`, `lowmem_reserve_ratio`, `extfrag_threshold`,
+`compaction_proactiveness`, THP `enabled`/`defrag`.
+
+**Wizard implication (not implemented; backlog MDT-021).** The wizard, and debian-install-v2 which writes the same sysctls, should ask for or derive
+`watermark_boost_factor` (suggest 0 on swap-backed, memory-protected hosts) next to wsf, with the reasoning in `scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md` ("Watermark boost and the 14:09 UTC failure mode"). `mdt-host-check.sh` should WARN when
+`node_unreclaimable` is 1 or `watermark_boost` is non-zero for long.
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may

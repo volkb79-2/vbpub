@@ -467,3 +467,30 @@ which **16.03 s is `shrink_memcg_cb` writeback** (worst windows 11:34:09 local 6
 memory PSI some rose ~22 s within 09:34:00–09:34:30; the load's 1 GiB dd files are page cache under
 `dev-gates.slice` (memory.high 7 G). vda ~11.9 MB/s, gate fio 214 iops. **Conclusion:** the IO-queue stall
 is fixed; the remaining stall is memory-reclaim-driven zswap writeback inside the game's threads.
+
+---
+
+## M9. Shutdown of a swapped-out server, eatmydata writeback delay, save cadence
+
+*Measured 2026-10-20 on gstammtisch (UTC) by the controller; the bpftrace and iostat logs are on the host, not in
+this repo. Labels: [M] measured, [I] inferred.*
+
+**Shutdown of a swapped-out server.** [M] CLIENT (`6c418fe7…`) was stopped via the Wings API. The stop took **125 s**
+(Wings stop request 23:12:38, container exit 23:14:43 UTC); the observer's own log says 128 s because its sampling
+window began about 3 s earlier. Exit code 130 is the normal stop-signal path.
+- **Page-in during shutdown:** 1 724 MiB from disk swap (`pswpin`) plus 805 MiB from zswap (`zswpin`); major faults
+  651 k, up to ~5 300 disk swap-ins/s. The scope's anon grew 3083 → 4522 MB before release.
+- **Shutdown save:** `world.db` and `world.db-journal`.
+- **Stalls:** the worst game-thread D-state was 4.5 s, at 23:12:59. The other server (MAIN) had no stall ≥ 20 ms
+  throughout.
+- **Implication:** stopping (and saving) a swapped-out server pages most of it back in. Budget the time (~2 min here)
+  and the disk read load for it. Operational note: [SOULMASK.md](SOULMASK.md#soulmask-save--backup-mechanism).
+
+**When eatmydata'd writes reach the disk.** [M] Probe [`tools/io-stall/wb_delay.bt`](tools/io-stall/wb_delay.bt)
+(game `vfs_write` on ext4 → `writeback_single_inode` for that inode; usage in the tools README).
+- Shutdown save: `world.db` reached the disk **0.4–2.3 s after its first write and ≤ 0.56 s after its last write**.
+- **Why so fast [I]:** `dirty_background_bytes` = 4 MiB (MDT-HS-05) starts writeback almost immediately, so the
+  exposure window of eatmydata is seconds, not the 30 s `dirty_expire` default.
+
+**Save cadence.** [M] Soulmask logs `logDB … cleanup auto database` hourly (at :08:39 on MAIN, :00:34 on CLIENT).
+`world.db` is rewritten more often than that.
