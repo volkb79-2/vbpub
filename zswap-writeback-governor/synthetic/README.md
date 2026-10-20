@@ -5,11 +5,28 @@ syntax only (`bash -n`, `shellcheck -S warning`, `py_compile`). The controller
 grants the run slot. Nothing here has been observed to work end to end; the
 first run will shake out harness details (see "Known weaknesses").
 
-**Safety.** Runs only inside the QEMU/TCG guest of
+**Safety (the actual guard).** Runs only inside the QEMU/TCG guest of
 [`scripts/debian-install-v2/testing/vm`](../../scripts/debian-install-v2/testing/vm/README.md)
 (its own kernel; `swapon`, sysctls and memory hogs never touch the host).
-`setup-guest.sh` refuses to continue unless `systemd-detect-virt --vm` says
-`qemu`/`kvm`. Never run any file under `guest/` on the live host.
+"Is a VM" proves nothing: gstammtisch, the production host, is itself a KVM
+guest and `systemd-detect-virt` says `kvm` there too, so it is **not** used.
+The guard is a **positive marker**: `/etc/zwg-harness-guest`, owned by root,
+containing exactly `zwg-harness-guest run=<run> nonce=<nonce>`. Only
+`run-synthetic.sh` writes it, over ssh, into a guest it has just started with
+`vmctl`, and it passes the same `ZWG_RUN`/`ZWG_NONCE` to each guest script.
+`guest/lib-guard.sh::require_harness_guest` is the first action of
+`setup-guest.sh`, `run-variant.sh` and `ensure-kernel.sh`; without the marker
+(or with a mismatch) they exit 97 before changing anything. Independently, they
+refuse if `/proc/swaps` lists any area other than `/swapfile`, and nothing uses
+`swapoff -a` (only `swapoff /swapfile`). The marker is removed before the base
+image is snapshotted. Copying these scripts to a production host does not make
+them run there: someone would have to create the marker by hand.
+`check-guards.sh` is the static refusal test (grep/awk only, executes nothing of
+the synthetic): it fails if a mutating script lacks the guard call or calls it
+after its first mutating command, if `swapoff -a` or `systemd-detect-virt`
+appears, if the marker/nonce/foreign-swap checks are removed from the lib, or if
+the driver stops writing the marker. It was exercised both ways (passes on the
+tree, fails on a copy with the guard call deleted).
 
 ## What it reproduces
 
@@ -32,6 +49,7 @@ Host-to-guest scale model (everything derived or recorded in `meta.json`):
 | Swap queue | `nr_requests` 16, `max_sectors_kb` 64 | same (`setup-guest.sh`) |
 | `min_free_kbytes` | 67584 KiB | the same proportion of RAM |
 | `watermark_scale_factor` | 50 at the incident | 50 (H3 variant: 200) |
+| Protection chain | `wings.slice` floors above the game scope | `zwg` parent's `memory.min/low` = children's sum, re-set on every band change (see below) |
 | Band after the squeeze | min 4000M / low 5000M / high 8000M of ~7.5 G | 53 % / 67 % / 107 % of the settled usage `U` |
 | zswap | zstd, `max_pool_percent` 25, shrinker Y, `memory.zswap.writeback=1`, `memory.zswap.max=max` | same |
 
@@ -45,18 +63,43 @@ rate, is what matters; override with `THROTTLE_MIBPS`).
 |---|---|
 | `run-synthetic.sh` | host driver: `prepare` (7.x-kernel guest image), `run <variant> <rep>`, `matrix`; applies and verifies the QEMU write throttle |
 | `guest/ensure-kernel.sh` | installs a trixie-backports kernel (Debian 13's 6.12 has the older shrinker, not the v7.2 one analysed) |
+| `guest/lib-guard.sh` | the harness-guest marker check (above) |
+| `check-guards.sh` | static refusal test for the guard |
 | `guest/setup-guest.sh` | guest preconditions, zswap/queue/THP settings, swap file, cgroups; fails loudly |
 | `guest/run-variant.sh` | one variant end to end: fill, settle, optional squeeze, wait for burst or cap; writes `meta.json` |
 | `guest/workload.py` | the "game": compressible anon WS, hot subset, own-thread churn, latency probe process |
-| `guest/bgpressure.py` | constant low global pressure: ballast + periodic churn |
-| `guest/sampler.py` | 1 Hz counters (`samples.jsonl`) + 10 Hz FULL kernel stacks of the game's D-state threads (`stacks.jsonl`) |
+| `guest/bgpressure.py` | constant low global pressure: mlocked ballast + periodic churn |
+| `guest/sampler.py` | 1 Hz counters (`samples.jsonl`) + 10 Hz FULL kernel stacks of the game's D-state threads and of the `kswapd` threads (`stacks.jsonl`, field `kind`) |
 | `analyze.py` | the authority for all definitions and verdicts below |
+
+## Protection chain: why the `zwg` parent carries min/low
+
+The kernel clamps a child's effective protection by its parent's. In
+`page_counter_calculate_protection()` (`mm/page_counter.c:445-463`, v7.2) a cgroup
+whose parent is the root gets `emin = min`, `elow = low` (445-448); a deeper cgroup
+gets `effective_protection()` (`page_counter.c` 358-359 and following):
+`protected = min(usage, setting)`, and if the siblings' combined protected usage
+exceeds the parent's effective protection the child receives
+`protected * parent_effective / siblings_protected`. `zwg` is a child of the root
+and starts with `memory.min = memory.low = 0`, so `parent_effective = 0` and the
+effective protection of `zwg/game` and `zwg/bg` is `0` whatever is written on
+them: the PRE/POST bands and the ballast protection would be silent no-ops
+(H2 could not show an effect even if one existed). `run-variant.sh` therefore
+re-sets `zwg/memory.min = game.min + bg.min` and `zwg/memory.low = game.low +
+bg.min` after every band change (`set_parent_protection`); then
+`parent_effective >= siblings_protected` and the children keep their full
+settings. This mirrors the real host, where `wings.slice` carries floors above
+the game scope. The ballast is additionally `mlock()`ed (unevictable, independent
+of any protection), and each second the sampler records `bg` `zswapped` and
+`memory.swap.current`; a non-zero value invalidates the run.
 
 ## Measurements per run
 
 - **Time from settle to the writeback burst** (`t_burst_s`).
-- **zswap pool size and `written_back_pages` over time** (`samples.jsonl`, from
-  `/sys/kernel/debug/zswap` and `memory.stat`).
+- **zswap pool size and written-back pages over time** (`samples.jsonl`). Settle and
+  burst use the **game cgroup's own** `memory.stat` (`zswapped` / 4096 as stored
+  pages, `zswpwb` as written back), not the global debugfs counters, which also
+  count any other cgroup's pages. The debugfs values are recorded alongside.
 - **The workload's own stall**: `probe.jsonl`, one row per second from a probe
   process in the game cgroup that allocates a small region on every iteration
   (so it stalls when reclaim hits an allocating thread of this cgroup) and
@@ -83,6 +126,11 @@ rate, is what matters; override with `THROTTLE_MIBPS`).
   decompress is invisible) is a limit, reported as `unmeasured`, never guessed.
 - Global-reclaim counters: `allocstall_*`, `pgscan_direct`, `pgscan_kswapd`
   deltas over [settle, burst], and the game cgroup's `memory.events high`.
+- **Where writeback runs**: samples of `shrink_memcg_cb` stacks per thread kind,
+  `game` vs `kswapd` (`kswapd_shrink_samples`), so H3's premise (writeback
+  moved to kswapd) is measured, not inferred from the stall alone.
+- **Ballast integrity**: `bg` `memory.stat zswapped` and `memory.swap.current`
+  are recorded each second; a run where either is non-zero is invalid.
 
 ## Definitions (exact)
 
@@ -93,11 +141,14 @@ rate, is what matters; override with `THROTTLE_MIBPS`).
   `written_back_pages(t+60 s) - written_back_pages(t) >= 0.25 x stored_pages(T_settle)`.
   `t_burst_s = t - T_settle`. No burst by the cap (`CAP_S`, default 2400 s after
   settle) means "no burst".
-- **Stall seconds** (`stall_s`): count of seconds in `[T_burst, T_burst+300 s]`
+- **Stall seconds** (`stall_s`): count of seconds in `[T_burst, T_burst+360 s]` (the 60 s burst window plus the sampler's 300 s post window; the caller is read over the same window)
   whose probe `max_ms >= 200` (`STALL_MS`). `baseline_stall_s`: the same over the
   120 s after settle.
-- **Valid run**: `meta.json` and the settle marker exist; a run that dies or
-  never settles is invalid and excluded, never counted as "no burst".
+- **Valid run**: `meta.json` (outcome `ok`) and the settle marker exist and the
+  ballast was never swapped; anything else is invalid and excluded, never counted
+  as "no burst". A run whose pool never settles within `SETTLE_TIMEOUT_S`
+  (default 900 s after the fill) is recorded with outcome `did-not-settle` and
+  reported as such (distinct from "no burst").
 
 ## Variants and the matrix
 
@@ -125,15 +176,16 @@ if the code and this text ever disagree, the bug is whichever is reviewed
 second.
 
 **H1: shrinker aging under constant low reclaim pressure triggers the burst after N minutes.**
-- PASS: at least 2 of 3 `base` runs burst, each with `t_burst_s >= 120`, and the
-  `t_burst_s` values of those runs satisfy `max/min <= 2.0`; AND `idle` (no
+- PASS: at least 2 of 3 `base` runs burst, **none of the bursting runs earlier
+  than 120 s after settle**, and the `t_burst_s` values of the bursting runs
+  satisfy `max/min <= 2.0`; AND `idle` (no
   pressure after the fill) shows no burst within the cap; AND `noshrink` shows
   no burst.
 - FAIL: fewer than 2 of 3 `base` runs burst within the cap; or `idle` bursts
   (time alone would then trigger it, which the source says is impossible:
   investigate); or `noshrink` bursts (the shrinker is not the writer).
-- INCONCLUSIVE: bursts exist but earlier than 120 s after settle (settle
-  detection suspect) or spread > 2x.
+- INCONCLUSIVE: any `base` burst earlier than 120 s after settle (settle
+  detection suspect), or spread > 2x.
 - Source prediction ([KERNEL-ANALYSIS](../docs/KERNEL-ANALYSIS.md) section 2/5),
   recorded before the run: `idle` quiet (no reclaim, no shrinker visits).
   Whether `base` bursts depends on the pressure ever reaching deep priority
@@ -146,6 +198,8 @@ without a burst counts as its observed time after settle):
 - PASS: `m_s <= 0.5 x m_b` and at least 2 of 3 variant runs burst.
 - FAIL: `m_s >= 0.8 x m_b`.
 - INCONCLUSIVE: otherwise.
+- INAPPLICABLE: fewer than 2 of 3 `base` runs burst (there is no reference time to
+  advance; H1 did not PASS).
 - Source prediction: for `squeeze-minlow` FAIL, because while the game's usage
   stays above its effective `memory.low` the shrinker gate is unchanged
   and the shrinker count ignores protection (KERNEL-ANALYSIS section 6). `squeeze`
@@ -157,8 +211,10 @@ Depends on the measured caller: it can only help if the caller is global direct 
 - NOT-APPLICABLE (not a FAIL): fewer than 2 of the bursting `base` runs have
   caller `global-direct`. Report the measured caller instead.
 - PASS: median `stall_s` of the 3 `wsf200` runs `<= 0.5 x` the median of the
-  bursting `base` runs.
-- FAIL: `>= 0.8 x`. INCONCLUSIVE otherwise (also when the base median is 0).
+  bursting `base` runs AND the median number of `shrink_memcg_cb` D-state
+  samples in game threads is `<= 0.5 x` that of base (the writeback left the
+  game threads; the `kswapd` counts are reported next to it).
+- FAIL: stall seconds `>= 0.8 x`. INCONCLUSIVE otherwise (also when the base median is 0).
 - Note: kswapd is one thread per node. If it blocks in `blk_mq_get_tag` on the
   throttled device, allocators fall back to direct reclaim anyway
   (KERNEL-ANALYSIS section 3). That is a mechanism for a FAIL, to be read from
@@ -171,6 +227,9 @@ Depends on the measured caller: it can only help if the caller is global direct 
 - PASS: at least 2 valid runs burst with `t_burst_s >= 120`, every one of them
   with caller `memcg-high`; AND `highonly-noshrink` shows no burst.
 - FAIL: at least 2 valid runs show no burst within the cap; or the control bursts.
+- DID-NOT-SETTLE: at least 2 of the 3 `highonly` runs never settled: memory.high
+  reclaim and the shrinker act during the fill itself, so the pool may keep moving
+  and give no aging window. Reported as its own outcome, not as FAIL.
 - INCONCLUSIVE: otherwise (e.g. bursts with another caller).
 - Source prediction **[I]**: memory.high reclaim asks for a small `nr_pages`
   (`MEMCG_CHARGE_BATCH`) and stops once the LRU scan has reclaimed it, so the
@@ -196,6 +255,13 @@ python3 analyze.py ./results/full
 `results/` is git-ignored (see `.gitignore` in this folder).
 
 ## Known weaknesses (so a PASS is not over-read)
+
+- **`highonly` may never settle.** `memory.high` is set to the target from the start,
+  so memory.high reclaim and the shrinker act during the fill and the settle
+  criterion may never hold. That is a recorded outcome (`did-not-settle`, bounded by
+  `SETTLE_TIMEOUT_S`), costs the run, and leaves H4 as DID-NOT-SETTLE rather than a
+  false FAIL. If it happens, lower the fill pressure (a stepped `memory.high`) before
+  rerunning.
 
 - **Never run.** Expect harness fixes on the first run.
 - **TCG timing.** CPU emulation makes compression, probe iterations and page

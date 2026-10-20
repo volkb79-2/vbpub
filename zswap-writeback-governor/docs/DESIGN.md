@@ -108,7 +108,7 @@ Candidates, ordered by how little they disturb reclaim:
   `blk_mq_get_tag` fails fast; on `-EAGAIN` stop the walk (`LRU_STOP`). This
   paces at device speed without ever sleeping in the reclaimer. Con: the
   writeback path decompresses and frees the entry **before** submitting
-  (`zswap.c:1043-1062`), so a failed submission needs a restore path;
+  (`zswap.c:1032-1062`), so a failed submission needs a restore path;
   non-trivial and untried. A sketch **[I]**, not a recommendation to implement.
 
 Any of these first needs the upstream conversation (see
@@ -137,7 +137,7 @@ kswapd, not in the game's threads. Limits, from source:
 
 ## Operator decisions (2026-10-20, recorded verbatim)
 
-| Item | Decision | Operator's words |
+| Item | Decision | Operator's words (full text; shorter elsewhere in the repo is abridged) |
 |---|---|---|
 | Raise the game's steady `memory.low` (mitigation (a)) | **REJECTED** | "no, far too much, around 4G min is fine as set now. refaults stay low at 5G. ignore your suggestion." |
 | Lower `dev.slice` `memory.high` (mitigation (c)) | **REJECTED** | "no, we need it" |

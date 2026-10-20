@@ -39,6 +39,9 @@ THROTTLE_MIBPS="${THROTTLE_MIBPS:-unset}"   # recorded only; applied by the driv
 
 die() { echo "run-variant: $*" >&2; exit 1; }
 [ "$(id -u)" = 0 ] || die "must run as root"
+# shellcheck source=lib-guard.sh
+. "$HERE/lib-guard.sh"
+require_harness_guest   # exits 97 before any sysctl or cgroup write unless run-synthetic.sh marked this guest
 [ -d /sys/fs/cgroup/zwg/game ] || die "run setup-guest.sh first"
 mountpoint -q /sys/kernel/debug || die "debugfs not mounted; run setup-guest.sh first"
 
@@ -89,6 +92,17 @@ set_band() {  # min_mib low_mib high_mib (a value of 'max' for high)
     set_cg game/memory.min "$(( $1 * MB ))"
     set_cg game/memory.low "$(( $2 * MB ))"
     if [ "$3" = max ]; then set_cg game/memory.high max; else set_cg game/memory.high "$(( $3 * MB ))"; fi
+    set_parent_protection
+}
+# The parent must itself carry protection covering its children, or the kernel's effective
+# protection for the children is clamped to the parent's (page_counter.c effective_protection(),
+# overcommit branch: protected * parent_effective / siblings_protected, and zwg's own emin/elow
+# would be 0). Called after every change of the children's min/low.
+set_parent_protection() {
+    local gmin glow bmin
+    gmin=$(cat "$CG/game/memory.min"); glow=$(cat "$CG/game/memory.low"); bmin=$(cat "$CG/bg/memory.min")
+    set_cg memory.min "$(( gmin + bmin ))"
+    set_cg memory.low "$(( glow + bmin ))"
 }
 set_cg game/memory.zswap.writeback 1
 set_cg game/memory.zswap.max max
@@ -103,7 +117,7 @@ set_cg bg/memory.zswap.writeback 0   # keep the ballast out of the writeback cou
 # --- start observation ------------------------------------------------------
 rm -f "$OUT"/fill-done "$OUT"/ready "$OUT"/bg-ready "$OUT"/done "$OUT"/settled.json "$OUT"/burst.json "$OUT"/never-settled
 python3 "$HERE/sampler.py" --out "$OUT" --cg "$CG/game" --fill-done-file "$OUT/fill-done" \
-    --cap-s "$CAP_S" --max-fill-wait-s 900 > "$OUT/sampler.log" 2>&1 &
+    --cap-s "$CAP_S" --post-s 300 --max-fill-wait-s "${SETTLE_TIMEOUT_S:-900}" --bg-cg "$CG/bg" > "$OUT/sampler.log" 2>&1 &
 SAMPLER=$!
 cleanup() {
     [ -n "${WORKLOAD:-}" ] && kill "$WORKLOAD" 2>/dev/null || true
@@ -134,6 +148,7 @@ if [ "$BG" = 1 ]; then
         --ready-file '"$OUT"'/bg-ready' > "$OUT/bg.log" 2>&1 &
     BGPID=$!
     set_cg bg/memory.min "$(( BALLAST_MB * MB ))"
+    set_parent_protection
     for _ in $(seq 1 "$FILL_TIMEOUT_S"); do
         [ -f "$OUT/bg-ready" ] && break
         kill -0 "$BGPID" 2>/dev/null || die "bgpressure died: $(cat "$OUT/bg.log")"
@@ -161,34 +176,38 @@ if [ "$BG" = 1 ] && [ "$BG_KEEP" = 0 ]; then
     # idle control: the pool is populated; remove all background pressure before settle
     kill "$BGPID"; wait "$BGPID" 2>/dev/null || true; BGPID=""
     set_cg bg/memory.min 0
+    set_parent_protection
 fi
 date +%s.%N > "$OUT/fill-done"
 
 # --- wait for settle, optionally squeeze, wait for done ---------------------
-for _ in $(seq 1 1000); do
-    [ -f "$OUT/settled.json" ] && break
-    [ -f "$OUT/never-settled" ] && die "pool never settled (see sampler.log / samples.jsonl)"
+OUTCOME=ok
+SQUEEZED_AT=""
+while [ ! -f "$OUT/settled.json" ]; do
+    if [ -f "$OUT/never-settled" ]; then OUTCOME=did-not-settle; break; fi
     kill -0 "$SAMPLER" 2>/dev/null || die "sampler exited before settle: $(cat "$OUT/sampler.log")"
     sleep 1
 done
-[ -f "$OUT/settled.json" ] || die "settle marker never appeared"
-SQUEEZED_AT=""
-case "$SQUEEZE" in
-    all)    set_band $(( U_MB * 53 / 100 )) $(( U_MB * 67 / 100 )) $(( U_MB * 107 / 100 )); SQUEEZED_AT=$(date +%s.%N) ;;
-    minlow) set_band $(( U_MB * 53 / 100 )) $(( U_MB * 67 / 100 )) $(( U_MB * 2 )); SQUEEZED_AT=$(date +%s.%N) ;;
-    none)   ;;
-esac
-# (53/67/107 % of U are the host's 4000M/5000M/8000M against its ~7.5 G footprint)
-
-while [ ! -f "$OUT/done" ]; do
-    kill -0 "$SAMPLER" 2>/dev/null || break
-    sleep 5
-done
+# "did-not-settle" is a recorded outcome (the pool kept moving for SETTLE_TIMEOUT_S after the fill),
+# not an error: analyze.py reports it separately from "no burst" and never counts it as one.
+if [ "$OUTCOME" = ok ]; then
+    case "$SQUEEZE" in
+        all)    set_band $(( U_MB * 53 / 100 )) $(( U_MB * 67 / 100 )) $(( U_MB * 107 / 100 )); SQUEEZED_AT=$(date +%s.%N) ;;
+        minlow) set_band $(( U_MB * 53 / 100 )) $(( U_MB * 67 / 100 )) $(( U_MB * 2 )); SQUEEZED_AT=$(date +%s.%N) ;;
+        none)   ;;
+    esac
+    # (53/67/107 % of U are the host's 4000M/5000M/8000M against its ~7.5 G footprint)
+    while [ ! -f "$OUT/done" ]; do
+        kill -0 "$SAMPLER" 2>/dev/null || break
+        sleep 5
+    done
+fi
 wait "$SAMPLER" || true
 
 cat > "$OUT/meta.json" <<EOF
 {
   "variant": "$VARIANT",
+  "outcome": "$OUTCOME",
   "kernel": "$(uname -r)",
   "ws_mb": $WS_MB, "hot_pct": $HOT_PCT, "cold_pushed_pct": $COLD_PUSHED_PCT, "ratio_x10_for_sizing": $RATIO_X10,
   "memtotal_mb": $MEMTOTAL_MB, "baseline_used_mb": $BASELINE_USED_MB,

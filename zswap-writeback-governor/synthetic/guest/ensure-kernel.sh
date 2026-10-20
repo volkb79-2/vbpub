@@ -4,6 +4,10 @@
 # in docs/KERNEL-ANALYSIS.md). Runs INSIDE the guest as root.
 # Exit 0: already >= 7.x.  Exit 10: a newer kernel was installed, REBOOT the guest.
 set -euo pipefail
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib-guard.sh
+. "$HERE/lib-guard.sh"
+require_harness_guest
 
 major="$(uname -r | cut -d. -f1)"
 if [ "$major" -ge 7 ]; then

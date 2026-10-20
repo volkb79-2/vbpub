@@ -26,6 +26,8 @@ gstammtisch (kernel `7.2.6+deb13-amd64`) on 2026-10-20. Companion documents:
   | `mm/memcontrol.c` (6068) | `reclaim_high` 2328-2350, `high_work_func` 2352-2357, `__mem_cgroup_handle_over_high` 2505-2600, zswap charge 5837-5930 |
   | `include/linux/memcontrol.h` (1991) | `mem_cgroup_unprotected` / `below_low` / `below_min` 604-634, `mem_cgroup_protection` 549-600 |
   | `mm/page_io.c` (721) | `swap_writepage_bdev_async` 449-464, `__swap_writepage` 466-487, swap-in hook 689-693 |
+  | `mm/list_lru.c` | `__list_lru_walk_one` 336-390 (`LRU_ROTATE` not counted as isolated, 378-380) |
+  | `mm/page_counter.c` (465) | `effective_protection` ~337-398, `page_counter_calculate_protection` 424-463 (used by the synthetic's parent-protection design) |
   | `include/linux/shrinker.h` | `DEFAULT_SEEKS` = 2 (line 119); `DEF_PRIORITY` = 12 (`include/linux/mmzone.h:1381`) |
 
 - Labels: **[S]** proven by the quoted source; **[M]** measured on the host
@@ -62,7 +64,7 @@ node, in this order:
 1. 0 if `shrinker_enabled` is off or `memory.zswap.writeback` is 0 on the
    memcg or any ancestor (`1200`, `mem_cgroup_zswap_writeback_enabled`,
    `memcontrol.c:5931-5942`);
-2. 0 if the reclaim `gfp_mask` lacks `__GFP_IO|__GFP_FS` (`1210`);
+2. 0 if the reclaim `gfp_mask` lacks `__GFP_IO|__GFP_FS` (`1208`);
 3. `nr_stored` (`MEMCG_ZSWAPPED`) and `nr_backing` (`MEMCG_ZSWAP_B >> PAGE_SHIFT`)
    from the memcg's stats; 0 if nothing is stored (`1228`);
 4. `nr_freeable` = number of entries on this memcg's zswap LRU (`1231`);
@@ -100,34 +102,53 @@ if (entry->referenced) {          /* 1102 */
 
 Therefore: **yes, an entry survives its first shrinker visit and is written
 back on its next visit** (the comment block at `1066-1077` states exactly this
-intent). Two properties follow, both **[S]**:
+intent). Three properties follow, all **[S]**:
 
-- the clearing visit costs a scan unit but no I/O, so it is cheap; a single pass
-  that merely has to rotate the whole list can "arm" the entire pool
-  (every entry `referenced == false`) without writing a page;
+- the clearing visit costs a scan unit but no I/O, so it is cheap;
+- **an all-referenced batch ends the visit, so arming is slow, not instant.**
+  `LRU_ROTATE` moves the item to the tail and does not count it as isolated
+  (`list_lru.c:378-380`; only `LRU_REMOVED`/`LRU_REMOVED_RETRY` increment
+  `isolated`). A batch whose entries are all still `referenced` therefore
+  isolates nothing; `zswap_shrinker_scan` returns `shrink_ret ? shrink_ret :
+  SHRINK_STOP` (`zswap.c:1187`) and `do_shrink_slab` breaks out of its batch
+  loop on `SHRINK_STOP` (`shrinker.c:444-445`). So one `do_shrink_slab` call
+  clears at most one batch of `nr_to_scan` entries (at most 128,
+  `SHRINK_BATCH`) on an unarmed list, whatever the reclaim priority; the unmet
+  scan target is deferred (`shrinker.c:461-468`), not spent. Clearing the
+  bit on all `N` entries of a freshly stored pool needs about `N / 128`
+  shrinker visits of that memcg and node;
 - there is no age: the only clock is *how many shrinker visits the entry has
-  seen*, and visits happen only inside reclaim (section 1).
+  seen*, and visits happen only inside reclaim (section 1). Arming is
+  FIFO: the list is in store order, a rotated entry goes to the tail, so the
+  entries at the head become unreferenced first and become the first to be
+  written back on the visit after a full rotation.
 
 **Candidate mechanism for "reproducible a few minutes after the server
-settles" [I]:** the squeeze at 11:11:38-11:11:52 pushed ~780 MB into zswap
-(zpool 37M -> 755M in 15 s, **[M]**). Every one of those entries was stored with
-`referenced = true`. Light reclaim visits since then (the pool even grew
-slowly 773M -> 789M until 11:15:27, **[M]**, during the controller's load test B2 (11:12:55-11:17:02 local), which means reclaim kept swapping
-the game's pages out) would have cleared the flags a few hundred entries at a
-time; once the flags are clear, the next reclaim visit **with a large scan
-budget** writes the cleared entries back at full device rate. The delay to the
-burst is then "how long until a high-budget visit arrives", not an age.
-That a flag-clearing phase exists is **[S]**; that it is what happened on the
-host is **[I]**; its duration depends on reclaim visit frequency and budget and
-only a traced run or the synthetic (H1) can decide it **[Q]**.
+settles" [I, built from the [S] facts above]:** the squeeze at 11:11:38-11:11:52
+pushed ~780 MB into zswap (zpool 37M -> 755M in about 19 s, **[M]**; at the
+measured ~2.6x that is about 2.0 GB, `N` of the order of 5e5 entries), every one
+stored with `referenced = true`. Arming that pool takes about `N / 128`, i.e.
+~4000 productive-less visits. If reclaim visits the game memcg at a rate of
+a few per second (kswapd passes, direct-reclaim priority steps; the rate is
+**unknown**, no per-visit data exists), arming takes minutes. That is the shape
+of the operator's "takes a few minutes after it settles". Once the head is
+unreferenced, a visit with a large enough scan target is productive batch
+after batch (each productive batch returns > 0 and the loop continues,
+`shrinker.c:436-453`), which is the burst (section 5). That the arming phase
+exists is **[S]**; that its duration matches the host is **[I]** (depends on the
+visit rate, which no recorded data gives); whether reclaim visited at that rate
+with no load running is what the synthetic's H1 tests **[Q]**. The pool also
+grew 773M -> 789M until 11:15:27 **[M]**, but that lies inside the
+controller's load test B2 (11:12:55-11:17:02 local) and says nothing about an
+idle host.
 
 ## 3. In whose context writeback runs, and whether it blocks
 
 **[S]** `shrink_memcg_cb()` (called from `list_lru_shrink_walk()` inside
 `zswap_shrinker_scan()`, `1181`) calls `zswap_writeback_entry()` (`987`)
 **synchronously in the reclaiming task**: it allocates a swap-cache folio
-(`GFP_KERNEL`, `1018`), decompresses into it (`1043`), frees the entry
-(`1056`), and calls `__swap_writepage()` (`1052`). On this host's virtio-blk
+(`GFP_KERNEL`, `1003`), decompresses into it (`1032`), frees the entry
+(`1043`), and calls `__swap_writepage()` (`1052`). On this host's virtio-blk
 swap devices (`vda6`, `vda7`; not `SWP_SYNCHRONOUS_IO`) that is
 `swap_writepage_bdev_async()` (`page_io.c:449-464`): `bio_alloc`,
 `folio_start_writeback`, `submit_bio()` and return; it does **not** wait for
@@ -139,7 +160,7 @@ IO-STALL-TESTING-GUIDE.md section 10 B1) the queue depth, hence the pacing, is
 whatever 16 in-flight requests drain at, i.e. the 14 MiB/s device cap
 (**[M]**, iostat). So: **the shrinker is paced by the block layer's tag
 exhaustion, and the pacing cost is paid by whichever task is running the
-shrinker.** No other throttle appears in the path **[S]**.
+shrinker.** [S] for `zswap.c` and `page_io.c`: neither contains any other throttle. The block layer itself (`submit_bio`, rq_qos/wbt, blkcg `io.max`/`iocost`, BFQ) was **not read**, so "nothing else paces it" is **[I]**.
 
 Which task: whatever thread invoked reclaim. The recorded stacks were captured
 with `kstack(10)` and are cut off at
@@ -195,27 +216,44 @@ while (total_scan >= batch || total_scan >= freeable)   /* batch = 128 */
         scan_objects(min(128, total_scan))         /* each call = up to 128 LRU entries */
 ```
 
-Consequences, all **[S]** from the arithmetic and `DEF_PRIORITY = 12`:
+Consequences, **[S]** from the arithmetic and `DEF_PRIORITY = 12`
+(`mmzone.h:1381`):
 
 - At the first reclaim priority (12) `delta` is tiny: `2*freeable/4096`, i.e.
-  ~100 objects for a ~200k-object pool. Below `batch`, so **no scanning at all**;
+  ~100 objects for a ~200k-object count. Below `batch`, so **no scanning at all**;
   the amount is added to the memcg's deferred counter (`nr_deferred`, capped
-  at `2*freeable`, `shrinker.c:462-470`) and tried again later.
+  at `2*freeable`, `shrinker.c:461-468`) and tried again later.
 - `total_scan` doubles for every priority step down. Around priority 6 it is
-  ~6k objects per memcg visit, around priority 1 it is ~`freeable`. At
-  priority 0 `delta = 2*freeable` and the clause `total_scan >= freeable`
-  makes the loop run until the LRU is exhausted. So **a single reclaim
-  episode that drives the priority down can legitimately drain the entire
-  pool in one `do_shrink_slab` call**: the 128-entry batches are the only
-  granularity, and `cond_resched()` between batches (`shrinker.c:453`) is the
-  only pause. There is no "give up after N pages" and no check of how much the
-  device can absorb.
-- Deferral carries unmet work across reclaim episodes (`nr >> priority` is added
-  next time), so a long run of light passes accumulates scan debt that a later
-  pass spends at once **[S]** (cap `2*freeable`).
-- A visit ends early only on `LRU_STOP` (the shrinker met a page that is already
-  in the swap cache, `1158-1161`, "shrinking into the warmer region"), or when
-  the walk finds no entries.
+  ~6k objects per visit, around priority 1 it is ~`freeable`. At priority 0
+  `delta = 2*freeable` and the clause `total_scan >= freeable` keeps the loop
+  going. **While the head of the list is unreferenced, every batch is
+  productive and the loop continues until `total_scan` is spent**, so one
+  visit at a deep priority can write back up to `total_scan` entries with no
+  budget except the batch size and `cond_resched()` between batches
+  (`shrinker.c:452`). There is no "give up after N pages" and no check of how
+  much the device can absorb.
+- **The scan stops at the first all-referenced batch** (section 2: `LRU_ROTATE`
+  is not isolated, `SHRINK_STOP`, `shrinker.c:444-445`). So the unit of work
+  per visit is bounded by the unarmed part of the list, not only by priority:
+  on an unarmed pool a visit does about one batch of 128 clearings and ends,
+  even at priority 0; on an armed pool it runs to `total_scan`.
+- Deferral carries debt across visits (`next_deferred = nr + delta - scanned`,
+  capped at `2*freeable`). During arming `scanned` stays 0, so the debt grows
+  by `delta` every visit up to the cap; later visits add `nr >> priority` to
+  `total_scan` (`shrinker.c:413-415`). At shallow priority the debt barely
+  contributes (`2*freeable >> 12`), at priority 4 it is ~`freeable/8`.
+
+**What then explains a full-pool drain in ~146 s [I, with [S] components]:**
+the pool is armed first (about `N/128` visits of clearing, section 2), and
+after that either (a) one visit at a deep priority (the loop above, which
+needs `total_scan` of the order of `freeable`, i.e. priority <= 1) or (b) many
+visits at moderate priority, each spending `(deferred + 2*freeable) >> priority`
+(about 7 % of `freeable` at priority 4 with a saturated debt), drain it
+in tens of visits. Both are plausible, nothing recorded distinguishes them
+[Q]: it needs per-visit data (`mm_shrink_slab_start/end` tracepoints:
+`nr_deferred`, `total_scan`, `priority`) from a traced run, or the synthetic.
+At the device's 14 MiB/s the drain is paced by `blk_mq_get_tag`, so its
+duration (146 s) is set by the device, not by the shrinker.
 
 **Why reclaim goes deep, a source-grounded chain [I for the conclusion]:**
 
@@ -229,8 +267,8 @@ Consequences, all **[S]** from the arithmetic and `DEF_PRIORITY = 12`:
 3. Hence pool writeback executed in a direct-reclaim episode does not make that
    episode finish sooner; if the LRU scan alone cannot reclaim enough (protected
    cgroup, mostly cold anon already compressed), the episode descends to deeper
-   priorities, where the shrinker budget is large. This explains the *shape*
-   (one episode eats everything) but whether it happened on the host is **[I]**.
+   priorities, where the shrinker budget is large. Whether that happened on
+   the host is **[I]**; it is compatible with, not required by, the drain.
 
 ## 6. memory.min / memory.low: what the source says
 
@@ -333,7 +371,9 @@ decides.
 | Writeback runs synchronously in the reclaiming task and blocks only on `blk_mq_get_tag` | S | `zswap.c:987-1062`, `page_io.c:449-464` |
 | The game threads' stacks show the memcg shrinker, not `shrink_worker` | M+S | D-state log frames + `shrink_worker` is a kworker |
 | No per-pass byte/page/time budget or rate limit | S | `shrink_memcg_cb`, `do_shrink_slab` |
-| A deep reclaim priority can drain the whole pool in one episode | S (arithmetic) | `shrinker.c:376-474` |
+| Once the head of the list is unreferenced, a visit with a large `total_scan` writes back batch after batch to the end of that target; an unarmed (all-referenced) batch ends the visit | S | `shrinker.c:436-453`, `list_lru.c:378-380`, `zswap.c:1187` |
+| Arming a fresh pool takes about N/128 shrinker visits, FIFO | S for the mechanism, I for the count and the visit rate | section 2 |
+| What drained the pool in 146 s: one deep-priority visit vs many moderate ones | Q | needs `mm_shrink_slab_*` tracepoints |
 | Writeback is not credited as reclaim progress, so episodes can go deeper | S for "not credited"; I for "so they went deeper" | `vmscan.c:6129`, no `reclaim_state` in `zswap.c` |
 | memory.min/low skip a below-protection memcg entirely; shrinker count ignores protection otherwise | S | `vmscan.c:6102-6120`, `zswap.c:1190-1260` |
 | Target-memcg (memory.high/max) reclaim ignores that memcg's own min/low | S | `memcontrol.h:561-614` |

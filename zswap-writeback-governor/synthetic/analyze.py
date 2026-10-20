@@ -19,7 +19,7 @@ import sys
 BURST_FRAC = 0.25
 BURST_WINDOW_S = 60
 MIN_T_BURST_S = 120.0          # a "burst after aging" must come this long after settle
-POST_WINDOW_S = 300
+STALL_WINDOW_S = 360           # [T_burst, T_burst+360]: the 60 s burst window plus the sampler's 300 s post window; also the caller window
 STALL_BASE_WINDOW_S = 120
 CALLER_MIN_SAMPLES = 5
 CALLER_MODAL_FRAC = 0.5
@@ -70,15 +70,25 @@ def analyse_run(d):
     meta = json.load(open(os.path.join(d, "meta.json"))) if os.path.exists(os.path.join(d, "meta.json")) else {}
     samples = jl(os.path.join(d, "samples.jsonl"))
     res = {"dir": os.path.basename(d), "variant": meta.get("variant"), "meta": meta,
-           "valid": False, "note": ""}
+           "valid": False, "note": "", "did_not_settle": False}
+    if not meta:
+        res["note"] = "no meta.json (run died before finishing)"
+        return res
+    if meta.get("outcome") == "did-not-settle":
+        res["did_not_settle"] = True
+        res["note"] = "did not settle (pool kept moving after the fill); neither burst nor no-burst"
+        return res
     if not os.path.exists(os.path.join(d, "settled.json")) or not samples:
         res["note"] = "no settle marker or no samples"
+        return res
+    if any((x.get("bg_zswapped_bytes") or 0) > 0 or (x.get("bg_swap_current") or 0) > 0 for x in samples):
+        res["note"] = "ballast was swapped (bg zswapped/swap.current > 0); game counters are still used but the run's pressure model is broken"
         return res
     settled = json.load(open(os.path.join(d, "settled.json")))
     t_settle = settled["mono"]
     stored0 = settled["stored_pages"]
-    series = [(s["mono"], s["zswap"]["written_back_pages"], s) for s in samples
-              if s["zswap"]["written_back_pages"] is not None]
+    series = [(s["mono"], s["game_wb_pages"], s) for s in samples
+              if s.get("game_wb_pages") is not None]
     after = [x for x in series if x[0] >= t_settle]
     res["stored_at_settle"] = stored0
     res["observed_s_after_settle"] = (after[-1][0] - t_settle) if after else 0
@@ -110,7 +120,7 @@ def analyse_run(d):
     sb = stall_stats(0, STALL_BASE_WINDOW_S)
     res["baseline_stall_s"], res["baseline_stall_max_ms"] = sb[0], sb[1]
     if t_burst is not None:
-        st = stall_stats(t_burst, t_burst + POST_WINDOW_S)
+        st = stall_stats(t_burst, t_burst + STALL_WINDOW_S)
         res["stall_s"], res["stall_max_ms"], res["stall_rows"] = st
     else:
         res["stall_s"] = res["stall_max_ms"] = None
@@ -126,13 +136,18 @@ def analyse_run(d):
         res["game_high_events_delta"] = (b_ev(win[-1][2], "high") - b_ev(win[0][2], "high"))
     # caller of the writeback: from FULL stacks sampled during the burst window
     callers = collections.Counter()
+    kswapd_n = 0
     if t_burst is not None:
         lo = settled["ts"] + t_burst
-        hi = lo + BURST_WINDOW_S + POST_WINDOW_S
+        hi = lo + STALL_WINDOW_S
         for st in jl(os.path.join(d, "stacks.jsonl")):
             if lo <= st["ts"] < hi:
                 c = classify(st["stack"])
-                if c:
+                if not c:
+                    continue
+                if st.get("kind") == "kswapd":
+                    kswapd_n += 1
+                else:
                     callers[c] += 1
     total = sum(callers.values())
     res["caller_counts"] = dict(callers)
@@ -142,6 +157,7 @@ def analyse_run(d):
         name, n = callers.most_common(1)[0]
         res["caller"] = name if n / total >= CALLER_MODAL_FRAC else "mixed"
     res["shrink_memcg_cb_dstate_samples"] = total
+    res["kswapd_shrink_samples"] = kswapd_n
     res["valid"] = True
     return res
 
@@ -164,8 +180,9 @@ def verdict_h1(runs):
     idle = [r for r in runs.get("idle", []) if r["valid"]]
     nosh = [r for r in runs.get("noshrink", []) if r["valid"]]
     if len(base) < 3 or not idle or not nosh:
-        return "INCOMPLETE", "needs base x3, idle x1, noshrink x1"
+        return "INCOMPLETE", "needs 3 valid base runs, 1 valid idle, 1 valid noshrink"
     bursts = [r for r in base if r["burst"]]
+    early = [r["t_burst_s"] for r in bursts if r["t_burst_s"] < MIN_T_BURST_S]
     late = [r["t_burst_s"] for r in bursts if r["t_burst_s"] >= MIN_T_BURST_S]
     if idle[0]["burst"]:
         return "FAIL", "idle control (no pressure after fill) burst: time alone triggers it, which the source says cannot happen; investigate"
@@ -173,8 +190,9 @@ def verdict_h1(runs):
         return "FAIL", "noshrink control burst: the shrinker is not the writer"
     if len(bursts) < 2:
         return "FAIL", f"only {len(bursts)} of 3 base runs burst within the cap"
-    if len(late) < 2:
-        return "INCONCLUSIVE", f"bursts earlier than {MIN_T_BURST_S:.0f}s after settle (settle detection suspect): {[r['t_burst_s'] for r in bursts]}"
+    if early:
+        return "INCONCLUSIVE", f"a base run burst earlier than {MIN_T_BURST_S:.0f}s after settle ({sorted(round(x) for x in early)}): settle detection suspect"
+    # all bursts are late here, and there are >= 2 of them
     if max(late) / min(late) <= 2.0:
         return "PASS", f"{len(late)} of 3 bursts at {sorted(round(x) for x in late)} s, spread <= 2x; idle and noshrink controls quiet"
     return "INCONCLUSIVE", f"bursts happen but spread > 2x: {sorted(round(x) for x in late)}"
@@ -183,10 +201,14 @@ def verdict_h1(runs):
 def verdict_h2(runs):
     base = [r for r in runs.get("base", []) if r["valid"]]
     out = {}
+    base_bursts = sum(r["burst"] for r in base)
     for name in ("squeeze", "squeeze-minlow"):
         sq = [r for r in runs.get(name, []) if r["valid"]]
         if len(base) < 3 or len(sq) < 3:
-            out[name] = ("INCOMPLETE", "needs base x3 and 3 runs of this variant")
+            out[name] = ("INCOMPLETE", "needs 3 valid base runs and 3 valid runs of this variant")
+            continue
+        if base_bursts < 2:
+            out[name] = ("INAPPLICABLE", f"base burst in only {base_bursts} of 3 runs, so there is no reference time to advance (H1 did not PASS)")
             continue
         mb, ms = med([tburst_or_cap(r) for r in base]), med([tburst_or_cap(r) for r in sq])
         nb = sum(r["burst"] for r in sq)
@@ -203,26 +225,37 @@ def verdict_h3(runs):
     base = [r for r in runs.get("base", []) if r["valid"] and r["burst"]]
     w2 = [r for r in runs.get("wsf200", []) if r["valid"]]
     if len(base) < 2 or len(w2) < 3:
-        return "INCOMPLETE", "needs >=2 bursting base runs and 3 wsf200 runs"
+        return "INCOMPLETE", "needs >=2 bursting base runs and 3 valid wsf200 runs"
     glob = sum(1 for r in base if r["caller"] == "global-direct")
     if glob < 2:
         return "NOT-APPLICABLE", f"measured caller in base is {[r['caller'] for r in base]}, not global direct reclaim; watermark_scale_factor cannot help"
     sb = med([r["stall_s"] or 0 for r in base])
     sw = med([(r["stall_s"] or 0) for r in w2])
+    gb = med([r["shrink_memcg_cb_dstate_samples"] for r in base])
+    gw = med([r["shrink_memcg_cb_dstate_samples"] for r in w2])
+    kb = med([r["kswapd_shrink_samples"] for r in base])
+    kw = med([r["kswapd_shrink_samples"] for r in w2])
+    mech = f"game-thread shrink_memcg_cb D samples {gw:.0f} vs base {gb:.0f}; kswapd {kw:.0f} vs base {kb:.0f}"
     if sb == 0:
-        return "INCONCLUSIVE", "base runs show no stall seconds to reduce"
-    if sw <= 0.5 * sb:
-        return "PASS", f"stall seconds {sw:.0f} vs base {sb:.0f}; caller global-direct in {glob} base runs"
+        return "INCONCLUSIVE", "base runs show no stall seconds to reduce; " + mech
+    if sw <= 0.5 * sb and gw <= 0.5 * gb:
+        return "PASS", f"stall seconds {sw:.0f} vs base {sb:.0f}; {mech}"
     if sw >= 0.8 * sb:
-        return "FAIL", f"stall seconds {sw:.0f} vs base {sb:.0f}"
-    return "INCONCLUSIVE", f"stall seconds {sw:.0f} vs base {sb:.0f}"
+        return "FAIL", f"stall seconds {sw:.0f} vs base {sb:.0f}; {mech}"
+    return "INCONCLUSIVE", f"stall seconds {sw:.0f} vs base {sb:.0f}; {mech}"
 
 
 def verdict_h4(runs):
-    ho = [r for r in runs.get("highonly", []) if r["valid"]]
+    allho = runs.get("highonly", [])
+    ho = [r for r in allho if r["valid"]]
+    dns = [r for r in allho if r.get("did_not_settle")]
     ctl = [r for r in runs.get("highonly-noshrink", []) if r["valid"]]
-    if len(ho) < 3 or not ctl:
+    if len(allho) < 3 or not (ctl or runs.get("highonly-noshrink")):
         return "INCOMPLETE", "needs highonly x3 and highonly-noshrink x1"
+    if len(dns) >= 2:
+        return "DID-NOT-SETTLE", f"{len(dns)} of {len(allho)} highonly runs never settled within the settle timeout: memory.high reclaim kept the pool moving, so no aging window exists to test"
+    if not ctl:
+        return "INCOMPLETE", "highonly-noshrink control did not produce a valid run"
     ok = [r for r in ho if r.get("allocstall_delta") == 0 and r.get("pgscan_direct_delta") == 0
           and (r.get("pgscan_kswapd_delta") or 0) <= 1000]
     if len(ok) < 2:

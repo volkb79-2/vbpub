@@ -4,8 +4,8 @@
 Runs INSIDE the VM-harness guest, in cgroup /sys/fs/cgroup/zwg/bg.
 
 Two parts:
-  ballast: allocates and touches exactly --ballast-mb of anonymous memory and
-           holds it. The caller sizes it so that the guest cannot hold the
+  ballast: allocates, touches and mlock()s exactly --ballast-mb of anonymous
+           memory and holds it. The caller sizes it so that the guest cannot hold the
            game's whole working set next to it, so global reclaim has to push
            the game's cold pages into zswap. The caller gives the bg cgroup a
            memory.min equal to the ballast so global reclaim does not take it
@@ -19,6 +19,7 @@ Two parts:
 Exit by SIGTERM. Never run on the live host.
 """
 import argparse
+import ctypes
 import mmap
 import signal
 import sys
@@ -48,6 +49,7 @@ def main() -> int:
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
 
+    libc = ctypes.CDLL(None, use_errno=True)
     chunks = []
     step = 16 * 1024 * 1024
     for _ in range(args.ballast_mb // 16):
@@ -56,7 +58,14 @@ def main() -> int:
         c = mmap.mmap(-1, step)
         for off in range(0, step, PAGE):
             c[off] = 1
-        chunks.append(c)
+        # Non-reclaimable: mlock (unevictable) so the ballast can never be pushed into zswap or swap,
+        # whatever the memory.min protection chain does. Keep the ctypes view alive with the mmap.
+        view = (ctypes.c_char * step).from_buffer(c)
+        if libc.mlock(ctypes.c_void_p(ctypes.addressof(view)), ctypes.c_size_t(step)) != 0:
+            print(f"bgpressure: mlock failed (errno {ctypes.get_errno()}); ballast would be reclaimable",
+                  file=sys.stderr)
+            return 3
+        chunks.append((c, view))
         time.sleep(0.05)
     with open(args.ready_file, "w") as f:
         f.write(f"{time.time()} ballast_mb={len(chunks) * 16} memfree_mb={memfree_mb()}\n")

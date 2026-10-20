@@ -56,8 +56,10 @@ Docs triad: this README is WHAT; `docs/DESIGN.md` is WHY; HOW to adopt
 
 - The memcg shrinker runs only inside reclaim (no timer) and writes back in the
   reclaiming task, blocking on the block layer's tag exhaustion; there is no
-  per-pass budget or rate limit. A reclaim episode that reaches a low priority can
-  drain the whole pool in one call. (source)
+  per-pass budget or rate limit. An unarmed (all-`referenced`) batch ends a visit,
+  so a fresh pool needs about N/128 light visits to arm; once armed, a visit with
+  a large scan target writes back batch after batch. (source; the visit rate on
+  the host is unknown)
 - v7.2 has no time-decayed "protected" counter; the dampener is the number of
   recent disk swap-ins, consumed once. The `referenced` bit gives each entry one
   second chance and no age. (source)
@@ -77,7 +79,7 @@ Docs triad: this README is WHAT; `docs/DESIGN.md` is WHY; HOW to adopt
 
 ## Operator decisions (2026-10-20, verbatim)
 
-| Item | Decision | Operator's words |
+| Item | Decision | Operator's words (full text; shorter elsewhere in the repo is abridged) |
 |---|---|---|
 | Raise the game's steady `memory.low` (mitigation (a)) | **REJECTED** | "no, far too much, around 4G min is fine as set now. refaults stay low at 5G. ignore your suggestion." |
 | Lower `dev.slice` `memory.high` (mitigation (c)) | **REJECTED** | "no, we need it" |
@@ -103,6 +105,11 @@ read by the authors of these documents.
 ## Safety
 
 Everything in `synthetic/` runs only in the QEMU/TCG VM harness
-(`scripts/debian-install-v2/testing/vm`). Nothing here touches swap, loop devices,
-zswap or cgroups on the live host, and nothing here should ever be pointed at it
-(see the cgroupns/loop-device host-hang incident in project memory).
+(`scripts/debian-install-v2/testing/vm`). The guard is a positive marker file
+that only `synthetic/run-synthetic.sh` writes into a guest it has just started,
+checked by every guest script before it changes anything; "is a VM" is not used
+because the production host is itself a KVM guest. See
+[`synthetic/README.md`](synthetic/README.md) (Safety) and
+`synthetic/check-guards.sh`. No script uses `swapoff -a`. Nothing here should
+ever be pointed at the live host (see the cgroupns/loop-device host-hang
+incident in project memory).

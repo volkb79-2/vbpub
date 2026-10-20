@@ -102,13 +102,21 @@ def swap_used_kb():
     return used
 
 
-def row(cg, dbg, disk):
+def row(cg, bg, dbg, disk):
     vm = read_kv("/proc/vmstat")
     d = {k: read_int(os.path.join(dbg, k)) for k in DEBUGFS_KEYS}
     ms = read_kv(os.path.join(cg, "memory.stat"))
     ev = read_kv(os.path.join(cg, "memory.events"))
+    zswapped_b = ms.get("zswapped")
+    bms = read_kv(os.path.join(bg, "memory.stat")) if bg else {}
     return {
         "ts": time.time(),
+        # The game cgroup's own counters are what settle/burst use: the global debugfs counters
+        # also count any other cgroup's pages (the ballast, if it were ever swapped).
+        "game_stored_pages": None if zswapped_b is None else zswapped_b // 4096,
+        "game_wb_pages": ms.get("zswpwb"),
+        "bg_zswapped_bytes": bms.get("zswapped"),
+        "bg_swap_current": read_int(os.path.join(bg, "memory.swap.current")) if bg else None,
         "mono": time.monotonic(),
         "vm": {k: vm.get(k) for k in VMSTAT_KEYS},
         "zswap": d,
@@ -125,8 +133,40 @@ def row(cg, dbg, disk):
     }
 
 
+def kswapd_tids():
+    out = []
+    for d in os.listdir("/proc"):
+        if d.isdigit():
+            try:
+                with open(f"/proc/{d}/comm") as f:
+                    if f.read().startswith("kswapd"):
+                        out.append(int(d))
+            except OSError:
+                pass
+    return out
+
+
+def dump_stack(tid, kind, out):
+    try:
+        with open(f"/proc/{tid}/status") as f:
+            st = f.read()
+        state = [l for l in st.splitlines() if l.startswith("State:")][0].split()[1]
+        if state != "D":
+            return
+        pid = int([l for l in st.splitlines() if l.startswith("Tgid:")][0].split()[1])
+        with open(f"/proc/{pid}/task/{tid}/stack") as f:
+            stack = [x.strip() for x in f.read().splitlines()]
+        with open(f"/proc/{tid}/comm") as f:
+            comm = f.read().strip()
+        out.write(json.dumps({"ts": time.time(), "kind": kind, "tid": tid, "comm": comm,
+                              "stack": stack}) + "\n")
+    except (OSError, IndexError, ValueError):
+        return
+
+
 def stack_sampler(cg, out_path, stop):
     # /proc/<pid>/task/<tid>/stack needs root; CONFIG_STACKTRACE is assumed (checked by setup-guest.sh).
+    kswapds = kswapd_tids()   # kernel threads are stable for the run; H3 needs to see writeback move here
     with open(out_path, "a", buffering=1) as out:
         while not stop.is_set():
             t0 = time.monotonic()
@@ -136,24 +176,9 @@ def stack_sampler(cg, out_path, stop):
             except OSError:
                 tids = []
             for tid in tids:
-                try:
-                    pid = None
-                    with open(f"/proc/{tid}/status") as f:
-                        st = f.read()
-                    state = [l for l in st.splitlines() if l.startswith("State:")][0].split()[1]
-                    if state != "D":
-                        continue
-                    for l in st.splitlines():
-                        if l.startswith("Tgid:"):
-                            pid = int(l.split()[1])
-                    with open(f"/proc/{pid}/task/{tid}/stack") as f:
-                        stack = [x.strip() for x in f.read().splitlines()]
-                    with open(f"/proc/{tid}/comm") as f:
-                        comm = f.read().strip()
-                    out.write(json.dumps({"ts": time.time(), "tid": tid, "comm": comm,
-                                          "stack": stack}) + "\n")
-                except (OSError, IndexError, ValueError):
-                    continue
+                dump_stack(tid, "game", out)
+            for tid in kswapds:
+                dump_stack(tid, "kswapd", out)
             stop.wait(max(0.0, 0.1 - (time.monotonic() - t0)))
 
 
@@ -161,6 +186,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True)
     ap.add_argument("--cg", required=True, help="the game cgroup directory")
+    ap.add_argument("--bg-cg", default=None, help="the ballast cgroup (recorded; analyze.py invalidates a run whose ballast was swapped)")
     ap.add_argument("--debugfs-zswap", default="/sys/kernel/debug/zswap")
     ap.add_argument("--disk", default="vda")
     ap.add_argument("--fill-done-file", required=True,
@@ -171,7 +197,8 @@ def main():
     ap.add_argument("--settle-drift-frac", type=float, default=0.01)
     ap.add_argument("--settle-max-wb-frac", type=float, default=0.02,
                     help="max written-back pages in the settle window, as a fraction of stored pages")
-    ap.add_argument("--post-s", type=int, default=180)
+    ap.add_argument("--post-s", type=int, default=300,
+                    help="seconds of data kept after the burst window; analyze.py reads [T_burst, T_burst+360]")
     ap.add_argument("--cap-s", type=int, required=True, help="max seconds after settle")
     ap.add_argument("--max-fill-wait-s", type=int, required=True,
                     help="give up (exit 4) if never settled this long after fill-done")
@@ -191,13 +218,13 @@ def main():
     with open(os.path.join(args.out, "samples.jsonl"), "a", buffering=1) as sf:
         while True:
             t0 = time.monotonic()
-            r = row(args.cg, args.debugfs_zswap, args.disk)
+            r = row(args.cg, args.bg_cg, args.debugfs_zswap, args.disk)
             sf.write(json.dumps(r) + "\n")
-            stored = r["zswap"]["stored_pages"]
-            wb = r["zswap"]["written_back_pages"]
-            if stored is None or wb is None:
-                raise SystemExit("sampler: zswap debugfs counters unreadable; is debugfs mounted "
-                                 "and zswap enabled?")
+            stored = r["game_stored_pages"]
+            wb = r["game_wb_pages"]
+            if stored is None or wb is None or r["zswap"]["stored_pages"] is None:
+                raise SystemExit("sampler: game memory.stat zswapped/zswpwb or the zswap debugfs counters "
+                                 "are unreadable; is debugfs mounted and zswap enabled?")
             hist.append((r["mono"], stored, wb))
             if t_fill_done is None and os.path.exists(args.fill_done_file):
                 t_fill_done = r["mono"]

@@ -3,6 +3,8 @@
 # Runs INSIDE the VM-harness guest as root. NEVER run this on the live host:
 # it creates a swap file and swapon's it, and changes vm.* sysctls.
 #
+# The first action is require_harness_guest (lib-guard.sh): without the marker that
+# only run-synthetic.sh writes, nothing below runs.
 # Fails loudly (non-zero) on any missing precondition instead of continuing with
 # a default: a synthetic that silently ran on the wrong kernel or without the
 # zswap debugfs counters would produce a plausible-looking wrong answer.
@@ -17,16 +19,11 @@ die() { echo "setup-guest: $*" >&2; exit 1; }
 
 [ "$(id -u)" = 0 ] || die "must run as root"
 
-# The guest must be a VM, not a container and not the live host.
-if command -v systemd-detect-virt >/dev/null 2>&1; then
-    virt="$(systemd-detect-virt --vm || true)"
-    case "$virt" in
-        qemu|kvm) ;;
-        *) die "systemd-detect-virt --vm reports '${virt:-none}', expected qemu/kvm; refusing to touch swap here" ;;
-    esac
-else
-    die "systemd-detect-virt missing; cannot prove this is a QEMU guest"
-fi
+# Positive identification of the harness guest (NOT "is a VM": production is a KVM guest too).
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=lib-guard.sh
+. "$HERE/lib-guard.sh"
+require_harness_guest   # exits 97 and changes nothing unless run-synthetic.sh marked this guest
 [ -e "/sys/block/$BLOCKDEV" ] || die "/sys/block/$BLOCKDEV missing"
 
 major="$(uname -r | cut -d. -f1)"
@@ -65,7 +62,7 @@ if [ ! -f /swapfile ]; then
     chmod 600 /swapfile
     mkswap /swapfile >/dev/null
 fi
-swapoff -a
+if grep -q '^/swapfile ' /proc/swaps; then swapoff /swapfile; fi   # only our own swap file, never every swap area
 swapon /swapfile
 [ "$(awk 'NR>1' /proc/swaps | wc -l)" = 1 ] || die "expected exactly one active swap area (the guest's /swapfile)"
 

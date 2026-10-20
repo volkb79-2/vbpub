@@ -61,6 +61,14 @@ set_throttle() {  # set_throttle <run> <bytes-per-second|0>
 
 guest() { vm ssh "$1" -- "${@:2}"; }
 
+# The positive marker that makes a guest a harness guest (guest/lib-guard.sh). Written only here, only
+# into a guest this script has just started with vmctl; every guest script refuses without it.
+mark_guest() {  # mark_guest <run> <nonce>
+    guest "$1" "echo 'zwg-harness-guest run=$1 nonce=$2' | sudo tee /etc/zwg-harness-guest >/dev/null && sudo chmod 0644 /etc/zwg-harness-guest"
+}
+unmark_guest() { guest "$1" 'sudo rm -f /etc/zwg-harness-guest' || true; }
+new_nonce() { printf '%s-%s-%s' "$(date +%s)" "$RANDOM" "$RANDOM"; }
+
 copy_guest_files() {  # copy_guest_files <run>
     guest "$1" 'rm -rf /tmp/zwg && mkdir -p /tmp/zwg'
     vm copy "$1" "$HERE/guest" /tmp/zwg/guest
@@ -71,8 +79,10 @@ cmd_prepare() {
     vm start "$run" --case case-b-ready --mem "$MEM_MB" --smp "$SMP" --disk-gb "$DISK_GB"
     vm wait "$run"
     copy_guest_files "$run"
+    local nonce; nonce="$(new_nonce)"
+    mark_guest "$run" "$nonce"
     set +e
-    guest "$run" 'sudo bash /tmp/zwg/guest/ensure-kernel.sh'
+    guest "$run" "sudo env ZWG_RUN=$run ZWG_NONCE=$nonce bash /tmp/zwg/guest/ensure-kernel.sh"
     local rc=$?
     set -e
     if [ "$rc" = 10 ]; then
@@ -88,6 +98,7 @@ cmd_prepare() {
         *) die "guest kernel after prepare is '$kr', not 7.x; backports does not carry one for this suite yet" ;;
     esac
     echo "+ guest kernel $kr" >&2
+    unmark_guest "$run"   # the base image must not carry the marker into later guests
     vm stop "$run"
     vm snapshot "$run" zwg-ready
     vm destroy "$run"
@@ -102,7 +113,9 @@ cmd_run() {
     vm start "$run" --case zwg-ready --mem "$MEM_MB" --smp "$SMP" --disk-gb "$DISK_GB"
     vm wait "$run"
     copy_guest_files "$run"
-    guest "$run" 'sudo bash /tmp/zwg/guest/setup-guest.sh'
+    local nonce; nonce="$(new_nonce)"
+    mark_guest "$run" "$nonce"
+    guest "$run" "sudo env ZWG_RUN=$run ZWG_NONCE=$nonce bash /tmp/zwg/guest/setup-guest.sh"
 
     # Prove the throttle works before trusting any timing: a direct 32 MiB write must run at the target rate.
     local bps=$(( THROTTLE_MIBPS * 1048576 ))
@@ -112,7 +125,7 @@ cmd_run() {
     awk -v m="$mbps" -v t="$THROTTLE_MIBPS" 'BEGIN { exit !(m+0 >= 0.65*t*1.048576 && m+0 <= 1.35*t*1.048576) }' \
         || die "throttle check failed: dd measured '$mbps' MB/s, expected about $(awk -v t="$THROTTLE_MIBPS" 'BEGIN{print t*1.048576}') MB/s"
 
-    local envs="THROTTLE_MIBPS=$THROTTLE_MIBPS" v
+    local envs="ZWG_RUN=$run ZWG_NONCE=$nonce THROTTLE_MIBPS=$THROTTLE_MIBPS" v
     for v in $GUEST_PASS_ENV; do
         [ -n "${!v:-}" ] && envs="$envs $v=${!v}"
     done
