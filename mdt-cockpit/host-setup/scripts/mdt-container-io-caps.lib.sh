@@ -183,7 +183,7 @@ _mdt_match() {
 # capping its peak rate is the goal, making it lose every IO race to a
 # sibling is not.
 _mdt_apply_container_caps() {
-  local cid="$1" label="$2" deprio="${3:-0}" scope unit props=()
+  local cid="$1" label="$2" deprio="${3:-0}" scope unit sd_dev props=()
   [ -n "${IO_DEV_PATH:-}" ] || { log "WARN: $label ($cid): no io device — skipped"; return 0; }
   scope=$(_mdt_scope_path "$cid")
   if [ -z "$scope" ]; then
@@ -199,13 +199,18 @@ _mdt_apply_container_caps() {
     return 0
   fi
   unit="${scope##*/}"
+  if ! sd_dev=$(_mdt_io_systemd_dev "$IO_DEV_PATH" 2>&1); then
+    log "WARN: $label ($cid): cannot resolve $IO_DEV_PATH to the whole disk systemd caps (${sd_dev}) — skipped"
+    return 0
+  fi
   [ "$deprio" = 1 ] && props+=(IOWeight=1)
-  props+=("IOReadBandwidthMax=$IO_DEV_PATH $WATCHER_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $WATCHER_WBPS"
-          "IOReadIOPSMax=$IO_DEV_PATH $WATCHER_RIOPS"     "IOWriteIOPSMax=$IO_DEV_PATH $WATCHER_WIOPS")
+  MDT_IO_PROPS=()
+  _mdt_io_props "$sd_dev" "$WATCHER_RBPS" "$WATCHER_WBPS" "$WATCHER_RIOPS" "$WATCHER_WIOPS"
+  props+=("${MDT_IO_PROPS[@]}")
   # set-property (not a raw io.max write): systemd re-applies its own recorded
   # properties to a scope on every daemon-reload, silently wiping raw writes.
   if systemctl set-property --runtime "$unit" "${props[@]}" 2>/dev/null; then
-    log "$label ($cid): io.max=${WATCHER_RIOPS}r/${WATCHER_WIOPS}w IOPS $((WATCHER_RBPS/1048576))/$((WATCHER_WBPS/1048576))MB/s r/w (${WATCHER_SRC})$([ "$deprio" = 1 ] && echo ', io.weight=1')"
+    log "$label ($cid): io.max on $sd_dev=${WATCHER_RIOPS}r/${WATCHER_WIOPS}w IOPS $((WATCHER_RBPS/1048576))/$((WATCHER_WBPS/1048576))MB/s r/w (${WATCHER_SRC})$([ "$deprio" = 1 ] && echo ', io.weight=1')"
   else
     log "WARN: $label ($cid): set-property failed — skipped"
     return 0
@@ -366,6 +371,50 @@ _mdt_resolve_dev_io_caps() {
   return $rc
 }
 
+# _mdt_io_devname_for_majmin <maj:min>: the devtmpfs node of that whole disk, `/dev/<DEVNAME>`,
+# read from sysfs `dev/block/<maj:min>/uevent`.  This is THE spelling handed to systemd's IO*Max=
+# properties (MDT-HS-04/H-34): systemd resolves a /dev node it can stat, the kernel name is
+# stable across dynamic major renumbering (virtio 254 vs device-mapper 253 can swap between
+# kernels or initramfs changes, which a rendered MAJ:MIN would not survive), and it exists
+# before udev creates /dev/block symlinks.  Refuses (rc 1, reason on stderr) when DEVNAME is
+# missing or the node does not exist -- never invents a name.
+_mdt_io_devname_for_majmin() {
+  local mm="$1" sysroot="${MDT_SYSFS_ROOT:-/sys}" name
+  name=$(sed -n 's/^DEVNAME=//p' "$sysroot/dev/block/$mm/uevent" 2>/dev/null | head -n1)
+  if [ -z "$name" ]; then
+    echo "sysfs has no DEVNAME for block device $mm ($sysroot/dev/block/$mm/uevent)" >&2
+    return 1
+  fi
+  printf '/dev/%s\n' "$name"
+}
+
+# _mdt_io_systemd_dev <device-path>: resolve to the originating WHOLE disk (_mdt_dev_majmin, the
+# value the kernel io.max is keyed on and the read-back verifies), then its /dev node.  Never a
+# mapper or partition node (measured 2026-10-20, systemd 257: IOReadBandwidthMax=/dev/mapper/<lv>
+# left dev.slice's io.max empty while the whole-disk node wrote at once).
+_mdt_io_systemd_dev() {
+  local mm
+  mm=$(_mdt_dev_majmin "$1") || return 1
+  _mdt_io_devname_for_majmin "$mm"
+}
+
+# _mdt_io_props <systemd-dev> <rbps> <wbps> <riops> <wiops>: appends the IO set-property
+# arguments to the array MDT_IO_PROPS.  Every key is RESET first and then set, in the
+# SAME call (MDT-016: an empty assignment alone wipes the unit-file value, so the reset
+# must travel with the set), so a stale entry under another spelling of the same disk
+# (/dev/vda from an earlier pin, a mapper path from an older reconcile) cannot shadow
+# the intended cap: the kernel took the LAST entry's value (measured, MDT-HS-04).
+# An empty value emits only the reset.
+_mdt_io_props() {
+  local sd="$1"; shift
+  local key val
+  for key in IOReadBandwidthMax IOWriteBandwidthMax IOReadIOPSMax IOWriteIOPSMax; do
+    val="$1"; shift
+    MDT_IO_PROPS+=("$key=")
+    [ -z "$val" ] || MDT_IO_PROPS+=("$key=$sd $val")
+  done
+}
+
 # _mdt_dev_majmin <device-path>: the MAJ:MIN of the device the kernel io.max
 # is keyed on — the originating WHOLE disk.  systemd resolves a mapper node
 # (single slave) and a partition to that disk, so the kernel never shows the
@@ -430,6 +479,8 @@ _mdt_io_max_fields() {
 #      this is indeterminate, not a pass and not a failure (logged)
 _mdt_verify_io_max() {
   local label="$1" dir="$2" majmin="$3" want_rb="$4" want_wb="$5" want_ri="$6" want_wi="$7" got
+  local lvl=ERROR remedy=" Remedy: ${MDT_VERIFY_REMEDY:-$_MDT_IO_OTHER_CAUSES}."
+  [ "${MDT_VERIFY_SOFT:-0}" = 1 ] && lvl=WARN
   if [ ! -d "$dir" ]; then
     log "$label: cgroup not active yet — properties recorded but NOT verified (no process is governed until the slice starts; the next run verifies)"
     return 2
@@ -440,7 +491,7 @@ _mdt_verify_io_max() {
       log "$label: verified kernel io.max has no limit for $majmin (cleared values read as unlimited)"
       return 0
     fi
-    log "ERROR: $label: kernel io.max has NO entry for $majmin (content: '$(tr '\n' ';' < "$dir/io.max" 2>/dev/null)') — the intended cap is NOT in effect"
+    log "$lvl: $label: kernel io.max has NO entry for $majmin (content: '$(tr '\n' ';' < "$dir/io.max" 2>/dev/null)') — the intended cap is NOT in effect.$remedy"
     return 1
   fi
   set -- $got
@@ -449,8 +500,111 @@ _mdt_verify_io_max() {
     log "$label: verified kernel io.max $majmin rbps=$1 wbps=$2 riops=$3 wiops=$4"
     return 0
   fi
-  log "ERROR: $label: kernel io.max $majmin is rbps=$1 wbps=$2 riops=$3 wiops=$4 but intended rbps=${want_rb:--} wbps=${want_wb:--} riops=${want_ri:--} wiops=${want_wi:--} — the intended cap is NOT in effect"
+  log "$lvl: $label: kernel io.max $majmin is rbps=$1 wbps=$2 riops=$3 wiops=$4 but intended rbps=${want_rb:--} wbps=${want_wb:--} riops=${want_ri:--} wiops=${want_wi:--} — the intended cap is NOT in effect.$remedy"
   return 1
+}
+
+# _mdt_systemd_reports_io <unit> <rbps> <wbps> <riops> <wiops>: true when `systemctl show` lists EVERY
+# intended non-empty value, i.e. systemd BELIEVES the whole cap is set (one value among several is not
+# enough: a partial report is a different problem than a stale per-spelling entry).
+_mdt_systemd_reports_io() {
+  local unit="$1" shown v n=0
+  shown=$(systemctl show "$unit" -p IOReadBandwidthMax -p IOWriteBandwidthMax -p IOReadIOPSMax -p IOWriteIOPSMax 2>/dev/null) || return 1
+  shift
+  for v in "$@"; do
+    case "$v" in ''|max) continue ;; esac
+    n=$((n + 1))
+    grep -Eq "(^|[ =])$v( |\$)" <<<"$shown" || return 1
+  done
+  [ "$n" -gt 0 ]
+}
+
+# The self-heal reload is rate-limited ACROSS runs: the timer starts a fresh process every minute, so a
+# per-process flag would let a heal that does not help daemon-reload PID 1 forever.  A stamp file holds
+# "<epoch> <reason>"; no reload while the last one is younger than the window.  The window is a documented
+# constant (30 min), not a knob: it only bounds how often PID 1 is asked to reload for this one cause.
+MDT_IO_RELOAD_WINDOW_SECONDS=1800
+_mdt_io_stamp_file() { printf '%s/io-selfheal-reload.stamp\n' "${MDT_STATE_DIR:-/run/mdt}"; }
+_mdt_now() { printf '%s\n' "${MDT_FAKE_NOW:-$(date +%s)}"; }
+
+# _mdt_io_reload_allowed: rc 0 = may reload; rc 1 = suppressed (sets MDT_IO_SUPPRESS_INFO with when/why).
+_mdt_io_reload_allowed() {
+  local f last reason now
+  f=$(_mdt_io_stamp_file)
+  [ -e "$f" ] || return 0
+  read -r last reason < "$f" 2>/dev/null || last=""
+  case "$last" in ''|*[!0-9]*) return 0 ;; esac    # an unreadable/garbled stamp does not block a heal
+  now=$(_mdt_now)
+  if [ $((now - last)) -lt "$MDT_IO_RELOAD_WINDOW_SECONDS" ]; then
+    MDT_IO_SUPPRESS_INFO="last self-heal reload at $(date -u -d "@$last" +%FT%TZ 2>/dev/null || echo "$last") ($((now - last))s ago, window ${MDT_IO_RELOAD_WINDOW_SECONDS}s${reason:+, reason: $reason}) did not fix it"
+    return 1
+  fi
+  return 0
+}
+
+# _mdt_io_stamp_write <reason>: records the reload; failing to record is refused (fail closed:
+# an unrecorded reload could not be rate-limited).
+_mdt_io_stamp_write() {
+  local f; f=$(_mdt_io_stamp_file)
+  mkdir -p "$(dirname "$f")" 2>/dev/null && printf '%s %s\n' "$(_mdt_now)" "$1" > "$f" 2>/dev/null
+}
+
+# _mdt_io_stamp_clear_if_clean: called once at the end of a run that needed NO reload and failed nothing.
+_mdt_io_stamp_clear_if_clean() {
+  [ "${MDT_IO_RELOADED:-0}" = 1 ] && return 0
+  [ "${MDT_RC:-0}" = 0 ] || return 0
+  rm -f "$(_mdt_io_stamp_file)" 2>/dev/null || true
+}
+
+_MDT_IO_OTHER_CAUSES="check the other causes: the io controller not enabled for dev.slice or its parent, the wrong device (IO_DEV_PATH / whole disk), a kernel refusal of the io.max write (dmesg)"
+
+# _mdt_io_apply_verify <unit> <cgroup-dir> <maj:min> <rbps> <wbps> <riops> <wiops>
+# The properties are in the array MDT_IO_PROPS.  set-property, read the kernel back, and
+# self-heal (MDT-HS-04, measured 2026-10-20 on systemd 257.13): systemd keeps one in-memory
+# io-device-limit entry per PATH STRING; an empty assignment resets an entry to max but does not
+# delete it, `systemctl show` and the runtime drop-in hide all-max entries, and the apply writes
+# every entry in list order, so a stale all-max entry for another spelling of the same disk silently
+# writes `max` over the cap (inferred from those measurements and the v257 source).  `daemon-reload`
+# rebuilds the list from the drop-in files, which hold only the non-max entries.  So: when the kernel
+# disagrees while systemd reports ALL the intended values, warn loudly, daemon-reload (at most once
+# per MDT_IO_RELOAD_WINDOW_SECONDS across runs, via the stamp file), re-apply, re-verify.  The remedy
+# text depends on what was actually tried.  Returns the _mdt_verify_io_max code (0 ok, 1 not in
+# effect, 2 not verifiable).
+_mdt_io_apply_verify() {
+  local unit="$1" dir="$2" mm="$3" rb="$4" wb="$5" ri="$6" wi="$7" err rc reason
+  if ! err=$(systemctl set-property --runtime "$unit" "${MDT_IO_PROPS[@]}" 2>&1); then
+    log "ERROR: $unit IO cap set-property failed ($err)"
+    return 1
+  fi
+  MDT_VERIFY_SOFT=1 _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"; rc=$?
+  [ "$rc" = 1 ] || return "$rc"
+  if ! _mdt_systemd_reports_io "$unit" "$rb" "$wb" "$ri" "$wi"; then
+    MDT_VERIFY_REMEDY="systemd does not report all the intended values either, so this is not the stale-entry case and no reload was attempted; $_MDT_IO_OTHER_CAUSES" \
+      _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"
+    return $?
+  fi
+  if ! _mdt_io_reload_allowed; then
+    MDT_VERIFY_REMEDY="reload suppressed: $MDT_IO_SUPPRESS_INFO; $_MDT_IO_OTHER_CAUSES" \
+      _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"
+    return $?
+  fi
+  MDT_IO_RELOADED=1
+  reason="unit=$unit kernel-disagrees-with-show"
+  if ! _mdt_io_stamp_write "$reason"; then
+    log "ERROR: $unit: cannot record the self-heal reload under $(dirname "$(_mdt_io_stamp_file)") — refusing to reload without a rate limit; fix that directory and rerun"
+    return 1
+  fi
+  log "WARN: $unit: systemctl show reports the intended IO limits but the kernel io.max disagrees — a stale per-spelling limit entry inside systemd (invisible in show) overrides it; running 'systemctl daemon-reload' to rebuild systemd's list from its drop-ins, then re-applying (at most once per ${MDT_IO_RELOAD_WINDOW_SECONDS}s across runs)"
+  if ! err=$(systemctl daemon-reload 2>&1); then
+    log "ERROR: systemctl daemon-reload failed ($err) — the intended cap on $unit is NOT in effect; fix the daemon-reload failure and rerun"
+    return 1
+  fi
+  if ! err=$(systemctl set-property --runtime "$unit" "${MDT_IO_PROPS[@]}" 2>&1); then
+    log "ERROR: $unit IO cap set-property failed after daemon-reload ($err)"
+    return 1
+  fi
+  MDT_VERIFY_REMEDY="the stale-entry heal (one daemon-reload) was tried and did not fix it; $_MDT_IO_OTHER_CAUSES" \
+    _mdt_verify_io_max "$unit" "$dir" "$mm" "$rb" "$wb" "$ri" "$wi"
 }
 
 # _mdt_active_swap_count: number of active swap devices that have a disk behind

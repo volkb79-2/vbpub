@@ -457,8 +457,18 @@ if [ -z "${IO_DEV_PATH:-}" ]; then
     esac
   done
 fi
+IO_SD_DEV=""
+IO_SD_STATE=none          # none = no device found | unresolved = found, whole disk not resolvable | ok
 if [ -n "${IO_DEV_PATH:-}" ]; then
-  echo "io device for static caps: $IO_DEV_PATH"
+  # systemd gets the WHOLE-DISK node by MAJ:MIN, derived (never a mapper/partition node: MDT-HS-04)
+  if IO_SD_DEV=$(_mdt_io_systemd_dev "$IO_DEV_PATH" 2>&1); then
+    echo "io device for static caps: $IO_DEV_PATH -> $IO_SD_DEV"
+    IO_SD_STATE=ok
+  else
+    echo "WARN: block device $IO_DEV_PATH was found but its whole disk could not be resolved (${IO_SD_DEV}) — the static IO caps are omitted and dev.slice will have NO static IO cap; the reconcile will report ERROR on every run until IO_DEV_PATH names a resolvable node"
+    IO_SD_DEV=""
+    IO_SD_STATE=unresolved
+  fi
 else
   echo "WARN: findmnt did not expose a host /dev block-device node — static IO caps will be omitted"
 fi
@@ -702,7 +712,7 @@ DEV_BUILDKITD_MAX_PARALLELISM \
 DEV_BUILDKITD_ZSWAP_WRITEBACK \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
 DOCKER_SCOPE_BACKSTOP_MEMORY_MAX DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX \
-IO_DEV_PATH WATCHER_INTERVAL"
+IO_DEV_PATH IO_SD_DEV WATCHER_INTERVAL"
 render() { # render <template> <dest>
   local src="$1" dst="$2" v args=()
   for v in $RENDER_VARS; do args+=(-e "s|@$v@|${!v:-}|g"); done
@@ -739,11 +749,16 @@ mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
   /etc/systemd/system/docker-.scope.d/50-default-limits.conf
 
-if [ -n "${IO_DEV_PATH:-}" ]; then
-  echo "static IO fallback: dev.slice on ${IO_DEV_PATH} = ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bytes/s read/write (DEV_IO_*_MAX when set, else DEV_STATIC_*)"
+if [ -n "${IO_SD_DEV:-}" ]; then
+  echo "static IO fallback: dev.slice on ${IO_SD_DEV} (${IO_DEV_PATH}) = ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bytes/s read/write (DEV_IO_*_MAX when set, else DEV_STATIC_*)"
   echo "  applies from boot, and whenever no current plausible identity-verified baseline is available; the reconciliation service re-asserts it explicitly, applies min(pinned, ${DEV_IO_CAP_PCT:-60}% of baseline) per value when a baseline exists, and verifies the kernel io.max (check with: mdt-cgroup-io-limits.sh dev.slice --systemd)"
 else
-  echo "static IO fallback: NOT ACTIVE — no host block device was discovered; the four configured values (${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bandwidth) are retained for the next host-side device discovery"
+  if [ "$IO_SD_STATE" = unresolved ]; then
+    _io_why="the block device ${IO_DEV_PATH} was found but its whole disk could not be resolved (dev.slice has NO static IO cap; the reconcile reports ERROR on every run until IO_DEV_PATH names a resolvable node)"
+  else
+    _io_why="no host block device was discovered"
+  fi
+  echo "static IO fallback: NOT ACTIVE — ${_io_why}; the four configured values (${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bandwidth) are retained for the next host-side device discovery"
 fi
 
 # Directory-mountable Docker API socket (/run/docker-api/docker.sock),
@@ -787,9 +802,13 @@ _mdt_apply_damon_step "$REQUIRE_DAMON" || exit 2
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.
 #   (dev.slice now carries the one IO ceiling for both tiers — see units/dev.slice.in)
-if [ -z "${IO_DEV_PATH:-}" ]; then
+if [ -z "${IO_SD_DEV:-}" ]; then
   sed -i '/^IO\(Read\|Write\)\(Bandwidth\|IOPS\)Max=/d' /etc/systemd/system/dev.slice
-  echo "no device — dropped static IO*Max lines (runtime caps may still apply if discovery succeeds later)"
+  if [ "$IO_SD_STATE" = unresolved ]; then
+    echo "device $IO_DEV_PATH found but its whole disk could not be resolved — dropped static IO*Max lines; dev.slice has NO static IO cap"
+  else
+    echo "no device discovered — dropped static IO*Max lines (runtime caps may still apply if discovery succeeds later)"
+  fi
 fi
 # - MemoryZSwapWriteback= needs systemd >= 256; older hosts get the raw-write
 #   fallback from mdt-dev-governance-reconcile.sh instead. Applies to dev.slice AND

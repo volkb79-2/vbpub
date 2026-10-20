@@ -51,20 +51,39 @@ KEYS = [("IOReadBandwidthMax", "rbps"), ("IOWriteBandwidthMax", "wbps"),
 def cgroup_dir(unit):
     return os.path.join(cg, "dev.slice") if unit == "dev.slice" else os.path.join(cg, "dev.slice", unit)
 
+def paths_of(unit):
+    """systemd keeps ONE in-memory io-device-limit entry PER PATH STRING (inferred, MDT-HS-04).
+    state["paths"][unit] = [[path, {key: value}], ...] in insertion order; "max" = reset."""
+    store = state.setdefault("paths", {})
+    if unit not in store:
+        entries = []
+        for key, _ in KEYS:
+            flat = state["unit"].get(unit, {}).get(key, [])
+            if flat:
+                for e in entries:
+                    if e[0] == flat[0]:
+                        e[1][key] = flat[1]
+                        break
+                else:
+                    entries.append([flat[0], {key: flat[1]}])
+        store[unit] = entries
+    return store[unit]
+
 def recompute(unit):
     d = cgroup_dir(unit)
     if not os.path.isdir(d):
         return
-    values = {}
-    for key, field in KEYS:
-        rt = state["runtime"].get(unit, {})
-        # runtime layer present (even EMPTY) overrides the unit file: this is the
-        # systemd behaviour that wiped dev.slice on the live host.
-        entries = rt[key] if key in rt else state["unit"].get(unit, {}).get(key, [])
-        values[field] = entries[1] if entries else "max"
-    if os.environ.get("FAKE_KERNEL_DROPS"):
-        text = ""
-    elif all(v == "max" for v in values.values()):
+    # the apply writes EVERY entry in list order, each as a complete MAJ:MIN line; several spellings
+    # resolve to the same disk, so the LAST one applied wins.  A stale all-max entry therefore
+    # silently writes `max` over the cap.  An entry whose spelling systemd cannot resolve
+    # (FAKE_DROP_SPELLING) writes nothing.
+    drop = os.environ.get("FAKE_DROP_SPELLING", "")
+    values = None
+    for path, vals in paths_of(unit):
+        if drop and path == drop:
+            continue
+        values = {field: vals.get(key, "max") for key, field in KEYS}
+    if os.environ.get("FAKE_KERNEL_DROPS") or values is None or all(v == "max" for v in values.values()):
         text = ""
     else:
         mm = os.environ.get("FAKE_KERNEL_MAJMIN", "254:0")
@@ -72,25 +91,56 @@ def recompute(unit):
     with open(os.path.join(d, "io.max"), "w") as f:
         f.write(text)
 
+def save():
+    json.dump(state, open(state_path, "w"))
+
 args = sys.argv[1:]
 if args[:2] == ["set-property", "--runtime"]:
     unit = args[2]
+    entries = paths_of(unit)
+    state.setdefault("touched", {})[unit] = True
     for assignment in args[3:]:
         key, _, val = assignment.partition("=")
         if key not in dict(KEYS):
             continue
-        state["runtime"].setdefault(unit, {})[key] = val.split() if val else []
+        if not val:
+            for e in entries:                  # a reset sets every entry's limit to max; it does NOT delete them
+                e[1][key] = "max"
+        else:
+            path, _, number = val.partition(" ")
+            for e in entries:
+                if e[0] == path:
+                    e[1][key] = number
+                    break
+            else:
+                entries.append([path, {key: number}])
     recompute(unit)
-    json.dump(state, open(state_path, "w"))
+    save()
+elif args == ["daemon-reload"]:
+    # rebuilds every list from the drop-in files, which hold only the NON-max entries
+    for unit, entries in list(state.get("paths", {}).items()):
+        if os.environ.get("FAKE_RELOAD_NOOP"):
+            break
+        kept = []
+        for path, vals in entries:
+            live = {k: v for k, v in vals.items() if v != "max"}
+            if live:
+                kept.append([path, live])
+        state["paths"][unit] = kept
+        recompute(unit)
+    save()
 elif args and args[0] == "show" and os.environ.get("FAKE_SHOW_FAILS"):
     sys.stderr.write("Failed to connect to bus\n")
     sys.exit(1)
 elif args and args[0] == "show":
     unit = args[1]
-    rt = state["runtime"].get(unit, {})
+    # show (and the runtime drop-in) HIDE all-max entries: a stale one is invisible
     for key, _ in KEYS:
-        print("%s=%s" % (key, " ".join(rt.get(key, state["unit"].get(unit, {}).get(key, [])))))
-    print("DropInPaths=" + ("/run/systemd/system.control/%s.d/50-IO.conf" % unit if rt else ""))
+        shown = [p + " " + v[key] for p, v in paths_of(unit) if key in v and v[key] != "max"]
+        if os.environ.get("FAKE_SHOW_HIDES") or (os.environ.get("FAKE_SHOW_PARTIAL") and key != "IOReadBandwidthMax"):
+            shown = []
+        print("%s=%s" % (key, " ".join(shown)))
+    print("DropInPaths=" + ("/run/systemd/system.control/%s.d/50-IO.conf" % unit if state.get("touched", {}).get(unit) or state.get("runtime", {}).get(unit) else ""))
 sys.exit(0)
 '''
 
@@ -100,6 +150,16 @@ FAKE_STAT = '''#!/usr/bin/env bash
 if [ "${1:-}" = -c ] && [ "${2:-}" = %d ]; then echo 111; exit 0; fi
 exec __REAL_STAT__ "$@"
 '''
+
+
+def lone_resets(call: str) -> list[str]:
+    """Keys an `IO*Max=` assignment resets in `call` WITHOUT setting the same key again in the
+    same call (a reset followed by a set is the MDT-HS-04 shape and is safe: MDT-016 only bites
+    a reset that is left alone)."""
+    words = call.split()
+    resets = [w[:-1] for w in words if re.fullmatch(r"IO\w+Max=", w)]
+    sets = {w.split("=", 1)[0] for w in words if re.match(r"IO\w+Max=\S", w)}
+    return [k for k in resets if k not in sets]
 
 
 def _write_exec(path: Path, text: str) -> None:
@@ -134,6 +194,8 @@ class Host:
         (dev / "vda" / "vda1" / "partition").write_text("1\n")
         (dev / "vdb" / "vdb1").mkdir(parents=True)
         (dev / "vdb" / "dev").write_text("8:16\n")
+        (dev / "vda" / "uevent").write_text("MAJOR=254\nMINOR=0\nDEVNAME=vda\nDEVTYPE=disk\n")
+        (dev / "vdb" / "uevent").write_text("MAJOR=8\nMINOR=16\nDEVNAME=vdb\nDEVTYPE=disk\n")
         (dev / "vdb" / "vdb1" / "dev").write_text("1:5\n")
         (dev / "vdb" / "vdb1" / "partition").write_text("1\n")
         blk = self.sys / "dev" / "block"
@@ -216,7 +278,7 @@ class ReconcileIoGovernanceTests(unittest.TestCase):
         result = self.host.run()
         # dev.slice is the slice meant to stay capped; tier slices carry no static IO line
         empty = [c for c in self.host.calls()
-                 if c.startswith("set-property --runtime dev.slice ") and re.search(r"\bIO\w+Max=(\s|$)", c)]
+                 if c.startswith("set-property --runtime dev.slice ") and lone_resets(c)]
         self.assertEqual(empty, [], result.stdout)
         # the runtime layer holds the EXPLICIT fallback, not nothing
         self.assertEqual(
@@ -259,7 +321,7 @@ class ReconcileIoGovernanceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("verified kernel io.max 254:0", result.stdout)
         self.assertIn("is authoritative", result.stdout)
-        self.assertIn("disk 254:0", result.stdout)  # the resolved whole disk, not the node
+        self.assertIn("io.max on /dev/vda (from /dev/null)", result.stdout)  # the resolved whole disk, not the node
 
     def test_an_empty_kernel_io_max_fails_and_is_never_certified(self) -> None:
         result = self.host.run(FAKE_KERNEL_DROPS="1")

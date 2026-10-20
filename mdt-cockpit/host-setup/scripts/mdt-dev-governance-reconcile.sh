@@ -151,25 +151,25 @@ _mdt_no_device() {
 }
 
 _mdt_apply_dev_io() {
-  local majmin err _rc
+  local majmin _rc sd_dev
   _mdt_resolve_dev_io_caps || MDT_RC=1
   if ! majmin=$(_mdt_dev_majmin "$IO_DEV_PATH" 2>&1); then
     log "ERROR: cannot resolve $IO_DEV_PATH to the whole disk systemd caps: ${majmin:-missing node or no sysfs entry} — IO governance cannot be verified"
     MDT_RC=1
     return
   fi
-  if ! err=$(systemctl set-property --runtime dev.slice \
-       "IOReadBandwidthMax=$IO_DEV_PATH $DEV_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $DEV_WBPS" \
-       "IOReadIOPSMax=$IO_DEV_PATH $DEV_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $DEV_WIOPS" 2>&1); then
-    log "ERROR: dev.slice set-property failed ($err)"
+  if ! sd_dev=$(_mdt_io_devname_for_majmin "$majmin" 2>&1); then
+    log "ERROR: cannot name the whole disk $majmin for systemd: $sd_dev — IO governance cannot be applied"
     MDT_RC=1
     return
   fi
-  _mdt_verify_io_max dev.slice "$CG/dev.slice" "$majmin" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"; _rc=$?
+  MDT_IO_PROPS=()
+  _mdt_io_props "$sd_dev" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"
+  _mdt_io_apply_verify dev.slice "$CG/dev.slice" "$majmin" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"; _rc=$?
   [ "$_rc" = 1 ] && MDT_RC=1
   if [ "$_rc" = 0 ]; then
     # "authoritative" is only ever claimed after the kernel agreed
-    log "dev.slice: io.max on $IO_DEV_PATH (disk $majmin) is authoritative: ${DEV_RIOPS}r/${DEV_WIOPS}w IOPS, ${DEV_RBPS}/${DEV_WBPS} B/s r/w [$DEV_IO_SRC; DEV_IO_CAP_PCT=${DEV_IO_CAP_PCT}] — covers every dev.slice child combined"
+    log "dev.slice: io.max on $sd_dev (from $IO_DEV_PATH) is authoritative: ${DEV_RIOPS}r/${DEV_WIOPS}w IOPS, ${DEV_RBPS}/${DEV_WBPS} B/s r/w [$DEV_IO_SRC; DEV_IO_CAP_PCT=${DEV_IO_CAP_PCT}] — covers every dev.slice child combined"
   fi
   _mdt_apply_tier_io "$majmin"
 }
@@ -185,7 +185,7 @@ _mdt_apply_dev_io() {
 # runtime value (a removed pin must not linger until reboot); it is never
 # written to dev.slice, which is the slice meant to stay capped.
 _mdt_apply_tier_io() {
-  local majmin="$1" pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub f sub_ri sub_wi err _rc touched
+  local majmin="$1" sd_dev pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub f sub_ri sub_wi _rc touched
   local -A v bad
   local -a props
   for entry in $MDT_IO_TIERS; do
@@ -210,6 +210,11 @@ _mdt_apply_tier_io() {
     # nothing configured for a tier that is not a sub-ceiling tier: leave it alone
     [ -n "$touched" ] || continue
     props=()
+    sd_dev=$(_mdt_io_devname_for_majmin "$majmin" 2>&1) || {
+      log "ERROR: $unit: cannot name the whole disk $majmin for systemd: $sd_dev — tier IO cap not applied"
+      MDT_RC=1
+      continue
+    }
     for f in RBPS WBPS RIOPS WIOPS; do
       case "$f" in
         RBPS) key=IOReadBandwidthMax ;; WBPS) key=IOWriteBandwidthMax ;;
@@ -218,22 +223,19 @@ _mdt_apply_tier_io() {
       if [ -n "${bad[$f]:-}" ]; then
         continue                                  # invalid: omitted, never cleared
       elif [ -n "${v[$f]}" ]; then
-        props+=("$key=$IO_DEV_PATH ${v[$f]}")
+        props+=("$key=" "$key=$sd_dev ${v[$f]}")   # reset + set in ONE call (MDT-HS-04)
       else
         props+=("$key=")                          # unset on a touched tier slice: drop our earlier value
         v[$f]=max                                 # ... and verify it reads unlimited
       fi
     done
     [ "${#props[@]}" -gt 0 ] || continue
-    if err=$(systemctl set-property --runtime "$unit" "${props[@]}" 2>&1); then
-      _mdt_verify_io_max "$unit" "$CG/dev.slice/$unit" "$majmin" \
-        "$([ -n "${bad[RBPS]:-}" ] || echo "${v[RBPS]}")" "$([ -n "${bad[WBPS]:-}" ] || echo "${v[WBPS]}")" \
-        "$([ -n "${bad[RIOPS]:-}" ] || echo "${v[RIOPS]}")" "$([ -n "${bad[WIOPS]:-}" ] || echo "${v[WIOPS]}")"; _rc=$?
-      [ "$_rc" = 1 ] && MDT_RC=1
-    else
-      log "ERROR: $unit IO cap set-property failed ($err)"
-      MDT_RC=1
-    fi
+    # shellcheck disable=SC2034  # read by _mdt_io_apply_verify (sourced lib)
+    MDT_IO_PROPS=("${props[@]}")
+    _mdt_io_apply_verify "$unit" "$CG/dev.slice/$unit" "$majmin" \
+      "$([ -n "${bad[RBPS]:-}" ] || echo "${v[RBPS]}")" "$([ -n "${bad[WBPS]:-}" ] || echo "${v[WBPS]}")" \
+      "$([ -n "${bad[RIOPS]:-}" ] || echo "${v[RIOPS]}")" "$([ -n "${bad[WIOPS]:-}" ] || echo "${v[WIOPS]}")"; _rc=$?
+    [ "$_rc" = 1 ] && MDT_RC=1
   done
 }
 
@@ -241,6 +243,8 @@ if [ -n "${IO_DEV_PATH:-}" ]; then
   [ "${MDT_IO_BASELINE_VALID:-0}" = 1 ] \
     || log "no current plausible baseline — dev.slice uses its pinned/static values until mdt-io-baseline.py succeeds"
   _mdt_apply_dev_io
+  # a run that verified clean WITHOUT needing a reload ends the self-heal rate-limit window
+  _mdt_io_stamp_clear_if_clean
 else
   _mdt_no_device
 fi
