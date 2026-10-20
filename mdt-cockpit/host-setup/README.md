@@ -203,6 +203,11 @@ closed vocabulary: `report-only` (default) detects and logs without removal;
 `terminate` removes an unapproved BuildKit worker and is an explicit opt-in.
 The wizard asks for a second confirmation because termination can interrupt a
 live Buildx build. Missing or invalid policy configuration stops the guard.
+IO caps are handed to systemd as `/dev/block/<maj:min>` of the whole disk (derived, never a device name
+or the configured mapper node), with every IO key reset and set in the same `set-property` call; see
+[DESIGN-GUIDE](../docs/DESIGN-GUIDE.md) (MDT-HS-04) for the measurement and why. The installer renders the
+`dev.slice` static lines the same way, and the log lines name the path given to systemd.
+
 The guard reads each `docker events` line's container id from `Actor.ID`, the documented
 current field: Docker 29 (API 1.56) no longer sends the deprecated top-level `id`/`status`/`from`.
 A legacy top-level `id` is accepted only when `Actor` is absent (older daemons) or agrees with it;

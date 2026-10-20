@@ -62,7 +62,7 @@ MemoryMax=@DEV_MEMORY_MAX@
 # wipes these unit-file values too: measured 2026-10-19, MDT-016) — and
 # applies min(pinned, DEV_IO_CAP_PCT% of a plausible baseline) when one exists,
 # then reads the kernel io.max back. See CGROUP-NOTES.md §3.
-IOReadBandwidthMax=@IO_DEV_PATH@ @DEV_STATIC_RBW@
-IOWriteBandwidthMax=@IO_DEV_PATH@ @DEV_STATIC_WBW@
-IOReadIOPSMax=@IO_DEV_PATH@ @DEV_STATIC_RIOPS@
-IOWriteIOPSMax=@IO_DEV_PATH@ @DEV_STATIC_WIOPS@
+IOReadBandwidthMax=@IO_SD_DEV@ @DEV_STATIC_RBW@
+IOWriteBandwidthMax=@IO_SD_DEV@ @DEV_STATIC_WBW@
+IOReadIOPSMax=@IO_SD_DEV@ @DEV_STATIC_RIOPS@
+IOWriteIOPSMax=@IO_SD_DEV@ @DEV_STATIC_WIOPS@

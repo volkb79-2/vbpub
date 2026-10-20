@@ -51,6 +51,12 @@ KEYS = [("IOReadBandwidthMax", "rbps"), ("IOWriteBandwidthMax", "wbps"),
 def cgroup_dir(unit):
     return os.path.join(cg, "dev.slice") if unit == "dev.slice" else os.path.join(cg, "dev.slice", unit)
 
+def pairs(v):
+    """Entries are [dev, value] pairs; a legacy flat [dev, value] list is one pair."""
+    if v and not isinstance(v[0], list):
+        return [v]
+    return v
+
 def recompute(unit):
     d = cgroup_dir(unit)
     if not os.path.isdir(d):
@@ -60,8 +66,12 @@ def recompute(unit):
         rt = state["runtime"].get(unit, {})
         # runtime layer present (even EMPTY) overrides the unit file: this is the
         # systemd behaviour that wiped dev.slice on the live host.
-        entries = rt[key] if key in rt else state["unit"].get(unit, {}).get(key, [])
-        values[field] = entries[1] if entries else "max"
+        entries = pairs(rt[key] if key in rt else state["unit"].get(unit, {}).get(key, []))
+        # the kernel takes the LAST entry's value (measured, MDT-HS-04); an entry whose
+        # device spelling systemd cannot resolve (FAKE_DROP_SPELLING) writes nothing
+        drop = os.environ.get("FAKE_DROP_SPELLING", "")
+        entries = [e for e in entries if not (drop and e[0] == drop)]
+        values[field] = entries[-1][1] if entries else "max"
     if os.environ.get("FAKE_KERNEL_DROPS"):
         text = ""
     elif all(v == "max" for v in values.values()):
@@ -79,7 +89,12 @@ if args[:2] == ["set-property", "--runtime"]:
         key, _, val = assignment.partition("=")
         if key not in dict(KEYS):
             continue
-        state["runtime"].setdefault(unit, {})[key] = val.split() if val else []
+        rt = state["runtime"].setdefault(unit, {})
+        if not val:
+            rt[key] = []                       # an empty assignment resets the WHOLE list
+        else:                                  # a non-empty one APPENDS (unit-file entries included)
+            base = rt[key] if key in rt else state["unit"].get(unit, {}).get(key, [])
+            rt[key] = pairs(base) + [val.split()]
     recompute(unit)
     json.dump(state, open(state_path, "w"))
 elif args and args[0] == "show" and os.environ.get("FAKE_SHOW_FAILS"):
@@ -89,7 +104,7 @@ elif args and args[0] == "show":
     unit = args[1]
     rt = state["runtime"].get(unit, {})
     for key, _ in KEYS:
-        print("%s=%s" % (key, " ".join(rt.get(key, state["unit"].get(unit, {}).get(key, [])))))
+        print("%s=%s" % (key, " ".join(" ".join(e) for e in pairs(rt.get(key, state["unit"].get(unit, {}).get(key, []))))))
     print("DropInPaths=" + ("/run/systemd/system.control/%s.d/50-IO.conf" % unit if rt else ""))
 sys.exit(0)
 '''
@@ -100,6 +115,16 @@ FAKE_STAT = '''#!/usr/bin/env bash
 if [ "${1:-}" = -c ] && [ "${2:-}" = %d ]; then echo 111; exit 0; fi
 exec __REAL_STAT__ "$@"
 '''
+
+
+def lone_resets(call: str) -> list[str]:
+    """Keys an `IO*Max=` assignment resets in `call` WITHOUT setting the same key again in the
+    same call (a reset followed by a set is the MDT-HS-04 shape and is safe: MDT-016 only bites
+    a reset that is left alone)."""
+    words = call.split()
+    resets = [w[:-1] for w in words if re.fullmatch(r"IO\w+Max=", w)]
+    sets = {w.split("=", 1)[0] for w in words if re.match(r"IO\w+Max=\S", w)}
+    return [k for k in resets if k not in sets]
 
 
 def _write_exec(path: Path, text: str) -> None:
@@ -216,7 +241,7 @@ class ReconcileIoGovernanceTests(unittest.TestCase):
         result = self.host.run()
         # dev.slice is the slice meant to stay capped; tier slices carry no static IO line
         empty = [c for c in self.host.calls()
-                 if c.startswith("set-property --runtime dev.slice ") and re.search(r"\bIO\w+Max=(\s|$)", c)]
+                 if c.startswith("set-property --runtime dev.slice ") and lone_resets(c)]
         self.assertEqual(empty, [], result.stdout)
         # the runtime layer holds the EXPLICIT fallback, not nothing
         self.assertEqual(
@@ -259,7 +284,7 @@ class ReconcileIoGovernanceTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertIn("verified kernel io.max 254:0", result.stdout)
         self.assertIn("is authoritative", result.stdout)
-        self.assertIn("disk 254:0", result.stdout)  # the resolved whole disk, not the node
+        self.assertIn("io.max on /dev/block/254:0 (from /dev/null)", result.stdout)  # the resolved whole disk, not the node
 
     def test_an_empty_kernel_io_max_fails_and_is_never_certified(self) -> None:
         result = self.host.run(FAKE_KERNEL_DROPS="1")

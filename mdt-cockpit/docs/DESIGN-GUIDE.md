@@ -663,6 +663,39 @@ which created containers are not seen, so a single bad line must not cost one. O
 `MAX_CONSECUTIVE_MALFORMED_EVENTS` (5) in a row exit non-zero, because that means the event shape is not
 understood and systemd should show it. A good event resets the streak. Review follow-ups: a rolling window (20 within 60 s) also exits, so bad/good interleaving cannot hide a broken parser; the immediate sweep runs at most once per rescan interval so an interleaved flood cannot storm the Docker API; a container vanishing between listing and inspect (ephemeral `--rm`) is skipped only on Docker's explicit `No such container`/`No such object`, so a daemon outage still fails loudly; event ids must be full 64-hex and the sweep uses `ps -aq --no-trunc` so a container named like another's short id cannot shadow it.
 
+### IO caps are given to systemd as `/dev/block/MAJ:MIN` of the whole disk, reset-then-set (MDT-HS-04)
+
+**Measured on gstammtisch** (systemd 257.13, kernel 7.2.6, root on a device-mapper LV `dm-0` 253:0
+over `vda` 254:0): `systemctl set-property --runtime dev.slice "IOReadBandwidthMax=/dev/mapper/<lv> N"`
+left the kernel's `dev.slice/io.max` empty with nothing logged, while `systemctl show` reported the value;
+the same call with `/dev/vda` or `/dev/block/254:0` wrote `254:0 rbps=N` at once. For `dev-gates.slice`
+the mapper spelling did produce 254:0 entries, but whether that was a real apply or stale kernel state
+is **unproven**. With two spellings of one disk in a runtime list (`/dev/vda N` from a manual pin plus
+`/dev/mapper/... M` from the reconcile) the kernel ended with the value of the LAST entry.
+
+**Decision.** The reconcile, the per-container watcher and the installer's rendered `dev.slice` static
+lines all hand systemd `/dev/block/<maj:min>` of the whole disk, derived by `_mdt_dev_majmin` (the same
+value the read-back verifies), via `_mdt_io_systemd_dev`; no device name is hard-coded and a mapper or
+partition node is never passed. Every IO `set-property` resets each key and then sets it in ONE call
+(`IOReadBandwidthMax=` then `IOReadBandwidthMax=/dev/block/254:0 N`), so a stale entry under another
+spelling cannot shadow the cap; the reset and the set must travel together because an empty assignment
+alone wipes the unit-file value (MDT-016). Log lines name the path actually given to systemd
+(`io.max on /dev/block/254:0 (from /dev/mapper/<lv>)`). Rejected: keeping the configured node and only
+adding the reset (leaves the unexplained mapper drop in place); a device name derived from sysfs
+(`/dev/vda`: works, but is a second spelling to keep consistent). Trade-off: MAJ:MIN of a SCSI/NVMe disk
+can change across boots, so the boot-time static line may briefly name another disk; the reconcile re-asserts
+the correct one every minute.
+
+**Source reading (systemd v257.13, `src/core/cgroup.c`), inferred rather than measured.**
+`lookup_block_device()` parses `/dev/block/M:N` directly with `device_path_parse_major_minor` (no stat),
+otherwise stats the path, then follows `block_get_originating()` through single-slave `slaves/` links and
+`block_get_whole_disk()`. By that code a mapper node SHOULD resolve to `vda`, and every failure branch logs a
+warning, so the observed silent drop is **not explained** by this lookup; the cause remains unknown (not
+reproduced here). What the source does explain is the last-wins observation:
+`cgroup_apply_io_device_limit()` is called once per list entry (per path spelling) and writes a complete
+`MAJ:MIN rbps= wbps= riops= wiops=` line each time, so a later entry for the same disk overwrites the earlier
+one, including fields the later entry did not set.
+
 ## Per-container memory policy
 
 Parent slices already bound the combined tier, while callers such as CIU may

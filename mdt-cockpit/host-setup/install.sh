@@ -457,8 +457,15 @@ if [ -z "${IO_DEV_PATH:-}" ]; then
     esac
   done
 fi
+IO_SD_DEV=""
 if [ -n "${IO_DEV_PATH:-}" ]; then
-  echo "io device for static caps: $IO_DEV_PATH"
+  # systemd gets the WHOLE-DISK node by MAJ:MIN, derived (never a mapper/partition node: MDT-HS-04)
+  if IO_SD_DEV=$(_mdt_io_systemd_dev "$IO_DEV_PATH" 2>&1); then
+    echo "io device for static caps: $IO_DEV_PATH -> $IO_SD_DEV"
+  else
+    echo "WARN: cannot resolve $IO_DEV_PATH to a whole disk (${IO_SD_DEV}) — static IO caps will be omitted"
+    IO_SD_DEV=""
+  fi
 else
   echo "WARN: findmnt did not expose a host /dev block-device node — static IO caps will be omitted"
 fi
@@ -702,7 +709,7 @@ DEV_BUILDKITD_MAX_PARALLELISM \
 DEV_BUILDKITD_ZSWAP_WRITEBACK \
 DEV_STATIC_RBW DEV_STATIC_WBW DEV_STATIC_RIOPS DEV_STATIC_WIOPS \
 DOCKER_SCOPE_BACKSTOP_MEMORY_MAX DOCKER_SCOPE_BACKSTOP_MEMORY_SWAP_MAX \
-IO_DEV_PATH WATCHER_INTERVAL"
+IO_DEV_PATH IO_SD_DEV WATCHER_INTERVAL"
 render() { # render <template> <dest>
   local src="$1" dst="$2" v args=()
   for v in $RENDER_VARS; do args+=(-e "s|@$v@|${!v:-}|g"); done
@@ -739,8 +746,8 @@ mkdir -p /etc/systemd/system/docker-.scope.d
 render "$HERE/units/docker-scope-default-limits.conf.in" \
   /etc/systemd/system/docker-.scope.d/50-default-limits.conf
 
-if [ -n "${IO_DEV_PATH:-}" ]; then
-  echo "static IO fallback: dev.slice on ${IO_DEV_PATH} = ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bytes/s read/write (DEV_IO_*_MAX when set, else DEV_STATIC_*)"
+if [ -n "${IO_SD_DEV:-}" ]; then
+  echo "static IO fallback: dev.slice on ${IO_SD_DEV} (${IO_DEV_PATH}) = ${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bytes/s read/write (DEV_IO_*_MAX when set, else DEV_STATIC_*)"
   echo "  applies from boot, and whenever no current plausible identity-verified baseline is available; the reconciliation service re-asserts it explicitly, applies min(pinned, ${DEV_IO_CAP_PCT:-60}% of baseline) per value when a baseline exists, and verifies the kernel io.max (check with: mdt-cgroup-io-limits.sh dev.slice --systemd)"
 else
   echo "static IO fallback: NOT ACTIVE — no host block device was discovered; the four configured values (${DEV_STATIC_RIOPS}r/${DEV_STATIC_WIOPS}w IOPS, ${DEV_STATIC_RBW}/${DEV_STATIC_WBW} bandwidth) are retained for the next host-side device discovery"
@@ -787,7 +794,7 @@ _mdt_apply_damon_step "$REQUIRE_DAMON" || exit 2
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.
 #   (dev.slice now carries the one IO ceiling for both tiers — see units/dev.slice.in)
-if [ -z "${IO_DEV_PATH:-}" ]; then
+if [ -z "${IO_SD_DEV:-}" ]; then
   sed -i '/^IO\(Read\|Write\)\(Bandwidth\|IOPS\)Max=/d' /etc/systemd/system/dev.slice
   echo "no device — dropped static IO*Max lines (runtime caps may still apply if discovery succeeds later)"
 fi

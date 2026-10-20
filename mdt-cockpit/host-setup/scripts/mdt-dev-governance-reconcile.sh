@@ -151,16 +151,17 @@ _mdt_no_device() {
 }
 
 _mdt_apply_dev_io() {
-  local majmin err _rc
+  local majmin err _rc sd_dev
   _mdt_resolve_dev_io_caps || MDT_RC=1
   if ! majmin=$(_mdt_dev_majmin "$IO_DEV_PATH" 2>&1); then
     log "ERROR: cannot resolve $IO_DEV_PATH to the whole disk systemd caps: ${majmin:-missing node or no sysfs entry} — IO governance cannot be verified"
     MDT_RC=1
     return
   fi
-  if ! err=$(systemctl set-property --runtime dev.slice \
-       "IOReadBandwidthMax=$IO_DEV_PATH $DEV_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $DEV_WBPS" \
-       "IOReadIOPSMax=$IO_DEV_PATH $DEV_RIOPS" "IOWriteIOPSMax=$IO_DEV_PATH $DEV_WIOPS" 2>&1); then
+  sd_dev="/dev/block/$majmin"
+  MDT_IO_PROPS=()
+  _mdt_io_props "$sd_dev" "$DEV_RBPS" "$DEV_WBPS" "$DEV_RIOPS" "$DEV_WIOPS"
+  if ! err=$(systemctl set-property --runtime dev.slice "${MDT_IO_PROPS[@]}" 2>&1); then
     log "ERROR: dev.slice set-property failed ($err)"
     MDT_RC=1
     return
@@ -169,7 +170,7 @@ _mdt_apply_dev_io() {
   [ "$_rc" = 1 ] && MDT_RC=1
   if [ "$_rc" = 0 ]; then
     # "authoritative" is only ever claimed after the kernel agreed
-    log "dev.slice: io.max on $IO_DEV_PATH (disk $majmin) is authoritative: ${DEV_RIOPS}r/${DEV_WIOPS}w IOPS, ${DEV_RBPS}/${DEV_WBPS} B/s r/w [$DEV_IO_SRC; DEV_IO_CAP_PCT=${DEV_IO_CAP_PCT}] — covers every dev.slice child combined"
+    log "dev.slice: io.max on $sd_dev (from $IO_DEV_PATH) is authoritative: ${DEV_RIOPS}r/${DEV_WIOPS}w IOPS, ${DEV_RBPS}/${DEV_WBPS} B/s r/w [$DEV_IO_SRC; DEV_IO_CAP_PCT=${DEV_IO_CAP_PCT}] — covers every dev.slice child combined"
   fi
   _mdt_apply_tier_io "$majmin"
 }
@@ -185,7 +186,7 @@ _mdt_apply_dev_io() {
 # runtime value (a removed pin must not linger until reboot); it is never
 # written to dev.slice, which is the slice meant to stay capped.
 _mdt_apply_tier_io() {
-  local majmin="$1" pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub f sub_ri sub_wi err _rc touched
+  local majmin="$1" sd_dev pct="${DEV_SUBSLICE_IOPS_PCT:-60}" entry tier unit sub f sub_ri sub_wi err _rc touched
   local -A v bad
   local -a props
   for entry in $MDT_IO_TIERS; do
@@ -210,6 +211,7 @@ _mdt_apply_tier_io() {
     # nothing configured for a tier that is not a sub-ceiling tier: leave it alone
     [ -n "$touched" ] || continue
     props=()
+    sd_dev="/dev/block/$majmin"
     for f in RBPS WBPS RIOPS WIOPS; do
       case "$f" in
         RBPS) key=IOReadBandwidthMax ;; WBPS) key=IOWriteBandwidthMax ;;
@@ -218,7 +220,7 @@ _mdt_apply_tier_io() {
       if [ -n "${bad[$f]:-}" ]; then
         continue                                  # invalid: omitted, never cleared
       elif [ -n "${v[$f]}" ]; then
-        props+=("$key=$IO_DEV_PATH ${v[$f]}")
+        props+=("$key=" "$key=$sd_dev ${v[$f]}")   # reset + set in ONE call (MDT-HS-04)
       else
         props+=("$key=")                          # unset on a touched tier slice: drop our earlier value
         v[$f]=max                                 # ... and verify it reads unlimited

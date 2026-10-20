@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_io_governance import (  # noqa: E402
     Host,
+    lone_resets,
     LIB,
     RECONCILE,
     ROOT,
@@ -160,7 +161,7 @@ class ReconcileRound1Tests(unittest.TestCase):
 
     def _empty_assignments(self, unit: str) -> list[str]:
         return [c for c in self.host.calls() if c.startswith(f"set-property --runtime {unit} ")
-                and re.search(r"\bIO\w+Max=(\s|$)", c)]
+                and lone_resets(c)]
 
     # H-03 -------------------------------------------------------------------
     def test_an_invalid_tier_pin_keeps_the_last_good_cap_when_it_is_one_of_several_pins(self) -> None:

@@ -183,7 +183,7 @@ _mdt_match() {
 # capping its peak rate is the goal, making it lose every IO race to a
 # sibling is not.
 _mdt_apply_container_caps() {
-  local cid="$1" label="$2" deprio="${3:-0}" scope unit props=()
+  local cid="$1" label="$2" deprio="${3:-0}" scope unit sd_dev props=()
   [ -n "${IO_DEV_PATH:-}" ] || { log "WARN: $label ($cid): no io device — skipped"; return 0; }
   scope=$(_mdt_scope_path "$cid")
   if [ -z "$scope" ]; then
@@ -199,13 +199,18 @@ _mdt_apply_container_caps() {
     return 0
   fi
   unit="${scope##*/}"
+  if ! sd_dev=$(_mdt_io_systemd_dev "$IO_DEV_PATH" 2>&1); then
+    log "WARN: $label ($cid): cannot resolve $IO_DEV_PATH to the whole disk systemd caps (${sd_dev}) — skipped"
+    return 0
+  fi
   [ "$deprio" = 1 ] && props+=(IOWeight=1)
-  props+=("IOReadBandwidthMax=$IO_DEV_PATH $WATCHER_RBPS" "IOWriteBandwidthMax=$IO_DEV_PATH $WATCHER_WBPS"
-          "IOReadIOPSMax=$IO_DEV_PATH $WATCHER_RIOPS"     "IOWriteIOPSMax=$IO_DEV_PATH $WATCHER_WIOPS")
+  MDT_IO_PROPS=()
+  _mdt_io_props "$sd_dev" "$WATCHER_RBPS" "$WATCHER_WBPS" "$WATCHER_RIOPS" "$WATCHER_WIOPS"
+  props+=("${MDT_IO_PROPS[@]}")
   # set-property (not a raw io.max write): systemd re-applies its own recorded
   # properties to a scope on every daemon-reload, silently wiping raw writes.
   if systemctl set-property --runtime "$unit" "${props[@]}" 2>/dev/null; then
-    log "$label ($cid): io.max=${WATCHER_RIOPS}r/${WATCHER_WIOPS}w IOPS $((WATCHER_RBPS/1048576))/$((WATCHER_WBPS/1048576))MB/s r/w (${WATCHER_SRC})$([ "$deprio" = 1 ] && echo ', io.weight=1')"
+    log "$label ($cid): io.max on $sd_dev=${WATCHER_RIOPS}r/${WATCHER_WIOPS}w IOPS $((WATCHER_RBPS/1048576))/$((WATCHER_WBPS/1048576))MB/s r/w (${WATCHER_SRC})$([ "$deprio" = 1 ] && echo ', io.weight=1')"
   else
     log "WARN: $label ($cid): set-property failed — skipped"
     return 0
@@ -364,6 +369,36 @@ _mdt_resolve_dev_io_caps() {
   done
   DEV_IO_SRC="${DEV_IO_SRC# }"
   return $rc
+}
+
+# _mdt_io_systemd_dev <device-path>: the device spelling handed to systemd's IO*Max=
+# properties, always `/dev/block/<maj:min>` of the originating WHOLE disk (the one
+# _mdt_dev_majmin derives, the one the kernel io.max is keyed on).  Never a mapper or
+# partition node and never a hard-coded name (MDT-HS-04, measured 2026-10-20 on
+# systemd 257: `IOReadBandwidthMax=/dev/mapper/<lv> N` on dev.slice left the kernel
+# io.max empty, while /dev/vda and /dev/block/254:0 wrote at once).  Prints the path
+# or returns 1 with the reason on stderr.
+_mdt_io_systemd_dev() {
+  local mm
+  mm=$(_mdt_dev_majmin "$1") || return 1
+  printf '/dev/block/%s\n' "$mm"
+}
+
+# _mdt_io_props <systemd-dev> <rbps> <wbps> <riops> <wiops>: appends the IO set-property
+# arguments to the array MDT_IO_PROPS.  Every key is RESET first and then set, in the
+# SAME call (MDT-016: an empty assignment alone wipes the unit-file value, so the reset
+# must travel with the set), so a stale entry under another spelling of the same disk
+# (/dev/vda from an earlier pin, a mapper path from an older reconcile) cannot shadow
+# the intended cap: the kernel took the LAST entry's value (measured, MDT-HS-04).
+# An empty value emits only the reset.
+_mdt_io_props() {
+  local sd="$1"; shift
+  local key val
+  for key in IOReadBandwidthMax IOWriteBandwidthMax IOReadIOPSMax IOWriteIOPSMax; do
+    val="$1"; shift
+    MDT_IO_PROPS+=("$key=")
+    [ -z "$val" ] || MDT_IO_PROPS+=("$key=$sd $val")
+  done
 }
 
 # _mdt_dev_majmin <device-path>: the MAJ:MIN of the device the kernel io.max
