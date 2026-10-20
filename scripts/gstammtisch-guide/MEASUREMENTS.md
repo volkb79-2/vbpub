@@ -453,8 +453,11 @@ IO-STALL-TESTING-GUIDE.md §10): **455.8 s** total in `blk_mq_get_tag` ← `subm
 (global direct reclaim); each wait < 100 ms, but very many on many threads. **Mechanism [I]:** host memory
 ran short (16 GB host; game ~7.5 G, dev.slice ~4.4 G), the game's threads entered direct reclaim, and the
 memcg zswap shrinker wrote the game's cold pool back synchronously at 14 MiB/s. After the squeeze the game
-scope's `memory.low` is 5000M, below its ~7.5 G footprint, so global reclaim reaches it **[I]**. What started
-the pressure at 11:19:34 was not recorded (the recorder units had expired).
+scope's `memory.low` is 5000M, below its ~7.5 G footprint, so global reclaim reaches it **[I]**. Trigger,
+per the operator (2026-10-20): **no other load was started at 11:19:34**; this is shrinker behaviour (pages
+become "cold enough" and are written back a few minutes after the server settles, reproducibly). The
+kernel-source analysis is in progress (project `zswap-writeback-governor/`, ZWG-01); the mechanism stays **[I]**
+until it lands.
 Mechanism and options: [MEMORY-ARCHITECTURE.md, "Burst writeback stall"](MEMORY-ARCHITECTURE.md#burst-writeback-stall-the-zswap-shrinker-has-no-rate-governor).
 
 **B3, settled server** (UTC 09:30:50–09:34:57, same load, all final settings live; controller trace): probe

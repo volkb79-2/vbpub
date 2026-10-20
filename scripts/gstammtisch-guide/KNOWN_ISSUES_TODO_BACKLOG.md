@@ -82,9 +82,19 @@ benchmark; udev rule keyed on the device behind `/`, values derived not literal)
 derived from the ~10 MB/s steady rate are still open.
 The instrument scripts are in `tools/io-stall/` but carry gstammtisch literals (`/dev/vda`, slice names, constant restore caps, dated file names); parameterising them (derive the disk, read the pre-test caps) is part of this item.
 
-## GG-5 — burst zswap writeback stall: mitigations proposed, none applied
+## GG-5 — burst zswap writeback stall: operator decisions recorded; (b) applied live only
 
-**Status:** OPEN (filed by SMT-04, 2026-10-20), each option awaiting the operator.
+**Status:** OPEN (filed by SMT-04, 2026-10-20; decisions 2026-10-20 recorded by SMT-05).
+
+**Operator decisions (quoted):** **(a) REJECTED**: "no, far too much, around 4G min is fine as set now. refaults
+stay low at 5G." (steady band stays min 4000M / low 5000M). **(b) ACCEPTED provisionally**:
+`vm.watermark_scale_factor` 200, **applied live only**; the repo sysctl file (`99-gstammtisch-memory.conf:16`)
+still says 50, so a reboot or `sysctl --system` reverts it; persisting waits for the measurement of the next
+startup burst (game D-state in `shrink_memcg_cb` versus kswapd, and the fps dip). **(c) REJECTED**: "no, we need
+it." (`dev.slice` `memory.high` stays). **(d) WANTED later**: "yes, we want that at some time"; design in the
+project folder `zswap-writeback-governor/`. Trigger: the operator states no other load was started at
+11:19:34, it is shrinker behaviour, reproducible a few minutes after the server settles. Details:
+MEMORY-ARCHITECTURE.md. The original option text follows.
 
 Mechanism, evidence and upstream status: MEMORY-ARCHITECTURE.md "Burst writeback stall: the zswap shrinker has
 no rate governor"; data: MEASUREMENTS.md M8. Options: **(a)** raise the game scope's steady `memory.low` through the per-server panel value of
