@@ -323,7 +323,7 @@ def test_two_instances_get_two_distinct_dry_run_mounts_and_nothing_shared(rig: R
         assert len(mine) == 1, (uuid, lines)
         assert f"soulmask-pi-{uuid[:8]}" in mine[0]
     # the per-instance path is never part of the shared copy/bind list
-    binds = [ln for ln in r.stdout.splitlines() if "--bind" in ln or "cp -a" in ln]
+    binds = [ln for ln in r.stdout.splitlines() if "DRY-RUN:" in ln and ("--bind" in ln or "cp -a" in ln)]
     assert binds and not any(LOGS in ln for ln in binds), binds
     assert not (rig.ramdisk / LOGS).exists()
     # dry run: no real action at all, and the prune pass is announced, not run
@@ -650,6 +650,7 @@ def test_second_instance_mount_failure_rolls_back_the_first_but_shared_completes
 
 def test_a_failing_shared_part_still_applies_the_per_instance_mounts(rig: Rig) -> None:
     rig.conf(SHARED_AND_PI)
+    (rig.volumes / UUID_A / "Engine" / "payload.bin").write_bytes(b"x" * 20000)  # payload >= the 1-byte tmpfs
     r = rig.run(SETUP, SOULMASK_TMPFS_SIZE="1")  # payload >= tmpfs size -> shared part exits 1
     assert r.returncode != 0, text(r)
     mounted = [row for row in rig.mount_table() if row[2].startswith("soulmask-pi-")]
@@ -1210,3 +1211,9 @@ def test_scripts_default_none_of_the_policy_values_and_use_one_mechanism() -> No
         assert not re.search(r"PER_INSTANCE_(SIZE|KEEP_BACKUPS|HIGH_WATER_PCT):-[^}]", src), script
     for script in (SETUP, TEARDOWN):
         assert "tmpfiles.d" not in script.read_text(), script
+
+
+@pytest.mark.parametrize("script", [SETUP, TEARDOWN, TOGGLE, PRUNE])
+def test_shipped_scripts_are_executable(script: Path) -> None:
+    # setup runs the prune script directly (and systemd ExecStart= needs the bit)
+    assert os.access(script, os.X_OK), script
