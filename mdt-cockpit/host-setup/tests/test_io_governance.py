@@ -137,6 +137,8 @@ elif args and args[0] == "show":
     # show (and the runtime drop-in) HIDE all-max entries: a stale one is invisible
     for key, _ in KEYS:
         shown = [p + " " + v[key] for p, v in paths_of(unit) if key in v and v[key] != "max"]
+        if os.environ.get("FAKE_SHOW_HIDES") or (os.environ.get("FAKE_SHOW_PARTIAL") and key != "IOReadBandwidthMax"):
+            shown = []
         print("%s=%s" % (key, " ".join(shown)))
     print("DropInPaths=" + ("/run/systemd/system.control/%s.d/50-IO.conf" % unit if state.get("touched", {}).get(unit) or state.get("runtime", {}).get(unit) else ""))
 sys.exit(0)

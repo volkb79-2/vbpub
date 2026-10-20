@@ -243,6 +243,8 @@ if [ -n "${IO_DEV_PATH:-}" ]; then
   [ "${MDT_IO_BASELINE_VALID:-0}" = 1 ] \
     || log "no current plausible baseline — dev.slice uses its pinned/static values until mdt-io-baseline.py succeeds"
   _mdt_apply_dev_io
+  # a run that verified clean WITHOUT needing a reload ends the self-heal rate-limit window
+  _mdt_io_stamp_clear_if_clean
 else
   _mdt_no_device
 fi

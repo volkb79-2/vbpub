@@ -715,9 +715,15 @@ mapper path itself works. The best-supported model:
 from the mapper spelling to `/dev/vda`, the reset turns the old mapper entry into a stale all-max entry that
 can win. So `_mdt_io_apply_verify` self-heals ONCE per run: when the read-back shows the intended disk missing
 or at the wrong values while `systemctl show` reports the intended ones, it logs a WARN naming the reason, runs
-one `systemctl daemon-reload`, re-applies and re-verifies; a second mismatch fails as before. It never loops
-and is rate-limited by `MDT_IO_RELOADED` to one reload per reconcile run. Every refusal names the remedy
-(`systemctl daemon-reload`, then rerun). `install.sh` already ends with a `daemon-reload`; it does not delete
+one `systemctl daemon-reload`, re-applies and re-verifies; a second mismatch fails. The heal is triggered only
+when `systemctl show` reports ALL the intended values. The limiter is persistent, because the timer starts a
+fresh process every minute and a per-process flag would reload PID 1 every minute forever when the heal does not
+help: a stamp file `/run/mdt/io-selfheal-reload.stamp` holds `<epoch> <reason>`, and no further reload happens
+within `MDT_IO_RELOAD_WINDOW_SECONDS` (1800, a documented constant, not a knob). A run that verifies clean
+without needing a reload clears the stamp. Refusals say what actually happened: "reload suppressed: last
+self-heal reload at T did not fix it", "the stale-entry heal was tried and did not fix it", or "systemd does not
+report all the intended values either, no reload was attempted"; the latter two list the other causes to check
+(io controller not enabled, wrong device, kernel refusal) instead of telling the operator to reload again. `install.sh` already ends with a `daemon-reload`; it does not delete
 stale runtime IO drop-ins, so the install relies on this self-heal on the first reconcile instead of duplicating
 its own cleanup (removing `/run/systemd/system.control` files was measured to depend on systemd's naming and
 to race its writes; see the MDT-016 note in the reconcile script).

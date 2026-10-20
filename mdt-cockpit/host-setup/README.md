@@ -209,8 +209,9 @@ read-back verifies, via sysfs `uevent`; never the configured mapper node), with 
 `dev.slice` static lines the same way, and the log lines name the path given to systemd. systemd keeps one
 limit entry per path spelling and a reset leaves a stale all-max entry that can override the cap while
 `systemctl show` looks right; when the kernel disagrees with `show`, the reconcile warns, runs ONE
-`systemctl daemon-reload`, re-applies and re-verifies (once per run, then it fails with the remedy:
-`systemctl daemon-reload`, then rerun).
+`systemctl daemon-reload`, re-applies and re-verifies. The reload is rate-limited across runs by a stamp
+file (`/run/mdt/io-selfheal-reload.stamp`, 30 minute window, cleared by a clean run); a heal that does not
+help fails with the other causes to check (io controller, device, kernel refusal), not another reload.
 
 The guard reads each `docker events` line's container id from `Actor.ID`, the documented
 current field: Docker 29 (API 1.56) no longer sends the deprecated top-level `id`/`status`/`from`.

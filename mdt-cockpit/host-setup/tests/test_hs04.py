@@ -100,18 +100,60 @@ class SystemdSpellingTests(Base):
         self.assertEqual(self.host.calls().count("daemon-reload"), 1, self.host.calls())
         self.assertNotIn("ERROR", result.stdout)
 
-    def test_the_heal_is_bounded_and_a_second_mismatch_fails_with_the_remedy(self) -> None:
-        self._seed([["/dev/vda", {k: "max" for k in KEYS}], ["/dev/mapper/gstammtisch--vg-root", {k: "max" for k in KEYS}]])
-        result = self.host.run(FAKE_RELOAD_NOOP="1")
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(self.host.calls().count("daemon-reload"), 1, "never a loop")
-        self.assertIn("ERROR: dev.slice: kernel io.max has NO entry", result.stdout)
-        self.assertIn("systemctl daemon-reload", result.stdout)
+    STALE = [["/dev/vda", {k: "max" for k in KEYS}], ["/dev/mapper/gstammtisch--vg-root", {k: "max" for k in KEYS}]]
+    NOW = 1_000_000
+
+    def _run_at(self, offset: int, **extra: str):
+        result = self.host.run(MDT_FAKE_NOW=str(self.NOW + offset), **extra)
+        return result, self.host.calls().count("daemon-reload")
+
+    def stamp(self) -> Path:
+        return self.host.base / "state" / "io-selfheal-reload.stamp"
+
+    def test_a_heal_that_does_not_help_reloads_exactly_once_inside_the_window(self) -> None:
+        """H-39: the timer starts a fresh process every minute; the limiter must persist across runs."""
+        self._seed(self.STALE)
+        r1, n1 = self._run_at(0, FAKE_RELOAD_NOOP="1")
+        self.assertNotEqual(r1.returncode, 0, r1.stdout)
+        self.assertEqual(n1, 1)
+        self.assertIn("ERROR: dev.slice: kernel io.max has NO entry", r1.stdout)
+        self.assertIn("stale-entry heal (one daemon-reload) was tried and did not fix it", r1.stdout)
+        self.assertNotIn("Remedy: systemctl daemon-reload", r1.stdout)
+        self.assertIn("io controller not enabled", r1.stdout)
+        self.assertTrue(self.stamp().exists())
+        for minute in range(1, 30):             # the timer fires every minute for 29 more minutes
+            r, n = self._run_at(minute * 60, FAKE_RELOAD_NOOP="1")
+            self.assertEqual(n, 0, f"minute {minute}: PID 1 must not be reloaded again")
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn("reload suppressed: last self-heal reload at", r.stdout)
+            self.assertIn("did not fix it", r.stdout)
+        r, n = self._run_at(1801, FAKE_RELOAD_NOOP="1")      # past the 30 min window: one more allowed
+        self.assertEqual(n, 1, r.stdout)
+
+    def test_a_clean_verify_clears_the_stamp(self) -> None:
+        self._seed(self.STALE)
+        r1, n1 = self._run_at(0)                  # the heal works
+        self.assertEqual((r1.returncode, n1), (0, 1), r1.stdout)
+        self.assertTrue(self.stamp().exists(), "the run that reloaded keeps the stamp")
+        r2, n2 = self._run_at(60)                 # a clean run with no reload ends the window
+        self.assertEqual((r2.returncode, n2), (0, 0), r2.stdout)
+        self.assertFalse(self.stamp().exists())
 
     def test_no_reload_when_systemd_itself_does_not_report_the_values(self) -> None:
-        result = self.host.run(FAKE_KERNEL_DROPS="1")
+        """H-40: the kernel is empty and `show` hides the values: not the stale-entry case, so NO reload."""
+        result, reloads = self._run_at(0, FAKE_KERNEL_DROPS="1", FAKE_SHOW_HIDES="1")
         self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertEqual(self.host.calls().count("daemon-reload"), 1 if "reports the intended" in result.stdout else 0)
+        self.assertEqual(reloads, 0, "a reload occurred although systemd did not report the values")
+        self.assertIn("systemd does not report all the intended values either", result.stdout)
+        self.assertIn("no reload was attempted", result.stdout)
+        self.assertNotIn("reload suppressed", result.stdout)
+        self.assertFalse(self.stamp().exists())
+
+    def test_a_partial_show_report_is_not_enough_to_reload(self) -> None:
+        result, reloads = self._run_at(0, FAKE_KERNEL_DROPS="1", FAKE_SHOW_PARTIAL="1")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(reloads, 0, result.stdout)
+        self.assertIn("systemd does not report all the intended values either", result.stdout)
 
     def test_the_old_spelling_would_have_been_dropped_by_systemd(self) -> None:
         """Oracle sensitivity for the measured failure: a spelling systemd drops writes nothing; the
