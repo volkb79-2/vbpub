@@ -50,7 +50,8 @@ gstammtisch-guide/
 │   ├── etc/systemd/system/zswap-config.service        # zstd post-boot fix
 │   ├── etc/systemd/system/soulmask-graceful-stop.service
 │   ├── etc/systemd/system/soulmask_tmpfs.service  soulmask_tmpfs.slice
-│   │                        soulmask_tmpfs-ZSwapMax{0,1}.slice   # SOULMASK-TMPFS.md
+│   │                        soulmask_tmpfs-ZSwapMax{0,1}.slice   # SOULMASK-TMPFS.md (shared tmpfs + per-instance
+│   │                                                             #   tmpfs for WS/Saved/Logs, SMT-01)
 │   ├── etc/systemd/oomd.conf.d/gstammtisch.conf
 │   ├── legacy/                              # retired — kept for reference, not installed
 │   │   ├── etc/systemd/system/gstammtisch-cgroups.service  soulmask-cgroup-watcher.service

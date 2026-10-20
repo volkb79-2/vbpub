@@ -122,11 +122,12 @@ _show_status() {
   # ── bind mounts ──
   if [ -f "$STATE_FILE" ]; then
     local count
-    count=$(grep -c 'TARGET=' "$STATE_FILE" 2>/dev/null || echo 0)
+    count=$(grep -c '^TARGET=' "$STATE_FILE" 2>/dev/null || echo 0)
     log "Bind mounts: $count in state file"
+    log "Per-instance tmpfs mounts: $(grep -c '^PI_TARGET=' "$STATE_FILE" 2>/dev/null || echo 0) in state file"
     if [ "$count" -gt 0 ]; then
       local uuid
-      for uuid in $(grep 'TARGET=' "$STATE_FILE" | sed 's|.*/volumes/||;s|/.*||' | sort -u); do
+      for uuid in $(grep '^TARGET=' "$STATE_FILE" | sed 's|.*/volumes/||;s|/.*||' | sort -u); do
         local n
         n=$(grep -c "volumes/$uuid/" "$STATE_FILE" 2>/dev/null || echo 0)
         log "    $uuid: $n paths"

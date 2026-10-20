@@ -81,7 +81,7 @@ if [ -e "$FAKE/busy" ] && grep -qxF "$t" "$FAKE/busy"; then
   exit 32
 fi
 if awk -F'\t' -v t="$t" '$1==t{f=1} END{exit !f}' "$FAKE/mounts.tsv"; then
-  grep -v -P "^\Q$t\E\t" "$FAKE/mounts.tsv" > "$FAKE/mounts.new" || true
+  awk -F'\t' -v t="$t" '$1!=t' "$FAKE/mounts.tsv" > "$FAKE/mounts.new"
   mv "$FAKE/mounts.new" "$FAKE/mounts.tsv"
   exit 0
 fi
@@ -492,4 +492,5 @@ def test_shipped_unit_defaults_the_per_instance_keys_not_the_script() -> None:
     assert re.search(r"^Environment=SOULMASK_TMPFS_PER_INSTANCE_SIZE=256M$", unit, re.M)
     assert re.search(r"^Environment=SOULMASK_TMPFS_PER_INSTANCE_MAX_AGE=3d$", unit, re.M)
     assert re.search(r"^Environment=SOULMASK_TMPFS_PER_INSTANCE_KEEP=WS\.log$", unit, re.M)
-    assert "PER_INSTANCE_SIZE:-" not in SETUP.read_text()
+    # an empty default (":-}") is "unset"; a non-empty one would be an invented literal
+    assert not re.search(r"PER_INSTANCE_(SIZE|MAX_AGE):-[^}]", SETUP.read_text())

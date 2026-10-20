@@ -23,6 +23,14 @@ RemainAfterExit=yes
 # this tmpfs's headroom (5G vs ~2.3G payload) — see SOULMASK-TMPFS.md and
 # soulmask_tmpfs-setup.sh's own comment on READONLY.
 Environment=SOULMASK_TMPFS_READONLY=0
+# Per-instance tmpfs sections of soulmask_tmpfs-paths.conf (SMT-01). The setup
+# script has NO defaults for these: they live here. SIZE is the cap of EACH
+# per-instance tmpfs (game cgroup memory.max is 12 GiB, ~4.5 GiB in use);
+# MAX_AGE is the systemd-tmpfiles age after which old files (WS-backup-*.log)
+# are pruned; KEEP lists names exempted from pruning (the live log).
+Environment=SOULMASK_TMPFS_PER_INSTANCE_SIZE=256M
+Environment=SOULMASK_TMPFS_PER_INSTANCE_MAX_AGE=3d
+Environment=SOULMASK_TMPFS_PER_INSTANCE_KEEP=WS.log
 # Enumerates /etc/gstammtisch/instances.d/*.env for TMPFS=1 instances, reads
 # /etc/gstammtisch/soulmask_tmpfs-paths.conf for what to share, copies from
 # the ROLE=main instance into ONE shared tmpfs, remounts it read-only, then

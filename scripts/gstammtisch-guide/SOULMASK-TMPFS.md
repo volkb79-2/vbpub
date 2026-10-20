@@ -153,7 +153,8 @@ touches during an update:
 | Compressible | `Engine`, `WS/Binaries`, `linux64`, `Steam/*` (except logs/appcache), `steamclient.so`, `libsteamwebrtc.so`, `steamapps`, `steamcmd`, `Manifest_*.txt` | `soulmask_tmpfs-ZSwapMax1` |
 
 Deliberately **excluded** (stay on disk):
-- `WS/Saved/` — world save, account database, per-instance state
+- `WS/Saved/` — world save, account database, per-instance state (except
+  `WS/Saved/Logs`, a per-instance tmpfs — see "Per-instance tmpfs" below)
 - `WS/Config/` — server configuration, per-instance
 - `Steam/logs/` — steam runtime logs (written continuously, keep writable)
 - `Steam/appcache/` — steam HTTP cache (written continuously)
@@ -194,6 +195,134 @@ process (`echo $$ > .../cgroup.procs`) to `ZSwapMax0` before copying the
 incompressible paths, then back to `ZSwapMax1` before copying the compressible
 paths. The kernel charges pages to whichever cgroup the allocating process is
 in, so each content type's pages end up in the correct slice.
+
+## Per-instance tmpfs (`WS/Saved/Logs`) — SMT-01, 2026-10-20
+
+### Why
+
+The game thread `FAsyncWriter_WS` writes `WS/Saved/Logs/WS.log` and calls
+`fdatasync`. Under dev IO load that blocks for up to ~26 s on the shared root
+ext4 journal (`jbd2_log_wait_commit`, `folio_wait_writeback`,
+`wait_transaction_locked`) and the tick rate drops from 30 to ~7. On a tmpfs the
+log touches no ext4 at all. The operator accepts that these logs are lost on
+service restart or reboot; nothing is copied back.
+
+### What a per-instance section is
+
+Every other section of `soulmask_tmpfs-paths.conf` is **shared**: the path is
+copied from the `ROLE=main` instance into one tmpfs and bind-mounted into every
+`TMPFS=1` instance. That is wrong for something the game *writes* — two servers
+would write the same `WS.log`. The two new sections are different:
+
+| Section | Mount | Pages |
+|---|---|---|
+| `[per-instance-compressible]` | own empty rw tmpfs per `TMPFS=1` instance, on `<volume>/<path>` | swappable, zswap-eligible |
+| `[per-instance-noswap]` | same, plus the tmpfs `noswap` option | resident, uncompressed |
+
+Nothing is copied in or back; the shared `/mnt/soulmask_tmpfs` is not involved.
+Shipped: `WS/Saved/Logs` under `[per-instance-compressible]`, nothing under
+`[per-instance-noswap]`.
+
+Mount options are **derived, never literals**: `uid`/`gid`/`mode` come from
+`stat` of the existing on-disk directory (988:988, 0755 today); `size` comes
+from `SOULMASK_TMPFS_PER_INSTANCE_SIZE` (set in `soulmask_tmpfs.service`, 256M;
+the script has no default and refuses without it); always
+`nosuid,nodev,noexec`. A directory that does not exist yet is skipped with a log
+line, never created (its ownership would be a guess). The mount source is
+tagged `soulmask-pi-<first 8 hex of the uuid>`.
+
+### Memory accounting — what "compressible" means here
+
+tmpfs pages are charged to the memcg of the task that **writes** them. For
+these mounts that is the game container's cgroup
+(`wings.slice/docker-<id>.scope`), **not** the `soulmask_tmpfs-ZSwapMax{0,1}`
+slices — the setup script's slice placement only governs the shared tmpfs it
+copies into itself, and does not apply to these pages. Consequences:
+
+- `[per-instance-compressible]` pages are swappable and so zswap-eligible under
+  the game cgroup's own `memory.zswap.max` (`max` on this host today).
+- `[per-instance-noswap]` pages stay resident and uncompressed. If the kernel
+  rejects `noswap` the script **fails**; it never falls back to a swappable
+  mount (the section's whole claim would then be false).
+- The size cap counts against the game cgroup's `memory.max` (12 GiB, ~4.5 GiB
+  in use) as it fills; two instances can each fill their own 256M.
+
+### Existing on-disk logs
+
+They are not moved or deleted. They are *hidden* under the mount and reappear
+after unmount. Setup logs a `NOTICE` with the hidden size (78 MB on
+`b87c0a5b…` when this was written). To inspect or remove them while the tmpfs
+is mounted, bind the volume **non-recursively** (a plain `--bind` does not carry
+submounts, so it shows the underlying disk):
+
+```bash
+mkdir -p /mnt/probe && mount --bind /var/lib/pterodactyl/volumes/<uuid> /mnt/probe
+ls -la /mnt/probe/WS/Saved/Logs        # the hidden on-disk logs
+rm -f /mnt/probe/WS/Saved/Logs/WS-backup-*.log   # only if you want them gone
+umount /mnt/probe
+```
+
+### Bounded growth: tmpfiles age rule
+
+UE renames `WS.log` to `WS-backup-<ts>.log` at every server start, and the
+tmpfs lives until restart or reboot, so backups would pile up (a full tmpfs
+gives the game `ENOSPC`). Setup therefore writes
+`/run/tmpfiles.d/soulmask-per-instance.conf`:
+
+```
+e /var/lib/pterodactyl/volumes/<uuid>/WS/Saved/Logs - - - 3d
+X /var/lib/pterodactyl/volumes/<uuid>/WS/Saved/Logs/WS.log
+```
+
+and teardown removes it. `systemd-tmpfiles-clean.timer` applies it
+(`SOULMASK_TMPFS_PER_INSTANCE_MAX_AGE`, 3d). The `X` lines come from
+`SOULMASK_TMPFS_PER_INSTANCE_KEEP` (default `WS.log`) and are **load-bearing**:
+the age is measured against the newest of atime/mtime/ctime/btime, so a live
+`WS.log` that is being written is never old — but one that sat idle longer than
+the age (a quiet server) would be unlinked while the game still holds it open,
+and the log would silently stop being visible. Measured with systemd 257
+(Debian 13): with only the `e` rule, an idle `WS.log` past the age is deleted
+along with the old backups; with the `X` exemption it survives and the old
+backups are still pruned. `systemd-tmpfiles-clean.timer` ships static in
+Debian's systemd package; confirm it is active on the host with
+`systemctl is-enabled systemd-tmpfiles-clean.timer` (it could not be verified
+from the dev sandbox).
+
+### Idempotence, refusal, teardown, dry run
+
+- Re-running setup keeps a target that is already **our** tmpfs (fstype `tmpfs`
+  *and* source `soulmask-pi-<uuid8>`; for `[per-instance-noswap]` it must also
+  carry `noswap`). Any **other** mount on a target — including an unrelated
+  tmpfs — is refused loudly (non-zero exit, nothing mounted anywhere); mounts are
+  never stacked. All targets are validated before the first mount.
+- The state file records them as `PI_TARGET=<path>`, distinct from the shared
+  bind `TARGET=` lines. Teardown unmounts every `PI_TARGET`; one that is busy is
+  reported, stays recorded, and makes teardown exit non-zero.
+- `DRY_RUN=1` (or `--dry-run`) prints every mount, unmount and tmpfiles action
+  for both scripts without executing it.
+- Tests: `tests/test_soulmask_tmpfs_per_instance.py` runs the real scripts
+  against PATH-shimmed `mount`/`umount`/`findmnt`/`mountpoint`/`stat`
+  (`SOULMASK_TMPFS_STATE_FILE`, `SOULMASK_TMPFS_RAMDISK` and
+  `SOULMASK_TMPFILES_DIR` redirect the host paths; production values are the
+  defaults).
+
+### Deployment (controller)
+
+1. Confirm no players are online on either instance.
+2. Stop both game servers (`6c418fe7…`, `b87c0a5b…`).
+3. Install the files to the host (`/usr/local/sbin/soulmask_tmpfs-{setup,teardown,toggle}.sh`,
+   `/etc/gstammtisch/soulmask_tmpfs-paths.conf`, `/etc/systemd/system/soulmask_tmpfs.service`),
+   then `systemctl daemon-reload`.
+4. `systemctl restart soulmask_tmpfs.service` (teardown, setup, restart wings;
+   it re-copies ~2.6 GB).
+5. Start the servers.
+6. Verify:
+   - `findmnt` shows one tmpfs per instance on `WS/Saved/Logs`
+     (`findmnt -t tmpfs | grep soulmask-pi-`);
+   - `WS.log` grows inside it;
+   - the D-state probe shows no ext4 or jbd2 stacks for `FAsyncWriter_WS`;
+   - `systemctl is-enabled systemd-tmpfiles-clean.timer` and
+     `cat /run/tmpfiles.d/soulmask-per-instance.conf`.
 
 ## Manual update procedure
 

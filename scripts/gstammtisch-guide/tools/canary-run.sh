@@ -97,6 +97,33 @@ canary env-of-ignores-docker-failure files/usr/local/sbin/soulmask-monitor.py \
         return ""' \
   tests/test_soulmask_monitor.py::test_env_of_returns_empty_on_docker_failure
 
+# 4. A per-instance target that is ANY mount other than our own tagged tmpfs
+#    must be refused, not stacked on (fstype alone is not identity).
+canary pi-foreign-mount-accepted files/usr/local/sbin/soulmask_tmpfs-setup.sh \
+  '    if [ "$fs" != "tmpfs" ] || [ "$src" != "$tag" ]; then' \
+  '    if false; then' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_foreign_tmpfs_is_refused_even_though_the_fstype_matches
+
+# 5. [per-instance-noswap] must really mount noswap (dropping the option would
+#    silently serve a swappable mount under a "stays resident" claim).
+canary pi-noswap-option-dropped files/usr/local/sbin/soulmask_tmpfs-setup.sh \
+  '    [ "$noswap" = "1" ] && opts+=",noswap"' \
+  '    :' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_noswap_section_mounts_with_noswap
+
+# 6. A busy per-instance mount must fail teardown, not be swallowed.
+canary pi-busy-teardown-swallowed files/usr/local/sbin/soulmask_tmpfs-teardown.sh \
+  '          RC=1' \
+  '          RC=0' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_teardown_refuses_when_a_per_instance_mount_is_busy
+
+# 7. The live log must be exempted from the age rule (an idle WS.log past the
+#    age would otherwise be unlinked under the running game).
+canary pi-live-log-not-exempted files/usr/local/sbin/soulmask_tmpfs-setup.sh \
+  '    for k in $PI_KEEP; do content+="X $t/$k"$'"'"'\n'"'"'; done' \
+  '    :' \
+  tests/test_soulmask_tmpfs_per_instance.py::test_setup_records_pi_targets_and_tmpfiles_and_teardown_reverses_them
+
 echo
 if [ "$fail" -gt 0 ]; then
   echo "canaries: $pass rejected, $fail SURVIVED — the gate is not discriminating"
