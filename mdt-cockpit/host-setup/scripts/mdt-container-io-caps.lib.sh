@@ -1081,7 +1081,7 @@ MDT_OLD_BFQ_MODULES_NAME=mdt-bfq.conf
 MDT_FOREIGN_BFQ_RULE_NAME=60-bfq-scheduler.rules
 # sha256 of the repo copies of the BFQ rule that MAY be retired byte-for-byte (a file MDT did not install is
 # only ever removed when its content is identical to one of these):
-#   163d55ac…  mdt-cockpit/host-setup/etc/udev/rules.d/60-bfq-scheduler.rules (and its modern-debian-tools copy)
+#   163d55ac…  mdt-cockpit/host-setup/etc/udev/rules.d/60-bfq-scheduler.rules (and its copy under the pre-rename project directory)
 #   fa2f64be…  scripts/gstammtisch-guide/files/etc/udev/rules.d/60-bfq-scheduler.rules
 MDT_KNOWN_BFQ_RULE_SHA256="163d55acd4cdfb32c7186670546ffca1bf2f6034568d7b969f3bcfc75f25711e fa2f64be189fb492148e60eff197fd240299604af9f977f80fb0627c13032fd5"
 MDT_KNOWN_BFQ_RULE_ORIGIN="scripts/gstammtisch-guide/files/etc/udev/rules.d/60-bfq-scheduler.rules (gstammtisch-guide) or mdt-cockpit/host-setup/etc/udev/rules.d/60-bfq-scheduler.rules"
