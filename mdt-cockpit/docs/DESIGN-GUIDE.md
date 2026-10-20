@@ -540,9 +540,9 @@ installed packages are determined by `PATH`.
 
 `DAMON_STAT` and cgprofile's generic DAMON sysfs sessions are mutually
 exclusive kernel consumers. MDT asks the host operator whether to disable
-`DAMON_STAT`, recommends disabling it for the development host, and applies
-the choice through a boot-time tmpfiles rule. The non-wizard example keeps the
-kernel default. This keeps a host-wide monitoring policy out of cgprofile's
+`DAMON_STAT`. mdt defaults to disabling it (operator decision 2026-10-20: the cgroup-profiler
+daemon needs the DAMON sysfs interface), `DAMON_STAT_DISABLE_DEFAULT="yes"` also in the
+non-wizard example, and applies the choice through a boot-time tmpfiles rule. This keeps a host-wide monitoring policy out of cgprofile's
 runtime and gives the operator a clear way to preserve `DAMON_STAT` when it is
 needed for other workloads.
 
@@ -637,9 +637,18 @@ unexpected EOF. The report mode leaves the worker available and records the
 identity mismatch. Operators who intentionally want the guard to remove
 unapproved workers can select `terminate`; the wizard requires a second
 confirmation because this action stops a live container.
-An existing `terminate` value is not confirmation for a later plain install:
-the installer stops and disables the guard and requires the wizard to confirm
-termination again.
+An existing `terminate` value is not itself a confirmation: the wizard's second
+confirmation is recorded durably (`/var/lib/mdt/guard-terminate.confirmed`: policy, BuildKit image,
+timestamp, digest of policy + image + machine-id). The record is an audit trail bound to what was
+confirmed and where, not an access control (root can write it); the guard re-checks it before it
+terminates anything and falls back to report-only. Limit, stated honestly: a hand-edit away from
+`terminate` and back to byte-identical settings with no install and no guard restart in between
+leaves the host in exactly the confirmed state, and cannot be told apart from never having left it. A plain re-install with an unchanged recorded
+confirmation proceeds and keeps the running guard; a new or changed `terminate` refuses
+before any mutation (MDT-HS-02: the earlier design disabled and stopped the running,
+previously confirmed guard and only then refused, removing live protection). The
+installer is split into pre-flight (reads the validated candidate, may refuse, mutates
+nothing) and a COMMIT POINT: validate everything first, then act.
 
 ## Per-container memory policy
 

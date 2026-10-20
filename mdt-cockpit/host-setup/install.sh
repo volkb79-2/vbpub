@@ -47,6 +47,7 @@ Usage
   sudo ./install.sh --with-baseline
   sudo ./install.sh --restart-docker
   sudo ./install.sh --observer-only
+  sudo ./install.sh --require-damon-disable   # make a failed DAMON_STAT write fatal
   sudo ./install.sh --help
 
 Options
@@ -196,6 +197,7 @@ RESET=0
 AUTO_RESTART_DOCKER=0
 WIZARD=0
 OBSERVER_ONLY=0
+REQUIRE_DAMON=0
 for arg in "$@"; do
   case "$arg" in
     --wizard) WIZARD=1 ;;
@@ -203,6 +205,7 @@ for arg in "$@"; do
     --with-baseline) WITH_BASELINE=1 ;;
     --reset) RESET=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
+    --require-damon-disable) REQUIRE_DAMON=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)"; exit 2 ;;
   esac
@@ -347,21 +350,12 @@ if ! python3 "$HERE/mdt-host-setup-wizard.py" \
   exit 2
 fi
 
-# Candidate validation passed. Only now may the installed config directory,
-# backup, and replacement be touched.
-mkdir -p "$CONFIG_DIR" /var/lib/mdt
-install -d -o root -g root -m 0755 "$BUILDX_CONFIG_DIR"
-if [ "$WIZARD" = 1 ] || [ "$HAD_CONFIG" = 0 ]; then
-  if [ "$HAD_CONFIG" = 1 ]; then
-    backup="$CONFIG_PATH.bak-$(date +%Y%m%dT%H%M%S)"
-    cp -- "$CONFIG_PATH" "$backup"
-    echo "backed up existing config to $backup"
-  fi
-  install -m 0644 "$CANDIDATE_PATH" "$CONFIG_PATH"
-fi
-
+# Candidate validation passed. Everything from here to the COMMIT POINT below is
+# PRE-FLIGHT: it reads the validated candidate (never the installed file), may refuse
+# (exit 2), and mutates NOTHING on the host. Validate everything first, then act
+# (MDT-HS-02: the guard refusal used to disable the running guard first).
 # shellcheck disable=SC1090,SC1091
-. "$CONFIG_PATH"
+. "$CANDIDATE_PATH"
 
 # A config that predates a key added to host-setup.env.example since has NO
 # line for it at all (not even empty) -- render()'s own "empty/unset =
@@ -377,12 +371,12 @@ fi
 # IO_BASELINE_ROTATIONAL_FLAG) are exempt: for them an absent line means "not
 # set" (a policy default), not "silently unbounded", so a plain install.sh works
 # on an existing env file and prints one NOTICE instead of refusing.  The list is
-# MDT_RUNTIME_OPTIONAL_RE in scripts/mdt-container-io-caps.lib.sh.
+# host-setup/runtime-optional-keys.re, read by the Python validator and the shell helper alike.
 log(){ echo "$*" >&2; }
 # shellcheck source=./scripts/mdt-container-io-caps.lib.sh
 . "$HERE/scripts/mdt-container-io-caps.lib.sh"
-MISSING_KEYS=$(_mdt_missing_declared_keys "$CONFIG_PATH" "$HERE/host-setup.env.example" required | sed 's/^/ /' | tr -d '\n')
-MISSING_OPTIONAL=$(_mdt_missing_declared_keys "$CONFIG_PATH" "$HERE/host-setup.env.example" optional | wc -l)
+MISSING_KEYS=$(_mdt_missing_declared_keys "$CANDIDATE_PATH" "$HERE/host-setup.env.example" required | sed 's/^/ /' | tr -d '\n')
+MISSING_OPTIONAL=$(_mdt_missing_declared_keys "$CANDIDATE_PATH" "$HERE/host-setup.env.example" optional | wc -l)
 if [ "$MISSING_OPTIONAL" -gt 0 ]; then
   echo "NOTICE: $MISSING_OPTIONAL runtime-optional key(s) are absent from $CONFIG_PATH (the DEV_IO_*_MAX pins and IO_BASELINE_ROTATIONAL_FLAG); they are treated as NOT SET. Run install.sh --wizard to review and add them." >&2
 fi
@@ -392,21 +386,20 @@ if [ -n "$MISSING_KEYS" ]; then
   exit 2
 fi
 
-case "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" in
-  terminate)
-    if [ "$WIZARD" != 1 ]; then
-      echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate requires install.sh --wizard and a second explicit confirmation before the guard can run." >&2
-      if systemctl is-active --quiet mdt-buildkit-guard.service \
-        || systemctl is-enabled --quiet mdt-buildkit-guard.service; then
-        systemctl disable --now mdt-buildkit-guard.service \
-          || { echo "ERROR: could not stop the Buildx guard while termination policy awaits confirmation" >&2; exit 2; }
-      fi
-      echo "Run ./install.sh --wizard to choose report-only or explicitly reconfirm terminate." >&2
-      exit 2
-    fi
-    echo "WARN: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate may remove active Docker-container Buildx workers and interrupt builds; second wizard confirmation received."
+GUARD_RECORD=/var/lib/mdt/guard-terminate.confirmed
+GUARD_DECISION=$(_mdt_guard_decision "${BUILDX_ACCIDENTAL_CONTAINER_POLICY:-}" "$WIZARD" "$GUARD_RECORD" "${DEV_BUILDKITD_IMAGE:-}")
+case "$GUARD_DECISION" in
+  record)
+    echo "WARN: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate may remove active Docker-container Buildx workers and interrupt builds; second wizard confirmation received and recorded at the commit point."
     ;;
-  report-only) ;;
+  keep)
+    echo "WARN: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate was already confirmed ($(grep -m1 '^confirmed_at=' "$GUARD_RECORD")) and is unchanged; the running guard is kept."
+    ;;
+  clear) ;;
+  refuse)
+    echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate has no recorded confirmation ($GUARD_RECORD): a new or changed terminate setting (policy, BuildKit image or host) needs install.sh --wizard and a second explicit confirmation. Nothing was changed: any running mdt-buildkit-guard.service is left exactly as it was." >&2
+    echo "Run ./install.sh --wizard to choose report-only or explicitly confirm terminate." >&2
+    exit 2 ;;
   *) echo "ERROR: BUILDX_ACCIDENTAL_CONTAINER_POLICY must be exactly terminate or report-only" >&2; exit 2 ;;
 esac
 case "${DEVCONTAINER_MISSING_BIND_SOURCE_POLICY:-}" in
@@ -641,6 +634,24 @@ else
   echo "WARN: could not read /proc/meminfo's SwapTotal — MemorySwapMax auto-detect skipped; set DEV_SWAP_MAX and the *_MEMORY_SWAP_MAX values explicitly if this host has swap"
 fi
 
+# === COMMIT POINT: nothing above this line mutates the host (MDT-HS-02) ===
+# Every refusal above has been evaluated. Only now are /etc/mdt, the buildx config
+# directory, the installed config and the guard confirmation record touched.
+mkdir -p "$CONFIG_DIR" /var/lib/mdt
+install -d -o root -g root -m 0755 "$BUILDX_CONFIG_DIR"
+if [ "$WIZARD" = 1 ] || [ "$HAD_CONFIG" = 0 ]; then
+  if [ "$HAD_CONFIG" = 1 ]; then
+    backup="$CONFIG_PATH.bak-$(date +%Y%m%dT%H%M%S)"
+    cp -- "$CONFIG_PATH" "$backup"
+    echo "backed up existing config to $backup"
+  fi
+  install -m 0644 "$CANDIDATE_PATH" "$CONFIG_PATH"
+fi
+case "$GUARD_DECISION" in
+  record) _mdt_guard_record_write "$GUARD_RECORD" terminate "${DEV_BUILDKITD_IMAGE:-}" ;;
+  clear) rm -f -- "$GUARD_RECORD" ;;
+esac
+
 echo "== packages =="
 # fio/pv: dependencies of the shared io.cost baseline benchmark.
 # systemd-oomd: without it every ManagedOOM*
@@ -769,23 +780,9 @@ systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
 provision_cgprofile_observer /
 
 # DAMON_STAT is a host-wide consumer that excludes cgprofile's generic DAMON
-# sysfs sessions. This override exists only after an explicit wizard choice.
-DAMON_STAT_TMPFILES=/etc/tmpfiles.d/mdt-damon-stat.conf
-if [ "$DAMON_STAT_DISABLE_DEFAULT" = yes ]; then
-  install -m 0644 "$HERE/units/mdt-damon-stat.conf" "$DAMON_STAT_TMPFILES"
-  if [ -e /sys/module/damon_stat/parameters/enabled ]; then
-    systemd-tmpfiles --create "$DAMON_STAT_TMPFILES" \
-      || { echo "ERROR: selected DAMON_STAT disable policy could not be applied" >&2; exit 2; }
-    echo "DAMON_STAT disabled for this boot and by the boot-time tmpfiles policy"
-  else
-    echo "DAMON_STAT parameter is not exposed by this kernel; the persistent rule remains installed"
-  fi
-else
-  if [ -f "$DAMON_STAT_TMPFILES" ]; then
-    rm -f -- "$DAMON_STAT_TMPFILES"
-    echo "Removed MDT's DAMON_STAT boot override; the current kernel value is unchanged until reboot"
-  fi
-fi
+# sysfs sessions. Disabled by default (operator decision 2026-10-20); `no` removes the override.
+export DAMON_STAT_TMPFILES=/etc/tmpfiles.d/mdt-damon-stat.conf
+_mdt_apply_damon_step "$REQUIRE_DAMON" || exit 2
 
 # Post-render fixups:
 # - no device node discovered → IO*Max lines would be invalid; drop them.

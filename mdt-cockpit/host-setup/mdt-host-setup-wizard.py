@@ -894,6 +894,23 @@ def _config_value_validators() -> dict[str, Validator]:
     return validators
 
 
+RUNTIME_OPTIONAL_KEYS_FILE = HOST_SETUP_DIR / "runtime-optional-keys.re"
+
+
+def runtime_optional_pattern() -> "re.Pattern[str]":
+    """The one shared definition of the runtime-optional keys (also read by the shell
+    helper in scripts/mdt-container-io-caps.lib.sh). A missing file is a refusal, never
+    'nothing is optional' or 'everything is optional'."""
+    try:
+        lines = [ln.strip() for ln in RUNTIME_OPTIONAL_KEYS_FILE.read_text(encoding="utf-8").splitlines()]
+    except OSError as exc:
+        raise TemplateError(f"cannot read {RUNTIME_OPTIONAL_KEYS_FILE}: {exc}") from exc
+    patterns = [ln for ln in lines if ln and not ln.startswith("#")]
+    if len(patterns) != 1:
+        raise TemplateError(f"{RUNTIME_OPTIONAL_KEYS_FILE} must hold exactly one regular expression")
+    return re.compile(patterns[0])
+
+
 def validate_host_setup_values(
     values: dict[str, str],
     example: dict[str, str],
@@ -910,7 +927,9 @@ def validate_host_setup_values(
     to be written.  In particular, values preserved from an existing config
     are not trusted merely because the current prompt did not show them.
     """
-    missing = sorted(set(example) - set(values))
+    optional = runtime_optional_pattern()
+    # runtime-optional keys may be absent (an old env file); they are still validated when present
+    missing = sorted(k for k in set(example) - set(values) if not optional.fullmatch(k))
     if missing:
         raise TemplateError(
             f"{config_label} is missing keys from {example_label}: {', '.join(missing)}"

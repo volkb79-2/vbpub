@@ -621,8 +621,10 @@ printf 'rio=%s wio=%s rbps=%s wbps=%s src=%s valid=%s\\n' \\
 
         installer = (ROOT / "install.sh").read_text()
         self.assertIn("no periodic memory-cap fallback exists", installer)
-        self.assertIn("BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate requires install.sh --wizard", installer)
-        self.assertIn("systemctl disable --now mdt-buildkit-guard.service", installer)
+        # MDT-HS-02: an unconfirmed terminate refuses BEFORE touching anything and never
+        # disables the running guard; a confirmed one is recorded durably and kept
+        self.assertIn("BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate has no recorded confirmation", installer)
+        self.assertNotIn("systemctl disable --now mdt-buildkit-guard.service", installer)
         self.assertIn("WATCHER_MEMORY_POLICY=enabled requires at least one explicit", installer)
         self.assertIn("per-container memory values are configured while WATCHER_MEMORY_POLICY=disabled", installer)
         self.assertIn("MEMORY_WATCHER_CONFIGURED=0", installer)

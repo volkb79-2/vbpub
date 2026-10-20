@@ -724,11 +724,11 @@ pass "host-check validates observer ownership, group isolation, and installed ru
 
 # The optional DAMON_STAT policy is applied only from the operator's explicit
 # config choice and uses the documented kernel module parameter.
-grep -q '^DAMON_STAT_DISABLE_DEFAULT="no"$' "$EXAMPLE" \
-  || fail "host-setup.env.example must keep DAMON_STAT unchanged outside the wizard"
-grep -qF 'install -m 0644 "$HERE/units/mdt-damon-stat.conf" "$DAMON_STAT_TMPFILES"' "$INSTALL_SH" \
+grep -q '^DAMON_STAT_DISABLE_DEFAULT="yes"$' "$EXAMPLE" \
+  || fail "host-setup.env.example must default to disabling DAMON_STAT (operator decision 2026-10-20)"
+grep -qF 'install -m 0644 "$HERE/units/mdt-damon-stat.conf" "$DAMON_STAT_TMPFILES"' "$HERE/scripts/mdt-container-io-caps.lib.sh" \
   || fail "install.sh does not install the DAMON_STAT tmpfiles policy"
-grep -qF 'systemd-tmpfiles --create "$DAMON_STAT_TMPFILES"' "$INSTALL_SH" \
+grep -qF 'systemd-tmpfiles --create "$DAMON_STAT_TMPFILES"' "$HERE/scripts/mdt-container-io-caps.lib.sh" \
   || fail "install.sh does not apply the selected DAMON_STAT policy"
 grep -qF 'case "${DAMON_STAT_DISABLE_DEFAULT:-}" in' "$HERE/scripts/check.sh" \
   || fail "check.sh invents a DAMON_STAT policy when the configured value is absent"
@@ -826,7 +826,7 @@ echo "GOVERNANCE_TEST_EXIT=$GOV_RC"
 pass "focused BuildKit guard identity, policy, builder idempotency, memory constraints, and template invariants"
 
 # --- bash -n + shellcheck (if available) on every shell script this package touches --
-SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-io-caps.lib.sh" "$HERE/scripts/mdt-cgroup-io-limits.sh" "$HERE/tests/vm-governance-acceptance.sh" "$HERE/tests/vm-install-with-diagnostics.sh" "$HERE/tests/vm-dump-diagnostics.sh" "$HERE/scripts/mdt-container-memory-inotify-watcher.py" "$HERE/scripts/mdt-slice-memory-min-low-audit.py" "$HERE/scripts/mdt-buildkit-guard.py" "$HERE/../scripts/mdt_buildkit_builder.py" "$HERE/mdt-host-setup-wizard.py" "${BASH_SOURCE[0]}")
+SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-io-caps.lib.sh" "$HERE/scripts/mdt-cgroup-io-limits.sh" "$HERE/tests/vm-governance-acceptance.sh" "$HERE/tests/vm-upgrade-acceptance.sh" "$HERE/tests/vm-install-with-diagnostics.sh" "$HERE/tests/vm-dump-diagnostics.sh" "$HERE/scripts/mdt-container-memory-inotify-watcher.py" "$HERE/scripts/mdt-slice-memory-min-low-audit.py" "$HERE/scripts/mdt-buildkit-guard.py" "$HERE/../scripts/mdt_buildkit_builder.py" "$HERE/mdt-host-setup-wizard.py" "${BASH_SOURCE[0]}")
 for s in "${SCRIPTS[@]}"; do
   case "$s" in
     *.py) "$MDT_TEST_PYTHON" -m py_compile "$s" || fail "py_compile failed: $s" ;;
@@ -835,7 +835,7 @@ for s in "${SCRIPTS[@]}"; do
 done
 pass "bash -n / py_compile clean on every touched script"
 
-SHELL_SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-io-caps.lib.sh" "$HERE/scripts/mdt-cgroup-io-limits.sh" "$HERE/tests/vm-governance-acceptance.sh" "$HERE/tests/vm-install-with-diagnostics.sh" "$HERE/tests/vm-dump-diagnostics.sh" "${BASH_SOURCE[0]}")
+SHELL_SCRIPTS=("$INSTALL_SH" "$HERE/scripts/mdt-dev-governance-reconcile.sh" "$HERE/scripts/mdt-container-io-events-watcher.sh" "$HERE/scripts/check.sh" "$HERE/scripts/mdt-container-io-caps.lib.sh" "$HERE/scripts/mdt-cgroup-io-limits.sh" "$HERE/tests/vm-governance-acceptance.sh" "$HERE/tests/vm-upgrade-acceptance.sh" "$HERE/tests/vm-install-with-diagnostics.sh" "$HERE/tests/vm-dump-diagnostics.sh" "${BASH_SOURCE[0]}")
 if command -v shellcheck >/dev/null 2>&1; then
   # -S warning: this package leaves a handful of PRE-EXISTING info/style
   # findings untouched (SC2015 "A && B || C", SC2181 "check $? directly") --

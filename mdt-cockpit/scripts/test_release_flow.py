@@ -122,7 +122,10 @@ class ReleaseFlowTests(unittest.TestCase):
         self.assertIn("defaults to `report-only`", design)
         self.assertIn("BUILDX_ACCIDENTAL_CONTAINER_POLICY=report-only", consumers)
         self.assertIn("BUILDX_ACCIDENTAL_CONTAINER_POLICY=terminate", consumers)
-        self.assertIn("stops and disables the guard", consumers)
+        # MDT-HS-02: a confirmed terminate is recorded durably and kept; an unconfirmed one refuses first
+        self.assertIn("guard-terminate.confirmed", consumers)
+        self.assertIn("keeps the running guard", consumers)
+        self.assertNotIn("stops and disables the guard", consumers)
 
     def test_memory_watcher_policy_docs_and_example_match_the_host_parser(self) -> None:
         readme = (ROOT / "README.md").read_text()

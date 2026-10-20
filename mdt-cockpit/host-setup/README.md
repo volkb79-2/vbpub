@@ -203,8 +203,17 @@ closed vocabulary: `report-only` (default) detects and logs without removal;
 `terminate` removes an unapproved BuildKit worker and is an explicit opt-in.
 The wizard asks for a second confirmation because termination can interrupt a
 live Buildx build. Missing or invalid policy configuration stops the guard.
-A plain install that finds `terminate` stops and disables the guard, then
-refuses to continue until `install.sh --wizard` confirms the choice again.
+The wizard's second confirmation is recorded durably in
+`/var/lib/mdt/guard-terminate.confirmed` (policy, BuildKit image, timestamp, and a digest
+of policy + image + this host's machine-id; an audit trail, not an access control).
+The guard service verifies the same digest before it acts in terminate mode and runs
+report-only, loudly, when there is none; it withdraws a stale record when the policy
+is report-only; `mdt-host-check.sh` warns about terminate without a valid record.
+Changing the policy, the BuildKit image or the host invalidates the record. A plain re-install with an unchanged, already-confirmed `terminate` proceeds
+and keeps the running guard. Only a new or changed `terminate` without a record refuses,
+and the refusal happens BEFORE anything is touched: a guard running under an earlier
+confirmation is left exactly as it was. Choosing `report-only` removes the record, so a
+later `terminate` needs confirming again.
 
 The wizard also configures `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` for the
 host-side `initialize_container_environment.py` that runs before a devcontainer
@@ -550,9 +559,11 @@ complete and the installer backs up any existing config only after validation.
 
 The wizard asks whether to disable the kernel-wide `DAMON_STAT` monitor so
 cgprofile can use generic DAMON sysfs sessions and collect per-session samples.
-It recommends `yes`; `no` preserves the kernel's current default. The shipped
-non-wizard `host-setup.env.example` uses `DAMON_STAT_DISABLE_DEFAULT="no"`, so
-an installation without the wizard never changes host policy. A `yes` choice
+mdt defaults to disabling `DAMON_STAT` (operator decision 2026-10-20): the shipped
+`host-setup.env.example` has `DAMON_STAT_DISABLE_DEFAULT="yes"`, the wizard's default
+answer is `yes`, and the cgroup-profiler daemon needs the DAMON sysfs interface that
+`DAMON_STAT` excludes. `no` preserves the kernel's current default. A failed immediate write does not abort the install: it warns loudly and
+continues (the boot-time rule is already installed); `install.sh --require-damon-disable` makes it fatal. A `yes` choice
 installs `/etc/tmpfiles.d/mdt-damon-stat.conf` and applies it immediately when
 the running kernel exposes the parameter. systemd-tmpfiles applies it again at
 boot. Changing back to `no` removes MDT's boot override; the current kernel
@@ -581,7 +592,7 @@ the test stacks.
 |---|---|---|
 | `units/dev.slice.in`, `units/dev-interactive.slice.in`, `units/dev-background.slice.in`, `units/dev-gates.slice.in`, `units/dev-memory_min_guaranteed.slice.in`, `units/dev-buildkitd.slice.in` | `/etc/systemd/system/*.slice` | the tiers — **rendered** from `/etc/mdt/host-setup.env` |
 | `units/mdt-buildkitd.service.in` | `/etc/systemd/system/mdt-buildkitd.service` (rendered, enabled) | host-managed rootless BuildKit worker — `docker run --cgroup-parent=dev-buildkitd.slice` as `ExecStart=`, see `plan-buildkitd-service.md` |
-| `units/mdt-damon-stat.conf` | `/etc/tmpfiles.d/mdt-damon-stat.conf` (only when selected) | optionally disable the kernel-global DAMON_STAT monitor now and at boot |
+| `units/mdt-damon-stat.conf` | `/etc/tmpfiles.d/mdt-damon-stat.conf` (unless `DAMON_STAT_DISABLE_DEFAULT=no`) | optionally disable the kernel-global DAMON_STAT monitor now and at boot |
 | `buildkitd.toml.in` | `/etc/mdt/buildkitd.toml` | managed BuildKit daemon configuration, including `DEV_BUILDKITD_MAX_PARALLELISM` |
 | `units/mdt-buildkit-guard.service`, `scripts/mdt-buildkit-guard.py` | systemd (enabled) + `/usr/local/sbin/` | Docker-events guard for unapproved Buildx/BuildKit workers |
 | `scripts/mdt_buildkit_builder.py` | `/usr/local/sbin/mdt-buildkit-builder.py` | idempotent `mdt-managed` remote registration/verification; never creates a container-driver worker |

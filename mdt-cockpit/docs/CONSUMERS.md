@@ -72,8 +72,10 @@ sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
 
+mdt defaults to disabling `DAMON_STAT` so the cgroup-profiler daemon can use the DAMON sysfs
+interface: `DAMON_STAT_DISABLE_DEFAULT="yes"` in the example, also without the wizard.
 The wizard asks for `DAMON_STAT_DISABLE_DEFAULT=yes|no`. Enter accepts the
-recommended `yes`: MDT writes `N` to the kernel's
+default `yes`: MDT writes `N` to the kernel's
 `/sys/module/damon_stat/parameters/enabled` parameter now and on each boot,
 letting cgprofile collect DAMON samples. Choose `no` to keep the kernel's
 configured default. Removing a previous MDT override leaves the live parameter
@@ -99,9 +101,12 @@ current `WATCHER_*` names shown in `host-setup.env.example`; old names are not
 aliases for the new clean configuration.
 
 Fresh installs default to `report-only`. If a plain install finds an existing
-`terminate` policy, it stops and disables the guard, then refuses to continue
-until `--wizard` explicitly confirms that policy again; it leaves the host
-config available for review. During `--wizard`, accepting the default answer
+`terminate` policy that the wizard already confirmed (recorded in
+`/var/lib/mdt/guard-terminate.confirmed` with the policy, the BuildKit image and this host's
+machine-id digest), it proceeds and keeps the running guard; the guard itself verifies the record
+before it acts. A new or
+changed `terminate` without that record refuses BEFORE touching anything (the running guard
+is left as it was) until `--wizard` confirms it; the host config stays available for review. During `--wizard`, accepting the default answer
 changes `terminate` to `report-only`.
 
 ### cgprofile resource-observer host setup
@@ -367,6 +372,7 @@ mount flags. The standalone check-only form does not repair:
 ```bash
 host-escape -- systemctl show dev-interactive.slice -p MemoryMax
 host-escape -- docker inspect dstdns-devcontainer-vb
+host-escape -- /usr/local/sbin/mdt-cgroup-io-limits.sh dev.slice --all --systemd   # dev-tier IO caps really in force
 host-escape                         # interactive host shell
 mdt doctor --check-only             # inspect cgroup2 flags without repair
 host-escape --help
