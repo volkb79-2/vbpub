@@ -145,3 +145,189 @@ def test_cal_02_confinement_argv():
     assert ladder.confined(devio.parse_job(job("randread", off=GIB, size=GIB).argv()), ext)
     assert not ladder.confined(devio.parse_job(job("randread", off=9 * GIB + 1, size=GIB).argv()), ext)
     assert not ladder.confined(job("randread", off=20 * GIB, size=GIB), ext)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# stage-level (the full calibration on FakeHost)
+# ---------------------------------------------------------------------------------------------------------
+from helpers import (INVERSION, READ_MISS, WRITE_14, calibrate, config, fio_jobs, make_host, read_json)  # noqa: E402
+from iobench import calibrate as cal_mod  # noqa: E402
+
+CALIB = "/var/lib/iobench/calibration.json"
+RESULT = "/var/lib/iobench/result.json"
+
+
+@pytest.fixture(scope="module")
+def healthy():
+    host = make_host(cache=INVERSION)
+    out = calibrate(host)
+    return host, out
+
+
+def test_cal_09_complete_definition(healthy):
+    host, out = healthy
+    assert out.status == "complete" and out.exit_code == 0
+    cal = read_json(host, CALIB)
+    assert cal["run"]["status"] == "complete" and cal["calibration"]["id"] == cal["run"]["calibration_id"]
+    stages = cal["run"]["stages"]
+    assert all(stages[s] == "ok" for s in ("S0", "S1", "fill", "ladder")) and stages["S7"] == "ok"
+    assert read_json(host, RESULT)["run"]["calibration_id"] == cal["calibration"]["id"]
+    # every key of the calibration example is present
+    for key in ("target", "touch_map", "extent_written", "fresh_extent", "fill_bps", "R_est_bps", "ladder", "cache", "cap_basis",
+                "fresh_vs_rewrite", "shape", "latency_curve", "latency_knee", "iocost_keys"):
+        assert key in cal["calibration"], key
+
+
+def test_cal_09_optional_stages_may_be_skipped_and_recorded():
+    host = make_host(cache=INVERSION)
+    out = calibrate(host, budget_minutes=20)
+    stages = out.calibration["run"]["stages"]
+    skipped = [k for k, v in stages.items() if v.startswith("skipped")]
+    assert out.status == "complete" and skipped, stages
+    assert "limited-by-budget" in out.result["quality"]["limits"]
+    for s in ("S6", "S7"):
+        if stages.get(s, "").startswith("skipped"):
+            assert f"stage_skipped:{s}" in out.result["quality"]["limits"]
+
+
+def test_cal_09_atomic_no_replace():
+    host = make_host(cache=INVERSION)
+    first = calibrate(host)
+    good = host.read_text(CALIB)
+    host.crash_after = host.fio_spawns + 5
+    with pytest.raises(Exception):
+        calibrate(host)
+    # a crashed run restored its state and never replaced the good calibration
+    assert host.read_text(CALIB) == good and first.status == "complete"
+    host2 = make_host(cache=INVERSION)
+    host2.makedirs("/run/iobench")
+    host2.at(host2.now() + 400, lambda: host2.deliver_signal("SIGTERM"))
+    out = calibrate(host2)
+    assert out.status == "aborted" and out.exit_code == 8
+    assert not host2.exists(CALIB) and read_json(host2, "/var/lib/iobench/calibration.last-failed.json")["run"]["status"] == "aborted"
+
+
+def test_cal_02_confinement_argv(healthy):
+    host, out = healthy
+    extent_end = read_json(host, CALIB)["calibration"]["extent_written"][0][1]
+    fresh = read_json(host, CALIB)["calibration"]["fresh_extent"]
+    jobs = fio_jobs(host)
+    reads = [j for j in jobs if j.filename == "/dev/vda7" and not j.writes]
+    assert reads and all(0 <= j.offset and j.end <= extent_end for j in reads)
+    assert not host.devices["/dev/vda7"].unwritten_reads
+    writes = [j for j in jobs if j.filename == "/dev/vda7" and j.writes]
+    assert all(j.end <= extent_end or (fresh and fresh[0] <= j.offset and j.end <= fresh[1]) or j.end <= 1 << 30 for j in writes)
+    assert all(j.end <= host.devices["/dev/vda7"].size - 1048576 for j in jobs if j.filename == "/dev/vda7")
+
+
+def test_cal_02_interrupted_fill_records_actual_bytes():
+    host = make_host(cache=INVERSION)
+    ws = int(0.85 * (435853320192 - 1048576))
+    host.scenario.cut_after_bytes = {"-fill-": int(0.4 * ws)}
+    out = calibrate(host)
+    cal = out.calibration["calibration"]
+    end = cal["extent_written"][0][1]
+    assert out.status == "complete" and end == pytest.approx(0.4 * ws, rel=0.01) and cal["extent_written"][0][0] == 0
+    sizes = {r["ws_bytes"] for r in cal["ladder"]["rungs"]}
+    assert max(sizes) <= end and cal["fill"]["bytes"] == end
+    props = out.result["proposals"]["caps"]["dev_aggregate"]
+    assert "budget_limited" in props["RIOPS"]["reasons"] and props["RIOPS"]["status"] == "unproven"
+    assert "limited-by-budget" in out.result["quality"]["limits"] and out.result["quality"]["cache_proof"] == "limited-by-budget"
+    assert not host.devices["/dev/vda7"].unwritten_reads
+
+
+def test_cal_02_fill_replans_on_burst_capped_disk():
+    from iobench.testing import Bucket
+    write = dict(iops_max=1e6, lat_us=440, bucket=Bucket(2e9, 14 * 1048576, 20.0))
+    host = make_host(size=60 * GIB, write=write, read=dict(iops_max=3000, lat_us=760), noise=0.02)
+    out = calibrate(host)
+    cal = out.calibration["calibration"]
+    assert out.status == "complete" and cal["fill"]["fill_replanned"] is True
+    assert cal["R_est_bps"] < 0.2 * 2e9 and cal["R_est_bps"] == pytest.approx(14 * 1048576, rel=0.2)
+    ws = cal["extent_written"][0][1]
+    assert ws < 0.85 * (60 * GIB) and "limited-by-budget" in out.result["quality"]["limits"]
+    # every later write job obeys 1.2 x the measured rate x its seconds
+    for j in fio_jobs(host):
+        if j.writes and j.io_size is not None and "-fill-" not in j.name:
+            assert j.io_size <= 1.2 * cal["R_est_bps"] * j.runtime_s * 1.001, j.name
+
+
+def test_cal_03_unsteady_rung_is_extended_then_kept_unsteady():
+    host = make_host(cache=None, noise=0.6)
+    out = calibrate(host)
+    assert out.status == "complete"
+    ext = [j for j in fio_jobs(host) if j.name.endswith("-ext")]
+    assert ext and all(j.runtime_s == 300 for j in ext)
+    rungs = out.calibration["calibration"]["ladder"]["rungs"]
+    assert any(r["state"] == "unsteady" and r.get("extended") for r in rungs)
+    caps = out.result["proposals"]["caps"]["dev_aggregate"]
+    assert all(v["status"] == "absent" and v["reason"] == "basis_unsteady" for v in caps.values())  # no fallback to a smaller rung
+    assert any(c["id"] == "IOB-PLA-01" and c["status"] == "fail" for c in out.result["quality"]["checks"])
+
+
+def test_cal_05_observation_limits(healthy):
+    host, out = healthy
+    assert "bucket_exclusion_s<=240" in out.result["quality"]["limits"]
+    obs = {"obs-" + j.name.split("-obs-")[1]: j for j in fio_jobs(host) if "-obs-" in j.name}
+    assert {k: v.runtime_s for k, v in obs.items()} == {"obs-write": 240, "obs-read": 120, "obs-fresh": 120}
+    assert all(j.iodepth == 8 and j.log_avg_ms == 1000 for j in obs.values())
+    thorough = make_host(size=40 * GIB, cache=None, read=dict(iops_max=21600, lat_us=300), write=dict(iops_max=21600, lat_us=300))
+    out2 = calibrate(thorough, profile="thorough")
+    assert "bucket_exclusion_s<=900" in out2.result["quality"]["limits"]
+    assert 64 in {j.iodepth for j in fio_jobs(thorough)}
+
+
+def test_cal_06_cap_basis(healthy):
+    host, out = healthy
+    cal = out.calibration["calibration"]
+    basis = cal["cap_basis"]
+    largest = cal["ladder"]["measured_largest"]["read"]
+    assert basis["read"]["value"] <= largest
+    fvr = cal["fresh_vs_rewrite"]
+    assert basis["write"]["value"] == min(fvr["rewrite_iops"], fvr["fresh_iops"])
+    assert set(basis["bps"]) == {"read", "write"} and basis["bps"]["read"]["status"] in ("proven", "unproven")
+
+
+def test_cal_07_fresh_penalty():
+    write = dict(WRITE_14, fresh_penalty=19.9, iops_max=71584)
+    host = make_host(cache=None, write=write, read=dict(iops_max=21600, lat_us=300), size=40 * GIB)
+    out = calibrate(host)
+    fvr = out.calibration["calibration"]["fresh_vs_rewrite"]
+    assert fvr["measured"] and fvr["penalty"] == pytest.approx(19.9, rel=0.15) and fvr["label"] == "fresh"
+    notes = {n["note"] for n in out.result["proposals"]["notes"]}
+    assert "fresh_write_penalty" in notes
+    assert out.calibration["calibration"]["cap_basis"]["write"]["value"] == pytest.approx(fvr["fresh_iops"])
+    # discard unsupported -> not_measured with the reason
+    host2 = make_host(cache=None, write=write, read=dict(iops_max=21600, lat_us=300), size=40 * GIB)
+    host2.devices["/dev/vda7"].discard_supported = False
+    out2 = calibrate(host2)
+    fvr2 = out2.calibration["calibration"]["fresh_vs_rewrite"]
+    assert fvr2 == {"measured": False, "reason": "discard_unsupported"}
+    assert out2.calibration["run"]["stages"]["fresh-vs-rewrite"].startswith("failed")
+    assert out2.calibration["calibration"]["rearm"] is None
+
+
+def test_cal_07_fresh_extent_is_disjoint(healthy):
+    host, out = healthy
+    cal = out.calibration["calibration"]
+    ws, fresh = cal["extent_written"][0][1], cal["fresh_extent"]
+    assert fresh[0] >= ws and fresh[1] <= cal["target"]["usable_bytes"] and fresh[1] - fresh[0] == 8 * GIB
+    discards = [a for a in host.argv_log if a[0] == "blkdiscard"]
+    assert len(discards) >= 5 and all(int(a[2]) >= ws for a in discards)  # re-discarded before each fresh cell, never inside [0, WS_max)
+    jobs = fio_jobs(host)
+    for j in jobs:
+        if j.filename == "/dev/vda7" and j.writes and j.end > ws:
+            assert j.offset >= fresh[0] and j.end <= fresh[1]
+    s6 = [j for j in jobs if "-s6-" in j.name]
+    assert all(j.end <= ws or j.offset >= fresh[0] for j in s6)
+    assert host.devices["/dev/vda7"].written.overlap(*fresh) == 0  # removed after use
+
+
+def test_cal_10_rearm_cell():
+    rearm_scn = dict(WRITE_14, fresh_penalty=19.9)
+    host = make_host(cache=None, write=rearm_scn, read=dict(iops_max=21600, lat_us=300), size=40 * GIB)
+    r = calibrate(host).calibration["calibration"]["rearm"]
+    assert r["verdict"] == "rearmed" and r["rearm_ratio"] >= 3
+    flat = make_host(cache=None, write=dict(WRITE_14), read=dict(iops_max=21600, lat_us=300), size=40 * GIB)
+    r2 = calibrate(flat).calibration["calibration"]["rearm"]
+    assert r2["verdict"] == "not_rearmed" and r2["rearm_ratio"] < 3

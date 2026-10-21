@@ -167,7 +167,7 @@ class Calibrator(Runner):
         if self.fresh:
             self.allowed_writes.add(*self.fresh)
         self.rung_sizes = plan.rung_plan(self.ws_planned, quick=self.quick)
-        self.budget_limited = self.ws_planned < int(0.85 * self.target.usable_bytes) and self.target.kind == "device"
+        self.budget_limited = self.target.kind == "device" and alloc.ws_max < int(0.85 * self.target.usable_bytes)
         return alloc
 
     # -- the fill ------------------------------------------------------------------------------------------
@@ -182,14 +182,14 @@ class Calibrator(Runner):
         replanned, aborted = False, None
         while pos < ws and self.host.now() < deadline:
             n = min(chunk, ws - pos)
-            job = self.job(f"fill-{k}", "write", MIB, 16, math.ceil(3 * n / self.r_est) + 10, pos, n, io_size=n, metric="bw")
-            out = self.fio(job)
+            runtime = math.ceil(3 * n / self.r_est) + 10
+            out = self.fio(self.job(f"fill-{k}", "write", MIB, 16, runtime, pos, n, io_size=n, metric="bw"))
             done = min(n, out.stats.io_bytes)
             rates += [v for _, v in out.series]
             pos += done
             k += 1
-            if done < n:
-                break
+            if done == 0 or (done < n and out.stats.runtime_s < runtime - 1):
+                break  # fio exited early: the extent is what it reported written
             if self.target.kind == "file" and guard.fs_info(self.host, self.target.path.rsplit("/", 1)[0]).free < self.margin:
                 aborted = "free_space"
                 break
@@ -197,10 +197,12 @@ class Calibrator(Runner):
             if not replanned and len(tail) >= 10 and statistics.median(tail) < FILL_REPLAN_FACTOR * self.r_est:
                 replanned, self.r_est = True, statistics.median(tail)
                 ws = min(ws, ladder.align(pos + self.r_est * max(0.0, fill_budget_s - (self.host.now() - started))))
+                chunk = max(MIN_FILL_CHUNK, ladder.align(self.r_est * FILL_CHECK_S))
         if pos == 0:
             raise RunFailed("the fill wrote no bytes")
         self.ws = pos
         self.read_extent.add(0, pos)
+        self.rung_sizes = plan.rung_plan(pos, quick=self.quick)  # rungs above the actual extent are never planned
         self.touch.maps["fill"] = [pos / 8.0] * 8
         self.fill_info = {"fill_bps": pos / max(self.host.now() - started, 1e-9), "fill_replanned": replanned, "fill_aborted": aborted,
                           "bytes": pos, "planned_bytes": self.ws_planned}
@@ -266,6 +268,8 @@ class Calibrator(Runner):
                 self.budget_limited = True
                 self.limits.append("limited-by-budget")
                 break
+            if not self.fits(2 * RUNG_S + 30):
+                raise RunFailed("the budget allowed fewer than three ladder rungs")
             rec = self.rung(ws, "read", 32)
             self.reads.append(rec)
             if ws == largest:
@@ -291,8 +295,6 @@ class Calibrator(Runner):
                     if good:
                         have = {r["ws_bytes"] for r in self.reads} | set(queue)
                         queue = sorted({*queue, *(d for d in plan.densification_rungs(max(good), largest) if d not in have)})
-        if self.budget_limited and len(self.reads) < MIN_RUNGS:
-            raise RunFailed("the budget allowed fewer than three ladder rungs")
         self.close_group("ladder", "r1")
 
     # -- fresh vs rewrite, rearm, observation ---------------------------------------------------------------

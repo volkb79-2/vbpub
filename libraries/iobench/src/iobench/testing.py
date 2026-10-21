@@ -189,8 +189,7 @@ class Scenario:
     # buffered work-dir load (drain / sweep model)
     drain_bps: float = 10_500_000.0
     dirty_peak_bytes: float = 200_000_000.0
-    sweep_probe: Callable[[dict[str, str]], float] | None = None
-    sweep_load_iops: float = 800.0
+    cut_after_bytes: dict[str, int] = field(default_factory=dict)
 
 
 def _noise(seed: int, name: str, k: int) -> float:
@@ -346,6 +345,8 @@ class FakeFio:
         pos = job.offset
         weighted_mean = 0.0
         for k in range(n):
+            if samples and job.io_size is not None and io_bytes >= job.io_size - 1e-6:
+                break  # fio stopped at its byte cap on the previous boundary
             lo, hi = k * dt, min((k + 1) * dt, job.runtime_s)
             span = hi - lo
             h1 = h2 = 0.0
@@ -357,7 +358,7 @@ class FakeFio:
                 iops /= 1 + fresh * (pen - 1)
             mult = self.s.ceiling(t0 + hi) if self.s.ceiling else 1.0
             if self.s.noise_cv:
-                mult *= 1 + self.s.noise_cv * math.sqrt(3) * _noise(self.s.seed, job.name, k)
+                mult *= max(0.05, 1 + self.s.noise_cv * math.sqrt(3) * _noise(self.s.seed, job.name, k))
             iops *= mult
             rho = 1.0
             if job.rate_iops is not None:
@@ -525,6 +526,7 @@ class FakeHost:
         self.locks = lock_registry if lock_registry is not None else {}
         self.holding: str | None = None
         self.fio_spawns = 0
+        self.cut_done: dict[str, int] = {}
         self.crash_after: int | None = None
         self.sweep_model: Callable[[dict[str, int]], SweepOutcome] = lambda knobs: SweepOutcome()
         self.work_disk = "vda"
@@ -815,7 +817,13 @@ class FakeHost:
             raise FakeCrash(f"scenario crash at fio job {self.fio_spawns}")
 
     def _launch(self, job: FioJob, dev: FakeDevice) -> FakeHandle:
+        for needle, budget in self.scenario.cut_after_bytes.items():
+            if needle in job.name:  # an interrupted writer: fio exits early once the cumulative budget is spent
+                job = job.with_(io_size=min(job.io_size if job.io_size is not None else job.size, max(0, budget - self.cut_done.get(needle, 0))))
         sim = self.fio.simulate(job, self.clock, dev)
+        for needle in self.scenario.cut_after_bytes:
+            if needle in job.name:
+                self.cut_done[needle] = self.cut_done.get(needle, 0) + int(sim.io_bytes)
         out, rate_log, hist_log = self.fio.render(job, sim)
         self.put(job.log_path, rate_log)
         if hist_log is not None:
