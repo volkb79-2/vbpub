@@ -62,7 +62,5 @@ largest rung mixes 77 % cache hits; the cap is conservative (<= R_cold). Asserte
 Resolved IOB-CCH-08 #5: was a logic flaw (a bare flat cap read as hit-like); fixed by `rate_cap` for any flat cold probe and the new `no_cache_observed` state (R-11).
 
 Coordinator rulings applied (second commit): REL-01 wheel only; CAL-01 numbers 282.8/312.4 GiB (allotment sum unchanged); SHP-04 wins over PLA-11; CCH-08 #1 analytic and #2 range documented
-(DESIGN-GUIDE "Decisions added in IOB-03 P3"); new `cache_state` `no_cache_observed` (R-11).
-OPEN CONCERN for the reviewers (R-11): a cache at least as large as the fill is indistinguishable from no cache, so CCH-08 #4 `cache_larger_than_fill` now classifies `no_cache_observed`/proven on a device
-target instead of `cold_hit_like`/unproven; `cold_hit_like` remains for a cliff, a file target, or a cold rate below 0.9 x `cached_ref`.
-
+(DESIGN-GUIDE "Decisions added in IOB-03 P3"); new `cache_state` `no_cache_observed` (R-11, first version proven - corrected, see below).
+R-11 was corrected by the coordinator in a follow-up commit: `no_cache_observed` is `unproven: cache_not_excluded` (no_cache and cache >= fill are one observation); `rate_cap` for a flat cold probe stays proven.

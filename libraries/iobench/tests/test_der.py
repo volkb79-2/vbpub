@@ -242,9 +242,9 @@ def test_der_10_read_cache_headroom():
     # synthetic r1002-model arithmetic: 92000 / 9800 = 9.39
     cal_syn = {"cache": {"read": {"read_cache_headroom": 92000 / 9800}}}
     assert P.build_notes(cal_syn)[0]["value"] == pytest.approx(9.39, abs=0.05)
-    # no cache observed (proven): the headroom is about 1; null when the read cache state is not proven (quick profile)
+    # no cache observed (unproven: cache_not_excluded) and the quick profile: the headroom is null
     hit = make_host(cache=dict(capacity_gib=500, hit_iops=92000, write_allocate=True))
     notes = calibrate(hit).result["proposals"]["notes"]
-    assert [n for n in notes if n["note"] == "read_cache_headroom"][0]["value"] == pytest.approx(1.0, abs=0.05)
+    assert [n for n in notes if n["note"] == "read_cache_headroom"][0]["value"] is None      # no_cache_observed is unproven
     quick = calibrate(make_host(cache=INVERSION), profile="quick").result["proposals"]["notes"]
     assert [n for n in quick if n["note"] == "read_cache_headroom"][0]["value"] is None

@@ -14,7 +14,7 @@ UNPROVEN_REASONS = (
     "cache_model_undetermined", "cache_residual_possible", "no_cliff_hit_like_mode", "device_smaller_than_cache_margin",
     "ceiling_moved", "budget_limited", "short_observation", "quick_profile", "worst_from_single_run", "metering_undetermined",
     "operator_override", "shape_fit_poor", "noise_floor_high", "drain_below_ladder", "formula_only", "target_missed",
-    "cross_disk", "identity_weak")
+    "cross_disk", "identity_weak", "cache_not_excluded")
 ABSENT_REASONS = ("stage_skipped", "stage_failed", "basis_unsteady", "basis_missing", "bps_basis_missing", "no_calibration")
 CACHE_STATES = ("cold_measured", "rate_cap", "no_cache_observed", "cold_hit_like", "undetermined")
 METERING = ("byte", "iops", "mixed", "undetermined")

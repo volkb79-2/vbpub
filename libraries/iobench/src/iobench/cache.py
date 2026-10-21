@@ -273,7 +273,8 @@ def classify_cache(cold: ColdProbe | None, e2: E2 | None, *, cliff_bytes: float 
     elif (cold.shape == "unimodal" and cold.cls in ("hit-like", "indeterminate") and cliff_bytes is None and cache_excludable
           and cached_ref is not None and cold.r_cold >= NO_CACHE_RATIO * cached_ref):
         # the cold region runs as fast as the warm one and there is no cliff: caching does not change the sustained rate
-        state, r, reasons = "no_cache_observed", cold.r_cold, []
+        # equally consistent with no cache and with a cache at least as large as the written extent: never proven
+        state, r, reasons = "no_cache_observed", None, ["cache_not_excluded"]
     elif cold.shape == "unimodal" and cold.cls == "hit-like":
         state, r = "cold_hit_like", None
         reasons = ["device_smaller_than_cache_margin" if cliff_bytes is not None else "no_cliff_hit_like_mode"]

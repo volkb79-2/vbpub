@@ -27,7 +27,7 @@ def test_sta_01_every_value_carries_its_own_status():
 
 
 def test_sta_02_closed_vocabularies():
-    assert len(P.UNPROVEN_REASONS) == 18 and len(P.ABSENT_REASONS) == 6
+    assert len(P.UNPROVEN_REASONS) == 19 and len(P.ABSENT_REASONS) == 6
     with pytest.raises(ValueError):
         P.value(1, "R1", {}, "measured", reasons=["because"])
     with pytest.raises(ValueError):
@@ -251,6 +251,8 @@ def test_sta_05_status_collapse_audit():
         # name: (owner key, scenario)
         "cache_model_undetermined": ("caps.RIOPS", cal(host_kw=dict(read=dict(iops_max=9800, lat_us=200, lat_hit_us=110)))),
         "no_cliff_hit_like_mode": ("caps.RIOPS", not_as_fast_as_warm),
+        # two real-world conditions collapse into this one observation (no cache / a cache at least as large as the written extent): never proven
+        "cache_not_excluded": ("caps.RIOPS", cal(host_kw=dict(cache=None, read=dict(iops_max=21600, lat_us=300)))),
         "cache_residual_possible": ("caps.RIOPS", residual),
         "device_smaller_than_cache_margin": ("caps.RIOPS", margin),
         "ceiling_moved": ("caps.RIOPS", moved),
@@ -321,7 +323,7 @@ def matrix_baseline_model_p99(host, p99):
 
 # reasons that legitimately accompany another row's scenario (each is a CONSEQUENCE of the scenario, not a collapse of two rows):
 CONSEQUENCES = {
-    "budget_limited": {"cache_model_undetermined", "ceiling_moved", "no_cliff_hit_like_mode", "cache_residual_possible"},
+    "budget_limited": {"cache_not_excluded", "cache_model_undetermined", "ceiling_moved", "no_cliff_hit_like_mode", "cache_residual_possible"},
     "ceiling_moved": {"cache_model_undetermined", "no_cliff_hit_like_mode"},
     "quick_profile": {"budget_limited"},  # the quick fill is time-bounded to R_est x 60 s, so the working set is budget-limited too
 }
@@ -336,12 +338,16 @@ def test_sta_05_cache_state_collapse_audit():
     """Every cache_state is reachable only from its own row, in both directions (IOB-CCH-05)."""
     plain = dict(cache=None, read=dict(iops_max=21600, lat_us=300))
     rows = {
-        "no_cache_observed": (plain, {}, ("no_cache_observed", "proven", [])),                    # as fast cold as warm, unimodal, no cliff
+        "no_cache_observed": (plain, {}, ("no_cache_observed", "unproven", ["cache_not_excluded"])),     # as fast cold as warm, unimodal, no cliff
         "rate_cap": (dict(cache=None, read=dict(iops_max=3600, lat_us=8000), noise=0.001), {}, ("rate_cap", "proven", [])),
         "cold_measured": (dict(cache=INVERSION), {}, ("cold_measured", "proven", [])),            # a slower cold region than the warm one
     }
     for name, (host_kw, kw, want) in rows.items():
         assert cache_state_of(host_kw, **kw) == want, name
+    # the two real-world conditions behind no_cache_observed give the same observation, so the status is never proven
+    no_cache = cache_state_of(plain)
+    big_cache = cache_state_of(dict(cache=dict(capacity_gib=500, hit_iops=92000, write_allocate=True)))
+    assert no_cache == big_cache == ("no_cache_observed", "unproven", ["cache_not_excluded"])
     # the look-alikes must NOT collapse into no_cache_observed
     # (1) a cliff exists: the same hit-like probe stays cold_hit_like / unproven
     s = cache.classify_cache(cache.ColdProbe(9800.0, False, "unimodal", "hit-like", 100.0, GIB), None, cliff_bytes=300 * GIB, largest_rung=345 * GIB,

@@ -87,7 +87,7 @@ comparison is `unproven: ceiling_moved`, both values are kept, and the move is a
 | Technique | What it defeats | What it does not |
 |---|---|---|
 | `--direct=1` | guest page cache | any host/provider cache |
-| The cold-region probe (earliest-written region right after the fill), cross-checked by E2 | host/provider read caches, whatever their allocation policy, as long as the fill exceeds the cache | a cache at least as large as the fill: on a device target it reads as `no_cache_observed` (R-11), because rate and latency cannot tell it from no cache |
+| The cold-region probe (earliest-written region right after the fill), cross-checked by E2 | host/provider read caches, whatever their allocation policy, as long as the fill exceeds the cache | a cache at least as large as the fill: it reads as `no_cache_observed`, `unproven: cache_not_excluded` (R-11), because rate and latency cannot tell it from no cache |
 | The time axis (>= 120 s after the knee, bytes after >= 2x burst) | write-back caches and token buckets for writes | a burst longer than the observation (`unproven: short_observation`) |
 | Steady tail = median of the last 25 % of a <= 2 s series, knee/burst detection | warm-up and bursts shorter than the observation | a token bucket longer than the observation: every result records `bucket_exclusion_s<=N`; `standard` adds a 240 s write and 120 s read observation, `thorough` 900/240 s (the 0.9 -> 3.2 GB/s step at ~430 s seen on r1002 needs `thorough`) |
 | Read only data **written by this calibration** (argv-confined to the recorded extent) | zero-page reads of unmapped space (99.9k IOPS on a discarded range [M r1002]) | - |
@@ -199,7 +199,7 @@ D-010 never branch on hypervisor detection, D-011 long-term probe later, D-012 r
 | R-1 per-proposal `proven`/`unproven`/`absent`; exit 7 = valid with unproven; collapse table; accept to apply; BPS own basis | SPEC section 4, IOB-CAL-06, IOB-CHK-01 |
 | R-2 second independent estimator (latency modes); two must agree; degenerate cases with fixtures | SPEC section 6, DG 3.1 |
 | R-3 rung sizes from the device; largest <= 0.85 x usable; PLA-02 = largest >= 1.2 x cliff else `device_smaller_than_cache_margin` | IOB-CAL-01, IOB-PLA-02 |
-| R-4 no cliff is valid; miss-like unimodal => proven; hit-like => unproven unless the cold region is as fast as the warm one (R-11); `quick` reports unproven | IOB-CCH-04, IOB-PRF |
+| R-4 no cliff is valid; miss-like unimodal => proven; hit-like => unproven (`cache_not_excluded` when the cold region is as fast as the warm one, R-11); `quick` reports unproven | IOB-CCH-04, IOB-PRF |
 | R-5 "fresh" is writes only; one matrix count | IOB-CAL-07, IOB-SHP-01, IOB-SWP-01 |
 | R-6 discard, fill, mkfs through the same marker guard; no installer bypass; tail oracle for every writer | IOB-TGT-03/04, IOB-ARC-05 |
 | R-7 noisy-knee fixture fixed (18000/22000 alternation, CV 0.10) | IOB-SER-02 |
@@ -227,12 +227,14 @@ token bucket longer than the observation cannot be excluded by a one-off benchma
 
 ## Decisions added in IOB-03 P3 (coordinator rulings)
 
-* **R-11 `no_cache_observed`.** A hit-or-miss label for the cold probe is relative to `hit_ref_us` (the QD1 latency of the smallest working set) and only means something when a cache exists. On a disk with no cache,
-  or with a flat provider cap (the gstammtisch class), the cold latency equals `hit_ref`, so the probe reads "hit-like" and nothing could ever be proven. The state `no_cache_observed` is `proven` when the cold probe is
-  unimodal, there is no cliff, the target is a device and the cold rate is at least 0.9 x `cached_ref`: the cold region runs as fast as the warm one, so caching does not change the sustained rate, and `R = R_cold`. A flat
-  cold probe stays `rate_cap`. `cold_hit_like` (unproven) remains for a cliff, a file target, or a cold rate clearly below the warm reference. **Residual risk, stated plainly:** a cache at least as large as the fill is
-  indistinguishable from no cache by rate or latency, so it is reported `no_cache_observed` too; the proof then covers data up to the fill size, not a dataset larger than the cache. The ruling accepts this; file targets are
-  excluded because their size bounds what could be shown.
+* **R-11 `no_cache_observed` (corrected ruling).** A hit-or-miss label for the cold probe is relative to `hit_ref_us` and only means something when a cache exists. On a disk with no cache, or with a flat
+  provider cap (the gstammtisch class), the cold latency equals `hit_ref`, so the probe reads "hit-like" and `rate_cap` could never be proven. Two fixes: (1) a **flat cold probe is `rate_cap`, `proven`, whatever its
+  latency class**, because a provider cap bounds the sustained rate whether or not reads are cached; (2) a new descriptive state `no_cache_observed` (cold region as fast as the warm one, `R_cold >= 0.9 x cached_ref`,
+  unimodal, no cliff, device target) with status **`unproven: cache_not_excluded`** and value `min(measured_largest, R_cold)`. No rate or latency difference was observed between data written first and data written
+  last; this is equally consistent with no cache and with a cache at least as large as the written extent, and a larger fill or the ceiling history can separate them. `cold_hit_like` (unproven) stays for a cliff,
+  a file target, or a cold rate below the warm reference. **First version of this ruling was wrong:** it made `no_cache_observed` `proven`. Two real-world conditions (no cache; a cache at least as large as the
+  fill) collapse into one observation, so certifying it would have let cached data prove a cap (the estate rule "a check is only as strong as what it compares"). The fixtures `cache_larger_than_fill` and the
+  no-cache, not-flat disk therefore give the same state and status, and the test asserts that they are indistinguishable.
 * **CCH-08 #1 is analytic.** The content simulator did not produce an E1 "good but wrong" ladder (the E1 criteria are strict and its ladder reads `[0, ws)`, which a two-tier model makes rise), so the ladder is generated
   from the header parameters and run through the production estimators. The simulator-based fixture that demonstrates the neighbouring hazard is #2 `fill_history_inversion`: the ladder rises with the working set,
   `cached_ref` equals the miss rate, no cliff appears, and the cap still comes from the cold probe.
