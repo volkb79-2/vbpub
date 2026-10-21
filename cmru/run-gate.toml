@@ -26,7 +26,10 @@ schema_version = 1
 kind = "assay"
 assay_lane = "cmru"                 # -> assay.toml [lanes.cmru]
 environment = "tester-unified"
-budget = "20m"
+# 60m (was 20m, 2026-10-21): the outer bound of the lane container. The binding deadline is assay.toml
+# [lanes.cmru] budget (50m, baseline + canary). Rule: outer >= assay lane budget + 10m, for the container
+# start and the editable assay install (tests/test_gate_budgets.py enforces at least +5m).
+budget = "60m"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
 # verdict records the exact runtime assay version and source commit.
@@ -44,7 +47,8 @@ memory_swap = "16g"
 kind = "assay"
 assay_lane = "cmru-first-release"
 environment = "tester-unified"
-budget = "20m"
+# Same rule as [lanes.assay]: outer >= assay.toml [lanes.cmru-first-release] budget (50m) + 10m.
+budget = "60m"
 
 [lanes.assay-first-release.resources]
 pids = 8192
@@ -146,7 +150,7 @@ rm -f coverage.json junit-coverage.xml
 exec env PYTHONPATH=src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json --junitxml=junit-coverage.xml
 ''',
 ]
-budget = "20m"
+budget = "30m"   # one full-suite run (~842 s measured on the shared host)
 artifacts = ["coverage.json", "junit-coverage.xml"]     # disclosed after every run (RG-10)
 
 [lanes.coverage.resources]
@@ -239,7 +243,7 @@ mkdir -p .assay
 exec /opt/tester-venv/bin/python tools/coverage_canary.py --repo-root {worktree} --project-root . --target src/cmru/config.py --evidence .assay/coverage-canary-cmru.json -- env PYTHONPATH=src:../libraries/worktree/src /opt/tester-venv/bin/python -m pytest tests -q --cov=src/cmru --cov-branch --cov-fail-under=100 --cov-report=json:coverage.json
 ''',
 ]
-budget = "20m"
+budget = "45m"   # control AND transformed run of the full suite (~2x the ~842 s suite)
 artifacts = [".assay/coverage-canary-cmru.json"]
 
 [lanes.canary.resources]
@@ -275,7 +279,7 @@ kind = "command"
 environment = "bare-host"
 argv = ["python3", "-I", "-B", "{worktree}/cmru/tools/run_release_gate.py", "--worktree", "{worktree}"]
 clean_tree = false   # sub-lanes each enforce their own clean-tree check
-# The conjunction includes the 20m Assay R0/R1/R3 lane plus total coverage,
+# The conjunction includes the Assay R0/R1/R3 lane (budget: [lanes.assay]) plus total coverage,
 # the 7h tag-based R2 mutation, and the cause-sensitive canary.
 budget = "14h"
 

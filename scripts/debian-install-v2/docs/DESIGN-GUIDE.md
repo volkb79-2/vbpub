@@ -106,7 +106,7 @@ does not scale across 20–512 GB images. The default is
 `min(ceil(2 × RAM in GiB), round-half-up(20% of disk capacity in GiB))`:
 twice guest RAM rounded up to GiB, capped by 20% of actual disk bytes rounded
 to the nearest GiB. The resulting values for common disk/RAM pairs are listed in the
-[feature overview](../README.md#disk-swap). The count is a separate setting,
+[feature overview](../README.md#disk--swap). The count is a separate setting,
 defaulting to four partitions; a fixed total is still available for workloads
 that need one. Automatic sizing uses actual block-device bytes and guest
 `MemTotal`, not provider labels or an invented RAM default.

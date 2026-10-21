@@ -813,6 +813,18 @@ def _alive(pid: int) -> bool:
     return True
 
 
+def _read_pid(pidfile, wait: float = 10.0) -> int:
+    """Poll for a pid file a child writes asynchronously (it may start late under load)."""
+    import time as real_time
+    deadline = real_time.monotonic() + wait
+    while real_time.monotonic() < deadline:
+        try:
+            return int(pidfile.read_text())
+        except (FileNotFoundError, ValueError):  # not created yet / partially written
+            real_time.sleep(0.05)
+    pytest.fail(f"child never wrote a pid to {pidfile} within {wait:g}s")
+
+
 @pytest.mark.os_integration
 def test_bounded_run_returns_output_and_exit_status():
     import shutil
@@ -830,8 +842,8 @@ def test_bounded_run_kills_the_whole_process_group_on_timeout(tmp_path):
     pidfile = tmp_path / "grandchild.pid"
     script = f'sleep 300 & echo $! > {pidfile}; wait'
     with pytest.raises(ActionTimeout, match="timed out"):
-        HostActions._run_bounded(["/bin/sh", "-c", script], None, 0.5, "hang", term_grace=2.0, reap_wait=2.0)
-    grandchild = int(pidfile.read_text())
+        HostActions._run_bounded(["/bin/sh", "-c", script], None, 3.0, "hang", term_grace=2.0, reap_wait=2.0)
+    grandchild = _read_pid(pidfile)
     real_time.sleep(0.2)
     assert not _alive(grandchild)  # orphaned grandchild (think fio) died with the group
 
@@ -842,10 +854,10 @@ def test_bounded_run_escalates_to_sigkill_for_a_term_ignoring_child(tmp_path):
     script = f'trap "" TERM; echo $$ > {pidfile}; while :; do sleep 1; done'
     started = real_time.monotonic()
     with pytest.raises(ActionTimeout):
-        HostActions._run_bounded(["/bin/sh", "-c", script], None, 0.5, "stubborn", term_grace=0.5, reap_wait=5.0)
+        HostActions._run_bounded(["/bin/sh", "-c", script], None, 3.0, "stubborn", term_grace=0.5, reap_wait=5.0)
     assert real_time.monotonic() - started < 15
     real_time.sleep(0.2)
-    assert not _alive(int(pidfile.read_text()))
+    assert not _alive(_read_pid(pidfile))
 
 
 def test_bounded_run_unreapable_child_raises_unreapable(monkeypatch):

@@ -125,7 +125,7 @@ These are runtime confirmations the deliverables assume but couldn't be tested f
 
 ## Design decisions (one-liners; full reasoning in MEMORY-ARCHITECTURE.md)
 - **zswap + zstd**, configured **post-boot** (built-in init races the zstd module → lzo fallback; GRUB tokens dropped).
-- **swappiness=100** (zswap makes anon reclaim cheap; protect the game with `memory.min`, not swappiness).
+- **swappiness=10** (operator decision 2026-10-21; was 100): write-capped disk, cheap reads, so prefer evicting clean file cache over anon ([why](MEMORY-ARCHITECTURE.md#vmswappiness--why-low-on-these-hosts)); protect the game with `memory.min`, not swappiness.
 - **2 labeled swap partitions** for `iostat` visibility — *not* for speed (striping is a no-op on one vda); thin-provisioned disk → `discard=once`.
 - **cgroup v2**: Soulmask `memory.min`/`memory.low`/`zswap.writeback=1` (operator decision: writeback and the shrinker are required, see [HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)), `io.bfq.weight=1000`, `cpu.weight=800`. Dev/test/build tiers are a separate concern — see [scope](#scope) below.
 - **BFQ I/O scheduler** on `vda` (not `[none]`): only scheduler that enforces cgroup `io.weight`/`io.bfq.weight` — without it, all I/O priority settings are no-ops. `io.latency` unavailable (`CONFIG_BLK_CGROUP_IOLATENCY` not set in Debian 13); `io.cost.qos` is a candidate, untested (see SOULMASK.md §2b). BFQ weights do not stop the shared-journal stall; bounded dirty data and queue depth do ([HOST-IO-INTERFERENCE.md](HOST-IO-INTERFERENCE.md)).

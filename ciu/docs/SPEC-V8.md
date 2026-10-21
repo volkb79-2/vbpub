@@ -1145,6 +1145,29 @@ and contract rather than inventing a second profiling or admission vocabulary.
 
 **Closed in draft.8 (proposal §4.1.10a, rev 4.4):** items (1), (2) and (4) are S16.6.7, S16.6.10, S16.9 (`resources_measured`) and S16.2.3; item (3) is S16.6: PSI, never swap, is the pressure signal and the committed manifest is the charge source, but the daemon is **not** an admission ledger — the project's manifest and ciu's host capacity decide, and the order is the Docker-object reservations (D-651 Q4, D-655), so S16.6 does not converge on the daemon's registry as D.6 (3) expected. Item (5) (a sanctioned exception to S4's naming for a host singleton, and honouring an authored `cgroup_parent`) is not carried by Appendix R and is open item O-7 of the coverage memo.
 
+**RG-55 implementation update (2026-10-01).** The concrete host-integration
+sketch above was an input to the RG-55 design, not the final architecture.
+The implementation keeps the daemon's PID and cgroup namespaces private and
+offers one newline-JSON protocol over both the `/run/cgprofile/ctl.sock`
+Unix socket and the existing `docker exec` carrier; the daemon has no Docker
+socket. For placed lanes, host systemd creates a delegated transient scope
+under the systemd-owned `dev-gates.slice`, and cgprofile manages only its
+`rg-<token>` leaf below that scope. It does not write children directly
+under the slice or use a host PID namespace. The daemon itself is a
+host-managed singleton in its own top-level `cgprofile.slice`, not in the
+interactive, background, or gates tier. The selected no-broker design
+lets this trusted, privileged daemon call the host system manager directly;
+it is not a security boundary against daemon compromise. A broker is a future
+option only if the trust model changes and the daemon's direct system-manager,
+cgroupfs, and DAMON authority is actually removed. Placement memory figures
+are cgroup-charge accounting since placement, not a total-RSS measurement or
+cap (pre-existing page charges do not migrate). Where this note and the
+sketch above disagree on daemon, namespace or placement facts, this note
+wins; the v8 spec text closed in draft.8 (items above) derives from RG-55's
+final v1.1 interface contract (S16.6 traceability row) and is consistent
+with the placement and trust decisions D-30..D-32, not with the superseded
+sketch.
+
 ### D.7 — operator note (2026-09-12) — **closed in draft.8**: liveness, placement and the gates slice (design of record: vbpub `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md`, D-17..D-26)
 
 | source | touches | note |
@@ -1152,6 +1175,15 @@ and contract rather than inventing a second profiling or admission vocabulary.
 | operator directive 2026-09-12 (progress must be judged mechanically; budgets are ceilings, not detectors) | S16.2 (`cgroup_slice`), S16.6 (admission), S16.9 (LaneResult), S13 (governance) | (1) A dedicated **`dev-gates.slice`** (mdt host-setup) becomes the capacity object for every lane; `testing.cgroup_slice` should default to `$CGROUP_PARENT_DEV_GATES` (falling back to `governance.cgroup_parent`), and the dstdns-style long-running stacks stay in `dev-background.slice`. (2) S16.6.1's ledger should sum live reservations AND the profiler daemon's live sessions (`ctl status`, each with its requested/expected peak and a `liveness` block) against the gates slice, with the slice's memory PSI as the pressure signal and a clock that pauses under pressure. (3) `host` and `exec` lanes can be PLACED: the daemon (root, `cgroupns=host`) migrates the lane's pid subtree into a leaf `<gates slice>/rg-<token>/` with `memory.high` = the lane's request and `memory.max` = its ceiling, giving exact per-lane accounting and a throttle-not-kill cap even where docker cannot cap a single process (S16.6.4's "requested admission values only" caveat then disappears for placed lanes); nesting inside a container's scope is rejected (cgroup v2 no-internal-processes → `docker exec` EBUSY). (4) LaneResult gains `resources_measured` and `liveness`; gate stall detection reads liveness (cgroup cpu/io deltas) and the lane's own progress-stream cadence hint instead of a fixed `stall_timeout`, with the verdict vocabulary stalled / runaway / throttled / over_ceiling. (5) The daemon is a host deployment, not dev load: it ships its own top-level `cgprofile.slice` (a real `memory.min` floor) with its stack and authors `cgroup_parent: cgprofile.slice` in its template; governance must keep honouring an authored `cgroup_parent` for this singleton (D.6 item 5). The daemon is also the singleton WATCHER: `ciu gate` authors the stall policy at `ctl start` (progress stream, idle bound, ceiling, on-stall action) and consumes the recorded verdict; enforcement (`cgroup.kill` on the lane's leaf) happens in the daemon, so a killed gate client never leaves an unbounded lane (design A1, D-27..D-29). |
 
 **Closed in draft.8, revised in draft.9:** (1) is S16.2.1: the gate slice is declared once in `capacity.tiers.gates` (`slice` or `slice_env`); draft.8's `testing.cgroup_slice*` keys and its hardwired `$CGROUP_PARENT_DEV_GATES` default are withdrawn (V8R-13). (2) is superseded by D-651 Q4 and D-655: the profiler's sessions are measurement, not an admission ledger, and the clock does not pause under pressure. (3) is S16.6.7 and S16.6.4. (4) is S16.6.8 and S16.9 (`liveness`, `stall_timeout`). (5) — the daemon's own slice and an authored `cgroup_parent` — is not carried by Appendix R (open item O-7).
+
+**Supersession note (2026-10-01).** For D.7's scope (liveness, placement and
+the gates slice): the facts in the D.6 "RG-55 implementation update" above
+supersede this 2026-09-12 sketch where they differ. In particular this
+sketch's `cgroupns=host` daemon and its leaf directly below `dev-gates.slice`
+are not what shipped; each placed lane gets a systemd-owned delegated scope
+with a profiler-owned leaf below it. The draft.8/draft.9 closures stated
+above for admission, liveness and the result model stand, and the daemon-slice
+question remains open item O-7.
 
 ### D.5 — operator note (2026-09-10) — **closed in draft.8**: the owner token is dropped
 

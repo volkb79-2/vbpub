@@ -99,14 +99,16 @@ class Config:
     # 2026-10-06). There is no zpool field: the knob is absent on 7.x.
     zswap_accept_threshold_percent: int = 90
     zswap_shrinker_enabled: bool = True
-    # 100 (gstammtisch value, operator decision 2026-10-06): with zswap in
-    # front of swap, reclaiming anonymous pages is cheap, so cold anon goes
-    # to the compressed pool early and file cache stays resident. The kernel
-    # accepts 0-200. oomd (run_oomd_config) is the safety net that makes any
-    # of these values safe to run unattended; 5-10 remains the documented
-    # alternative for latency-sensitive workloads that want almost no anon
-    # reclaim. See debian_install_v2/README.md.
-    vm_swappiness: int = 100
+    # 10 (operator decision 2026-10-21, resolving gstammtisch GG-6; it
+    # replaces the 100 of 2026-10-06): on RAM-constrained hosts with cheap
+    # reads, prefer evicting clean file cache (zero writes, a refault is a
+    # read) over anonymous memory (zswap store, then 4K swap WRITES once the
+    # pool is full or the shrinker runs). The kernel accepts 0-200; 0 is
+    # avoided because hot mapped files would thrash. Reasoning and
+    # measurements: scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md
+    # (vm.swappiness). oomd (run_oomd_config) is the safety net that makes any
+    # value safe to run unattended. See debian_install_v2/README.md.
+    vm_swappiness: int = 10
     docker_live_restore: bool = True
     # journald, not json-file: container logs must survive `docker rm`
     # (operator requirement, 2026-09-09) -- json-file's log is deleted with

@@ -849,7 +849,7 @@ def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     (repo / "cmru" / "CHANGES.md").write_text(
-        "# Changelog\n\n## [6.2.1] - 2026-10-15\n\n- later release\n",
+        "# Changelog\n\n## [6.3.0] - 2026-10-15\n\n- later release\n",
         encoding="utf-8",
     )
     # The gate judges an exact commit and refuses a dirty tracked tree before it
@@ -857,7 +857,7 @@ def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
     _git(repo, "add", "cmru/CHANGES.md")
     _git(repo, "commit", "--quiet", "-m", "prepare a later release")
 
-    with pytest.raises(RuntimeError, match="authorized only for CMRU 6.2.0"):
+    with pytest.raises(RuntimeError, match=r"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .*identifies 6\.3\.0"):
         run_release_gate.run_release_gate(
             repo, temp_parent=private_root, postpone_mutation="KI-79",
         )
@@ -2383,7 +2383,7 @@ def test_a_snapshot_whose_own_checkout_changed_is_retained_for_inspection(tmp_pa
 
     shutil.rmtree(path)
     (report,) = gs.inspect_gate_snapshots(repo)
-    assert report.status == gs.RETAINED and "cannot inspect CMRU gate snapshot" in report.reason
+    assert report.status == gs.RETAINED and "still registers" in report.reason and "directory is missing" in report.reason
     path.write_text("not a checkout", encoding="utf-8")
     (report,) = gs.inspect_gate_snapshots(repo)
     assert report.status == gs.RETAINED and "is not a real directory" in report.reason

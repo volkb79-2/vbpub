@@ -79,7 +79,7 @@ SPEC §9.
 | RG-59 | daemon-absent profiling warning named the wrong cause | Minor | FIXED 2026-09-12 |
 | RG-60 | exec-lane profiling had no inflight recovery record | Major | FIXED 2026-09-12 |
 | RG-61 | RG-55 wave left documentation drift | Minor | FIXED 2026-09-12 |
-| RG-62 | two order-/timing-sensitive selftest flakes were found live | Minor | OPEN |
+| RG-62 | two order-/timing-sensitive selftest flakes were found live | Minor | FIXED (tests only): developed 2026-10-07 in package RG-SMALL, integrated into main 2026-10-21 (INT-02); no production code change: the pairing rot-guard scans the troves itself; the history duration test freezes its clock |
 | RG-63 | assay lane budget included time queued on the exec lock | Major | FIXED 2026-10-04 (rev 49): budget starts after admission and runner locks |
 | RG-64 | caller-side lock checks could not reliably diagnose actual container occupancy | Minor | FIXED 2026-10-04 (rev 51): `status` reads internal exec-lock holders/waiters, selected-tree inflight records, and daemon-wide admission state |
 | RG-65 | duplicate of RG-47: worktree-only lanes were hidden by invoking-CWD config resolution | Major | MERGED INTO RG-47 2026-10-04 (rev 47) |
@@ -98,12 +98,12 @@ SPEC §9.
 | RG-78 | adopt the ciu v8 closed exit table and explicit environment modes in run-gate now (backport, operator ruling D-654): lane exit passthrough overlaps the 2/3 refusal codes, and the built-in `host` environment is a container | Major | FIXED 2026-10-04 (rev 49): single finish path, AST guard, byte-status lane oracle |
 | RG-79 | exec-mode resolution **silently falls back to main's runner** when the judged worktree has no rendered ciu config (a shadowing default, AGENTS §4.2a); the worktree's own test-runner is the design (D-647 #2, D-666), so run-gate must refuse and name "start this worktree's own test-runner" (reframed 2026-10-03; originally filed as a stray-render defect) | Major | FIXED 2026-10-04 (rev 47; same implementation as RG-47) |
 | RG-80 | no daemon-wide cap on concurrent gates: the cross-worktree cap is a consumer flock wrapper (dstdns `gate-slot.sh`); build SPEC-V8 S21's count mode (Docker-name tickets, tombstones, deadlines, run marker, published `ciu-admission-<g>` object) behind an off-by-default switch, so the wrapper retires before v8 | Major | FIXED 2026-10-04 (rev 49; operability rev 51): ticket/publish and owner/reaping packages; read-only status view and enabled-policy doctor checks |
-| RG-81 | internal source-backed Assay lanes fail because editable installs omit artifact `judge_provenance`; verify selected source, bind the verdict commit, and preserve source/artifact mode across re-attachment | Major | IN PROGRESS (rev 54; Review #11 findings addressed, package gate pending) |
-| RG-82 | Adopt cli-extended (unified adoption, order 7 of 8): full grammar re-registration of the 11k-line single-module launcher, real wheel dependency (CX-D1, CX-D12) | Enhancement | OPEN — planned (filed 2026-10-05 as RG-81, renumbered at the merge with main's RG-81; requires cli-extended 0.2.0) |
+| RG-81 | internal source-backed Assay lanes fail because editable installs omit artifact `judge_provenance`; verify selected source, bind the verdict commit, and preserve source/artifact mode across re-attachment | Major | FIXED in run-gate 23.10.0 (2026-10-07; rev 54): `CHANGES.md` [23.10.0] "Source-backed Assay identity and recovery (RG-81, rev 54 ...)" and "RG-81 recovery and inventory follow-up (rev 53)" |
+| RG-82 | Adopt cli-extended (unified adoption, order 7 of 8): full grammar re-registration of the 11k-line single-module launcher, real wheel dependency (CX-D1, CX-D12) | Enhancement | PARTIAL — run-gate 24.0.0/24.0.1 shipped the wheel-SemVer-only interface (`CHANGES.md` [24.0.0] "make wheel SemVer the only supported interface"); the cli-extended grammar re-registration and real `cli-extended` wheel dependency are NOT shipped (`pyproject.toml` `dependencies = []`, `RunGateArgumentParser` still in `run_gate.py`). Filed 2026-10-05 as RG-81, renumbered at the merge with main's RG-81; requires cli-extended 0.2.0 |
 | RG-83 | `tests/test_run_gate.py`'s `install_fake_assay` writes its fake `assay`/`assay.real` into the FIRST ENTRY OF THE REAL `$PATH` (the operator's `~/.local/bin`) when a test has not already prepended a tmp shim dir | Major | FIXED by RG-87 (filed 2026-10-05 as RG-82, renumbered at merge; leaked files observed 2026-10-04 14:36; recurred 2026-10-06 22:51) |
-| RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | IN PROGRESS (rev 55; PID 1 and low-pids live acceptance PASS; registered selftest pending; contaminated R2 outcomes discarded) |
+| RG-84 | run-gate runs as an unreaping PID 1 (no init) and keeps reporting lane verdicts after the container hits `pids.max`; refuse PID 1, and treat `pids.events`/`memory.events` increments as infrastructure errors | Major | FIXED in run-gate 23.10.0 (2026-10-07; rev 55): `CHANGES.md` [23.10.0] "Init and cgroup resource-event guard (RG-84, filed as RG-83, rev 55)"; live PID 1 and low-pids acceptance PASS; contaminated R2 outcomes were discarded |
 | RG-85 | assay lanes need `.run-gate/` to exist before launch (TMPDIR and ceiling point into it) | Minor | FIXED in RG-55 candidate: derive both pytest/Git paths from the verified state root, create the default root before fresh container or bare-host lanes |
-| RG-86 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | FIXED IN CANDIDATE rev 67; exact registered gate pending |
+| RG-86 | Every ephemeral gate container mounts the whole main checkout read-write, so every git-ignored file in it (secrets) and every other worktree are visible, and `.git/config` leaks the remote credential; mount only the judged worktree + git common dir and overlay a credential-free git config | Major | FIXED in run-gate 23.10.0 (2026-10-07): `CHANGES.md` [23.10.0] "Narrow container mounts and credential-free git config (RG-86)." (package RG-NARROW) |
 | RG-87 | `shim_dir_of` returned the first WRITABLE `$PATH` entry, so a test run outside tester-unified replaced the operator's real `~/.local/bin/assay` with a PASS-fabricating fake (2026-10-06 22:51 recurrence of RG-83); shims now live only in private per-test dirs prepended to PATH, plus a session guard that fails on any write into a real PATH dir, `~/.local/bin` or `~/.venv/bin` | Major | FIXED (package `run-gate-shimleak`, same untagged 23.10.0 release; also closes RG-83) |
 | RG-88 | footprint disclosure assumes `damon.hot_bytes` is an object; a valid unavailable-DAMON summary with `hot_bytes: null` raises during cleanup formatting, discards otherwise valid profile resources, and emits `profiling cleanup crashed` while leaving the lane verdict unchanged | Minor | FIXED in run-gate-v24.0.0 (reproduced by RG-55 cgroup-profiler r0-r1 on 2026-10-07; formatter guard and regression test shipped; status reconciled against the tag 2026-10-21) |
 | RG-89 | native Assay R2 requires ancestor cgroup-v2 event counters, but Run-Gate's private-cgroup-namespace tester environment hides them and no trusted observer interface is provided; native R2 refuses before candidates | Major | IN PROGRESS (read-only observer socket shipped in source rev 58; rev 66 adds contract-2/path/listener preflight and arbitrary ephemeral-environment support; exact release gates pending) |
@@ -126,6 +126,7 @@ SPEC §9.
 | RG-106 | environments have no `user` key; a root-run `host` environment (tester-base) can leave root-owned files in the bind-mounted worktree | Major | OPEN (filed 2026-10-19, operator decision D-007) |
 | RG-107 | `TestPointerLinkageEstate::test_cmru_release_body_uses_the_versioned_changelog` needs a local `run-gate-v*` tag, so the `assay-r1` lane fails in R0 | Minor | OPEN (found by the INT-01 `assay-r1` run, 2026-10-19; lane-only) |
 | RG-108 | `stop-pending` / `finalization-failed` cgprofile sessions are treated as unavailable, dropping the session id and kill evidence | Medium | OPEN (renumbered 2026-10-21 from the duplicate RG-105 of park/stash@2; must release before a CP-24 daemon is installed) |
+| RG-109 | A SIGTERM to `run-gate` while a detached lane container runs ends the wrapper but leaves the container running: an orphan that keeps load on a production-shared host (found 2026-10-21 on a `gate-provisional` run, 24.0.1) | Medium | OPEN (filed 2026-10-21, BL-01); cause of the survival not determined (see entry) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -4899,6 +4900,15 @@ convention that a tool's own defects, found while working in it, are
 recorded in the tool's backlog — never worked around locally without a
 record.
 
+### Status — FIXED (tests only): developed 2026-10-07 in package RG-SMALL, integrated into main 2026-10-21 (INT-02); no production code change
+
+The two flakes (named in `nyxloom-trove/reports/run-gate-WAVE-RG55-P4-LOG.md`, session 5):
+
+1. `TestEstateBudgetTimeoutPairing::test_estate_pairing_sweep_is_alive` read a class-level `PAIRINGS_SEEN` list that the parametrized sibling tests filled, so its verdict depended on which siblings had run first (pytest-randomly): it silently SKIPPED when run first (a hollow guard) and failed `collapsed to [('ciu', 'tester-unified')]` when only some siblings had run. Reproduced deterministically before the fix with `-p no:randomly` and the order `[ciu]` then the aggregate. Fix: a pure `_pair(trove)` helper; the per-trove test asserts over it and the aggregate scans every trove itself. No shared state remains.
+2. `TestHistoryEligibilityGuard::test_tree_state_is_sampled_before_the_lane_not_after` stamped `_started_monotonic = time.monotonic() - 4.0` and then let `finish_run_record` read the real clock, so any delay (host load) gave 4.001 != 4.0. Fix: the test freezes the clock `finish_run_record` reads (`run_gate.time` replaced by a stand-in whose `monotonic` is constant; every other attribute delegates to the real module). No sleep, no retry, no tolerance widening.
+
+**Oracles.** Both tests, 20 serial runs each under `nice -n 19 ionice -c 3`: 20/20 pass; pairing class also 20/20; reversed order (aggregate first, aggregate after one sibling, flaky history test before the aggregate) all pass; 20 distinct `--randomly-seed` runs of both together all pass. Plant: a clock that is 1 ms off restores `assert 4.001 == 4.0`. Other tests that build `_started_monotonic` from `time.monotonic() - N` (for example near the `record_invocation` tests) were not audited for the same hazard; none of them failed in the evidence runs. Known unaudited follow-up on main: six such sites remain in `tests/test_run_gate.py` (around lines 12356, 13411, 13978, 14081, 14189, 18600).
+
 ## RG-65 — duplicate config-resolution defect merged into RG-47
 
 This entry's independent 2026-09-18 reproduction and its worktree-only-lane
@@ -5838,11 +5848,11 @@ return a closed recovery refusal before inventory or admission.
 **Files:** `run-gate.py`, `tests/test_run_gate.py`, `SPEC.md`, `README.md`,
 `docs/DESIGN-GUIDE.md`, `CONSUMERS.md`, `CHANGES.md`, and this backlog entry.
 
-### Status — IN PROGRESS (rev 54; Review #11 findings addressed, package gate pending)
+### Status — FIXED in run-gate 23.10.0 (2026-10-07; rev 54). Evidence: `CHANGES.md` [23.10.0] "Source-backed Assay identity and recovery (RG-81, rev 54 ...)" and "RG-81 recovery and inventory follow-up (rev 53)"; the release ran the registered `selftest`.
 
 ## RG-82 — Adopt cli-extended (unified adoption, order 7 of 8)
 
-**Status: OPEN — planned (filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-81; renumbered RG-82 when merged with main, whose RG-81 is the source-backed Assay lane entry above).**
+**Status: PARTIAL (checked 2026-10-21 against main). Delivered in run-gate 24.0.0/24.0.1: the wheel is the only supported interface (design D2: no zero-install script; D3 in part: SemVer is the public identity, but `__revision__` (currently 68) and the persisted `revision`/`run_gate_revision` keys remain as provenance). NOT delivered: the design's Q9 rename of those keys to `run_gate_version`; the cli-extended adoption itself (the grammar re-registration, `cli-extended` as a wheel dependency, `unexpected_exceptions="report"`, surface lifecycle, skills/doctor verbs); `pyproject.toml` still has `dependencies = []` and `run_gate.py` still defines `RunGateArgumentParser`. Design of record: [`docs/DESIGN-RG82-RUN-GATE-24.md`](docs/DESIGN-RG82-RUN-GATE-24.md). Filed 2026-10-05 by the cli-extended unified-adoption program, W10, as RG-81; renumbered RG-82 when merged with main, whose RG-81 is the source-backed Assay lane entry above.**
 
 **Source documents.** [`libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md`](../libraries/cli-extended/docs/PROGRAM-2026-10-UNIFIED-ADOPTION.md) (decisions CX-D1..CX-D12, section "W10 - planned adoptions"; CX-D12: run-gate fully adopts, independent of the v8 merge into ciu) and [`libraries/cli-extended/docs/ADOPTION-CHECKLIST.md`](../libraries/cli-extended/docs/ADOPTION-CHECKLIST.md) (AC-01..AC-25). **Dependency:** cli-extended 0.2.0 released first (W8, the controller). Not executed in the program's session.
 
@@ -5893,7 +5903,7 @@ return a closed recovery refusal before inventory or admission.
 
 ## RG-84 — run-gate runs happily as an unreaping PID 1 and reports lane verdicts from a container that can no longer fork
 
-**Status:** IN PROGRESS (filed 2026-10-05 as RG-83, renumbered RG-84 at the merge with main; rev 55 implementation is present; live PID 1 and low-pids acceptance passed; registered selftest remains pending). See the [live acceptance report](nyxloom-trove/reports/run-gate-RG84-live-acceptance-2026-10-05.md).
+**Status:** FIXED in run-gate 23.10.0 (2026-10-07; filed 2026-10-05 as RG-83, renumbered RG-84 at the merge with main; rev 55). Evidence: `CHANGES.md` [23.10.0] "Init and cgroup resource-event guard (RG-84, filed as RG-83, rev 55)"; live PID 1 and low-pids acceptance passed; the release ran the registered `selftest`. See the [live acceptance report](nyxloom-trove/reports/run-gate-RG84-live-acceptance-2026-10-05.md).
 
 **Observed.** `cmru tester-gate` started `tester-unified:local` without `--init` (cmru KI-52), so `./run-gate.py --base main assay-r2` ran as PID 1 of container `pedantic_antonelli`. git's detached auto-maintenance orphaned one `git` per commit to that PID 1, which never reaps; 19,108 zombies filled `pids.max` (19,115/19,117) at 03:11Z. The operator's contamination notice requires discarding the campaign's Assay state and progress and invalidates all post-03:11Z candidate outcomes and its final verdict; none are evidence for this entry. run-gate's own `docker run` launches already pass `--init` (`run-gate.py:5873`, `:9856` at filing time); the gap is run-gate *being* PID 1 under someone else's launcher.
 
@@ -5907,7 +5917,7 @@ return a closed recovery refusal before inventory or admission.
 
 ## RG-86 — every ephemeral gate container sees the whole main checkout (all ignored files, all worktrees) and the git remote credential
 
-**Status:** IN PROGRESS (filed 2026-10-06, package RG-NARROW; implementation and tests landed on branch `run-gate-narrow-mount`, awaiting independent review; no revision bump yet, the release owner bumps it).
+**Status:** FIXED in run-gate 23.10.0 (2026-10-07; filed 2026-10-06, package RG-NARROW). Evidence: `CHANGES.md` [23.10.0] "Narrow container mounts and credential-free git config (RG-86)." (package RG-NARROW); review rounds are in `nyxloom-trove/reports/run-gate-RG-NARROW-2026-10-REPORT.md`.
 
 **Observed.** `resolve_repo_and_worktree` returns the common-dir owner as `repo`, and `dual_mount_flags(repo, ...)` bind-mounted that whole checkout read-write at both its physical and namespace paths for every ephemeral lane and probe. Every gate container of every project therefore saw the main checkout, every other worktree and every git-ignored file in them (including `cmru.secret.toml`), and could read `.git/config`, whose `remote.origin.url` embeds a credential. Only cmru's own gate wrapper hid one named file.
 
@@ -6409,3 +6419,41 @@ parked CP-24 packet (`park/stash-2026-10-17-park-cp-24-25-26-work-from-cgprofile
 unavailable", discarding both.
 
 **Ordering constraint.** Must release before the CP-24 daemon is installed. Not needed for cgprofile 1.0.x/1.1.0 daemons.
+
+## RG-109 — a SIGTERM to `run-gate` leaves the detached lane container running
+
+**Status:** OPEN (found 2026-10-21 ~03:50 UTC, filed by BL-01; severity: medium). No existing entry covers it (checked this
+file and `CHANGES.md` for SIGTERM, signal, orphan and stale-container wording: the nearest are RG-44 `GONE_SIGNALS`, an unrelated
+docker-stderr match, and the ticket release on SIGTERM at the transient-ticket section, which is about the runner lock, not
+the container).
+
+**Observed (controller-reported; source: controller report 2026-10-21, not in repo, no file in the repo records it).**
+`run-gate gate-provisional` (24.0.1) was sent SIGTERM during its `assay` lane. The wrapper ended with `GP_EXIT=2` and left the
+detached lane container `run-gate-vbpub-assay-3611285-1792554054` running. The controller removed it by its exact name.
+
+**What the code does today (read in `run_gate.py` `main()` and the container lane path).** `main()` installs
+`_sigterm_as_exit`, which raises `SystemExit(128 + signum)` so lane cleanup (including the Docker ticket `finally`) can run, and
+wraps `_dispatch` in an `except (SystemExit, KeyboardInterrupt)` that turns the interruption into
+`LaneResult("ERROR", reason="interrupted-before-a-closed-result")`. So a SIGTERM is already converted to an exit and the wrapper
+does end. The detached lane is started with `docker run -d --name run-gate-<repo>-<lane>-<pid>-<epoch>`, and an in-flight record
+(owner pid, start ticks, container name) is written so that a later invocation can follow or adopt the run. The
+`docker rm -f <name>` calls seen on this path are in the failed-`docker run` branch, the `--fresh` branch and the post-completion
+path; none was found in a handler for the SIGTERM exit. **Why the container survived is not determined:** whether the
+interrupted wait reaches any cleanup was not traced to the end, and the survival may be intended adoption behaviour (hypothesis,
+unverified) rather than an oversight.
+
+**Expected.** A signal to run-gate stops and removes the lane container it started (the detached form, `nyxloom/reference/
+LESSONS.md` L18), or at least prints the container name to remove, so an interrupted run cannot silently keep running.
+
+**Why it matters.** An orphaned gate container keeps CPU, memory and disk load on a host shared with production workloads, and
+nothing reports it: the wrapper's exit code looks like an ordinary interruption.
+
+**Fix direction (proposal, depends on the open question above).** `main()` already converts SIGTERM to `SystemExit`; if the
+interrupted path indeed runs no teardown of the started lane container, extend that exit path (a try/finally or handler around
+the detached-lane wait) to run `docker stop`/`docker rm` on exactly the container name it started (never a filter such as `ancestor=`: see the 2026-09-12 incident where an `ancestor=` filter
+destroyed a live mutation-lane container), and on a failure to do so print `docker rm -f <exact name>`. Oracle: start a lane
+with a long-running fake command, send SIGTERM to run-gate, and assert the named container is gone (or the printed removal
+command names it).
+
+**Observation only (not a defect filed here; controller-reported).** The same run printed `cgprofile ctl version could not reach the daemon at
+/run/cgprofile/ctl.sock` (exit 3) as a profiling WARNING. It degrades profiling, not the verdict.

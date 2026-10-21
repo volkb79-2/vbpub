@@ -303,3 +303,43 @@ def test_a_valid_new_gate_clears_stale_success_state_before_any_lane_runs(tmp_pa
 
     # The first lane saw neither the old marker nor a success-shaped manifest.
     assert seen_at_first_lane == [(False, "running")]
+
+
+def _prepare_release_heading(repo, version):
+    (repo / "cmru" / "CHANGES.md").write_text(
+        f"# Changelog\n\n## [{version}] - 2026-10-21\n\n- prepared release\n", encoding="utf-8",
+    )
+    # the gate judges an exact commit and refuses a dirty tracked tree
+    _git(repo, "add", "cmru/CHANGES.md")
+    _git(repo, "commit", "--quiet", "-m", f"prepare {version}")
+
+
+def test_the_ki79_window_is_the_6_2_patch_line_and_nothing_wider():
+    assert run_release_gate.POSTPONEMENT_RELEASE_VERSIONS == {"KI-79": ((6, 2, 0), (6, 3, 0))}
+
+
+@pytest.mark.parametrize("version", ["6.2.0", "6.2.1", "6.2.9", "6.2.10"])
+def test_ki79_is_authorized_for_the_whole_6_2_patch_line(tmp_path, monkeypatch, version):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    _prepare_release_heading(repo, version)
+
+    assert _gate(repo, private_root, postpone=POSTPONE) == 0
+
+    assert calls == NON_MUTATION_LANES
+    marker = json.loads(_paths(repo)[1].read_text(encoding="utf-8"))
+    assert marker["target_version"] == version and marker["tracking_id"] == POSTPONE
+
+
+@pytest.mark.parametrize("version", ["6.3.0", "6.3.1", "7.0.0", "6.1.9", "5.9.9"])
+def test_ki79_is_refused_outside_the_6_2_line_before_any_lane_runs(tmp_path, monkeypatch, version):
+    repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
+    _prepare_release_heading(repo, version)
+
+    with pytest.raises(
+        RuntimeError,
+        match=rf"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .*identifies {version}",
+    ):
+        _gate(repo, private_root, postpone=POSTPONE)
+
+    assert calls == []
+    assert not _paths(repo)[1].exists()

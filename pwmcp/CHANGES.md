@@ -4,10 +4,40 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [1.64.0-r3] - 2026-10-21
+<!-- cmru: generated -->
+<!-- cmru: source-end=ff75374eeed6972871a879a4672fb8f6534888d2 -->
+
+### Added
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+
+### Fixed
+- fix(pwmcp): re-render get.py without the legacy-name fallback; record the PWMCP-08 decision (releases <= v1.64.0-r2 stay uninstallable by get.py) (0475fcd75)
+- fix(pwmcp): re-render get.py with the bounded legacy-name fallback; fix stale bundle names in DEPLOYMENT.md and build-bundle (PWMCP-07) (e7a3b51be)
+- fix(pwmcp): publish the bundle under the contract name pwmcp-v<version>.tar.xz (PWMCP-07) (98a545c1a)
+
+### Changed
+- backlog: PWMCP-07 / KI-89 status after merge (fixed on main, not released) (716ceb514)
+- backlog: file PWMCP-07 / cmru KI-89 (pwmcp get.py cannot download its own release asset) (42251319c)
+- pwmcp: annotate the stale cmru KI-70 references as KI-83 (review A-05) (12bd44516)
+- INT-01 amendment review of steps 1-3: fold duplicate KI-85 into KI-83 (3365d8de2)
+- Merge main (b3277b36e) (INT-01 step 3) (4d7400c15)
+- Merge cgprofile-v1.0.0 (a27fd282f) into estate-integration-20261019 (INT-01 step 1) (12d774477)
+- Merge main into CGProfile release candidate (f4933a2d5)
+- pwmcp: file PWMCP-03 (pwmcp-fetch skill examples hard-code a stale dstdns ciu instance id) (63a58e002)
+- chore(gates): declare mutation resource ceilings (da06e52de)
+- chore: integrate contract-2 release wave (336336d81)
+
+### Documentation
+- docs(pwmcp): curated [Unreleased] note, get.py downloads only contract-named assets; drop 'fallback trust' from PWMCP-07 (PWMCP-08) (80b9ef760)
+- docs(pwmcp): record websocket recycle failure (b3277b36e)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - The release bundle is published as `pwmcp-v<version>.tar.xz` (PWMCP-07), and `get.py` downloads only contract-named assets (`<tag><asset_suffix>`), with no legacy-name fallback; a release published under another name, i.e. pwmcp releases <= v1.64.0-r2, is not installable by `get.py` (PWMCP-08).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [1.64.0-r2] - 2026-10-17
 <!-- cmru: generated -->
