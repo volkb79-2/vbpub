@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: CP-13
 title: "cmd_targets passes HERE as both repo_dir and out_dir to build_helper_spec, causing Docker to refuse a duplicate mount point"
-status: open
+status: fixed
 type: "bugfix"
 severity: "medium"
 provenance: "dstdns controller session, 2026-09-22; renumbered during RG-55 P6 integration because RG-55 CP-12 is reserved"
@@ -77,3 +77,7 @@ Either:
 must succeed and print resolved targets when run from a container with no host cgroup
 view, without requiring the caller to pass any workaround flag. A regression test should
 assert `cmd_targets`'s constructed `HelperSpec` never has `repo_mount_path == out_mount_path`.
+
+## Updates
+
+**2026-10-21** — CGP-110: stale. `cgprofile.py` `cmd_targets` now passes `DEFAULT_OUT` as the distinct output mount (`build_helper_spec(HERE, DEFAULT_OUT, ...)`), so the duplicate mount point cannot occur. Closed by reading the call site (Sol review of cgprofile-v1.0.0, "Risks": stale entry).

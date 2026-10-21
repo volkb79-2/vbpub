@@ -317,8 +317,10 @@ itself remains 1.
 The observer is a distinct listener, not a read-only bind of `ctl.sock`:
 filesystem read-only does not restrict the verbs of an AF_UNIX service. The
 listener accepts one `resource-limits` query and no start/stop/placement
-operation. Run-Gate validates the fixed socket and mounts only that node
-read-only, forwarding its observed group ID. It does not add a Docker socket,
+operation. Run-Gate validates the fixed socket path and bind-mounts its
+dedicated `/run/cgprofile/observer` DIRECTORY read-only (so a daemon restart
+that replaces the socket inode stays resolvable), forwarding the socket's
+observed group ID; the control socket's directory is never mounted. It does not add a Docker socket,
 host PID namespace, host cgroup namespace, or a second daemon.
 
 The observer request is one newline-terminated JSON line, at most 4096 bytes

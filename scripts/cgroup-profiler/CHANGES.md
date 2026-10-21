@@ -13,6 +13,13 @@ Release scope (CGP-110): the six blockers of the cgprofile-v1.0.0 Sol review.
 registered `r0-r1` and `r3` lanes are the qualification. No R2 verdict may be
 inferred from the r3 canaries.
 
+- Docs (Sol B6 / records): the observer mount is described as the dedicated
+  directory (not "only that node"), and stale CP-13 is closed. Release
+  qualification for 1.1.0 is the registered `r0-r1` and `r3` lanes run from a
+  clean exact tree plus the Bake build and post-deploy revision-label checks
+  (CP-21); the code side of CP-21, including the dirty-source refusal in
+  `cmru/build-initial-standalone.sh`, is already on main. No R2 (mutation)
+  verdict exists or is claimed for 1.1.0.
 - Add (Sol B5): `tools/observer-live-acceptance.py`, a read-only probe for the
   live contract-2 observer acceptance from a gated peer (contract-1 refusal,
   well-formed local maps, sibling-only versus enforced-at-ancestor deltas),
