@@ -5698,11 +5698,60 @@ class TestPointerLinkageEstate:
         if not dated:
             assert note in " ".join(notes.unreleased_body(changes).split())
             return
-        _tag, latest = candidate._latest_release_tag()
-        if candidate._semver_key(version) > candidate._semver_key(latest):
-            assert candidate.prepared_release_version(changes_path) == version
         section = notes.extract_release_section(changes, version, source=str(changes_path))
         assert note in visible(section.text)
+
+    def test_cmru_release_body_versioned_section_beats_unreleased_on_fresh_tags(
+            self, tmp_path, monkeypatch):
+        """RG-107: the "prepared version is newer than the latest tag" half
+        of the release-body contract, on a throwaway repository.
+
+        The checkout's own `run-gate-v*` tags are ambient state: assay's
+        isolated snapshot has none, so reading them made the `assay-r1` lane
+        red while `selftest` stayed green. This builds its own repository
+        with an older `run-gate-v23.9.9` tag and a changelog whose dated
+        24.0.0 section carries the note, and proves the body CMRU would send
+        is that dated section, not [Unreleased].
+        """
+        def load(name, path):
+            spec = importlib.util.spec_from_file_location(name, path)
+            assert spec is not None and spec.loader is not None, path
+            module = importlib.util.module_from_spec(spec)
+            monkeypatch.setitem(sys.modules, name, module)
+            spec.loader.exec_module(module)
+            return module
+
+        notes = load("cmru_release_notes_fixture",
+                     RUN_GATE_DIR.parent / "cmru" / "src" / "cmru" / "release_notes.py")
+        candidate = load("release_candidate_fixture",
+                         RUN_GATE_DIR / "tools" / "release_candidate.py")
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git = ["git", "-C", str(repo), "-c", "user.name=t",
+               "-c", "user.email=t@example.invalid"]
+        for argv in (["init", "-q"], ["commit", "-q", "--allow-empty", "-m", "x"],
+                     ["tag", "run-gate-v23.9.9"]):
+            subprocess.run([*git, *argv], check=True, capture_output=True)
+        monkeypatch.setattr(
+            candidate, "_git",
+            lambda *args: subprocess.run(
+                ["git", "-C", str(repo), *args], check=True,
+                capture_output=True, text=True).stdout.strip())
+
+        note = "**24.0.0:** fixture migration note."
+        changes_path = tmp_path / "CHANGES.md"
+        changes_path.write_text(
+            "# Changes\n\n## [Unreleased]\n\n"
+            "## [24.0.0] - 2026-10-17\n\n" + note + "\n\n"
+            "## [23.9.9] - 2026-09-01\n\nold\n", encoding="utf-8")
+        changes = changes_path.read_text(encoding="utf-8")
+
+        assert candidate.prepared_release_version(changes_path) == "24.0.0"
+        section = notes.extract_release_section(
+            changes, "24.0.0", source=str(changes_path))
+        assert note in " ".join(section.text.split())
+        assert note not in " ".join(notes.unreleased_body(changes).split())
 
 
 # ---------------------------------------------------------------------------

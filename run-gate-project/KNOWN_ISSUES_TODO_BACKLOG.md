@@ -124,7 +124,7 @@ SPEC §9.
 | RG-104 | The observer-unavailable rollup rejects Assay's own pre-R0 refusal: Assay (B148/A-484) refuses the whole lane before R0 and stamps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on every requested rigor, but `_observer_unavailable_rollup` accepts the reason only on an R2 claim, so a correct environment refusal surfaces as ERROR `invalid-assay-observer-refusal-claim` (a malformed-verdict reason) | Minor | SUPERSEDED by Assay A-494/A-496 (filed 2026-10-15, dstdns P242 under the 24.0.0 candidate). A-494 replaced the pre-R0 whole-lane refusal with an R2-only one: completed R0/R1 claims and the independent R3 claim are kept, and `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` is stamped on R2 alone, which `_observer_unavailable_rollup` already accepts; A-496 sets the verdict-v16 floor at Assay 10.0.0, which CONSUMERS requires. The all-rigors shape is no longer produced, so no production change; `test_observer_refusal_follows_assay_a494_r2_only_shape` pins R0/R1 PASS + R2 refusal + R3 PASS and refuses the old shape. |
 | RG-105 | `DEFAULT_HOST_IMAGE` still names the 8 GB MDT cockpit image; move it onto `tester-base` | Major | OPEN (filed 2026-10-18 by mdt-cockpit MDTC-02) |
 | RG-106 | environments have no `user` key; a root-run `host` environment (tester-base) can leave root-owned files in the bind-mounted worktree | Major | OPEN (filed 2026-10-19, operator decision D-007) |
-| RG-107 | `TestPointerLinkageEstate::test_cmru_release_body_uses_the_versioned_changelog` needs a local `run-gate-v*` tag, so the `assay-r1` lane fails in R0 | Minor | OPEN (found by the INT-01 `assay-r1` run, 2026-10-19; lane-only) |
+| RG-107 | `TestPointerLinkageEstate::test_cmru_release_body_uses_the_versioned_changelog` needs a local `run-gate-v*` tag, so the `assay-r1` lane fails in R0 | Minor | FIXED 2026-10-21 (commit `test(run-gate): RG-107 ...` on `rg55-fin-20261021`; found by the INT-01 `assay-r1` run, 2026-10-19; lane-only) |
 | RG-108 | `stop-pending` / `finalization-failed` cgprofile sessions are treated as unavailable, dropping the session id and kill evidence | Medium | OPEN (renumbered 2026-10-21 from the duplicate RG-105 of park/stash@2; must release before a CP-24 daemon is installed) |
 | RG-109 | A SIGTERM to `run-gate` while a detached lane container runs ends the wrapper but leaves the container running: an orphan that keeps load on a production-shared host (found 2026-10-21 on a `gate-provisional` run, 24.0.1) | Medium | OPEN (filed 2026-10-21, BL-01); cause of the survival not determined (see entry) |
 ---
@@ -6393,7 +6393,7 @@ load; (4) a lane that writes into the worktree through such an environment leave
 
 ## RG-107 — `TestPointerLinkageEstate::test_cmru_release_body_uses_the_versioned_changelog` needs a local `run-gate-v*` tag, so the `assay-r1` lane fails in R0
 
-**Status:** OPEN (found by the INT-01 `assay-r1` run, 2026-10-19; severity: minor, lane-only). Pre-existing: the test,
+**Status:** FIXED 2026-10-21 (commit `test(run-gate): RG-107 ...` on `rg55-fin-20261021`: the test no longer reads ambient tags; the newer-than-latest-tag half now runs on a throwaway repository with its own `run-gate-v23.9.9` tag, and a mutated fixture changelog turns it red). Originally found by the INT-01 `assay-r1` run, 2026-10-19; severity: minor, lane-only. Pre-existing: the test,
 `tools/release_candidate.py` and `assay.toml` are byte-identical to `run-gate-v24.0.1` (`git diff run-gate-v24.0.1 HEAD`
 over them is empty).
 
