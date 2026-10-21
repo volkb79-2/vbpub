@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from dataclasses import replace
 from typing import Any
 
 from .derive import latency_knee
@@ -157,7 +158,8 @@ class Calibrator(Runner):
             fs = guard.fs_info(self.host, self.target.path.rsplit("/", 1)[0])
             self.margin = guard.file_margin(fs.total)
             fill_s = 60 if self.quick else plan.FILL_BUDGET_FRACTION * budget
-            ws, fresh_len = guard.file_ws_max(self.target.size_bytes, fs.free, self.margin, self.r_est, fill_s)
+            # the space the file could consume is what was free before it was preallocated
+            ws, fresh_len = guard.file_ws_max(self.target.size_bytes, fs.free + self.target.size_bytes, self.margin, self.r_est, fill_s)
             start = ladder.align_up(ws)
             self.fresh = (start, start + ladder.align(fresh_len)) if fresh_len >= MIB and not self.quick else None
         elif not self.quick:
@@ -396,6 +398,9 @@ class Calibrator(Runner):
         post = [(r["ws_bytes"], r["steady_iops"]) for r in classes if r["class"] == "post_cliff" and r["state"] in ("steady", "flat")]
         e1 = cache.e1_fit(post, statistics.median(before) if before else None)
         state = cache.classify_cache(cold, e2, cliff_bytes=cliff, largest_rung=largest["ws_bytes"], quick=self.quick)
+        if self.target.kind == "file" and state.state == "cold_hit_like" and cliff is None:
+            # a file target is bounded by --size and free space: its cliff is unreachable (IOB-TGT-10), so the honest reason is the margin
+            state = replace(state, reasons=("device_smaller_than_cache_margin",))
         value = cache.read_value(state, largest["steady_iops"], e1)
         best = ladder.best_read_rung(classes)
         self.a = {"cliff": cliff, "cached_ref": cached_ref, "classes": classes, "writes": writes, "largest": largest, "cold": cold, "e2": e2,
@@ -520,6 +525,7 @@ class Calibrator(Runner):
             "latency_curve": self.curve,
             "latency_knee": {d: latency_knee(self.curve, d) for d in ("read", "write")},
             "windows": {"write_seq1m_bps": windows},
+            "plateau_bps": {f"{d}/rand4k": self.obs[d].steady * 4096 for d in ("read", "write") if d in self.obs},
             "stages": dict(self.stages),
         }
         props = proposals.build_calibration_proposals(cal, self.cfg.targets, history)

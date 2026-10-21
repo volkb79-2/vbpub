@@ -470,3 +470,135 @@ def test_tgt_02_clean_device_still_needs_matching_flags_and_dry_run_writes_nothi
     assert untouched(host)
     target = init(host, dry_run=True)
     assert target.devno == "254:7" and untouched(host)
+
+
+# ---------------------------------------------------------------------------------------------------------
+# stage-level
+# ---------------------------------------------------------------------------------------------------------
+from iobench import calibrate as cal_mod  # noqa: E402
+from iobench import ceilings  # noqa: E402
+from iobench.testing import CacheModel, DirScenario, Scenario  # noqa: E402
+
+from helpers import CREATED as _CREATED, INVERSION, READ_MISS, calibrate, config, fio_jobs, make_host, read_json  # noqa: E402
+
+FILE_FS = "22222222-2222-2222-2222-222222222222"
+
+
+def file_host(free=40 * GIB, size=6 * GIB, discard=False, **sc):
+    scn = Scenario(read=DirScenario(iops_max=21600, lat_us=300), write=DirScenario(iops_max=3600, lat_us=440, bps_cap_seq=14e6, bps_cap_rand=14e6),
+                   noise_cv=0.02, **sc)
+    host = standard_host(scn, workdir_free=free)
+    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    if discard:
+        host.mounts = [(ns, dev, mp, src, fs, opts + ",discard" if mp == "/bench" else opts) for ns, dev, mp, src, fs, opts in host.mounts]
+    guard.init_file(host, "/bench/target.img", size=size, own=True, expect_fs_uuid=FILE_FS, confirm_quiet_window=False,
+                    allow_large_root_target=False, created=_CREATED)
+    return host
+
+
+def test_tgt_04_installer_flag_does_not_bypass_refused():
+    host = make_host(cache=None)
+    host.devices["/dev/vda7"].marker = None
+    for installer in (False, True):
+        with pytest.raises(Refusal) as err:
+            calibrate(host, installer=installer)
+        assert err.value.condition == "no_marker"
+    assert host.devices["/dev/vda7"].write_bytes == 0 and [x for x in host.devices["/dev/vda7"].log if x[0] != "marker"] == []
+    # a foreign signature that appears MID-RUN is caught before the next writing stage, installer or not
+    for installer in (False, True):
+        mid = make_host(cache=None)
+        mid.at(mid.now() + 120, lambda m=mid: m.devices["/dev/vda7"].signatures.append("ext4"))
+        with pytest.raises(Refusal) as err:
+            calibrate(mid, installer=installer, confirm_quiet_window=True)
+        assert err.value.condition == "foreign_signature"
+        assert not mid.exists("/run/iobench/restore.json")  # restored and cleaned up on the way out
+        assert not mid.exists("/var/lib/iobench/calibration.json")
+
+
+def test_tgt_06_preallocate_then_fully_write():
+    host = file_host()
+    out = calibrate(host, target="/bench/target.img", work_dir="/bench/w")
+    assert out.status == "complete"
+    names = [a for a in host.argv_log if a[0] in ("fallocate",) or (a[0] == "fio" and len(a) > 2)]
+    assert names[0][:2] == ["fallocate", "-l"]
+    fills = [j for j in fio_jobs(host) if "-fill-" in j.name]
+    assert fills and sum(j.size for j in fills) == out.calibration["calibration"]["extent_written"][0][1]
+    assert fills[0].offset == 0 and all(a.offset == b.end for a, b in zip(fills[1:], fills))
+    assert not host.devices["/bench/target.img"].unwritten_reads  # no read of an unwritten byte
+    assert all(j.direct for j in fio_jobs(host) if j.filename == "/bench/target.img")  # O_DIRECT only
+    assert out.result["identity"]["target"]["kind"] == "file"
+
+
+def test_tgt_08_punch_hole_or_not_measured():
+    host = file_host()
+    host.devices["/bench/target.img"].discard_supported = False
+    out = calibrate(host, target="/bench/target.img", work_dir="/bench/w")
+    assert out.status == "complete"
+    assert out.calibration["calibration"]["fresh_vs_rewrite"] == {"measured": False, "reason": "discard_unsupported"}
+    punch = [a for a in host.argv_log if a[0] == "fallocate" and a[1] == "-p"]
+    assert punch and not [a for a in host.argv_log if a[0] in ("blkdiscard", "fstrim")]  # a hole is punched, never blkdiscard, never fstrim
+
+
+def test_tgt_08_fresh_fs_alloc_label_and_discard_mount_rule():
+    results = {}
+    for discard in (False, True):
+        host = file_host(discard=discard, write_fresh=None) if False else file_host(discard=discard)
+        host.scenario.write.fresh_penalty = 8.0
+        out = calibrate(host, target="/bench/target.img", work_dir="/bench/w")
+        cal = out.calibration["calibration"]
+        fvr = cal["fresh_vs_rewrite"]
+        assert fvr["label"] == "fresh_fs_alloc" and fvr["mount_discard"] == ("true" if discard else "false")
+        assert "fresh_semantics_filesystem" in out.result["quality"]["limits"] and "filesystem_layer" in out.result["quality"]["limits"]
+        results[discard] = (cal["cap_basis"]["write"]["value"], fvr)
+        assert not [a for a in host.argv_log if a[0] == "fstrim"]
+    off_val, off_fvr = results[False]
+    on_val, on_fvr = results[True]
+    assert off_val == pytest.approx(off_fvr["rewrite_iops"])  # informational only without discard
+    assert on_val == pytest.approx(min(on_fvr["rewrite_iops"], on_fvr["fresh_iops"])) and on_val < 0.5 * off_val
+
+
+def test_tgt_09_file_kind_labelled_and_history_separate():
+    host = file_host()
+    out = calibrate(host, target="/bench/target.img", work_dir="/bench/w")
+    assert out.result["identity"]["target"]["kind"] == "file" and "filesystem_layer" in out.result["quality"]["limits"]
+    rows = host.read_text("/var/lib/iobench/ceilings.jsonl").splitlines()
+    digest_file = json.loads(rows[0])["identity_digest"]
+    dev_host = make_host(cache=None)
+    dev_out = calibrate(dev_host)
+    digest_dev = json.loads(dev_host.read_text("/var/lib/iobench/ceilings.jsonl").splitlines()[0])["identity_digest"]
+    assert digest_file != digest_dev
+    # a device-kind history is ignored (with a warning) by a file-kind lookup and vice versa
+    assert ceilings.load(host, "/var/lib/iobench/ceilings.jsonl", digest_dev) == ([], ["history_ignored_identity_differs"])
+
+
+def test_tgt_10_file_sizing():
+    host = file_host(free=9 * GIB, size=6 * GIB)   # free space is a few GiB
+    host.devices["/bench/target.img"].cache = CacheModel(10, 92000, write_allocate=True)  # a cache bigger than the whole file
+    out = calibrate(host, target="/bench/target.img", work_dir="/bench/w")
+    cal = out.calibration["calibration"]
+    ws = cal["extent_written"][0][1]
+    margin = guard.file_margin(30 * GIB)
+    assert ws <= 0.85 * 9 * GIB - margin + 1 and cal["fresh_extent"][1] - cal["fresh_extent"][0] <= 2 * GIB
+    assert ws + (cal["fresh_extent"][1] - cal["fresh_extent"][0]) <= 6 * GIB
+    # read caps are unproven: device_smaller_than_cache_margin (honest and acceptable: reads are cheap here)
+    assert "device_smaller_than_cache_margin" in out.result["proposals"]["caps"]["dev_aggregate"]["RIOPS"]["reasons"]
+    # the gstammtisch geometry, 342 GiB free, --size 30G -> WS_max <= 30 GiB - fresh - tail
+    big = file_host(free=342 * GIB, size=30 * GIB)
+    big.set_fs("/bench", 400 * GIB, 342 * GIB)
+    out2 = calibrate(big, target="/bench/target.img", work_dir="/bench/w")
+    cal2 = out2.calibration["calibration"]
+    fresh = cal2["fresh_extent"][1] - cal2["fresh_extent"][0]
+    assert cal2["extent_written"][0][1] <= 30 * GIB - fresh - 1048576
+
+
+def test_tgt_10_fill_aborts_when_free_space_falls():
+    host = file_host(free=40 * GIB, size=6 * GIB)
+    # a competing writer eats the free space while the fill runs
+    host.at(host.now() + 60, lambda: host.consume("/bench", 39 * GIB))
+    out = calibrate(host, target="/bench/target.img", work_dir="/bench/w")
+    cal = out.calibration["calibration"]
+    assert cal["fill"]["fill_aborted"] == "free_space"
+    margin = guard.file_margin(30 * GIB)
+    assert cal["fill"]["bytes"] < cal["fill"]["planned_bytes"] and host.statfs("/bench")[1] < margin + GIB
+    assert cal["extent_written"][0][1] == cal["fill"]["bytes"]  # WS_max shrank to the extent so far
+    assert "limited-by-budget" in out.result["quality"]["limits"]

@@ -305,7 +305,7 @@ class Matrixer(Runner):
     def assemble(self, report: Any) -> dict[str, Any]:
         carried = {k: self.cal["proposals"][k] for k in ("caps", "iocost_model", "iocost_qos", "notes")}
         checks = list(self.calibration_doc["quality"]["checks"])
-        if self.stage_ok("S4"):
+        if self.decision is not None:
             checks.append(plausibility.pla_12(self.decision["noise_floor_ratio"]).as_dict())
         limits = proposals.dedupe([*self.calibration_doc["quality"]["limits"], *self.limits])
         targets = {**self.cfg.targets, "source": "default" if self.cfg.targets == proposals.DEFAULT_TARGETS else "operator"}

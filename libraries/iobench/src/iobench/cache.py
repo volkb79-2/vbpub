@@ -13,6 +13,7 @@ from typing import Sequence
 from .devio import HIST_BINS, bin_value_us
 from .series import Reading
 
+E1_RULES_VERSION = 2  # bump when the E1 acceptance rules change: fixtures that sit near a limit must be regenerated
 MASS_MIN = 0.05
 BIMODAL_GAP = 2.5
 OVERLAP_GAP = 1.5

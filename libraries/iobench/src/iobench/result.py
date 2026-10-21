@@ -204,9 +204,11 @@ def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tu
             return CheckResult("aborted_only" if host.exists(failed) else "absent", result=path)
         return CheckResult("corrupt", [exc.reason], result=path)
     calibration_id = doc["calibration"]["id"] if calibration else doc["run"].get("calibration_id")
+    cal_doc = doc
     if not calibration and calibration_id is not None:
         try:
-            matching = load(host, p["calibration"], REQUIRED_CAL_TOP)["calibration"]["id"] == calibration_id
+            cal_doc = load(host, p["calibration"], REQUIRED_CAL_TOP)
+            matching = cal_doc["calibration"]["id"] == calibration_id
         except LoadError:
             matching = False
         if not matching:
@@ -218,6 +220,10 @@ def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tu
         res.state = "stale"
         return res
     res.warnings = advisory_warnings(doc["identity"], live, ceilings.parse_iso(doc["run"]["started"]), now)
+    rows, _ = ceilings.load(host, p["ceilings"], ceilings.identity_digest(doc["identity"]))
+    res.history = "recorded" if rows else "single-run"
+    if "calibration" in cal_doc and ceilings.recalibrate_recommended(rows, cal_doc["calibration"].get("plateau_bps", {}), now):
+        res.warnings.append("recalibrate_recommended")
     if host.exists(failed):
         try:
             newer = load(host, failed, ())["run"]["started"] > doc["run"]["started"]  # ISO-8601 Z strings sort in time order
