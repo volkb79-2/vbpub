@@ -42,7 +42,7 @@ reported complete. *Reference cell*: the fixed short cell of section 8.
 
 * **IOB-STA-01** Every proposed value (each cap key, each model key, each QoS key, each writeback value) carries its own `status`: `proven`, `unproven` (with `reasons[]` from the closed vocabulary below) or `absent` (with one `reason`). A value never has a status that is stronger than its weakest basis.
 * **IOB-STA-02** Closed vocabularies:
-  * `unproven` reasons: `cache_model_undetermined`, `cache_residual_possible`, `no_cliff_hit_like_mode`, `device_smaller_than_cache_margin`, `ceiling_moved`, `budget_limited`, `short_observation`, `quick_profile`, `worst_from_single_run`, `metering_undetermined`, `operator_override`, `shape_fit_poor`, `noise_floor_high`, `drain_below_ladder`, `formula_only`, `target_missed`, `cross_disk`, `identity_weak`, `cache_not_excluded`.
+  * `unproven` reasons: `cache_model_undetermined`, `cache_residual_possible`, `no_cliff_hit_like_mode`, `device_smaller_than_cache_margin`, `ceiling_moved`, `budget_limited`, `short_observation`, `quick_profile`, `worst_from_single_run`, `metering_undetermined`, `operator_override`, `shape_fit_poor`, `noise_floor_high`, `drain_below_ladder`, `formula_only`, `target_missed`, `cross_disk`, `identity_weak`, `cache_not_excluded`, `fresh_not_measured`.
   * `absent` reasons: `stage_skipped`, `stage_failed`, `basis_unsteady`, `basis_missing`, `bps_basis_missing`, `no_calibration`.
   * `cache_state` values (reads): `cold_measured`, `rate_cap`, `no_cache_observed`, `cold_hit_like`, `undetermined`.
   * `metering` values: `byte`, `iops`, `mixed`, `undetermined`.
@@ -57,6 +57,7 @@ reported complete. *Reference cell*: the fixed short cell of section 8.
 | `proven` | the value's basis is steady (`steady`/`flat`) AND (not cache-dependent, or a read whose cache state is `cold_measured`/`rate_cap`, or a write that satisfies the time-axis proof of IOB-CCH-07) AND no listed unproven reason applies |
 | `unproven: cache_model_undetermined` | read cache state `undetermined`: no cold probe, the cold probe is bimodal/overlapping/indeterminate, or E2 disagrees with it by more than the tolerance |
 | `unproven: no_cliff_hit_like_mode` | no cliff observed AND the cold probe is unimodal hit-like (`cold_hit_like`: a file target, or a cold rate below 0.9 x `cached_ref`) |
+| `unproven: fresh_not_measured` | a standard-profile run could not measure the fresh-block penalty (no discard, no fresh extent, or the stage failed), so the write cap lacks the fresh half of `min(rewrite, fresh)`; a budget skip is `budget_limited` instead |
 | `unproven: cache_not_excluded` | `cache_state` `no_cache_observed`: the cold region is as fast as the warm one, no cliff, unimodal. Two real-world conditions give this one observation (no cache; a cache at least as large as the written extent), so it is never `proven`; a larger fill or the ceiling history can separate them |
 | `unproven: cache_residual_possible` | a read figure is shown from the measured largest rung while no cold probe exists |
 | `unproven: device_smaller_than_cache_margin` | cliff observed and the largest rung < 1.2 x cliff, OR the cold probe is hit-like with a cliff |
@@ -75,7 +76,7 @@ reported complete. *Reference cell*: the fixed short cell of section 8.
 | `current_unproven` (7) | identity matches AND at least one requested proposal is `unproven` or `absent` (the JSON lists them; exit 7 is never raised for a group the caller did not request) |
 | `stale` (3) | the disk identity (devno, partuuid, size, and any non-null model/serial/wwn) differs from the calibration's |
 | `absent` (4) | no `result.json` (or, with `--calibration`, no `calibration.json`) |
-| exit 5, `reasons[0]` in `corrupt|schema_unsupported|unreadable|calibration_missing` | truncated/invalid JSON / unknown major schema / OS error (EACCES, EIO) / the result's `calibration_id` has no matching calibration file |
+| exit 5, `reasons[0]` in `corrupt|schema_unsupported|unreadable|calibration_missing|damaged_proposals` | truncated/invalid JSON / unknown major or a newer minor schema / OS error (EACCES, EIO) / the result's `calibration_id` has no matching calibration file / a proposals section with an unknown status or a malformed value |
 | `aborted_only` (6) | the newest record is `aborted` or `failed` and no good record exists |
 | `current` (0) or `current_unproven` (7) with warning `last_run_aborted` | a good record exists and a newer aborted/failed record also exists |
 

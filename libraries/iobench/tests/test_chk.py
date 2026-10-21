@@ -71,9 +71,13 @@ def test_res_02_versioning(world):
     h.put(f"{STATE}/result.json", json.dumps({**doc, "schema": 2}))
     c = do_check(h)
     assert (c.state, c.reasons, c.exit_code) == ("corrupt", ["schema_unsupported"], 5)
-    # unknown keys are ignored; a newer minor with only extra keys is read
-    h.put(f"{STATE}/result.json", json.dumps({**doc, "schema_minor": 7, "future_key": {"x": 1}}))
+    # unknown keys are ignored; a NEWER minor is refused (a reader accepts any minor <= its own: it could not judge a new status)
+    h.put(f"{STATE}/result.json", json.dumps({**doc, "future_key": {"x": 1}}))
     assert do_check(h).state in ("current", "current_unproven")
+    for minor in (res.SCHEMA_MINOR + 1, 7, "0", True, -1, None):
+        h.put(f"{STATE}/result.json", json.dumps({**doc, "schema_minor": minor, "future_key": {"x": 1}}))
+        c = do_check(h)
+        assert (c.state, c.reasons, c.exit_code) == ("corrupt", ["schema_unsupported"], 5), minor
     # a missing newer optional key is not_measured, never a default
     assert res.opt(doc, "a_newer_optional_key") == "not_measured" and res.opt(doc, "schema") == 1
     # truncated / invalid JSON, a non-object, missing required keys
@@ -209,7 +213,11 @@ def test_chk_01_calibration_check_uses_the_calibration_file(world):
     host, _ = world
     c = do_check(host, calibration=True)
     assert c.state in ("current", "current_unproven") and c.result.endswith("calibration.json")
-    assert set(c.sections) == set(proposals.SECTIONS) and c.sections["writeback"]["proven"] == 0
+    # a calibration carries no writeback: the sections checked are the ones the file has, and asking for writeback is a usage error
+    assert set(c.sections) == {"caps", "iocost_model", "iocost_qos"}
+    with pytest.raises(Refusal) as err:
+        do_check(host, calibration=True, sections=("writeback",))
+    assert err.value.condition == "section_not_in_document" and err.value.exit_code == 2
 
 
 def test_chk_02_show_is_read_only_and_exact(world):

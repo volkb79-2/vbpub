@@ -292,7 +292,7 @@ def cells_of(fn):
         for p in ("seq", "rand"):
             for bs in shape.SIZES:
                 iops = fn(d, p, bs)
-                out.append({"id": "x", "dir": d, "pattern": p, "bs": bs, "block_state": "rewrite", "steady_iops": iops, "steady_bps": iops * bs, "repeat": False})
+                out.append({"id": "x", "dir": d, "pattern": p, "bs": bs, "block_state": "rewrite", "steady_iops": iops, "steady_bps": iops * bs, "repeat": False, "state": "steady"})
     return out
 
 

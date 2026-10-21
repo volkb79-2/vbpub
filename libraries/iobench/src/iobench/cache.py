@@ -11,7 +11,7 @@ from itertools import accumulate
 from typing import Sequence
 
 from .devio import HIST_BINS, bin_value_us
-from .series import Reading
+from .series import Reading, SeriesError
 
 E1_RULES_VERSION = 2  # bump when the E1 acceptance rules change: fixtures that sit near a limit must be regenerated
 MASS_MIN = 0.05
@@ -27,7 +27,7 @@ PROOF_MIN_AFTER_S = 120.0
 PROOF_BURST_FACTOR = 2.0
 
 
-class HistError(ValueError):
+class HistError(SeriesError):
     """A histogram that cannot be analysed (empty)."""
 
 
@@ -91,6 +91,8 @@ def modes(counts: Sequence[float]) -> Modes:
         raise HistError("empty histogram")
     smooth = _smooth(counts)
     peaks = _peaks(smooth)
+    if not peaks:
+        raise HistError("no latency mode survives (all mass is below the first resolvable bin)")
     while True:
         bounds = [0] + [_valley(smooth, a, b) for a, b in zip(peaks, peaks[1:])] + [len(counts)]
         masses = [sum(counts[bounds[k]:bounds[k + 1]]) / total for k in range(len(peaks))]
@@ -138,15 +140,16 @@ class ColdProbe:
     cls: str  # hit-like | miss-like | indeterminate | n/a (non-unimodal)
     p50_us: float
     region_bytes: int
+    state: str  # the series state of the QD32 run: only steady / flat can vouch for a rate
 
     def as_dict(self) -> dict:
         return {"region_bytes": self.region_bytes, "R_cold_iops": self.r_cold, "shape": self.shape, "class": self.cls,
-                "p50_us": self.p50_us, "rate_limited": self.rate_limited}
+                "p50_us": self.p50_us, "rate_limited": self.rate_limited, "state": self.state}
 
 
 def cold_probe(reading: Reading, qd1: Modes, hit_ref_us: float | None, region_bytes: int) -> ColdProbe:
     cls = classify_unimodal(qd1.p50_us, hit_ref_us, reading.rate_limited) if qd1.shape == "unimodal" else "n/a"
-    return ColdProbe(reading.steady, reading.rate_limited, qd1.shape, cls, qd1.p50_us, region_bytes)
+    return ColdProbe(reading.steady, reading.rate_limited, qd1.shape, cls, qd1.p50_us, region_bytes, reading.state)
 
 
 @dataclass(frozen=True)
@@ -263,6 +266,9 @@ def classify_cache(cold: ColdProbe | None, e2: E2 | None, *, cliff_bytes: float 
     if cold is None:
         reasons = ["quick_profile"] if quick else ["cache_residual_possible"]
         state, r = "undetermined", None
+    elif cold.state not in ("steady", "flat"):
+        # a drifting or noisy cold probe is not a rate: the one value that confers `proven` on every read cap needs a certified basis
+        state, r, reasons = "undetermined", None, ["cache_model_undetermined"]
     elif cold.rate_limited is True:
         state, r, reasons = "rate_cap", cold.r_cold, []
     elif cold.shape == "unimodal" and cold.cls == "miss-like":

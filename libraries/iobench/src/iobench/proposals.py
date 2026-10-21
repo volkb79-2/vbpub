@@ -14,7 +14,7 @@ UNPROVEN_REASONS = (
     "cache_model_undetermined", "cache_residual_possible", "no_cliff_hit_like_mode", "device_smaller_than_cache_margin",
     "ceiling_moved", "budget_limited", "short_observation", "quick_profile", "worst_from_single_run", "metering_undetermined",
     "operator_override", "shape_fit_poor", "noise_floor_high", "drain_below_ladder", "formula_only", "target_missed",
-    "cross_disk", "identity_weak", "cache_not_excluded")
+    "cross_disk", "identity_weak", "cache_not_excluded", "fresh_not_measured")
 ABSENT_REASONS = ("stage_skipped", "stage_failed", "basis_unsteady", "basis_missing", "bps_basis_missing", "no_calibration")
 CACHE_STATES = ("cold_measured", "rate_cap", "no_cache_observed", "cold_hit_like", "undetermined")
 METERING = ("byte", "iops", "mixed", "undetermined")
@@ -78,13 +78,24 @@ def iter_values(group: Mapping[str, Any]) -> Iterable[tuple[str, dict[str, Any]]
             yield from iter_values(item)
 
 
+STATUSES = ("proven", "unproven", "absent")
+
+
 def section_summary(group: Mapping[str, Any], *, identity_weak: bool = False) -> dict[str, Any]:
-    """``{proven: n, unproven: [{key, reasons}], absent: [{key, reason}]}`` for ``check``."""
+    """``{proven: n, unproven: [{key, reasons}], absent: [{key, reason}]}`` for ``check``.
+
+    The status is whitelisted: anything that is not one of the three known strings is a programming error or a damaged file
+    and raises ``ValueError`` (it is never counted as ``proven``).  A section without any value is not "nothing wrong"; the
+    caller decides what an empty section means.
+    """
     out: dict[str, Any] = {"proven": 0, "unproven": [], "absent": []}
     for key, item in iter_values(group):
-        if item["status"] == "absent":
+        status = item["status"]
+        if status not in STATUSES:
+            raise ValueError(f"unknown proposal status {status!r} for {key}")
+        if status == "absent":
             out["absent"].append({"key": key, "reason": item["reason"]})
-        elif item["status"] == "unproven" or identity_weak:
+        elif status == "unproven" or identity_weak:
             out["unproven"].append({"key": key, "reasons": dedupe([*item.get("reasons", []), *(["identity_weak"] if identity_weak else [])])})
         else:
             out["proven"] += 1
@@ -158,6 +169,14 @@ def build_model(cal: Mapping[str, Any], history: Mapping[str, Any]) -> dict[str,
         if hist_bps is None:
             reasons.append("worst_from_single_run")
             basis_tag = "single-run"
+        # S6 reads ran on the cache-basis working set: their fitted costs inherit the read cache state (review B-B6)
+        cache_ratio = 1.0
+        if direction == "read":
+            cache = cal["cache"]["read"]
+            if cache["status"] == "proven" and cache["R_iops"]:
+                cache_ratio = min(1.0, cache["R_iops"] / cal["ladder"]["measured_largest"]["read"])
+            else:
+                reasons.append("cache_residual_possible")
         metering = shape["metering_by_dir"][direction]
         if metering == "undetermined":
             reasons.append("metering_undetermined")
@@ -172,15 +191,14 @@ def build_model(cal: Mapping[str, Any], history: Mapping[str, Any]) -> dict[str,
         worst_bps = bps_basis["value"] if hist_bps is None else min(hist_bps, bps_basis["value"])
         worst_iops = None
         if metering == "iops":
-            basis_iops_val = iops_basis["value"] if iops_basis["status"] != "absent" else None
-            worst_iops = basis_iops_val if hist_iops is None else min(hist_iops / 4096.0, basis_iops_val)
-            if worst_iops is None:
+            if iops_basis["status"] == "absent":
                 out.update({n: absent(iops_basis["reason"], "R6-model", {"key": n}) for n in names})
                 continue
+            worst_iops = iops_basis["value"] if hist_iops is None else min(hist_iops / 4096.0, iops_basis["value"])
             reasons += [r for r in iops_basis.get("reasons", [])]
         for n in names:
             inputs = {"key": n, "direction": direction, "metering": metering, "worst_bps": worst_bps, "worst_iops": worst_iops,
-                      "c_io_seq_us": seq.get("c_io_us"), "c_io_rand_us": rand.get("c_io_us"), "c_byte_ns": seq.get("c_byte_ns")}
+                      "cache_ratio": cache_ratio, "c_io_seq_us": seq.get("c_io_us"), "c_io_rand_us": rand.get("c_io_us"), "c_byte_ns": seq.get("c_byte_ns")}
             out[n] = value(derive.recompute("R6-model", inputs), "R6-model", inputs, basis_tag, reasons=reasons)
     return out
 

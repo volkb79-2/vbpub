@@ -27,7 +27,7 @@ def test_sta_01_every_value_carries_its_own_status():
 
 
 def test_sta_02_closed_vocabularies():
-    assert len(P.UNPROVEN_REASONS) == 19 and len(P.ABSENT_REASONS) == 6
+    assert len(P.UNPROVEN_REASONS) == 20 and len(P.ABSENT_REASONS) == 6
     with pytest.raises(ValueError):
         P.value(1, "R1", {}, "measured", reasons=["because"])
     with pytest.raises(ValueError):
@@ -228,7 +228,7 @@ def test_sta_05_status_collapse_audit():
             for p in ("seq", "rand"):
                 for bs in shape.SIZES:
                     iops = fn(d, p, bs)
-                    out.append({"id": "x", "dir": d, "pattern": p, "bs": bs, "block_state": "rewrite", "steady_iops": iops, "steady_bps": iops * bs, "repeat": False})
+                    out.append({"id": "x", "dir": d, "pattern": p, "bs": bs, "block_state": "rewrite", "steady_iops": iops, "steady_bps": iops * bs, "repeat": False, "state": "steady"})
         return out
 
     clean = cells_of(lambda d, p, bs: 1 / (80e-6 + bs * 0.25e-9))
@@ -350,18 +350,18 @@ def test_sta_05_cache_state_collapse_audit():
     assert no_cache == big_cache == ("no_cache_observed", "unproven", ["cache_not_excluded"])
     # the look-alikes must NOT collapse into no_cache_observed
     # (1) a cliff exists: the same hit-like probe stays cold_hit_like / unproven
-    s = cache.classify_cache(cache.ColdProbe(9800.0, False, "unimodal", "hit-like", 100.0, GIB), None, cliff_bytes=300 * GIB, largest_rung=345 * GIB,
+    s = cache.classify_cache(cache.ColdProbe(9800.0, False, "unimodal", "hit-like", 100.0, GIB, "steady"), None, cliff_bytes=300 * GIB, largest_rung=345 * GIB,
                              cached_ref=9800.0)
     assert (s.state, s.status) == ("cold_hit_like", "unproven")
     # (2) a file target is size-bounded: not excludable
-    s = cache.classify_cache(cache.ColdProbe(9800.0, False, "unimodal", "hit-like", 100.0, GIB), None, cliff_bytes=None, largest_rung=GIB,
+    s = cache.classify_cache(cache.ColdProbe(9800.0, False, "unimodal", "hit-like", 100.0, GIB, "steady"), None, cliff_bytes=None, largest_rung=GIB,
                              cached_ref=9800.0, cache_excludable=False)
     assert (s.state, s.reasons) == ("cold_hit_like", ("no_cliff_hit_like_mode",))
     # (3) the cold rate is clearly below the warm rate: the cache does matter
-    s = cache.classify_cache(cache.ColdProbe(5000.0, False, "unimodal", "hit-like", 100.0, GIB), None, cliff_bytes=None, largest_rung=GIB, cached_ref=9800.0)
+    s = cache.classify_cache(cache.ColdProbe(5000.0, False, "unimodal", "hit-like", 100.0, GIB, "steady"), None, cliff_bytes=None, largest_rung=GIB, cached_ref=9800.0)
     assert s.state == "cold_hit_like"
     # (4) a flat cold probe is rate_cap even when the rate also satisfies the no-cache condition: the flat line wins
-    s = cache.classify_cache(cache.ColdProbe(9800.0, True, "unimodal", "hit-like", 100.0, GIB), None, cliff_bytes=None, largest_rung=GIB, cached_ref=9800.0)
+    s = cache.classify_cache(cache.ColdProbe(9800.0, True, "unimodal", "hit-like", 100.0, GIB, "steady"), None, cliff_bytes=None, largest_rung=GIB, cached_ref=9800.0)
     assert s.state == "rate_cap"
     # and in the other direction: no other state's scenario reports no_cache_observed
     for host_kw in (dict(cache=INVERSION), dict(cache=dict(capacity_gib=265, hit_iops=41800, write_allocate=False, read_allocate=True, read_alloc_share=1.0))):

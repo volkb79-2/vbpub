@@ -20,6 +20,8 @@ UNSTEADY_TREND = 0.20
 RATE_LIMITED_CV = 0.01
 RATE_LIMITED_WINDOW_S = 60.0
 MAX_STORED_POINTS = 120
+MEDIAN_WINDOW = 5
+MEDIAN_HALF = MEDIAN_WINDOW // 2  # a rolling median of window 5 removes any burst of <= 2 samples
 
 
 class SeriesError(ValueError):
@@ -83,7 +85,7 @@ def discard_warmup(points: Sequence[Point], warmup_s: float) -> list[Point]:
     return [p for p in points if p[0] > warmup_s]
 
 
-def rolling_median(values: Sequence[float], window: int = 5) -> list[float]:
+def rolling_median(values: Sequence[float], window: int = MEDIAN_WINDOW) -> list[float]:
     half = window // 2
     n = len(values)
     return [statistics.median(values[max(0, i - half):min(n, i + half + 1)]) for i in range(n)]
@@ -115,17 +117,19 @@ def _knee_index(smooth: Sequence[float], steady: float) -> int | None:
 
 
 def rate_limited(points: Sequence[Point]) -> Any:
-    """True when some 60 s window has CV < 1 %; ``not_assessed`` for short series."""
-    if points[-1][0] - points[0][0] < RATE_LIMITED_WINDOW_S:
-        return "not_assessed"
+    """True when the FINAL 60 s window (the one that defines ``steady``) has CV < 1 %; ``not_assessed`` for short series.
+
+    An earlier flat window followed by a change is not a limiter: the figure that is reported is the tail's, so the
+    flatness must hold there.  A window with fewer than ``MIN_POINTS`` samples is not assessed either (N10).
+    """
     last = points[-1][0]
-    for i in (i for i, (t, _) in enumerate(points) if last - t >= RATE_LIMITED_WINDOW_S):
-        t0 = points[i][0]
-        window = [v for t, v in points[i:] if t - t0 <= RATE_LIMITED_WINDOW_S]
-        mean = sum(window) / len(window)
-        if mean > 0 and statistics.pstdev(window) / mean < RATE_LIMITED_CV:
-            return True
-    return False
+    if last - points[0][0] < RATE_LIMITED_WINDOW_S:
+        return "not_assessed"
+    window = [v for t, v in points if last - t <= RATE_LIMITED_WINDOW_S]
+    if len(window) < MIN_POINTS:
+        return "not_assessed"
+    mean = sum(window) / len(window)
+    return bool(mean > 0 and statistics.pstdev(window) / mean < RATE_LIMITED_CV)
 
 
 def reduce_series(points: Sequence[Point]) -> Reading:
@@ -140,6 +144,12 @@ def reduce_series(points: Sequence[Point]) -> Reading:
     tail_cv = statistics.pstdev(p[1] for p in tail) / tail_mean
     smooth = rolling_median(values)
     knee = _knee_index(smooth, steady)
+    if knee is not None:
+        # The median hides a leading burst of 1-2 samples (a one-sample 5 GB/s burst looks `flat`): the raw samples decide
+        # where a leading burst ends, so the knee never precedes a raw sample that sits above the band.
+        for i in range(MEDIAN_HALF):
+            if values[i] > steady * (1 + KNEE_BAND):
+                knee = max(knee, i + 1)
     trend = _tail_trend(tail, steady)
     if tail_cv > UNSTEADY_CV or trend > UNSTEADY_TREND or knee is None:
         state = "unsteady"
@@ -151,9 +161,9 @@ def reduce_series(points: Sequence[Point]) -> Reading:
     knee_s = None
     if knee is not None and state != "unsteady":
         knee_s = 0.0 if state == "flat" else points[knee][0]  # a flat series has no knee: it is flat from the start
-        for i in range(knee):
-            dt = points[i + 1][0] - points[i][0]
-            burst += max(0.0, smooth[i] - steady) * dt
+        for i in range(knee):  # RAW samples: the smoothed series under-counts a short burst; noise cancels in the signed sum
+            burst += (values[i] - steady) * (points[i + 1][0] - points[i][0])
+        burst = max(0.0, burst)
     return Reading(
         state=state,
         steady=steady,

@@ -96,16 +96,20 @@ def r5(*, U: float, worst_over_median: float, basis_iops: float | None = None, b
 
 # -- R6 model ---------------------------------------------------------------------------
 def r6_keys(*, direction: str, metering: str, worst_bps: float, worst_iops: float | None, c_io_seq_us: float | None,
-            c_io_rand_us: float | None, c_byte_ns: float | None) -> dict[str, float]:
-    """The three keys of one direction (``r``/``w`` prefix) per metering class."""
+            c_io_rand_us: float | None, c_byte_ns: float | None, cache_ratio: float) -> dict[str, float]:
+    """The three keys of one direction (``r``/``w`` prefix) per metering class.
+
+    ``cache_ratio`` (<= 1; always 1 for writes) scales the keys derived from the S6 fit: those cells ran on the cache-basis
+    working set, so their per-IO and per-byte costs encode the CACHED rate exactly like the cell the BPS basis is scaled from.
+    """
     p = direction[0]
     if metering == "byte":
         iops = int(worst_bps // PLAIN_BPS_IOPS_DIV)
         return {f"{p}bps": int(worst_bps), f"{p}seqiops": iops, f"{p}randiops": iops}
     if metering == "iops":
         return {f"{p}bps": int(worst_iops * 1048576), f"{p}seqiops": int(worst_iops), f"{p}randiops": int(worst_iops)}
-    return {f"{p}bps": int(min(1e9 / c_byte_ns, worst_bps)), f"{p}seqiops": int(1e6 / c_io_seq_us),
-            f"{p}randiops": int(1e6 / c_io_rand_us)}
+    return {f"{p}bps": int(min(1e9 / c_byte_ns * cache_ratio, worst_bps)), f"{p}seqiops": int(1e6 / c_io_seq_us * cache_ratio),
+            f"{p}randiops": int(1e6 / c_io_rand_us * cache_ratio)}
 
 
 # -- R6 QoS -----------------------------------------------------------------------------

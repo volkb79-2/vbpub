@@ -20,7 +20,7 @@ STRICT_DISK = ("devno", "partuuid", "size_bytes")
 OPTIONAL_STRICT = ("model", "serial", "wwn")
 AGE_WARN_DAYS = 180
 EXIT = {"current": 0, "stale": 3, "absent": 4, "corrupt": 5, "aborted_only": 6, "current_unproven": 7}
-LOAD_REASONS = ("corrupt", "schema_unsupported", "unreadable", "calibration_missing")
+LOAD_REASONS = ("corrupt", "schema_unsupported", "unreadable", "calibration_missing", "damaged_proposals")
 SHOW_WHAT = ("proposals", "evidence", "calibration", "ceilings", "paths")
 
 
@@ -81,8 +81,9 @@ def load(host: Host, path: str, required: tuple[str, ...]) -> dict[str, Any]:
         raise LoadError("corrupt", path) from exc
     if not isinstance(doc, dict) or any(k not in doc for k in ("schema", "schema_minor")):
         raise LoadError("corrupt", path)
-    if doc["schema"] != SCHEMA:
-        raise LoadError("schema_unsupported", path)
+    minor = doc["schema_minor"]
+    if doc["schema"] != SCHEMA or not isinstance(minor, int) or isinstance(minor, bool) or minor < 0 or minor > SCHEMA_MINOR:
+        raise LoadError("schema_unsupported", path)  # IOB-RES-02: any minor <= the reader's; a newer one may carry statuses it cannot judge
     if any(k not in doc for k in required):
         raise LoadError("corrupt", path)
     return doc
@@ -200,7 +201,6 @@ def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tu
     path = result_path or p["calibration" if calibration else "result"]
     failed = p["calibration_failed" if calibration else "result_failed"]
     required = REQUIRED_CAL_TOP if calibration else REQUIRED_TOP
-    asked = sections or proposals.SECTIONS
     try:
         doc = load(host, path, required)
     except LoadError as exc:
@@ -237,11 +237,28 @@ def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tu
             res.warnings.append("last_run_aborted")
     group = doc["calibration"]["proposals"] if calibration else doc["proposals"]
     weak = require_strong_identity and doc["identity"]["identity_strength"] == "weak"
+    if sections:
+        for name in sections:
+            if name not in proposals.SECTIONS:
+                raise Refusal("unknown_section", f"unknown section {name!r}", f"use one of {', '.join(proposals.SECTIONS)}")
+            if name not in group:
+                raise Refusal("section_not_in_document", f"{path} carries no {name!r} section (a calibration.json has no writeback)",
+                              "check result.json for writeback, or name a section this file carries")
+        asked = sections
+    else:
+        asked = tuple(n for n in proposals.SECTIONS if n in group)
     unproven = False
-    for name in asked:
-        summary = proposals.section_summary(group.get(name, {}), identity_weak=weak)
-        res.sections[name] = summary
-        unproven = unproven or bool(summary["unproven"] or summary["absent"])
+    try:
+        for name in asked:
+            if not group[name]:
+                # an empty section proves nothing: it must not read as "nothing is wrong"
+                summary = {"proven": 0, "unproven": [], "absent": [{"key": name, "reason": "stage_skipped"}]}
+            else:
+                summary = proposals.section_summary(group[name], identity_weak=weak)
+            res.sections[name] = summary
+            unproven = unproven or bool(summary["unproven"] or summary["absent"])
+    except (ValueError, KeyError, TypeError, AttributeError, IndexError):
+        return CheckResult("corrupt", ["damaged_proposals"], result=path, calibration_id=calibration_id)
     res.state = "current_unproven" if unproven else "current"
     return res
 

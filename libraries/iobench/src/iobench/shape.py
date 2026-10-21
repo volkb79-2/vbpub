@@ -96,6 +96,11 @@ def anchor_drift(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     return {"spread": spread, "moved": any(v > DRIFT_LIMIT for v in spread.values())}
 
 
+def certified(cell: dict[str, Any]) -> bool:
+    """Only a steady or flat cell may enter a fit or a metering test: an unsteady cell has no trustworthy rate (IOB-DER-08)."""
+    return cell["state"] in ("steady", "flat")
+
+
 # -- fit ----------------------------------------------------------------------------
 def fit_cells(cells: Sequence[dict[str, Any]]) -> dict[str, Any]:
     """``1/steady_iops = c_io + bs x c_byte`` over the sizes of one dir x pattern x block_state."""
@@ -125,7 +130,7 @@ def _pattern_ok(rand: dict[int, float], seq: dict[int, float]) -> bool:
 
 def metering_for(cells: Sequence[dict[str, Any]], direction: str, fits: dict[str, Any], *, moved: bool = False) -> dict[str, Any]:
     """The two-test metering rule for one direction (IOB-SHP-03)."""
-    rewrite = [c for c in cells if c["dir"] == direction and c["block_state"] == "rewrite" and not c.get("repeat")]
+    rewrite = [c for c in cells if c["dir"] == direction and c["block_state"] == "rewrite" and not c.get("repeat") and certified(c)]
     by = {p: {c["bs"]: c for c in rewrite if c["pattern"] == p} for p in ("rand", "seq")}
     if moved:
         return {"metering": "undetermined", "reasons": ["ceiling_moved"], "tests": {}}
@@ -157,7 +162,7 @@ def shape_summary(cells: Sequence[dict[str, Any]], *, override: str | None = Non
     fits = {}
     for d in ("read", "write"):
         for p in ("seq", "rand"):
-            group = [c for c in cells if c["dir"] == d and c["pattern"] == p and c["block_state"] == "rewrite" and not c.get("repeat")]
+            group = [c for c in cells if c["dir"] == d and c["pattern"] == p and c["block_state"] == "rewrite" and not c.get("repeat") and certified(c)]
             if group:
                 fits[f"{d}-{p}-rewrite"] = fit_cells(group)
     by_dir = {d: metering_for(cells, d, fits, moved=drift["moved"]) for d in ("read", "write")}

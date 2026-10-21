@@ -28,6 +28,14 @@ class IntegrityViolation(IobenchError):
     exit_code = 1
 
 
+class StageSkipped(S.SeriesError):
+    """A stage that cannot apply to this target (no discard, no fresh extent): recorded ``skipped: <why>``, never ``failed``."""
+
+    def __init__(self, why: str, message: str = "") -> None:
+        self.why = why
+        super().__init__(message or why)
+
+
 @dataclass
 class Config:
     target: str
@@ -206,6 +214,11 @@ class Runner:
             fn()
         except S.IntegrityError:
             raise
+        except StageSkipped as exc:
+            if required:
+                raise
+            self.skip(name, exc.why)
+            return False
         except S.TooFewPoints:
             if required:
                 raise

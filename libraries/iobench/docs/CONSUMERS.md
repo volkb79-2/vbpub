@@ -61,7 +61,7 @@ iobench show --proposals --json
 ```
 
 Exit codes of `check`: `0` every requested proposal is `proven`; `3` stale (disk identity differs); `4` no result; `5` unreadable (`reasons`: `corrupt`, `schema_unsupported`,
-`unreadable`, `calibration_missing`); `6` only an aborted or failed record exists; `7` identity current but at least one requested proposal is `unproven` or `absent`.
+`unreadable`, `calibration_missing`, `damaged_proposals`); `6` only an aborted or failed record exists; `7` identity current but at least one requested proposal is `unproven` or `absent`.
 Also from `iobench`: `1` runtime failure, `2` refusal or usage, `8` run aborted (restored), `9` restore or `io.max` verification failure.
 
 ```json
@@ -112,6 +112,7 @@ nothing; host-setup renders and verifies the persistent files.
 |---|---|
 | `cache_model_undetermined` | the cold-region probe was bimodal, overlapping or indeterminate, or the latency-split cross-check disagreed with it (rerun `thorough`, or accept) |
 | `cache_residual_possible` | a figure from the measured largest rung is shown and no cold-region probe exists |
+| `fresh_not_measured` | the fresh-block write penalty could not be measured on a standard run (no discard support, no fresh extent, or the stage failed): the write cap lacks the fresh half of `min(rewrite, fresh)` |
 | `cache_not_excluded` | the cold region is as fast as the warm one with no cliff (`no_cache_observed`): equally consistent with no cache and with a cache at least as large as the written extent; a larger fill or the ceiling history can separate them |
 | `no_cliff_hit_like_mode` | no cliff, and the cold-region probe is hit-like: the cache may hold the whole fill |
 | `device_smaller_than_cache_margin` | the largest rung is below 1.2x the cliff, or the cold probe is hit-like with a cliff: the target is too small to see past the cache |

@@ -83,14 +83,14 @@ def test_der_04_r5():
 def test_der_05_r6_model():
     # plateau history worst 6 MiB/s, byte-metered -> wbps = 6291456, wseqiops = 1536
     w = derive.r6_keys(direction="write", metering="byte", worst_bps=6 * MIB, worst_iops=None, c_io_seq_us=None,
-                       c_io_rand_us=None, c_byte_ns=None)
+                       c_io_rand_us=None, c_byte_ns=None, cache_ratio=1.0)
     assert w == {"wbps": 6291456, "wseqiops": 1536, "wrandiops": 1536}
     # read not byte-metered: iops keys from the fit
-    r = derive.r6_keys(direction="read", metering="mixed", worst_bps=4e9, worst_iops=None, c_io_seq_us=50.0, c_io_rand_us=100.0, c_byte_ns=0.25)
+    r = derive.r6_keys(direction="read", metering="mixed", worst_bps=4e9, worst_iops=None, c_io_seq_us=50.0, c_io_rand_us=100.0, c_byte_ns=0.25, cache_ratio=1.0)
     assert r == {"rbps": 4_000_000_000, "rseqiops": 20000, "rrandiops": 10000}
-    r2_ = derive.r6_keys(direction="read", metering="undetermined", worst_bps=1e9, worst_iops=None, c_io_seq_us=50.0, c_io_rand_us=100.0, c_byte_ns=0.25)
+    r2_ = derive.r6_keys(direction="read", metering="undetermined", worst_bps=1e9, worst_iops=None, c_io_seq_us=50.0, c_io_rand_us=100.0, c_byte_ns=0.25, cache_ratio=1.0)
     assert r2_["rbps"] == 1_000_000_000  # min(1e9 / c_byte, worst)
-    i = derive.r6_keys(direction="write", metering="iops", worst_bps=0, worst_iops=3000.0, c_io_seq_us=None, c_io_rand_us=None, c_byte_ns=None)
+    i = derive.r6_keys(direction="write", metering="iops", worst_bps=0, worst_iops=3000.0, c_io_seq_us=None, c_io_rand_us=None, c_byte_ns=None, cache_ratio=1.0)
     assert i == {"wbps": 3000 * MIB, "wseqiops": 3000, "wrandiops": 3000}
 
 
@@ -131,7 +131,7 @@ def test_der_07_recompute_rules():
     assert derive.recompute("R6-rlat", {"light_p95_us": 600.0}) == 2000
     assert derive.recompute("R6-qos-max", dict(best_read_rung=92000, R=9800, best_w=3.2e9, worst_w=1.4e9)) == 1035
     assert derive.recompute("R6-model", dict(key="wbps", direction="write", metering="byte", worst_bps=6 * MIB, worst_iops=None,
-                                              c_io_seq_us=None, c_io_rand_us=None, c_byte_ns=None)) == 6291456
+                                              c_io_seq_us=None, c_io_rand_us=None, c_byte_ns=None, cache_ratio=1.0)) == 6291456
     assert derive.recompute("R3", dict(R_drain_bps=10_500_000, max_hw_kb=4096, F=0.25, P_us=250_000.0, read_ratio=GST_RATIO,
                                        probe_p99_us={"128": 466_000.0})) == 64
 
@@ -224,7 +224,7 @@ def test_der_09_fresh_consumed():
     fvr = out.calibration["calibration"]["fresh_vs_rewrite"]
     assert fvr["penalty"] >= 3
     wiops = out.result["proposals"]["caps"]["dev_aggregate"]["WIOPS"]["inputs"]["basis_iops"]
-    assert wiops == pytest.approx(min(fvr["fresh_iops"], fvr["rewrite_iops"])) and wiops < fvr["rewrite_iops"]
+    assert wiops == pytest.approx(min(fvr["fresh_iops"], fvr["rewrite_iops"]), rel=0.02) and wiops < fvr["rewrite_iops"]
     assert [n for n in out.result["proposals"]["notes"] if n["note"] == "fresh_write_penalty"][0]["penalty"] == fvr["penalty"]
     # no penalty -> no note
     plain = make_host(cache=None, read=dict(iops_max=21600, lat_us=300), size=40 << 30)

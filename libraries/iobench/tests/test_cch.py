@@ -87,7 +87,7 @@ def test_cch_03_e2_adjacency_and_crosscheck():
 
 
 def probe(r=9800.0, shape="unimodal", cls="miss-like", rl=False):
-    return ColdProbe(r, rl, shape, cls, 760.0, 32 * GIB)
+    return ColdProbe(r, rl, shape, cls, 760.0, 32 * GIB, "steady")
 
 
 def classify(cold, e2=None, cliff=None, largest=345 * GIB, quick=False, ref=None, excludable=True):
@@ -388,7 +388,7 @@ def test_cch_08_1_two_tier_e1_good_but_wrong():
     assert e1.fit == "good" and e1.r2 == pytest.approx(0.977, abs=0.003) and e1.loo_max <= 0.15
     assert e1.r_e1 >= 1.3 * 9800.0 and e1.r_e1 == pytest.approx(14.6e3, rel=0.03) and e1.c_bytes / GIB == pytest.approx(41, abs=4)
     cold = doc["cold_probe"]
-    state = classify(ColdProbe(cold["r_cold"] * 1.03, False, cold["shape"], cold["cls"], 760.0, 32 * GIB))
+    state = classify(ColdProbe(cold["r_cold"] * 1.03, False, cold["shape"], cold["cls"], 760.0, 32 * GIB, "steady"))
     assert state.state == "cold_measured" and state.status == "proven" and state.r == pytest.approx(9800, rel=0.05)
     value = cache.read_value(state, 15429.0, e1)
     assert value.status == "proven" and value.value == pytest.approx(9800, rel=0.05) and value.value < e1.r_e1 / 1.3   # the cap comes from R_cold, never R_E1

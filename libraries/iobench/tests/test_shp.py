@@ -15,7 +15,7 @@ def make_cells(fn, *, dirs=("read", "write"), fresh=False):
             for bs in SIZES:
                 iops = fn(d, p, bs)
                 cells.append({"id": f"{d}-{p}-{bs}", "dir": d, "pattern": p, "bs": bs, "block_state": "rewrite",
-                              "steady_iops": iops, "steady_bps": iops * bs, "repeat": False})
+                              "steady_iops": iops, "steady_bps": iops * bs, "repeat": False, "state": "steady"})
     return cells
 
 
@@ -97,7 +97,7 @@ def test_shp_03_metering():
     # a byte-metered disk with a fresh penalty stays byte (fresh cells are a separate field)
     cells = make_cells(lambda d, p, bs: 14e6 / bs)
     cells.append({"id": "f", "dir": "write", "pattern": "rand", "bs": 4096, "block_state": "fresh", "steady_iops": 180.0,
-                  "steady_bps": 180.0 * 4096, "repeat": False})
+                  "steady_bps": 180.0 * 4096, "repeat": False, "state": "steady"})
     assert shape.shape_summary(cells)["metering"] == "byte"
     # a moved reference makes it undetermined with ceiling_moved
     drifting = make_cells(lambda d, p, bs: 14e6 / bs)

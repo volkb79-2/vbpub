@@ -14,7 +14,7 @@ from .devio import FioResult
 from .errors import Aborted, IobenchError, Refusal, RunFailed
 from .extents import Extents
 from .host import HostError
-from .stages import GIB, MIB, Config, IntegrityViolation, Outcome, Runner
+from .stages import GIB, MIB, Config, IntegrityViolation, Outcome, Runner, StageSkipped
 
 METHOD = "ladder-v1+cachefit-v1+shape-v1+latcurve-v1+drain-v1+sweep-v1+readcost-v1"
 COLD_MAX = 32 * GIB
@@ -24,7 +24,7 @@ HIST_S = 60
 REF_S = 15
 REF_WARMUP_S = 3.0
 EXTEND_S = 300
-OBS_QD = 8
+OBS_QD = 32  # the cap basis is a QD32 quantity: the observation that time-proves it runs at the same depth (review B-B3)
 MIN_FILL_CHUNK = 64 * MIB
 FILL_REPLAN_FACTOR = 0.5
 FILL_CHECK_S = 10
@@ -78,6 +78,7 @@ class Calibrator(Runner):
         self.refs: dict[str, dict[str, float]] = {}
         self.ref_tag: str | None = None
         self.moved: dict[str, bool] = {}
+        self.moved_dirs: dict[str, dict[str, bool]] = {}  # a write comparison is judged by the WRITE reference (a read reference follows the read cache)
         self.checks: list[plausibility.Check] = []
         self.r_est = 0.0
         self.ws = 0
@@ -133,7 +134,8 @@ class Calibrator(Runner):
         """Take the closing reference of a comparison group and record whether the ceiling moved."""
         self.reference(tag)
         before, after = self.refs[self.ref_tag], self.refs[tag]
-        self.moved[group] = any(plausibility.ref_moved(before[d], after[d]) for d in ("read", "write"))
+        self.moved_dirs[group] = {d: plausibility.ref_moved(before[d], after[d]) for d in ("read", "write")}
+        self.moved[group] = any(self.moved_dirs[group].values())
         self.ref_tag = tag
         return self.moved[group]
 
@@ -277,11 +279,9 @@ class Calibrator(Runner):
             if ws == largest:
                 self.depth["read"][32] = rec["steady_iops"]
                 if not self.quick:
-                    if self.fits(HIST_S):
-                        self.e2(ws, self.last_started)
-                        self.mark("E2", "ok")
-                    else:
-                        self.skip("E2", "budget")
+                    # E2 is an optional estimator (CCH-03): a missing or unusable histogram is recorded, never a failed calibration
+                    started = self.last_started
+                    self.stage("E2", lambda: self.e2(ws, started), min_s=HIST_S)
                     self.stage("ladder-qd", lambda: self.depth_runs(ws), min_s=4 * RUNG_S)
             self.writes.append(self.rung(ws, "write", 32))
             if len(self.writes) == 1 and not self.quick:
@@ -307,10 +307,10 @@ class Calibrator(Runner):
     def fresh_vs_rewrite(self) -> None:
         if self.fresh is None:
             self.fresh_note = "no_fresh_extent"
-            raise S.SeriesError("no fresh extent")
+            raise StageSkipped("no_fresh_extent", "no fresh extent")
         if not self.discard(self.fresh):
             self.fresh_note = "discard_unsupported"
-            raise S.SeriesError("the target refused a discard / hole punch")
+            raise StageSkipped("discard_unsupported", "the target refused a discard / hole punch")
         self.fresh_ok = True
         fresh = self.reading(self.fresh_cell("fresh"))
         rewrite = self.reading(self.run_job("rewrite", "randwrite", 4096, 32, RUNG_S, 0, self.ws, key="ladder"))
@@ -423,7 +423,7 @@ class Calibrator(Runner):
             read = _basis(None, [], "basis_unsteady")
         else:
             read = _basis(value.value, [*value.reasons, *extras])
-        # write basis
+        # write basis (IOB-CAL-07, IOB-CCH-07): the cap and its time proof come from the SAME series
         wl = writes[-1]
         if wl["state"] == "unsteady":
             write = _basis(None, [], "basis_unsteady")
@@ -431,21 +431,82 @@ class Calibrator(Runner):
         else:
             rewrite = self.fvr["rewrite_iops"] if self.fvr else wl["steady_iops"]
             iops = ladder.write_iops_basis(rewrite, self.fvr)
+            fresh_counts = bool(self.fvr) and ladder.fresh_in_basis(self.fvr)
             reasons: list[str] = list(extras)
+            if self.fvr and self.moved_dirs.get("fresh_vs_rewrite", {}).get("write"):
+                reasons.append("ceiling_moved")  # the reference of the fresh-vs-rewrite pair moved: that comparison is unproven (REF-02)
             self.proof = {}
+            inputs: dict[str, Any] = {"rewrite_iops": rewrite, "fresh_iops": self.fvr["fresh_iops"] if fresh_counts else None}
             if self.quick:
                 reasons.append("quick_profile")
             elif "write" not in self.obs:
                 reasons.append("budget_limited")
             else:
+                # the 30 s QD32 runs can sit wholly inside a burst that the 240 s observation outlives: the observation's own steady
+                # rate bounds the cap, so the proven quantity and the capped quantity are one series (review B-B3)
                 self.proof["rewrite"] = cache.write_time_proof(self.obs["write"], 4096)
-                if self.fvr and ladder.fresh_in_basis(self.fvr) and "fresh" in self.obs:
-                    self.proof["fresh"] = cache.write_time_proof(self.obs["fresh"], 4096)
+                bounds = [self.obs["write"].steady]
+                inputs["obs_write_steady"] = self.obs["write"].steady
+                if fresh_counts:
+                    if "fresh" in self.obs:
+                        self.proof["fresh"] = cache.write_time_proof(self.obs["fresh"], 4096)
+                        bounds.append(self.obs["fresh"].steady)
+                        inputs["obs_fresh_steady"] = self.obs["fresh"].steady
+                    else:
+                        reasons.append("short_observation")  # the fresh half was never time-proven (the observation failed or was cut)
+                iops = min(iops, *bounds)
                 if not all(p.proven for p in self.proof.values()):
                     reasons.append("short_observation")
+            if not self.quick and self.fvr is None:
+                reasons.append(self.fresh_gap_reason())
             write = _basis(iops, reasons)
+            write["inputs"] = inputs
         self.write_proven = write["status"] == "proven"
         self.bases = {"read": {"iops": read["value"], **read}, "write": {"iops": write["value"], **write}}
+
+    # -- run-level plausibility checks that need S6 and the history (IOB-PLA-07, -09, -17, -18) -------------------------
+    def cell_bps(self, direction: str, pattern: str, bs: int, block_state: str = "rewrite") -> float | None:
+        cell = next((c for c in self.cells if (c["dir"], c["pattern"], c["bs"], c["block_state"]) == (direction, pattern, bs, block_state)
+                     and not c["repeat"] and shape.certified(c)), None)
+        return None if cell is None else cell["steady_bps"]
+
+    def bytes_checks(self, history: dict[str, Any]) -> list[plausibility.Check]:
+        """PLA-07 (random-4K bytes/s vs sequential, per direction), PLA-09 (fill vs sequential rewrite), PLA-17 (steady vs the ceiling
+        history), PLA-18 (fresh sequential bytes/s).  Each is evaluated from the run's own measurements; none is a unit-only function."""
+        moved = bool(self.moved.get("shape"))
+        p7 = []
+        for d in ("read", "write"):
+            rand, seq = self.cell_bps(d, "rand", 4096), self.cell_bps(d, "seq", MIB)
+            if rand is not None and seq is not None:
+                p7.append((d, plausibility.pla_07(rand, seq, moved)))
+        p9 = []
+        seq_w = self.cell_bps("write", "seq", MIB)
+        if seq_w is not None and self.fill_info.get("fill_bps"):
+            p9 = [("write", plausibility.pla_09(self.fill_info["fill_bps"], seq_w, moved))]
+        p17 = []
+        for d in ("read", "write"):
+            if d in self.obs:
+                median = history.get(d, {}).get("rand4k", {}).get("median")
+                p17.append((d, plausibility.pla_17(self.obs[d].steady * 4096, median)))
+        fresh_w = self.cell_bps("write", "seq", MIB, "fresh")
+        rearm = self.rearm_info["rearm_ratio"] if self.rearm_info else None
+        p18 = [("write", plausibility.pla_18(fresh_w, seq_w, moved, rearm))]
+        return [worst_check(cid, found, f"{cid} was not evaluated: " + why) for cid, found, why in (
+            ("IOB-PLA-07", p7, "random-4K and sequential 1 MiB cells are missing"), ("IOB-PLA-09", p9, "no fill rate or sequential rewrite cell"),
+            ("IOB-PLA-17", p17, "no observation run"), ("IOB-PLA-18", p18, "no fresh sequential cell"))]
+
+    def fresh_gap_reason(self) -> str:
+        """Why the fresh-block penalty is absent from the write cap on a standard run (an unproven reason, never silence)."""
+        return "budget_limited" if self.stages.get("fresh-vs-rewrite") == "skipped: budget" else "fresh_not_measured"
+
+    def fresh_unmeasured_note(self) -> str:
+        """The real cause recorded in ``fresh_vs_rewrite.reason`` when it was not measured."""
+        if self.quick:
+            return "quick_profile"
+        if self.fresh_note:
+            return self.fresh_note
+        status = self.stages.get("fresh-vs-rewrite", "skipped")
+        return "budget" if status == "skipped: budget" else ("stage_failed" if status.startswith("failed") else "stage_skipped")
 
     def bps_bases(self) -> dict[str, Any]:
         def cell(direction: str) -> dict[str, Any] | None:
@@ -495,6 +556,7 @@ class Calibrator(Runner):
         bps = self.bps_bases()
         shape_doc = self.shape_doc()
         self.checks += [plausibility.pla_11({d: shape_doc["linear_model_fit_by_dir"][d] for d in ("read", "write")})] if self.cells else []
+        self.checks += self.bytes_checks(history)
         cap_basis = {d: {k: v for k, v in self.bases[d].items() if k != "iops"} for d in ("read", "write")}
         cap_basis["bps"] = bps
         windows = [c["steady_bps"] for c in self.cells if c["dir"] == "write" and c["pattern"] == "seq" and c["bs"] == MIB
@@ -517,7 +579,7 @@ class Calibrator(Runner):
                       "write": {"time_proof": self.proof["rewrite"].as_dict() if "rewrite" in self.proof else None,
                                 "fresh_proof": self.proof["fresh"].as_dict() if "fresh" in self.proof else None}},
             "cap_basis": cap_basis,
-            "fresh_vs_rewrite": self.fvr or {"measured": False, "reason": self.fresh_note or "quick_profile"},
+            "fresh_vs_rewrite": self.fvr or {"measured": False, "reason": self.fresh_unmeasured_note()},
             "rearm": self.rearm_info,
             "reference": {"cells": self.refs, "moved": self.moved},
             "shape": shape_doc,
@@ -621,6 +683,18 @@ class Calibrator(Runner):
         self.stage("S7", self.s7, min_s=alloc.seconds("S7"))
 
 
+
+
+_RANK = {"fail": 3, "info": 2, "pass": 1, "not_applicable": 0}
+
+
+def worst_check(check_id: str, found: list[tuple[str, plausibility.Check]], missing: str) -> plausibility.Check:
+    """One stored check per id: the worst per-direction verdict, naming the direction(s) in the detail."""
+    if not found:
+        return plausibility.Check(check_id, "not_applicable", missing)
+    best = max((c for _, c in found), key=lambda c: _RANK[c.status])
+    detail = "; ".join(f"{d}: {c.detail}" for d, c in found)
+    return replace(best, detail=detail)
 
 
 def devio_lat(out: FioResult) -> dict[str, float]:

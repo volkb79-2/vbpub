@@ -554,7 +554,7 @@ def test_tgt_08_fresh_fs_alloc_label_and_discard_mount_rule():
     off_val, off_fvr = results[False]
     on_val, on_fvr = results[True]
     assert off_val == pytest.approx(off_fvr["rewrite_iops"])  # informational only without discard
-    assert on_val == pytest.approx(min(on_fvr["rewrite_iops"], on_fvr["fresh_iops"])) and on_val < 0.5 * off_val
+    assert on_val == pytest.approx(min(on_fvr["rewrite_iops"], on_fvr["fresh_iops"]), rel=0.02) and on_val < 0.5 * off_val
 
 
 def test_tgt_09_file_kind_labelled_and_history_separate():

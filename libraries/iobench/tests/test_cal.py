@@ -270,7 +270,7 @@ def test_cal_05_observation_limits(healthy):
     assert "bucket_exclusion_s<=240" in out.result["quality"]["limits"]
     obs = {"obs-" + j.name.split("-obs-")[1]: j for j in fio_jobs(host) if "-obs-" in j.name}
     assert {k: v.runtime_s for k, v in obs.items()} == {"obs-write": 240, "obs-read": 120, "obs-fresh": 120}
-    assert all(j.iodepth == 8 and j.log_avg_ms == 1000 for j in obs.values())
+    assert all(j.iodepth == 32 and j.log_avg_ms == 1000 for j in obs.values())  # QD32: the depth of the cap it time-proves (review B-B3)
     thorough = make_host(size=40 * GIB, cache=None, read=dict(iops_max=21600, lat_us=300), write=dict(iops_max=21600, lat_us=300))
     out2 = calibrate(thorough, profile="thorough")
     assert "bucket_exclusion_s<=900" in out2.result["quality"]["limits"]
@@ -296,14 +296,17 @@ def test_cal_07_fresh_penalty():
     assert fvr["measured"] and fvr["penalty"] == pytest.approx(19.9, rel=0.15) and fvr["label"] == "fresh"
     notes = {n["note"] for n in out.result["proposals"]["notes"]}
     assert "fresh_write_penalty" in notes
-    assert out.calibration["calibration"]["cap_basis"]["write"]["value"] == pytest.approx(fvr["fresh_iops"])
+    wb = out.calibration["calibration"]["cap_basis"]["write"]
+    # the cap is the minimum of its recorded inputs (the 30 s QD32 runs and the time-proven observation series)
+    assert wb["value"] == min(v for v in wb["inputs"].values() if v is not None) and wb["value"] == pytest.approx(fvr["fresh_iops"], rel=0.02)
     # discard unsupported -> not_measured with the reason
     host2 = make_host(cache=None, write=write, read=dict(iops_max=21600, lat_us=300), size=40 * GIB)
     host2.devices["/dev/vda7"].discard_supported = False
     out2 = calibrate(host2)
     fvr2 = out2.calibration["calibration"]["fresh_vs_rewrite"]
     assert fvr2 == {"measured": False, "reason": "discard_unsupported"}
-    assert out2.calibration["run"]["stages"]["fresh-vs-rewrite"].startswith("failed")
+    assert out2.calibration["run"]["stages"]["fresh-vs-rewrite"] == "skipped: discard_unsupported"  # not "failed": the target simply has no discard
+    assert "fresh_not_measured" in out2.calibration["calibration"]["cap_basis"]["write"]["reasons"]
     assert out2.calibration["calibration"]["rearm"] is None
 
 
