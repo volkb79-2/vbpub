@@ -26,8 +26,8 @@ schema_version = 1
 kind = "assay"
 assay_lane = "cmru"                 # -> assay.toml [lanes.cmru]
 environment = "tester-unified"
-# 45m (was 20m, 2026-10-21): on the shared gstammtisch host the R0/R1/R3 baseline alone took 790 s under
-# load, and three runs ended BUDGET_EXCEEDED with no failing test; the budget is a hang bound, not a speed target.
+# 45m (was 20m, 2026-10-21): the outer bound of the lane container. The binding deadline is assay.toml
+# [lanes.cmru] budget (40m, baseline + canary); this one must stay above it plus snapshot and install time.
 budget = "45m"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the

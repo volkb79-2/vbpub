@@ -43,7 +43,11 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
 # environment's installed release (CX-D1/CX-D3, BG-04).
 env = { PYTHONPATH = "src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-budget = "20m"
+# 40m (was 20m, 2026-10-21): this is the lane-wide deadline and covers the baseline run AND the import-break
+# canary. On the shared gstammtisch host the baseline alone took 901 s (PASS) and the canary did not finish
+# inside the remaining 5 min, so the lane ended BUDGET_EXCEEDED/LANE_TIMEOUT with no failing test. The
+# budget is a hang bound, not a speed target. run-gate.toml's outer budget must stay above it.
+budget = "40m"
 allow_argv_append = false
 
 [lanes.cmru.isolation]
