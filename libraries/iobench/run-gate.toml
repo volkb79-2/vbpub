@@ -1,0 +1,28 @@
+# iobench's executable gate matrix. All lanes run inside tester-unified; no test
+# runs in the cockpit. The VM lane (real small virtio disk, mechanics only) is a
+# separate registered lane because it needs the QEMU harness, not tester-unified.
+schema_version = 1
+
+[lanes.r0-r1]
+kind = "command"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/libraries/iobench && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q -m 'not vm' --cov=iobench --cov-branch --cov-fail-under=100 --cov-report=term-missing --cov-report=json:coverage.json",
+]
+clean_tree = false
+budget = "20m"
+artifacts = ["coverage.json"]
+
+[lanes.r0-r1.resources]
+memory = "1g"
+
+[lanes.gate]
+kind = "command"
+environment = "bare-host"
+argv = [
+  "bash", "-c",
+  "cd {worktree}/libraries/iobench && run-gate --worktree {worktree} r0-r1",
+]
+clean_tree = false
+budget = "30m"
