@@ -133,6 +133,9 @@ USER root
 
 COPY apt/backports.sources.in /tmp/backports.sources.in
 COPY apt/backports.pref.in /tmp/backports.pref.in
+# Preview archives (oldstable, oldstable-backports, testing): visible to apt, pinned to 100, never auto-selected.
+COPY --chmod=0644 apt/testing.sources /etc/apt/sources.list.d/testing.sources
+COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archives
 COPY apt/packages.list /tmp/packages.list
 COPY pip/wheels.list /tmp/pip/wheels.list
 COPY pip/wheels/ /tmp/pip/wheels/
@@ -215,11 +218,12 @@ RUN set -euo pipefail; \
 
 # Skopeo: try to get the latest version from Debian testing.
 # The trixie release ships skopeo 1.18.x; testing has 1.22.x.
-# We add testing as a temporary source with pin-priority 501 for skopeo ONLY,
-# so no other packages are affected.  If this fails (e.g. testing repo
-# unavailable, dependency conflict), we keep the trixie version silently.
+# Testing is a permanent source (apt/testing.sources) pinned to 100 by apt/preview-archives.pref, so
+# nothing is auto-selected from it. For skopeo ONLY, a temporary 501 pin (just above trixie's 500)
+# lifts that one package; the pin file is removed right
+# after, so the image leaves this step with testing back at 100. If this fails (testing unavailable,
+# dependency conflict), we keep the trixie version silently.
 RUN set -euo pipefail; \
-    echo "deb http://deb.debian.org/debian testing main" > /etc/apt/sources.list.d/testing.list; \
     printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > /etc/apt/preferences.d/skopeo-testing; \
     apt-get update; \
     if apt-get install --dry-run -y skopeo 2>/dev/null | grep -q "^Inst skopeo "; then \
@@ -228,7 +232,7 @@ RUN set -euo pipefail; \
     else \
         echo "[INFO] skopeo from testing not available — keeping trixie version"; \
     fi; \
-    rm -f /etc/apt/sources.list.d/testing.list /etc/apt/preferences.d/skopeo-testing; \
+    rm -f /etc/apt/preferences.d/skopeo-testing; \
     rm -rf /var/lib/apt/lists/*; \
     skopeo --version || echo "[WARN] skopeo not installed"
 
@@ -516,6 +520,19 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     require_file "${DOWNLOADS_DIR}/regctl-${REGCTL_VER}-linux-amd64"; \
     (cd "${DOWNLOADS_DIR}" && sha256sum -c "regctl-${REGCTL_VER}.sha256"); \
     install -m 755 "${DOWNLOADS_DIR}/regctl-${REGCTL_VER}-linux-amd64" /usr/local/bin/regctl; \
+    require_file "${DOWNLOADS_DIR}/gdu-${GDU_VER}-sha256sums.txt"; \
+    require_file "${DOWNLOADS_DIR}/gdu-${GDU_VER}.tgz"; \
+    EXPECTED_GDU_SHA256="$(grep 'gdu_linux_amd64_static.tgz$' "${DOWNLOADS_DIR}/gdu-${GDU_VER}-sha256sums.txt" | awk '{print $1}')"; \
+    echo "${EXPECTED_GDU_SHA256}  ${DOWNLOADS_DIR}/gdu-${GDU_VER}.tgz" | sha256sum -c -; \
+    mkdir -p /tmp/gdu-extract; \
+    tar -xzf "${DOWNLOADS_DIR}/gdu-${GDU_VER}.tgz" -C /tmp/gdu-extract; \
+    require_file /tmp/gdu-extract/gdu_linux_amd64_static; \
+    install -m 755 /tmp/gdu-extract/gdu_linux_amd64_static /usr/local/bin/gdu; \
+    # dust: upstream publishes no checksum file; the staged sidecar carries the sha256 pinned in stage_tool_artifacts.py. \
+    require_file "${DOWNLOADS_DIR}/dust-${DUST_VER}.sha256"; \
+    require_file "${DOWNLOADS_DIR}/dust-${DUST_VER}.tar.gz"; \
+    (cd "${DOWNLOADS_DIR}" && sha256sum -c "dust-${DUST_VER}.sha256"); \
+    install_from_tar "${DOWNLOADS_DIR}/dust-${DUST_VER}.tar.gz" dust /tmp/dust-extract; \
     require_file "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz"; \
@@ -658,6 +675,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     rm -rf \
         /tmp/bat-extract \
         /tmp/crane-extract \
+        /tmp/gdu-extract \
+        /tmp/dust-extract \
         /tmp/grpcurl-extract \
         /tmp/delta-extract \
         /tmp/fd-extract \
@@ -1043,6 +1062,8 @@ RUN set -euo pipefail; \
         echo "b2=${b2_version_output}"; \
         echo "bat=$(bat --version 2>&1 | head -1)"; \
         echo "crane=$(crane version 2>&1 | head -1)"; \
+        echo "gdu=$(gdu --version 2>&1 | awk '/^Version:/ { sub(/^v/, "", $2); print $2; exit }')"; \
+        echo "dust=$(dust --version 2>&1 | awk '{ print $2; exit }')"; \
         echo "regctl=$(regctl version 2>&1 | awk '/^VCSTag:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         if command -v claude >/dev/null 2>&1; then \
             echo "claude=$(claude --version 2>&1 | head -1)"; \
