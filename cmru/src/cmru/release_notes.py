@@ -37,6 +37,8 @@ NOTES_SOURCE_ENV = "CMRU_RELEASE_NOTES_SOURCE"
 #: released with ``--skip-gates REASON``: the single-line REASON. Unset or empty
 #: means the release was gated. Projects cannot declare it (it is reserved).
 GATES_SKIPPED_ENV = "CMRU_RELEASE_GATES_SKIPPED"
+#: The body line's fixed lead-in; the reason follows it.
+GATES_SKIPPED_LINE_PREFIX = "Released without gates (operator): "
 NO_NOTES = "none"
 
 #: Stand-ins the dry-run preview prints for the two facts only a build produces.
@@ -430,7 +432,7 @@ def compose_release_body(headline: str, generated: str, notes: ReleaseNotes | No
     if skipped:
         # An ungated release says so in the public record, whichever publisher
         # (wheel, tarball, variants, image) composed the body.
-        body += f"\n\nReleased without gates (operator): {skipped}"
+        body += f"\n\n{GATES_SKIPPED_LINE_PREFIX}{skipped}"
     if notes is not None:
         body += "\n\n" + notes.text
     return body

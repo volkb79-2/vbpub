@@ -352,7 +352,7 @@ unchanged. The compatibility rationale is in the
 recorded operator decision: the reason is required, shown as a `[WARN]` and in the plan and `--dry-run`,
 recorded in the transaction, and published as `Released without gates (operator): REASON` in each GitHub
 Release body. It skips nothing else, never excuses a project that declares no gate, and is refused with
-`--resume` (a resume uses the recorded choice); see the
+`--resume` (a resume uses the recorded choice); the post-tag body retry `cmru publish --release-tag` restates it from evidence or refuses until you declare `--gates-ran`/`--gates-skipped`; see the
 [design guide](docs/DESIGN-GUIDE.md#an-ungated-release-is-an-explicit-recorded-flag-cmru-skip-01).
 
 `release` detects changed projects, runs their explicit prepare/gate/tag/build/push/promote

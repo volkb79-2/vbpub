@@ -1499,7 +1499,15 @@ The release prints `[WARN] release gates skipped by operator: <reason>`, shows `
 (prepare, build, push, tag, integration, the clean-tree and tool-dependency checks) runs as usual, and a
 project that declares no `run-tests` step is still refused. If the release fails and you resume it,
 use plain `cmru release --resume PATH`: the recorded choice applies, and `--skip-gates` with `--resume`
-is a usage error (exit 2). The rationale is in the
+is a usage error (exit 2). The reason may be at most 500 characters.
+
+If the final `oci-image-release` body step fails after the tag was pushed, retry it with
+`cmru publish <project> --from-checkout --release-tag <tag>`. That retry restates the ungated
+line from the retained transaction (or from the existing Release body); when neither states it, it
+refuses (exit 4) and you declare the fact: `--gates-ran`, or
+`--gates-skipped "operator: re-publish after release cleanup"`.
+
+The rationale is in the
 [design guide](DESIGN-GUIDE.md#an-ungated-release-is-an-explicit-recorded-flag-cmru-skip-01).
 
 ### Resuming a retained release

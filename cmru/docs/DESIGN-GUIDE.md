@@ -1404,13 +1404,26 @@ silent. `cmru release --skip-gates REASON` is the answer.
   record in the transaction (`gates = {skipped, reason}`, bound to its branch and base and written
   once); and the line `Released without gates (operator): REASON` in the GitHub Release body that
   CMRU composes for every publisher (wheel, tarball, variants, image). The body line lives in the
-  one function that assembles a body, so no publisher can omit it. The reason reaches the publisher
+  one function that assembles a body, so no CMRU publisher can omit it (a project's own custom
+  publisher that does not use that function is outside this guarantee). The reason reaches the publisher
   steps as the protected `CMRU_RELEASE_GATES_SKIPPED`, which a project cannot declare or shadow and
   which is cleared outside a transaction.
 - **A resume cannot change the decision.** The choice is part of the transaction. `--resume` uses the
   recorded choice (and prints the warning again); `--skip-gates` together with `--resume` is refused
   (exit 2), because resuming must neither add a skip to a gated transaction nor drop one from an
   ungated one. A transaction created before this feature has no record and resumes as gated.
+- **The post-tag body retry restates the fact from evidence, and fails closed.** `cmru publish
+  --release-tag TAG` rewrites the whole Release body, so it must restate whether the release skipped
+  its gates. It derives that from, in order: (1) the retained transaction that created exactly that tag
+  at that commit (located through its tag-attempt record, then its gates record); (2) the live Release
+  body, but only when it already carries the `Released without gates (operator):` line, because a body
+  without it proves nothing (an earlier rewrite may have dropped it); (3) otherwise it refuses
+  (exit 4) and requires the operator's explicit `--gates-ran` or `--gates-skipped REASON`. It never
+  assumes "gated" when the fact cannot be read, a transaction older than this feature (no gates
+  record) counts as undetermined, and an explicit declaration that contradicts a derived fact refuses.
+  A malformed or foreign gates record is likewise a typed refusal (exit 4), not a crash.
+- **The reason is at most 500 characters** (longer is a usage error, exit 2): it travels in argv,
+  an environment variable and a public Release body.
 
 ## Release uses a wheel-bound controller
 

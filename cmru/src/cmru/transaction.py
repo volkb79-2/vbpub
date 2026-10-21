@@ -1047,6 +1047,13 @@ def read_release_gates(
     malformed, or bound to another transaction is an error, never a default.
     """
     path = _scope_dir(repo_root) / f"{_release_token(workspace)}.gates.json"
+    return _read_gates_file(path, branch=workspace.branch, base=workspace.base)
+
+
+def _read_gates_file(
+    path: Path, *, branch: str | None, base: str | None,
+) -> dict[str, object] | None:
+    """Parse one gates sidecar; ``branch``/``base`` ``None`` accept the record's own binding."""
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -1068,8 +1075,10 @@ def read_release_gates(
         or set(raw) != {"schema_version", "transaction", "base", "gates"}
         or type(raw["schema_version"]) is not int
         or raw["schema_version"] != 1
-        or raw["transaction"] != workspace.branch
-        or raw["base"] != workspace.base
+        or not isinstance(raw["transaction"], str)
+        or not isinstance(raw["base"], str)
+        or (branch is not None and raw["transaction"] != branch)
+        or (base is not None and raw["base"] != base)
         or not isinstance(gates, dict)
         or set(gates) != {"skipped", "reason"}
         or type(gates["skipped"]) is not bool
@@ -1077,9 +1086,47 @@ def read_release_gates(
         or (reason is not None and (not isinstance(reason, str) or not reason.strip()))
     ):
         raise RuntimeError(
-            f"release gates record is malformed or does not match {workspace.branch}: {path}"
+            f"release gates record is malformed or does not match its transaction: {path}"
         )
     return {"skipped": gates["skipped"], "reason": reason}
+
+
+def find_release_gates_for_tag(
+    repo_root: Path, tag: str, tag_commit: str,
+) -> dict[str, object] | None:
+    """The gates fact of the retained transaction that created exactly ``tag`` at ``tag_commit``.
+
+    Located through the transaction's own tag-attempt record (the exact local tag
+    objects it tried to push), then its gates sidecar. ``None`` means no retained
+    transaction names this tag, or the one that does has no gates record (a
+    transaction older than CMRU-SKIP-01): the fact is then UNDETERMINED, never
+    assumed gated. Two transactions naming the tag with different facts, or any
+    unreadable record, is an error.
+    """
+    scope_dir = _scope_dir(repo_root)
+    facts: list[dict[str, object]] = []
+    for attempts in sorted(scope_dir.glob("*.tag-attempts.json")):
+        try:
+            raw = json.loads(
+                attempts.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise RuntimeError(f"cannot read release tag attempt record {attempts}: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise RuntimeError(f"release tag attempt record is malformed: {attempts}")
+        if raw.get(f"refs/tags/{tag}") != tag_commit:
+            continue
+        token = attempts.name[: -len(".tag-attempts.json")]
+        fact = _read_gates_file(scope_dir / f"{token}.gates.json", branch=None, base=None)
+        if fact is not None:
+            facts.append(fact)
+    if not facts:
+        return None
+    if any(fact != facts[0] for fact in facts):
+        raise RuntimeError(
+            f"retained transactions disagree on whether {tag} was released without gates"
+        )
+    return facts[0]
 
 
 def _valid_local_branch_name(branch: str, repo_root: Path) -> bool:

@@ -62,7 +62,7 @@ cmru release --discard logs --discard artifacts
 to release without gates, never a convenience. The reason is required, recorded in the transaction and
 published in each Release body as `Released without gates (operator): REASON`. Never add it, edit a
 project's gate, or hand-tag to get around a failing gate on your own; a project with no declared gate
-is still refused; `--resume` uses the recorded choice and refuses the flag.
+is still refused; `--resume` uses the recorded choice and refuses the flag. A body retry (`cmru publish <project> --from-checkout --release-tag TAG`) restates the fact from evidence and otherwise refuses until `--gates-ran` or `--gates-skipped REASON` is given.
 
 `cmru release` runs the ENTIRE release as one transaction in its own worktree.
 By default it snapshots `origin/main` (`--allow-uncommitted` allows project edits

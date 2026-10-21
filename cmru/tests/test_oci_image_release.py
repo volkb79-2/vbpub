@@ -200,6 +200,16 @@ def _body_command(prefix: str) -> dict:
 @pytest.fixture
 def retry_repo(tmp_path, monkeypatch):
     """A real tagged checkout with a bare origin; records handler runs and origin queries."""
+    from cmru import release
+
+    class _NoPublishedRelease:  # CMRU-SKIP-01: the retry consults the live body; none exists here
+        def __init__(self, *_args):
+            pass
+
+        def get_release_by_tag(self, _tag):
+            return None
+
+    monkeypatch.setattr(release, "GitHubReleases", _NoPublishedRelease)
 
     def build(*, prefix: str = "demo", annotated: bool = False, push_tag: bool = True,
               step_env: dict | None = None, login: dict | None = None,
@@ -269,6 +279,7 @@ def _retry(repo, tag=None):
         repo.root, repo.project, tag or repo.tag, git_auth=None,
         github_config=cli.GitHubConfig("o", "r", "token", "user"),
         env_config=cli.ReleaseEnvConfig({}, None),
+        gates_ran=True,  # CMRU-SKIP-01: nothing here records the gates fact, so declare it
     )
 
 
@@ -675,6 +686,8 @@ def test_publish_release_tag_uses_the_explicit_secret_file_and_retry_workflow(
             "git_auth": cli.GitHubGitAuth("o", "r", "token"),
             "github_config": loaded[-2],
             "env_config": loaded[-1],
+            "gates_skipped": None,
+            "gates_ran": False,
         },
     )]
 

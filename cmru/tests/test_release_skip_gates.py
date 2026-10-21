@@ -21,6 +21,7 @@ from cmru.release import (
     build_oci_image_release_body, build_release_body, build_variants_release_body,
 )
 from cmru.release_notes import GATES_SKIPPED_ENV, ReleaseNotes
+from cmru.errors import RefusedBeforeChange
 from cmru.version import ReleasePlanRefused
 
 BASE = "a" * 40
@@ -118,7 +119,7 @@ def test_skip_gates_does_not_execute_run_tests_and_runs_every_other_step(monkeyp
 
 def test_skip_gates_still_refuses_a_project_with_no_declared_gate(tmp_path):
     with pytest.raises(RuntimeError, match="no release gate is declared"):
-        cli._run_release_gates(tmp_path, {"demo": _gate_project({})}, ["demo"], skip_gates=True)
+        cli._run_release_gates(tmp_path, {"demo": _gate_project({})}, ["demo"], skip_gates=REASON)
 
 
 def test_a_skipped_gate_never_asks_git_for_a_gate_commit(monkeypatch, tmp_path, capsys):
@@ -129,7 +130,7 @@ def test_a_skipped_gate_never_asks_git_for_a_gate_commit(monkeypatch, tmp_path, 
         cli, "run_project_step", lambda *a, **k: (_ for _ in ()).throw(AssertionError("gate")),
     )
     cli._run_release_gates(
-        tmp_path, {"demo": _gate_project({"run-tests": [object()]})}, ["demo"], skip_gates=True,
+        tmp_path, {"demo": _gate_project({"run-tests": [object()]})}, ["demo"], skip_gates=REASON,
     )
     assert "demo: release gate skipped by operator" in capsys.readouterr().out
 
@@ -162,8 +163,8 @@ def test_a_versioning_commit_rechecks_instead_of_rerunning_a_skipped_gate(monkey
         github_config=cli.GitHubConfig("o", "r", "t", "user"),
         env_config=cli.ReleaseEnvConfig({}, None), no_build=True, gates_skipped=REASON,
     )
-    assert seen == [True, True]
-    assert "re-checking the skipped release gate" in capsys.readouterr().out
+    assert seen == [REASON, REASON]
+    assert "re-checking the candidate source (release gate skipped by operator)" in capsys.readouterr().out
 
 
 # --- the plan, the warning, dry-run and the transaction's record --------------
@@ -525,3 +526,251 @@ def test_a_project_cannot_declare_the_reserved_name():
     from cmru import config
 
     assert config.is_reserved_internal_env(GATES_SKIPPED_ENV)
+
+
+# --- review round: reason cap, ambient clearing, typed refusal, wording -------
+
+
+def test_a_reason_over_500_characters_is_a_usage_error(capsys):
+    assert cli._gates_reason("x" * 500) == "x" * 500
+    assert cli.main(["release", "--skip-gates", "x" * 501]) == 2
+    assert "at most 500 are allowed" in capsys.readouterr().err
+
+
+def test_the_skip_log_line_names_the_reason(monkeypatch, tmp_path, capsys):
+    cli._run_release_gates(
+        tmp_path, {"demo": _gate_project({"run-tests": [object()]})}, ["demo"], skip_gates=REASON,
+    )
+    assert f"release gate skipped by operator (--skip-gates): {REASON}" in capsys.readouterr().out
+
+
+def test_the_child_clears_a_callers_exported_value_before_any_prepare_step(
+    child, monkeypatch,
+):
+    seen = []
+    monkeypatch.setenv(GATES_SKIPPED_ENV, "exported in the caller's shell")
+    monkeypatch.setattr(
+        cli, "_prepare_dry_run_external_versions",
+        lambda *a, **k: seen.append(os.environ.get(GATES_SKIPPED_ENV)),
+    )
+
+    cli.main(["release", "--config", child.config, "--dry-run"])
+
+    assert seen == [None]
+
+
+@pytest.mark.real_release_gates_plan
+@pytest.mark.parametrize("damage", ["{not json", "foreign"])
+def test_an_unusable_gates_record_is_a_typed_refusal_not_a_crash(
+    child, scope, capsys, damage,
+):
+    workspace = transaction.ReleaseWorkspace(Path("."), Path("."), "cmru/release/child", BASE)
+    path = _record_path(scope, workspace)
+    if damage == "foreign":
+        document = _good(_workspace(Path(".")))
+        path.write_text(json.dumps(document), encoding="utf-8")
+    else:
+        path.write_text(damage, encoding="utf-8")
+
+    assert cli.main(["release", "--config", child.config]) == exit_codes.REFUSED
+
+    assert child.calls == ["refused"]
+    err = capsys.readouterr().err
+    assert "[ERROR]" in err and "unusable gates record" in err
+
+
+def test_a_skipped_candidate_mismatch_does_not_talk_about_a_gate_receipt(monkeypatch, tmp_path):
+    receipts = iter(("gated", "elsewhere"))
+    for name, value in (
+        ("write_release_progress", lambda *a: None),
+        ("push_backup_branch", lambda *a, **k: None),
+    ):
+        monkeypatch.setattr(transaction, name, value)
+    monkeypatch.setattr(transaction, "read_release_source", lambda *_a: None)
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_prepare_release_projects", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_run_release_gates_on_exact_head", lambda *a, **k: next(receipts))
+    monkeypatch.setattr(cli, "_git", lambda *a, **k: "candidate")
+    monkeypatch.setattr(version, "release_cmd", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_tag_on_head", lambda *a: "demo-v1.0.0")
+    monkeypatch.setattr(cli, "_discard_unpushed_release_tags", lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="recorded source check .* is for elsewhere") as raised:
+        cli._release_projects_sequentially(
+            tmp_path, {"demo": cli.ProjectConfig("demo", {}, {}, prefix="demo-v")},
+            _workspace(tmp_path), ["demo"],
+            github_config=cli.GitHubConfig("o", "r", "t", "user"),
+            env_config=cli.ReleaseEnvConfig({}, None), gates_skipped=REASON,
+        )
+    assert "gate receipt" not in str(raised.value)
+
+
+# --- the post-tag body retry (cmru publish --release-tag) ---------------------
+
+TAG = "img-v1.2.3"
+TAG_COMMIT = "c" * 40
+
+
+class _FakeReleases:
+    body = None  # None = no Release published
+
+    def __init__(self, *_args):
+        pass
+
+    def get_release_by_tag(self, tag):
+        assert tag == TAG
+        return None if type(self).body is None else {"body": type(self).body}
+
+
+@pytest.fixture
+def retry(scope, monkeypatch, tmp_path):
+    from cmru import release
+
+    _FakeReleases.body = None
+    monkeypatch.setattr(release, "GitHubReleases", _FakeReleases)
+    gh = cli.GitHubConfig("o", "r", "t", "user")
+
+    def fact(**explicit):
+        return cli._retry_gates_fact(
+            tmp_path, "img", TAG, TAG_COMMIT, gh,
+            gates_skipped=explicit.get("gates_skipped"),
+            gates_ran=explicit.get("gates_ran", False),
+        )
+
+    def record(token, *, skip, tag_commit=TAG_COMMIT, with_gates=True):
+        workspace = transaction.ReleaseWorkspace(
+            tmp_path, tmp_path / token, f"cmru-release-{token}", BASE,
+        )
+        (scope / f"{transaction._release_token(workspace)}.tag-attempts.json").write_text(
+            json.dumps({f"refs/tags/{TAG}": tag_commit}), encoding="utf-8",
+        )
+        if with_gates:
+            transaction.write_release_gates(tmp_path, workspace, skip)
+        return workspace
+
+    return SimpleNamespace(fact=fact, record=record, scope=scope)
+
+
+def test_source_1_a_retained_skipped_transaction_restates_the_skip(retry):
+    retry.record("20261021_100000-img-aaaaaa", skip=REASON)
+    assert retry.fact() == REASON
+
+
+def test_source_1_a_retained_gated_transaction_stays_gated(retry):
+    retry.record("20261021_100000-img-aaaaaa", skip=None)
+    assert retry.fact() is None
+
+
+def test_source_1_ignores_a_transaction_that_tagged_another_commit(retry):
+    retry.record("20261021_100000-img-aaaaaa", skip=REASON, tag_commit="d" * 40)
+    with pytest.raises(RefusedBeforeChange, match="cannot determine"):
+        retry.fact()
+
+
+def test_source_1_agreeing_transactions_are_fine_and_disagreeing_ones_refuse(retry):
+    retry.record("20261021_100000-img-aaaaaa", skip=REASON)
+    retry.record("20261021_110000-img-bbbbbb", skip=REASON)
+    assert retry.fact() == REASON
+    retry.record("20261021_120000-img-cccccc", skip=None)
+    with pytest.raises(RefusedBeforeChange, match="disagree"):
+        retry.fact()
+
+
+def test_source_1_a_transaction_without_a_gates_record_is_undetermined_not_gated(retry):
+    retry.record("20261021_100000-img-aaaaaa", skip=None, with_gates=False)
+    with pytest.raises(RefusedBeforeChange, match="--gates-ran"):
+        retry.fact()
+
+
+@pytest.mark.parametrize("damage", ["{not json", "[1]"])
+def test_source_1_an_unreadable_tag_attempt_record_refuses(retry, damage):
+    (retry.scope / "20261021_100000-img-aaaaaa.tag-attempts.json").write_text(
+        damage, encoding="utf-8",
+    )
+    with pytest.raises(RefusedBeforeChange, match="cannot determine"):
+        retry.fact()
+
+
+def test_source_1_a_malformed_gates_record_refuses_instead_of_defaulting(retry):
+    workspace = retry.record("20261021_100000-img-aaaaaa", skip=REASON)
+    (retry.scope / f"{transaction._release_token(workspace)}.gates.json").write_text(
+        "{}", encoding="utf-8",
+    )
+    with pytest.raises(RefusedBeforeChange, match="malformed"):
+        retry.fact()
+
+
+def test_source_2_an_existing_body_that_states_the_skip_is_preserved(retry, capsys):
+    _FakeReleases.body = f"img 1.2.3\n\n{LINE}\n\n## img-v1.2.3 - 2026-10-21\n- Fixed."
+    assert retry.fact() == REASON
+    assert "taken from the existing Release body" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("body", [None, "img 1.2.3\n\n- Fixed.", "Released without gates (operator):  "])
+def test_source_3_a_body_that_does_not_state_it_proves_nothing_and_refuses(retry, body):
+    _FakeReleases.body = body
+    with pytest.raises(RefusedBeforeChange, match="--gates-ran") as raised:
+        retry.fact()
+    assert "--gates-skipped REASON" in str(raised.value)
+    assert RefusedBeforeChange.default_exit_code == exit_codes.REFUSED
+
+
+def test_source_3_an_explicit_declaration_settles_an_undetermined_fact(retry):
+    assert retry.fact(gates_ran=True) is None
+    assert retry.fact(gates_skipped=REASON) == REASON
+
+
+def test_an_explicit_declaration_cannot_contradict_a_derived_fact(retry):
+    retry.record("20261021_100000-img-aaaaaa", skip=REASON)
+    with pytest.raises(RefusedBeforeChange, match="contradicts"):
+        retry.fact(gates_ran=True)
+    assert retry.fact(gates_skipped=REASON) == REASON
+    _FakeReleases.body = None
+
+
+def test_an_explicit_gated_declaration_cannot_contradict_a_recorded_gated_release(retry):
+    retry.record("20261021_100000-img-aaaaaa", skip=None)
+    with pytest.raises(RefusedBeforeChange, match="was gated"):
+        retry.fact(gates_skipped=REASON)
+
+
+@pytest.mark.parametrize("skipped", [REASON, None])
+def test_the_body_retry_hands_the_fact_to_the_publisher_step(monkeypatch, tmp_path, skipped):
+    seen = {}
+    monkeypatch.setattr(
+        cli, "_prepare_oci_release_body_retry",
+        lambda *a, **k: ("retry-project", TAG_COMMIT, "ghcr.io/o/img", "1.2.3"),
+    )
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *a: None)
+    monkeypatch.setattr(cli, "_retry_gates_fact", lambda *a, **k: skipped)
+    monkeypatch.setattr(
+        cli, "run_project_step", lambda *a, protected_env: seen.update(protected_env),
+    )
+    project = cli.ProjectConfig("img", {}, {}, prefix="img-v")
+
+    cli._run_oci_release_body_retry(
+        tmp_path, project, TAG, git_auth=None,
+        github_config=cli.GitHubConfig("o", "r", "t", "user"),
+        env_config=cli.ReleaseEnvConfig({}, None),
+    )
+
+    assert seen.get(GATES_SKIPPED_ENV) == skipped
+    assert seen["CMRU_RELEASE_TAG"] == TAG
+
+
+def test_a_caller_supplied_protected_value_wins_inside_run_project_step(tmp_path, monkeypatch):
+    import subprocess
+
+    root = tmp_path / "demo"
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
+    (root / "cmru.toml").write_text(_STEP_PROJECT, encoding="utf-8")
+    (_root, configs, *_rest) = cli.load_config(root / "cmru.toml")
+    seen = []
+    monkeypatch.setattr("cmru.cli.execute_step", lambda *a, **kw: seen.append(kw))
+    monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda *_a, **_k: False)
+
+    cli.run_project_step(
+        configs["demo"], "build", root, root / "logs", protected_env={GATES_SKIPPED_ENV: REASON},
+    )
+
+    assert seen[0]["protected_env"][GATES_SKIPPED_ENV] == REASON
