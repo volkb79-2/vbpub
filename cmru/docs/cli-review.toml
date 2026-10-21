@@ -2664,6 +2664,19 @@ effects = ["Stops at configuration discovery (exit 2); no candidate is created."
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--set-version/--set-version]"]
 
 [[cases]]
+id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--skip-gates/--skip-gates"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c586c26472759583e8108c3b6045646ba20a4d27d2d37abc65864adf266c6a5f"
+rationale = "Exact spelling of the explicit, recorded ungated-release option (CMRU-SKIP-01); its non-empty reason and its refusal with --resume are pinned in tests/test_release_skip_gates.py."
+invocation = ["release", "--skip-gates", "operator: re-publish after release cleanup"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "config file not found"
+effects = ["The option and its reason are recognized, then configuration discovery refuses (exit 2); no candidate is created and no gate decision is recorded."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[release/option-spelling/--skip-gates/--skip-gates]"]
+
+[[cases]]
 id = "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--show-run-details/--show-run-details"
 state = "active"
 decision = "accept"

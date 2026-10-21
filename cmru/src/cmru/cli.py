@@ -377,6 +377,13 @@ def run_project_step(
             for key in ("CMRU_RELEASE_COMMIT", "CMRU_RELEASE_TAG"):
                 internal_env.setdefault(key, None)
             internal_env.setdefault("CMRU_RELEASE_GATE_COMMIT", None)
+            # CMRU-SKIP-01: the operator's recorded `--skip-gates` reason reaches
+            # the publisher only from a transaction child that set it; an ambient
+            # shell value outside one is cleared like every protected name.
+            from cmru.release_notes import GATES_SKIPPED_ENV
+            internal_env[GATES_SKIPPED_ENV] = (
+                (os.environ.get(GATES_SKIPPED_ENV) or None) if has_transaction_context else None
+            )
             # KI-75: where a publisher finds the curated section for the version
             # it releases (or `none` when the project opted out of a changelog).
             # Protected: a project cannot declare or replace it.
@@ -3160,11 +3167,18 @@ def _run_release_gates_on_exact_head(
     repo_root: Path,
     configs: Mapping[str, "ProjectConfig"],
     names: List[str],
+    *,
+    skip_gates: bool = False,
 ) -> str:
-    """Run the declared gate and return only the commit it actually judged."""
+    """Run the declared gate and return only the commit it actually judged.
+
+    With ``skip_gates`` the gate is not executed but every source-consistency
+    check around it still runs, and the returned commit is the one tagged."""
     judged_sha = _git(repo_root, "rev-parse", "HEAD")
     _assert_release_gate_source_matches_commit(repo_root, judged_sha, phase="before")
-    _run_release_gates(repo_root, configs, names, candidate_sha=judged_sha)
+    _run_release_gates(
+        repo_root, configs, names, candidate_sha=judged_sha, skip_gates=skip_gates,
+    )
     current_sha = _git(repo_root, "rev-parse", "HEAD")
     if current_sha != judged_sha:
         raise RuntimeError(
@@ -3451,6 +3465,7 @@ def _release_projects_sequentially(
     major: bool = False,
     set_version: Optional[str] = None,
     version_plan: Optional[Mapping[str, Optional[str]]] = None,
+    gates_skipped: Optional[str] = None,
 ) -> List[str]:
     """Release every named project one after another.
 
@@ -3512,7 +3527,7 @@ def _release_projects_sequentially(
             workspace, git_auth=git_auth, require_feature_source=feature_source,
         )
         gated_sha = _run_release_gates_on_exact_head(
-            repo_root, configs, [name]
+            repo_root, configs, [name], skip_gates=gates_skipped is not None,
         )
 
         strategy = _version_strategy(project)
@@ -3560,9 +3575,13 @@ def _release_projects_sequentially(
                     # initial pre-tag gate. Re-run the real gate on that exact
                     # candidate so the commit that produces the artifact has passed
                     # the same acceptance contract before publication begins.
-                    log_info(f"{name}: versioning changed the candidate; re-running release gate")
+                    log_info(
+                        f"{name}: versioning changed the candidate; "
+                        + ("re-checking the skipped release gate" if gates_skipped is not None
+                           else "re-running release gate")
+                    )
                     gated_sha = _run_release_gates_on_exact_head(
-                        repo_root, configs, [name]
+                        repo_root, configs, [name], skip_gates=gates_skipped is not None,
                     )
                     candidate_sha = _git(repo_root, "rev-parse", "HEAD")
                 if candidate_sha != gated_sha:
@@ -4723,8 +4742,13 @@ def _run_release_gates(
     project_names: List[str],
     *,
     candidate_sha: str | None = None,
+    skip_gates: bool = False,
 ) -> None:
-    """Run every selected project's declared release gate before source promotion."""
+    """Run every selected project's declared release gate before source promotion.
+
+    ``skip_gates`` (the operator's recorded ``--skip-gates``) skips only the
+    execution of ``run-tests``: a project that declares no gate is still refused,
+    so the option never excuses a missing gate."""
     log_dir = repo_root / "logs"
     gate_commit = candidate_sha
     for name in project_names:
@@ -4734,6 +4758,9 @@ def _run_release_gates(
                 f"{name}: no release gate is declared ([project.{name}.steps.run-tests]); "
                 "cmru refuses to tag or publish without a meaningful tester-unified gate"
             )
+        if skip_gates:
+            log_info(f"{name}: release gate skipped by operator (--skip-gates)")
+            continue
         if gate_commit is None:
             # Only a declared gate needs the commit identity; a missing gate is
             # a typed refusal that must not depend on a Git checkout.
@@ -6025,6 +6052,13 @@ def _release_or_status(verb: str, args, rest: List[str], runtime=None) -> None:
     vargs = args
     if verb == "release":
         _resolve_ahead_check_ref(vargs)
+        if vargs.resume and getattr(vargs, "skip_gates", None) is not None:
+            _usage_error(
+                "--skip-gates cannot be combined with --resume: whether a release skips its "
+                "gates is recorded when the transaction starts, and a resume uses that record "
+                "(it can neither add nor remove a skip). Run `cmru release --resume` without "
+                "--skip-gates, or abandon the candidate and start a new release"
+            )
     _apply_output_options(vargs)
     cfg_path = _resolve_config(vargs.config)
     selected_secret_file = (
@@ -6861,6 +6895,54 @@ def _release_launcher(
         sys.exit(1)
 
 
+def _release_gates_plan(
+    repo_root: Path, workspace: transaction.ReleaseWorkspace, requested: Optional[str],
+    *, dry_run: bool,
+) -> Optional[str]:
+    """The transaction's ``--skip-gates`` reason (``None`` = gated), recorded once.
+
+    A new transaction records what its flag selected; a retry (``--resume``)
+    uses the recorded choice, and the launcher already refused a flag given with
+    ``--resume``. A flag that contradicts an existing record refuses here too,
+    because silently preferring either side would change what was gated
+    (CMRU-SKIP-01). A dry run records nothing.
+    """
+    from cmru.version import ReleasePlanRefused
+
+    recorded = transaction.read_release_gates(repo_root, workspace)
+    if recorded is None:
+        if not dry_run:
+            transaction.write_release_gates(repo_root, workspace, requested)
+        return requested
+    reason = recorded["reason"]
+    if requested is not None and requested != reason:
+        raise ReleasePlanRefused(
+            f"retained transaction {workspace.branch} recorded "
+            + ("--skip-gates " + repr(reason) if reason is not None else "gated (no --skip-gates)")
+            + f"; it cannot change to --skip-gates {requested!r}. Resume without --skip-gates, "
+            "or abandon the candidate and start a new release"
+        )
+    return reason if isinstance(reason, str) else None
+
+
+def _announce_gates_skipped(release_names: Sequence[str], reason: Optional[str]) -> None:
+    """Make an ungated release impossible to miss, and export it to the publishers.
+
+    Sets (or clears) the protected ``CMRU_RELEASE_GATES_SKIPPED`` input that the
+    release-body builder reads, so the reason is public in every project's
+    GitHub Release body.
+    """
+    from cmru.release_notes import GATES_SKIPPED_ENV
+
+    if reason is None:
+        os.environ.pop(GATES_SKIPPED_ENV, None)
+        return
+    os.environ[GATES_SKIPPED_ENV] = reason
+    log_warn(f"release gates skipped by operator: {reason}")
+    for name in release_names:
+        log_info(f"{name}: phase run-tests: skipped (operator: {reason})")
+
+
 def _release_child(
     vargs, repo_root: Path, configs, ordered, project_order,
     selected_names: List[str], github_config, env_config, git_auth,
@@ -7002,6 +7084,16 @@ def _release_child(
         transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
         sys.exit(exit_codes.REFUSED)
 
+    try:
+        gates_skipped = _release_gates_plan(
+            repo_root, workspace, getattr(vargs, "skip_gates", None), dry_run=vargs.dry_run,
+        )
+    except ReleasePlanRefused as exc:
+        log_error(str(exc))
+        transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+        sys.exit(exit_codes.REFUSED)
+    _announce_gates_skipped(release_names, gates_skipped)
+
     if vargs.dry_run:
         # Preview only: show what would be tagged for every changed project, no
         # commits/gates/promotion/tags — nothing here has side effects.
@@ -7066,6 +7158,7 @@ def _release_child(
         git_auth=git_auth,
         no_build=vargs.no_build, minor=vargs.minor, major=vargs.major,
         set_version=vargs.set_version, version_plan=version_plan,
+        gates_skipped=gates_skipped,
     )
 
     if released:
@@ -7083,6 +7176,20 @@ def _non_empty(value: str) -> str:
     if not value.strip():
         raise argparse.ArgumentTypeError("the value must not be empty")
     return value
+
+
+def _gates_reason(value: str) -> str:
+    """argparse ``type`` of ``--skip-gates``: one non-empty line (inner whitespace collapsed).
+
+    The reason is recorded and published verbatim, so it must be a real, single-line
+    statement; an empty or whitespace-only one (``--skip-gates "$UNSET"``) is a usage error.
+    """
+    import argparse
+
+    reason = " ".join(value.split())
+    if not reason:
+        raise argparse.ArgumentTypeError("the reason must not be empty")
+    return reason
 
 
 def _usage_error(message: str) -> None:
@@ -7845,6 +7952,7 @@ def _build_cli():
         OptionSpec(("--allow-uncommitted",), "allow default origin/main release to omit project edits (not valid for feature-source release or resume)", parser_kwargs={"action": "store_true", "default": False}),
         OptionSpec(("--allow-tag-ahead-of-head",), "allow a tag strictly ahead of the snapshot", parser_kwargs={"action": "store_true", "default": False}),
         OptionSpec(("--allow-stale-tool-deps",), "allow declared tool dependencies behind their latest release", parser_kwargs={"action": "store_true", "default": False}),
+        OptionSpec(("--skip-gates",), "release WITHOUT running the run-tests gate; the reason is recorded and published in each Release body (not valid with --resume)", metavar="REASON", parser_kwargs={"default": None, "type": _gates_reason}),
         *detail_opts,
         OptionSpec(("--discard",), "do not retain this kind of output after a successful release; repeat for several", metavar="{logs,artifacts,evidence}", parser_kwargs={"action": "append", "choices": ("logs", "artifacts", "evidence"), "default": None}),
         OptionSpec(("--ahead-check-ref",), "git ref the default-mode local-ahead guard compares against (snapshot is origin/main)", metavar="REF", parser_kwargs={"default": None}),

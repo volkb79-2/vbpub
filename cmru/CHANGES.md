@@ -31,6 +31,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+### Added
+- `cmru release --skip-gates REASON` (CMRU-SKIP-01) releases without running the `run-tests` gate, as an explicit, recorded operator decision. REASON is required. It skips only the execution of `steps.run-tests`: prepare, build, push, tagging, changelog, integration and every source-consistency and tool-dependency check run as before, and a project that declares no gate is still refused. The skip is announced as a `[WARN]`, shown as `run-tests: skipped (operator: ...)` in the plan and `--dry-run`, recorded in the transaction, and published as `Released without gates (operator): REASON` in every GitHub Release body. A `--resume` uses the recorded choice and refuses the flag.
+
 <!-- cmru: release history -->
 
 ## [6.2.1] - 2026-10-21

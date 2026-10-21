@@ -3065,6 +3065,19 @@
       "signature": "sha256:59f6a7c414c5156d71618600a89887d48ab97390ab4c21eef6a49c5b03cd13a2"
     },
     {
+      "id": "case:route:entrypoint:cmru/release/option-spelling/option:route:entrypoint:cmru/release/--skip-gates/--skip-gates",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:cmru/release/--skip-gates"
+      ],
+      "route_id": "route:entrypoint:cmru/release",
+      "shape": {
+        "option_id": "option:route:entrypoint:cmru/release/--skip-gates",
+        "spelling": "--skip-gates"
+      },
+      "signature": "sha256:c586c26472759583e8108c3b6045646ba20a4d27d2d37abc65864adf266c6a5f"
+    },
+    {
       "id": "case:route:entrypoint:cmru/resolve/argument-shape/argument:route:entrypoint:cmru/resolve/target",
       "kind": "argument-shape",
       "members": [
@@ -11244,6 +11257,49 @@
           "type": null
         },
         {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--skip-gates",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "release WITHOUT running the run-tests gate; the reason is recorded and published in each Release body (not valid with --resume)",
+          "dest": "skip_gates",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--skip-gates"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:cmru/release/--skip-gates",
+          "kind": "option",
+          "metavar": "REASON",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null,
+            "type": {
+              "callable": "cmru.cli._gates_reason"
+            }
+          },
+          "parser_path": [
+            "release"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "cmru.cli._gates_reason"
+          }
+        },
+        {
           "action": "argparse._StoreTrueAction",
           "before_nested_subcommand": false,
           "canonical": "--show-run-details",
@@ -11472,7 +11528,8 @@
       "kind": "invocation",
       "no_args_action": false,
       "opaque_fields": [
-        "option:route:entrypoint:cmru/release/--log-prefix-time-short.action"
+        "option:route:entrypoint:cmru/release/--log-prefix-time-short.action",
+        "option:route:entrypoint:cmru/release/--skip-gates.type"
       ],
       "parser_configured_by_callback": false,
       "parser_settings": [

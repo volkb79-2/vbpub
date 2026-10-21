@@ -174,6 +174,11 @@ network, is its own explicit "unresolved" outcome, never a pass and never a fail
 This check makes zero network calls when nothing in this run declares a tool
 dependency, or when nothing changed. See `cmru tool-deps` for the standalone verb.
 
+`--skip-gates REASON` (CMRU-SKIP-01) is part of the transaction: the child records `{skipped, reason}`
+beside the version plan before any side effect, a `--resume` uses that record (the flag is refused with
+`--resume`), and only the execution of `run-tests` is skipped; the source-consistency checks around the
+gate still run.
+
 Every project this plan skips (equal, ahead-and-allowed, or the ordinary "behind" case) prints
 its own `[INFO] Unchanged, skipping: <name> (…)` line naming the exact baseline tag and reason —
 never a bare list of names (SPEC S12.2e); see the worked example below. After a dry run has

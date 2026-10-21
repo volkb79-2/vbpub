@@ -53,9 +53,16 @@ cmru release ciu --set-version 7.0.0 # explicit version (exactly one project)
 cmru release ciu --from-worktree     # release the exact pushed feature branch commit
 cmru release ciu --from-worktree --secret-file /path/to/main/cmru.secret.toml
 cmru release --no-build              # tag and push only
+cmru release ciu --skip-gates "operator: re-publish after release cleanup"   # ONLY on the operator's explicit say-so
 cmru release --resume cmru-release-20261006_101500-ciu-ab12cd
 cmru release --discard logs --discard artifacts
 ```
+
+`--skip-gates REASON` skips only running `run-tests`: it is for an explicit operator decision
+to release without gates, never a convenience. The reason is required, recorded in the transaction and
+published in each Release body as `Released without gates (operator): REASON`. Never add it, edit a
+project's gate, or hand-tag to get around a failing gate on your own; a project with no declared gate
+is still refused; `--resume` uses the recorded choice and refuses the flag.
 
 `cmru release` runs the ENTIRE release as one transaction in its own worktree.
 By default it snapshots `origin/main` (`--allow-uncommitted` allows project edits

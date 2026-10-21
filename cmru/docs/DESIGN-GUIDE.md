@@ -1378,6 +1378,40 @@ handoff keeps the resolved credential out of the isolated transaction worktree, 
 environment, and logs. This behavior is implemented in the current candidate; stable
 availability waits for KI-82's registered gate and acceptance evidence.
 
+## An ungated release is an explicit, recorded flag (CMRU-SKIP-01)
+
+Every release runs `[steps.run-tests]`; there was no supported way to publish without it.
+The operator sometimes has to (re-publishing after a release cleanup, a gate that cannot run on
+the host that day). The question was never whether to allow it, but how to keep it from becoming
+silent. `cmru release --skip-gates REASON` is the answer.
+
+- **A flag with a mandatory reason, not a config edit or an environment variable.** Editing a
+  project's `run-tests` step (or removing it) changes the project's standing contract for every
+  later release and leaves no trace in the release that used it; an ambient variable can be left
+  exported in a shell and silently ungate the next release. A flag lives and dies with one
+  invocation, and its required, non-empty, single-line REASON is the audit trail: an empty or
+  whitespace-only reason is a usage error (exit 2).
+- **It skips exactly one thing: the execution of `run-tests`.** Preparation, the build, the push,
+  tagging, changelog generation, integration and promotion run unchanged, and so does every
+  verification: clean tree, ahead-check, tool dependencies, and the source-consistency checks around
+  the (skipped) gate that compare tracked bytes with the candidate commit. After versioning moves
+  the candidate, the "gate" slot is re-checked the same way and still skipped.
+- **It does not excuse a missing gate.** A project that declares no `run-tests` step is still
+  refused: the flag waives running a declared gate, not having one. `cmru standards` keeps
+  requiring the declaration, and `cmru build` and `cmru publish` are untouched.
+- **It is visible in four places.** A `[WARN] release gates skipped by operator: REASON` line; the
+  `run-tests` phase shown as `skipped (operator: REASON)` in the plan and in `--dry-run`; a durable
+  record in the transaction (`gates = {skipped, reason}`, bound to its branch and base and written
+  once); and the line `Released without gates (operator): REASON` in the GitHub Release body that
+  CMRU composes for every publisher (wheel, tarball, variants, image). The body line lives in the
+  one function that assembles a body, so no publisher can omit it. The reason reaches the publisher
+  steps as the protected `CMRU_RELEASE_GATES_SKIPPED`, which a project cannot declare or shadow and
+  which is cleared outside a transaction.
+- **A resume cannot change the decision.** The choice is part of the transaction. `--resume` uses the
+  recorded choice (and prints the warning again); `--skip-gates` together with `--resume` is refused
+  (exit 2), because resuming must neither add a skip to a gated transaction nor drop one from an
+  ungated one. A transaction created before this feature has no record and resumes as gated.
+
 ## Release uses a wheel-bound controller
 
 `cmru release` re-executes the controller inside its isolated candidate worktree. If the caller
