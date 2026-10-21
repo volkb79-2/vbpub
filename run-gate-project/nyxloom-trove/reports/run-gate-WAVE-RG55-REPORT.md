@@ -1,10 +1,58 @@
-# RG-55 wave report — interim closeout
+# RG-55 wave report — final closeout
 
-Evidence snapshot: 2026-10-11 10:36 UTC. RG-55 is **not complete or
-released**. The implementation and live-probe evidence are substantially in
-place, and P5 plus the cgroup-profiler R2-cap correction are provisionally
-integrated on local `main`. Mutation evidence, final full gates, publication,
-installation, and final adoption closeout remain open.
+Closed 2026-10-21 (operator decision, all recommendations of
+`RG55-FINISH-PLAN-20261021` accepted). Live-evidence snapshot 2026-10-11;
+release facts verified against git tags on `origin/main` (`9b33474c7`) on
+2026-10-21. This replaces the "interim closeout" of 2026-10-11, whose
+"not complete or released" statement was overtaken by the INT-01 integration
+and the publications of 2026-10-17/18.
+
+**RG-55 as scoped (P0-P8) is shipped and closed.** The residue is tracked as
+named backlog rows, not as the wave. Two things are explicitly NOT delivered:
+mutation (R2) evidence on the final trees, and the six cgprofile review
+blockers (fixed in the next package, cgprofile 1.1.0).
+
+## What shipped, per package
+
+| Package | Delivered | Release / commit |
+|---|---|---|
+| P0 | contract, fixtures, RG-53 (`coverage_gate` branch coverage) | within run-gate 23.7.0 |
+| P1 | cgprofile daemon (sessions, DAMON, socket/exec control, store) | `cgprofile-v1.0.0` (`a27fd282f`, 2026-10-17) |
+| P2 | run-gate client: per-lane profile, footprint manifest, history | `run-gate-v23.7.0` (`652a118cb`, 2026-09-13) |
+| P4 | RG-57..RG-61 (bare-host profiling, warnings, in-flight record, doc drift) | `run-gate-v23.8.0` (`409439c15`, 2026-09-16) |
+| P5 | socket/exec carriers, `ctl watch`, placement barrier, best-effort admission wait | `run-gate-v24.0.0` (`d3e7d1101`, 2026-10-17), via `e40476b1f` and the R2-cap fix `da511e7bf` |
+| P6 | cgprofile follow-ups CP-2, CP-4..CP-12 (events, report charts, limits table, watch, placement, journaled recovery) | folded into `cgprofile-v1.0.0` (no 1.1.0 was ever tagged for it; RW-569) |
+| P7 | Assay B091 progress-judged candidates, `hung` outcome, `--rejudge`; follow-on B107 | `assay-v6.2.0` (`bd461dcd5`), `assay-v8.0.0` (`e4e3db005`) |
+| P8 | mdt host-setup `dev-gates.slice`, `/run/cgprofile` mount, cap-watcher knob | `a71c46b08` (review ACCEPT round 3) |
+| later | CP-18..CP-21, RG-89 native observer, RG-98..RG-103 | `cgprofile-v1.0.0`, `run-gate-v24.0.0`, `run-gate-v24.0.1` (`f793a3b8a`, 2026-10-18) |
+
+P3 (this close-out): live probes and DAMON overhead below; final report and
+backlog reconciliation 2026-10-21. Host-side installation of the P8
+host-setup and deployment of the released daemon/wheel are NOT verified by this
+report (cockpit is read-only); they are tracked as the deployment check that
+gates the dstdns brief.
+
+## Not delivered, and where it is tracked
+
+- **R2 (mutation) was not obtained** for cgprofile (1,593 candidates), P5 or
+  P6. Exact-tree attempts ended `ERROR/EXEC_FAILED` (Assay B145, an
+  un-attributable shared-ancestor resource event), and the contract-1 campaign
+  was stopped on purpose (RW-569). By operator decision the next releases go
+  without R2 and the release notes must say so. R2 is revisited when the CP-24
+  stop-protocol code lands (needs Assay B157/CP-23 for parallel attribution).
+- **cgprofile review blockers.** The Sol review REJECT of 1.0.0 (six blockers:
+  placement after origin change, unconfirmed DAMON teardown reporting `ok:true`,
+  implicit unbounded `cgprofile.slice`, missing live acceptance of the
+  contract-2 observer from a gated peer, dirty/ineligible saved receipts and
+  unproved image identity) is fixed in cgprofile 1.1.0. CP-24..CP-26 (stop
+  protocol, quarantine, DAMON pool provenance) follow later; the CP-24 packet is
+  parked on `park/stash-2026-10-17-park-cp-24-25-26-work-from-cgprofile-rel`.
+- **RG-56** atomic admission (with CP-15) is deferred; its design and seven
+  implementation commits stay as branch refs `rg56-admission*`.
+- **RG-108** (stop-pending sessions treated as unavailable) must release before
+  a CP-24 daemon is installed.
+- **RG-99** live concurrent exec-mode acceptance remains open.
+- The four `[no-ciu-root]` rg55 worktrees are left to the ciu worktree fix.
 
 ## Live acceptance and measurement
 
@@ -45,7 +93,8 @@ report unavailable. The measured on-run is evidence for the explicit temporary
 sysfs-monitoring mode, not a claim that DAMON is available under the host's
 default setting.
 
-## Integration and test status
+## Integration and test status (2026-10-11 snapshot)
+
 
 - P5's repaired code passed selftest, assay R1, and assay R3; a fresh Sol
   review accepted it, and it was provisionally merged to main as
@@ -74,7 +123,11 @@ default setting.
 - No final `gate-full` receipt, survivor disposition, or release has been
   recorded. The cap worktree must remain unchanged until its R2 ends.
 
-## Release and deployment status
+## Release and deployment status (as of the 2026-10-11 snapshot; superseded)
+
+Historical. The tags above are the current truth; the version
+and the install statements below were true on 2026-10-11 only.
+
 
 Read-only `cmru status` reports `run-gate-v23.10.0` as the latest Run-Gate
 tag and `run-gate-v23.11.0` as the next minor; cgroup-profiler has no tag and
@@ -101,18 +154,13 @@ gate/release disposition; isolate the RG-55 release inputs or coordinate the
 shared-main publication boundary first. This does not prevent local gate and
 review work.
 
-## Remaining closeout
+## Remaining after close-out
 
-1. Finish cgprofile R2 on the quiet judged tree; triage every survivor and any
-   non-killed bucket, then run the final required full gate.
-2. Resume P5 R2 from its partial records after the active campaign finishes;
-   if it passes, complete survivor accounting and its final full gate.
-3. Refresh any gates invalidated by later tree changes, then complete the
-   authorized CMRU release transactions, install the released Run-Gate wheel,
-   and deploy the released cgprofile daemon from main via CIU.
-4. Recheck the daemon singleton and live acceptance after deployment; preserve
-   the DAMON limitation/overhead disclosure above.
-5. Fill the remaining release/version fields in
-   [`run-gate-WAVE-RG55-DSTDNS-ADOPTION-BRIEF.md`](run-gate-WAVE-RG55-DSTDNS-ADOPTION-BRIEF.md),
-   but do not dispatch it to dstdns. Mark RG-55 fixed only after all release,
-   evidence, backlog, and closeout requirements are met.
+1. Verify deployment: released daemon running from the declared CIU workflow,
+   run-gate 24.0.1 installed in the cockpit venv and the tester image, host P8
+   install confirmed.
+2. Then, and only then, fill the `⟨P3⟩` fields of
+   [`run-gate-WAVE-RG55-DSTDNS-ADOPTION-BRIEF.md`](run-gate-WAVE-RG55-DSTDNS-ADOPTION-BRIEF.md)
+   and dispatch it on the operator's say-so.
+3. cgprofile 1.1.0 (six blockers), then run-gate follow-up release, per
+   `RG55-FINISH-PLAN-20261021`.

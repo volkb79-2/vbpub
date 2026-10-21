@@ -1,5 +1,11 @@
 # RG-55 wave — controller handoff (session ended 2026-09-12 ~22:00Z)
 
+> **CLOSED, pending release of the follow-ups (2026-10-21).** RG-55 as scoped is
+> shipped and closed; this handoff is historical (its pins, e.g. P1 r2
+> `637b8c09` and P6 r2 `d4f51bbc`, and its open asks are stale). Current plan and
+> evidence: `/home/vscode/vbpub-release-program-20261019/RG55-FINISH-PLAN-20261021.md`;
+> final report: `run-gate-WAVE-RG55-REPORT.md`. Do not resume from this file.
+
 Written by the controller session `session_01YBJzBA7KyG4ayu5ndNf9Hx` on the
 operator's instruction: "let all agents reach a semantic boundary and
 checkpoint to files for handoff to a new session; do not start new work;
