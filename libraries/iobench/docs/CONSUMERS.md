@@ -22,7 +22,7 @@ there). iobench never creates, mounts or unmounts a filesystem: the work dir for
 
 ```bash
 lsblk -b -o NAME,SIZE,PARTUUID,FSTYPE,MOUNTPOINTS /dev/vda
-iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 7b2d0c1e-07
+iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007
 iobench target show /dev/vda7 --json
 ```
 
@@ -110,12 +110,12 @@ nothing; host-setup renders and verifies the persistent files.
 
 | Reason | Meaning |
 |---|---|
-| `cache_model_undetermined` | the two cache estimators were unavailable, non-monotone, overlapping or disagreed (rerun `thorough`, or accept) |
-| `cache_residual_possible` | a figure from the measured largest rung is shown while a cache hit share cannot be excluded |
-| `no_cliff_hit_like_mode` | no cliff, and the latency is hit-like: everything may be cached |
-| `device_smaller_than_cache_margin` | the largest rung is below 1.2x the cliff: the device is too small to see past the cache |
+| `cache_model_undetermined` | the cold-region probe was bimodal, overlapping or indeterminate, or the latency-split cross-check disagreed with it (rerun `thorough`, or accept) |
+| `cache_residual_possible` | a figure from the measured largest rung is shown and no cold-region probe exists |
+| `no_cliff_hit_like_mode` | no cliff, and the cold-region probe is hit-like: the cache may hold the whole fill |
+| `device_smaller_than_cache_margin` | the largest rung is below 1.2x the cliff, or the cold probe is hit-like with a cliff: the target is too small to see past the cache |
 | `ceiling_moved` | the provider rate changed during a comparison; both values are in the evidence |
-| `budget_limited` / `short_observation` / `quick_profile` | the time budget, the observation length or the `quick` profile limited the evidence |
+| `budget_limited` / `short_observation` / `quick_profile` | the time budget limited the evidence / a write series was not observed long enough after its knee / the `quick` profile |
 | `worst_from_single_run` | worst/best plateaus come from this run only (no ceiling history yet) |
 | `metering_undetermined` / `operator_override` | S6 did not pass both metering tests / you typed `--metering` |
 | `shape_fit_poor` | the per-IO + per-byte linear fit is poor |
@@ -127,12 +127,12 @@ nothing; host-setup renders and verifies the persistent files.
 
 ### 5.3 Cache state, metering, fit, limits
 
-* `cache_state`: `plateau_cache_free` (best case), `cliff_modeled`, `no_cliff_miss_like`, `no_cliff_hit_like`, `undetermined`.
-* `metering`: `byte`, `iops`, `mixed`, `undetermined`; `fit`: `good`, `poor`, `insufficient`.
-* `limits`: `quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `bucket_exclusion_s<=<N>` (the longest observation: bursts longer than that are not excluded).
+* `cache_state` (reads): `cold_measured` (the earliest-written region read as cache-free: proven), `rate_cap` (a flat provider cap: proven), `cold_hit_like` (the cache is larger than the fill), `undetermined`. Writes have no cache state: they are proven by the time axis (>= 120 s after the knee, bytes after >= 2x the burst).
+* `metering`: `byte`, `iops`, `mixed`, `undetermined`; E1 `fit` (informational): `good`, `poor`, `insufficient`, `plateau`.
+* `limits`: `quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `filesystem_layer` (file target: extent mapping and journal overhead are inside every figure), `bucket_exclusion_s<=<N>` (the longest observation: bursts longer than that are not excluded).
 * Check ids in `quality.checks[]`: IOB-PLA-01 tail flat, -02 working-set rule, -03 cached-tier factor, -04 mean vs steady, -05 flat-line, -06 Little's law, -07 bytes consistency,
   -08 read-only-written, -09 fill vs sequential, -10 cache state, -11 shape fit, -12 noise floor, -13 fresh vs rewrite, -14 data integrity, -15 identity stable, -16 extent integrity,
-  -17 outside history. A `fail` degrades only the groups it lists; -14, -15 and -16 fail the whole run.
+  -17 outside history, -18 fresh write bytes/s (info; also records whether a discard re-arms the fresh-block penalty, hypothesis). A `fail` degrades only the groups it lists; -14, -15 and -16 fail the whole run.
 
 ## 6. mdt-cockpit wizard (MDT-HS-05 and the io.cost wizard, D-IOC-4)
 
@@ -155,13 +155,27 @@ iobench ceilings summary --window-days 30 --json
 `worst` and `best` feed `min = 100` and `max = ceil(110 x best / worst)` (here 330). With no records the summary says `"history": "single-run"` and every dependent value is `unproven: worst_from_single_run`.
 Until a probe or governor appends observations (D-011), the history is `single-run` on hosts that only ran the benchmark.
 
-## 8. debian-install-v2 (installer profile)
+## 8. A host with no spare partition: file targets (gstammtisch-class hosts)
+
+The wizard's default (D-IOC-4) must be able to run on production hosts that have no raw partition to give. A **file target** is a preallocated file on an existing filesystem, written once in
+full and accessed with `O_DIRECT`. Its identity is (filesystem UUID, inode, size) with the marker in its last MiB and a sidecar `.iobench-target`; every writing stage re-verifies it. Refused:
+tmpfs/ramfs/overlay, symlinks, hard links, too little free space. Every figure carries the `filesystem_layer` limit and is never mixed with device-kind history.
+
+```bash
+iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid 0b1c2d3e-4f50-4a61-8b72-93a4b5c6d7e8 --confirm-quiet-window
+iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile standard --confirm-quiet-window --protect-cgroup wings.slice --abort-psi 40
+```
+
+With a few GiB of free space the cliff is unreachable, so read caps come out `unproven: device_smaller_than_cache_margin` (reads are cheap there); the write cap is what matters and is `proven` by
+the time axis when the observation run is long enough. If the first seconds are a provider burst, the fill re-plans from its own measured rate and says `fill_replanned`.
+
+## 8b. debian-install-v2 (installer profile)
 
 The installer owns the throwaway partition lifecycle. iobench needs a raw target **and** an existing filesystem for the work dir (open item OI-1 in the SPEC: two partitions, or a
 calibrate-then-mkfs sequence). `--installer` only waives the live-host refusals; every target guard still applies.
 
 ```bash
-iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 7b2d0c1e-07
+iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007
 iobench calibrate --target /dev/vda7 --work-dir /mnt/iobench-work --profile quick --installer
 ```
 

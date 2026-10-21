@@ -1,8 +1,8 @@
 # iobench DESIGN-GUIDE (why it works this way)
 
 This is the WHY document. [README](../README.md) says WHAT it does, [CONSUMERS](CONSUMERS.md) says HOW to adopt it, [SPEC](SPEC.md) is the normative requirement list.
-The design record moved here from `vbpub-release-program-20261019/IOB-02-DESIGN.md` (now a pointer). Revision 2 (2026-10-21) folds in the P1/P2 review and the
-controller rulings R-1..R-10 (section 11).
+The design record moved here from `vbpub-release-program-20261019/IOB-02-DESIGN.md` (now a pointer). Revision 3 (2026-10-21) folds in the P1/P2 review, the
+controller rulings R-1..R-10 and the controller review O-1..O-8 (section 11).
 
 Evidence labels: **[M date host]** measured, **[I]** inferred. Sources: `IO-BENCH-01-report.md` (r1002, 2026-10-20), `IO-STALL-TESTING-GUIDE.md` and
 `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` (gstammtisch), `IOCOST-WIZARD-DESIGN.md` (D-IOC-1..4), `review-IO-BENCH-01.md` (findings B-01, B-03, P-01).
@@ -47,31 +47,28 @@ review (B-3, B-4) called that out; the fix is a **per-proposal status**:
 `check` exit 0 means only that every *requested* proposal is `proven`; exit 7 means the result is valid but some requested proposal is unproven or absent (the JSON
 lists which). The audit table of real-world conditions per status lives in SPEC IOB-STA-05; a status can only be reached from its row.
 
-### 3.1 Why a size-only cache defence is not enough (the r1002 lesson)
+### 3.1 Why a model fit cannot prove a cache absent, and what does (findings O-1, O-2)
 
-The ladder on r1002 never plateaued: random read at 300 / 350 / 400 GiB gave 46k / 31k / 24k IOPS on a 406 GiB partition [M]. A cache of size C in front of a rate-limited
-backing store gives `1/iops = (C/ws)/F + (1 - C/ws)/R` for `ws > C` (F the cached rate, R the miss/backing rate); that is **linear in 1/ws**, so a fit has two parameters.
-Three points leave one degree of freedom (the review recomputed R ~ 9.8k, C ~ 265 GiB, residual ~2 %); almost any convex decreasing triple would be labelled "good". With a
-cache comparable to the device (C ~ 65 % of it), the hit ratio stays >= 0.6 on every rung that fits the device, so the largest measurable rung is still mostly cache
-hits [I]: the 24k "steady" figure was probably ~2.5x a cache-free rate.
+The ladder on r1002 never plateaued: random read at 300 / 350 / 400 GiB gave 46k / 31k / 24k IOPS on a 406 GiB partition [M]. A hit-ratio model (`1/iops = (C/ws)/F + (1 - C/ws)/R`,
+linear in 1/ws) fits those three points with R ~ 9.8k and C ~ 265 GiB, which is suggestive and is exactly the trap: the model assumes the cache holds a uniformly random C-sized subset of the
+rung's range, the steady state of an LRU under uniform random access. A 30 s rung reads 6-12 GB against hundreds of GiB of cache, so the cache content during a rung is whatever the
+**fill and the earlier rungs** left there. Replaying that with a content-based simulator (offline, while writing this revision) shows how far the formula is from content:
 
-Hence two **independent** estimators must agree before a cache-dependent value is `proven`:
+* a **write-allocating** cache after a sequential fill holds the *last-written* region, so a ladder over `[0, ws)` is *rising* with `ws` (about 9.8k at 64 GiB up to 31k at 345 GiB); the first rungs measure the miss rate and the "cached reference" is wrong;
+* a **read-allocating** cache that starts empty gives a ladder decaying from 41.8k to ~10k that E1 rejects;
+* a **two-tier** cache (40 GiB at 92k IOPS, 300 GiB in total at 15k IOPS, backing store 9.8k) yields a ladder on which E1 fits `good` (`r2` 0.977, leave-one-out 0.137) and reports **R = 14.6k, 49 % too high**. That is the required fixture (SPEC IOB-CCH-08 #1): a wrong model that passes its own acceptance test.
 
-* **E1, hit-ratio fit across rungs**: needs >= 4 post-cliff rungs, monotone, `0 < C < smallest post-cliff rung`, `r2 >= 0.97`, every leave-one-out prediction within 15 %. This is why
-  the planner densifies the ladder between the cliff and `WS_max` (up to four rungs); on r1002 that is 276-345 GiB.
-* **E2, per-IO completion-latency split**: a QD1 clat percentile ladder at the largest rungs. A cache-hit mode and a miss mode (>= 2.5x apart, each tight) give the hit fraction
-  `h2` and the miss time; `R_E2 = iops_largest x (1 - h2)`. Overlapping or unimodal distributions give no E2.
-* They agree when `abs(h1 - h2) <= 0.15` and `R_E1 / R_E2` lies in [0.7, 1.43]. Anything else is `unproven: cache_model_undetermined` with both estimates kept.
+So the estimators are ordered by directness:
 
-Degenerate cases are first-class outcomes (SPEC IOB-CCH-04/06), each with a controlled-wrong fixture:
+1. **E-cold (primary, direct)**: right after the fill, before anything else touches the front, read the **earliest-written region** `[0, cold_len)` (`min(32 GiB, 0.1 x WS_max)`), QD32 for the rate, then QD1 on a disjoint half for the full latency histogram. When the fill wrote more than the cache holds, that region is cold under every allocation policy (write-allocate LRU or FIFO, read-allocate). A miss-like unimodal histogram makes `R_cold` a *measured* cache-free rate: `cold_measured`, `proven`. A hit-like one (the cache is larger than the fill) is `unproven: device_smaller_than_cache_margin` or `no_cliff_hit_like_mode`. Anything else is `undetermined`.
+2. **E2 (cross-check)**: the latency split on the largest rung (full histogram, h = CDF mass below the valley between the modes, `R_E2 = iops(QD32) x (1 - h)`), with its QD1 run immediately after the rung's QD32 run. When both exist they must agree within [0.7, 1.43].
+3. **E1 (informational)**: the fit is kept for a cliff-size estimate and `cached_tier_factor`, with its degenerate-case fixtures, but it never decides a cache state and is never a cap basis.
 
-* a **true plateau** (flat within 10 % over >= 3 post-cliff rungs, unimodal miss-like latency) is the *good* case: no cache residue, `proven`, never labelled poor;
-* **no cliff** is valid: a single miss-like mode (or a flat-line rate cap) is `proven` cache-free; a single hit-like mode is `unproven: no_cliff_hit_like_mode`; anything else is undetermined;
-* **non-monotone rungs**, **C >= the smallest post-cliff rung**, **two rungs**, **noise-only triples**: E1 is `poor`/`insufficient`, never an exception and never `good`;
-* the **recorded r1002 rungs that fit the device** (<= 345 GiB) contain a single post-cliff point; the honest, asserted outcome is `undetermined`. Whether a densified
-  calibration on r1002 reaches `cliff_modeled` is what IOB-03 P4 measures. If the estimators disagree there, the caps stay `unproven` and the report says so.
+A cap never exceeds the measured largest-rung rate whatever any estimator says, and a cap whose basis may still contain cache hits is never `proven` without direct evidence (IOB-STA-03).
 
-A cap never exceeds the measured largest-rung rate whatever any fit says, and a cap whose basis may still contain cache hits is never `proven` on a single fit (IOB-STA-03).
+**Writes are proven by the time axis.** A write-back cache absorbs writes until its dirty capacity fills and then drains at the backing rate; `C/ws` hit ratios do not describe it and write-latency bimodality means "acked" versus "throttled", not hit versus miss. A write series is `proven` cache-free when the observation run is steady, lasted >= 120 s after its knee, and the bytes written after the knee are >= 2x the burst bytes. Otherwise `unproven: short_observation`. E1, E2 and E-cold are read-only.
+
+The recorded r1002 data holds no cold probe, so replaying it gives `undetermined`, an honest outcome the SPEC asserts; P4 produces the first real cold-probe histograms, and the E-cold/E2 thresholds are `[I]` until then.
 
 ### 3.2 Bandwidth caps need their own basis
 
@@ -90,7 +87,8 @@ comparison is `unproven: ceiling_moved`, both values are kept, and the move is a
 | Technique | What it defeats | What it does not |
 |---|---|---|
 | `--direct=1` | guest page cache | any host/provider cache |
-| Working set past the detected cliff, with E1 and E2 | host/provider caches | a cache that E1/E2 cannot separate (then `unproven`) |
+| The cold-region probe (earliest-written region right after the fill), cross-checked by E2 | host/provider read caches, whatever their allocation policy, as long as the fill exceeds the cache | a cache larger than the fill (reported `cold_hit_like`) |
+| The time axis (>= 120 s after the knee, bytes after >= 2x burst) | write-back caches and token buckets for writes | a burst longer than the observation (`unproven: short_observation`) |
 | Steady tail = median of the last 25 % of a <= 2 s series, knee/burst detection | warm-up and bursts shorter than the observation | a token bucket longer than the observation: every result records `bucket_exclusion_s<=N`; `standard` adds a 240 s write and 120 s read observation, `thorough` 900/240 s (the 0.9 -> 3.2 GB/s step at ~430 s seen on r1002 needs `thorough`) |
 | Read only data **written by this calibration** (argv-confined to the recorded extent) | zero-page reads of unmapped space (99.9k IOPS on a discarded range [M r1002]) | - |
 | Fresh vs rewrite series (**writes only**; reads are always of data written earlier) | provider allocation / copy-on-write (random writes to fresh space ran at 3.6k IOPS, 7 ms p50 against 71k rewritten [M r1002]) | - |
@@ -104,10 +102,11 @@ Every stage exists because a derivation reads its output.
 |---|---|---|
 | S0 | identity (devno, PARTUUID, size, model/serial if any), disk chain, scheduler, `max_hw_sectors_kb`, RAM, PSI, containers, every slice `io.max` (read only) | validity, refusals |
 | S1 | 20 s direct sequential write to the target's first GiB: `R_est` | time-bounded sizing, slow-disk detection |
-| fill + S2 ladder | sequential fill of `[0, WS_max)`; random 4 KiB read/write QD32 over a doubling ladder + densification; QD1/QD8 at the largest | cliff, `QD90`, E1 inputs |
-| CDF runs | QD1 clat percentile ladders at the smallest and largest three rungs | E2 |
-| fresh/rewrite, reference cells | 4 KiB random writes to a discarded extent vs a written one; the reference pairs | fresh penalty, `ceiling_moved` |
-| observation runs | 240 s write / 120 s read at the largest rung (`thorough`: 900/240 s) | bucket exclusion |
+| fill + E-cold | sequential fill of `[0, WS_max)` (re-planned if its rate falls below 0.5 x `R_est`); then the cold-region probe | `R_cold`, the primary cache state |
+| S2 ladder | random 4 KiB read/write QD32 over a doubling ladder + two densification rungs; QD1/QD8 at the largest | cliff, `QD90`, `cached_ref`, E1 (informational) |
+| E2 | QD1 full-histogram runs on the smallest rung (`hit_ref`) and, adjacent to its QD32 run, on the largest | cross-check of `R_cold` |
+| fresh/rewrite, rearm, reference cells | 4 KiB random writes to a discarded extent vs a written one; one rewrite -> discard -> write cell (does discard re-arm the penalty? hypothesis [I]); the reference pairs | fresh penalty, `fresh_write_bps`, `ceiling_moved` |
+| observation runs | 240 s write / 120 s read at the largest rung and a 120 s fresh write run (`thorough`: 900/240 s) | the write time-axis proof, bucket exclusion |
 | S3 drain rate | `R_drain`: device bytes/s under the reference writeback load on the work dir's filesystem | `dirty_bytes`, caps |
 | S4 sweep | sync-latency probe under buffered load across candidate settings; REF twice for the noise floor | choice of `nr_requests`, `max_sectors_kb` |
 | S5 read cost | direct sequential reads per `max_sectors_kb` candidate | the read-floor rule |
@@ -145,7 +144,7 @@ Targets are explicit; defaults are *policy* defaults, never substitutes for a me
 * **R3 `max_sectors_kb`**: largest power-of-two KB <= `R_drain x 10 ms` (the 10 ms request time is `[I]`), clamped to `[32, max_hw]`, raised to the smallest candidate meeting the read floor `F` unless the sweep shows it breaks `P`.
 * **R4**: the chosen triple's REF probe p99 must be <= `P`, else `unproven: target_missed`.
 * **R5 dev caps**: one aggregate cap, `U x basis x min(1, worst/median)` per key; basis from the cap-basis rules (write IOPS = `min(rewrite, fresh)`); using the worst plateau makes the cap bind when the provider drops to it. No per-tier caps.
-* **R6 model and QoS**: model basis = the **worst plateau** per direction (D-IOC-2). Byte-metered: `wbps = worst`, `*seqiops = *randiops = bps/4096`; otherwise from the S6 fit. `min = 100`; `max = ceil(110 x max(best_r/worst_r, best_w/worst_w))` over directions with history; `wpct 90`, `wlat = 2 x light p90` rounded up to 5 ms in [10, 50] ms; `rpct 95`, `rlat = 2 x light p95` rounded up to 1 ms in [2, 20] ms. Histogram source: the governor if running, else S7 (D-IOC-3). Without ceiling history, worst/best come from this run's own windows and every dependent value is `unproven: worst_from_single_run`.
+* **R6 model and QoS**: model basis = the **worst plateau** per direction (D-IOC-2). Byte-metered: `wbps = worst`, `*seqiops = *randiops = bps/4096`; otherwise from the S6 fit. `min = 100`; `max = ceil5(110 x max(cached_ref/R, best_w/worst_w))`: both directions are priced at the worst/cache-free basis (**IOB-D-015**: "price the worst case, let vrate climb into the cache"), and `max` leaves room for reads that the cache serves, using `cached_ref` as the read best (the only permitted use of a `cached_tier` figure); the result records `read_cache_headroom = cached_ref / R` (r1002: 9.39, so `max` = 1035); `wpct 90`, `wlat = 2 x light p90` rounded up to 5 ms in [10, 50] ms; `rpct 95`, `rlat = 2 x light p95` rounded up to 1 ms in [2, 20] ms. Histogram source: the governor if running, else S7 (D-IOC-3). Without ceiling history, worst/best come from this run's own windows and every dependent value is `unproven: worst_from_single_run`.
 
 **Worked check against the evidence** (replay oracles): gstammtisch with `R_drain` 10.5 MB/s gives dirty 16 MiB / 4 MiB, `nr_requests` 16, `max_sectors_kb` 64 (the measured best); r1002 gives `kernel` for dirty and sectors.
 
@@ -179,7 +178,7 @@ consumers get a cmru-released wheel and zipapp with sha256 (never PyPI). New cod
 
 ## 10. Decisions
 
-IOB-D-001..014 are those of IOB-02 section 9 and are **accepted** (controller, 2026-10-21): D-001 library, D-002 io.cost moves in (phased), D-003 CLI shell adopts cli-extended, D-004 targets as
+IOB-D-001..014 are those of IOB-02 section 9 and are **accepted** (controller, 2026-10-21); **IOB-D-015** (controller, review O-4): both directions use the worst/cache-free basis and `max` uses `cached_ref` as the read best, an explicit exception in IOB-DER-08. The 14 original decisions: D-001 library, D-002 io.cost moves in (phased), D-003 CLI shell adopts cli-extended, D-004 targets as
 wizard keys with policy defaults, D-005 raw read-only reads opt-in, D-006 standard first run / quick re-measure, D-007 refuse unless confirmed, D-008 identity-only validity, D-009 slow disk,
 D-010 never branch on hypervisor detection, D-011 long-term probe later, D-012 re-implement without GPL code, D-013 fresh-block rung, D-014 never persists.
 
@@ -207,6 +206,14 @@ D-010 never branch on hypervisor detection, D-011 long-term probe later, D-012 r
 | R-8 moving ceiling is a finding; reference cells; `ceiling_moved` | SPEC section 8, DG 3.3 |
 | R-9 byte metering needs both tests | IOB-SHP-03, DG 5.1 |
 | R-10 no VM lane; assay mutation lane registered | IOB-ACC-01, IOB-GATE-01, `run-gate.toml`, `assay.toml` |
+| O-1 cold-region probe primary, E2 cross-check, E1 informational; FakeFio simulates cache content; E1-good-but-wrong fixture | SPEC IOB-CCH-01..08, IOB-ARC-03, DG 3.1 |
+| O-2 write cache proven by the time axis; E-cold/E1/E2 read-only | IOB-CCH-07 |
+| O-3 target kind `file`; fill re-plan below 0.5 x `R_est`; `filesystem_layer` | IOB-TGT-06..10, IOB-CAL-02, CONSUMERS 8 |
+| O-4 (IOB-D-015) worst/cache-free basis both directions; `max` from `cached_ref`; `read_cache_headroom` | IOB-DER-05/06/08/10 |
+| O-5 `fresh_write_bps` check and the rearm cell [I] | IOB-PLA-18, IOB-CAL-10 |
+| O-6 full histograms, h = mass below the valley, thresholds [I], adjacency | IOB-CCH-02/03 |
+| O-7 what r1002 does and does not prove | SPEC section 20 |
+| O-8 NITs | calibration example, README |
 
 ## 12. Rejected and open
 
