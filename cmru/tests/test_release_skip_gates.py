@@ -621,33 +621,59 @@ class _FakeReleases:
         return None if type(self).body is None else {"body": type(self).body}
 
 
+def _git(root, *args):
+    import subprocess
+
+    return subprocess.run(
+        ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t", *args],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+
 @pytest.fixture
 def retry(scope, monkeypatch, tmp_path):
+    """A real repo with a real ANNOTATED tag, created as cmru creates release tags (``git tag -a``)."""
     from cmru import release
 
     _FakeReleases.body = None
     monkeypatch.setattr(release, "GitHubReleases", _FakeReleases)
     gh = cli.GitHubConfig("o", "r", "t", "user")
+    root = tmp_path / "repo"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "commit", "-q", "--allow-empty", "-m", "release candidate")
+    _git(root, "tag", "-a", TAG, "-m", f"Release {TAG}")
+    oid = _git(root, "rev-parse", f"refs/tags/{TAG}")
+    commit = _git(root, "rev-parse", f"refs/tags/{TAG}^{{commit}}")
+    assert oid != commit  # the trap: an annotated tag's object is not its commit
 
     def fact(**explicit):
         return cli._retry_gates_fact(
-            tmp_path, "img", TAG, TAG_COMMIT, gh,
+            root, "img", TAG, gh,
             gates_skipped=explicit.get("gates_skipped"),
             gates_ran=explicit.get("gates_ran", False),
         )
 
-    def record(token, *, skip, tag_commit=TAG_COMMIT, with_gates=True):
+    def record(token, *, skip, tag_oid=None, with_gates=True):
         workspace = transaction.ReleaseWorkspace(
-            tmp_path, tmp_path / token, f"cmru-release-{token}", BASE,
+            root, tmp_path / token, f"cmru-release-{token}", BASE,
         )
-        (scope / f"{transaction._release_token(workspace)}.tag-attempts.json").write_text(
-            json.dumps({f"refs/tags/{TAG}": tag_commit}), encoding="utf-8",
+        # Exactly what ``_push_tags`` records: the tag REF's own object id.
+        transaction.write_release_tag_attempts(
+            root, workspace, {f"refs/tags/{TAG}": tag_oid or cli.local_git_tag_oid(root, TAG)},
         )
         if with_gates:
-            transaction.write_release_gates(tmp_path, workspace, skip)
+            transaction.write_release_gates(root, workspace, skip)
         return workspace
 
-    return SimpleNamespace(fact=fact, record=record, scope=scope)
+    def retag():
+        """Reuse the tag NAME at the SAME commit: a different tag object."""
+        _git(root, "tag", "-d", TAG)
+        _git(root, "tag", "-a", TAG, "-m", "re-created")
+        assert _git(root, "rev-parse", f"refs/tags/{TAG}") != oid
+        assert _git(root, "rev-parse", f"refs/tags/{TAG}^{{commit}}") == commit
+
+    return SimpleNamespace(fact=fact, record=record, scope=scope, oid=oid, retag=retag)
 
 
 def test_source_1_a_retained_skipped_transaction_restates_the_skip(retry):
@@ -660,10 +686,18 @@ def test_source_1_a_retained_gated_transaction_stays_gated(retry):
     assert retry.fact() is None
 
 
-def test_source_1_ignores_a_transaction_that_tagged_another_commit(retry):
-    retry.record("20261021_100000-img-aaaaaa", skip=REASON, tag_commit="d" * 40)
+def test_source_1_ignores_a_transaction_that_made_a_different_tag_object_at_the_same_commit(retry):
+    retry.record("20261021_100000-img-aaaaaa", skip=REASON)
+    retry.retag()
     with pytest.raises(RefusedBeforeChange, match="cannot determine"):
         retry.fact()
+
+
+def test_source_1_a_real_annotated_release_tag_is_matched_and_a_gates_ran_claim_is_refused(retry):
+    retry.record("20261021_100000-img-aaaaaa", skip=REASON)
+    assert retry.fact() == REASON
+    with pytest.raises(RefusedBeforeChange, match="contradicts"):
+        retry.fact(gates_ran=True)
 
 
 def test_source_1_agreeing_transactions_are_fine_and_disagreeing_ones_refuse(retry):
@@ -682,11 +716,35 @@ def test_source_1_a_transaction_without_a_gates_record_is_undetermined_not_gated
 
 
 @pytest.mark.parametrize("damage", ["{not json", "[1]"])
-def test_source_1_an_unreadable_tag_attempt_record_refuses(retry, damage):
-    (retry.scope / "20261021_100000-img-aaaaaa.tag-attempts.json").write_text(
+def test_an_unrelated_unreadable_attempt_record_is_skipped_with_a_warning(retry, capsys, damage):
+    retry.record("20261021_100000-img-aaaaaa", skip=REASON)
+    (retry.scope / "20261021_090000-other-zzzzzz.tag-attempts.json").write_text(
         damage, encoding="utf-8",
     )
-    with pytest.raises(RefusedBeforeChange, match="cannot determine"):
+    assert retry.fact() == REASON
+    assert "[WARN] skipping" in capsys.readouterr().out
+
+
+def test_an_unparsable_attempt_record_does_not_block_an_explicit_declaration(retry):
+    (retry.scope / "20261021_090000-other-zzzzzz.tag-attempts.json").write_text(
+        "{not json", encoding="utf-8",
+    )
+    assert retry.fact(gates_ran=True) is None
+
+
+def test_a_record_that_names_this_tag_but_is_malformed_refuses(retry):
+    (retry.scope / "20261021_090000-img-zzzzzz.tag-attempts.json").write_text(
+        json.dumps({f"refs/tags/{TAG}": "not-an-oid"}), encoding="utf-8",
+    )
+    with pytest.raises(RefusedBeforeChange, match="malformed for"):
+        retry.fact(gates_ran=True)
+
+
+def test_a_record_for_another_tag_is_not_this_releases_business(retry):
+    (retry.scope / "20261021_090000-img-zzzzzz.tag-attempts.json").write_text(
+        json.dumps({"refs/tags/other-v1.0.0": "e" * 40}), encoding="utf-8",
+    )
+    with pytest.raises(RefusedBeforeChange, match="--gates-ran"):
         retry.fact()
 
 
@@ -774,3 +832,9 @@ def test_a_caller_supplied_protected_value_wins_inside_run_project_step(tmp_path
     )
 
     assert seen[0]["protected_env"][GATES_SKIPPED_ENV] == REASON
+
+
+def test_a_missing_local_tag_refuses_the_fact_lookup(retry, tmp_path):
+    _git(tmp_path / "repo", "tag", "-d", TAG)
+    with pytest.raises(RefusedBeforeChange, match="is absent"):
+        retry.fact(gates_ran=True)

@@ -1415,7 +1415,7 @@ silent. `cmru release --skip-gates REASON` is the answer.
 - **The post-tag body retry restates the fact from evidence, and fails closed.** `cmru publish
   --release-tag TAG` rewrites the whole Release body, so it must restate whether the release skipped
   its gates. It derives that from, in order: (1) the retained transaction that created exactly that tag
-  at that commit (located through its tag-attempt record, then its gates record); (2) the live Release
+  object, not merely its commit (located through its tag-attempt record, then its gates record); (2) the live Release
   body, but only when it already carries the `Released without gates (operator):` line, because a body
   without it proves nothing (an earlier rewrite may have dropped it); (3) otherwise it refuses
   (exit 4) and requires the operator's explicit `--gates-ran` or `--gates-skipped REASON`. It never

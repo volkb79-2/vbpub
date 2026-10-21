@@ -2885,7 +2885,7 @@ def _run_oci_release_body_retry(
         repo_root, project, tag, git_auth=git_auth, verify_origin=True,
     )
     reason = _retry_gates_fact(
-        repo_root, project.name, tag, tag_commit, github_config,
+        repo_root, project.name, tag, github_config,
         gates_skipped=gates_skipped, gates_ran=gates_ran,
     )
     apply_project_release_env(github_config, env_config, retry_project)
@@ -2899,13 +2899,13 @@ def _run_oci_release_body_retry(
 
 
 def _retry_gates_fact(
-    repo_root: Path, name: str, tag: str, tag_commit: str, github_config: "GitHubConfig",
+    repo_root: Path, name: str, tag: str, github_config: "GitHubConfig",
     *, gates_skipped: Optional[str], gates_ran: bool,
 ) -> Optional[str]:
     """Whether the release being re-published skipped its gates: its reason, or ``None`` if gated.
 
     Derived from a durable fact bound to THIS release, never defaulted: (1) the
-    retained transaction that created exactly this tag (its gates record); else
+    retained transaction that created exactly this tag OBJECT (its gates record; a reused tag name never matches); else
     (2) the live Release body, but only when it already carries the
     ``Released without gates (operator):`` line (a body WITHOUT it proves
     nothing, since an earlier rewrite may have dropped it); else (3) refuse
@@ -2917,8 +2917,13 @@ def _retry_gates_fact(
     from cmru.release_notes import GATES_SKIPPED_LINE_PREFIX
 
     derived: Optional[tuple[str, Optional[str]]] = None
+    tag_oid = local_git_tag_oid(repo_root, tag)
+    if tag_oid is None:
+        raise RefusedBeforeChange(f"{name}: local release tag {tag!r} is absent")
     try:
-        record = transaction.find_release_gates_for_tag(repo_root, tag, tag_commit)
+        record = transaction.find_release_gates_for_tag(
+            repo_root, tag, tag_oid, warn=log_warn,
+        )
     except RuntimeError as exc:
         raise RefusedBeforeChange(
             f"{name}: cannot determine from the retained transaction records whether {tag} "

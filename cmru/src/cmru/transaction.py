@@ -34,7 +34,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Iterator, Mapping, NamedTuple, Sequence
 
 from cmru.git_auth import (
     GitHubGitAuth,
@@ -1092,16 +1092,24 @@ def _read_gates_file(
 
 
 def find_release_gates_for_tag(
-    repo_root: Path, tag: str, tag_commit: str,
+    repo_root: Path, tag: str, tag_oid: str, *, warn: Callable[[str], None] = lambda _m: None,
 ) -> dict[str, object] | None:
-    """The gates fact of the retained transaction that created exactly ``tag`` at ``tag_commit``.
+    """The gates fact of the retained transaction that created exactly this tag object.
 
-    Located through the transaction's own tag-attempt record (the exact local tag
-    objects it tried to push), then its gates sidecar. ``None`` means no retained
-    transaction names this tag, or the one that does has no gates record (a
-    transaction older than CMRU-SKIP-01): the fact is then UNDETERMINED, never
-    assumed gated. Two transactions naming the tag with different facts, or any
-    unreadable record, is an error.
+    ``tag_oid`` is the tag REF's own object id (``git rev-parse refs/tags/<tag>``,
+    unpeeled: the annotated tag object CMRU creates), which is what a
+    transaction's tag-attempt record stores. Binding on the object rather than
+    the commit means a reused tag name, even at the same commit, never matches
+    another transaction's record.
+
+    Only a record that could bind to this tag counts. A file that cannot be
+    parsed, or is not a record at all, cannot name this tag: it is skipped with
+    ``warn``. A record that names this tag with anything but an object id is
+    malformed and an error. ``None`` means no retained transaction names this
+    tag object, or the one that does has no gates record (older than
+    CMRU-SKIP-01): the fact is then UNDETERMINED, never assumed gated. Two
+    transactions with different facts, or an unreadable matching gates record,
+    is an error.
     """
     scope_dir = _scope_dir(repo_root)
     facts: list[dict[str, object]] = []
@@ -1111,10 +1119,17 @@ def find_release_gates_for_tag(
                 attempts.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object,
             )
         except (OSError, UnicodeError, ValueError) as exc:
-            raise RuntimeError(f"cannot read release tag attempt record {attempts}: {exc}") from exc
+            warn(f"skipping unreadable tag attempt record {attempts}: {exc}")
+            continue
         if not isinstance(raw, dict):
-            raise RuntimeError(f"release tag attempt record is malformed: {attempts}")
-        if raw.get(f"refs/tags/{tag}") != tag_commit:
+            warn(f"skipping tag attempt record {attempts}: not a record")
+            continue
+        if f"refs/tags/{tag}" not in raw:
+            continue
+        recorded = raw[f"refs/tags/{tag}"]
+        if not isinstance(recorded, str) or not COMMIT_ID_RE.fullmatch(recorded):
+            raise RuntimeError(f"release tag attempt record {attempts} is malformed for {tag}")
+        if recorded != tag_oid:
             continue
         token = attempts.name[: -len(".tag-attempts.json")]
         fact = _read_gates_file(scope_dir / f"{token}.gates.json", branch=None, base=None)
