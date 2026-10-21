@@ -2,6 +2,8 @@
 
 Status: design for implementation (carve), 2026-10-07. Base commit: `vbpub@4670f53a6` (main). Author role: design carver; no code changed.
 
+Record note (2026-10-21): this is the historical design record. run-gate 24.0.0 and 24.0.1 have since been released from main; where this text says "to be implemented", read the shipped code and `CHANGES.md` as authoritative.
+
 Operator decisions D1-D6 are final and implemented here, not re-argued:
 
 - D1 full cli-extended adoption, whole grammar re-registered (CX-D1, CX-D12, backlog RG-82, AC-01..AC-25).
