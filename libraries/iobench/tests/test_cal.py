@@ -140,7 +140,7 @@ def test_cal_06_bps_basis_rules():
     assert u.as_dict()["reasons"] == ["cache_residual_possible"]
 
 
-def test_cal_02_confinement_argv():
+def test_cal_02_confinement_unit():
     ext = Extents([(0, 10 * GIB)])
     assert ladder.confined(devio.parse_job(job("randread", off=GIB, size=GIB).argv()), ext)
     assert not ladder.confined(devio.parse_job(job("randread", off=9 * GIB + 1, size=GIB).argv()), ext)

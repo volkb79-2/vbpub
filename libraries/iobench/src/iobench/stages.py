@@ -239,8 +239,6 @@ class Runner:
 
     def identity_at_end(self) -> tuple[str, str, int]:
         """IOB-PLA-15: the target identity must still match its marker when the run ends, else the run failed."""
-        if self.target is None:
-            return "complete", "", 0
         try:
             guard.verify_target(self.host, self.target)
         except (IobenchError, HostError) as exc:

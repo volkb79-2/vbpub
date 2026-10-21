@@ -392,7 +392,7 @@ class FakeFio:
                 break
         runtime = samples[-1][0]
         total_ios = sum(w for w in total_w.values())
-        return Sim(samples, io_bytes, runtime, hist, total_w, weighted_mean / total_ios)
+        return Sim(samples, io_bytes, runtime, hist, total_w, weighted_mean / total_ios if total_ios else 0.0)
 
     def _components(self, d: DirScenario, job: FioJob, h1: float, h2: float, iops: float, rho: float, mult: float) -> list[tuple[float, float]]:
         base = d.lat_us + (job.bs - PAGE) * d.c_byte_ns / 1000

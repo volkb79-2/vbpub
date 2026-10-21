@@ -293,10 +293,10 @@ class Calibrator(Runner):
                 ref = statistics.median(r["steady_iops"] for r in self.reads[:MIN_RUNGS])
                 if rec["steady_iops"] < ladder.CLIFF_RATIO * ref:
                     densified = True
+                    # the median of the first three rungs is one of them, so at least one rung is at or above the threshold
                     good = [r["ws_bytes"] for r in self.reads if r["steady_iops"] >= ladder.CLIFF_RATIO * ref]
-                    if good:
-                        have = {r["ws_bytes"] for r in self.reads} | set(queue)
-                        queue = sorted({*queue, *(d for d in plan.densification_rungs(max(good), largest) if d not in have)})
+                    have = {r["ws_bytes"] for r in self.reads} | set(queue)
+                    queue = sorted({*queue, *(d for d in plan.densification_rungs(max(good), largest) if d not in have)})
         self.close_group("ladder", "r1")
 
     # -- fresh vs rewrite, rearm, observation ---------------------------------------------------------------
@@ -459,8 +459,6 @@ class Calibrator(Runner):
             b = ladder.bps_basis(direction, cell(direction), cache_ratio=ratio, write_proven=self.write_proven)
             d = b.as_dict()
             extra = (["budget_limited"] if self.budget_limited else []) + (["ceiling_moved"] if self.moved.get("shape") else [])
-            if self.quick and b.status != "absent":
-                extra.append("quick_profile")
             out[direction] = _basis(b.value, [*b.reasons, *extra]) if b.status != "absent" else d
         return out
 

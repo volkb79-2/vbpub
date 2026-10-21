@@ -115,11 +115,6 @@ def _outcome(runtime: CliRuntime, out: Any) -> int:
     return out.exit_code
 
 
-def _fail(exc: Exception) -> CliFailure:
-    code = getattr(exc, "exit_code", 1)
-    return CliFailure(str(exc), exit_code=code)
-
-
 def _load_failure(exc: res.LoadError) -> CliFailure:
     return CliFailure(f"{exc.reason}: {exc.path}", exit_code=4 if exc.reason == "absent" else 5)
 
