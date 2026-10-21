@@ -696,16 +696,24 @@ fallback therefore follows the events of the newest `run` segment in order:
 ```text
 run header
   └─ command_started / command_running  → 300 s minimum idle bound
-       └─ command_finished              → keep that bound while awaiting plan
-            └─ plan                     → max(300 s, 3 × advertised cadence)
+       └─ command_finished              → R2 lanes only: keep that bound
+            └─ plan                        while awaiting the plan, then
+                 │                         max(300 s, 3 × advertised cadence)
                  └─ candidate events    → each one resets the idle clock
-verdict_written (R0/R1: no plan ever)   → nothing left to wait for
+verdict_written                         → nothing left to wait for
 ```
 
 The heartbeat is a pure time-based tick Assay writes while its own command
-runs (B064), so a silent baseline is genuinely silent. `verdict_written`
-ends the post-command bound because an R0/R1 stream has no plan to wait for;
-without that rule the 300 s bound would outlive a finished lane. The previous
+runs (B064), so a silent baseline is genuinely silent; run-gate requests its
+interval (`--progress-heartbeat 60`) rather than trusting a default, and
+refuses an assay lane's `stall_timeout` below twice that. The tick exists for
+the command phase ONLY. After `command_finished` an R0/R1 judge parses
+coverage and judges changed lines and writes nothing (silences of up to 253 s
+measured in real cmru R1 streams), so a bound there would kill healthy lanes;
+the post-command bound is armed only when the judge inventory proves the lane
+declares R2, i.e. a `plan` follows within seconds (0.6 to 3.3 s measured).
+When the declaration cannot be proved, no post-command bound is applied (the
+pre-existing behavior), never a guessed one. The previous
 `run` segments are fenced off (see above), and during an automatic bound host
 memory PSI `full avg10 > 5` pauses the clock: pressure-affected time is not
 silence.

@@ -10,7 +10,7 @@ and the publications of 2026-10-17/18.
 **RG-55 as scoped (P0-P8) is shipped and closed.** The residue is tracked as
 named backlog rows, not as the wave. Two things are explicitly NOT delivered:
 mutation (R2) evidence on the final trees, and the six cgprofile review
-blockers (fixed in the next package, cgprofile 1.1.0).
+blockers (open; to be fixed in cgprofile 1.1.0, CGP-110, in progress).
 
 ## What shipped, per package
 
@@ -48,7 +48,8 @@ gates the dstdns brief.
   placement after origin change, unconfirmed DAMON teardown reporting `ok:true`,
   implicit unbounded `cgprofile.slice`, missing live acceptance of the
   contract-2 observer from a gated peer, dirty/ineligible saved receipts and
-  unproved image identity) is fixed in cgprofile 1.1.0. CP-24..CP-26 (stop
+  unproved image identity) are OPEN: to be fixed in cgprofile 1.1.0 (CGP-110, in
+  progress; no 1.1.0 exists yet, the only tag is `cgprofile-v1.0.0`). CP-24..CP-26 (stop
   protocol, quarantine, DAMON pool provenance) follow later; the CP-24 packet is
   parked on `park/stash-2026-10-17-park-cp-24-25-26-work-from-cgprofile-rel`.
 - **RG-56** atomic admission (with CP-15) is deferred; its design and seven

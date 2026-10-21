@@ -2090,17 +2090,23 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     applies an automatic idle bound from the progress stream of the latest
     `run` segment (`R-40g`). Assay emits the R2 `plan` only AFTER its baseline
     command, so before the plan the baseline's `command_started` /
-    `command_running` heartbeat (B064) arms a `300s` minimum bound that every
-    heartbeat resets, and after `command_finished` the same `300s` minimum
-    stays armed until the `plan` arrives (or `verdict_written` ends an R0/R1
-    stream, which never has one). After the `plan` the bound is `max(300s, 3 ×
+    `command_running` heartbeat (B064; run-gate requests it explicitly with
+    `--progress-heartbeat 60`) arms a `300s` minimum bound that every
+    heartbeat resets. After `command_finished` the same `300s` minimum stays
+    armed until the `plan` arrives ONLY for a lane whose judge inventory proves
+    it declares R2; an R0/R1 lane (or one whose inventory is unavailable) has
+    no post-command bound, because its judge phase (coverage parse,
+    changed-line coverage) writes nothing for minutes and no plan follows
+    (`verdict_written` clears the bound in any case). After the `plan` the bound is `max(300s, 3 ×
     expect_next_event_within_s)`; the plan arms it even before candidate 0, so
     a wedged collection phase is bounded. A file holding only the `run` header
     and no heartbeat, plan or candidate event remains the `R-40b`
     disclosure-only case. During this automatic bound, host memory PSI `full
     avg10 > 5` pauses the idle clock; the measured high-load interval is not
     converted into a false stall. An explicit `stall_timeout` remains the
-    author's policy and retains its existing semantics. The watch is liveness,
+    author's policy, and the pre-plan phases are bounded by it too, so the
+    loader refuses an assay lane's `stall_timeout` below `120s` (twice the
+    requested heartbeat). The watch is liveness,
     not measurement: it is armed for an assay lane even when profiling is
     disabled. In bare-host rusage mode run-gate polls the exact child with
     `wait4(WNOHANG)` while the watch is active and reaps it with `wait4`, so

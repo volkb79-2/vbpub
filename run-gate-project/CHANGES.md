@@ -13,9 +13,15 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   bounds the R2 baseline. It follows Assay's `command_started` /
   `command_running` heartbeat (300 s minimum idle bound, reset by each tick)
   and keeps that bound from `command_finished` until the `plan` arrives
-  (`verdict_written` ends it for an R0/R1 stream); the post-plan bound is
-  unchanged. A stream holding only the `run` header remains disclosure-only,
-  so verdicts of lanes that were healthy are unchanged. The watch is armed for
+  for a lane whose judge inventory PROVES it declares R2 (a `plan` will
+  follow); an R0/R1 lane gets only the command-phase heartbeat bound, because
+  its judge phase after `command_finished` (coverage, changed-line coverage)
+  legitimately writes nothing for minutes (measured up to 253 s). The
+  post-plan bound is unchanged. A stream holding only the `run` header remains
+  disclosure-only. Run-gate now requests the Assay heartbeat explicitly
+  (`--progress-heartbeat 60`) and refuses, at load, an assay lane whose
+  `stall_timeout` is below 120 s (twice the heartbeat), which would otherwise
+  stall a healthy baseline. The watch is armed for
   an assay lane even when profiling is disabled (exec, bare-host and
   container lanes). Bare-host fallback polling uses `wait4(WNOHANG)` at the
   progress cadence and still reaps the exact child, so rusage accounting is

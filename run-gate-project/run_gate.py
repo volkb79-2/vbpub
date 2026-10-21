@@ -651,6 +651,13 @@ OWNER_RACE_PAUSE_SECONDS = 0.5    # -> ~1.0 s across the two extra reads
 # This is NOT the disclosure interval: a poll that sees no new event prints
 # nothing.
 PROGRESS_POLL_SECONDS = 30
+# The Assay `command_running` heartbeat interval run-gate REQUESTS for every
+# assay lane (`--progress-heartbeat`), rather than relying on Assay's default:
+# the in-process liveness bound (300 s minimum) is only sound while the
+# heartbeat stays well inside it, so run-gate owns this fact. A lane's explicit
+# `stall_timeout` must also leave room for it (see `_validate_stall_timeout`).
+ASSAY_PROGRESS_HEARTBEAT_SECONDS = 60
+ASSAY_STALL_FLOOR_SECONDS = 2 * ASSAY_PROGRESS_HEARTBEAT_SECONDS
 
 # RG-55 / SPEC R-43: cgroup-profiler daemon client
 # (RG55-INTERFACE-CONTRACT.md, contract 1). run-gate never depends on the
@@ -1170,6 +1177,16 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         # thing to get wrong.
         _validate_budget(table["stall_timeout"], f"{where} [lanes.{name}]",
                          "stall_timeout")
+        if table.get("kind") == "assay" \
+                and budget_seconds(table["stall_timeout"]) \
+                < ASSAY_STALL_FLOOR_SECONDS:
+            fail(f"{where} [lanes.{name}]: 'stall_timeout' "
+                 f"{table['stall_timeout']!r} is below "
+                 f"{ASSAY_STALL_FLOOR_SECONDS}s, twice the "
+                 f"{ASSAY_PROGRESS_HEARTBEAT_SECONDS}s Assay heartbeat "
+                 f"run-gate requests: a healthy baseline would be reported "
+                 f"STALLED between two ticks. Use at least "
+                 f"'{ASSAY_STALL_FLOOR_SECONDS // 60}m'")
         # RG-41: legal for kind = "command" now too, judged from LOG-STREAM
         # silence (await_container already tails `docker logs -f` for every
         # container lane) rather than the assay progress file — the two
@@ -10524,7 +10541,9 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     progress = assay_progress_rel(lane["assay_lane"])
     run_argv = ["run", lane["assay_lane"], "--file", "assay.toml",
                 "--verdict-json", verdict, "--resume", "--progress",
-                progress, "--state-dir", str(state_dir)]
+                progress, "--progress-heartbeat",
+                str(ASSAY_PROGRESS_HEARTBEAT_SECONDS),
+                "--state-dir", str(state_dir)]
     if request_base:
         # RG-26: only ever appended for a lane the INVENTORY says delegates
         # its base (base_source == "request"); assay refuses it on any other.
@@ -11018,8 +11037,13 @@ class ProgressWatch:
     def __init__(self, path: Path, lane_name: str,
                  stall_seconds: int | None, clock=time.monotonic,
                  *, auto_bound: bool = False,
-                 pressure_reader=None):
+                 pressure_reader=None, expects_plan: bool = False):
         self.path = path
+        # True only for a lane whose Assay run will emit a mutation `plan`
+        # (declared R2). An R0/R1 lane's judge phase after `command_finished`
+        # (coverage parse, changed-line coverage) writes nothing for minutes
+        # and has no plan to wait for, so that silence is NOT evidence.
+        self.expects_plan = expects_plan
         self.lane = lane_name
         self.stall_seconds = stall_seconds
         self.clock = clock
@@ -11117,7 +11141,7 @@ class ProgressWatch:
                 baseline_finished = False
             elif kind == "command_finished":
                 command_active = False
-                baseline_finished = True
+                baseline_finished = self.expects_plan
             elif kind == "verdict_written":
                 # An R0/R1 lane (or a finished R2) has no plan to wait for.
                 command_active = False
@@ -11567,6 +11591,17 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
               flush=True)
 
 
+def lane_declares_r2(lane: dict) -> bool:
+    """True only when the judge inventory PROVES the assay lane declares R2
+    (so a `plan` event will follow its baseline). Unknown is False: an
+    unprovable lane keeps the pre-plan behavior of no post-command bound, never
+    a bound that could kill a healthy R0/R1 judge phase."""
+    inventory = lane.get("_assay_inventory")
+    entry = inventory.get("entry") if isinstance(inventory, dict) else None
+    rigor = entry.get("rigor") if isinstance(entry, dict) else None
+    return isinstance(rigor, list) and "R2" in rigor
+
+
 def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
                         recorded: dict | None = None,
                         *, auto_bound: bool = False) -> "ProgressWatch | None":
@@ -11605,7 +11640,8 @@ def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
     return ProgressWatch(Path(progress), lane_name,
                          budget_seconds(stall) if stall else None,
                          auto_bound=auto_bound,
-                         pressure_reader=pressure_reader)
+                         pressure_reader=pressure_reader,
+                         expects_plan=lane_declares_r2(lane))
 
 
 def consume_profiler_watch(stream: ProfilerWatch, profiler: dict,

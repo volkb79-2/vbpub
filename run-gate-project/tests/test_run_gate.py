@@ -14252,6 +14252,7 @@ class TestResumeAndProgressAlways:
                                            request_base="deadbeef")
         assert inner.rstrip().endswith("--request-base deadbeef")
         assert ("--progress .assay/progress-sql_mutation.jsonl "
+                "--progress-heartbeat 60 "
                 "--state-dir /repo/.run-gate/assay-state/proj "
                 "--request-base deadbeef") in inner
 
@@ -14897,6 +14898,7 @@ class TestResumeAndProgressAlways:
         assert ("JUDGE-ARGV: run ui_unit --file assay.toml "
                 "--verdict-json .assay/verdict-ui_unit.json "
                 "--resume --progress .assay/progress-ui_unit.jsonl "
+                "--progress-heartbeat 60 "
                 f"--state-dir {state_dir} "
                 "--request-base deadbeef") in out
 
@@ -17029,7 +17031,8 @@ class TestProgressWatch:
                               "phase": "baseline"},
                        {"event": "command_finished", "phase": "baseline"})
         watch = run_gate.ProgressWatch(
-            path, "sql-mutation", None, clock, auto_bound=True)
+            path, "sql-mutation", None, clock, auto_bound=True,
+            expects_plan=True)
         assert watch.poll() is None
         clock.advance(299)
         assert watch.poll() is None
@@ -17068,7 +17071,7 @@ class TestProgressWatch:
                        {"event": "command_finished"},
                        {"event": "verdict_written"})
         watch = run_gate.ProgressWatch(
-            path, "r1", None, clock, auto_bound=True)
+            path, "r1", None, clock, auto_bound=True, expects_plan=True)
         clock.advance(10_000)
         assert watch.poll() is None
 
@@ -17116,6 +17119,87 @@ class TestProgressWatch:
         assert stalled is not None
         assert "idle_bound auto 300s" in stalled
         assert "last event seen: baseline command progress" in stalled
+
+    def test_r1_judge_phase_silence_is_not_a_stall(self, tmp_path):
+        # Replay of the measured R1 shape (cmru-bugs62: command_finished,
+        # coverage_parsed, ~250 s of judge silence, verdict_written). No plan
+        # follows an R0/R1 lane, so that silence is not evidence of a stall.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r1-judge.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_running"},
+                       {"event": "command_finished"},
+                       {"event": "coverage_parsed"})
+        watch = run_gate.ProgressWatch(
+            path, "r1", None, clock, auto_bound=True, expects_plan=False)
+        assert watch.poll() is None
+        clock.advance(250)
+        assert watch.poll() is None
+        clock.advance(10_000)            # even far longer: no plan expected
+        assert watch.poll() is None
+        append_progress(path, {"event": "verdict_written"})
+        assert watch.poll() is None
+
+    def test_r2_post_baseline_bound_has_an_exact_300s_boundary(self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r2-boundary.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_finished"},
+                       {"event": "coverage_parsed"})
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(299.9)
+        assert watch.poll() is None
+        clock.advance(0.1)
+        assert watch.poll() is not None
+
+    def test_expects_plan_comes_from_the_proven_inventory_only(self):
+        r2 = {"_assay_inventory": {"entry": {"rigor": ["R0", "R1", "R2"]}}}
+        r1 = {"_assay_inventory": {"entry": {"rigor": ["R0", "R1"]}}}
+        assert run_gate.lane_declares_r2(r2) is True
+        assert run_gate.lane_declares_r2(r1) is False
+        assert run_gate.lane_declares_r2({}) is False          # unknown
+        assert run_gate.lane_declares_r2(
+            {"_assay_inventory": {"entry": {"rigor": "R2"}}}) is False
+
+    def test_make_progress_watch_carries_the_declared_rigor(self, tmp_path):
+        lane = {"kind": "assay", "assay_lane": "x",
+                "_assay_inventory": {"entry": {"rigor": ["R2"]}}}
+        watch = run_gate.make_progress_watch(
+            lane, "x", tmp_path, auto_bound=True)
+        assert watch.expects_plan is True
+        lane["_assay_inventory"]["entry"]["rigor"] = ["R1"]
+        assert run_gate.make_progress_watch(
+            lane, "x", tmp_path, auto_bound=True).expects_plan is False
+
+    def test_requested_heartbeat_leaves_room_inside_the_auto_bound(self):
+        # F-05: run-gate pins the heartbeat it relies on; it must stay well
+        # inside the 300 s minimum idle bound.
+        assert run_gate.ASSAY_PROGRESS_HEARTBEAT_SECONDS * 3 <= 300
+        assert run_gate.ASSAY_STALL_FLOOR_SECONDS \
+            >= 2 * run_gate.ASSAY_PROGRESS_HEARTBEAT_SECONDS
+
+    def test_explicit_stall_timeout_below_the_heartbeat_is_refused(self):
+        base = {"kind": "assay", "environment": "tester-unified",
+                "assay_lane": "x"}
+        with pytest.raises(run_gate.GateError, match="below 120s"):
+            run_gate._validate_lane(
+                "x", {**base, "stall_timeout": "45s"}, "fixture")
+        with pytest.raises(run_gate.GateError, match="below 120s"):
+            run_gate._validate_lane(
+                "x", {**base, "stall_timeout": "119s"}, "fixture")
+        run_gate._validate_lane(
+            "x", {**base, "stall_timeout": "120s"}, "fixture")
+        # A command lane is judged from its log stream, not the heartbeat.
+        run_gate._validate_lane(
+            "c", {"kind": "command", "environment": "tester-unified",
+                  "argv": ["true"], "stall_timeout": "30s"}, "fixture")
+
+    def test_the_assay_run_argv_pins_the_requested_heartbeat(self):
+        source = (RUN_GATE_DIR / "run_gate.py").read_text(encoding="utf-8")
+        assert '"--progress-heartbeat"' in source
+        assert "str(ASSAY_PROGRESS_HEARTBEAT_SECONDS)" in source
 
     def test_auto_bound_plan_rewrite_reseeds_from_the_new_plan_time(self,
                                                                      tmp_path):
@@ -17644,6 +17728,9 @@ class TestStallEndToEnd:
 
     def test_a_silent_lane_is_stopped_with_evidence_and_error_status(
             self, tmp_path, monkeypatch, capsys):
+        # These end-to-end stall tests need a seconds-scale timeout; the
+        # load-time floor (twice the heartbeat) is lifted for them only.
+        monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)
         repo, proj = make_history_repo(tmp_path, """\
             schema_version = 1
             [environments.tester-unified]
@@ -17679,6 +17766,7 @@ class TestStallEndToEnd:
 
     def test_a_moving_lane_is_never_stopped(self, tmp_path, monkeypatch,
                                             capsys):
+        monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)
         repo, proj = make_history_repo(tmp_path, """\
             schema_version = 1
             [environments.tester-unified]
