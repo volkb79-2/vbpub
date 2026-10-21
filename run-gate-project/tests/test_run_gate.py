@@ -23914,6 +23914,64 @@ class TestBareHostProfilingWiring:
         assert "went idle; reattaching once" in err
         assert "using in-process liveness fallback" in err
 
+    def test_bare_host_idle_twice_without_fallback_stays_silent_and_keeps_exit(
+            self, tmp_path, monkeypatch, capsys):
+        """Same double-idle path with NO progress fallback: no in-process
+        announcement, the warning says liveness continues without the daemon,
+        and the lane exit code is unaffected."""
+        class DaemonWatch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return False
+
+            def idle(self):
+                return True
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def watch(self, session):
+                self.calls += 1
+                return DaemonWatch()
+
+        class Process:
+            pid = 4249
+            returncode = None
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls <= 4:
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        client = Client()
+        state = {"mode": "daemon", "client": client, "daemon": "d",
+                 "session": "s-bare-idle2-nofb", "session_line": None,
+                 "warning": None, "sampler": None, "profiler_status": None}
+        assert self._bare_assay_call(tmp_path, monkeypatch, state,
+                                     watch=None, process=Process()) == 0
+        assert client.calls == 2
+        out, err = capsys.readouterr()
+        assert "in-process watch" not in out
+        assert "in-process watch" not in err
+        assert "continuing without daemon liveness" in err
+        assert "using in-process liveness fallback" not in err
+        assert state["warning"] == \
+            "daemon watch remained idle after one reattach"
+
     def test_bare_host_daemon_verdict_stops_child_as_infrastructure(
             self, tmp_path, monkeypatch):
         class Watch:

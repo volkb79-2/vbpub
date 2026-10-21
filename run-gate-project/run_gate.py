@@ -13588,9 +13588,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     # available, remains the preferred stream.
     fallback_watch = make_progress_watch(
         lane, lane_name, project_dir, auto_bound=True)
-    fallback_announced = False
     if daemon_watch is None and fallback_watch is not None:
-        fallback_announced = True
         cause = ("profiling disabled"
                  if profiler_state.get("mode") == "disabled"
                  else "daemon unavailable")
@@ -13726,9 +13724,10 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                                     profiler_state.get("warning") or \
                                     "daemon watch remained idle after one " \
                                     "reattach"
-                                if fallback_watch is not None \
-                                        and not fallback_announced:
-                                    fallback_announced = True
+                                # Runs at most once: this same step sets
+                                # daemon_watch = None, so the branch is
+                                # never re-entered.
+                                if fallback_watch is not None:
                                     print(f"run-gate: in-process watch — "
                                           f"daemon unavailable for lane "
                                           f"{lane_name!r}", flush=True)
