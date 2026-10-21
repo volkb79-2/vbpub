@@ -44,3 +44,5 @@ The API must remain explicit about its contract version. A consumer must not sil
 **2026-10-13** — 2026-10-13: The contract-2 observer implementation and scope tests are present in the release candidate. Keep this entry carved until the exact-tip registered gates and live observer acceptance pass; the current in-progress tree is not yet release evidence.
 
 **2026-10-15** — An independent review found that `pids_localevents` cannot substitute for `pids.events.local` in native R2 attribution: its local fork-failure counter does not identify which ancestor's `pids.max` rejected the fork. The observer now refuses this mount mode; the exact-tip gates and live observer acceptance remain pending.
+
+**2026-10-21** — CGP-110: the bounded live probe `tools/observer-live-acceptance.py` and its procedure (`docs/CONSUMERS.md`, "Live observer acceptance") are shipped. The live run against the released daemon from a gated peer has NOT been performed; this entry stays `carved` until its four outputs are recorded.

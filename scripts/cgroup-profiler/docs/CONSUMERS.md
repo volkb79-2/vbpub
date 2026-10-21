@@ -368,6 +368,39 @@ invalidate the candidate. See the
 [`observer protocol`](PROTOCOL.md#8-native-r2-resource-observer-rg-89) and
 [`design rationale`](DESIGN-GUIDE.md#native-r2-resource-observation-is-data-only-not-a-broker).
 
+### Live observer acceptance
+
+Unit tests prove the contract with fake trees; a release additionally needs one
+bounded run against the real daemon from a gated peer. `tools/observer-live-acceptance.py`
+(stdlib only, read-only, creates no cgroup) is the probe. Run it inside an
+opted-in gated container that has `/run/cgprofile/observer` mounted:
+
+```sh
+# 1. contract 1 is refused with bad-argument naming the contract
+python tools/observer-live-acceptance.py contract1
+# 2. baseline reading (well-formed contract 2, local maps present)
+python tools/observer-live-acceptance.py read --out /tmp/before.json
+# 3. cause a SIBLING-only event: a second gated container under the same
+#    gates slice hits ITS OWN pids.max or memory.max (bounded, e.g. a 16-fork
+#    burst under --pids-limit 8); the peer above stays untouched
+python tools/observer-live-acceptance.py read --out /tmp/after-sibling.json
+python tools/observer-live-acceptance.py compare --before /tmp/before.json \
+    --after /tmp/after-sibling.json --expect sibling-only
+# 4. cause an event ENFORCED AT THE SHARED ANCESTOR (the gates slice's own
+#    limit is reached by the peers together), then
+python tools/observer-live-acceptance.py read --out /tmp/after-enforced.json
+python tools/observer-live-acceptance.py compare --before /tmp/after-sibling.json \
+    --after /tmp/after-enforced.json --expect enforced
+```
+
+`sibling-only` passes only when a shared ancestor's hierarchical counter grew
+while its local counter did not; `enforced` only when the ancestor's local
+counter grew. Record the daemon image revision label (it must equal the
+peeled release tag) next to the four outputs. The probe never substitutes for
+Assay's own fail-closed attribution; it is evidence that the live daemon
+reports the distinction at all. Until this has been run against the released
+daemon, CP-20 stays `carved`.
+
 ## Resolve a target from a cockpit
 
 In helper mode, `self` means the invoking container. The caller resolves its

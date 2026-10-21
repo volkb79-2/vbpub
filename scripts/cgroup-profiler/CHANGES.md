@@ -13,6 +13,11 @@ Release scope (CGP-110): the six blockers of the cgprofile-v1.0.0 Sol review.
 registered `r0-r1` and `r3` lanes are the qualification. No R2 verdict may be
 inferred from the r3 canaries.
 
+- Add (Sol B5): `tools/observer-live-acceptance.py`, a read-only probe for the
+  live contract-2 observer acceptance from a gated peer (contract-1 refusal,
+  well-formed local maps, sibling-only versus enforced-at-ancestor deltas),
+  with the operator procedure in `docs/CONSUMERS.md`. The live run itself is
+  NOT part of this change and is required before CP-20 is closed.
 - Fix (Sol B4): `cgprofile serve` now refuses to start (exit 2) when its own
   `cgprofile.slice` is unbounded (`memory.max` unlimited or unreadable), i.e.
   when the unit was never installed and systemd auto-created an implicit,
