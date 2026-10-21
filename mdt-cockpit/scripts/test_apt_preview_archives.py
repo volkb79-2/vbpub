@@ -18,6 +18,52 @@ ARCHIVES = ("oldstable", "oldstable-backports", "testing")
 def _stanzas(name: str) -> list[prefs.Stanza]:
     return prefs.parse_preferences((ROOT / "apt" / name).read_text(encoding="utf-8"))
 
+OPERATOR_PRIORITIES = """\
+# /etc/apt/preferences.d/debian-priorities
+
+# Current stable — normal priority
+Package: *
+Pin: release a=stable
+Pin-Priority: 500
+
+# Current stable backports — preferred over stable
+Package: *
+Pin: release a=stable-backports
+Pin-Priority: 600
+"""
+
+
+def _dockerfile_vendor_hosts() -> set[str]:
+    import re
+
+    text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    # `deb [options] https://host/path ...` as written into sources.list.d by the Dockerfile
+    return set(re.findall(r"\bdeb (?:\[[^\]]*\] )?https?://([^/\s]+)", text)) - {"deb.debian.org"}
+
+
+def test_debian_priorities_is_the_operators_text_byte_for_byte() -> None:
+    assert (ROOT / "apt" / "debian-priorities.pref").read_text(encoding="utf-8").rstrip("\n") == OPERATOR_PRIORITIES.rstrip("\n")
+
+
+def test_every_vendor_source_the_dockerfile_adds_has_a_700_origin_pin_above_backports() -> None:
+    hosts = _dockerfile_vendor_hosts()
+    assert hosts >= {"packages.sury.org", "apt.postgresql.org", "packages.redis.io", "download.docker.com"}, hosts
+    stanzas = _stanzas("vendor-origins.pref")
+    assert prefs.origin_pin_problems(stanzas, tuple(sorted(hosts)), 700) == []
+    assert {s.pin for s in stanzas} == {f"origin {h}" for h in hosts}, "pin for a host the Dockerfile no longer adds"
+    assert min(s.priority for s in stanzas) > 600
+
+
+def test_a_vendor_host_without_a_pin_is_rejected() -> None:
+    problems = prefs.origin_pin_problems(_stanzas("vendor-origins.pref"), ("packages.example.org",), 700)
+    assert problems and "packages.example.org" in problems[0]
+
+
+def test_vendor_origins_are_installed_next_to_debian_priorities() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY --chmod=0644 apt/vendor-origins.pref /etc/apt/preferences.d/vendor-origins" in dockerfile
+    assert dockerfile.index("apt/vendor-origins.pref") < dockerfile.index("# Core system packages")
+
 
 def test_stable_is_500_and_stable_backports_is_600_each_in_its_own_stanza_by_archive_name() -> None:
     stanzas = _stanzas("debian-priorities.pref")

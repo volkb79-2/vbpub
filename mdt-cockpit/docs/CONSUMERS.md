@@ -309,6 +309,10 @@ sudo apt-get install -t trixie <pkg>        # stay on stable although backports 
 sudo apt-get install -t testing <pkg>       # explicit testing, below
 ```
 
+The vendor repositories (sury, pgdg, redis.io, docker.com) are pinned to 700 in
+`/etc/apt/preferences.d/vendor-origins` (`Pin: origin <host>`), so they beat backports. Add one such stanza when you add
+your own third-party source.
+
 If you add your own preference for a Debian archive, match it with `a=<archive name>` (`stable-backports`),
 not the codename: `a=trixie-backports` matches nothing, because apt compares `a=` with the Release `Suite:`
 (`n=` is the codename).

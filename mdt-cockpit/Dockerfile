@@ -135,6 +135,8 @@ COPY apt/backports.sources.in /tmp/backports.sources.in
 # Priority policy (stable 500, stable-backports 600; testing/oldstable stay 100 via preview-archives). Matches the
 # archive NAME (`a=`), not the codename, which is why it is not templated by suite.
 COPY --chmod=0644 apt/debian-priorities.pref /etc/apt/preferences.d/debian-priorities
+# Vendor repositories (sury, pgdg, redis, docker) at 700, above backports' 600: see the file's comment.
+COPY --chmod=0644 apt/vendor-origins.pref /etc/apt/preferences.d/vendor-origins
 COPY apt/packages.list /tmp/packages.list
 COPY pip/wheels.list /tmp/pip/wheels.list
 COPY pip/wheels/ /tmp/pip/wheels/

@@ -270,9 +270,18 @@ stable 500 > testing / oldstable / oldstable-backports 100.
 * **Source by codename, pin by archive name.** `trixie-backports.sources` stays codename-based (the Debian
   recommendation for sources): an image built for trixie keeps following trixie when trixie becomes
   oldstable. The pin, however, is by archive name, so on that day `a=stable` / `a=stable-backports` stop
-  matching the image's trixie sources: they fall to the defaults (500 for the archive, 100 for backports
-  because of `NotAutomatic`), and the new stable's archives are not configured. **Rebuild the image** for
-  the new stable at that point (new `DEBIAN_VERSION`); the pin file then needs no change.
+  matching the image's trixie sources, and `preview-archives.pref` takes over: trixie is then `a=oldstable`
+  and trixie-backports `a=oldstable-backports`, both pinned to **100**. The image's own sources drop to 100
+  (not 500/600), and the new stable's archives are not configured. **Rebuild the image** for the new stable
+  at that point (new `DEBIAN_VERSION`); the pin files then need no change.
+* **Vendor repositories at 700.** The image adds sury PHP, pgdg, redis.io and docker.com on purpose. They
+  get the default 500, and a higher priority beats a higher version, so with backports at 600 apt would pick
+  a Debian backports build of `postgresql-client`, `redis-tools` or `docker-*` over the vendor's.
+  `apt/vendor-origins.pref` therefore pins each vendor host (`Pin: origin <host>`, one stanza each) to 700:
+  an explicitly added repository is the chosen source for its packages. The oracle derives the vendor hosts
+  from the `deb ...` lines the Dockerfile writes and fails for a host without a 700 stanza. These repos do
+  not ship skopeo (docker-ce/pgdg/redis/sury ship their own packages), so the temporary 601 skopeo pin still
+  beats everything for skopeo; if a vendor ever did, 700 would win and the dry-run check would not notice.
 * **Not templated.** Because the pin carries archive names, there is no `@SUITE@` rendering any more; the
   file is copied as is, and `scripts/test_apt_preview_archives.py` fails if it names a codename.
 * **Skopeo pin.** The temporary skopeo-only pin is 601 (was 501): a pin below 600 would let a backported

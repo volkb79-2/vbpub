@@ -34,12 +34,22 @@ Types: deb
 URIs: http://backports.invalid/debian
 Suites: trixie-backports
 Components: main
+
+Types: deb
+URIs: https://download.docker.com/linux/debian
+Suites: trixie
+Components: main
 SRC
+# A vendor archive (Release Suite = codename, as docker.com/pgdg publish) offering what backports also offers.
+printf 'Suite: trixie\nCodename: trixie\nArchitectures: %s\nComponents: main\n' "$arch" \
+    > "$d/lists/download.docker.com_linux_debian_dists_trixie_Release"
+printf 'Package: mdt-vendor\nVersion: 1.0\nArchitecture: %s\nDescription: fake\n' "$arch" \
+    > "$d/lists/download.docker.com_linux_debian_dists_trixie_main_binary-${arch}_Packages"
 # Realistic Release fields: the backports archive's Suite is `stable-backports`, its Codename
 # `trixie-backports`; apt matches `a=` against Suite, `n=` against Codename.
 printf 'Suite: stable-backports\nCodename: trixie-backports\nNotAutomatic: yes\nButAutomaticUpgrades: yes\nArchitectures: %s\nComponents: main\n' "$arch" \
     > "$d/lists/backports.invalid_debian_dists_trixie-backports_Release"
-printf 'Package: mdt-both\nVersion: 2.0~bpo13+1\nArchitecture: %s\nDescription: fake\n\nPackage: mdt-bpo-only\nVersion: 1\nArchitecture: %s\nDescription: fake\n' "$arch" "$arch" \
+printf 'Package: mdt-both\nVersion: 2.0~bpo13+1\nArchitecture: %s\nDescription: fake\n\nPackage: mdt-bpo-only\nVersion: 1\nArchitecture: %s\nDescription: fake\n\nPackage: mdt-vendor\nVersion: 2.0~bpo13+1\nArchitecture: %s\nDescription: fake\n' "$arch" "$arch" "$arch" \
     > "$d/lists/backports.invalid_debian_dists_trixie-backports_main_binary-${arch}_Packages"
 printf 'Suite: testing\nCodename: forky\nArchitectures: %s\nComponents: main contrib non-free non-free-firmware\n' "$arch" \
     > "$d/lists/deb.debian.org_debian_dists_testing_Release"
@@ -62,7 +72,7 @@ printf 'Suite: stable\nCodename: trixie\nArchitectures: %s\nComponents: main\n' 
 printf 'Package: bash\nVersion: %s\nArchitecture: %s\nDescription: fake\n\nPackage: mdt-both\nVersion: 1.0\nArchitecture: %s\nDescription: fake\n' "$installed" "$arch" "$arch" \
     > "$d/lists/stable.invalid_debian_dists_stable_main_binary-${arch}_Packages"
 apt-cache -o Dir::State::lists="$d/lists" -o Dir::Etc::sourcelist=/dev/null -o Dir::Etc::sourceparts="$d/src" \
-    -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= policy bash mdt-both mdt-bpo-only mdt-preview-only mdt-oldstable-only mdt-oldstable-backports-only
+    -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= policy bash mdt-vendor mdt-both mdt-bpo-only mdt-preview-only mdt-oldstable-only mdt-oldstable-backports-only
 """
 
 
@@ -81,7 +91,7 @@ class Contract:
     def test_testing_is_configured_and_no_temporary_pin_is_left_behind(self) -> None:
         result = self.sh(
             "test -f /etc/apt/sources.list.d/testing.sources && test -f /etc/apt/preferences.d/preview-archives "
-            "&& test -f /etc/apt/preferences.d/debian-priorities && ! test -e /etc/apt/preferences.d/backports "
+            "&& test -f /etc/apt/preferences.d/debian-priorities && test -f /etc/apt/preferences.d/vendor-origins && ! test -e /etc/apt/preferences.d/backports "
             "&& ! test -e /etc/apt/preferences.d/skopeo-testing && ! test -e /etc/apt/sources.list.d/testing.list"
         )
         self.assertOk(result, "testing source and preview pin files")
@@ -107,6 +117,14 @@ class Contract:
         self.assertRegex(both, r"1\.0 500\n\s+500 http://stable\.invalid/debian stable/main", "stable sits at 500")
         # testing offers 3.0 for the same package: visible at 100, not the candidate.
         self.assertRegex(both, r"3\.0 100\n\s+100 http://deb\.debian\.org/debian testing/main")
+
+    def test_a_vendor_repository_beats_backports_at_700(self) -> None:
+        result = self.sh(SCRIPT)
+        self.assertOk(result, "synthetic apt-cache policy")
+        vendor = _section(result.stdout, "mdt-vendor")
+        self.assertRegex(vendor, r"Candidate: 1\.0\n", f"the vendor repository must beat backports 2.0~bpo:\n{vendor}")
+        self.assertRegex(vendor, r"1\.0 700\n\s+700 https://download\.docker\.com/linux/debian trixie/main")
+        self.assertRegex(vendor, r"2\.0~bpo13\+1 600\n")
 
     def test_a_backports_only_package_is_a_candidate_at_600(self) -> None:
         result = self.sh(SCRIPT)

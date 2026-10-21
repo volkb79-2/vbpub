@@ -265,8 +265,13 @@ sudo apt-get install -t trixie <pkg>         # force stable: a backports version
 sudo apt-get install <pkg>/testing           # explicit testing (see below)
 ```
 
+Vendor repositories added on purpose (sury PHP, pgdg, redis.io, docker.com) are pinned to 700 by origin, above
+backports, so their packages are not replaced by Debian backports builds.
+
 When trixie becomes oldstable the pins by archive name (`a=stable`, `a=stable-backports`) stop matching this
-image's trixie sources; rebuild the image for the new stable (DESIGN-GUIDE, "Apt priority policy").
+image's trixie sources; `preview-archives.pref` then pins trixie (`a=oldstable`) and trixie-backports
+(`a=oldstable-backports`) to 100, so the image's own sources drop to 100. Rebuild the image for the new
+stable (DESIGN-GUIDE, "Apt priority policy").
 
 ## Installing a package from Debian testing
 
