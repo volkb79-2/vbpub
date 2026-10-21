@@ -79,7 +79,7 @@ SPEC §9.
 | RG-59 | daemon-absent profiling warning named the wrong cause | Minor | FIXED 2026-09-12 |
 | RG-60 | exec-lane profiling had no inflight recovery record | Major | FIXED 2026-09-12 |
 | RG-61 | RG-55 wave left documentation drift | Minor | FIXED 2026-09-12 |
-| RG-62 | two order-/timing-sensitive selftest flakes were found live | Minor | OPEN |
+| RG-62 | two order-/timing-sensitive selftest flakes were found live | Minor | FIXED 2026-10-07 (tests only, no `__revision__` change): the pairing rot-guard scans the troves itself; the history duration test freezes its clock |
 | RG-63 | assay lane budget included time queued on the exec lock | Major | FIXED 2026-10-04 (rev 49): budget starts after admission and runner locks |
 | RG-64 | caller-side lock checks could not reliably diagnose actual container occupancy | Minor | FIXED 2026-10-04 (rev 51): `status` reads internal exec-lock holders/waiters, selected-tree inflight records, and daemon-wide admission state |
 | RG-65 | duplicate of RG-47: worktree-only lanes were hidden by invoking-CWD config resolution | Major | MERGED INTO RG-47 2026-10-04 (rev 47) |
@@ -4894,6 +4894,15 @@ backlog) per this session's own dispatch instructions and the estate
 convention that a tool's own defects, found while working in it, are
 recorded in the tool's backlog — never worked around locally without a
 record.
+
+### Status — FIXED 2026-10-07 (package RG-SMALL; tests only, no `__revision__` change)
+
+The two flakes (named in `nyxloom-trove/reports/run-gate-WAVE-RG55-P4-LOG.md`, session 5):
+
+1. `TestEstateBudgetTimeoutPairing::test_estate_pairing_sweep_is_alive` read a class-level `PAIRINGS_SEEN` list that the parametrized sibling tests filled, so its verdict depended on which siblings had run first (pytest-randomly): it silently SKIPPED when run first (a hollow guard) and failed `collapsed to [('ciu', 'tester-unified')]` when only some siblings had run. Reproduced deterministically before the fix with `-p no:randomly` and the order `[ciu]` then the aggregate. Fix: a pure `_pair(trove)` helper; the per-trove test asserts over it and the aggregate scans every trove itself. No shared state remains.
+2. `TestHistoryEligibilityGuard::test_tree_state_is_sampled_before_the_lane_not_after` stamped `_started_monotonic = time.monotonic() - 4.0` and then let `finish_run_record` read the real clock, so any delay (host load) gave 4.001 != 4.0. Fix: the test freezes the clock `finish_run_record` reads (`run_gate.time` replaced by a stand-in whose `monotonic` is constant; every other attribute delegates to the real module). No sleep, no retry, no tolerance widening.
+
+**Oracles.** Both tests, 20 serial runs each under `nice -n 19 ionice -c 3`: 20/20 pass; pairing class also 20/20; reversed order (aggregate first, aggregate after one sibling, flaky history test before the aggregate) all pass; 20 distinct `--randomly-seed` runs of both together all pass. Plant: a clock that is 1 ms off restores `assert 4.001 == 4.0`. Other tests that build `_started_monotonic` from `time.monotonic() - N` (for example near the `record_invocation` tests) were not audited for the same hazard; none of them failed in the evidence runs.
 
 ## RG-65 — duplicate config-resolution defect merged into RG-47
 
