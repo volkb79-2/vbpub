@@ -719,3 +719,17 @@ owner affirmatively verified its teardown; an exception from the owner, or no
 confirmation property at all, is unconfirmed. `quarantined` states whether the
 daemon will refuse to reuse that slot, so "unverified" is never read as a
 no-reuse guarantee it did not establish.
+
+## `stop` finalizes only after the sampler has exited
+
+`stop` used to join the sampling thread for ten seconds and then release
+placement, close DAMON, write `finished` and answer `ok: true` whether or not
+the thread had exited. A blocked sampler could then append samples to a
+finalized session. Finalization is now conditional on the worker being gone:
+a live worker leaves the session live, with its placement and DAMON resources
+held and no `finished` manifest, and `stop` answers `stop-incomplete`. The
+caller retries; the same session finalizes once the worker exits. Daemon
+shutdown logs the incomplete stop and leaves the manifest `running`, which the
+next start recovers as an orphan. This is deliberately NOT the CP-24 stop
+protocol (bounded finalization with kill evidence); it only forbids the false
+completion.

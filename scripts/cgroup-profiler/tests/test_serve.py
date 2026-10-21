@@ -2376,6 +2376,69 @@ def test_finalize_session_swallows_optional_damon_cleanup_failure(
     assert stop["summary"]["damon_cleanup"]["confirmed"] is False
 
 
+def test_stop_with_a_blocked_sampler_is_incomplete_and_finalizes_nothing(
+    simple_server, monkeypatch,
+):
+    """Sol B2: a sampling worker that does not exit within the join bound must
+    not be finalized under: no finished manifest, no summary, no released
+    placement, no closed DAMON, and no successful stop. A retry after the
+    worker exits finalizes normally."""
+    monkeypatch.setattr(serve, "STOP_JOIN_SECONDS", 0.05)
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+    # Replace the real sampler thread with one that ignores stop_event.
+    sess.stop_event.set()
+    sess.thread.join(timeout=5.0)
+    sess.stop_event.clear()
+    release = threading.Event()
+    blocked = threading.Thread(target=release.wait, daemon=True)
+    blocked.start()
+    sess.thread = blocked
+
+    closed = []
+    released = []
+
+    class _Damon:
+        cleanup_confirmed = True
+        kdamond_idx = 1
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
+
+        def __exit__(self, *_args):
+            closed.append(True)
+
+    class _Placement:
+        def release(self):
+            released.append(True)
+
+        def block(self):
+            return {"leaf": None}
+
+    sess.damon_session = _Damon()
+    sess.placement = _Placement()
+    summary_path = Path(simple_server.sessions_dir) / sess.session_id / "summary.json"
+    manifest_path = Path(simple_server.sessions_dir) / sess.session_id / "manifest.json"
+    status_before = json.loads(manifest_path.read_text())["status"]
+
+    response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+
+    assert response["ok"] is False
+    assert response["error"]["code"] == "stop-incomplete"
+    assert sess.finished is False
+    assert closed == [] and released == []
+    assert not summary_path.exists()
+    assert json.loads(manifest_path.read_text())["status"] == status_before
+    assert sess.session_id in simple_server._sessions
+
+    # The worker exits; the same session now stops normally.
+    release.set()
+    blocked.join(timeout=5.0)
+    again = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert again["ok"] is True and again["already_stopped"] is False
+    assert sess.finished and closed == [True] and released == [True]
+    assert summary_path.is_file()
+
+
 def test_confirmed_damon_cleanup_is_reported_as_confirmed(simple_server):
     started = simple_server._dispatch(_start_req())
     sess = simple_server._sessions[started["session"]]

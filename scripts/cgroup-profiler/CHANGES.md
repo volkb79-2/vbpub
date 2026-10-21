@@ -13,6 +13,12 @@ Release scope (CGP-110): the six blockers of the cgprofile-v1.0.0 Sol review.
 registered `r0-r1` and `r3` lanes are the qualification. No R2 verdict may be
 inferred from the r3 canaries.
 
+- Fix (Sol B2): `stop` no longer claims completion while the sampling worker is
+  still running. If the worker does not exit within 10 s the daemon answers the
+  new error `stop-incomplete`, writes no `finished` manifest or summary, and
+  keeps the session's placement and DAMON resources; a retry after the worker
+  exits finalizes normally. Previously the join result was ignored, so a blocked
+  sampler could append records to a finalized session.
 - Fix (Sol B3): an unconfirmed DAMON teardown is no longer indistinguishable
   from "DAMON off". `stop` (and `summary.json`/`manifest.json`) now carry
   `damon_cleanup: {confirmed, slot, quarantined}` whenever a DAMON owner was

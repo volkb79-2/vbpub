@@ -193,6 +193,11 @@ def _expected_duration_seconds(meta: Dict[str, Any]) -> Optional[float]:
     return float(value) if value > 0 else None
 
 
+#: How long ``stop`` waits for a session's sampling worker to exit before it
+#: reports the stop as incomplete (Sol B2). Module level so tests can shorten it.
+STOP_JOIN_SECONDS = 10.0
+
+
 class RequestError(Exception):
     """A verb refused the request — becomes ``{"ok": false, "error": {...}}``
     (contract exit code 2), never an uncaught traceback back to the socket."""
@@ -2088,7 +2093,17 @@ class SessionServer:
                 return self._stop_response(session_id, on_disk, already_stopped=True)
             if sess.finished:
                 return self._stop_response(session_id, sess.summary_doc, already_stopped=True)
-            self._finalize_session_locked(sess, aborted_reason=None)
+            if not self._finalize_session_locked(sess, aborted_reason=None):
+                # Sol B2: the sampling worker did not exit in time. The
+                # session stays live and owns its placement and DAMON
+                # resources; no finished manifest was written. The caller can
+                # retry `stop` once the worker has exited.
+                raise RequestError(
+                    "stop-incomplete",
+                    f"session {session_id} is still sampling: its worker did "
+                    f"not exit within {STOP_JOIN_SECONDS:g}s, so it was NOT "
+                    f"finalized and its resources are still held; retry stop",
+                )
             summary_doc = sess.summary_doc
         response = self._stop_response(session_id, summary_doc, already_stopped=False)
         self._run_retention()
@@ -2102,13 +2117,28 @@ class SessionServer:
         except (OSError, json.JSONDecodeError):
             return None
 
-    def _finalize_session_locked(self, sess: _Session, *, aborted_reason: Optional[str]) -> None:
+    def _finalize_session_locked(
+        self, sess: _Session, *, aborted_reason: Optional[str],
+    ) -> bool:
         """Stop ``sess``'s thread and write its final summary/manifest.
         Called with :attr:`_lock` held — every caller (``stop``, shutdown,
-        the session-loop's own error path) already holds it."""
+        the session-loop's own error path) already holds it.
+
+        Returns False, having changed NOTHING but the stop request, when the
+        sampling worker is still alive after the bounded join (Sol B2):
+        releasing placement, closing DAMON and writing ``finished`` under a
+        live sampler would let it append records to a finalized session. The
+        session then stays live and a later call retries."""
         sess.stop_event.set()
         if sess.thread is not None and sess.thread is not threading.current_thread():
-            sess.thread.join(timeout=10.0)
+            sess.thread.join(timeout=STOP_JOIN_SECONDS)
+            if sess.thread.is_alive():
+                self._log(
+                    f"session {sess.session_id}: sampling worker still running "
+                    f"after {STOP_JOIN_SECONDS:g}s; stop is incomplete and the "
+                    f"session keeps its placement and DAMON resources"
+                )
+                return False
         ended_at = self._iso(self.clock())
         with sess.lock:
             if sess.summary_acc.sample_count == 0:
@@ -2167,6 +2197,7 @@ class SessionServer:
         manifest = self._manifest_for(sess, status="aborted" if aborted_reason else "finished")
         manifest["aborted_reason"] = aborted_reason
         sess.rundir.write_manifest(manifest)
+        return True
 
     def _stop_response(
         self, session_id: str, summary_doc: Optional[Dict[str, Any]], *, already_stopped: bool,
