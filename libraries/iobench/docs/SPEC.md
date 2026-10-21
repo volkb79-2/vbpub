@@ -57,7 +57,7 @@ reported complete. *Reference cell*: the fixed short cell of section 8.
 | `proven` | the value's basis is steady (`steady`/`flat`) AND (not cache-dependent, or a read whose cache state is `cold_measured`/`rate_cap`, or a write that satisfies the time-axis proof of IOB-CCH-07) AND no listed unproven reason applies |
 | `unproven: cache_model_undetermined` | read cache state `undetermined`: no cold probe, the cold probe is bimodal/overlapping/indeterminate, or E2 disagrees with it by more than the tolerance |
 | `unproven: no_cliff_hit_like_mode` | no cliff observed AND the cold probe is unimodal hit-like (`cold_hit_like`: a file target, or a cold rate below 0.9 x `cached_ref`) |
-| `unproven: fresh_not_measured` | a standard-profile run could not measure the fresh-block penalty (no discard, no fresh extent, or the stage failed), so the write cap lacks the fresh half of `min(rewrite, fresh)`; a budget skip is `budget_limited` instead |
+| `unproven: fresh_not_measured` | the fresh-block penalty is not part of the write cap on a standard run: it could not be measured (no discard, no fresh extent, the stage failed) or it was measured but excluded by design (a file target on a mount without `discard`, IOB-TGT-08), so the cap lacks the fresh half of `min(rewrite, fresh)`; a budget skip is `budget_limited` instead |
 | `unproven: cache_not_excluded` | `cache_state` `no_cache_observed`: the cold region is as fast as the warm one, no cliff, unimodal. Two real-world conditions give this one observation (no cache; a cache at least as large as the written extent), so it is never `proven`; a larger fill or the ceiling history can separate them |
 | `unproven: cache_residual_possible` | a read figure is shown from the measured largest rung while no cold probe exists |
 | `unproven: device_smaller_than_cache_margin` | cliff observed and the largest rung < 1.2 x cliff, OR the cold probe is hit-like with a cliff |
@@ -90,7 +90,7 @@ reported complete. *Reference cell*: the fixed short cell of section 8.
 * **IOB-CAL-03 (rung measurement)** Each rung runs random 4 KiB read and write at QD32 for 30 s (first 5 s discarded, 2 s log); the largest rung also runs QD1 and QD8. Rungs go through `reduce_series`; the record carries `steady_iops`, `mean_iops`, `state`, `observation_s`, `rate_limited`, latency p50/p90/p95/p99/p99.9 and a series downsampled to <= 120 points. An `unsteady` rung is extended up to 5 min and, if still `unsteady`, kept as `unsteady` and gives `absent: basis_unsteady` for any proposal that needs it (no fallback to a smaller rung). *Oracle:* `test_cal_03_rung_record_and_extension`.
 * **IOB-CAL-04 (cliff, classes, no-cliff outcomes)** `cached_ref` = median steady IOPS of the first three rungs. The cliff rung is the first rung with steady < 0.75 x `cached_ref` such that no later rung recovers to >= 0.75 x `cached_ref`; `cliff_bytes` is its size, else null. Rungs below the cliff are class `cached_tier`, at or after it `post_cliff`. With `cliff_bytes == null` the class of every rung is `no_cliff` and section 6 decides the cache state (a valid outcome, ruling R-4). *Oracle:* `test_cal_04_cliff_detection` on: cliff at 270 GiB; no cliff; cliff only at the last rung; noisy small rungs; plus the **r1002 recorded replay** (cliff between 250 and 300 GiB).
 * **IOB-CAL-05 (observation runs, write proof input)** `standard` adds one 240 s steady run (random write **QD32**, the depth of the cap it time-proves; largest rung), one 120 s run (random read QD32) and one 150 s **fresh** write run on the fresh extent (QD32; 30 s longer than the 120 s proof rule, because fio stamps the last sample of a 120 s run at 119.9x s and the rule gets no tolerance); `thorough` replaces them with a 900 s write run, a 240 s read run and the 120 s fresh run. Every result records the longest `observation_s` at the basis rung and `limits += bucket_exclusion_s<=<N>`. The write proof is IOB-CCH-07. *Oracle:* `test_cal_05_observation_limits`.
-* **IOB-CAL-06 (cap basis)** Read basis (IOPS): `min(measured_largest, R)` where `R` is the cache-free rate of IOB-CCH-05 when proven; unproven: see IOB-CCH-05. Write basis: `min(rewrite, fresh)` (IOB-CAL-07), `proven` only by the time-axis proof (IOB-CCH-07). A `cached_tier` figure and an `unsteady` rung are never a basis. BPS keys: the basis is the steady bytes/s of the sequential 1 MiB QD16 cell of S6 at the cap-basis working set, multiplied for **reads** by `cache_ratio = R / measured_largest` (<= 1) when the read cache state is proven, else by 1 with `unproven: cache_residual_possible`; for **writes** by 1 with the status of the write proof; if no such cell exists the BPS caps are `absent: bps_basis_missing`. A flat-line (`rate_limited`) sequential cell is **not** a proof: its bytes/s is multiplied by `cache_ratio` when the read cache state is proven, else the BPS key is `unproven: cache_residual_possible`. *Oracle:* `test_cal_06_cap_basis`, `test_cal_06_bps_basis_rules` (proven ratio, unproven ratio, flat-line sequential cell with and without a proven cache state, missing cell, write time-proof).
+* **IOB-CAL-06 (cap basis)** Read basis (IOPS): `min(measured_largest, R)` where `R` is the cache-free rate of IOB-CCH-05 when proven; unproven: see IOB-CCH-05. Write basis: `min(rewrite, fresh)` (IOB-CAL-07), `proven` only by the time-axis proof (IOB-CCH-07). The **write BPS cap is never proven** until the sequential series itself is time-proven: its proof would have to come from the same kind of series as the cap, and the sequential 1 MiB cell is observed for 30 s (< 120 s), so it carries `unproven: short_observation` in addition to the write basis reasons (backlog IOB-BL-02). A `cached_tier` figure and an `unsteady` rung are never a basis. BPS keys: the basis is the steady bytes/s of the sequential 1 MiB QD32 cell of S6 at the cap-basis working set, multiplied for **reads** by `cache_ratio = R / measured_largest` (<= 1) when the read cache state is proven, else by 1 with `unproven: cache_residual_possible`; for **writes** by 1 with the status of the write proof; if no such cell exists the BPS caps are `absent: bps_basis_missing`. A flat-line (`rate_limited`) sequential cell is **not** a proof: its bytes/s is multiplied by `cache_ratio` when the read cache state is proven, else the BPS key is `unproven: cache_residual_possible`. *Oracle:* `test_cal_06_cap_basis`, `test_cal_06_bps_basis_rules` (proven ratio, unproven ratio, flat-line sequential cell with and without a proven cache state, missing cell, write time-proof).
 * **IOB-CAL-07 (fresh versus rewrite, writes only, ruling R-5)** On an iobench-marked target that supports discard (device) or hole punching (file, IOB-TGT-08), the calibration discards a **fresh extent** located above `WS_max` and below the reserved tail (size = `min(usable - WS_max - reserved, 8 GiB)`), measures random 4 KiB QD32 writes to it for 30 s (`fresh`), and to a written extent (`rewrite`); `fresh_penalty = rewrite/fresh`. The fresh extent is re-discarded before each fresh cell and removed from the written-extent map after use. Fresh applies to writes only. If discard or space is unavailable: `fresh_write: not_measured` with the reason. The write-IOPS cap basis is `min(rewrite, fresh)` when both are measured (file target: IOB-TGT-08), and never above the steady rate of the observation series that time-proves it (IOB-CCH-07): `min(rewrite, fresh, obs_write_steady, obs_fresh_steady)`; the inputs are recorded in `cap_basis.write.inputs`. If the fresh half counts but its observation is missing the cap is `unproven: short_observation`; if no fresh penalty could be measured on a standard run (no discard, no fresh extent, stage failed) it is `unproven: fresh_not_measured` (`budget_limited` when the stage was skipped for budget) and `fresh_vs_rewrite.reason` names the real cause; a moved WRITE reference of the fresh-vs-rewrite pair makes it `unproven: ceiling_moved`. A stage that cannot apply to the target is recorded `skipped: <why>`, never `failed`. *Oracle:* `test_cal_07_fresh_penalty` (3596 vs 71584 -> 19.9; unsupported -> `not_measured`); `test_cal_07_fresh_extent_is_disjoint` (no overlap with `[0, WS_max)` nor the tail, re-discard between cells, extent map updated); `test_cal_07_write_cap_uses_min`.
 * **IOB-CAL-08** `QD90` is computed per direction as the smallest tested QD whose steady >= 0.9 x the maximum over the tested depths at the largest rung. Depths between tested values are untested and the record says so. *Oracle:* `test_cal_08_qd90` (r1002: 23.7k at QD8, 23.9k at QD32 -> 8).
 * **IOB-CAL-09 (artefact)** `calibration.json` is written atomically when the calibration status is `complete`: all stages the profile **requires** (S0, S1, fill, ladder) are `ok`; optional stages (S6, S7, fresh, CDF runs) may be `skipped: budget` and are recorded, with dependent proposals `absent: stage_skipped` and `limits += stage_skipped:<Sn>`. A ladder truncated before any cliff is `complete`; the read cache state comes from the cold probe (section 6). `aborted`/`failed` writes `calibration.last-failed.json` and never replaces a good one. *Oracle:* `test_cal_09_complete_definition`, `test_cal_09_atomic_no_replace`.
@@ -102,7 +102,7 @@ reported complete. *Reference cell*: the fixed short cell of section 8.
 
 **Why direct measurement comes first.** A 30 s rung reads 6-12 GB against a cache of hundreds of GiB: the cache content during a rung is whatever the **fill and the earlier rungs** left there, not the steady state of an LRU under uniform access. A hit-ratio fit (E1) can therefore be convex, decreasing and `good` while wrong. The primary estimator measures a region the cache cannot hold instead of extrapolating a model.
 
-* **IOB-CCH-01 (E-cold, primary)** Immediately after the fill, before any rung, reference cell or other job touches `[0, cold_len)` with `cold_len = min(32 GiB, 0.1 x WS_max)`: random 4 KiB read at QD32 for 70 s (first 5 s discarded, so a 65 s window makes a flat line assessable) confined to the first half of the cold region gives `R_cold` (steady tail) and the cold probe's `rate_limited` flag; then a QD1 run of 60 s on the **disjoint second half** records a full latency histogram. The cold region is the earliest-written region: when the fill wrote more than the cache holds, it is cold under every allocation policy (write-allocate LRU or FIFO, or read-allocate). It reads only data the fill wrote. Every rung and probe stores its **touch map** (bytes written or read per 1/8 of the extent since the fill) so the history is part of the record. *Oracle:* `test_cch_01_cold_probe_runs_first_and_reads_written_data_only` (the plan places it before the first rung; a controlled-wrong plan that reorders it fails; the extent check holds).
+* **IOB-CCH-01 (E-cold, primary)** Immediately after the fill, before any rung, reference cell or other job touches `[0, cold_len)` with `cold_len = min(32 GiB, 0.1 x WS_max)`: random 4 KiB read at QD32 for 70 s (first 5 s discarded, so a 65 s window makes a flat line assessable) confined to the first half of the cold region gives `R_cold` (steady tail) and the cold probe's `rate_limited` flag; then a QD1 run of 60 s on the **disjoint second half** records a full latency histogram. The cold region is the earliest-written region: when the fill wrote more than the cache holds, it is cold under every allocation policy (write-allocate LRU or FIFO, or read-allocate). It reads only data the fill wrote. The calibration stores a **touch map** per stage (`fill`, `e_cold`, `ladder`, `fresh`, `reference`: bytes written or read per 1/8 of the extent since the fill) so the history is part of the record; it is keyed by stage, not by individual rung or probe. *Oracle:* `test_cch_01_cold_probe_runs_first_and_reads_written_data_only` (the plan places it before the first rung; a controlled-wrong plan that reorders it fails; the extent check holds).
 * **IOB-CCH-02 (histograms and modes; thresholds `[I]` until P4)** Latency is measured with fio's **full histogram** (`--write_hist_log --log_hist_msec=1000 --log_hist_coarseness=0`, all bins); the percentile ladder is a summary only. `modes(hist)`: aggregate the bins of the run after the first 20 %, smooth with a 3-bin moving average in log-latency, take local maxima carrying >= 5 % of the mass as modes, the **valley** is the minimum smoothed density between adjacent modes. The histogram is **bimodal** iff two modes are >= 2.5x apart in latency and the valley density is <= 0.5 x the lower peak; **overlapping** if the modes are 1.5-2.5x apart or the valley is above that bound; **unimodal** otherwise. For bimodal: `h2` = the CDF mass below the valley, `t_hit`, `t_miss` the mode latencies. A unimodal histogram is **hit-like** if its p50 <= 1.5 x `hit_ref_us`, **miss-like** if >= 2.5 x `hit_ref_us` or the series is `rate_limited`, else indeterminate; `hit_ref_us` is the p50 of a QD1 run (60 s, full histogram) on the smallest rung. The thresholds are guesses until P4 measures real histograms (a miss at ~100-300 us against a 110 us hit would be "overlapping" under this rule and make everything `undetermined`; that outcome is acceptable, and P4 stores the raw histograms to tune the thresholds). *Oracle:* `test_cch_02_modes_*` (unimodal, bimodal, overlapping, valley, h2 value from a constructed histogram with known mass).
 * **IOB-CCH-03 (E2, cross-check)** On the largest rung, its QD32 run is followed **immediately** (gap <= 60 s, both start timestamps recorded; a larger gap voids E2) by a 60 s QD1 run with a full histogram. If bimodal, `R_E2 = steady_iops(QD32) x (1 - h2)`. When both `R_cold` and `R_E2` exist the ratio `R_cold / R_E2` must lie in [0.7, 1.43]; outside is `undetermined`. A unimodal, overlapping, voided or missing E2 gives no cross-check and is not a failure. *Oracle:* `test_cch_03_e2_adjacency_and_crosscheck`.
 * **IOB-CCH-04 (E1, informational)** The hit-ratio fit `1/iops = A + B/ws` (`A = 1/R`, `B = C (1/F - 1/R)`, `F` = median steady of the rungs before the cliff) over the post-cliff rungs yields a cliff/size estimate (`C_bytes`, `R_E1`), `cached_tier_factor` and the margin check. `fit` is `good` iff >= 4 post-cliff rungs, monotone non-increasing within +5 % per step, `A > 0`, `B < 0`, `0 < C < smallest post-cliff rung`, `R <= min(post-cliff steady)`, `r2 >= 0.97` and every leave-one-out prediction within 15 %; `plateau` iff >= 3 post-cliff rungs within 10 % of each other (the cache-free best case, never labelled poor); `insufficient` if < 4 rungs; else `poor`. It MUST NOT raise on degenerate input. **E1 never decides a cache state and is never a cap basis.** *Oracle:* `test_cch_04_e1_*` for the degenerate fixtures of IOB-CCH-08.
@@ -207,7 +207,7 @@ Proposals live in `proposals.*`; each value is `{value, status, reasons|reason, 
 | **IOB-PLA-03** | cached-tier factor | `info` value `cached_tier_factor` = small-rung / largest-rung (report; a derivation using a small rung is a code defect caught by DER-08); stored in the calibration |
 | **IOB-PLA-04** | mean vs steady | `info` value `mean_overstates` (reported; the mean is never used) |
 | **IOB-PLA-05** | flat-line | `info`: `rate_limited` (e.g. 4096 MiB/s sequential read) |
-| **IOB-PLA-06** | Little's law | `iops x mean_clat / QD` outside [0.7, 1.3] for a rung -> `fail` (broken or faked fio) -> rung unusable (`absent`) |
+| **IOB-PLA-06** | Little's law | `iops x mean_clat / QD` outside [0.7, 1.3] for a rung -> `fail` (broken or faked fio) -> rung unusable (`absent`): the failing rung is dropped before every consumer (ladder, cliff, `cached_ref`, `best_read_rung`, E1, QD90) and listed in `ladder.excluded_rungs`; if no rung of a direction remains the run fails |
 | **IOB-PLA-07** | bytes consistency | random-4K bytes/s > sequential bytes/s of the same direction by > 5 % in an interleaved pair with unmoved reference -> `fail`; reference moved -> `info`, `unproven: ceiling_moved` Evaluated by the calibration from its own S6 cells and fill rate, per direction (the worst verdict is stored; the reference-moved flag is that direction's); `not_applicable` without the closing S6 reference. |
 | **IOB-PLA-08** | read-only-written | enforced by argv confinement (IOB-CAL-02); a violation is a programming error that fails the run |
 | **IOB-PLA-09** | fill vs sequential | `fill_bps` and the sequential 1 MiB rewrite differ by > 5x with unmoved reference -> `fail` for BPS caps Evaluated by the calibration from its own S6 cells and fill rate, per direction (the worst verdict is stored; the reference-moved flag is that direction's); `not_applicable` without the closing S6 reference. |
@@ -266,7 +266,7 @@ Proposals live in `proposals.*`; each value is `{value, status, reasons|reason, 
 | S7 | 160 | 4 points x 2 dirs x 20 s |
 | **total** | **3340** | <= 3600 (260 s slack) |
 
-* **IOB-PRF-01** `--budget-minutes N` overrides the profile; `--dry-run` prints each stage's allotment, fio argv and written-byte bound and writes nothing. *Oracle:* `test_prf_01_dry_run_plan_complete_and_writes_nothing`.
+* **IOB-PRF-01** `--budget-minutes N` overrides the profile; `--dry-run` prints each stage's allotment, fio argv and written-byte bound and writes nothing; it is plan-only and says so: the object (and the human output) carries `preflight: not_run` and a `preflight_note`, because a clean dry run must not read as "this target will be accepted" (the live-host preflight, abort guards, namespaces and work-dir checks are not run; backlog IOB-BL-01). *Oracle:* `test_prf_01_dry_run_plan_complete_and_writes_nothing`.
 * **IOB-PRF-02** `quick` marks `limits += quick-profile` and its cache-dependent values `unproven: quick_profile`. *Oracle:* `test_prf_02_quick_statuses`.
 
 ## 16. Result, calibration, read path
@@ -302,11 +302,11 @@ Timestamps UTC ISO-8601 `Z`; sizes bytes; rates bytes/s or IO/s; latencies micro
   "identity": {"target": {"kind": "device"}, "disk": {"devno": "254:7", "model": null, "serial": null, "wwn": null, "partuuid": "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "size_bytes": 435853320192, "scheduler": "none", "rotational_flag": "1"},
                "identity_strength": "weak", "root_source": "/dev/vda3", "workdir_fs": {"type": "ext4", "uuid": "00000000-0000-0000-0000-000000000000"}, "kernel": "7.2.9", "ram_bytes": 8321499136, "virt": "kvm"},
   "targets": {"W_s": 2.0, "P_ms": 250, "F_read_ratio": 0.25, "U_dev_share": 0.70, "source": "default"},
-  "evidence": {"rate_probe": {}, "drain": {}, "sweep": {"noise_floor_ratio": 1.9, "cells": []}, "read_cost": {"native_bps": 0, "candidates": []},
+  "evidence": {"histograms": {}, "history_rotated": null, "rate_probe": {}, "drain": {}, "sweep": {"noise_floor_ratio": 1.9, "cells": []}, "read_cost": {"native_bps": 0, "candidates": []},
                "preflight": {"containers_active": 0, "confirmed_quiet_window": true, "slice_io_max_before": {}, "slice_io_max_after": {}}},
   "proposals": {"writeback": {}, "caps": {}, "iocost_model": {}, "iocost_qos": {}, "notes": []},
   "quality": {"cache_proof": "working-set", "limits": ["bucket_exclusion_s<=240"], "checks": [{"id": "IOB-PLA-01", "status": "pass", "detail": "", "degrades": []}]},
-  "restore": {"verified": true, "slice_io_max_unchanged": true, "journal_removed": true, "skipped": []}
+  "restore": {"verified": true, "slice_io_max_unchanged": true, "journal_removed": true, "skipped": [], "warnings": []}
 }
 ```
 
@@ -318,26 +318,347 @@ Required top-level keys: `schema, schema_minor, tool, run, identity, targets, ev
 
 ### 18.2 `calibration.json` (schema 1)
 
-Same envelope (`schema, schema_minor, tool, run, identity, quality`) plus:
+Same envelope (`schema, schema_minor, tool, run, identity, quality`) plus the `calibration` object. The example is the shape the code writes (reconciled with the code in the IOB-03 P3 review wave; every key below is produced by `Calibrator.assemble`):
 
 ```json
 {
-  "calibration": {"id": "cal-20261021T020000Z-7b2d0c1e",
-    "target": {"kind": "device", "path": "/dev/vda7", "size_bytes": 435853320192, "usable_bytes": 435852271616, "reserved_tail_bytes": 1048576},
-    "touch_map": {"fill": [0, 0, 0, 0, 0, 0, 0, 0], "e_cold": [8, 0, 0, 0, 0, 0, 0, 0]}, "extent_written": [[0, 370472800000]], "fresh_extent": [370472800000, 378000000000], "fill_bps": 1357000000, "R_est_bps": 1357000000,
-    "ladder": {"rungs": [{"ws_bytes": 1073741824, "dir": "read", "qd": 32, "steady_iops": 97850, "mean_iops": 98100, "state": "steady", "observation_s": 30, "rate_limited": "not_assessed", "class": "cached_tier", "lat_us": {"p50": 309, "p90": 420, "p95": 480, "p99": 545, "p999": 692}, "series": [[0, 97000]]}],
-               "cliff_bytes": 322122547200, "cached_ref_iops": 92000, "qd90": {"read": 8, "write": 8}, "idle_qd1_p99_us": {"read": 272, "write": 440}, "cached_tier_factor": 3.8},
-    "cache": {"read": {"cache_state": "cold_measured", "e_cold": {"region_bytes": 34359738368, "R_cold_iops": 9810, "shape": "unimodal", "class": "miss-like", "p50_us": 760}, "E2": {"shape": "overlapping", "gap_ratio": 1.8, "qd32_start": "2026-10-21T02:40:00Z", "qd1_start": "2026-10-21T02:40:31Z"}, "E1": {"fit": "insufficient", "points": 2}, "hit_ref_us": 109, "read_cache_headroom": 9.39},
-              "write": {"time_proof": {"observation_s": 240, "knee_s": 2, "burst_bytes": 3970000000, "after_knee_bytes": 3400000000, "proven": false, "reason": "short_observation"}}},
-    "cap_basis": {"read": {"iops": 9810, "status": "proven", "reasons": []}, "write": {"iops": 3596, "status": "unproven", "reasons": ["short_observation"]}},
-    "fresh_vs_rewrite": {"measured": true, "kind": "device", "mount_discard": null, "fresh_iops": 3596, "rewrite_iops": 71584, "penalty": 19.9},
-    "reference": {"read": [{"t": "2026-10-21T02:05:00Z", "iops": 24100}], "write": [], "moved": false},
-    "shape": {"cells": [], "fit": {"read": {"rand": {"c_io_us": 0, "c_byte_ns": 0, "r2": 0, "residual_max": 0}}}, "metering": "undetermined", "linear_model_fit": "good", "override": null},
-    "latency_curve": [{"dir": "write", "load_pct": 10, "bps": 0, "lat_us": {"p50": 0, "p90": 0, "p95": 0, "p99": 0}}],
-    "latency_knee": {"read": null, "write": null},
-    "iocost_keys": {"rbps": 0, "rseqiops": 0, "rrandiops": 0, "wbps": 0, "wseqiops": 0, "wrandiops": 0}}
+  "calibration": {
+   "id": "cal-20261021T020000Z-7b2d0c1e",
+   "target": {
+    "kind": "device",
+    "path": "/dev/vda7",
+    "size_bytes": 435853320192,
+    "usable_bytes": 435852271616,
+    "reserved_tail_bytes": 1048576
+   },
+   "touch_map": {
+    "fill": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "e_cold": [
+     8,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "ladder": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "fresh": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ],
+    "reference": [
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0,
+     0
+    ]
+   },
+   "extent_written": [
+    [
+     0,
+     370472800000
+    ]
+   ],
+   "fresh_extent": [
+    370472800000,
+    378000000000
+   ],
+   "fill_bps": 1357000000,
+   "R_est_bps": 1357000000,
+   "fill": {
+    "bytes": 370472800000,
+    "planned_bytes": 370472800000,
+    "fill_bps": 1357000000,
+    "fill_replanned": false,
+    "fill_aborted": null
+   },
+   "ladder": {
+    "rungs": [
+     {
+      "ws_bytes": 1073741824,
+      "dir": "read",
+      "qd": 32,
+      "bs": 4096,
+      "steady_iops": 97850,
+      "mean_iops": 98100,
+      "state": "steady",
+      "knee_s": 0.0,
+      "burst_units": 0.0,
+      "observation_s": 30,
+      "rate_limited": "not_assessed",
+      "class": "cached_tier",
+      "lat_us": {
+       "p50": 309,
+       "p90": 420,
+       "p95": 480,
+       "p99": 545,
+       "p999": 692
+      },
+      "series": [
+       [
+        6.0,
+        97000.0
+       ]
+      ]
+     }
+    ],
+    "excluded_rungs": [],
+    "cliff_bytes": 322122547200,
+    "cached_ref_iops": 92000,
+    "qd90": {
+     "read": 8,
+     "write": 8
+    },
+    "idle_qd1_p99_us": {
+     "read": 272,
+     "write": 440
+    },
+    "cached_tier_factor": 3.8,
+    "best_read_rung_iops": 97850,
+    "measured_largest": {
+     "read": 9810,
+     "write": 71584
+    }
+   },
+   "cache": {
+    "read": {
+     "cache_state": "cold_measured",
+     "status": "proven",
+     "reasons": [],
+     "R_iops": 9810,
+     "R_cold_iops": 9810,
+     "R_E2_iops": null,
+     "e_cold": {
+      "region_bytes": 34359738368,
+      "R_cold_iops": 9810,
+      "shape": "unimodal",
+      "class": "miss-like",
+      "p50_us": 760,
+      "rate_limited": false,
+      "state": "flat"
+     },
+     "E2": {
+      "shape": "overlapping",
+      "gap_ratio": 1.8,
+      "R_E2_iops": null,
+      "voided": false,
+      "qd32_start": 1792550700.0,
+      "qd1_start": 1792550731.0
+     },
+     "E1": {
+      "fit": "insufficient",
+      "points": 2,
+      "r2": null,
+      "loo_max": null,
+      "R_E1_iops": null,
+      "C_bytes": null,
+      "margin_ok": null
+     },
+     "hit_ref_us": 109,
+     "read_cache_headroom": 9.39,
+     "read_value": {
+      "value": 9810,
+      "status": "proven",
+      "reasons": []
+     }
+    },
+    "write": {
+     "time_proof": {
+      "observation_s": 240,
+      "knee_s": 3,
+      "burst_bytes": 3970000000,
+      "after_knee_bytes": 3480000000,
+      "proven": false,
+      "reason": "short_observation"
+     },
+     "fresh_proof": null
+    }
+   },
+   "cap_basis": {
+    "read": {
+     "value": 9810,
+     "status": "proven",
+     "reasons": []
+    },
+    "write": {
+     "value": 3596,
+     "status": "unproven",
+     "reasons": [
+      "short_observation"
+     ],
+     "inputs": {
+      "rewrite_iops": 71584,
+      "fresh_iops": 3596,
+      "obs_write_steady": 3600,
+      "obs_fresh_steady": 3596
+     }
+    },
+    "bps": {
+     "read": {
+      "value": 1830000000,
+      "status": "unproven",
+      "reasons": [
+       "cache_residual_possible"
+      ]
+     },
+     "write": {
+      "value": 14680064,
+      "status": "unproven",
+      "reasons": [
+       "short_observation"
+      ]
+     }
+    }
+   },
+   "fresh_vs_rewrite": {
+    "measured": true,
+    "kind": "device",
+    "label": "fresh",
+    "mount_discard": null,
+    "fresh_iops": 3596,
+    "rewrite_iops": 71584,
+    "penalty": 19.9
+   },
+   "rearm": {
+    "rearm_ratio": 1.02,
+    "verdict": "not_rearmed"
+   },
+   "reference": {
+    "cells": {
+     "r0": {
+      "read": 24100,
+      "write": 21000
+     },
+     "r1": {
+      "read": 24000,
+      "write": 21100
+     }
+    },
+    "moved": {
+     "ladder": false,
+     "fresh_vs_rewrite": false,
+     "rearm": false,
+     "shape": false
+    },
+    "moved_by_dir": {
+     "ladder": {
+      "read": false,
+      "write": false
+     }
+    }
+   },
+   "shape": {
+    "cells": [],
+    "fit": {
+     "read-rand-rewrite": {
+      "fit": "good",
+      "c_io_us": 80.0,
+      "c_byte_ns": 0.25,
+      "r2": 0.99,
+      "residual_max": 0.05,
+      "n": 5
+     }
+    },
+    "drift": {
+     "spread": {},
+     "moved": false
+    },
+    "metering_by_dir": {
+     "read": "undetermined",
+     "write": "mixed"
+    },
+    "metering": "mixed",
+    "linear_model_fit_by_dir": {
+     "read": "good",
+     "write": "good"
+    },
+    "linear_model_fit": "good",
+    "override": null
+   },
+   "latency_curve": [
+    {
+     "dir": "write",
+     "load_pct": 10,
+     "offered_iops": 358,
+     "achieved_iops": 358,
+     "bps": 1466368,
+     "lat_us": {
+      "p50": 0,
+      "p90": 0,
+      "p95": 0,
+      "p99": 0
+     },
+     "not_reached": false
+    }
+   ],
+   "latency_knee": {
+    "read": null,
+    "write": null
+   },
+   "windows": {
+    "write_seq1m_bps": [
+     14680064.0
+    ]
+   },
+   "plateau_bps": {
+    "read/rand4k": 40000000.0,
+    "write/rand4k": 14680064.0
+   },
+   "stages": {
+    "S0": "ok",
+    "S1": "ok",
+    "fill": "ok",
+    "ladder": "ok"
+   },
+   "proposals": {
+    "caps": {},
+    "iocost_model": {},
+    "iocost_qos": {},
+    "notes": []
+   },
+   "iocost_keys": {
+    "rbps": 0,
+    "rseqiops": 0,
+    "rrandiops": 0,
+    "wbps": 0,
+    "wseqiops": 0,
+    "wrandiops": 0
+   }
+  }
 }
 ```
+
+Shape notes (divergences between the first draft of this section and the code, resolved in favour of the code): `cap_basis.<dir>` carries `value` (not `iops`) and the write entry its `inputs`; `cap_basis.bps` holds the two BPS bases; `reference` is `{cells: {tag: {read, write}}, moved: {group: bool}, moved_by_dir}`; `touch_map` is keyed by stage (`fill`, `e_cold`, `ladder`, `fresh`, `reference`), not per rung or probe (IOB-CCH-01); the E2 start timestamps are epoch seconds; `shape.fit` is keyed `<dir>-<pattern>-rewrite` with `metering_by_dir` and `linear_model_fit_by_dir`; `fresh_vs_rewrite` not measured is `{measured: false, reason}` with the real cause; `ladder.rungs[].class` is `no_cliff|cached_tier|post_cliff|write`.
 
 In the example, `cliff_bytes` is the recorded r1002 value: the first measured rung below the threshold (300 GiB = 322122547200 B); the cliff itself lies between the 250 GiB rung (not below) and that one.
 
@@ -357,7 +678,7 @@ In the example, `cliff_bytes` is the recorded r1002 value: the first measured ru
 
 * **IOB-EVD-01 (replay)** `tests/fixtures/` holds condensed, provenance-stamped fixtures: the recorded r1002 rungs ≤ usable (header: sha256 of `IO-BENCH-01-data/r1002-fio-out.tgz`) and the gstammtisch tables (HOST-IO-INTERFERENCE s4.3/4.4), plus the **synthetic** `r1002-model` (C = 265 GiB, F = 92k, R = 9.8k; reproduces the recorded 300 GiB point 46440 vs 46315). Required replay oracles: gstammtisch -> 16 MiB / 4 MiB / 16 / 64; r1002 -> `kernel` for dirty and sectors; recorded r1002 cache state `undetermined` (honest, CCH-08 #10); the synthetic `two_tier_e1_good_but_wrong` and `fill_history_inversion` fixtures (CCH-08 #1, #2); r1002 `max` = 1035 (DER-06); the IO-BENCH-01 facts as assertions (cliff in [250, 300] GiB, fresh 3.6k vs rewrite 71k, cached-tier factor in [3.5, 4], 4096 MiB/s read flagged `rate_limited`). *Oracle:* the named tests.
 * **IOB-EVD-02** A fixture round-trip is not an oracle: every replay test asserts a derived value that depends on a rule constant. *Oracle:* `test_evd_02_mutation_sanity` mutates each rule constant (monkeypatch) and asserts the corresponding replay test fails.
-* **IOB-ACC-01 (acceptance probe, no VM lane, ruling R-10)** The live acceptance of mechanics and plausibility is the r1002 run of IOB-03 P4 (target guard refusals on real devices, sysctl/sysfs writes landing and restoring, `check` after a real run). It is an **acceptance probe**, not a unit test; it is recorded under `measurements/` in the program directory. What it proves and what it does not is stated in section 20.
+* **IOB-ACC-01 (acceptance probe, no VM lane, ruling R-10)** The live acceptance of mechanics and plausibility is the r1002 run of IOB-03 P4 (target guard refusals on real devices, sysctl/sysfs writes landing and restoring, `check` after a real run). It is an **acceptance probe**, not a unit test; it is recorded under `measurements/` in the program directory. What it proves and what it does not is stated in section 20. **Probe checklist (live, on the real host):** (1) `fio --cmdhelp=exclusive_open` names the option on the installed fio (S0 refuses `fio_option_unsupported` otherwise) and a device job really gets EBUSY on a mounted or claimed device; (2) `systemd-run --wait` returns only when the probe unit has finished and the output file then exists; (3) the O_EXCL marker open on a mounted device is a refusal (exit 2), not exit 1; (4) `PR_SET_PDEATHSIG` and the process group: SIGKILL of iobench stops fio; a second SIGTERM during `blkdiscard` interrupts it; (5) a real 150 s fresh observation reaches `proven` (fio stamps the last sample at 119.9x s for a 120 s run, hence the 30 s margin); (6) plausibility: a provider throttle that shows only on reads (cross-direction movement, backlog IOB-BL-04) and the PLA-07/-09/-17/-18 verdicts on real numbers; (7) `--exclusive_open` does not break the read jobs on the unmounted target.
 * **IOB-GATE-01** `run-gate.toml` registers `r0-r1` (pytest, 100 % branch coverage; `.coveragerc` omits only `host.py` and `__main__.py`, each with a reason, and `test_gate_01_coverage_exclusions_match` asserts the omit list equals exactly those files) and `r2` (assay mutation lane, `assay.toml` `whole_target` over every shipped module, kept in step by `test_gate_01_mutation_targets_cover_every_module`, which exempts only `host.py` and `__main__.py`) and an aggregating `gate` lane. The devcontainer is a cockpit. The `vm` marker is not used. *Oracle:* `./run-gate.py r0-r1` exit 0 from the marker file (probe).
 * **IOB-DOC-01** Docs-sync: every requirement id in this file has a collected test **or** is listed in `tests/probe_oracles.txt` (the acceptance probes: IOB-ACC-01, IOB-GATE-01, IOB-REL-01); every collected iobench test id exists here; every cross-document anchor resolves. *Oracle:* `test_doc_01_ids_anchors`.
 * **IOB-DOC-02** In README, DESIGN-GUIDE and CONSUMERS (the SPEC is the contract), every `json` block parses with the shipped loader as the object it claims, every `bash` `iobench` invocation parses with the CLI's own parser in `--dry-run` mode, and every value of the closed vocabularies of IOB-STA-02, the exit codes 0-9 and the check ids IOB-PLA-01..17 appears in at least one of the three. *Oracle:* `test_doc_02_examples_parse_and_vocabulary_complete`.

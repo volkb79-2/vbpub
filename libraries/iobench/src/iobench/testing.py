@@ -941,8 +941,6 @@ class FakeHost:
         return FakeHandle(self, start + job.runtime_s, RunResult(0, out, ""), sim)
 
     def _spawn_probe(self, argv: Sequence[str]) -> FakeHandle:
-        if not any(a.startswith("RuntimeMaxSec=") for a in argv):
-            raise HostError("probe unit without RuntimeMaxSec")
         outpath, duration = argv[-3], float(argv[-2])
         outcome = self.sweep_model(self.knobs())
         n = int(duration / float(argv[-1]))

@@ -294,3 +294,58 @@ def test_rev_c_fresh_excluded_on_a_file_target_without_discard_carries_a_reason(
         wb = out.calibration["calibration"]["cap_basis"]["write"]
         assert out.calibration["calibration"]["fresh_vs_rewrite"]["measured"]
         assert ("fresh_not_measured" in wb.get("reasons", [])) is (not discard), (discard, wb)
+
+
+# -- B-S15: a dynamic two-tier fixture, end to end through the Calibrator ------------------------------------------------------------------
+def test_rev_c_s15_two_tier_cache_end_to_end():
+    """A 40 GiB fast tier (92k IOPS) inside a 300 GiB slower tier (15k IOPS) over a 9.8k backing disk, filled with 345 GiB: the earliest
+    written 45 GiB were evicted to the backing disk.  Simulated content, not a formula: E-cold reads that region and must report the SLOW
+    (backing) rate, the write series has a 4 s burst that the 240 s observation outlives, and the proposals carry the statuses SPEC gives."""
+    from test_sta import PLAIN_WRITE, key_reasons, seed_history
+    t_obs = {}
+    host = make_host(cache=dict(capacity_gib=40, hit_iops=92000, write_allocate=True, tier2_capacity_gib=300, tier2_iops=15000),
+                     read=dict(iops_max=9800, lat_us=760, lat_hit_us=110, lat_hit2_us=240), write=dict(PLAIN_WRITE),
+                     ceiling=lambda t: 1.0 if t < t_obs.get("t", 1e18) + 3.5 else 0.2)
+    seed_history(host)
+    real = host.write_range
+
+    def wr(argv, target, offset, length):
+        if any("-obs-write" in a for a in argv):
+            t_obs.setdefault("t", host.now())
+        return real(argv, target, offset, length)
+
+    host.write_range = wr
+    out = calibrate(host)
+    assert out.status == "complete"
+    cal = out.calibration["calibration"]
+    read = cal["cache"]["read"]
+    # E-cold picked the slow tier: the backing rate, not tier 2 (15k) nor tier 1 (92k)
+    cold = read["e_cold"]
+    assert cold["class"] == "miss-like" and cold["shape"] == "unimodal" and cold["state"] in ("steady", "flat")
+    assert read["R_cold_iops"] == pytest.approx(9800, rel=0.05) and read["R_cold_iops"] < 12000
+    # the largest rung mixes the tiers, so E2 (bimodal) disagrees with the cold probe: SPEC CCH-05 says undetermined, unproven
+    assert read["E2"]["shape"] == "bimodal" and read["E2"]["R_E2_iops"] < 0.5 * read["R_cold_iops"]
+    assert (read["cache_state"], read["status"]) == ("undetermined", "unproven") and "cache_model_undetermined" in read["reasons"]
+    assert read["E1"]["fit"] == "insufficient"  # no cliff in a two-tier ladder: E1 never decides
+    assert cal["ladder"]["cliff_bytes"] is None
+    status, reasons, _ = key_reasons(out.result, "caps.RIOPS")
+    assert status == "unproven" and "cache_model_undetermined" in reasons
+    assert out.result["proposals"]["caps"]["dev_aggregate"]["RIOPS"]["value"] <= round(0.7 * read["R_cold_iops"]) + 1  # never above the cold rate
+    # the write proof: a 4 s burst, then the sustained rate; the proof counts the bytes AFTER the knee
+    proof = cal["cache"]["write"]["time_proof"]
+    assert 3 <= proof["knee_s"] <= 6 and proof["burst_bytes"] > 5e8 and proof["proven"] is True
+    sustained = cal["cap_basis"]["write"]["inputs"]["obs_write_steady"]
+    assert proof["after_knee_bytes"] == pytest.approx(sustained * (proof["observation_s"] - proof["knee_s"]) * 4096, rel=0.001)
+    assert proof["after_knee_bytes"] >= 2 * proof["burst_bytes"]
+    # the write cap is the sustained rate, never the burst (SPEC CAL-07), and with history it is proven
+    wb = cal["cap_basis"]["write"]
+    assert wb["value"] == min(v for v in wb["inputs"].values() if v is not None) and wb["value"] < 0.3 * wb["inputs"]["rewrite_iops"]
+    assert key_reasons(out.result, "caps.WIOPS")[:2] == ("proven", set())
+
+
+def test_rev_c_allowed_but_unsimulated_commands_and_unbounded_probe_units_are_refused():
+    host = standard_host()
+    with pytest.raises(HostError, match="unsupported command"):
+        host.run(["fallocate", "-p", "-o", "0", "-l", "1", "/x"])
+    with pytest.raises(HostError, match="allowlist"):
+        host.spawn(["systemd-run", "--wait", "python3", "-c", "pass"])  # a probe unit without RuntimeMaxSec
