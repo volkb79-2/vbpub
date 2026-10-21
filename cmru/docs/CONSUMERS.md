@@ -335,12 +335,10 @@ The rendered `get.py` is a fail-closed, transactional installer you ship as a re
    `[project.installer] asset_suffix` and fails when its `bundle.toml` `name_template` or
    `tarball-publish --glob` does not produce that name (a project that publishes no bundle yet,
    ciu, is listed with its backlog id, CIU-99). A release published under another name
-   (pwmcp up to `1.64.0-r2` shipped `pwmcp-<version>.tar.xz`) is still installable: when the
-   canonical asset answers 404, `get.py` lists the release's assets through the GitHub API and
-   takes the single `*<asset_suffix>` asset (variant-named `<tag>-<variant>` assets never count; zero or several is a refusal that names them), logs
-   that it did so, and still requires its `.sha256` sidecar to verify. The fallback never applies
-   to a `--variant` request and adds no trust beyond today's: the sidecar is an integrity check,
-   the authenticity anchor stays the signed manifest where `manifest_pubkey` is set.
+   (pwmcp up to `1.64.0-r2` shipped `pwmcp-<version>.tar.xz`) is NOT installable by `get.py`: it
+   requests exactly `<tag><asset_suffix>`, and a 404 is a refusal that names the requested asset
+   (operator decision 2026-10-21, PWMCP-08: no discovery of other asset names; such releases are
+   left as they are). Consumers pin a release published under the contract name.
 
    The tarball has exactly ONE top-level directory that holds
    `manifest.json` (and `manifest.json.minisig` when signed), the wheels under their globbed
