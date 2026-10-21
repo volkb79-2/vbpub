@@ -160,7 +160,7 @@ this lifecycle case.
 **Status: FIXED on main (merged 2026-10-21, gate-provisional PASS at b22b747a6), not released; fix C removed by PWMCP-08 (2026-10-21).**
 
 Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; independently reviewed, and the
-review's conclusions (contract, keystone scope, fallback trust, unblock preconditions) are inlined below.
+review's conclusions (contract, keystone scope, unblock preconditions) are inlined below.
 
 **Evidence.** Stage-2 step 39/55 (`python3 /tmp/install_pwmcp_instance.py`) fails:
 `==> Pinned version: pwmcp-v1.64.0-r2` / `==> Downloading pwmcp-v1.64.0-r2.tar.xz ...` /
