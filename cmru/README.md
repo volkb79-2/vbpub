@@ -921,7 +921,7 @@ tracks that gap. The 6.2.x release candidates select
 and canary checks, then records the operator-approved R2 deferral under KI-79.
 That deferral is bound to the 6.2 patch line, `>= 6.2.0` and `< 6.3.0` (operator decisions
 2026-10-14 and 2026-10-21): the gate refuses a prepared 6.3.0 or later after the candidate
-is prepared. It therefore records no mutation event evidence. The full `gate` lane remains
+is prepared. It therefore records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 (KI-79). The full `gate` lane remains
 available for the post-release mutation campaign.
 Both are `bare-host` lanes (the controller starts lane containers itself), so they need
 the estate Python environment that holds the installed `cmru` wheel and its declared
