@@ -34,7 +34,7 @@ restatement of the technical detail below it.
 - New managed allocations use worktree record schema v5. Ready v1-v4 records remain readable. Incomplete v1/v2 records lack overlay intent, incomplete v3 records lack overlay-recovery phase, and an initial reset whose exact result was not checkpointed requires operator-directed recovery. Existing unlabelled networks may need a one-time `ciu worktree adopt|ensure --adopt-existing-network` claim before CIU has saved an object id.
 
 ### Changed
-- `get.py` downloads only contract-named assets (`<tag><asset_suffix>`), with no legacy-name fallback; a release published under another name, i.e. pwmcp releases <= v1.64.0-r2, is not installable by `get.py` (PWMCP-08).
+- `get.py` re-rendered from the current cmru installer template; download behaviour unchanged (it requests only `<tag><asset_suffix>`).
 - Run the real-system enrollment lane as a required release gate, verify installed Run-Gate module bytes and console-entry-point targets against the selected checkout, and pin the disposable fixture image (CIU-131).
 
 ### Fixed

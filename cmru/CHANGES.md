@@ -32,7 +32,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 ### Changed
-- `get.py` downloads only contract-named assets (`<tag><asset_suffix>`), with no legacy-name fallback; a release published under another name, i.e. pwmcp releases <= v1.64.0-r2, is not installable by `get.py` (PWMCP-08).
+- One asset-name function now serves bundle producers and the rendered `get.py`, and a test compares every installer project's published bundle name with the name its `get.py` requests (KI-89). The `get.py` download behaviour is unchanged: it requests only `<tag><asset_suffix>` (a legacy-name fallback was added and removed before release, PWMCP-08).
 
 <!-- cmru: release history -->
 
