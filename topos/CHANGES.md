@@ -4,6 +4,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.4.2] - 2026-10-21
+<!-- cmru: generated -->
+<!-- cmru: source-end=8f7425bba9a407c4d2522d0a2c429dd95b93585b -->
+
+### Added
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+
+### Changed
+- DOCS-FOLD-01 review fixes F-01..F-08: memory.low claim corrected, boost chain labelled, one canonical home per fact, 125 s, stale rows, README:130, MDT-022 citations (fa215e600)
+- DOCS-FOLD-01: fold operator-approved facts A-D into the docs (c5b79f9f2)
+- INT-01 gate fixes: overlap tests, bootstrap oracle, topos lane, mattermost drift (fbe8720e5)
+- Merge mdt-home-persistence-20261018 (daf47a2e9) (INT-01 step 4) (5e2dff706)
+- topos: a present systemctl that cannot reach systemd is unavailable too (W4) (44f56b06e)
+- topos: 'systemctl not available' is a state of its own, not 'unit absent' (V3) (697103a5f)
+- tester-unified: no systemctl stub, node from the official image (D-001, D-004), host lanes off the root environment (D-002), R5, R7 (c3bd7f916)
+- topos: a missing systemctl degrades instead of crashing the collector (D-001, TP-SYSTEMCTL) (78e4200d3)
+- tester-base/tester-unified: explicit systemctl stub (D-001) and pycache guard (D-002) found by the T8 skip-diff; topos backlog TP-SYSTEMCTL (262cb9c30)
+
 ## [0.4.1] - 2026-09-26
 <!-- cmru: generated -->
 <!-- cmru: source-end=d22feaab860607938505380ef9ddacb521307e66 -->
