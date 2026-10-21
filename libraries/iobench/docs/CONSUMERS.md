@@ -127,9 +127,9 @@ nothing; host-setup renders and verifies the persistent files.
 
 ### 5.3 Cache state, metering, fit, limits
 
-* `cache_state` (reads): `cold_measured` (the earliest-written region read as cache-free: proven), `rate_cap` (a flat provider cap: proven), `cold_hit_like` (the cache is larger than the fill), `undetermined`. Writes have no cache state: they are proven by the time axis (>= 120 s after the knee, bytes after >= 2x the burst).
+* `cache_state` (reads): `cold_measured` (the earliest-written region read as cache-free: proven), `rate_cap` (the cold-region probe itself is flat at a provider cap: proven; a flat line elsewhere is only a recorded fact), `cold_hit_like` (the cache is larger than the fill), `undetermined`. Writes have no cache state: they are proven by the time axis (>= 120 s after the knee, bytes after >= 2x the burst).
 * `metering`: `byte`, `iops`, `mixed`, `undetermined`; E1 `fit` (informational): `good`, `poor`, `insufficient`, `plateau`.
-* `limits`: `quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `filesystem_layer` (file target: extent mapping and journal overhead are inside every figure), `bucket_exclusion_s<=<N>` (the longest observation: bursts longer than that are not excluded).
+* `limits`: `quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `filesystem_layer` (file target: extent mapping and journal overhead are inside every figure), `fresh_semantics_filesystem` (file target: the "fresh" write is `fresh_fs_alloc` and counts toward the cap only on a `discard` mount), `bucket_exclusion_s<=<N>` (the longest observation: bursts longer than that are not excluded).
 * Check ids in `quality.checks[]`: IOB-PLA-01 tail flat, -02 working-set rule, -03 cached-tier factor, -04 mean vs steady, -05 flat-line, -06 Little's law, -07 bytes consistency,
   -08 read-only-written, -09 fill vs sequential, -10 cache state, -11 shape fit, -12 noise floor, -13 fresh vs rewrite, -14 data integrity, -15 identity stable, -16 extent integrity,
   -17 outside history, -18 fresh write bytes/s (info; also records whether a discard re-arms the fresh-block penalty, hypothesis). A `fail` degrades only the groups it lists; -14, -15 and -16 fail the whole run.
@@ -159,7 +159,7 @@ Until a probe or governor appends observations (D-011), the history is `single-r
 
 The wizard's default (D-IOC-4) must be able to run on production hosts that have no raw partition to give. A **file target** is a preallocated file on an existing filesystem, written once in
 full and accessed with `O_DIRECT`. Its identity is (filesystem UUID, inode, size) with the marker in its last MiB and a sidecar `.iobench-target`; every writing stage re-verifies it. Refused:
-tmpfs/ramfs/overlay, symlinks, hard links, too little free space. Every figure carries the `filesystem_layer` limit and is never mixed with device-kind history.
+tmpfs/ramfs/overlay, symlinks, hard links, too little free space, and on the root filesystem a `--size` above 10 % of the free space (`--allow-large-root-target` overrides; `--size` is required and is the hard upper bound). Free space is re-checked while the fill runs. The "fresh" write is reported as `fresh_fs_alloc` with the filesystem's `discard` mount option and enters the write cap only on a `discard` mount; iobench never runs `fstrim`. Every figure carries the `filesystem_layer` limit and is never mixed with device-kind history.
 
 ```bash
 iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid 0b1c2d3e-4f50-4a61-8b72-93a4b5c6d7e8 --confirm-quiet-window

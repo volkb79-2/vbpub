@@ -1,8 +1,8 @@
 # iobench DESIGN-GUIDE (why it works this way)
 
 This is the WHY document. [README](../README.md) says WHAT it does, [CONSUMERS](CONSUMERS.md) says HOW to adopt it, [SPEC](SPEC.md) is the normative requirement list.
-The design record moved here from `vbpub-release-program-20261019/IOB-02-DESIGN.md` (now a pointer). Revision 3 (2026-10-21) folds in the P1/P2 review, the
-controller rulings R-1..R-10 and the controller review O-1..O-8 (section 11).
+The design record moved here from `vbpub-release-program-20261019/IOB-02-DESIGN.md` (now a pointer). Revision 4 (2026-10-21) folds in the P1/P2 review, the
+controller rulings R-1..R-10, the controller review O-1..O-8 and the re-review R2-1..R2-4 (section 11).
 
 Evidence labels: **[M date host]** measured, **[I]** inferred. Sources: `IO-BENCH-01-report.md` (r1002, 2026-10-20), `IO-STALL-TESTING-GUIDE.md` and
 `scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md` (gstammtisch), `IOCOST-WIZARD-DESIGN.md` (D-IOC-1..4), `review-IO-BENCH-01.md` (findings B-01, B-03, P-01).
@@ -73,8 +73,8 @@ The recorded r1002 data holds no cold probe, so replaying it gives `undetermined
 ### 3.2 Bandwidth caps need their own basis
 
 The ladder is random 4 KiB, so `RBPS`/`WBPS` have no basis in it. The basis is the steady bytes/s of the sequential 1 MiB QD16 cell at the cap-basis working set, scaled by the
-same direction's `cache_ratio = R / measured_largest` when that is proven (else 1 with `unproven: cache_residual_possible`); a flat-line sequential cell (r1002 read 4096 MiB/s) is itself
-a proven upper bound; with no such cell the BPS caps are `absent: bps_basis_missing`.
+same direction's `cache_ratio = R / measured_largest` when that is proven (else 1 with `unproven: cache_residual_possible`); a flat-line sequential cell (r1002 read 4096 MiB/s) is a recorded fact and
+never a proof (a limiter can cap *cached* data; cold reads can be slower than the cap), so its bytes/s is scaled by the same `cache_ratio`; with no such cell the BPS caps are `absent: bps_basis_missing`.
 
 ### 3.3 Moving ceilings are findings, not failures (ruling R-8)
 
@@ -92,7 +92,7 @@ comparison is `unproven: ceiling_moved`, both values are kept, and the move is a
 | Steady tail = median of the last 25 % of a <= 2 s series, knee/burst detection | warm-up and bursts shorter than the observation | a token bucket longer than the observation: every result records `bucket_exclusion_s<=N`; `standard` adds a 240 s write and 120 s read observation, `thorough` 900/240 s (the 0.9 -> 3.2 GB/s step at ~430 s seen on r1002 needs `thorough`) |
 | Read only data **written by this calibration** (argv-confined to the recorded extent) | zero-page reads of unmapped space (99.9k IOPS on a discarded range [M r1002]) | - |
 | Fresh vs rewrite series (**writes only**; reads are always of data written earlier) | provider allocation / copy-on-write (random writes to fresh space ran at 3.6k IOPS, 7 ms p50 against 71k rewritten [M r1002]) | - |
-| Flat-line detection (CV < 1 % over >= 60 s => `rate_limited`) | reading a provider cap as a capability (sequential read exactly 4096 MiB/s [M r1002]) | - |
+| Flat-line detection (CV < 1 % over >= 60 s => `rate_limited`) | reading a provider cap as a capability (sequential read exactly 4096 MiB/s [M r1002]) | proving a rate cache-free: an upper bound can sit on cached data. Only a flat-line **cold probe** that is not hit-like earns `rate_cap`. |
 
 ## 5. Stages and why each exists
 
@@ -103,7 +103,7 @@ Every stage exists because a derivation reads its output.
 | S0 | identity (devno, PARTUUID, size, model/serial if any), disk chain, scheduler, `max_hw_sectors_kb`, RAM, PSI, containers, every slice `io.max` (read only) | validity, refusals |
 | S1 | 20 s direct sequential write to the target's first GiB: `R_est` | time-bounded sizing, slow-disk detection |
 | fill + E-cold | sequential fill of `[0, WS_max)` (re-planned if its rate falls below 0.5 x `R_est`); then the cold-region probe | `R_cold`, the primary cache state |
-| S2 ladder | random 4 KiB read/write QD32 over a doubling ladder + two densification rungs; QD1/QD8 at the largest | cliff, `QD90`, `cached_ref`, E1 (informational) |
+| S2 ladder | random 4 KiB read/write QD32 over a doubling ladder + two densification rungs; QD1/QD8 at the largest | cliff, `QD90`, `cached_ref`, the best read rung, E1 (informational) |
 | E2 | QD1 full-histogram runs on the smallest rung (`hit_ref`) and, adjacent to its QD32 run, on the largest | cross-check of `R_cold` |
 | fresh/rewrite, rearm, reference cells | 4 KiB random writes to a discarded extent vs a written one; one rewrite -> discard -> write cell (does discard re-arm the penalty? hypothesis [I]); the reference pairs | fresh penalty, `fresh_write_bps`, `ceiling_moved` |
 | observation runs | 240 s write / 120 s read at the largest rung and a 120 s fresh write run (`thorough`: 900/240 s) | the write time-axis proof, bucket exclusion |
@@ -144,7 +144,7 @@ Targets are explicit; defaults are *policy* defaults, never substitutes for a me
 * **R3 `max_sectors_kb`**: largest power-of-two KB <= `R_drain x 10 ms` (the 10 ms request time is `[I]`), clamped to `[32, max_hw]`, raised to the smallest candidate meeting the read floor `F` unless the sweep shows it breaks `P`.
 * **R4**: the chosen triple's REF probe p99 must be <= `P`, else `unproven: target_missed`.
 * **R5 dev caps**: one aggregate cap, `U x basis x min(1, worst/median)` per key; basis from the cap-basis rules (write IOPS = `min(rewrite, fresh)`); using the worst plateau makes the cap bind when the provider drops to it. No per-tier caps.
-* **R6 model and QoS**: model basis = the **worst plateau** per direction (D-IOC-2). Byte-metered: `wbps = worst`, `*seqiops = *randiops = bps/4096`; otherwise from the S6 fit. `min = 100`; `max = ceil5(110 x max(cached_ref/R, best_w/worst_w))`: both directions are priced at the worst/cache-free basis (**IOB-D-015**: "price the worst case, let vrate climb into the cache"), and `max` leaves room for reads that the cache serves, using `cached_ref` as the read best (the only permitted use of a `cached_tier` figure); the result records `read_cache_headroom = cached_ref / R` (r1002: 9.39, so `max` = 1035); `wpct 90`, `wlat = 2 x light p90` rounded up to 5 ms in [10, 50] ms; `rpct 95`, `rlat = 2 x light p95` rounded up to 1 ms in [2, 20] ms. Histogram source: the governor if running, else S7 (D-IOC-3). Without ceiling history, worst/best come from this run's own windows and every dependent value is `unproven: worst_from_single_run`.
+* **R6 model and QoS**: model basis = the **worst plateau** per direction (D-IOC-2). Byte-metered: `wbps = worst`, `*seqiops = *randiops = bps/4096`; otherwise from the S6 fit. `min = 100`; `max = ceil5(110 x max(best_read_rung/R, best_w/worst_w))`: both directions are priced at the worst/cache-free basis (**IOB-D-015**: "price the worst case, let vrate climb into the cache"), and `max` leaves room for reads that the cache serves, using the best observed read rung as the read best (the only permitted use of a `cached_tier` figure; `cached_ref` is not used because a write-allocating fill can make it the miss rate); the result records `read_cache_headroom = best_read_rung / R` (r1002: 9.39, so `max` = 1035); `wpct 90`, `wlat = 2 x light p90` rounded up to 5 ms in [10, 50] ms; `rpct 95`, `rlat = 2 x light p95` rounded up to 1 ms in [2, 20] ms. Histogram source: the governor if running, else S7 (D-IOC-3). Without ceiling history, worst/best come from this run's own windows and every dependent value is `unproven: worst_from_single_run`.
 
 **Worked check against the evidence** (replay oracles): gstammtisch with `R_drain` 10.5 MB/s gives dirty 16 MiB / 4 MiB, `nr_requests` 16, `max_sectors_kb` 64 (the measured best); r1002 gives `kernel` for dirty and sectors.
 
@@ -178,7 +178,7 @@ consumers get a cmru-released wheel and zipapp with sha256 (never PyPI). New cod
 
 ## 10. Decisions
 
-IOB-D-001..014 are those of IOB-02 section 9 and are **accepted** (controller, 2026-10-21); **IOB-D-015** (controller, review O-4): both directions use the worst/cache-free basis and `max` uses `cached_ref` as the read best, an explicit exception in IOB-DER-08. The 14 original decisions: D-001 library, D-002 io.cost moves in (phased), D-003 CLI shell adopts cli-extended, D-004 targets as
+IOB-D-001..014 are those of IOB-02 section 9 and are **accepted** (controller, 2026-10-21); **IOB-D-015** (controller, review O-4): both directions use the worst/cache-free basis and `max` uses the best observed read rung as the read best, an explicit exception in IOB-DER-08. The 14 original decisions: D-001 library, D-002 io.cost moves in (phased), D-003 CLI shell adopts cli-extended, D-004 targets as
 wizard keys with policy defaults, D-005 raw read-only reads opt-in, D-006 standard first run / quick re-measure, D-007 refuse unless confirmed, D-008 identity-only validity, D-009 slow disk,
 D-010 never branch on hypervisor detection, D-011 long-term probe later, D-012 re-implement without GPL code, D-013 fresh-block rung, D-014 never persists.
 
@@ -209,7 +209,11 @@ D-010 never branch on hypervisor detection, D-011 long-term probe later, D-012 r
 | O-1 cold-region probe primary, E2 cross-check, E1 informational; FakeFio simulates cache content; E1-good-but-wrong fixture | SPEC IOB-CCH-01..08, IOB-ARC-03, DG 3.1 |
 | O-2 write cache proven by the time axis; E-cold/E1/E2 read-only | IOB-CCH-07 |
 | O-3 target kind `file`; fill re-plan below 0.5 x `R_est`; `filesystem_layer` | IOB-TGT-06..10, IOB-CAL-02, CONSUMERS 8 |
-| O-4 (IOB-D-015) worst/cache-free basis both directions; `max` from `cached_ref`; `read_cache_headroom` | IOB-DER-05/06/08/10 |
+| O-4 (IOB-D-015) worst/cache-free basis both directions; `max` from the best read rung; `read_cache_headroom` | IOB-DER-05/06/08/10 |
+| R2-1 a flat line is an upper bound, never a cache-free proof; `rate_cap` only from the cold probe itself | IOB-CCH-05, IOB-CAL-06, fixtures #5, #12 |
+| R2-2 file target `--size` required and bounding; root fs 10 % rule; free space re-checked during the fill | IOB-TGT-06, IOB-TGT-10 |
+| R2-3 `fresh_fs_alloc`, `mount_discard`, `fresh_semantics_filesystem`; basis only on a `discard` mount; never `fstrim` | IOB-TGT-08, IOB-DER-09 |
+| R2-4 `ratio_r` from the best read rung; unproven read value `min(measured_largest, R_cold)` | IOB-DER-06/08/10, IOB-CCH-06 |
 | O-5 `fresh_write_bps` check and the rearm cell [I] | IOB-PLA-18, IOB-CAL-10 |
 | O-6 full histograms, h = mass below the valley, thresholds [I], adjacency | IOB-CCH-02/03 |
 | O-7 what r1002 does and does not prove | SPEC section 20 |
