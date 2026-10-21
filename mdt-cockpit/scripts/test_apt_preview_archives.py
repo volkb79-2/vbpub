@@ -66,9 +66,15 @@ def test_the_dockerfile_installs_both_files_after_the_main_install_and_never_lea
     copy_sources = "COPY --chmod=0644 apt/testing.sources /etc/apt/sources.list.d/testing.sources"
     copy_pref = "COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archives"
     assert dockerfile.count(copy_sources) == 1 and dockerfile.count(copy_pref) == 1
-    # Copied just before the skopeo step, after the core install, so earlier apt-get updates never fetch testing.
-    assert dockerfile.index("# Core system packages") < dockerfile.index(copy_sources)
-    assert dockerfile.index(copy_pref) < dockerfile.index("# Skopeo from Debian testing")
+    # Copied just before the skopeo step, which is placed after the LAST other `apt-get update`, so only the
+    # skopeo step ever fetches testing indexes.
+    skopeo_at = dockerfile.index("# Skopeo from Debian testing")
+    assert dockerfile.index(copy_pref) < skopeo_at and dockerfile.index(copy_sources) < skopeo_at
+    assert "# Core system packages" in dockerfile[: dockerfile.index(copy_sources)]
+    # The skopeo step's own `apt-get update` is the first one after the COPY and the only one: every other
+    # layer that updates apt runs before the testing files exist.
+    after_copy = dockerfile[dockerfile.index(copy_sources):]
+    assert after_copy.count("apt-get update") == 1 and after_copy.index("apt-get update") > after_copy.index("# Skopeo from Debian testing")
     # The old ad-hoc testing.list is gone; the skopeo pin is the only temporary pin and is removed again.
     assert "sources.list.d/testing.list" not in dockerfile
     skopeo = dockerfile.split("# Skopeo from Debian testing")[1].split("# Upstream Node.js")[0]
@@ -76,3 +82,5 @@ def test_the_dockerfile_installs_both_files_after_the_main_install_and_never_lea
     assert "rm -f \"${pin}\"" in skopeo
     # Fail closed: a missing testing skopeo is an error, never an [INFO] fallback to trixie's.
     assert "exit 1" in skopeo and "keeping trixie" not in skopeo
+    # The dry-run output is captured first: `apt-get ... | grep -q` under pipefail can take a SIGPIPE.
+    assert "| grep -q" not in skopeo and 'simulated="$(apt-get install --dry-run' in skopeo

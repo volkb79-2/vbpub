@@ -213,32 +213,6 @@ RUN set -euo pipefail; \
     echo "user_allow_other" >> /etc/fuse.conf; \
     rm -rf /var/lib/apt/lists/*
 
-# Debian testing, the preview archive: a permanent source (apt/testing.sources) pinned to 100 together with
-# oldstable and oldstable-backports (apt/preview-archives.pref) - visible, never auto-selected. Both files
-# are copied HERE, after the main package install, so no earlier `apt-get update` fetches testing indexes
-# and a testing-mirror hiccup cannot fail unrelated layers. The final image has both.
-COPY --chmod=0644 apt/testing.sources /etc/apt/sources.list.d/testing.sources
-COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archives
-
-# Skopeo from Debian testing (trixie ships 1.18.x, testing 1.22.x). FAILS CLOSED: if testing does not offer
-# a skopeo that apt would install, or the install fails, the build stops with a clear message instead of
-# silently shipping the older trixie skopeo. Only for skopeo, a temporary pin of 501 (just above trixie's
-# 500) lifts testing's package; the pin is removed in the same RUN, so the image leaves this step with
-# testing at 100.
-RUN set -euo pipefail; \
-    pin=/etc/apt/preferences.d/skopeo-testing; \
-    trap 'rm -f "${pin}"' EXIT; \
-    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > "${pin}"; \
-    apt-get update; \
-    if ! apt-get install --dry-run -y skopeo 2>&1 | grep -q "^Inst skopeo "; then \
-        echo "[ERROR] Debian testing offers no skopeo that apt would install; refusing to silently keep trixie's skopeo" >&2; \
-        exit 1; \
-    fi; \
-    apt-get install -y --no-install-recommends skopeo; \
-    echo "[INFO] skopeo installed from Debian testing: $(skopeo --version)"; \
-    rm -f "${pin}"; \
-    rm -rf /var/lib/apt/lists/*
-
 # Upstream Node.js runtime for npm-based AI tooling.
 RUN set -euo pipefail; \
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -; \
@@ -747,6 +721,35 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "${VERSION_CODENAME}") stable" > /etc/apt/sources.list.d/docker.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin docker-compose-plugin; \
+    rm -rf /var/lib/apt/lists/*
+
+# Debian testing, the preview archive: a permanent source (apt/testing.sources) pinned to 100 together with
+# oldstable and oldstable-backports (apt/preview-archives.pref) - visible, never auto-selected. Both files
+# are copied HERE, after the LAST other `apt-get update` in the image (the docker-cli layer above), so no
+# other layer fetches testing indexes and a testing-mirror hiccup cannot fail an unrelated layer. Only the
+# skopeo step below runs `apt-get update` with testing configured. The final image has both files. Skopeo has
+# no ordering dependency on the layers above (nothing uses it before the manifest listing at the end).
+COPY --chmod=0644 apt/testing.sources /etc/apt/sources.list.d/testing.sources
+COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archives
+
+# Skopeo from Debian testing (trixie ships 1.18.x, testing 1.22.x). FAILS CLOSED: if testing does not offer
+# a skopeo that apt would install, or the install fails, the build stops with a clear message instead of
+# silently shipping the older trixie skopeo. Only for skopeo, a temporary pin of 501 (just above trixie's
+# 500) lifts testing's package; the pin is removed in the same RUN, so the image leaves this step with
+# testing at 100.
+RUN set -euo pipefail; \
+    pin=/etc/apt/preferences.d/skopeo-testing; \
+    trap 'rm -f "${pin}"' EXIT; \
+    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > "${pin}"; \
+    apt-get update; \
+    simulated="$(apt-get install --dry-run -y skopeo 2>&1)"; \
+    if ! grep -q "^Inst skopeo " <<<"${simulated}"; then \
+        echo "[ERROR] Debian testing offers no skopeo that apt would install; refusing to silently keep trixie's skopeo" >&2; \
+        exit 1; \
+    fi; \
+    apt-get install -y --no-install-recommends skopeo; \
+    echo "[INFO] skopeo installed from Debian testing: $(skopeo --version)"; \
+    rm -f "${pin}"; \
     rm -rf /var/lib/apt/lists/*
 
 # ── Primary Python venv — full development toolkit ────────────────────────────

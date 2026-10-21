@@ -276,7 +276,8 @@ visible for `apt-cache policy` and `apt install -t testing <pkg>`, never auto-se
   and these docs.
 * **Skopeo fails closed.** If testing offers no skopeo apt would install, or the install fails, the build
   stops with an error rather than quietly keeping trixie's older skopeo. The testing files are copied just
-  before this step so earlier `apt-get update` layers never fetch testing indexes.
+  after the last other `apt-get update` in the image, so this step is the only one that fetches testing indexes
+  (a testing-mirror hiccup cannot fail an unrelated layer). Skopeo has no ordering dependency on the layers above.
 * **Acceptance** is image-level: `tests/runtime/test_apt_preview.py` builds a synthetic index in the container
   (the image carries no apt lists and the lane is offline) and lets apt apply the image's real files.
 
