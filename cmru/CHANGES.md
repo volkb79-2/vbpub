@@ -32,6 +32,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      the `fix(cmru): ...` commit subject. -->
 
 ### Changed
+- `cmru gate-snapshots` reports a snapshot whose directory and Git registration are both gone as `stale-record` instead of `retained`, and `--remove` drops it; a missing directory that Git still registers, and an existing directory Git does not register, stay `retained` with their own reasons (KI-92).
+- The KI-79 provisional R2 deferral is authorized for the whole 6.2 patch line (`>= 6.2.0`, `< 6.3.0`; operator decisions 2026-10-21); 6.3.0 and later still refuse. R2 is owed before the first release judged worth R2 and at the latest before 6.3.0 (KI-79).
 - One asset-name function now serves bundle producers and the rendered `get.py`, and a test compares every installer project's published bundle name with the name its `get.py` requests (KI-89). The `get.py` download behaviour is unchanged: it requests only `<tag><asset_suffix>` (a legacy-name fallback was added and removed before release, PWMCP-08).
 
 <!-- cmru: release history -->

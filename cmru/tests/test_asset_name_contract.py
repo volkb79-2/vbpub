@@ -181,3 +181,22 @@ class TestNoLegacyNameFallback:
         with pytest.raises(SystemExit):
             ns["download_and_verify"](TAG, wd, None, "py311")
         assert f"{TAG}-py311.tar.xz" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("token", [None, "tok"])
+    def test_the_refusal_names_the_asset_the_tag_and_the_contract(self, tmp_path, capsys, token):
+        # R6-03: both download paths say which asset, which release, and what get.py requests
+        host = _FakeHost()
+        _put_raw(host, tmp_path, TAG, "get.py", b"x")
+        ns = _render()
+        _serve(ns, host)
+        wd = tmp_path / "wd"
+        wd.mkdir()
+        with pytest.raises(SystemExit):
+            ns["download_and_verify"](TAG, wd, token)
+        err = capsys.readouterr().err
+        assert f"{TAG}.tar.xz" in err                    # the requested asset
+        assert f"release {TAG}" in err                    # the tag, explicitly
+        if token is None:  # a bare 404 proves less than "no such asset": say what else it can be
+            assert "missing asset, release or tag, or a private repository without a token" in err
+            assert "has no asset" not in err
+        assert "<tag><asset_suffix>" in err               # the contract it requests

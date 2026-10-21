@@ -787,9 +787,9 @@ The native-R2 `mutation` lane requests contract-2 event evidence from
 working observation to those command lanes. The release step for the current
 6.2.0 candidate runs `run-gate gate-provisional`, which skips the long mutation
 lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
-KI-79. The deferral is authorized only for CMRU 6.2.0, so that release is
-`cmru release cmru --minor` (or `--set-version 6.2.0`); the default patch bump
-that `cmru status cmru` reports would be refused by the gate. That release
+KI-79. The deferral is authorized only for CMRU >= 6.2.0 and < 6.3.0 (the 6.2 patch line;
+6.3.0, 7.x and everything else refuse), so a 6.2.x release is an ordinary patch release; a
+bump that computes 6.3.0 or later is refused by the gate. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 (KI-79). That release
 therefore has no mutation event evidence. Read its result from
 `cmru/.assay/release-gate-snapshot.json`: `"state": "provisional"` with a `deferred_lanes`
 entry for `mutation` (never `"passed"`), for example
@@ -992,11 +992,13 @@ source checkout, so a failed or interrupted gate can resume. Inspect and clean t
 with the supported verb, never with `git worktree remove`:
 
 ```bash
-cmru gate-snapshots                        # list: removable / retained, with the reason
+cmru gate-snapshots                        # list: removable / retained / stale-record, with the reason
 cmru gate-snapshots --remove --dry-run     # preview exactly what would be removed
-cmru gate-snapshots --remove               # remove the snapshots whose source moved on
+cmru gate-snapshots --remove               # remove the snapshots whose source moved on; drop stale records
 cmru gate-snapshots --remove --include-current   # also the resumable one for the current HEAD
 ```
+
+A `stale-record` is a record whose snapshot directory is gone AND whose worktree Git no longer registers (nor lists its branch anywhere, so a path only invisible from this mount namespace is never called stale); `--remove` drops just the record, its derived Assay state and a leftover branch that still points at the recorded commit. Two lookalike states stay `retained`, each with its own reason: the directory is gone but Git still registers it (`git worktree prune` after confirming), and the directory exists but Git does not register it (inspect it).
 
 It keeps a snapshot whose gate is still running, whose lease holder lives in another
 PID namespace and cannot be proven dead from where you are (run the verb where the gate

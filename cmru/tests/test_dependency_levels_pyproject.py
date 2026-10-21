@@ -149,15 +149,73 @@ def test_a_malformed_pyproject_is_reported_not_swallowed(tmp_path):
     assert not report.ok and "cannot read" in report.errors[0]
 
 
-def _estate_complete() -> bool:
-    """The orchestration AND every project config it names are present (the isolated
-    canary tree carries the orchestration file but only some of the projects)."""
+# The isolated canary tree is built from `git ls-files` pathspecs: it carries the orchestration
+# file but only some projects, and it has NO `.git`. The real-estate checks skip ONLY on that fact
+# about the tree. In a git checkout a project that went missing is a FAILURE (KI-90): one skip
+# status must not stand for both "intended isolated copy" and "a real checkout lost a project".
+IS_CHECKOUT = (REPO_ROOT / ".git").exists()  # a file in a worktree, a directory in a clone
+
+
+def estate_violations(repo_root: Path, *, is_checkout: bool, doc: Path | None = None) -> list[str]:
+    """What a FULL checkout must carry: the orchestration, every project config it names, and the
+    bootstrap doc. A non-checkout tree (the isolated canary copy) is exempt: [] there."""
     import tomllib
 
-    if not ORCHESTRATION.exists():
-        return False
-    projects = tomllib.loads(ORCHESTRATION.read_text(encoding="utf-8")).get("orchestration", {}).get("project", {})
-    return bool(projects) and all((REPO_ROOT / entry["config"]).is_file() for entry in projects.values())
+    if not is_checkout:
+        return []
+    orchestration = repo_root / "cmru.orchestration.toml"
+    if not orchestration.is_file():
+        return ["cmru.orchestration.toml is missing from a full checkout"]
+    projects = tomllib.loads(orchestration.read_text(encoding="utf-8")).get(
+        "orchestration", {}).get("project", {})
+    out = [] if projects else ["cmru.orchestration.toml names no projects"]
+    out += [f"{name}: {entry['config']} is missing from a full checkout"
+            for name, entry in sorted(projects.items()) if not (repo_root / entry["config"]).is_file()]
+    if doc is not None and not doc.is_file():
+        out.append(f"{doc} is missing from a full checkout")
+    return out
+
+
+def _estate_complete() -> bool:
+    """Run the real-estate checks: always in a git checkout (where they fail loudly if a
+    project is missing), never in a non-git isolated canary tree."""
+    return IS_CHECKOUT
+
+
+def test_a_full_checkout_carries_the_orchestrated_estate():
+    """UNSKIPPED guard: in a git checkout every orchestrated project config and the doc exist."""
+    assert estate_violations(REPO_ROOT, is_checkout=IS_CHECKOUT, doc=DOC) == []
+
+
+def _fake_estate(tmp_path: Path, *, git: bool, present: dict[str, bool]) -> Path:
+    root = tmp_path / ("co" if git else "iso")
+    root.mkdir()
+    if git:
+        (root / ".git").write_text("gitdir: x\n", encoding="utf-8")
+    (root / "cmru.orchestration.toml").write_text(
+        "".join(f'[orchestration.project.{n}]\nconfig = "{n}/cmru.toml"\n' for n in present),
+        encoding="utf-8")
+    for name, here in present.items():
+        if here:
+            (root / name).mkdir()
+            (root / name / "cmru.toml").write_text("[project]\n", encoding="utf-8")
+    return root
+
+
+def test_a_full_checkout_missing_a_project_fails_instead_of_skipping(tmp_path):
+    root = _fake_estate(tmp_path, git=True, present={"a": True, "b": False})
+    assert any(v.startswith("b:") for v in estate_violations(root, is_checkout=True))
+
+
+def test_a_full_checkout_missing_the_doc_fails(tmp_path):
+    root = _fake_estate(tmp_path, git=True, present={"a": True})
+    assert estate_violations(root, is_checkout=True, doc=root / "nope.md")
+
+
+def test_only_a_tree_without_git_is_exempt(tmp_path):
+    root = _fake_estate(tmp_path, git=False, present={"a": False})
+    assert estate_violations(root, is_checkout=(root / ".git").exists()) == []
+    assert estate_violations(root, is_checkout=True)  # same tree as a checkout: a failure
 
 
 @pytest.mark.skipif(not _estate_complete(), reason="estate projects absent (isolated canary tree)")

@@ -1036,15 +1036,32 @@ def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
 
 POSTPONED_MARKER = Path(".assay") / "mutation-postponed-cmru.json"
 POSTPONE_REASON = (
-    "operator-approved provisional release of CMRU 6.2.0: the R2 mutation lane "
-    "was skipped and must be run afterwards against the released tag"
+    "operator-approved provisional CMRU release (KI-79; the marker's target_version names "
+    "which): the R2 mutation lane was skipped and must be run afterwards against the "
+    "released tag"
 )
 FIRST_RELEASE_POSTPONE_REASON = (
     "first CMRU release has no earlier published source baseline; whole-source R0/R1/R3 ran, "
     "and whole-source R2 must be run afterwards with "
     f"`run-gate {FIRST_RELEASE_R2_FOLLOW_UP_LANE}`"
 )
-POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": "6.2.0"}
+#: Version window each postponement id may defer R2 for: ``(lowest, below)``, i.e.
+#: ``lowest <= version < below``. KI-79: the whole 6.2 patch line (6.2.0 by the 2026-10-14
+#: operator decision; widened 2026-10-21 -- "release more cmru also without prior R2" --
+#: to every 6.2.x). 6.3.0 and later (7.x included) still refuse; moving the window needs a
+#: new operator decision and a reviewed change here.
+POSTPONEMENT_RELEASE_VERSIONS = {"KI-79": ((6, 2, 0), (6, 3, 0))}
+
+
+def _version_tuple(version: str) -> tuple[int, int, int]:
+    major, minor, patch = (int(part) for part in version.split("."))
+    return major, minor, patch
+
+
+def _postponement_window_text(window: tuple[tuple[int, int, int], tuple[int, int, int]]) -> str:
+    low, below = window
+    return (f">= {'.'.join(map(str, low))} and < {'.'.join(map(str, below))} "
+            f"(the {low[0]}.{low[1]} patch line)")
 #: What a later whole-source/full mutation follow-up needs before it can run.
 #: The marker and the snapshot manifest carry these verbatim so a reader never
 #: has to infer them from prose. ``d4-capacity-evidence`` is named, not defined,
@@ -1122,17 +1139,17 @@ def _validate_postponement(
                 "first-release R2 deferral requires a dated, prepared CMRU release heading"
             )
         return observed_version
-    expected_version = POSTPONEMENT_RELEASE_VERSIONS.get(tracking_id)
-    if expected_version is None:
+    window = POSTPONEMENT_RELEASE_VERSIONS.get(tracking_id)
+    if window is None:
         raise RuntimeError(
             f"mutation postponement {tracking_id!r} is not authorized for a release"
         )
     observed_version = _prepared_release_version(project_root)
-    if observed_version != expected_version:
+    if observed_version is None or not window[0] <= _version_tuple(observed_version) < window[1]:
         observed = observed_version or "no prepared release version"
         raise RuntimeError(
             f"mutation postponement {tracking_id} is authorized only for CMRU "
-            f"{expected_version}; prepared changelog identifies {observed}"
+            f"{_postponement_window_text(window)}; prepared changelog identifies {observed}"
         )
     return observed_version
 
