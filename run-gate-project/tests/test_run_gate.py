@@ -23842,6 +23842,78 @@ class TestBareHostProfilingWiring:
         assert watch.calls == 1
         assert "watch reattach failed" in capsys.readouterr().err
 
+    def test_bare_host_idle_twice_announces_in_process_watch_exactly_once(
+            self, tmp_path, monkeypatch, capsys):
+        """Daemon watch idle on the first attach and again after the single
+        reattach, with a progress fallback configured: the in-process-watch
+        announcement is printed exactly once on stdout, even across further
+        idle polls served by the fallback, and the profiler warning names the
+        second idle."""
+        class DaemonWatch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return False
+
+            def idle(self):
+                return True
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def watch(self, session):
+                self.calls += 1
+                return DaemonWatch()
+
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return None
+
+        class Process:
+            pid = 4248
+            returncode = None
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls <= 5:
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        client = Client()
+        watch = Watch()
+        state = {"mode": "daemon", "client": client, "daemon": "d",
+                 "session": "s-bare-idle2", "session_line": None,
+                 "warning": None, "sampler": None, "profiler_status": None}
+        assert self._bare_assay_call(tmp_path, monkeypatch, state,
+                                     watch=watch, process=Process()) == 0
+        assert client.calls == 2
+        # Timeouts 1-2 consume the two idle daemon watches; 3-5 are served by
+        # the fallback alone, none of which may re-announce.
+        assert watch.calls >= 3
+        out, err = capsys.readouterr()
+        assert out.count("in-process watch") == 1
+        assert "in-process watch \u2014 daemon unavailable for lane" in out
+        assert state["warning"] == \
+            "daemon watch remained idle after one reattach"
+        assert "went idle; reattaching once" in err
+        assert "using in-process liveness fallback" in err
+
     def test_bare_host_daemon_verdict_stops_child_as_infrastructure(
             self, tmp_path, monkeypatch):
         class Watch:
