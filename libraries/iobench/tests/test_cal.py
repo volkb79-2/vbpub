@@ -112,9 +112,9 @@ def test_cal_10_rearm_cell():
 
 
 def test_cal_05_observation_limits():
-    assert ladder.observation_plan("standard") == {"write": 240, "read": 120, "fresh": 120}
+    assert ladder.observation_plan("standard") == {"write": 240, "read": 120, "fresh": 150}
     assert ladder.observation_plan("quick") == ladder.observation_plan("standard")
-    assert ladder.observation_plan("thorough") == {"write": 900, "read": 240, "fresh": 120}
+    assert ladder.observation_plan("thorough") == {"write": 900, "read": 240, "fresh": 150}
     assert ladder.observation_limit(240.0) == "bucket_exclusion_s<=240"
 
 
@@ -272,7 +272,7 @@ def test_cal_05_observation_limits(healthy):
     host, out = healthy
     assert "bucket_exclusion_s<=240" in out.result["quality"]["limits"]
     obs = {"obs-" + j.name.split("-obs-")[1]: j for j in fio_jobs(host) if "-obs-" in j.name}
-    assert {k: v.runtime_s for k, v in obs.items()} == {"obs-write": 240, "obs-read": 120, "obs-fresh": 120}
+    assert {k: v.runtime_s for k, v in obs.items()} == {"obs-write": 240, "obs-read": 120, "obs-fresh": 150}
     assert all(j.iodepth == 32 and j.log_avg_ms == 1000 for j in obs.values())  # QD32: the depth of the cap it time-proves (review B-B3)
     thorough = make_host(size=40 * GIB, cache=None, read=dict(iops_max=21600, lat_us=300), write=dict(iops_max=21600, lat_us=300))
     out2 = calibrate(thorough, profile="thorough")

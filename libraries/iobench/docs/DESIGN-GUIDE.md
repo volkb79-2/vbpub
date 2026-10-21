@@ -106,7 +106,7 @@ Every stage exists because a derivation reads its output.
 | S2 ladder | random 4 KiB read/write QD32 over a doubling ladder + two densification rungs; QD1/QD8 at the largest | cliff, `QD90`, `cached_ref`, the best read rung, E1 (informational) |
 | E2 | QD1 full-histogram runs on the smallest rung (`hit_ref`) and, adjacent to its QD32 run, on the largest | cross-check of `R_cold` |
 | fresh/rewrite, rearm, reference cells | 4 KiB random writes to a discarded extent vs a written one; one rewrite -> discard -> write cell (does discard re-arm the penalty? hypothesis [I]); the reference pairs | fresh penalty, `fresh_write_bps`, `ceiling_moved` |
-| observation runs | 240 s write / 120 s read at the largest rung and a 120 s fresh write run (`thorough`: 900/240 s) | the write time-axis proof, bucket exclusion |
+| observation runs | 240 s write / 120 s read at the largest rung and a 150 s fresh write run (the 120 s proof rule plus a fixed 30 s margin: fio stamps a 120 s run's last sample at 119.9x s, and widening the rule with a tolerance was rejected) (`thorough`: 900/240 s) | the write time-axis proof, bucket exclusion |
 | S3 drain rate | `R_drain`: device bytes/s under the reference writeback load on the work dir's filesystem | `dirty_bytes`, caps |
 | S4 sweep | sync-latency probe under buffered load across candidate settings; REF twice for the noise floor | choice of `nr_requests`, `max_sectors_kb` |
 | S5 read cost | direct sequential reads per `max_sectors_kb` candidate | the read-floor rule |
@@ -240,7 +240,7 @@ token bucket longer than the observation cannot be excluded by a one-off benchma
   `cached_ref` equals the miss rate, no cliff appears, and the cap still comes from the cold probe.
 * **CCH-08 #2 range.** `R = min(R_cold, R_E2)` with `R_E2 = steady(QD32) x (1 - h2)` is conservative on the mixed largest rung (about 7.3k against a cold 9.8k); the fixture asserts 0.7 to 1.06 x 9.8k.
 * **SHP-04 wins over PLA-11.** A poor fit makes the model keys `absent: stage_failed` and the QoS `max` `unproven: shape_fit_poor`; the PLA-11 text now says the same.
-* **CAL-01.** The rule wins over the literal numbers: the two densification rungs are the geometric thirds (282.8 and 312.4 GiB). They add a fixed two rungs, so the section 15 allotment sum (3310 s standard, 4150 s thorough) is unchanged and `test_slo_05_*` pins it.
+* **CAL-01.** The rule wins over the literal numbers: the two densification rungs are the geometric thirds (282.8 and 312.4 GiB). They add a fixed two rungs, so the section 15 allotment sum (3340 s standard, 4180 s thorough) is unchanged and `test_slo_05_*` pins it.
 * **REL-01.** Wheel and sha256 only.
 
 
@@ -273,7 +273,7 @@ Two independent reviews (A: safety and the real host; B: measurement, estimators
 * **Plausibility checks run.** PLA-07, -09, -17 and -18 existed as unit-tested functions that no run called; the calibration now evaluates them (per direction, from the run's own cells), and without the closing S6 reference
   they are `not_applicable` instead of asserting "unmoved".
 * **A fresh reference before S6.** The "before" reference of the shape group was taken at the end of rearm, before 480 s of heavy writes; a draining bucket then made a healthy disk look like a moved ceiling and every BPS cap
-  `unproven: ceiling_moved`. Six references now cost 180 s (standard 3310 s, thorough 4150 s).
+  `unproven: ceiling_moved`. Six references now cost 180 s, and the fresh observation is 150 s (standard 3340 s, thorough 4180 s).
 * **Smaller rulings.** The coupled `IO*`/`BlockIO*` argv forms are all refused; a file target is identified by its resolved path and filesystem (a bind mount of `/` is `/`); a re-init needs a sidecar that matches the file; `:` in
   a path is refused (fio splits it); an active holder is refused outright; an `fio` left by a dead run refuses the next run; a failed second spawn kills the first; the dry run no longer creates an O_DIRECT probe file; a foreign
   `ceilings.jsonl` is rotated aside before the run instead of refusing after the result is written; a dry run only plans with the rate of the same target and a current calibration.

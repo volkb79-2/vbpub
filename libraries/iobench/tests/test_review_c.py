@@ -204,3 +204,93 @@ def test_rev_c_s9_a_second_signal_interrupts_a_blocking_command():
     finally:
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, signal.SIG_DFL)
+
+
+# -- ruling 3: the write BPS cap is not proven by the 4 KiB random series --------------------------------------------------------------
+def test_rev_c_3_write_bps_is_unproven_until_the_sequential_series_is_time_proven():
+    from test_sta import key_reasons, run_cal
+    out = run_cal()[1]
+    # the IOPS caps are proven; the sequential 30 s cell cannot prove a bytes/s figure over 120 s
+    assert key_reasons(out.result, "caps.WIOPS")[:2] == ("proven", set())
+    status, reasons, _ = key_reasons(out.result, "caps.WBPS")
+    assert status == "unproven" and "short_observation" in reasons
+    cb = out.calibration["calibration"]["cap_basis"]["bps"]
+    assert cb["write"]["status"] == "unproven" and "short_observation" in cb["write"]["reasons"]
+    # reads are untouched by the write rule: the read BPS cap follows the read cache state only
+    assert "short_observation" not in key_reasons(out.result, "caps.RBPS")[1]
+    assert "short_observation" not in cb["read"]["reasons"]
+    # the model's write keys inherit it
+    assert out.result["proposals"]["iocost_model"]["wbps"]["status"] == "unproven"
+
+
+# -- B r2: the 120 s margin ----------------------------------------------------------------------------------------------------------
+def test_rev_c_margin_a_run_exactly_as_long_as_the_rule_can_never_prove_the_fresh_half():
+    from iobench import cache, ladder
+    from iobench.series import reduce_series
+    stamped = [(1.0 * i - 0.03, 21600.0) for i in range(1, 121)]  # fio's last sample of a 120 s run lands at 119.97 s
+    assert stamped[-1][0] == pytest.approx(119.97)
+    short = cache.write_time_proof(reduce_series(stamped), 4096)
+    assert not short.proven and short.reason == "short_observation" and short.observation_s < 120
+    longer = [(1.0 * i - 0.03, 21600.0) for i in range(1, 151)]
+    assert cache.write_time_proof(reduce_series(longer), 4096).proven
+    assert ladder.FRESH_OBS_S == 150 and ladder.observation_plan("standard")["fresh"] == 150 == ladder.observation_plan("thorough")["fresh"]
+    # no tolerance was added to the rule: 119.97 s is still short
+    assert cache.PROOF_MIN_AFTER_S == 120
+
+
+# -- B S13: a rung that fails Little's law is dropped before every consumer ------------------------------------------------------------
+def test_rev_c_s13_a_faked_rung_feeds_no_cliff_no_cached_ref_no_best_rung_and_no_caps():
+    from test_sta import key_reasons, seeded
+
+    def go(fake):
+        host = seeded()
+        real = host.spawn
+
+        def sp(argv):
+            if fake and any(a.startswith("--name=") and a.endswith("-rung-r32-1024") for a in argv):
+                host.scenario.little_factor = 2.0
+            try:
+                return real(argv)
+            finally:
+                host.scenario.little_factor = 1.0
+
+        host.spawn = sp
+        return calibrate(host)
+
+    base, faked = go(False), go(True)
+    bl, fl = base.calibration["calibration"]["ladder"], faked.calibration["calibration"]["ladder"]
+    assert bl["excluded_rungs"] == [] and bl["best_read_rung_iops"] == pytest.approx(73228, rel=0.01)  # the 1 GiB rung was the fastest
+    assert fl["excluded_rungs"] == [{"dir": "read", "ws_bytes": 1 << 30, "check": "IOB-PLA-06"}]
+    assert all(r["ws_bytes"] != 1 << 30 for r in fl["rungs"] if r["dir"] == "read")
+    assert fl["best_read_rung_iops"] < 0.5 * bl["best_read_rung_iops"]  # not the faked figure
+    assert fl["cached_ref_iops"] != bl["cached_ref_iops"]  # computed without the dropped rung
+    assert key_reasons(faked.result, "caps.RIOPS")[2] == "stage_failed"  # the PLA-06 effect on the caps stays
+    # QoS max does not use the faked rung either
+    qos = faked.result["proposals"]["iocost_qos"]["max"]
+    assert qos["status"] == "absent" or qos["inputs"]["best_read_rung"] == fl["best_read_rung_iops"]
+    # a faked depth rung voids QD90 for its direction
+    host = seeded()
+    real = host.spawn
+
+    def sp(argv):
+        if any(a.startswith("--name=") and a.endswith("-d") and "-rung-r8-" in a for a in argv):
+            host.scenario.little_factor = 2.0
+        try:
+            return real(argv)
+        finally:
+            host.scenario.little_factor = 1.0
+
+    host.spawn = sp
+    assert calibrate(host).calibration["calibration"]["ladder"]["qd90"]["read"] is None
+
+
+# -- B r2: a fresh penalty excluded by design is not silent ------------------------------------------------------------------------------
+def test_rev_c_fresh_excluded_on_a_file_target_without_discard_carries_a_reason():
+    from test_tgt import file_host
+    for discard in (False, True):
+        host = file_host(discard=discard)
+        host.scenario.write.fresh_penalty = 8.0
+        out = calibrate(host, target="/bench/target.img", work_dir="/bench/w")
+        wb = out.calibration["calibration"]["cap_basis"]["write"]
+        assert out.calibration["calibration"]["fresh_vs_rewrite"]["measured"]
+        assert ("fresh_not_measured" in wb.get("reasons", [])) is (not discard), (discard, wb)

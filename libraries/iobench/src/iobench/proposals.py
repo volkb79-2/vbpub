@@ -15,7 +15,7 @@ UNPROVEN_REASONS = (
     "ceiling_moved", "budget_limited", "short_observation", "quick_profile", "worst_from_single_run", "metering_undetermined",
     "operator_override", "shape_fit_poor", "noise_floor_high", "drain_below_ladder", "formula_only", "target_missed",
     "cross_disk", "identity_weak", "cache_not_excluded", "fresh_not_measured")
-ABSENT_REASONS = ("stage_skipped", "stage_failed", "basis_unsteady", "basis_missing", "bps_basis_missing", "no_calibration")
+ABSENT_REASONS = ("stage_skipped", "stage_failed", "basis_unsteady", "basis_missing", "bps_basis_missing", "no_calibration", "missing_from_document")
 CACHE_STATES = ("cold_measured", "rate_cap", "no_cache_observed", "cold_hit_like", "undetermined")
 METERING = ("byte", "iops", "mixed", "undetermined")
 FITS = ("good", "poor", "insufficient", "plateau")
@@ -23,6 +23,15 @@ LIMIT_FIXED = ("quick-profile", "limited-by-budget", "short-observation", "singl
 LIMIT_PATTERNS = (re.compile(r"^stage_skipped:S[0-9]$"), re.compile(r"^bucket_exclusion_s<=[0-9]+$"))
 BASES = ("measured", "confirmed-by-sweep", "ratio-inferred", "formula-only", "single-run")
 SECTIONS = ("writeback", "caps", "iocost_model", "iocost_qos")
+# The schema, not the file, decides what `check` must find (IOB-CHK-03 guaranteed keys): result.json carries all four sections, calibration.json
+# the three a calibration produces.  Every listed leaf must exist; one that does not is `absent: missing_from_document`, never "nothing wrong".
+CALIBRATION_SECTIONS = ("caps", "iocost_model", "iocost_qos")
+REQUIRED_LEAVES = {
+    "writeback": ("dirty_bytes", "dirty_background_bytes", "nr_requests", "max_sectors_kb"),
+    "caps": ("RIOPS", "WIOPS", "RBPS", "WBPS"),
+    "iocost_model": ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops"),
+    "iocost_qos": ("min", "max", "wpct", "rpct", "wlat", "rlat"),
+}
 WARNINGS = ("scheduler_changed", "ram_changed", "kernel_changed", "root_source_changed", "workdir_fs_changed",
             "older_than_180_days", "recalibrate_recommended", "last_run_aborted")
 DEFAULT_TARGETS = {"W_s": 2.0, "P_ms": 250, "F_read_ratio": 0.25, "U_dev_share": 0.70}
@@ -79,6 +88,18 @@ def iter_values(group: Mapping[str, Any]) -> Iterable[tuple[str, dict[str, Any]]
 
 
 STATUSES = ("proven", "unproven", "absent")
+
+
+def section_report(name: str, group: Any, *, identity_weak: bool = False) -> dict[str, Any]:
+    """The summary of one REQUIRED section: the values it has, plus an `absent: missing_from_document` for every required leaf it lacks."""
+    if group is None:
+        group = {}  # a required section the file does not carry
+    if not isinstance(group, Mapping):
+        raise TypeError(f"section {name} is not an object")
+    out = section_summary(group, identity_weak=identity_weak)
+    have = {key for key, _ in iter_values(group)}
+    out["absent"] += [{"key": leaf, "reason": "missing_from_document"} for leaf in REQUIRED_LEAVES[name] if leaf not in have]
+    return out
 
 
 def section_summary(group: Mapping[str, Any], *, identity_weak: bool = False) -> dict[str, Any]:

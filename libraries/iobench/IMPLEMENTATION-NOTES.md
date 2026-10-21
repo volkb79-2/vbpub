@@ -97,7 +97,7 @@ Reviews: `review-IOB-03-P3-A.md` (safety), `review-IOB-03-P3-B.md` (estimators).
 | B-B6 read model keys | scaled by `cache_ratio` (derive.r6_keys requires it), unproven otherwise; unsteady cells leave fit/metering | `test_rev_b_b6_*` |
 | B-B7 PLA-07/09/17/18 | `Calibrator.bytes_checks` in `assemble`; PLA-06/-13 run-level tests | `test_rev_b_b7_*` |
 | B-S1/S2 QoS inheritance | `max` inherits budget/moved, `wlat/rlat` inherit the ceiling reasons, unsteady rungs ignored | `test_rev_b_s1_*`, `_s2_*` |
-| B-S3 stale S6 reference | `r3s` reference before S6 (reference 150 -> 180 s: standard 3310, thorough 4150) | `test_rev_b_s3_*`, `test_slo_05_*` |
+| B-S3 stale S6 reference | `r3s` reference before S6 (reference 150 -> 180 s: standard 3340, thorough 4180 after the 150 s fresh observation) | `test_rev_b_s3_*`, `test_slo_05_*` |
 | B-S4..S7 | unsteady depth voids QD90; E2 optional stage and `HistError` is a `SeriesError`; worst write window; no TypeError | `test_rev_b_s4_*` .. `_s7_*` |
 | B-S8 | rejected knob = skipped cell; per-cell budget in S4/S6/S7/knob plan; budget starts at the run start; matrix inherits `short_observation` | `test_rev_b_s8_*` |
 | B-S9/S10 | dry-run rate bound to target and currency; foreign `ceilings.jsonl` rotated aside before the run | `test_rev_b_s9_*`, `_s10_*` |

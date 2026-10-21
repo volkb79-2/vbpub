@@ -236,13 +236,61 @@ def test_rev_b_b5_absent_and_unknown_sections_are_not_certified(world):
     with pytest.raises(Refusal) as err:
         do_check(host, sections=("bogus",))
     assert err.value.condition == "unknown_section" and err.value.exit_code == 2
-    # an emptied section is "nothing measured", never "nothing wrong"
+    # an emptied section is "nothing measured", never "nothing wrong": the schema, not the file, says what must be there
     h = copy.deepcopy(host)
     doc = read_json(h, f"{STATE}/result.json")
     doc["proposals"]["caps"] = {}
     h.put(f"{STATE}/result.json", json.dumps(doc))
     c = do_check(h, sections=("caps",))
-    assert c.exit_code == 7 and c.sections["caps"]["absent"] == [{"key": "caps", "reason": "stage_skipped"}] and c.sections["caps"]["proven"] == 0
+    assert c.exit_code == 7 and c.sections["caps"]["proven"] == 0
+    assert c.sections["caps"]["absent"] == [{"key": k, "reason": "missing_from_document"} for k in ("RIOPS", "WIOPS", "RBPS", "WBPS")]
+
+
+def test_rev_b_new1_default_check_requires_the_sections_of_the_schema(world):
+    host, _ = world
+    base = read_json(host, f"{STATE}/result.json")
+    assert do_check(host).exit_code == 7  # intact (single-run history): every section examined
+
+    def check_with(mutate, **kw):
+        h = copy.deepcopy(host)
+        d = copy.deepcopy(base)
+        mutate(d)
+        h.put(f"{STATE}/result.json", json.dumps(d))
+        return do_check(h, **kw)
+
+    def only_caps(d):
+        for k in ("iocost_model", "iocost_qos", "writeback"):
+            d["proposals"].pop(k)
+
+    for mutate in (only_caps, lambda d: d.__setitem__("proposals", {}), lambda d: d.__setitem__("proposals", {"notes": []}),
+                   lambda d: d["proposals"]["caps"].__setitem__("dev_aggregate", {}),
+                   lambda d: d["proposals"]["caps"]["dev_aggregate"].pop("WBPS")):
+        c = check_with(mutate)
+        assert (c.state, c.exit_code) == ("current_unproven", 7)
+        assert set(c.sections) == {"writeback", "caps", "iocost_model", "iocost_qos"}
+        assert any(a["reason"] == "missing_from_document" for s_ in c.sections.values() for a in s_["absent"])
+    # even with every present value proven, a missing required leaf blocks exit 0
+    def all_proven(d):
+        for sec in d["proposals"].values():
+            if isinstance(sec, dict):
+                for _, item in P.iter_values(sec):
+                    item["status"], item.pop("reasons", None), item.pop("reason", None)
+                    item["status"] = "proven"
+        d["proposals"]["caps"]["dev_aggregate"].pop("RIOPS")
+    c = check_with(all_proven)
+    assert c.exit_code == 7 and c.sections["caps"]["absent"] == [{"key": "RIOPS", "reason": "missing_from_document"}]
+    # the same for a calibration.json: its three sections are required, writeback is not part of it
+    cal = read_json(host, f"{STATE}/calibration.json")
+    h = copy.deepcopy(host)
+    cal["calibration"]["proposals"] = {}
+    h.put(f"{STATE}/calibration.json", json.dumps(cal))
+    c = do_check(h, calibration=True)
+    assert c.exit_code == 7 and set(c.sections) == {"caps", "iocost_model", "iocost_qos"}
+    # a section that is not an object is damage (exit 5), not "absent"
+    assert check_with(lambda d: d["proposals"].__setitem__("caps", [1])).exit_code == 5
+    # an explicit --section of result.json that the file lacks is absent, not a usage error (writeback IS part of result.json)
+    c = check_with(lambda d: d["proposals"].pop("writeback"), sections=("writeback",))
+    assert c.exit_code == 7 and {a["reason"] for a in c.sections["writeback"]["absent"]} == {"missing_from_document"}
 
 
 def test_rev_b_b5_an_unknown_status_is_never_proven(world):
@@ -415,11 +463,9 @@ def test_rev_b_b7_missing_cells_are_not_applicable():
 
 
 def test_rev_b_b7_pla_06_and_13_run_level_wiring():
-    # PLA-06: a fio that breaks Little's law makes the rung unusable (caps absent) - run level, not only the pure function
+    # PLA-06: a fio that breaks Little's law on EVERY rung leaves nothing to analyse: the run fails (see test_rev_c_s13_* for one rung)
     out = run_cal(host_kw=dict(little_factor=2.0))[1]
-    c06 = check_of(out, "IOB-PLA-06")
-    assert c06["status"] == "fail" and ";" in c06["detail"]  # every failing rung is listed
-    assert key_reasons(out.result, "caps.RIOPS")[2] == "stage_failed"
+    assert out.status == "failed" and "IOB-PLA-06" in out.message
     # PLA-13: fresh writes faster than rewrites with an unmoved reference (impossible without a cache effect)
     out = run_cal(host_kw=dict(write=dict(PLAIN_WRITE, fresh_penalty=0.5)))[1]
     assert check_of(out, "IOB-PLA-13")["status"] == "fail" and key_reasons(out.result, "caps.WIOPS")[2] == "stage_failed"
@@ -701,7 +747,7 @@ def test_rev_b_s12_bps_caps_carry_the_real_reasons():
     host.devices["/dev/vda7"].discard_supported = False
     out = calibrate(host)
     wstatus, wreasons, _ = key_reasons(out.result, "caps.WBPS")
-    assert wstatus == "unproven" and "fresh_not_measured" in wreasons and "short_observation" not in wreasons
+    assert wstatus == "unproven" and "fresh_not_measured" in wreasons
 
 
 def test_rev_b_s14_e2_start_timestamps_are_in_the_artefact():

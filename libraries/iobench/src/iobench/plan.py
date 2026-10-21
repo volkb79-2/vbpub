@@ -113,7 +113,7 @@ def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: 
     stages.append(Stage("ladder", n_rungs * 2 * RUNG_RUNTIME, True))
     if not quick:
         stages += [Stage("ladder-qd", 120 + (60 if thorough else 0), False, "largest rung QD1/QD8" + (" + QD64" if thorough else "")),
-                   Stage("E2", 120), Stage("fresh-vs-rewrite", 90), Stage("fresh-observation", 120),
+                   Stage("E2", 120), Stage("fresh-vs-rewrite", 90), Stage("fresh-observation", 150),
                    Stage("rearm", 100)]
     stages.append(Stage("reference", 60 if quick else 180))
     if not quick:

@@ -70,6 +70,7 @@ class Calibrator(Runner):
         super().__init__(host, cfg, command="calibrate")
         self.profile, self.quick = cfg.profile, cfg.profile == "quick"
         self.touch = TouchMap()
+        self.excluded_rungs: list[dict[str, Any]] = []
         self.reads: list[dict[str, Any]] = []
         self.writes: list[dict[str, Any]] = []
         self.depth: dict[str, dict[int, float]] = {"read": {}, "write": {}}
@@ -237,9 +238,19 @@ class Calibrator(Runner):
         if rec["state"] == "unsteady" and qd == 32 and self.fits(EXTEND_S + 60):
             out = self.run_job(label + "-ext", rw, 4096, qd, EXTEND_S, 0, ws, key="ladder")
             rec = {**ladder.rung_record(out, ws), "extended": True}
-        self.little.append(plausibility.pla_06(out.stats.iops, out.stats.clat_mean_us, qd))
+        check = plausibility.pla_06(out.stats.iops, out.stats.clat_mean_us, qd)
+        self.little.append(check)
+        if check.status == "fail":
+            rec["little_failed"] = True  # a broken or faked fio: the rung is unusable and is dropped before ANY consumer sees it
         self.last_started = out.started
         return rec
+
+    def usable(self, rec: dict[str, Any]) -> bool:
+        """A rung that failed Little's law (IOB-PLA-06) never reaches the ladder, the cliff, ``cached_ref``, ``best_read_rung`` or E1."""
+        if rec.get("little_failed"):
+            self.excluded_rungs.append({"dir": rec["dir"], "ws_bytes": rec["ws_bytes"], "check": "IOB-PLA-06"})
+            return False
+        return True
 
     def hit_ref(self) -> None:
         out = self.run_job("hitref", "randread", 4096, 1, HIST_S, 0, min(GIB, self.ws), key="ladder", hist=True, log_avg_ms=1000)
@@ -259,7 +270,7 @@ class Calibrator(Runner):
             for qd in (1, 8) + ((64,) if self.profile == "thorough" else ()):
                 rec = self.rung(ws, direction, qd, RUNG_S, "-d")
                 self.depth[direction][qd] = rec["steady_iops"]
-                if rec["state"] == "unsteady":
+                if rec["state"] == "unsteady" or rec.get("little_failed"):
                     self.depth_unsteady.add(direction)
                 if qd == 1:
                     self.qd1_p99[direction] = rec["lat_us"]["p99"]
@@ -279,25 +290,28 @@ class Calibrator(Runner):
             if not self.fits(2 * RUNG_S + 30):
                 raise RunFailed("the budget allowed fewer than three ladder rungs")
             rec = self.rung(ws, "read", 32)
-            self.reads.append(rec)
+            if self.usable(rec):
+                self.reads.append(rec)
             if ws == largest:
                 self.depth["read"][32] = rec["steady_iops"]
-                if rec["state"] == "unsteady":
+                if rec["state"] == "unsteady" or rec.get("little_failed"):
                     self.depth_unsteady.add("read")
                 if not self.quick:
                     # E2 is an optional estimator (CCH-03): a missing or unusable histogram is recorded, never a failed calibration
                     started = self.last_started
                     self.stage("E2", lambda: self.e2(ws, started), min_s=HIST_S)
                     self.stage("ladder-qd", lambda: self.depth_runs(ws), min_s=4 * RUNG_S)
-            self.writes.append(self.rung(ws, "write", 32))
-            if len(self.writes) == 1 and not self.quick:
+            wrec = self.rung(ws, "write", 32)
+            if self.usable(wrec):
+                self.writes.append(wrec)
+            if len(self.writes) == 1 and not self.quick and not wrec.get("little_failed"):
                 # the smallest rung has been read AND written: a QD1 run on it is the cache-HIT reference (hit_ref_us)
                 self.stage("hit_ref", self.hit_ref, min_s=HIST_S)
             if ws == largest:
-                self.depth["write"][32] = self.writes[-1]["steady_iops"]
-                if self.writes[-1]["state"] == "unsteady":
+                self.depth["write"][32] = wrec["steady_iops"]
+                if wrec["state"] == "unsteady" or wrec.get("little_failed"):
                     self.depth_unsteady.add("write")
-            if not densified and len(self.reads) > MIN_RUNGS:
+            if not densified and len(self.reads) > MIN_RUNGS and not rec.get("little_failed"):
                 ref = statistics.median(r["steady_iops"] for r in self.reads[:MIN_RUNGS])
                 if rec["steady_iops"] < ladder.CLIFF_RATIO * ref:
                     densified = True
@@ -403,6 +417,8 @@ class Calibrator(Runner):
 
     # -- analysis ----------------------------------------------------------------------------------------
     def analyze(self) -> None:
+        if not self.reads or not self.writes:
+            raise RunFailed("no usable ladder rung: every rung of one direction failed IOB-PLA-06 (Little's law) or was not run")
         cliff, cached_ref, classes = ladder.classify_rungs(self.reads)
         writes = sorted(self.writes, key=lambda r: r["ws_bytes"])
         for w in writes:
@@ -477,7 +493,8 @@ class Calibrator(Runner):
                 iops = min(iops, *bounds)
                 if not all(p.proven for p in self.proof.values()):
                     reasons.append("short_observation")
-            if not self.quick and self.fvr is None:
+            if not self.quick and not fresh_counts:
+                # unmeasured, or measured but excluded by design (a file target on a mount without `discard`, IOB-TGT-08): never silent
                 reasons.append(self.fresh_gap_reason())
             write = _basis(iops, reasons)
             write["inputs"] = inputs
@@ -543,7 +560,9 @@ class Calibrator(Runner):
         if self.a["state"].status == "proven":
             ratio = self.a["state"].r / self.a["largest"]["steady_iops"]
         # the reasons are the real ones of the basis the figure rests on (quick profile, undetermined cache, budget, time proof ...)
-        write_reasons = tuple(self.bases["write"].get("reasons", ())) or (() if self.write_proven else ("short_observation",))
+        # A cap's proof must come from the same kind of series as the cap: the write time proof covers the 4 KiB random IOPS series, and
+        # the sequential 1 MiB series is observed for only 30 s (< the 120 s rule), so a WRITE bytes/s figure is never proven (review B-S12).
+        write_reasons = tuple(dict.fromkeys((*self.bases["write"].get("reasons", ()), "short_observation")))
         out = {}
         for direction in ("read", "write"):
             b = ladder.bps_basis(direction, cell(direction), cache_ratio=ratio, read_reasons=tuple(self.a["state"].reasons),
@@ -598,7 +617,7 @@ class Calibrator(Runner):
             "touch_map": self.touch.as_dict(), "extent_written": self.read_extent.as_list(),
             "fresh_extent": list(self.fresh) if self.fresh_ok else None, "fill_bps": self.fill_info["fill_bps"], "R_est_bps": self.r_est,
             "fill": self.fill_info,
-            "ladder": {"rungs": a["classes"] + a["writes"], "cliff_bytes": a["cliff"], "cached_ref_iops": a["cached_ref"],
+            "ladder": {"excluded_rungs": self.excluded_rungs, "rungs": a["classes"] + a["writes"], "cliff_bytes": a["cliff"], "cached_ref_iops": a["cached_ref"],
                        "qd90": self.qd90_doc(), "idle_qd1_p99_us": dict(self.qd1_p99), "cached_tier_factor": ladder.cached_tier_factor(a["classes"]),
                        "best_read_rung_iops": a["best"], "measured_largest": {"read": a["largest"]["steady_iops"], "write": a["writes"][-1]["steady_iops"]}},
             "cache": {"read": {**state.as_dict(), "e_cold": a["cold"].as_dict() if a["cold"] else None,

@@ -27,7 +27,7 @@ def test_sta_01_every_value_carries_its_own_status():
 
 
 def test_sta_02_closed_vocabularies():
-    assert len(P.UNPROVEN_REASONS) == 20 and len(P.ABSENT_REASONS) == 6
+    assert len(P.UNPROVEN_REASONS) == 20 and len(P.ABSENT_REASONS) == 7
     with pytest.raises(ValueError):
         P.value(1, "R1", {}, "measured", reasons=["because"])
     with pytest.raises(ValueError):

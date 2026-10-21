@@ -183,7 +183,7 @@ def test_chk_01_exit_codes(world):
     cal = read_json(swapped, f"{STATE}/calibration.json")
     cal["calibration"]["id"] = "cal-other"
     swapped.put(f"{STATE}/calibration.json", json.dumps(cal))
-    assert do_check(swapped).reasons == ["calibration_missing"]
+    assert do_check(swapped).reasons == ["calibration_superseded"]  # a valid calibration exists, but not the one this result used
     # aborted_only (6): the newest record is aborted/failed and no good record exists
     a = make_host(cache=INVERSION)
     a.put(f"{STATE}/result.last-failed.json", json.dumps({"schema": 1, "schema_minor": 0, "run": {"status": "aborted", "started": "2026-10-21T03:00:00Z"}}))

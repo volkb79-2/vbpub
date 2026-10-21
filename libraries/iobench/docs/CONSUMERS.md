@@ -61,7 +61,7 @@ iobench show --proposals --json
 ```
 
 Exit codes of `check`: `0` every requested proposal is `proven`; `3` stale (disk identity differs); `4` no result; `5` unreadable (`reasons`: `corrupt`, `schema_unsupported`,
-`unreadable`, `calibration_missing`, `damaged_proposals`); `6` only an aborted or failed record exists; `7` identity current but at least one requested proposal is `unproven` or `absent`.
+`unreadable`, `calibration_missing`, `calibration_superseded`, `damaged_proposals`); `6` only an aborted or failed record exists; `7` identity current but at least one requested proposal is `unproven` or `absent`.
 Also from `iobench`: `1` runtime failure, `2` refusal or usage, `8` run aborted (restored), `9` restore or `io.max` verification failure.
 
 ```json
@@ -125,7 +125,7 @@ nothing; host-setup renders and verifies the persistent files.
 
 ### 5.2 Absent reasons
 
-`stage_skipped`, `stage_failed`, `basis_unsteady`, `basis_missing`, `bps_basis_missing`, `no_calibration`.
+`stage_skipped`, `stage_failed`, `basis_unsteady`, `basis_missing`, `bps_basis_missing`, `no_calibration`, `missing_from_document` (`check` only: the schema requires this section or key and the file lacks it).
 
 ### 5.3 Cache state, metering, fit, limits
 

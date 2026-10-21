@@ -117,11 +117,16 @@ def rearm_verdict(before_iops: float, after_iops: float, reference_moved: bool) 
     return {"rearm_ratio": ratio, "verdict": verdict}
 
 
+# The fresh observation must outlast the 120 s proof rule (CCH-07) by a fixed margin: fio stamps the last sample of a 120 s run at 119.9x s,
+# so a run exactly as long as the rule could never reach `proven` on real hardware.  No tolerance is added to the rule instead.
+FRESH_OBS_S = 150
+
+
 def observation_plan(profile: str) -> dict[str, int]:
     """IOB-CAL-05: seconds of the write, read and fresh observation runs."""
     if profile == "thorough":
-        return {"write": 900, "read": 240, "fresh": 120}
-    return {"write": 240, "read": 120, "fresh": 120}
+        return {"write": 900, "read": 240, "fresh": FRESH_OBS_S}
+    return {"write": 240, "read": 120, "fresh": FRESH_OBS_S}
 
 
 def observation_limit(observation_s: float) -> str:
