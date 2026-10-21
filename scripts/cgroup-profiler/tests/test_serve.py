@@ -1021,6 +1021,7 @@ def test_cli_serve_gates_slice_flag_reaches_session_server(monkeypatch):
             return None
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
+    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda root: True)  # Sol B4
     monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
@@ -1040,6 +1041,7 @@ def test_cli_serve_gates_slice_defaults_to_dev_gates(monkeypatch):
             return None
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
+    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda root: True)  # Sol B4
     monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)

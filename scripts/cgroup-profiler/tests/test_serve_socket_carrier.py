@@ -1043,6 +1043,9 @@ class TestServeCliAllowUids:
     @pytest.fixture(autouse=True)
     def _daemon_pid_namespace_mode(self, monkeypatch):
         monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
+        # Sol B4: `serve` refuses an unbounded cgprofile.slice; these tests
+        # are about the allowlist, so the slice is provably bounded here.
+        monkeypatch.setattr(serve, "daemon_slice_bounded", lambda _root: True)
 
     def _serve_argv(self, tmp_path):
         return ["serve", "--sessions", str(tmp_path / "sessions"),
