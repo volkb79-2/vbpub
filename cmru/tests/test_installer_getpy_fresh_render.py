@@ -39,17 +39,15 @@ def staleness(rendered: str, committed: Path) -> str | None:
 
 
 def render_project(name: str, out_dir: Path, monkeypatch) -> str:
-    monkeypatch.chdir(REPO)
-    assert cmru_main(["get-py", name, "--output-dir", str(out_dir)]) in (0, None)
-    return (out_dir / f"{name}-get.py").read_text(encoding="utf-8")
-
-
-@needs_checkout
-def test_the_renderer_is_this_checkouts_own_cmru():
+    # Every comparison carries this: a render by an installed wheel's template would make the
+    # byte-equality below pass or fail for the wrong reason.
     assert Path(cmru.__file__).resolve().is_relative_to((REPO / "cmru" / "src").resolve()), (
         f"cmru imported from {cmru.__file__}, not the checkout's cmru/src: the render would "
         "use another template"
     )
+    monkeypatch.chdir(REPO)
+    assert cmru_main(["get-py", name, "--output-dir", str(out_dir)]) in (0, None)
+    return (out_dir / f"{name}-get.py").read_text(encoding="utf-8")
 
 
 @needs_checkout
