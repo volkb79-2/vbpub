@@ -2087,17 +2087,29 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     truncate the stream, which Assay uses for resume history.
   - **`R-40h` Calibrated no-daemon fallback (RG-55/P5).** When the daemon or
     its watch transport is unavailable, an assay lane's in-process fallback
-    may apply an automatic idle bound only after it has read the judge's
-    `plan` event. The bound is `max(300s, 3 ×
+    applies an automatic idle bound from the progress stream of the latest
+    `run` segment (`R-40g`). Assay emits the R2 `plan` only AFTER its baseline
+    command, so before the plan the baseline's `command_started` /
+    `command_running` heartbeat (B064) arms a `300s` minimum bound that every
+    heartbeat resets, and after `command_finished` the same `300s` minimum
+    stays armed until the `plan` arrives (or `verdict_written` ends an R0/R1
+    stream, which never has one). After the `plan` the bound is `max(300s, 3 ×
     expect_next_event_within_s)`; the plan arms it even before candidate 0, so
-    a wedged collection phase is bounded, while a file with no plan and no
-    candidate events remains the `R-40b` disclosure-only case. During this
-    automatic bound, host memory PSI `full avg10 > 5` pauses the idle clock;
-    the measured high-load interval is not converted into a false stall. An
-    explicit `stall_timeout` remains the author's policy and retains its
-    existing semantics. This fallback is advisory to profiling only: it never
+    a wedged collection phase is bounded. A file holding only the `run` header
+    and no heartbeat, plan or candidate event remains the `R-40b`
+    disclosure-only case. During this automatic bound, host memory PSI `full
+    avg10 > 5` pauses the idle clock; the measured high-load interval is not
+    converted into a false stall. An explicit `stall_timeout` remains the
+    author's policy and retains its existing semantics. The watch is liveness,
+    not measurement: it is armed for an assay lane even when profiling is
+    disabled. In bare-host rusage mode run-gate polls the exact child with
+    `wait4(WNOHANG)` while the watch is active and reaps it with `wait4`, so
+    the final accounting still belongs to that child. A watch that raises, or
+    a daemon watch that cannot be re-attached, is disclosed and degrades to
+    ordinary waiting; it never changes the lane's exit. This fallback never
     changes a lane verdict except through the lane's already-declared stall
-    path.
+    path, which is an infrastructure outcome, never a mutant kill/survive
+    classification.
 - `R-41` **Exec-mode internal mutual exclusion (RG-39).** An exec-mode lane
   no longer depends on every CALLER wrapping its own `flock` around the
   `docker exec` (dstdns `GUIDE.md` §1) to keep two lanes racing the SAME

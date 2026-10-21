@@ -685,6 +685,44 @@ artificially fast rate.
 See [SPEC.md §5](../SPEC.md#5-execution-contract) for the normative reader
 behavior.
 
+## Liveness is evidence, not a verdict
+
+An R2 mutation run has a baseline phase before Assay emits its calibrated
+`plan` event. A fallback that starts watching only at `plan` leaves that
+baseline unbounded; a fallback that treated a bare `run` header as activity
+would instead time out valid R0/R1 runs that have no candidate stream. The
+fallback therefore follows the events of the newest `run` segment in order:
+
+```text
+run header
+  └─ command_started / command_running  → 300 s minimum idle bound
+       └─ command_finished              → keep that bound while awaiting plan
+            └─ plan                     → max(300 s, 3 × advertised cadence)
+                 └─ candidate events    → each one resets the idle clock
+verdict_written (R0/R1: no plan ever)   → nothing left to wait for
+```
+
+The heartbeat is a pure time-based tick Assay writes while its own command
+runs (B064), so a silent baseline is genuinely silent. `verdict_written`
+ends the post-command bound because an R0/R1 stream has no plan to wait for;
+without that rule the 300 s bound would outlive a finished lane. The previous
+`run` segments are fenced off (see above), and during an automatic bound host
+memory PSI `full avg10 > 5` pauses the clock: pressure-affected time is not
+silence.
+
+Liveness is not measurement, so disabling profiling does not disable the
+assay lane's watch. A daemon watch is preferred; a missing or failed one falls
+back to this stream. On a bare-host lane the fallback polls the exact child
+with `wait4(WNOHANG)` at the progress cadence and later reaps the same child
+with `wait4`, so the child's rusage survives. A watch that raises or a daemon
+watch that cannot be re-attached is disclosed and degrades to ordinary
+waiting; a broken diagnostic stream is not evidence about the child.
+
+Most importantly, an idle-bound expiry is only an infrastructure interruption
+of an incomplete run. It is never a mutant kill/survive classification or a
+product PASS/FAIL. Resume the same judged tree and keep Assay's candidate
+records; elapsed wall time and host scheduling are not correctness oracles.
+
 ## Assay resume state needs an environment-owned mount
 
 Assay keeps verdict and progress beside the judged project for this run, but

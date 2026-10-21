@@ -11031,6 +11031,12 @@ class ProgressWatch:
         self._token: tuple | None = None
         self._cadence_hint: float | None = None
         self._plan_seen = False
+        # RG-55 baseline liveness: Assay emits the R2 `plan` only AFTER its
+        # baseline command finishes, so before the plan the only live signal
+        # is the command_started/command_running heartbeat (B064), and after
+        # command_finished the plan transition is the only remaining gap.
+        self._command_active = False
+        self._baseline_finished = False
         self._last_signal_kind: str | None = None
         self._paused_total = 0.0
         self._pause_started: float | None = None
@@ -11071,6 +11077,8 @@ class ProgressWatch:
         pending_total = None
         pending_total_seen = False
         plan_seen = False
+        command_active = False
+        baseline_finished = False
         for line_number, line in enumerate(text.splitlines()):
             try:
                 event = json.loads(line)
@@ -11086,6 +11094,8 @@ class ProgressWatch:
                 pending_total = None
                 pending_total_seen = False
                 plan_seen = False
+                command_active = False
+                baseline_finished = False
                 self._cadence_hint = None
                 continue
             if isinstance(event, dict) and event.get("event") == "candidates":
@@ -11101,14 +11111,29 @@ class ProgressWatch:
                 newest = event
                 if event["candidate_index"] >= 0:
                     completed += 1
+            kind = event.get("event") if isinstance(event, dict) else None
+            if kind in ("command_started", "command_running"):
+                command_active = True
+                baseline_finished = False
+            elif kind == "command_finished":
+                command_active = False
+                baseline_finished = True
+            elif kind == "verdict_written":
+                # An R0/R1 lane (or a finished R2) has no plan to wait for.
+                command_active = False
+                baseline_finished = False
             if isinstance(event, dict) and event.get("event") == "plan":
                 plan_seen = True
+                command_active = False
+                baseline_finished = False
                 hint = event.get("expect_next_event_within_s")
                 if isinstance(hint, (int, float)) \
                         and not isinstance(hint, bool) \
                         and math.isfinite(hint) and hint > 0:
                     self._cadence_hint = float(hint)
         self._plan_seen = plan_seen
+        self._command_active = command_active
+        self._baseline_finished = baseline_finished
         return (newest, mtime, run_boundary, completed, pending_total,
                 pending_total_seen)
 
@@ -11206,6 +11231,11 @@ class ProgressWatch:
     def _last_event_phrase(self) -> str:
         if self._last_signal_kind == "plan" and self._last_seen is None:
             return "the plan event"
+        if self._last_signal_kind == "command" and self._last_seen is None:
+            return "baseline command progress"
+        if self._last_signal_kind == "baseline-finished" \
+                and self._last_seen is None:
+            return "baseline completion; waiting for plan"
         index, total = self._last_seen        # only called after one was seen
         return (f"candidate {index}"
                 + (f"/{total}" if isinstance(total, int)
@@ -11246,12 +11276,16 @@ class ProgressWatch:
                 self._pause_started = None
         self._update_pressure_pause(now)
         if newest is None:
-            if self.auto_bound and self._plan_seen and mtime is not None:
-                token = (mtime, "plan", self._cadence_hint)
+            if self.auto_bound and mtime is not None \
+                    and (self._plan_seen or self._command_active
+                         or self._baseline_finished):
+                signal = ("plan" if self._plan_seen else "command"
+                          if self._command_active else "baseline-finished")
+                token = (mtime, signal, self._cadence_hint)
                 if token != self._token:
                     first_observation = self._token is None
                     self._token = token
-                    self._last_signal_kind = "plan"
+                    self._last_signal_kind = signal
                     if first_observation:
                         self._token_at = _seed_from_wall_clock(now, mtime)
                     else:
@@ -11738,15 +11772,18 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
         except Exception as exc:
             profiler["warning"] = profiler.get("warning") or \
                 f"daemon watch could not start: {exc}"
-    if daemon_watch is None and profiler is not None \
-            and profiler.get("mode") != "disabled":
+    if daemon_watch is None and profiler is not None:
+        # Liveness is not measurement: a lane with profiling disabled keeps
+        # its in-process progress watch (the plan-less baseline included).
         if fallback_watch is None:
             fallback_watch = make_progress_watch(
                 lane, lane_name, project_dir, recorded=recorded,
                 auto_bound=True)
         if fallback_watch is not None:
             fallback_announced = True
-            print(f"run-gate: in-process watch — daemon unavailable for lane "
+            cause = ("profiling disabled" if profiler.get("mode") == "disabled"
+                     else "daemon unavailable")
+            print(f"run-gate: in-process watch — {cause} for lane "
                   f"{lane_name!r}", flush=True)
     try:
         while True:
@@ -13056,8 +13093,12 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
     # and the record survives for reconciliation (the required client-death
     # behavior).
     daemon_watch = None
-    fallback_watch = (make_progress_watch(
-        lane, lane_name, project_dir, auto_bound=True) if profiling else None)
+    # The progress watcher is liveness, not resource measurement: an assay
+    # lane keeps it when profiling is explicitly disabled (disabling
+    # measurement must not disable the caller's stall protection). A daemon
+    # watch, when available, remains the preferred stream.
+    fallback_watch = make_progress_watch(
+        lane, lane_name, project_dir, auto_bound=True)
     fallback_announced = False
     watch_restarts = 0
     stalled = None
@@ -13070,7 +13111,10 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                 f"daemon watch could not start: {exc}"
     if daemon_watch is None and fallback_watch is not None:
         fallback_announced = True
-        print(f"run-gate: in-process watch — daemon unavailable for lane "
+        cause = ("profiling disabled"
+                 if profiler_state.get("mode") == "disabled"
+                 else "daemon unavailable")
+        print(f"run-gate: in-process watch — {cause} for lane "
               f"{lane_name!r}", flush=True)
     output_tee = None
     stdin_forwarder = None
@@ -13141,8 +13185,19 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                                   f"for lane {lane_name!r} {state}; "
                                   "reattaching once", file=sys.stderr,
                                   flush=True)
-                            daemon_watch = profiler_state["client"].watch(
-                                profiler_state["session"])
+                            try:
+                                daemon_watch = profiler_state["client"].watch(
+                                    profiler_state["session"])
+                            except Exception as exc:
+                                daemon_watch = None
+                                profiler_state["warning"] = \
+                                    profiler_state.get("warning") or \
+                                    f"daemon watch reattach failed: {exc}"
+                                print(f"run-gate: WARNING profiling: daemon "
+                                      f"watch reattach failed for lane "
+                                      f"{lane_name!r}; continuing with "
+                                      "in-process liveness if configured",
+                                      file=sys.stderr, flush=True)
                         else:
                             daemon_watch = None
                             profiler_state["warning"] = \
@@ -13159,7 +13214,15 @@ def run_exec_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path,
                                       "continuing without daemon liveness",
                                       file=sys.stderr, flush=True)
                 if daemon_watch is None and fallback_watch is not None:
-                    stalled = fallback_watch.poll()
+                    try:
+                        stalled = fallback_watch.poll()
+                    except Exception as exc:
+                        # A broken diagnostic stream is not evidence about
+                        # the child: drop this watch, keep waiting.
+                        fallback_watch = None
+                        print(f"run-gate: WARNING liveness: in-process "
+                              f"watch failed unexpectedly: {exc}",
+                              file=sys.stderr, flush=True)
                     if stalled is not None:
                         proc.terminate()
                         try:
@@ -13460,6 +13523,33 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         except Exception as exc:
             profiler_state["warning"] = profiler_state.get("warning") or \
                 f"daemon watch could not start: {exc}"
+    # The progress watcher is liveness, not resource measurement: keep it for
+    # assay lanes even when profiling is disabled; a daemon watch, when
+    # available, remains the preferred stream.
+    fallback_watch = make_progress_watch(
+        lane, lane_name, project_dir, auto_bound=True)
+    fallback_announced = False
+    if daemon_watch is None and fallback_watch is not None:
+        fallback_announced = True
+        cause = ("profiling disabled"
+                 if profiler_state.get("mode") == "disabled"
+                 else "daemon unavailable")
+        print(f"run-gate: in-process watch — {cause} for lane "
+              f"{lane_name!r}", flush=True)
+
+    def poll_fallback_watch() -> str | None:
+        nonlocal fallback_watch
+        if fallback_watch is None:
+            return None
+        try:
+            return fallback_watch.poll()
+        except Exception as exc:
+            # A broken diagnostic stream is not evidence about the child's
+            # behavior. Disable only this watch and continue/reap normally.
+            fallback_watch = None
+            print(f"run-gate: WARNING liveness: in-process watch failed "
+                  f"unexpectedly: {exc}", file=sys.stderr, flush=True)
+            return None
     try:
         if proc is None:
             proc = subprocess.Popen(argv, cwd=str(project_dir), env=run_env,
@@ -13477,6 +13567,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
             if run_record is not None and run_record.get("log_path") else None)
         if profiler_state["mode"] == "rusage":
             kill_deadline = None
+            next_progress_poll = 0.0   # first look is immediate
             while True:
                 try:
                     pid, status, child_ru = os.wait4(proc.pid, os.WNOHANG)
@@ -13497,8 +13588,17 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                     proc.returncode = code
                     break
                 now = time.monotonic()
-                if budget_deadline is not None and now >= budget_deadline:
-                    budget_expired = True
+                if stalled is None and fallback_watch is not None \
+                        and now >= next_progress_poll:
+                    # wait4(WNOHANG) keeps reaping the exact child, so the
+                    # liveness poll never costs the lane's rusage accounting.
+                    next_progress_poll = now + PROGRESS_POLL_SECONDS
+                    stalled = poll_fallback_watch()
+                if stalled is not None \
+                        or (budget_deadline is not None
+                            and now >= budget_deadline):
+                    if stalled is None:
+                        budget_expired = True
                     if kill_deadline is None:
                         kill_deadline = now + LANE_KILL_GRACE_SECONDS
                         try:
@@ -13512,7 +13612,7 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                             pass
                         kill_deadline = float("inf")
                 time.sleep(0.05)
-        elif daemon_watch is not None:
+        elif daemon_watch is not None or fallback_watch is not None:
             while True:
                 try:
                     wait_for = PROGRESS_POLL_SECONDS
@@ -13527,35 +13627,64 @@ def run_bare_host_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                         budget_expired = True
                         code = terminate_process_group(proc)
                         break
+                    if daemon_watch is not None:
+                        stalled = consume_profiler_watch(
+                            daemon_watch, profiler_state, lane_name,
+                            project_dir, worktree, run_record)
+                        if stalled is not None:
+                            code = terminate_process_group(proc)
+                            break
+                        watch_ended = daemon_watch.ended()
+                        if watch_ended or daemon_watch.idle():
+                            daemon_watch.close()
+                            if watch_restarts == 0:
+                                watch_restarts += 1
+                                state = ("ended" if watch_ended else
+                                         "went idle")
+                                print(f"run-gate: WARNING profiling: daemon "
+                                      f"watch for lane {lane_name!r} {state}; "
+                                      "reattaching once", file=sys.stderr,
+                                      flush=True)
+                                try:
+                                    daemon_watch = \
+                                        profiler_state["client"].watch(
+                                            profiler_state["session"])
+                                except Exception as exc:
+                                    daemon_watch = None
+                                    profiler_state["warning"] = \
+                                        profiler_state.get("warning") or \
+                                        f"daemon watch reattach failed: {exc}"
+                                    print(f"run-gate: WARNING profiling: "
+                                          f"daemon watch reattach failed for "
+                                          f"lane {lane_name!r}; continuing "
+                                          "with in-process liveness if "
+                                          "configured", file=sys.stderr,
+                                          flush=True)
+                            else:
+                                daemon_watch = None
+                                profiler_state["warning"] = \
+                                    profiler_state.get("warning") or \
+                                    "daemon watch remained idle after one " \
+                                    "reattach"
+                                if fallback_watch is not None \
+                                        and not fallback_announced:
+                                    fallback_announced = True
+                                    print(f"run-gate: in-process watch — "
+                                          f"daemon unavailable for lane "
+                                          f"{lane_name!r}", flush=True)
+                                print(f"run-gate: WARNING profiling: daemon "
+                                      f"watch for lane {lane_name!r} "
+                                      "unavailable; "
+                                      + ("using in-process liveness fallback"
+                                         if fallback_watch is not None else
+                                         "continuing without daemon "
+                                         "liveness"),
+                                      file=sys.stderr, flush=True)
                     if daemon_watch is None:
-                        continue
-                    stalled = consume_profiler_watch(
-                        daemon_watch, profiler_state, lane_name, project_dir,
-                        worktree, run_record)
-                    if stalled is not None:
-                        code = terminate_process_group(proc)
-                        break
-                    watch_ended = daemon_watch.ended()
-                    if watch_ended or daemon_watch.idle():
-                        daemon_watch.close()
-                        if watch_restarts == 0:
-                            watch_restarts += 1
-                            state = "ended" if watch_ended else "went idle"
-                            print(f"run-gate: WARNING profiling: daemon watch "
-                                  f"for lane {lane_name!r} {state}; "
-                                  "reattaching once", file=sys.stderr,
-                                  flush=True)
-                            daemon_watch = profiler_state["client"].watch(
-                                profiler_state["session"])
-                        else:
-                            daemon_watch = None
-                            profiler_state["warning"] = \
-                                profiler_state.get("warning") or \
-                                "daemon watch remained idle after one reattach"
-                            print(f"run-gate: WARNING profiling: daemon watch "
-                                  f"for lane {lane_name!r} unavailable; "
-                                  "continuing without daemon liveness",
-                                  file=sys.stderr, flush=True)
+                        stalled = poll_fallback_watch()
+                        if stalled is not None:
+                            code = terminate_process_group(proc)
+                            break
         else:
             wait_for = (max(0.0, budget_deadline - time.monotonic())
                         if budget_deadline is not None else None)

@@ -16971,6 +16971,152 @@ class TestProgressWatch:
         assert stalled is not None
         assert "last event seen: the plan event" in stalled
 
+    def test_auto_bound_watches_the_baseline_heartbeat_before_plan(
+            self, tmp_path):
+        # Assay writes the R2 plan only after the baseline command returns.
+        # Until then command_running is the only caller-visible liveness
+        # signal; run-gate must observe that heartbeat rather than treat the
+        # stream as an empty (disclosure-only) one.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-baseline-heartbeat.jsonl"
+        write_progress(path, {"event": "command_started",
+                              "phase": "baseline"})
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        clock.advance(299)
+        assert watch.poll() is None
+        old_mtime = path.stat().st_mtime
+        append_progress(path, {"event": "command_running",
+                               "phase": "baseline"})
+        os.utime(path, (old_mtime + 1, old_mtime + 1))
+        assert watch.poll() is None
+        clock.advance(299)
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "idle_bound auto 300s" in stalled
+        assert "last event seen: baseline command progress" in stalled
+
+    def test_auto_bound_pauses_for_high_host_psi_during_baseline(
+            self, tmp_path):
+        clock = FakeClock()
+        psi = [0.0]
+        path = tmp_path / ".assay" / "progress-baseline-psi.jsonl"
+        write_progress(path, {"event": "command_started",
+                              "phase": "baseline"})
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True,
+            pressure_reader=lambda: psi[0])
+        assert watch.poll() is None
+        clock.advance(299)
+        psi[0] = 6.0
+        assert watch.poll() is None
+        clock.advance(600)
+        assert watch.poll() is None
+        psi[0] = 0.0
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "last event seen: baseline command progress" in stalled
+
+    def test_auto_bound_covers_baseline_finished_before_plan(self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-baseline-finished.jsonl"
+        write_progress(path, {"event": "command_started",
+                              "phase": "baseline"},
+                       {"event": "command_finished", "phase": "baseline"})
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        clock.advance(299)
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "last event seen: baseline completion; waiting for plan" \
+            in stalled
+
+    def test_plan_supersedes_the_baseline_signal_and_uses_its_cadence(
+            self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-baseline-then-plan.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_finished"},
+                       {"event": "plan", "expect_next_event_within_s": 200.0})
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        clock.advance(599)
+        assert watch.poll() is None
+        clock.advance(1)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "idle_bound auto 600s" in stalled
+        assert "last event seen: the plan event" in stalled
+
+    def test_verdict_written_ends_the_baseline_bound_for_r0_r1_streams(
+            self, tmp_path):
+        # An R0/R1 lane never writes a plan. Once its verdict is written
+        # there is nothing left to wait for, so the 300 s post-command bound
+        # must not turn a finished lane's silence into a stall.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r1-done.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_finished"},
+                       {"event": "verdict_written"})
+        watch = run_gate.ProgressWatch(
+            path, "r1", None, clock, auto_bound=True)
+        clock.advance(10_000)
+        assert watch.poll() is None
+
+    def test_header_only_stream_stays_disclosure_only_when_auto_bound(
+            self, tmp_path):
+        # Verdict invariance: a run header alone (no heartbeat, no plan) is
+        # still the R-40b "healthy, not an R2 lane" case.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-header-only.jsonl"
+        write_progress(path)
+        watch = run_gate.ProgressWatch(
+            path, "r1", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        clock.advance(10_000)
+        assert watch.poll() is None
+
+    def test_baseline_bound_is_inert_without_auto_bound(self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-baseline-manual.jsonl"
+        write_progress(path, {"event": "command_started"})
+        watch = run_gate.ProgressWatch(path, "sql-mutation", None, clock)
+        assert watch.poll() is None
+        clock.advance(10_000)
+        assert watch.poll() is None
+
+    def test_auto_bound_uses_only_the_latest_append_only_run_segment(
+            self, tmp_path):
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-latest-run.jsonl"
+        path.parent.mkdir(parents=True)
+        path.write_text("\n".join((
+            json.dumps({"event": "run", "lane": "sql-mutation"}),
+            json.dumps({"event": "plan",
+                        "expect_next_event_within_s": 120.0}),
+            json.dumps(candidate(8)),
+            json.dumps({"event": "run", "lane": "sql-mutation"}),
+            json.dumps({"event": "command_started", "phase": "baseline"}),
+        )) + "\n")
+        watch = run_gate.ProgressWatch(
+            path, "sql-mutation", None, clock, auto_bound=True)
+        assert watch.poll() is None
+        assert watch._cadence_hint is None
+        clock.advance(300)
+        stalled = watch.poll()
+        assert stalled is not None
+        assert "idle_bound auto 300s" in stalled
+        assert "last event seen: baseline command progress" in stalled
+
     def test_auto_bound_plan_rewrite_reseeds_from_the_new_plan_time(self,
                                                                      tmp_path):
         clock = FakeClock()
@@ -21986,6 +22132,49 @@ class TestAwaitContainerProfilingWiring:
         assert "daemon watch could not start" in profiler["warning"]
         assert "in-process watch" in capsys.readouterr().out
 
+    def test_profiling_disabled_assay_lane_keeps_in_process_watch(
+            self, tmp_path, monkeypatch, capsys):
+        # Liveness is not measurement: disabling profiling must not strip an
+        # assay lane of its progress watch.
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        _log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+        (state / ".hang").write_text("")
+
+        def _clear_hang():
+            time.sleep(0.2)
+            (state / ".hang").unlink(missing_ok=True)
+
+        threading.Thread(target=_clear_hang, daemon=True).start()
+
+        class _Fallback:
+            def __init__(self):
+                self.poll_calls = 0
+
+            def poll(self):
+                self.poll_calls += 1
+                return None
+
+        built = []
+        fallback = _Fallback()
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: (
+                                built.append(kwargs) or fallback))
+        profiler = {"mode": "disabled", "client": None, "daemon": None,
+                    "session": None, "warning": None, "session_line": None,
+                    "sampler": None, "profiler_status": None,
+                    "disabled_reason": "disabled"}
+        docker = shutil.which("docker")
+        assert run_gate.await_container(
+            docker, name, {"kind": "assay", "assay_lane": "suite"},
+            "suite", tmp_path, tmp_path, tmp_path, profiler=profiler,
+            watch=None) == 0
+        assert built and built[0].get("auto_bound") is True
+        assert fallback.poll_calls >= 1
+        assert "in-process watch — profiling disabled" \
+            in capsys.readouterr().out
+
     def test_daemon_watch_verdict_kills_container_as_infrastructure(
             self, tmp_path, monkeypatch):
         monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
@@ -23197,6 +23386,316 @@ class TestBareHostProfilingWiring:
             "suite", repo, repo, repo, run_record={}, profile_plan=plan)
         assert code == 0
         assert "daemon watch could not start" in capsys.readouterr().err
+
+    def _bare_assay_call(self, tmp_path, monkeypatch, profiler_state, *,
+                         watch, process):
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling",
+                            lambda *a, **k: profiler_state)
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *a, **k: watch)
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *a, **k: process)
+        monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
+                            lambda *a, **k: {"resources": None,
+                                             "profile_error": None,
+                                             "profile_ref": None})
+        monkeypatch.setattr(run_gate, "print_lane_artifacts",
+                            lambda *a, **k: None)
+        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+                "damon": True, "source": "test", "token": "tok"}
+        return run_gate.run_bare_host_lane(
+            {"kind": "assay", "assay_lane": "r2",
+             "environment": "bare-host", "clean_tree": False},
+            "suite", repo, repo, repo, run_record={}, profile_plan=plan)
+
+    @staticmethod
+    def _rusage_state():
+        return {"mode": "rusage", "client": None, "daemon": "d",
+                "session": None, "session_line": None, "warning": None,
+                "sampler": None, "profiler_status": None}
+
+    def test_bare_host_rusage_fallback_stall_terminates_group_and_keeps_rusage(
+            self, tmp_path, monkeypatch, capsys):
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return "assay progress stopped"
+
+        class Process:
+            pid = 4242
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+        proc = Process()
+        watch = Watch()
+        rusage = _FakeRusage(ru_maxrss=123, ru_utime=1.0, ru_stime=0.5)
+        state = {"killed": False}
+        wait_calls = []
+        finish_calls = []
+
+        def wait4(pid, options):
+            wait_calls.append((pid, options))
+            if state["killed"]:
+                return pid, 15, rusage
+            return 0, 0, None
+
+        def killpg(pid, sig):
+            assert pid == proc.pid
+            state["killed"] = True
+
+        monkeypatch.setattr(run_gate.os, "wait4", wait4)
+        monkeypatch.setattr(run_gate.os, "killpg", killpg)
+        monkeypatch.setattr(run_gate.time, "sleep", lambda _s: None)
+        repo = make_repo(tmp_path)
+        fake_docker(tmp_path, monkeypatch)
+        monkeypatch.setattr(run_gate, "start_bare_host_profiling",
+                            lambda *a, **k: self._rusage_state())
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *a, **k: watch)
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *a, **k: proc)
+        monkeypatch.setattr(run_gate, "finish_bare_host_profiling",
+                            lambda state_, ru, *a, **k: (
+                                finish_calls.append(ru) or {
+                                    "resources": None, "profile_error": None,
+                                    "profile_ref": None}))
+        monkeypatch.setattr(run_gate, "print_lane_artifacts",
+                            lambda *a, **k: None)
+        plan = {"enabled": True, "daemon": "d", "interval": "1s",
+                "damon": True, "source": "test", "token": "tok"}
+        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            run_gate.run_bare_host_lane(
+                {"kind": "assay", "assay_lane": "r2",
+                 "environment": "bare-host", "clean_tree": False},
+                "suite", repo, repo, repo, run_record={}, profile_plan=plan)
+        # The exact child is still reaped by wait4, so its rusage survives,
+        # and the watch is consulted once (stall latches; it is not re-polled).
+        assert watch.calls == 1
+        assert finish_calls == [rusage]
+        assert all(pid == proc.pid for pid, _ in wait_calls)
+        assert "in-process watch — daemon unavailable" \
+            in capsys.readouterr().out
+
+    def test_bare_host_rusage_fallback_is_polled_at_the_progress_cadence(
+            self, tmp_path, monkeypatch):
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return None
+
+        class Process:
+            pid = 4244
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+        clock = [1000.0]
+        watch = Watch()
+        rusage = _FakeRusage(ru_maxrss=1, ru_utime=0.1, ru_stime=0.1)
+        steps = [0]
+
+        def wait4(pid, options):
+            if steps[0] >= 700:          # 700 x 0.05 s = 35 s of fake time
+                return pid, 0, rusage
+            return 0, 0, None
+
+        def sleep(seconds):
+            steps[0] += 1
+            clock[0] += seconds
+
+        monkeypatch.setattr(run_gate.os, "wait4", wait4)
+        monkeypatch.setattr(run_gate.time, "sleep", sleep)
+        monkeypatch.setattr(run_gate.time, "monotonic", lambda: clock[0])
+        assert self._bare_assay_call(
+            tmp_path, monkeypatch, self._rusage_state(),
+            watch=watch, process=Process()) == 0
+        # first poll immediately, the second one PROGRESS_POLL_SECONDS (30 s)
+        # later: never once per 50 ms spin.
+        assert watch.calls == 2
+
+    def test_bare_host_watch_failure_degrades_to_unwatched_rusage_wait(
+            self, tmp_path, monkeypatch, capsys):
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                raise RuntimeError("planted progress reader failure")
+
+        class Process:
+            pid = 4243
+            returncode = None
+
+            def poll(self):
+                return self.returncode
+
+        rusage = _FakeRusage(ru_maxrss=123, ru_utime=1.0, ru_stime=0.5)
+        calls = [0]
+        watch = Watch()
+
+        def wait4(pid, options):
+            calls[0] += 1
+            return (0, 0, None) if calls[0] < 4 else (pid, 0, rusage)
+
+        monkeypatch.setattr(run_gate.os, "wait4", wait4)
+        monkeypatch.setattr(run_gate.time, "sleep", lambda _s: None)
+        assert self._bare_assay_call(
+            tmp_path, monkeypatch, self._rusage_state(),
+            watch=watch, process=Process()) == 0
+        assert watch.calls == 1                 # dropped after the failure
+        assert "in-process watch failed unexpectedly" \
+            in capsys.readouterr().err
+
+    def test_bare_host_profiling_disabled_assay_lane_keeps_progress_liveness(
+            self, tmp_path, monkeypatch, capsys):
+        class Watch:
+            def poll(self):
+                return "assay progress stopped"
+
+        class Process:
+            pid = 4245
+            returncode = None
+
+            def __init__(self):
+                self.terminated = False
+
+            def wait(self, timeout=None):
+                if timeout is not None and not self.terminated:
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        proc = Process()
+
+        def killpg(pid, sig):
+            proc.terminated = True
+
+        monkeypatch.setattr(run_gate.os, "killpg", killpg)
+        state = {"mode": "disabled", "client": None, "daemon": None,
+                 "session": None, "session_line": None, "warning": None,
+                 "sampler": None, "profiler_status": None,
+                 "disabled_reason": "disabled"}
+        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            self._bare_assay_call(tmp_path, monkeypatch, state,
+                                  watch=Watch(), process=proc)
+        assert proc.terminated
+        assert "in-process watch — profiling disabled" \
+            in capsys.readouterr().out
+
+    def test_bare_host_daemon_watch_failure_uses_progress_fallback(
+            self, tmp_path, monkeypatch, capsys):
+        class Client:
+            def watch(self, session):
+                raise OSError("planted daemon watch failure")
+
+        class Watch:
+            def poll(self):
+                return "assay progress stopped"
+
+        class Process:
+            pid = 4246
+            returncode = None
+
+            def __init__(self):
+                self.terminated = False
+
+            def wait(self, timeout=None):
+                if timeout is not None and not self.terminated:
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        proc = Process()
+        monkeypatch.setattr(run_gate.os, "killpg",
+                            lambda pid, sig: setattr(proc, "terminated", True))
+        state = {"mode": "daemon", "client": Client(), "daemon": "d",
+                 "session": "s-bare-failed", "session_line": None,
+                 "warning": None, "sampler": None, "profiler_status": None}
+        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            self._bare_assay_call(tmp_path, monkeypatch, state,
+                                  watch=Watch(), process=proc)
+        out, err = capsys.readouterr()
+        assert "in-process watch — daemon unavailable" in out
+        assert "daemon watch could not start" in err
+
+    def test_bare_host_reattach_failure_keeps_lane_exit_via_fallback(
+            self, tmp_path, monkeypatch, capsys):
+        class DaemonWatch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return True
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class Client:
+            def __init__(self):
+                self.calls = 0
+
+            def watch(self, session):
+                self.calls += 1
+                if self.calls > 1:
+                    raise OSError("planted reattach failure")
+                return DaemonWatch()
+
+        class Watch:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return None
+
+        class Process:
+            pid = 4247
+            returncode = None
+
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("bare assay", timeout)
+                self.returncode = 0
+                return 0
+
+            def poll(self):
+                return self.returncode
+
+        client = Client()
+        watch = Watch()
+        state = {"mode": "daemon", "client": client, "daemon": "d",
+                 "session": "s-bare-reattach", "session_line": None,
+                 "warning": None, "sampler": None, "profiler_status": None}
+        assert self._bare_assay_call(tmp_path, monkeypatch, state,
+                                     watch=watch, process=Process()) == 0
+        assert client.calls == 2
+        assert watch.calls == 1
+        assert "watch reattach failed" in capsys.readouterr().err
 
     def test_bare_host_daemon_verdict_stops_child_as_infrastructure(
             self, tmp_path, monkeypatch):
@@ -25600,6 +26099,167 @@ class TestExecLaneProfilingWiring:
         captured = capsys.readouterr()
         assert "daemon watch could not start" in captured.err
         assert "in-process watch" in captured.out
+
+    def test_exec_profiling_disabled_assay_lane_keeps_progress_liveness(
+            self, tmp_path, monkeypatch, capsys):
+        # Disabling measurement must not disable the caller's stall
+        # protection: the in-process watch is built regardless of profiling.
+        built = []
+
+        class Fallback:
+            def __init__(self):
+                self.calls = 0
+
+            def poll(self):
+                self.calls += 1
+                return "assay progress stopped"
+
+        class Process:
+            def __init__(self):
+                self.terminated = False
+
+            def wait(self, timeout=None):
+                if timeout is not None and not self.terminated:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                return 0
+
+            def terminate(self):
+                self.terminated = True
+
+            def kill(self):
+                pass
+
+        fallback = Fallback()
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "disabled", "client": None,
+                                "daemon": None, "session": None,
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None,
+                                "disabled_reason": "disabled"})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: (
+                                built.append(kwargs) or fallback))
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        with pytest.raises(run_gate.GateInfraError, match="STALLED"):
+            self._exec_lane_call(
+                tmp_path, monkeypatch, ["true"], {},
+                popen_factory=lambda *args, **kwargs: Process())
+        assert built and built[0].get("auto_bound") is True
+        assert fallback.calls == 1
+        assert "in-process watch — profiling disabled" in capsys.readouterr().out
+
+    def test_exec_progress_fallback_failure_keeps_lane_exit(
+            self, tmp_path, monkeypatch, capsys):
+        class Fallback:
+            def poll(self):
+                raise RuntimeError("planted progress reader failure")
+
+        class Process:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                return 0
+
+            def kill(self):
+                pass
+
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "disabled", "client": None,
+                                "daemon": None, "session": None,
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None,
+                                "disabled_reason": "disabled"})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: Fallback())
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        assert self._exec_lane_call(
+            tmp_path, monkeypatch, ["true"], {},
+            popen_factory=lambda *args, **kwargs: Process()) == 0
+        assert "in-process watch failed unexpectedly" \
+            in capsys.readouterr().err
+
+    def test_exec_watch_reattach_failure_keeps_lane_exit(
+            self, tmp_path, monkeypatch, capsys):
+        class Watch:
+            def drain(self):
+                return []
+
+            def ended(self):
+                return True
+
+            def idle(self):
+                return False
+
+            def close(self):
+                pass
+
+        class Client:
+            carrier = "exec"
+            socket_path = "/run/cgprofile/ctl.sock"
+
+            def __init__(self):
+                self.calls = 0
+
+            def watch(self, session):
+                self.calls += 1
+                if self.calls > 1:
+                    raise OSError("planted reattach failure")
+                return Watch()
+
+        class Fallback:
+            def __init__(self):
+                self.poll_calls = 0
+
+            def poll(self):
+                self.poll_calls += 1
+                return None
+
+        class Process:
+            def __init__(self):
+                self.wait_calls = 0
+
+            def wait(self, timeout=None):
+                self.wait_calls += 1
+                if timeout is not None and self.wait_calls == 1:
+                    raise subprocess.TimeoutExpired("docker exec", timeout)
+                return 0
+
+            def kill(self):
+                pass
+
+        client = Client()
+        fallback = Fallback()
+        monkeypatch.setattr(run_gate, "start_lane_profiling",
+                            lambda *args, **kwargs: {
+                                "mode": "daemon", "client": client,
+                                "daemon": run_gate.PROFILE_DAEMON_DEFAULT,
+                                "session": "s-reattach-fail",
+                                "session_line": None, "warning": None,
+                                "sampler": None, "profiler_status": None})
+        monkeypatch.setattr(run_gate, "make_progress_watch",
+                            lambda *args, **kwargs: fallback)
+        monkeypatch.setattr(run_gate, "finish_lane_profiling",
+                            lambda state: {"resources": None,
+                                           "profile_error": None,
+                                           "profile_ref": None})
+        assert self._exec_lane_call(
+            tmp_path, monkeypatch, ["true"], {},
+            popen_factory=lambda *args, **kwargs: Process()) == 0
+        assert client.calls == 2
+        assert fallback.poll_calls == 1
+        assert "watch reattach failed" in capsys.readouterr().err
 
     def test_exec_second_ended_watch_can_kill_via_progress_fallback(
             self, tmp_path, monkeypatch):

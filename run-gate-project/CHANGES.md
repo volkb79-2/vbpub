@@ -9,6 +9,21 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+- Fix (RG-55, baseline liveness): the in-process assay progress fallback now
+  bounds the R2 baseline. It follows Assay's `command_started` /
+  `command_running` heartbeat (300 s minimum idle bound, reset by each tick)
+  and keeps that bound from `command_finished` until the `plan` arrives
+  (`verdict_written` ends it for an R0/R1 stream); the post-plan bound is
+  unchanged. A stream holding only the `run` header remains disclosure-only,
+  so verdicts of lanes that were healthy are unchanged. The watch is armed for
+  an assay lane even when profiling is disabled (exec, bare-host and
+  container lanes). Bare-host fallback polling uses `wait4(WNOHANG)` at the
+  progress cadence and still reaps the exact child, so rusage accounting is
+  kept. A progress watch that raises, or a daemon watch that cannot be
+  re-attached, is disclosed and degrades to ordinary waiting instead of
+  affecting the lane's exit. A stall remains an infrastructure outcome.
+  Ported as a third version of the unmerged `a612d8460` against current main.
+
 <!-- cmru: release history -->
 
 ## [24.0.1] - 2026-10-18
