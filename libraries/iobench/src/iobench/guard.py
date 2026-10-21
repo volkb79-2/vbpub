@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import posixpath
+import re
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -37,12 +38,20 @@ class MountEntry:
     options: str
 
 
+_OCTAL = re.compile(r"\\([0-7]{3})")
+
+
+def _unescape(field: str) -> str:
+    """mountinfo writes a space, tab, newline or backslash in a path as a 3-digit octal escape (``\\040``)."""
+    return _OCTAL.sub(lambda m: chr(int(m.group(1), 8)), field)
+
+
 def parse_mountinfo(text: str) -> list[MountEntry]:
     out = []
     for line in text.splitlines():
         left, _, right = line.partition(" - ")
         fields, tail = left.split(), right.split()
-        out.append(MountEntry(fields[2], fields[4], tail[0], tail[1], fields[5]))
+        out.append(MountEntry(fields[2], _unescape(fields[4]), tail[0], _unescape(tail[1]), fields[5]))
     return out
 
 
@@ -201,6 +210,8 @@ def violations(host: Host, facts: DeviceFacts) -> list[Violation]:
             out.append(Violation("holder", f"{e.source}, a holder of {facts.path}, is mounted at {e.mountpoint}"))
         else:
             out.append(Violation("mounted", f"the parent disk of {facts.path} is mounted at {e.mountpoint}"))
+    if facts.chain.holders and not any(v.condition == "holder" for v in out):
+        out.append(Violation("holder_active", f"{facts.path} has active holders ({', '.join(sorted(facts.chain.holders))}: md, dm, LVM ...)"))
     swaps = swap_devnos(host)
     if swaps & watched:
         out.append(Violation("swap", f"{facts.path} (or a partition or holder of it) is swap-active (swapon)"))
@@ -284,7 +295,11 @@ def init_device(host: Host, path: str, *, own: bool, expect_size: int | None, ex
     target = Target("device", path, facts.size_bytes, facts.devno, facts.partuuid, facts.serial, None, None,
                     facts.chain.disk_name, facts.wwn, facts.model)
     if not dry_run:
-        host.write_marker(target.ref, marker_text(facts.size_bytes, facts.partuuid, facts.serial, created))
+        try:
+            host.write_marker(target.ref, marker_text(facts.size_bytes, facts.partuuid, facts.serial, created))
+        except HostError as exc:  # the identity re-verification (or the kernel's exclusive open) said no: a refusal, exit 2
+            raise Refusal("identity_changed", f"the device could not be claimed for the marker ({exc})",
+                          "check that the device is still the intended, unused one and rerun") from exc
     return target
 
 
@@ -339,12 +354,20 @@ class FsInfo:
 
 
 def fs_info(host: Host, path: str) -> FsInfo:
+    path = host.realpath(path)  # `..` and symlinks resolved first: a textual prefix match would put /mnt/data/../x under /mnt/data
     entries = [e for e in parse_mountinfo(host.read_text("/proc/self/mountinfo"))
                if path == e.mountpoint or path.startswith(e.mountpoint.rstrip("/") + "/")]
     e = max(entries, key=lambda e: len(e.mountpoint))
     uuid = blkid_fields(host, e.source).get("UUID") if e.source.startswith("/dev/") else None
     total, free = host.statfs(path)
     return FsInfo(e.mountpoint, e.source, e.fstype, e.options, e.devno, uuid, total, free)
+
+
+def on_root_fs(host: Host, fs: FsInfo) -> bool:
+    """Whether ``fs`` is the filesystem that holds ``/``: the same device or backing source, not only a mount point of ``/``
+    (a btrfs subvolume or a bind mount of the root filesystem is the root filesystem too)."""
+    root = next((e for e in parse_mountinfo(host.read_text("/proc/self/mountinfo")) if e.mountpoint == "/"), None)
+    return root is not None and (fs.devno == root.devno or (fs.source.startswith("/dev/") and fs.source == root.source))
 
 
 def file_margin(total: int) -> int:
@@ -361,6 +384,7 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
     _need(size is not None, "size_required", "a file target needs --size (the operator's upper bound for everything iobench writes)",
           "pass --size BYTES")
     _need(own, "own_file_required", f"{path} would be created and overwritten by iobench", "pass --i-own-this-file")
+    _need(":" not in path, "path_colon", f"{path} contains ':' (fio would split it into several files)", "use a path without ':'")
     st = host.stat(path)
     _need(st is None or not st.is_symlink, "symlink", f"{path} is a symlink", "name a regular file path")
     fs = fs_info(host, posixpath.dirname(path))
@@ -369,19 +393,19 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
           f"pass --expect-fs-uuid {fs.uuid} if this is the intended filesystem")
     _need(fs.fstype not in BAD_FS_TYPES + ("overlay",), "fs_type", f"{path} is on a {fs.fstype} filesystem",
           "use a persistent disk filesystem (ext4, xfs)")
-    _need(st is None or host.exists(sidecar_path(path)), "exists_without_sidecar",
-          f"{path} exists and has no iobench sidecar", "remove it yourself, or pick another path")
+    _need(st is None or sidecar_matches(host, path, st, fs), "exists_without_sidecar",
+          f"{path} exists and has no iobench sidecar matching its inode, size and filesystem", "remove it yourself, or pick another path")
     _need(st is None or st.nlink <= 1, "hard_link", f"{path} has a link count above 1", "use a file with a single link")
     margin = file_margin(fs.total)
     _need(fs.free >= size + margin, "free_space",
           f"free space {fs.free} is below size + margin ({size} + {margin})", "pass a smaller --size")
-    if fs.mountpoint == "/":
+    if on_root_fs(host, fs):
         _need(confirm_quiet_window, "root_fs_needs_quiet_window", f"{path} is on the root filesystem",
               "pass --confirm-quiet-window in an agreed window")
         _need(allow_large_root_target or size <= ROOT_TARGET_FREE_SHARE * fs.free, "root_target_too_large",
               f"--size {size} exceeds 10 % of the free space ({fs.free}) of the root filesystem",
               "pass a smaller --size or --allow-large-root-target")
-    _need(host.probe_odirect(posixpath.dirname(path)), "odirect_unsupported",
+    _need(dry_run or host.probe_odirect(posixpath.dirname(path)), "odirect_unsupported",
           f"the filesystem under {path} refuses O_DIRECT", "use another filesystem")
     if dry_run:
         return Target("file", path, size, None, None, None, fs.uuid, 0)
@@ -392,6 +416,18 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
     host.write_marker(target.ref, marker_text(size, None, None, created, fs_uuid=fs.uuid, inode=inode))
     host.write_atomic(sidecar_path(path), json.dumps({"fs_uuid": fs.uuid, "inode": inode, "size": size, "created": created}))
     return target
+
+
+def sidecar_matches(host: Host, path: str, st, fs: FsInfo) -> bool:
+    """TGT-06: an existing file may be re-initialised only through a sidecar that MATCHES it (inode, size, filesystem uuid): a stale
+    sidecar next to a user file that was later created at the same path must not authorise overwriting that file."""
+    if not host.exists(sidecar_path(path)):
+        return False
+    try:
+        doc = json.loads(host.read_text(sidecar_path(path)))
+        return doc["inode"] == st.inode and doc["size"] == st.size and doc["fs_uuid"] == fs.uuid
+    except (ValueError, KeyError, TypeError):
+        return False
 
 
 def load_file_target(host: Host, path: str) -> Target:
@@ -443,6 +479,7 @@ class Workdir:
 
 def check_workdir(host: Host, path: str, *, planned_volume: int, installer: bool, confirm_quiet_window: bool,
                   target_disk: str | None) -> Workdir:
+    _need(":" not in path, "path_colon", f"{path} contains ':' (fio would split it into several files)", "use a path without ':'")
     entries = host.listdir(path) if host.exists(path) else []
     _need(all(n == WORKDIR_MARK for n in entries), "workdir_not_empty",
           f"{path} is not empty", f"use a new or empty directory (only {WORKDIR_MARK} may exist)")
@@ -454,7 +491,7 @@ def check_workdir(host: Host, path: str, *, planned_volume: int, installer: bool
     need = max(MIN_WORKDIR_FREE, 3 * planned_volume)
     _need(fs.free >= need, "workdir_free_space", f"{path} has {fs.free} bytes free; {need} are required",
           "use a directory on a larger filesystem")
-    on_root = fs.mountpoint == "/"
+    on_root = on_root_fs(host, fs)
     _need(not on_root or confirm_quiet_window, "workdir_on_root", f"{path} is on the root filesystem",
           "pass --confirm-quiet-window in an agreed window")
     check_namespaces(host, {fs.devno}, {fs.source}, path)

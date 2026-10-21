@@ -338,7 +338,8 @@ def test_tgt_06_file_kind_refusals():
     host.put("/bench/exists.img", "data")
     frefused(host, "exists_without_sidecar", path="/bench/exists.img")
     host.put("/bench/linked.img", "data")
-    host.put("/bench/linked.img.iobench-target", "{}")
+    st = host.stat("/bench/linked.img")
+    host.put("/bench/linked.img.iobench-target", json.dumps({"inode": st.inode, "size": st.size, "fs_uuid": guard.fs_info(host, "/bench").uuid}))
     host.nlinks["/bench/linked.img"] = 2
     frefused(host, "hard_link", path="/bench/linked.img")
     frefused(standard_host(workdir_free=7 * GIB), "free_space")  # needs size + 2 GiB margin

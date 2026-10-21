@@ -381,3 +381,165 @@ def test_rev_a_b2_a_failing_ratio_write_is_reported_not_raised_raw():
     host.sysfs_reject.clear()
     host.write_sysfs(DIRTY, host.read_text(DIRTY).strip())  # rewriting an unchanged value does not trigger the kernel's coupling
     assert host.read_text(RATIO) == "0\n"
+
+
+# =============================================================================================================================
+# SHOULD findings (the rest of review A)
+# =============================================================================================================================
+from iobench.testing import GIB  # noqa: E402
+
+FS_UUID = "22222222-2222-2222-2222-222222222222"
+
+
+def finit(host, path="/bench/target.img", size=6 * GIB, **kw):
+    args = dict(size=size, own=True, expect_fs_uuid=FS_UUID, confirm_quiet_window=False, allow_large_root_target=False, created=CREATED)
+    args.update(kw)
+    return guard.init_file(host, path, **args)
+
+
+# -- S2: an active md/dm holder is refused outright ---------------------------------------------------------------------------
+def test_rev_a_s2_an_unmounted_but_active_holder_is_a_hard_refusal():
+    host = standard_host()
+    host.add_holder(DEV, "dm-0", 253, 0, GIB)  # an LVM/md holder that is not mounted
+    with pytest.raises(Refusal) as err:
+        init(host, own=True)
+    assert err.value.condition == "holder_active" and "253:0" in str(err.value) and host.devices[DEV].marker is None
+    # the override flag cannot talk a device out of being held
+    with pytest.raises(Refusal) as err:
+        init(host, own=True, expect_partuuid=R1002_PARTUUID)
+    assert err.value.condition == "holder_active"
+
+
+# -- S11 / S12: file targets --------------------------------------------------------------------------------------------------------
+def test_rev_a_s11_colons_and_dotdot_and_escaped_mountpoints():
+    host = standard_host()
+    with pytest.raises(Refusal) as err:
+        finit(host, path="/bench/a:b.img")
+    assert err.value.condition == "path_colon"
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench/w:x", planned_volume=GIB, installer=False, confirm_quiet_window=True, target_disk="vda")
+    assert err.value.condition == "path_colon"
+    # `..` is resolved before the mount lookup: /bench/../scratch is on the root filesystem, not under /bench
+    assert guard.fs_info(host, "/bench/../scratch").mountpoint == "/"
+    assert guard.fs_info(host, "/bench/w").mountpoint == "/bench"
+    entries = guard.parse_mountinfo("30 1 254:9 / /mnt/my\\040disk rw - ext4 /dev/vdz rw\n")
+    assert entries[0].mountpoint == "/mnt/my disk" and entries[0].source == "/dev/vdz"
+    assert guard._unescape("a\\134b\\011c") == "a\\b\tc"
+
+
+def test_rev_a_s11_a_bind_mount_of_the_root_filesystem_is_the_root_filesystem():
+    host = standard_host()
+    host.add_mount("254:3", "/srv/data", "/dev/vda3")  # the same filesystem as `/`, reached through another mount point
+    host.set_fs("/srv/data", 40 * GIB, 20 * GIB)
+    assert guard.on_root_fs(host, guard.fs_info(host, "/srv/data/f"))
+    assert not guard.on_root_fs(host, guard.fs_info(host, "/bench/f"))
+    with pytest.raises(Refusal) as err:
+        finit(host, path="/srv/data/t.img", expect_fs_uuid="11111111-1111-1111-1111-111111111111")
+    assert err.value.condition == "root_fs_needs_quiet_window"
+    no_root = standard_host()
+    no_root.mounts = [m for m in no_root.mounts if m[2] != "/"]
+    assert not guard.on_root_fs(no_root, guard.fs_info(no_root, "/bench/f"))
+
+
+def test_rev_a_s12_a_stale_sidecar_does_not_authorise_overwriting_a_file():
+    host = standard_host()
+    host.put("/bench/user.img", "x" * 10)
+    host.put("/bench/user.img.iobench-target", json.dumps({"inode": 1, "size": 10, "fs_uuid": FS_UUID}))  # leftover of an earlier target
+    with pytest.raises(Refusal) as err:
+        finit(host, path="/bench/user.img")
+    assert err.value.condition == "exists_without_sidecar"
+    st = host.stat("/bench/user.img")
+    for bad in ("not json", json.dumps({"inode": st.inode}), json.dumps({"inode": st.inode, "size": st.size + 1, "fs_uuid": FS_UUID}),
+                json.dumps({"inode": st.inode, "size": st.size, "fs_uuid": "other"})):
+        host.put("/bench/user.img.iobench-target", bad)
+        with pytest.raises(Refusal) as err:
+            finit(host, path="/bench/user.img")
+        assert err.value.condition == "exists_without_sidecar", bad
+    host.put("/bench/user.img.iobench-target", json.dumps({"inode": st.inode, "size": st.size, "fs_uuid": FS_UUID}))
+    assert finit(host, path="/bench/user.img").kind == "file"  # the matching sidecar of an iobench target may be re-initialised
+
+
+# -- S13: a dry run writes nothing, not even a probe file -----------------------------------------------------------------------------
+def test_rev_a_s13_a_dry_run_does_not_probe_o_direct_by_creating_a_file():
+    host = standard_host()
+
+    def boom(directory):
+        raise AssertionError("probe_odirect creates a file in the target directory")
+
+    host.probe_odirect = boom
+    assert finit(host, dry_run=True).kind == "file"
+    with pytest.raises(AssertionError):
+        finit(host)
+
+
+# -- S14 ------------------------------------------------------------------------------------------------------------------------------------
+def test_rev_a_s14_an_identity_failure_while_claiming_the_device_is_a_refusal():
+    host = standard_host()
+
+    def moved(target, text):
+        raise HostError("device size changed: /dev/vda7")
+
+    host.write_marker = moved
+    with pytest.raises(Refusal) as err:
+        init(host)
+    assert err.value.condition == "identity_changed" and err.value.exit_code == 2 and "size changed" in str(err.value)
+
+
+# -- S8: orphans and partial spawns --------------------------------------------------------------------------------------------------------
+def test_rev_a_s8_an_fio_left_by_an_earlier_run_refuses_the_next_run_before_any_restore():
+    host = make_host(cache=INVERSION)
+    dead = holder(host, "run-dead")
+    dead.set_knob(DIRTY, "16777216")
+    host.put("/proc/4242/cmdline", "fio\0--name=run-20261021T030000Z-abcd-s1\0--filename=/dev/vda7\0")
+    host.put("/proc/77/cmdline", "bash\0-c\0fio --name=run-x\0")  # not an fio argv0
+    host.put("/proc/self/cmdline", "")
+    host.put("/proc/99/cmdline", "fio\0--name=other\0")  # an fio that is not iobench's
+    with pytest.raises(Refusal) as err:
+        calibrate(host)
+    assert err.value.condition == "orphan_fio" and "4242" in str(err.value) and "77" not in str(err.value) and "99" not in str(err.value)
+    assert host.read_text(DIRTY) == "16777216\n" and host.exists(restore.JOURNAL)  # nothing was restored under the running fio
+    host.files.pop("/proc/4242/cmdline")
+    assert calibrate(host).status == "complete" and host.read_text(DIRTY) == "0\n"
+    # a process that ends between listing and reading is skipped
+    gone = standard_host()
+    gone.put("/proc/5/cmdline", "x")
+    real = gone.read_text
+    gone.read_text = lambda p: (_ for _ in ()).throw(FileNotFoundError(p)) if p == "/proc/5/cmdline" else real(p)
+    assert restore.orphan_fio(gone) == []
+
+
+def test_rev_a_s8_a_failed_second_spawn_kills_the_first_fio():
+    from helpers import matrix
+    from test_cov import calibrated
+    host = calibrated()
+    killed = []
+    real = host.spawn
+    count = {"n": 0}
+
+    def spawn(argv):
+        if argv[0] == "fio":
+            count["n"] += 1
+            if count["n"] == 2:
+                raise HostError("cannot start the second fio")
+        h = real(argv)
+        orig_kill = h.kill
+        h.kill = lambda: (killed.append(argv[1]), orig_kill())[1]
+        return h
+
+    host.spawn = spawn
+    out = matrix(host, work_dir="/bench/w")
+    assert out.status == "failed" and "cannot start the second fio" in out.message
+    assert len(killed) == 1 and "-s3-w" in killed[0], "the first fio of the pair was left running"
+
+
+# -- S9: the drain result is recorded ----------------------------------------------------------------------------------------------------------
+def test_rev_a_s9_requests_still_in_flight_after_a_kill_are_a_warning_in_the_restore_report():
+    host = make_host(cache=INVERSION)
+    host.put("/sys/devices/pci0/block/vda/inflight", "3 0\n")  # never drains
+    host.deliver_signal("SIGTERM")
+    out = calibrate(host)
+    assert out.status == "aborted" and out.exit_code == 8
+    assert any(w.startswith("inflight_not_drained") for w in out.result["restore"]["warnings"])
+    clean = make_host(cache=INVERSION)
+    clean.deliver_signal("SIGTERM")
+    assert calibrate(clean).result["restore"]["warnings"] == []

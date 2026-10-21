@@ -139,7 +139,8 @@ class Runner:
         except BaseException:
             for h in handles:
                 h.kill()
-            restore.wait_inflight_zero(self.host, self.disk_name)
+            if not restore.wait_inflight_zero(self.host, self.disk_name):
+                self.safety.report.warnings.append("inflight_not_drained: the device still had requests in flight 30 s after fio was killed")
             raise
 
     def _check_job(self, job: FioJob) -> None:
@@ -152,6 +153,18 @@ class Runner:
             guard.verify_target(self.host, self.target)
         elif not (end_ok and self.read_extent.covers(job.offset, job.end)):
             raise IntegrityViolation(f"IOB-PLA-08: read {job.name} [{job.offset}, {job.end}) is outside the written extent")
+
+    def spawn_all(self, jobs: Sequence[Any]) -> list[Any]:
+        """Start several jobs together; if a later one cannot start, the earlier ones are killed (never an unsupervised fio)."""
+        handles: list[Any] = []
+        try:
+            for start in jobs:
+                handles.append(start())
+        except BaseException:
+            for h in handles:
+                h.kill()
+            raise
+        return handles
 
     def spawn(self, job: FioJob) -> Any:
         self._check_job(job)
@@ -183,6 +196,10 @@ class Runner:
         if version < FIO_FLOOR:
             raise Refusal("fio_version", f"fio {version[0]}.{version[1]} is older than 3.30 (clat_ns percentiles)", "install fio >= 3.30")
         self.safety.acquire()
+        orphans = restore.orphan_fio(self.host)
+        if orphans:
+            raise Refusal("orphan_fio", f"an fio from an earlier iobench run is still running (pid {', '.join(orphans)}); it may still be writing to the target",
+                          "wait for it to end or stop it, then rerun (the leftover journal is restored on the next start)")
         self.safety.recover_previous()
         restore.stale_abort_file(self.host)
         self.preflight = restore.live_preflight(self.host, confirm_quiet_window=cfg.confirm_quiet_window, installer=cfg.installer,

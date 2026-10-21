@@ -99,7 +99,7 @@ class Matrixer(Runner):
     def s3(self) -> None:
         writer, fsyncj = self.load_jobs("s3", LOAD_S)
         t0 = self.host.now()
-        handles = [self.spawn(writer), self.spawn(fsyncj)]
+        handles = self.spawn_all([lambda: self.spawn(writer), lambda: self.spawn(fsyncj)])
         samples = [self.written_bytes()]
         self.supervise(handles, lambda: samples.append(self.written_bytes()))
         self.finish(writer, handles[0], t0)
@@ -149,7 +149,7 @@ class Matrixer(Runner):
         unit = devio.probe_unit_argv(f"iobench-probe-{self.run_id}-{tag}", PROBE_SLICE, seconds + PROBE_SLACK_S, sweep.PROBE_SOURCE,
                                      [self.cfg.work_dir, out_path, str(seconds), str(sweep.PROBE_INTERVAL_S)])
         t0 = self.host.now()
-        handles = [self.spawn(writer), self.spawn(fsyncj), self.host.spawn(unit)]
+        handles = self.spawn_all([lambda: self.spawn(writer), lambda: self.spawn(fsyncj), lambda: self.host.spawn(unit)])
         self.supervise(handles)
         self.finish(writer, handles[0], t0)
         out = self.finish(fsyncj, handles[1], t0)

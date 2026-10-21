@@ -580,7 +580,7 @@ class FakeHost:
         return path
 
     def realpath(self, path: str) -> str:
-        return self._resolve(path)
+        return posixpath.normpath(self._resolve(path))
 
     def put(self, path: str, text: str) -> None:
         path = self._resolve(path)

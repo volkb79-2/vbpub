@@ -48,7 +48,7 @@ class RestoreReport:
 
     def as_dict(self) -> dict[str, Any]:
         return {"verified": self.verified, "slice_io_max_unchanged": self.slice_io_max_unchanged,
-                "journal_removed": self.journal_removed, "skipped": self.skipped}
+                "journal_removed": self.journal_removed, "skipped": self.skipped, "warnings": self.warnings}
 
 
 # -- io.max (read only) ---------------------------------------------------------------------
@@ -156,6 +156,22 @@ def unit_is_active(host: Host, unit: str) -> bool:
         raise Refusal("unit_not_found", f"--production-unit {unit} does not exist (LoadState=not-found); a typo would be read as inactive",
                       "name an existing unit, for example wings.service")
     return devio.probe(host, f"systemctl is-active {unit}", devio.unit_active_argv(unit), ok=(0, 3)).returncode == 0
+
+
+def orphan_fio(host: Host) -> list[str]:
+    """Pids of an ``fio`` that an earlier iobench run left running (its job names start with ``run-``).  Called with the lock held, so
+    any such process is an orphan: restoring knobs under it would change the settings of a run that is still writing."""
+    found = []
+    for name in host.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            argv = host.read_text(f"/proc/{name}/cmdline").split("\0")
+        except OSError:
+            continue  # the process ended while we looked
+        if posixpath.basename(argv[0]) == "fio" and any(a.startswith("--name=run-") for a in argv):
+            found.append(name)
+    return found
 
 
 def stale_abort_file(host: Host) -> None:

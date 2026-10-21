@@ -119,11 +119,19 @@ class Host(Protocol):
     def install_signals(self) -> None: ...
 
 
+def _die_with_parent() -> None:
+    """Child side of the spawn: SIGKILL this process when iobench itself dies (an orphan fio must not keep writing to the device)."""
+    import ctypes
+    ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+
+
 class _ProcHandle:
     def __init__(self, argv: Sequence[str]) -> None:
         self._out = tempfile.TemporaryFile("w+")
         self._err = tempfile.TemporaryFile("w+")
-        self._p = subprocess.Popen(list(argv), stdout=self._out, stderr=self._err, text=True)
+        # its own session/process group (the whole group is killed) and a parent-death signal (S8)
+        self._p = subprocess.Popen(list(argv), stdout=self._out, stderr=self._err, text=True, start_new_session=True,
+                                   preexec_fn=_die_with_parent)
 
     def poll(self) -> int | None:
         return self._p.poll()
@@ -136,7 +144,14 @@ class _ProcHandle:
 
     def kill(self) -> None:
         if self._p.poll() is None:
-            self._p.kill()
+            try:
+                os.killpg(self._p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        try:
+            self._p.wait(timeout=5)  # reap; a process stuck in D state is left to the kernel rather than blocking the restore
+        except subprocess.TimeoutExpired:
+            pass
 
 
 class RealHost:
@@ -210,9 +225,9 @@ class RealHost:
         os.makedirs(path, exist_ok=True)
 
     def probe_odirect(self, directory: str) -> bool:
-        probe = os.path.join(directory, ".iobench-odirect-probe")
-        try:
-            fd = os.open(probe, os.O_WRONLY | os.O_CREAT | getattr(os, "O_DIRECT", 0), 0o600)
+        probe = os.path.join(directory, f".iobench-odirect-probe-{os.getpid()}")
+        try:  # O_EXCL | O_NOFOLLOW: never opens (and then unlinks) a file or link that was already there
+            fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_DIRECT", 0), 0o600)
         except OSError:
             return False
         os.close(fd)
@@ -288,6 +303,8 @@ class RealHost:
         self._verify_live(target)
         data = text.encode("utf-8").ljust(4096, b"\0")
         flags = os.O_WRONLY | getattr(os, "O_DIRECT", 0)
+        if target.kind == "device":
+            flags |= os.O_EXCL  # the kernel refuses (EBUSY) a device that is mounted, swap-active or claimed by md/dm
         fd = os.open(target.path, flags)
         try:
             import mmap
