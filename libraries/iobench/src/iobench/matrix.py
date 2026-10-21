@@ -283,8 +283,6 @@ class Matrixer(Runner):
             basis_s = "measured" if "sweep_winner" in sflags else ("confirmed-by-sweep" if sweep_ok else "measured")
             out["max_sectors_kb"] = proposals.value(sectors, "R3", s_inputs, basis_s, reasons=[*common, *drain, *missed], flags=sflags)
         if r4 is not None:
-            out["target_check"] = None
-            del out["target_check"]
             self.evidence["sweep"]["r4"] = r4
         return {k: out[k] for k in ("dirty_bytes", "dirty_background_bytes", "nr_requests", "max_sectors_kb")}
 

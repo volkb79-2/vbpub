@@ -209,3 +209,20 @@ def test_cli_ceilings_summary_warns_about_foreign_history():
     host.put("/var/lib/iobench/ceilings.jsonl", "\n".join(other) + "\n")
     code, out, _ = run(host, "ceilings", "summary", "--json")
     assert code == 0 and json.loads(out).get("warnings")
+
+
+def test_cli_10_audit_and_surface_pass(monkeypatch):
+    """The cli-extended audit and the surface check on the committed artefacts (IOB-CLI-10)."""
+    import pathlib
+    from cli_extended import check_cli_surface, load_project_config
+    from cli_extended.audit import run_audit
+    monkeypatch.setattr(cli, "identity", lambda: IDENT)
+    root = pathlib.Path(__file__).resolve().parents[1]
+    project = load_project_config(root / "pyproject.toml")
+    entry = project.select("iobench")
+    report = check_cli_surface(cli.build_cli(IDENT), review_path=entry.review, manifest_path=entry.manifest, spec_path=entry.spec,
+                               findings_path=entry.findings)
+    assert report.passed, report.render()
+    items = run_audit(entry, project)
+    assert [i.checklist_id for i in items if i.status == "fail"] == []
+    assert {i.status for i in items} <= {"pass", "manual", "warn"}

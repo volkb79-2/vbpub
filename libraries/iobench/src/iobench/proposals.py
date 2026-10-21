@@ -218,7 +218,7 @@ def build_qos(cal: Mapping[str, Any], targets: Mapping[str, Any], history: Mappi
             out[key] = absent("basis_missing", rule)
             continue
         inputs = {f"light_{pct_key}_us": light}
-        out[key] = value(fn(light), rule, inputs, "measured", reasons=cal["cache"].get("limits_reasons", []) if False else [])
+        out[key] = value(fn(light), rule, inputs, "measured")
     return out
 
 

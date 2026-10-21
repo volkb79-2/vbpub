@@ -38,7 +38,8 @@ iobench show --proposals --json
 
 ```
 libraries/iobench/
-  README.md  docs/{DESIGN-GUIDE,CONSUMERS,SPEC}.md  run-gate.toml  assay.toml
+  README.md  docs/{DESIGN-GUIDE,CONSUMERS,SPEC,CLI-SPEC}.md  docs/{cli-surface.json,cli-review.toml,cli-review-findings.toml}
+  pyproject.toml  cmru.toml  run-gate.toml  assay.toml  .coveragerc
   src/iobench/   pure core (planning, reduction, derivation, schema) behind an injected Host; cli.py is the thin shell
   tests/         fake-fio and fake-sysfs scenarios, recorded-evidence replays, controlled-wrong plausibility cases
 ```
@@ -46,5 +47,6 @@ libraries/iobench/
 ## Status
 
 Implemented (IOB-03 P3): the measurement core, safety, proposals, the `iobench` CLI over `cli-extended`, and the replay fixtures, all tested on a fake host (`FakeHost` / `FakeFio`). Not yet done: the live
-acceptance run on r1002 (IOB-ACC-01, IOB-03 P4), the first cmru release (IOB-REL-01; wheel only, no zipapp yet), and the reviewed CLI semantic cases. The decisions behind it are IOB-D-001..014 and the rulings
+acceptance run on r1002 (IOB-ACC-01, IOB-03 P4) and the first cmru release (IOB-REL-01; wheel only, no zipapp yet). The CLI review cases in `docs/cli-review.toml` record real invocations and
+the outcomes observed on the fake host; an independent semantic review still has to confirm their rationales. The decisions behind it are IOB-D-001..014 and the rulings
 R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
