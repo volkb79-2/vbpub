@@ -251,6 +251,35 @@ caches and config directories.
 Everything else (`~/.aws`, `~/.docker`, `~/.config/gh`, pip/uv/npm caches, ...)
 is user state and is deliberately left at each tool's own home default.
 
+## Debian testing preview archive
+
+`apt/testing.sources` adds Debian `testing` (deb822, signed by the Debian archive keyring) and
+`apt/preview-archives.pref` pins `oldstable`, `oldstable-backports` and `testing` to priority 100:
+visible for `apt-cache policy` and `apt install -t testing <pkg>`, never auto-selected.
+
+* **One stanza per archive.** In apt_preferences(5) the comma-separated conditions of one
+  `Pin: release` line are a logical AND. The tempting `Pin: release a=oldstable, a=oldstable-backports,
+  a=testing` therefore matches nothing and leaves testing at the default 500, which would let
+  testing packages upgrade the system: the opposite of the intent. `scripts/test_apt_preview_archives.py`
+  parses the file and fails on that form.
+* **Skopeo.** The former temporary `testing.list` is gone. The skopeo step now uses the permanent source
+  and a temporary skopeo-only pin of 501, removed in the same RUN, so the image leaves the step with testing
+  at 100 and no build state hides a 500.
+* **Known tie.** The installed version also sits at 100 (`/var/lib/dpkg/status`). A package installed from
+  a source with no list (a locally installed `.deb`) that testing offers in a newer version can be upgraded
+  by `apt upgrade`, because the two priorities tie and the higher version wins. Packages that a 500+ archive
+  also offers are not affected.
+* **Acceptance** is image-level: `tests/runtime/test_apt_preview.py` builds a synthetic index in the container
+  (the image carries no apt lists and the lane is offline) and lets apt apply the image's real files.
+
+## gdu and dust
+
+Both are static linux/amd64 binaries pinned to the newest release at least 14 days old when pinned
+(estate freshness rule), not "latest": a bump is a deliberate edit in `scripts/stage_tool_artifacts.py`.
+gdu is checked against upstream `sha256sums.txt`. dust publishes no checksum file, so its sha256 is pinned
+in the same file (it equals the digest GitHub records for the asset) and written to an offline sidecar that
+the Dockerfile re-verifies.
+
 ## System-wide defaults
 
 Every default the image ships is installed where its tool reads *system-wide*

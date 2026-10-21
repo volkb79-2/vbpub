@@ -268,10 +268,18 @@ Container and system inspection, in-image:
 | `lazydocker` | Docker/Compose TUI — lifecycle, logs, exec, stats |
 | `glances` | broader host resource view with Docker awareness |
 | `dive` | image-layer inspection |
+| `gdu` | interactive disk-usage analyzer (static build, pinned 5.38.0) |
+| `dust` | `du` with a tree view and bars (static musl build, pinned 1.2.6) |
 | `syft` | SBOM generation, image/package inventory |
 | `htop` | GitHub-sourced build with a shipped default config |
 | `zswap-status` | prints kernel zswap counters directly from sysfs/debugfs |
 | `lnav` | ncurses log/JSONL viewer with SQL queries over parsed fields — see below |
+
+Debian `testing` is configured as a **preview archive**: its package lists are visible to `apt`
+but pinned to priority 100 (as are `oldstable` and `oldstable-backports`), so nothing is ever
+upgraded or installed from it implicitly. Take a package from it deliberately with
+`sudo apt install -t testing <pkg>` — see [Installing a package from testing](USAGE.md#installing-a-package-from-debian-testing)
+and the rationale in [DESIGN-GUIDE](docs/DESIGN-GUIDE.md#debian-testing-preview-archive).
 
 Neovim ships as `nvim` with the NvChad tree in `/etc/xdg/nvim` (system-wide, started by
 Neovim's own `$XDG_CONFIG_DIRS` fallback, only while you have no `~/.config/nvim/init.lua` or `init.vim`; `sysinit.vim` redirects the lazy lockfile into your state directory);

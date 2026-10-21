@@ -385,3 +385,24 @@ def test_install_enabled_has_one_definition_shared_by_staging_resolver_and_insta
         monkeypatch.setenv("INSTALL_X", value)
 
     assert staging.install_enabled("INSTALL_X") == installer.is_enabled("INSTALL_X", True)
+
+
+def test_gdu_and_dust_are_pinned_not_latest_and_dust_needs_a_pinned_sha(monkeypatch: _pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GDU_VERSION", raising=False)
+    monkeypatch.delenv("DUST_VERSION", raising=False)
+    assert staging._resolve_pinned_version(None, staging.GDU_PINNED_VERSION, "GDU_VERSION") == staging.GDU_PINNED_VERSION
+    with _pytest.raises(staging.StageError):
+        staging._resolve_pinned_version("latest", staging.GDU_PINNED_VERSION, "GDU_VERSION")
+    assert staging.DUST_PINNED_VERSION in staging.DUST_PINNED_SHA256
+    with _pytest.raises(staging.StageError, match="no pinned sha256"):
+        staging._stage_dust("9.9.9", [])
+
+
+def test_dust_rejects_an_archive_that_differs_from_the_pinned_sha(tmp_path: Path) -> None:
+    def fake_download(url: str, destination: Path, **_: object) -> str:
+        destination.write_bytes(b"not the pinned archive")
+        return url
+
+    with mock.patch.object(staging, "DOWNLOADS_DIR", tmp_path), mock.patch.object(staging, "_download", side_effect=fake_download):
+        with _pytest.raises(staging.StageError, match="checksum mismatch"):
+            staging._stage_dust(staging.DUST_PINNED_VERSION, [])

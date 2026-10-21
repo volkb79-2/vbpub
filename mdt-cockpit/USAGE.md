@@ -250,6 +250,23 @@ Counterexample (do NOT do this):
 }
 ```
 
+## Installing a package from Debian testing
+
+Debian `testing` (the next release) is a permanent apt source in the image, pinned to priority 100
+together with `oldstable` and `oldstable-backports`: `apt install <pkg>` and `apt upgrade` never take
+a version from it. Refresh the lists and ask for it explicitly:
+
+```bash
+sudo apt-get update
+apt-cache policy <pkg>                     # shows the testing candidate at priority 100
+sudo apt-get install -t testing <pkg>      # or: sudo apt-get install <pkg>/testing
+```
+
+`-t testing` raises testing to 990 for that one command, so the package's dependencies may also come
+from testing; the next plain `apt upgrade` leaves them alone again. Nothing stays installed from
+testing implicitly, but anything you installed from it is held at its installed version only while no
+500-priority archive offers a newer one. Image-level check: `tests/runtime/test_apt_preview.py`.
+
 ## Manifest
 
 The canonical user-facing manifest lives at:
