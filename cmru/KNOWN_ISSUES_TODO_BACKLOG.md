@@ -2317,3 +2317,30 @@ canary fixture copies `git ls-files` output, no `.git`) and FAIL otherwise, with
 and a synthetic test for both polarities, as `tests/test_installer_asset_names.py` now does for its own
 estate reads (KI-89). The same review applies to the other "isolated canary tree" skips (listed in
 `SKIP_GUARDED_MODULES`, `tests/test_project_fixture.py`).
+
+### KI-91 — a failed `cmru release --dry-run` leaves a durable candidate branch and worktree that `cmru abandon` withholds
+
+**Status:** OPEN. Filed 2026-10-21 from PWMCP-09. Related to, but not the same condition as, KI-86 (that one is a
+`--from-worktree` transaction whose recorded `source_commit` differs from `workspace.base`).
+
+**Observed (2026-10-21, cmru 6.2.0, source checkout).** `cmru release pwmcp --dry-run` (default mode, snapshot of
+origin/main `716ceb51485c`) stopped at the changelog check with exit 4 (`pwmcp: .../pwmcp/CHANGES.md section
+[1.64.0-r2] was generated before later project commits landed ... hand edits`) and printed "Release candidate was not
+promoted ... The durable candidate branch cmru-release-20261021_012919-pwmcp-oes4gj was retained for inspection" plus
+"Release transaction failed; retained <worktree> on branch ...". A DRY RUN therefore created a local branch and a
+worktree (with a `chore(pwmcp): prepare release inputs` commit in it) that outlive the command. The cmru, ciu and
+tls-edge dry-runs that succeeded removed their worktrees ("Release transaction complete; isolated worktree removed").
+`cmru abandon cmru-release-20261021_012919-pwmcp-oes4gj --dry-run` and `--yes` both answered
+`Withheld ... transaction scope: unavailable; refs/assets involved: unknown; reason: release scope metadata is missing,
+malformed, or ambiguous`, so the supported verb cannot retire it (a dry run writes no scope record, and abandon treats
+the absence as ambiguity). The branch was local only (no origin branch, no tag).
+
+**Impact:** a dry run is advertised as non-mutating ("No tags pushed, nothing built/published") but leaves retained
+local state whose supported cleanup refuses; the alternative is hand-deleting worktrees and branches, which AGENTS.md
+forbids. Running dry-runs to check a release plan therefore accumulates unremovable candidates whenever the plan stops
+early.
+
+**Fix direction:** (1) a `--dry-run` failure must discard its own disposable worktree and branch, or (2) record a scope
+file for the dry-run candidate so `abandon` can classify it, and (3) make `abandon` distinguish "scope record absent
+for a dry-run candidate with no tag/release/origin evidence" (abandonable) from "ambiguous". Test: a dry-run that fails
+the changelog check leaves no branch or worktree (or leaves one that `abandon --yes` removes).
