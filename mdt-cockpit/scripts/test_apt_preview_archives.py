@@ -1,4 +1,5 @@
-"""Oracle for the preview archives (oldstable, oldstable-backports, testing): visible, never auto-selected."""
+"""Oracle for the apt priority policy: stable 500, stable-backports 600, and the preview archives
+(oldstable, oldstable-backports, testing) at 100 - visible, never auto-selected."""
 from __future__ import annotations
 
 import sys
@@ -12,6 +13,90 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import apt_preferences as prefs  # noqa: E402
 
 ARCHIVES = ("oldstable", "oldstable-backports", "testing")
+
+
+def _stanzas(name: str) -> list[prefs.Stanza]:
+    return prefs.parse_preferences((ROOT / "apt" / name).read_text(encoding="utf-8"))
+
+OPERATOR_PRIORITIES = """\
+# /etc/apt/preferences.d/debian-priorities
+
+# Current stable — normal priority
+Package: *
+Pin: release a=stable
+Pin-Priority: 500
+
+# Current stable backports — preferred over stable
+Package: *
+Pin: release a=stable-backports
+Pin-Priority: 600
+"""
+
+
+def _dockerfile_vendor_hosts() -> set[str]:
+    import re
+
+    text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    # `deb [options] https://host/path ...` as written into sources.list.d by the Dockerfile
+    return set(re.findall(r"\bdeb (?:\[[^\]]*\] )?https?://([^/\s]+)", text)) - {"deb.debian.org"}
+
+
+def test_debian_priorities_is_the_operators_text_byte_for_byte() -> None:
+    assert (ROOT / "apt" / "debian-priorities.pref").read_text(encoding="utf-8").rstrip("\n") == OPERATOR_PRIORITIES.rstrip("\n")
+
+
+def test_every_vendor_source_the_dockerfile_adds_has_a_700_origin_pin_above_backports() -> None:
+    hosts = _dockerfile_vendor_hosts()
+    assert hosts >= {"packages.sury.org", "apt.postgresql.org", "packages.redis.io", "download.docker.com"}, hosts
+    stanzas = _stanzas("vendor-origins.pref")
+    assert prefs.origin_pin_problems(stanzas, tuple(sorted(hosts)), 700) == []
+    assert {s.pin for s in stanzas} == {f"origin {h}" for h in hosts}, "pin for a host the Dockerfile no longer adds"
+    assert min(s.priority for s in stanzas) > 600
+
+
+def test_a_vendor_host_without_a_pin_is_rejected() -> None:
+    problems = prefs.origin_pin_problems(_stanzas("vendor-origins.pref"), ("packages.example.org",), 700)
+    assert problems and "packages.example.org" in problems[0]
+
+
+def test_vendor_origins_are_installed_next_to_debian_priorities() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY --chmod=0644 apt/vendor-origins.pref /etc/apt/preferences.d/vendor-origins" in dockerfile
+    assert dockerfile.index("apt/vendor-origins.pref") < dockerfile.index("# Core system packages")
+
+
+def test_stable_is_500_and_stable_backports_is_600_each_in_its_own_stanza_by_archive_name() -> None:
+    stanzas = _stanzas("debian-priorities.pref")
+    assert prefs.archive_pin_problems(stanzas, ("stable",), 500) == []
+    assert prefs.archive_pin_problems(stanzas, ("stable-backports",), 600) == []
+    assert len(stanzas) == 2
+
+
+def test_the_policy_never_pins_by_codename_and_never_names_a_preview_archive() -> None:
+    # `n=`/`a=trixie-backports` would be the codename; the archive NAME is what apt matches with `a=`.
+    for stanza in _stanzas("debian-priorities.pref"):
+        assert [k for k, _ in stanza.conditions] == ["a"], stanza
+        assert "trixie" not in stanza.pin
+    text = (ROOT / "apt" / "debian-priorities.pref").read_text(encoding="utf-8")
+    assert "# Current stable backports" in text and "# Current stable — normal priority" in text
+
+
+def test_the_preview_archives_do_not_overlap_the_priority_policy() -> None:
+    assert {c for s in _stanzas("preview-archives.pref") for c in s.conditions} == {("a", a) for a in ARCHIVES}
+
+
+def test_the_old_templated_backports_pref_is_gone() -> None:
+    assert not (ROOT / "apt" / "backports.pref.in").exists()
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "backports.pref.in" not in dockerfile and "preferences.d/backports" not in dockerfile
+    assert "COPY --chmod=0644 apt/debian-priorities.pref /etc/apt/preferences.d/debian-priorities" in dockerfile
+    # The backports SOURCE stays codename-based (it is rendered, the pin is not).
+    assert 'BACKPORTS_SUITE="${DEBIAN_VERSION}-backports"' in dockerfile
+
+
+def test_the_temporary_skopeo_pin_beats_stable_backports() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert r"Pin: release a=testing\nPin-Priority: 701" in dockerfile
 
 # The operator's original line. In apt_preferences(5) its three conditions are ANDed, so it matches no
 # archive and testing would keep the default priority 500. Kept as the negative control.

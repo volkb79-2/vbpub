@@ -89,3 +89,15 @@ def archive_pin_problems(stanzas: list[Stanza], archives: tuple[str, ...], prior
         elif matching[0].priority != priority:
             problems.append(f"archive {archive!r} is pinned to {matching[0].priority}, expected {priority}")
     return problems
+
+
+def origin_pin_problems(stanzas: list[Stanza], hosts: tuple[str, ...], priority: int) -> list[str]:
+    """Why `stanzas` do not pin every vendor host in `hosts` to `priority` with its own `Pin: origin` stanza."""
+    problems: list[str] = []
+    for host in hosts:
+        matching = [s for s in stanzas if s.package == "*" and s.pin == f"origin {host}"]
+        if len(matching) != 1:
+            problems.append(f"vendor origin {host!r} needs exactly one `Package: *` `Pin: origin` stanza, found {len(matching)}")
+        elif matching[0].priority != priority:
+            problems.append(f"vendor origin {host!r} is pinned to {matching[0].priority}, expected {priority}")
+    return problems

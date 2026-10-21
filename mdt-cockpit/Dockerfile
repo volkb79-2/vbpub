@@ -132,7 +132,11 @@ ENV DEBIAN_FRONTEND=noninteractive
 USER root
 
 COPY apt/backports.sources.in /tmp/backports.sources.in
-COPY apt/backports.pref.in /tmp/backports.pref.in
+# Priority policy (stable 500, stable-backports 600; testing/oldstable stay 100 via preview-archives). Matches the
+# archive NAME (`a=`), not the codename, which is why it is not templated by suite.
+COPY --chmod=0644 apt/debian-priorities.pref /etc/apt/preferences.d/debian-priorities
+# Vendor repositories (sury, pgdg, redis, docker) at 700, above backports' 600: see the file's comment.
+COPY --chmod=0644 apt/vendor-origins.pref /etc/apt/preferences.d/vendor-origins
 COPY apt/packages.list /tmp/packages.list
 COPY pip/wheels.list /tmp/pip/wheels.list
 COPY pip/wheels/ /tmp/pip/wheels/
@@ -203,7 +207,6 @@ RUN set -euo pipefail; \
     fi; \
     BACKPORTS_SUITE="${DEBIAN_VERSION}-backports"; \
     sed -e "s|@URI@|${BACKPORTS_URI}|g" -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/backports.sources.in > "/etc/apt/sources.list.d/${BACKPORTS_SUITE}.sources"; \
-    sed -e "s|@SUITE@|${BACKPORTS_SUITE}|g" /tmp/backports.pref.in > /etc/apt/preferences.d/backports; \
     apt-get update; \
     # Package list lives in apt/packages.list (one per line; '#' starts a comment). \
     sed 's/#.*//' /tmp/packages.list | xargs apt-get install -y --no-install-recommends; \
@@ -734,13 +737,13 @@ COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archi
 
 # Skopeo from Debian testing (trixie ships 1.18.x, testing 1.22.x). FAILS CLOSED: if testing does not offer
 # a skopeo that apt would install, or the install fails, the build stops with a clear message instead of
-# silently shipping the older trixie skopeo. Only for skopeo, a temporary pin of 501 (just above trixie's
-# 500) lifts testing's package; the pin is removed in the same RUN, so the image leaves this step with
+# silently shipping the older trixie skopeo. Only for skopeo, a temporary pin of 701 (chosen to outrank both the vendor
+# origin pins at 700 and stable-backports at 600, so neither a vendor nor a backported skopeo can win) lifts testing's package; the pin is removed in the same RUN, so the image leaves this step with
 # testing at 100.
 RUN set -euo pipefail; \
     pin=/etc/apt/preferences.d/skopeo-testing; \
     trap 'rm -f "${pin}"' EXIT; \
-    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > "${pin}"; \
+    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 701\n' > "${pin}"; \
     apt-get update; \
     simulated="$(apt-get install --dry-run -y skopeo 2>&1)"; \
     if ! grep -q "^Inst skopeo " <<<"${simulated}"; then \

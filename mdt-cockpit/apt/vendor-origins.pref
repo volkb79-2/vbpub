@@ -1,0 +1,23 @@
+# Vendor repositories added on purpose (Dockerfile: sury PHP, pgdg, redis.io, docker.com).
+#
+# stable-backports sits at 600 (debian-priorities), above the 500 an added repository gets by default, and a
+# higher priority beats a higher version. Without these pins apt would pick a Debian backports build of
+# e.g. postgresql-client, redis-tools or docker-* over the vendor's. An explicitly added vendor repository is
+# the chosen source for its packages, so each one is pinned above backports, by origin (the host of its
+# URI). One stanza per origin. A new vendor source in the Dockerfile needs a stanza here
+# (scripts/test_apt_preview_archives.py fails otherwise).
+Package: *
+Pin: origin packages.sury.org
+Pin-Priority: 700
+
+Package: *
+Pin: origin apt.postgresql.org
+Pin-Priority: 700
+
+Package: *
+Pin: origin packages.redis.io
+Pin-Priority: 700
+
+Package: *
+Pin: origin download.docker.com
+Pin-Priority: 700
