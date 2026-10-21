@@ -33,13 +33,18 @@ mode = "whole_target"
 # r1002 acceptance probe IOB-ACC-01 and by FakeHost-parity tests).
 targets = [
   "src/iobench/__init__.py",
+  "src/iobench/cache.py",
+  "src/iobench/calibrate.py",
   "src/iobench/ceilings.py",
   "src/iobench/cli.py",
   "src/iobench/derive.py",
   "src/iobench/devio.py",
+  "src/iobench/dryrun.py",
+  "src/iobench/errors.py",
+  "src/iobench/extents.py",
   "src/iobench/guard.py",
   "src/iobench/ladder.py",
-  "src/iobench/cache.py",
+  "src/iobench/matrix.py",
   "src/iobench/plan.py",
   "src/iobench/plausibility.py",
   "src/iobench/proposals.py",
@@ -48,6 +53,7 @@ targets = [
   "src/iobench/series.py",
   "src/iobench/shape.py",
   "src/iobench/stages.py",
+  "src/iobench/sweep.py",
   "src/iobench/testing.py",
 ]
 fail_under = 100.0

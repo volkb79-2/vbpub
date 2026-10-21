@@ -232,8 +232,20 @@ class Runner:
         except BaseException:
             self.cleanup("failed", "", 1)
             raise
+        else:
+            status, message, code = self.identity_at_end()
         status, message, code = self.cleanup(status, message, code)
         return self.conclude(status, message, code)
+
+    def identity_at_end(self) -> tuple[str, str, int]:
+        """IOB-PLA-15: the target identity must still match its marker when the run ends, else the run failed."""
+        if self.target is None:
+            return "complete", "", 0
+        try:
+            guard.verify_target(self.host, self.target)
+        except (IobenchError, HostError) as exc:
+            return "failed", f"IOB-PLA-15: the target identity changed during the run ({exc})", 1
+        return "complete", "", 0
 
     def cleanup(self, status: str, message: str, exit_code: int) -> tuple[str, str, int]:
         """Restore every knob, verify io.max, release the lock (IOB-SAF-02/-03/-04)."""

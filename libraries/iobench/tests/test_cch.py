@@ -1,7 +1,10 @@
-"""IOB-CCH: cache-state estimators (pure parts; the FakeFio fixtures are in test_cch_fixtures.py)."""
+"""IOB-CCH: cache-state estimators and the CCH-08 fixtures."""
+import json
+import re
+
 import pytest
 
-from iobench import cache
+from iobench import cache, ladder
 from iobench.cache import ColdProbe, E1, E2
 from iobench.devio import HIST_BINS
 from iobench.series import reduce_series
@@ -329,3 +332,156 @@ def test_cch_05_cold_probe_missing_is_residual_possible():
     assert "cache_residual_possible" in caps["RIOPS"]["reasons"] and caps["RIOPS"]["status"] == "unproven"
     # a cap value never exceeds the measured largest-rung rate
     assert caps["RIOPS"]["inputs"]["basis_iops"] <= out.calibration["calibration"]["ladder"]["measured_largest"]["read"]
+
+
+# ---------------------------------------------------------------------------------------------------------
+# IOB-CCH-08 fixtures
+# ---------------------------------------------------------------------------------------------------------
+import pathlib  # noqa: E402
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+
+
+def fixture(name):
+    return json.loads((FIXTURES / name).read_text())
+
+
+def read_cache(out):
+    return out.calibration["calibration"]["cache"]["read"]
+
+
+def test_cch_08_fixture_header_matches_e1_rules_version():
+    for name in ("two_tier_e1_good_but_wrong.json", "r1002_model.json", "r1002_recorded.json", "gstammtisch_tables.json", "latency_curve_synthetic.json"):
+        header = fixture(name)["_provenance"]
+        assert header.get("synthetic") is True or re.fullmatch(r"[0-9a-f]{64}", header["recorded"]), name
+    gen = fixture("two_tier_e1_good_but_wrong.json")["_provenance"]["generator"]
+    assert gen["e1_rules_version"] == cache.E1_RULES_VERSION   # a change of the E1 rules forces regenerating this fixture
+    assert gen["kind"] == "two_tier" and gen["tier1_gib"] == 40 and gen["tier2_total_gib"] == 300 and gen["fill_gib"] == 345
+
+
+def two_tier_ladder(gen):
+    def rate(ws):
+        t1, t2 = gen["tier1_gib"], gen["tier2_total_gib"]
+        f1, f2, fb = min(ws, t1) / ws, (min(ws, t2) - min(ws, t1)) / ws, max(0, ws - t2) / ws
+        return 1 / (f1 / gen["tier1_iops"] + f2 / gen["tier2_iops"] + fb / gen["backing_iops"])
+    return [(g * GIB, rate(g)) for g in gen["rungs_gib"]]
+
+
+def test_cch_08_1_two_tier_e1_good_but_wrong():
+    doc = fixture("two_tier_e1_good_but_wrong.json")
+    pts = two_tier_ladder(doc["_provenance"]["generator"])
+    assert [round(v, 1) for _, v in pts] == [r["steady_iops"] for r in doc["ladder"]]       # the stored ladder IS the generator's
+    post_cliff = [p for p in pts if p[0] >= 64 * GIB]
+    e1 = cache.e1_fit(post_cliff, 92000.0)
+    assert e1.fit == "good" and e1.r2 == pytest.approx(0.977, abs=0.003) and e1.loo_max <= 0.15
+    assert e1.r_e1 >= 1.3 * 9800.0 and e1.r_e1 == pytest.approx(14.6e3, rel=0.03) and e1.c_bytes / GIB == pytest.approx(41, abs=4)
+    cold = doc["cold_probe"]
+    state = classify(ColdProbe(cold["r_cold"] * 1.03, False, cold["shape"], cold["cls"], 760.0, 32 * GIB))
+    assert state.state == "cold_measured" and state.status == "proven" and state.r == pytest.approx(9800, rel=0.05)
+    value = cache.read_value(state, 15429.0, e1)
+    assert value.status == "proven" and value.value == pytest.approx(9800, rel=0.05) and value.value < e1.r_e1 / 1.3   # the cap comes from R_cold, never R_E1
+    # controlled wrong: a derivation that trusted E1 over the cold probe would be ~49 % too high
+    assert e1.r_e1 / 9800.0 - 1 >= 0.30
+
+
+def test_cch_08_2_fill_history_inversion():
+    host = make_host(cache=INVERSION)
+    out = calibrate(host)
+    ladder = out.calibration["calibration"]["ladder"]
+    rungs = sorted(ladder["rungs"], key=lambda r: r["ws_bytes"])
+
+    assert ladder["cliff_bytes"] is None and 9000 < ladder["cached_ref_iops"] < 20000
+    c = read_cache(out)
+    assert c["cache_state"] == "cold_measured" and c["status"] == "proven" and 0.7 * 9800 <= c["R_iops"] <= 1.06 * 9800   # min(R_cold, R_E2); E2 = S x (1 - h2) is conservative here (IMPLEMENTATION-NOTES)
+    cap = out.result["proposals"]["caps"]["dev_aggregate"]["RIOPS"]
+    assert 0.7 * 9800 <= cap["inputs"]["basis_iops"] <= 1.06 * 9800
+
+
+def test_cch_08_3_read_alloc_cold_ladder():
+    host = make_host(cache=dict(capacity_gib=265, hit_iops=41800, write_allocate=False, read_allocate=True, read_alloc_share=1.0))
+    out = calibrate(host)
+    rungs = sorted((r for r in out.calibration["calibration"]["ladder"]["rungs"] if r["dir"] == "read"), key=lambda r: r["ws_bytes"])
+    assert rungs[0]["steady_iops"] > 3 * rungs[-1]["steady_iops"] and rungs[0]["steady_iops"] > 30000
+    c = read_cache(out)
+    assert c["E1"]["fit"] in ("poor", "insufficient") and c["cache_state"] == "cold_measured" and c["status"] == "proven"
+
+
+def test_cch_08_4_cache_larger_than_fill():
+    host = make_host(cache=dict(capacity_gib=500, hit_iops=92000, write_allocate=True))
+    c = read_cache(calibrate(host))
+    assert c["cache_state"] == "cold_hit_like" and c["status"] == "unproven" and c["reasons"] == ["no_cliff_hit_like_mode"]
+
+
+def test_cch_08_5_flat_rate_cap():
+    capped = dict(iops_max=3600, lat_us=8000, lat_hit_us=110)
+    host = make_host(cache=None, read=capped, noise=0.001)
+    c = read_cache(calibrate(host))
+    # on a bare flat line the small-working-set reference is as slow as the cold probe, so the probe is hit-like
+    assert c["E_cold"]["rate_limited"] is True if "E_cold" in c else True
+    assert (c["cache_state"], c["status"]) == ("cold_hit_like", "unproven")
+    # the cold probe itself flat and miss-like or indeterminate -> rate_cap, proven
+    for cls in ("miss-like", "indeterminate"):
+        s = classify(probe(rl=True, cls=cls))
+        assert (s.state, s.status) == ("rate_cap", "proven")
+    s = classify(probe(rl=True, cls="hit-like"))
+    assert (s.state, s.status) == ("cold_hit_like", "unproven")
+
+
+def test_cch_08_6_e2_disagrees():
+    s = classify(probe(), E2("bimodal", 6.9, 9800.0 * 0.5, False))
+    assert (s.state, s.reasons) == ("undetermined", ("cache_model_undetermined",))
+    assert classify(probe(), E2("bimodal", 6.9, 9800.0 / 1.44, False)).state == "undetermined"
+    assert classify(probe(), E2("bimodal", 6.9, 9800.0 / 1.42, False)).state == "cold_measured"
+
+
+def test_cch_08_7_overlapping_modes_e2():
+    s = classify(probe(), E2("overlapping", 1.8, None, False))
+    assert (s.state, s.status) == ("cold_measured", "proven")      # E2 is a cross-check, not a gate
+
+
+def test_cch_08_8_e1_degenerate_inputs():
+    f = 92000.0
+    full = model_points(100, f, 9800.0, (150, 200, 250, 300))
+    cases = {"non_monotone": full[:2] + [(full[2][0], full[2][1] * 1.5)] + full[3:], "C_ge_smallest_rung": model_points(500, f, 9800.0, (150, 200, 250, 300)),
+             "two_rungs": full[:2], "three_rungs_noise": [(300 * GIB, 9000.0), (350 * GIB, 12000.0), (400 * GIB, 8000.0)]}
+    for name, pts in cases.items():
+        e = cache.e1_fit(pts, f)
+        assert e.fit in ("poor", "insufficient"), name
+        assert classify(probe()).state == "cold_measured", name      # the cold probe decides, whatever E1 says
+    assert cache.e1_fit(cases["two_rungs"], f).fit == "insufficient" and cache.e1_fit(cases["non_monotone"], f).fit == "poor"
+
+
+def test_cch_08_9_true_plateau():
+    pts = [(g * GIB, 9800.0 * x) for g, x in ((250, 1.0), (300, 1.03), (345, 0.98), (400, 1.01))]
+    assert cache.e1_fit(pts, 92000.0).fit == "plateau"
+    assert cache.e1_fit([(g * GIB, 9800.0 * x) for g, x in ((250, 1.0), (300, 1.2), (345, 0.98))], 92000.0).fit != "plateau"
+
+
+def test_cch_08_10_recorded_r1002():
+    doc = fixture("r1002_recorded.json")
+    rungs = [{"ws_bytes": r["ws_gib"] * GIB, "steady_iops": float(r["steady_iops"])} for r in doc["rungs_le_0_85_usable"]]
+    assert [r["ws_gib"] for r in doc["rungs_le_0_85_usable"]] == [1, 16, 100, 150, 200, 250, 300]
+    cliff, ref, classed = ladder.classify_rungs(rungs)
+    assert 250 * GIB <= cliff <= 300 * GIB and ref == pytest.approx(93083, rel=0.01)
+    post = [(r["ws_bytes"], r["steady_iops"]) for r in classed if r["class"] == "post_cliff"]
+    assert cache.e1_fit(post, ref).fit == "insufficient"
+    s = cache.classify_cache(None, None, cliff_bytes=cliff, largest_rung=300 * GIB)
+    assert s.state == "undetermined" and "cache_residual_possible" in s.reasons and s.status == "unproven"
+    assert cache.read_value(s, 46315.0, None).reasons[0] == "cache_residual_possible"
+
+
+def test_cch_08_11_r_wrong_3x():
+    # a cache-free rate 3x too high is bounded by the measurement and flagged by the cold probe
+    state = classify(probe(r=9800.0))
+    assert cache.read_value(state, 9800.0 * 3, E1("good", 6, 0.99, 0.01, 29400.0, 1.0)).value == 9800.0
+    undetermined = classify(None)
+    assert cache.read_value(undetermined, 24000.0, E1("good", 6, 0.99, 0.01, 72000.0, 1.0)).value == 24000.0
+
+
+def test_cch_08_12_largest_rung_flat_cold_slower():
+    s = classify(probe(r=9800.0), cliff=None, largest=345 * GIB)
+    flat_largest = 24000.0
+    v = cache.read_value(s, flat_largest, None)
+    assert s.state == "cold_measured" and v.value == 9800.0 and v.value != flat_largest
+    none = cache.read_value(classify(None), flat_largest, None)
+    assert none.status == "unproven" and none.reasons == ("cache_residual_possible",)

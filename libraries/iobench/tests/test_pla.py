@@ -163,3 +163,70 @@ def test_pla_effects_degrade_only_what_they_list():
     assert P.apply_effects(only, [P.pla_12(9.0)]) == only
     out = P.apply_effects(props, [P.pla_06(10000.0, 9000.0, 32)])
     assert out["caps"]["dev_aggregate"]["RIOPS"]["status"] == "absent"
+
+
+def test_pla_04_mean_vs_steady():
+    c = P.pla_04(["rung-64G"])
+    assert c.status == "info" and c.value == ["rung-64G"] and c.degrades == () if hasattr(c, "degrades") else c.status == "info"
+    assert P.pla_04([]).status == "info" and "none" in P.pla_04([]).detail
+
+
+def test_pla_05_flat_line():
+    c = P.pla_05(["read-seq-1M"])
+    assert c.status == "info" and "read-seq-1M" in str(c.value) + c.detail
+    assert "none" in P.pla_05([]).detail
+
+
+def test_pla_11_shape_fit():
+    assert P.pla_11({"read": "good", "write": "good"}).status == "pass"
+    bad = P.pla_11({"read": "good", "write": "poor"})
+    assert bad.status == "fail" and bad.degrades == ("iocost_model", "iocost_qos") and "shape_fit_poor" in bad.detail
+
+
+def test_pla_12_noise_floor():
+    assert P.pla_12(4.0).status == "pass" and P.pla_12(4.01).status == "fail"
+    assert P.pla_12(5.0).effects == (("writeback", "unproven", "noise_floor_high"),)
+
+
+def _identity_flip_after_body(monkeypatch, flip):
+    from iobench import calibrate as cal_mod
+    original = cal_mod.Calibrator.body
+
+    def body(self):
+        original(self)
+        flip(self.host)
+
+    monkeypatch.setattr(cal_mod.Calibrator, "body", body)
+
+
+def test_pla_15_identity_stable(monkeypatch):
+    from helpers import INVERSION, calibrate, make_host
+    stable = calibrate(make_host(cache=INVERSION))
+    assert stable.status == "complete"
+    host = make_host(cache=INVERSION)
+    _identity_flip_after_body(monkeypatch, lambda h: setattr(h.devices["/dev/vda7"], "partuuid", "00000000-0000-0000-0000-00000000dead"))
+    out = calibrate(host)
+    assert out.status == "failed" and out.exit_code == 1 and "IOB-PLA-15" in out.message
+    assert not host.exists("/var/lib/iobench/calibration.json") or "IOB-PLA-15" not in host.read_text("/var/lib/iobench/calibration.json")
+
+
+def test_pla_16_extent_integrity():
+    from helpers import INVERSION, calibrate, make_host
+    from iobench import devio
+    from iobench.stages import IntegrityViolation
+    host = make_host(cache=INVERSION)
+    from iobench import calibrate as cal_mod
+    from helpers import config
+    r = cal_mod.Calibrator(host, config())
+    r.s0(need_workdir=False)
+    r.allowed_writes.add(0, 1 << 30)
+    ok = devio.FioJob(name="x-ok", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=0, size=1 << 20, runtime_s=1)
+    r.spawn(ok).kill()
+    bad = devio.FioJob(name="x-bad", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=2 << 30, size=1 << 20, runtime_s=1)
+    with pytest.raises(IntegrityViolation, match="IOB-PLA-16"):
+        r.spawn(bad)
+    tail = devio.FioJob(name="x-tail", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=435853320192 - (1 << 20), size=1 << 20, runtime_s=1)
+    r.allowed_writes.add(0, 435853320192)
+    with pytest.raises(IntegrityViolation, match="IOB-PLA-16"):
+        r.spawn(tail)
+    r.safety.release()

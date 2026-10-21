@@ -118,3 +118,31 @@ def test_shp_03_metering():
     assert q["metering"] == "undetermined" and q["linear_model_fit"] == "insufficient"
     only_read = shape.shape_summary([c for c in make_cells(lambda d, p, bs: 14e6 / bs) if c["dir"] == "read"])
     assert only_read["metering_by_dir"]["write"] == "undetermined" and only_read["linear_model_fit_by_dir"]["write"] == "insufficient"
+
+
+def test_shp_04_model_keys():
+    import copy
+    from iobench import proposals as P
+    from helpers import INVERSION, calibrate, make_host, read_json
+    host = make_host(cache=INVERSION)
+    calibrate(host)
+    base = read_json(host, "/var/lib/iobench/calibration.json")["calibration"]
+    history = {"history": "single-run"}
+
+    def proposals_for(cells):
+        c = copy.deepcopy(base)
+        c["shape"] = shape.shape_summary(cells)
+        return P.build_calibration_proposals(c, P.DEFAULT_TARGETS, history)
+
+    erratic = {4096: 9000.0, 16384: 2000.0, 65536: 9500.0, 262144: 1500.0, 1048576: 8000.0}
+    poor = proposals_for(make_cells(lambda d, p, bs: erratic[bs]))
+    assert all(v["status"] == "absent" and v["reason"] == "stage_failed" for v in poor["iocost_model"].values())
+    assert "shape_fit_poor" in poor["iocost_qos"]["max"].get("reasons", ())          # the dependent QoS names the cause
+    # a good fit whose metering is undetermined: computed from the fit, unproven: metering_undetermined
+    und = proposals_for(make_cells(lambda d, p, bs: 1 / ((80e-6 if p == "rand" else 20e-6) + bs * 0.25e-9)))
+    for key in ("wbps", "wseqiops", "wrandiops"):
+        assert und["iocost_model"][key]["status"] == "unproven" and "metering_undetermined" in und["iocost_model"][key]["reasons"]
+        assert und["iocost_model"][key]["value"] > 0
+    # a good, byte-metered fit has no such reason
+    good = proposals_for(make_cells(lambda d, p, bs: 14e6 / bs))
+    assert "metering_undetermined" not in good["iocost_model"]["wbps"].get("reasons", ())

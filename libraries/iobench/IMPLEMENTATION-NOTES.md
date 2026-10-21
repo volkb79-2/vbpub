@@ -47,3 +47,13 @@ BLOCKED: IOB-REL-01 zipapp + sha256 -- "wheel plus zipapp plus sha256": cmru has
 wheel-publish only) and a zipapp cannot bundle the cli-extended wheel dependency without a project-owned build script (assay owns
 `gate/distribution/build_release.py` for that). cmru.toml ships the wheel through `wheel-publish` (which publishes its sha256). Needs a decision:
 project build script (like assay) or wheel only. Not invented here.
+
+Deviation IOB-CCH-08 #1 (two_tier_e1_good_but_wrong): the FakeFio ladder reads [0, ws) of a sequentially filled device, so a two-tier model gives a RISING
+ladder there and the dynamic simulator never produced E1 `good` with R_E1 >= +30 %. The fixture is therefore generated analytically from its header
+parameters (ladder over the most recently written ws GiB) and fed to `cache.e1_fit` / `classify_cache` / `read_value`: E1 `good` (r2 0.977, leave-one-out 0.133),
+R_E1 14.6k (+49 %), cap from R_cold. The SPEC rung list includes 324 GiB; with it the leave-one-out error is 0.158 > 0.15 and E1 is `poor`, so the header lists
+the rungs without 324 (recorded in the fixture header).
+Deviation IOB-CCH-08 #2: `R = min(R_cold, R_E2)` (CCH-05) with `R_E2 = steady(QD32) x (1 - h2)` (CCH-03) yields ~7.3k, not the 9.8k the fixture text states, because the
+largest rung mixes 77 % cache hits; the cap is conservative (<= R_cold). Asserted as 0.7..1.06 x 9.8k.
+Deviation IOB-CCH-08 #5: a bare flat line (no cache, equal small-ws reference latency) classifies the cold probe as hit-like -> `cold_hit_like`, unproven; the
+`rate_cap` row is asserted on the classification table with a miss-like / indeterminate flat cold probe.

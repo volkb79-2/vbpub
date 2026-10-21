@@ -149,6 +149,10 @@ def identity_differs(stored: Mapping[str, Any], live: Mapping[str, Any] | None) 
     return any(sd.get(k) is not None and sd[k] != ld.get(k) for k in OPTIONAL_STRICT)
 
 
+WARNINGS = ("scheduler_changed", "ram_changed", "kernel_changed", "root_source_changed", "workdir_fs_changed", "older_than_180_days",
+            "recalibrate_recommended", "last_run_aborted")
+
+
 def advisory_warnings(stored: Mapping[str, Any], live: Mapping[str, Any], started: float | None, now: float) -> list[str]:
     out = []
     if stored["disk"].get("scheduler") != live["disk"].get("scheduler"):

@@ -45,5 +45,6 @@ libraries/iobench/
 
 ## Status
 
-Specification phase (IOB-03 P1/P2, revision 3 after the controller review). The decisions behind it are IOB-D-001..014 and the rulings R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into
-`mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
+Implemented (IOB-03 P3): the measurement core, safety, proposals, the `iobench` CLI over `cli-extended`, and the replay fixtures, all tested on a fake host (`FakeHost` / `FakeFio`). Not yet done: the live
+acceptance run on r1002 (IOB-ACC-01, IOB-03 P4), the first cmru release (IOB-REL-01; wheel only, no zipapp yet), and the reviewed CLI semantic cases. The decisions behind it are IOB-D-001..014 and the rulings
+R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
