@@ -122,7 +122,7 @@ SPEC §9.
 | RG-102 | Run-Gate raw Docker ephemeral launch duplicates CIU service identity and cannot preserve CIU-rendered network/secrets/mounts/cgroup/user or hand the exact one-shot container identity to the RG-89 observer | Medium | OPEN — after the current release wave, integrate with CIU-141's v7 `ciu run`; structured container-ID and observer lifecycle handoff required |
 | RG-103 | `run-gate doctor` crashes with `KeyError: 'environment'` when the config declares a `kind = "sequence"` lane: the per-lane environment pass calls `resolve_environment`, which reads `lane["environment"]`, a key R-07/RG-74 forbid on sequences | Major | FIXED IN CANDIDATE (filed 2026-10-15, dstdns P242): `doctor` walks sequence members and reports each member's environment facts, names malformed members, and `--check-env` skips the sequence; behavioral tests; registered gate pending |
 | RG-104 | The observer-unavailable rollup rejects Assay's own pre-R0 refusal: Assay (B148/A-484) refuses the whole lane before R0 and stamps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on every requested rigor, but `_observer_unavailable_rollup` accepts the reason only on an R2 claim, so a correct environment refusal surfaces as ERROR `invalid-assay-observer-refusal-claim` (a malformed-verdict reason) | Minor | SUPERSEDED by Assay A-494/A-496 (filed 2026-10-15, dstdns P242 under the 24.0.0 candidate). A-494 replaced the pre-R0 whole-lane refusal with an R2-only one: completed R0/R1 claims and the independent R3 claim are kept, and `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` is stamped on R2 alone, which `_observer_unavailable_rollup` already accepts; A-496 sets the verdict-v16 floor at Assay 10.0.0, which CONSUMERS requires. The all-rigors shape is no longer produced, so no production change; `test_observer_refusal_follows_assay_a494_r2_only_shape` pins R0/R1 PASS + R2 refusal + R3 PASS and refuses the old shape. |
-| RG-109 | A SIGTERM to `run-gate` while a detached lane container runs ends the wrapper but leaves the container running: an orphan that keeps load on a production-shared host (found 2026-10-21 on a `gate-provisional` run, 24.0.1) | Medium | OPEN (filed 2026-10-21, BL-01); root cause not investigated |
+| RG-109 | A SIGTERM to `run-gate` while a detached lane container runs ends the wrapper but leaves the container running: an orphan that keeps load on a production-shared host (found 2026-10-21 on a `gate-provisional` run, 24.0.1) | Medium | OPEN (filed 2026-10-21, BL-01); cause of the survival not determined (see entry) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6401,10 +6401,20 @@ file and `CHANGES.md` for SIGTERM, signal, orphan and stale-container wording: t
 docker-stderr match, and the ticket release on SIGTERM at the transient-ticket section, which is about the runner lock, not
 the container).
 
-**Observed.** `run-gate gate-provisional` (24.0.1) was sent SIGTERM during its `assay` lane. The wrapper ended with
-`GP_EXIT=2` and **left the detached lane container `run-gate-vbpub-assay-3611285-1792554054` running**. The controller removed
-it by its exact name. Why the container survived (the detached form starts it with `docker run -d`, so nothing ties its
-lifetime to the wrapper process) is the expected mechanism but was **not investigated** here; no source was read.
+**Observed (controller-reported; source: controller report 2026-10-21, not in repo, no file in the repo records it).**
+`run-gate gate-provisional` (24.0.1) was sent SIGTERM during its `assay` lane. The wrapper ended with `GP_EXIT=2` and left the
+detached lane container `run-gate-vbpub-assay-3611285-1792554054` running. The controller removed it by its exact name.
+
+**What the code does today (read in `run_gate.py` `main()` and the container lane path).** `main()` installs
+`_sigterm_as_exit`, which raises `SystemExit(128 + signum)` so lane cleanup (including the Docker ticket `finally`) can run, and
+wraps `_dispatch` in an `except (SystemExit, KeyboardInterrupt)` that turns the interruption into
+`LaneResult("ERROR", reason="interrupted-before-a-closed-result")`. So a SIGTERM is already converted to an exit and the wrapper
+does end. The detached lane is started with `docker run -d --name run-gate-<repo>-<lane>-<pid>-<epoch>`, and an in-flight record
+(owner pid, start ticks, container name) is written so that a later invocation can follow or adopt the run. The
+`docker rm -f <name>` calls seen on this path are in the failed-`docker run` branch, the `--fresh` branch and the post-completion
+path; none was found in a handler for the SIGTERM exit. **Why the container survived is not determined:** whether the
+interrupted wait reaches any cleanup was not traced to the end, and the survival may be intended adoption behaviour (hypothesis,
+unverified) rather than an oversight.
 
 **Expected.** A signal to run-gate stops and removes the lane container it started (the detached form, `nyxloom/reference/
 LESSONS.md` L18), or at least prints the container name to remove, so an interrupted run cannot silently keep running.
@@ -6412,11 +6422,12 @@ LESSONS.md` L18), or at least prints the container name to remove, so an interru
 **Why it matters.** An orphaned gate container keeps CPU, memory and disk load on a host shared with production workloads, and
 nothing reports it: the wrapper's exit code looks like an ordinary interruption.
 
-**Fix direction.** Install a SIGTERM/SIGINT handler around the detached-lane wait that runs `docker stop`/`docker rm` on exactly
-the container name it started (never a filter such as `ancestor=`: see the 2026-09-12 incident where an `ancestor=` filter
+**Fix direction (proposal, depends on the open question above).** `main()` already converts SIGTERM to `SystemExit`; if the
+interrupted path indeed runs no teardown of the started lane container, extend that exit path (a try/finally or handler around
+the detached-lane wait) to run `docker stop`/`docker rm` on exactly the container name it started (never a filter such as `ancestor=`: see the 2026-09-12 incident where an `ancestor=` filter
 destroyed a live mutation-lane container), and on a failure to do so print `docker rm -f <exact name>`. Oracle: start a lane
 with a long-running fake command, send SIGTERM to run-gate, and assert the named container is gone (or the printed removal
 command names it).
 
-**Observation only (not a defect filed here).** The same run printed `cgprofile ctl version could not reach the daemon at
+**Observation only (not a defect filed here; controller-reported).** The same run printed `cgprofile ctl version could not reach the daemon at
 /run/cgprofile/ctl.sock` (exit 3) as a profiling WARNING. It degrades profiling, not the verdict.

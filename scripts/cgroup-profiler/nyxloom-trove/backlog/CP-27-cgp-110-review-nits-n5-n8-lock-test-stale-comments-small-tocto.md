@@ -8,7 +8,7 @@ type: "bugfix"
 severity: "low"
 component: "daemon"
 context_estimate: "small"
-provenance: "CGP-110 review round r4 (review-CGP-110.md, section r4 NITs), 2026-10-21; branch cgp-110-20261021 at 6ea5ef2fb (not yet merged)"
+provenance: "CGP-110 review round r4 (controller report 2026-10-21, not in repo), 2026-10-21; branch cgp-110-20261021 at 6ea5ef2fb (not yet merged)"
 filed_by: "vbpub maintenance"
 spec_owner: "cgroup-profiler daemon"
 priority: 3
@@ -20,7 +20,7 @@ filed_date: "2026-10-21"
 The r4 review of CGP-110 (branch `cgp-110-20261021`, commit `6ea5ef2fb`, "fix(cgprofile): bounded finalize lock; guard
 liveness kill and DAMON paths after close (review CGP-110 r3)") returned READY with four NITs, none blocking, and asked that
 they be filed. **The branch is not yet merged**: the `serve.py` and test locations below are as of that commit and may move
-before it lands. Review text: `review-CGP-110.md`, "NITs (backlog, none blocking)" in the program directory.
+before it lands. Review text: controller report 2026-10-21 (not in repo), r4 review of CGP-110, section "NITs (backlog, none blocking)"; the four NITs are restated in full below.
 
 ## The four NITs (grouped; each could be split)
 

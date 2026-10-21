@@ -596,7 +596,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-147 | `ciu up` reports success for a stack whose rendered, bind-mounted config file changed, while the running container keeps serving the OLD config: Compose's recreate diff hashes the service definition, not the content of a bind-mounted file, and CIU never forces a recreate or warns | Medium | OPEN |
 | CIU-148 | `docs/SPEC.md` S15.20 and `docs/DESIGN-NOTES.md` D8 cite dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`, which dstdns merged into `docs/RESOURCE-GOVERNANCE.md` (dstdns docs-sync W20) | Low | OPEN |
 | CIU-149 | `tests/tests/test_ciu_cli_worktree.py::TestWorktreeCreateDispatch::test_forwards_all_options` fails in the registered `ciu` lane (and on origin/main): `--profile` without `--root-folder` hits the S16 selected-root refusal because ciu's own directory is not a CIU root, so `--maxfail=1` ends the lane as EMPTY_COVERAGE | Medium |
-| CIU-151 | `ciu worktree rm` / `clean` cannot find a CIU root in an old checkout that predates the root marker, so it refuses and only `--force` works (found 2026-10-05, again 2026-10-21); related to CIU-115 (stale identity file) and CIU-134 (partial removal, third reproduction 2026-10-21) | Medium | OPEN (filed 2026-10-21, BL-01) |
+| CIU-151 | `ciu worktree rm` cannot find a CIU root in an old checkout, so it refuses and only `--force` works (found 2026-10-05; operator-reported again 2026-10-21, text not recorded); related to CIU-115 (stale identity file) and CIU-134 (partial removal, third reproduction 2026-10-21) | Medium | OPEN (filed 2026-10-21, BL-01) |
 
 
 The approved milestone decisions and serial package order are in
@@ -5066,13 +5066,11 @@ Severity: High (a lifecycle command can complete resource cleanup but leave a br
 **Second reproduction, 2026-10-15 (priority evidence; dstdns P243, ciu 7.16.0).** `ciu worktree rm p243-lane-repair -y` completed its clean: containers, 6 volumes and the network were removed, with `[SUCCESS] clean complete`. It then failed with `[S16] shared workspace removal failed: git worktree remove failed (255): ... Permission denied`. Git had already dropped the worktree registration, but the directory and the branch remained. Five root-owned descendants were written by the runner and the schema-lane clones: `.coverage`, `tests/schema/__pycache__/*.pyc` and `.ciu/ksm/ksm-optin-*.so`. Recovered by hand: a one-shot root container (`rm -rf`) on the host path, then `git worktree prune` and `git branch -d`. Every lane-running worktree leaves such files, so the failure is systematic for dstdns. The supported retry through the S6.5 helper is still needed. The `.ciu/ksm` artifact is CIU's own.
 
 
-**Third reproduction, 2026-10-21 (worktree cleanup, BL-01).** During the estate cleanup, `ciu worktree rm` / `clean` removed
-a tree that contains read-only directories only in part: it half-deleted the tree and the operator had to finish the removal by
-hand. This is the same permission-protected-descendant shape as above, now with read-only (not only root-owned) directories.
-The exact error text of this run is **not recorded** in `memory/worktree-sprawl-cleanup.md` or in
-`WORKTREE-TRIAGE-20261021.md` (the memory note records the 2026-10-05 symptom of a different bug, see CIU-151); only the
-operator's description is available. Required contract unchanged; additionally, the removal should clear the read-only bit
-on directories it owns before deleting (or report them by name) instead of stopping half-way.
+**Third reproduction, 2026-10-21 (worktree cleanup, BL-01).** Operator report (details unrecorded; source: controller report
+2026-10-21, not in repo): `ciu worktree rm` left a half-deleted tree, which the operator finished by hand. The exact error text
+is not recorded anywhere in the repo. Suspected, **unverified**: read-only directories in the tree, the same
+permission-protected-descendant shape as the reproductions above. Required contract unchanged. Proposal: the removal clears the
+read-only bit on directories it owns before deleting (or reports them by name) instead of stopping half-way.
 
 ## CIU-135 — managed worktree overlay intent and recovery can be ambiguous
 
@@ -5509,24 +5507,24 @@ It printed `Active service profile(s): apps,worker-io,worker-db,identity,observa
 
 **Oracles.** `run-gate ciu` completes with a verdict that reflects the whole suite; the test passes from the lane's cwd.
 
-## CIU-151 — `ciu worktree rm` / `clean` cannot find a CIU root in an old checkout that predates the root marker; only `--force` works
+## CIU-151 — `ciu worktree rm` cannot find a CIU root in an old checkout; only `--force` works
 
 Severity: Medium. Type: bugfix. Filed 2026-10-21 (BL-01) from the worktree cleanups of 2026-10-05 and 2026-10-21.
 
-**Observed.** In an old checkout that predates the CIU root marker, `ciu worktree rm` / `clean` cannot find a CIU root, refuses,
-and only `--force` works. Evidence in the repo's memory: `memory/worktree-sprawl-cleanup.md` records, for the 2026-10-05 run,
-"`cmru-secret-git-auth` via `ciu worktree rm --force` (ciu clean can't find a root in an old checkout; force is safe only after
-checking no containers/volumes/networks for its instance id and no `vol-*`/foreign-owned files)". The 2026-10-21 recurrence is
-reported by the operator; its exact refusal text is **not recorded** in that note or in `WORKTREE-TRIAGE-20261021.md`.
+**Observed.** In an old checkout, `ciu worktree rm` cannot find a CIU root, refuses, and only `--force` works. Cause (a missing
+root marker) is a **hypothesis, not verified**. Evidence: controller report 2026-10-21 (not in repo), quoting an operator/controller
+session memory note for the 2026-10-05 run: "`cmru-secret-git-auth` via `ciu worktree rm --force` (ciu clean can't find a root in
+an old checkout; force is safe only after checking no containers/volumes/networks for its instance id and no
+`vol-*`/foreign-owned files)". The 2026-10-21 recurrence is operator-reported; its exact refusal text is **not recorded**.
 
 **Why it matters.** `--force` skips the resource cleanup that `ciu clean` exists to do, so the operator must first verify by
 hand that no container, volume or network of that instance remains. Teardown is the operation an operator reaches for to get
-RID of a stale checkout, and it is blocked by the checkout's age (compare CIU-115, where a pre-schema-2 identity file blocked it).
+rid of a stale checkout, and it is blocked for an old checkout (compare CIU-115, where a pre-schema-2 identity file blocked it).
 
 **Existing entries checked.** CIU-115 (stale generated file fail-closes `worktree rm`; workaround `ciu env generate`) and CIU-134
 (partial removal) are related but not the same: here no root is found at all, so there is nothing for `env generate` to repair.
 
-**Required contract.** For a worktree whose record exists in the shared worktree records but whose checkout has no root marker,
+**Required contract.** For a worktree whose record exists in the shared worktree records but whose checkout has no findable CIU root,
 `rm` should derive the instance identity from the record (or from the labels on the instance's Docker resources), run the same
 `clean` it runs elsewhere, and only then remove the checkout; if it cannot, it must say which resources it could not verify and
 offer a `--force` that prints the exact `docker` objects it is skipping. Oracle: a fixture checkout without the marker, with a
