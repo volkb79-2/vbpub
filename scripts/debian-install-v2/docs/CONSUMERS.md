@@ -107,11 +107,11 @@ guest RAM using `min(RAM × 2, round(20% of disk capacity))`, expressed in GiB.
 Twice the RAM rounds up to a whole GiB; 20% of actual disk bytes rounds to the
 nearest GiB, with half-GiB ties upward. The retained pre-root swap partition,
 when present, is included in that target. For the suggested 20–512 GB disk and
-4–128 GB RAM range, see the [default sizing table](../README.md#disk-swap).
+4–128 GB RAM range, see the [default sizing table](../README.md#disk--swap).
 The default count is four total managed partitions, including retained
 pre-root swap; set `swap_partition_count` to change it. The nominal-capacity
 examples and the reasons for this sizing rule are in the
-[feature overview](../README.md#disk-swap) and
+[feature overview](../README.md#disk--swap) and
 [design rationale](DESIGN-GUIDE.md#root-and-swap-policies).
 
 Partition order is read from sector extents, not partition numbers. The

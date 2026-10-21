@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
+import pytest
 from cli_extended import assert_cli_contract, make_invoker
 
 from debian_install_v2.bootstrap import IDENTITY, build_cli, main
@@ -199,6 +200,25 @@ def test_documented_config_examples_parse_with_the_shipped_loader():
             assert config.schema_version == 1
 
 
+def slug(heading: str) -> str:
+    """GitHub's heading anchor: lowercase, drop punctuation, each space becomes a hyphen."""
+    value = heading.lower().strip()
+    value = re.sub(r"[^\w\- ]", "", value)
+    return value.replace(" ", "-")
+
+
+@pytest.mark.parametrize(
+    ("heading", "anchor"),
+    [
+        ("`vm.swappiness` — why low on these hosts", "vmswappiness--why-low-on-these-hosts"),
+        ("Disk / swap", "disk--swap"),
+        ("Plain heading", "plain-heading"),
+    ],
+)
+def test_slug_follows_github_anchor_rules(heading, anchor):
+    assert slug(heading) == anchor
+
+
 def test_user_guide_relative_links_and_anchors_resolve():
     docs = (
         PROJECT / "README.md",
@@ -206,11 +226,6 @@ def test_user_guide_relative_links_and_anchors_resolve():
         PROJECT / "docs" / "DESIGN-GUIDE.md",
         PROJECT / "debian_install_v2" / "README.md",
     )
-
-    def slug(heading: str) -> str:
-        value = heading.lower().strip()
-        value = re.sub(r"[^\w\- ]", "", value)
-        return re.sub(r"\s+", "-", value)
 
     for source_path in docs:
         source = source_path.read_text(encoding="utf-8")
