@@ -1,0 +1,59 @@
+# iobench's test lane is consumed through run-gate.toml in tester-unified (lanes r0-r1 and r2).
+schema_version = 2
+
+[lanes.iobench]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+argv = [
+  "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q",
+  "--maxfail=1",
+  "--cov=iobench", "--cov-branch", "--cov-report=json:coverage.json",
+]
+env = { PYTHONPATH = "src:../cli-extended/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "360m"
+allow_argv_append = false
+
+[lanes.iobench.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.iobench.judge]
+language = "python"
+source_roots = ["src/iobench"]
+mode = "whole_target"
+# Every shipped module; tests/test_gate.py::test_gate_01_mutation_targets_cover_every_module
+# (IOB-GATE-01) fails when a module under src/iobench is missing here, except the two
+# coverage exclusions host.py and __main__.py (thin real-effect shims, covered by the
+# r1002 acceptance probe IOB-ACC-01 and by FakeHost-parity tests).
+targets = [
+  "src/iobench/__init__.py",
+  "src/iobench/cache.py",
+  "src/iobench/calibrate.py",
+  "src/iobench/ceilings.py",
+  "src/iobench/cli.py",
+  "src/iobench/derive.py",
+  "src/iobench/devio.py",
+  "src/iobench/dryrun.py",
+  "src/iobench/errors.py",
+  "src/iobench/extents.py",
+  "src/iobench/guard.py",
+  "src/iobench/ladder.py",
+  "src/iobench/matrix.py",
+  "src/iobench/plan.py",
+  "src/iobench/plausibility.py",
+  "src/iobench/proposals.py",
+  "src/iobench/restore.py",
+  "src/iobench/result.py",
+  "src/iobench/series.py",
+  "src/iobench/shape.py",
+  "src/iobench/stages.py",
+  "src/iobench/sweep.py",
+  "src/iobench/testing.py",
+]
+fail_under = 100.0

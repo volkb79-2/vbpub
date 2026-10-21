@@ -1,0 +1,2251 @@
+schema_version = 1
+cli_id = "iobench"
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e9472f15680f10599711d4553330b1bdb07e2cbf52385708fa918e7a3a0af58a"
+rationale = "The smallest valid `calibrate` invocation: only the required inputs."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--metering/0aa52ffaa6"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a98be9de2cb55a2dc46c600e31c01fbdec5f46794d6f36bde30ab24434131749"
+rationale = "--metering mixed is one of the closed choices of `calibrate`."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--metering", "mixed"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--metering.0aa52ffaa6]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--metering/1e88129891"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c978a1a1749c691a9b1f264193c6b1be6ceb572f5520496d3651b6f34366bd59"
+rationale = "--metering byte is one of the closed choices of `calibrate`."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--metering", "byte"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--metering.1e88129891]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--metering/937423e60f"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9efc5780ebbec81b79528b1ca8e786b9e5d1853d526dcd6a65ff5e128e3305af"
+rationale = "--metering iops is one of the closed choices of `calibrate`."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--metering", "iops"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--metering.937423e60f]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--profile/acdbec3949"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6e6d917f251259b334057f3542460cf6f0bbb2c4a0071ecaa4bccc29227c4afd"
+rationale = "--profile quick is one of the closed choices of `calibrate`."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--profile", "quick"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--profile.acdbec3949]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--profile/cb2842d668"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b6d097002038e428ff7eed51e46e04fc667bc31e28e384fdd0573d78079d02f9"
+rationale = "--profile standard is one of the closed choices of `calibrate`."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--profile", "standard"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--profile.cb2842d668]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-choice/option:route:entrypoint:iobench/calibrate/--profile/e0b457a3fb"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:100017811d828f6edcf6aa8521241e8e8399fa16bb37b8f421143b8ba0e29ccb"
+rationale = "--profile thorough is one of the closed choices of `calibrate`."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--profile", "thorough"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--profile.e0b457a3fb]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--abort-psi/--abort-psi"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:63abe0cc07046cfa1f3c0bc40795faa314dcd55bd55e26e295205a9bd7e638c2"
+rationale = "--abort-psi is accepted by `calibrate`: Abort when io.pressure some avg10 of the protected cgroup exceeds this for 3 consecutive samples."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--abort-psi", "40"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--abort-psi.--abort-psi]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--assume-r-est/--assume-r-est"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b222883c70c3f7591725d828c411f7e16b9fd7d219235f2e4e5cd7c52b2d7a0c"
+rationale = "--assume-r-est is accepted by `calibrate`: With --dry-run: the write rate (bytes/s) to plan with; otherwise READ from calibration.json."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--assume-r-est", "1.36e9"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--assume-r-est.--assume-r-est]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--budget-minutes/--budget-minutes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5b11aea2d84aae4653a5e3f97942a41f5fb2f8df908bf573cd93ec0561fa4d17"
+rationale = "--budget-minutes is accepted by `calibrate`: Hard wall-clock budget in minutes; overrides the profile."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--budget-minutes", "60"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--budget-minutes.--budget-minutes]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--confirm-quiet-window/--confirm-quiet-window"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1a0c516a05f2d157af8cb359df68de0e57fd2af640af1c0a4a31c695b57ed7cd"
+rationale = "--confirm-quiet-window is accepted by `calibrate`: Confirm that production work may be disturbed now (required on a live host; unlisted systemd units are not detected)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--confirm-quiet-window"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--confirm-quiet-window.--confirm-quiet-window]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:936af1005813df4ee208a8af8374f6f7de4454ed68a5684417e2d41dc35b2c17"
+rationale = "--debug-raw is accepted by `calibrate`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:19b03f1f0e940cf6b5445ee2da5499da6a80014e39f5de1810f61fdd40ed3b26"
+rationale = "--dry-run is accepted by `calibrate`: the shared control --dry-run makes the verb change nothing"
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--dry-run.--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--f-read-ratio/--f-read-ratio"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:926c633179c4ef78a42a53602663a2a7f246de1f31708af1b1006b17074f697b"
+rationale = "--f-read-ratio is accepted by `calibrate`: Smallest acceptable sequential read ratio F (policy default 0.25)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--f-read-ratio", "0.25"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--f-read-ratio.--f-read-ratio]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--governor-histogram/--governor-histogram"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d524314af90014b28cce878df87c9950b53ed0a1fc1b60e714b8b1695b91c18d"
+rationale = "--governor-histogram is accepted by `calibrate`: A governor latency histogram file; recorded as the latency source."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--governor-histogram", "/var/lib/iobench/gov.hist"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--governor-histogram.--governor-histogram]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--installer/--installer"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:376e3c490b21e0bcf86fbee61af8c4e736c9b3e84e8b25c78b4d5a2b28c46a19"
+rationale = "--installer is accepted by `calibrate`: Installer run: waives only the live-host refusals; every target guard still applies."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--installer"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--installer.--installer]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8be5bf83dba046e2c2cf1ede38e8f2de55cc9c31a8655fbb5510967a816ab0db"
+rationale = "--json is accepted by `calibrate`: the shared control --json prints the result as one JSON line"
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--metering/--metering"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f8731fc1f73f4a14668a9e19689675de937446adf9c4057becf588a5e7dc5bd0"
+rationale = "--metering is accepted by `calibrate`: Typed metering override; dependent values become unproven: operator_override."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--metering", "byte"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--metering.--metering]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--p-ms/--p-ms"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f2d7475d4511c55cb4fb3552b248e75b1fa8ec23746bb747d6a2beeed9171137"
+rationale = "--p-ms is accepted by `calibrate`: Probe fdatasync p99 acceptance threshold P in milliseconds (policy default 250)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--p-ms", "250"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--p-ms.--p-ms]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--production-pattern/--production-pattern"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c555bceae2bca1d0a67058d30268adc2e4e5fd0968b0ecb55ac37151f2866f8b"
+rationale = "--production-pattern is accepted by `calibrate`: Regular expression selecting the running containers that count as production (default: any running container)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--production-pattern", "^game"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--production-pattern.--production-pattern]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--production-unit/--production-unit"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6f30721f9fa443b90ef86b950c6d7cbea932f3a7cc98001790745cc75bdd506a"
+rationale = "--production-unit is accepted by `calibrate`: A systemd unit that counts as production when active (repeatable)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--production-unit", "wings.service"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--production-unit.--production-unit]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--profile/--profile"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:25f6b084c8eb213ef2ee558164a982050a655ea392504f34df024e1dde679136"
+rationale = "--profile is accepted by `calibrate`: Calibration profile (quick 12, standard 60, thorough 75 minutes)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--profile", "quick"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--profile.--profile]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--protect-cgroup/--protect-cgroup"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dc9b992a96d35770ceeabc14ad7739aeb5e8407233cfee3b969164e65938ca8d"
+rationale = "--protect-cgroup is accepted by `calibrate`: Cgroup whose io.pressure is watched; a live-host run needs it with --abort-psi (no default)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--protect-cgroup", "wings.slice"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--protect-cgroup.--protect-cgroup]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--state-dir/--state-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d8a5cc6554a7d5e68cb8e91708c5a31385522a506e449e303445f0c1fbf8cea4"
+rationale = "--state-dir is accepted by `calibrate`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--state-dir", "/var/lib/iobench"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--state-dir.--state-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--target/--target"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ef7ca3387d6596e19d3ba45e758976d136547b67cc18efba2cc4323b0b65605a"
+rationale = "--target is accepted by `calibrate`: The prepared target: a device path or a file target (see `target init`)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--target.--target]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--u-dev-share/--u-dev-share"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7e009db6c998868a8834c7b929af543927e43e677b4f4964fa6dfbc2839a5719"
+rationale = "--u-dev-share is accepted by `calibrate`: Dev aggregate share U of the measured basis (policy default 0.70)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--u-dev-share", "0.7"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--u-dev-share.--u-dev-share]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--w-seconds/--w-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5a56303fd36bb87435c4a81668aa852da4ef1c8270414789cb650221b0397c25"
+rationale = "--w-seconds is accepted by `calibrate`: Worst-case sync wait W in seconds (policy default 2)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--w-seconds", "2"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--w-seconds.--w-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/calibrate/option-spelling/option:route:entrypoint:iobench/calibrate/--work-dir/--work-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b21c34e04c4ffb4a6f8acfdcdd52dc474bb10debfc647f156e79c182fab5ea3b"
+rationale = "--work-dir is accepted by `calibrate`: A directory on an EXISTING filesystem for the writeback stages (new or empty)."
+invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--work-dir", "/bench/w"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--work-dir.--work-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fc0e40f68afbd0a21684b3a4f1407f01c4ef98aa430f1856f85242625800b01a"
+rationale = "The smallest valid `ceilings add` invocation: only the required inputs."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--dir/6f3658822a"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:edf0ba0a7366deaef23712dcb390a3aa5f4c46c9a245b40517a7100d1ffb13e0"
+rationale = "--dir read is one of the closed choices of `ceilings add`."
+invocation = ["ceilings", "add", "--dir", "read", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-choice.ceilings.add.--dir.6f3658822a]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--dir/bc2434a12f"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:25d17e6631c67a191666d213c83d7f4123040dd4fc08ea538549b80e04ff11d7"
+rationale = "--dir write is one of the closed choices of `ceilings add`."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-choice.ceilings.add.--dir.bc2434a12f]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--source/4b322f8948"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dd7499ef75d004dcdd47beb142dd53b8982d20a7307830416cfa91257023c225"
+rationale = "--source governor is one of the closed choices of `ceilings add`."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-choice.ceilings.add.--source.4b322f8948]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--source/59a56e97bc"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:25b02106ae89e95d5549b7ebb4818d80468f50bf2b7baa93313db4790842ab45"
+rationale = "--source probe is one of the closed choices of `ceilings add`."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "probe", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-choice.ceilings.add.--source.59a56e97bc]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--source/7f466e0ffd"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dedd482353c706ea0c73f8b112ffec952828dec2e2046a821ae703e87ef926fc"
+rationale = "--source benchmark is one of the closed choices of `ceilings add`."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "benchmark", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-choice.ceilings.add.--source.7f466e0ffd]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--workload/0147cdc27d"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:32a34665483fc054b7019f7b9715a52df696a12c39e4950fde3d0c6221bdce25"
+rationale = "--workload rand4k is one of the closed choices of `ceilings add`."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "rand4k", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-choice.ceilings.add.--workload.0147cdc27d]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-choice/option:route:entrypoint:iobench/ceilings/add/--workload/b30eec8a55"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c8f2cecd54f2f0fa0f3285aede0e02b2477186b3fa2f5cedb67e0c9cd603a981"
+rationale = "--workload seq1m is one of the closed choices of `ceilings add`."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-choice.ceilings.add.--workload.b30eec8a55]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--bps/--bps"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5077bada6f56589f8698675f7a52f697cc107afcc0ee44349475e2a4bcc0df90"
+rationale = "--bps is accepted by `ceilings add`: Sustained plateau in bytes/s."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-spelling.ceilings.add.--bps.--bps]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d3028bd92074b799af51e309e52a07d3e050866533fd69726bae9f98876e24ad"
+rationale = "--debug-raw is accepted by `ceilings add`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-spelling.ceilings.add.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--dir/--dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d1dc5aa30e4579e764e777aea0d76a656930ba39a1d40d1d8251dcbec6cbe168"
+rationale = "--dir is accepted by `ceilings add`: Direction."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-spelling.ceilings.add.--dir.--dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ceab8528d2b9e8e968615f44a5b92bb2eec700665d62e9bf0353c8e3ba6c23e6"
+rationale = "--dry-run is accepted by `ceilings add`: the shared control --dry-run makes the verb change nothing"
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-spelling.ceilings.add.--dry-run.--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--duration-s/--duration-s"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5e84bcf8b1a93f4aa95976611b921ee02f1e852473cb989860afb1000d8f804b"
+rationale = "--duration-s is accepted by `ceilings add`: Observed seconds (>= 60)."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-spelling.ceilings.add.--duration-s.--duration-s]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9a71bc8ee691d51451e3c64a8885e568976fae642fedfeca2e4ebae31b8fc44c"
+rationale = "--json is accepted by `ceilings add`: the shared control --json prints the result as one JSON line"
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-spelling.ceilings.add.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--source/--source"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7d4db8b3de45581e11e66e6471b374852ed8bc1088ac22e4bdfb1dea1f85fcf5"
+rationale = "--source is accepted by `ceilings add`: Who observed it."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-spelling.ceilings.add.--source.--source]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--state-dir/--state-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5a8c2af6834ca57c162b74956a1f5ec940d58a2ac1ef1e84a8de43a1bd89b0d3"
+rationale = "--state-dir is accepted by `ceilings add`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run", "--state-dir", "/var/lib/iobench"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-spelling.ceilings.add.--state-dir.--state-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/add/option-spelling/option:route:entrypoint:iobench/ceilings/add/--workload/--workload"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:45f8a131e4dd60ef33bebeef0884c55978c2432b73d45ff02dd497b9e7731eaf"
+rationale = "--workload is accepted by `ceilings add`: Workload."
+invocation = ["ceilings", "add", "--dir", "write", "--workload", "seq1m", "--bps", "1e9", "--duration-s", "600", "--source", "governor", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"appended\""
+expected_stderr_contains = ""
+effects = ["Dry run: validates the observation and prints it; the ceiling history is not appended"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.add.option-spelling.ceilings.add.--workload.--workload]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/summary/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f3ecff330c53c45812f482a5933224bd1d85d8dcf8205f9b4d6049052f786003"
+rationale = "The smallest valid `ceilings summary` invocation: only the required inputs."
+invocation = ["ceilings", "summary"]
+expected_exit_status = 0
+expected_stdout_contains = "\"history\""
+expected_stderr_contains = ""
+effects = ["Reads the ceiling history; prints worst/median/best per direction and workload; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.summary.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/summary/option-spelling/option:route:entrypoint:iobench/ceilings/summary/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:269eebb9fe745ff155d65ae07063e9bfde122ca3ca52fb3759a32837e491bb65"
+rationale = "--debug-raw is accepted by `ceilings summary`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["ceilings", "summary", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"history\""
+expected_stderr_contains = ""
+effects = ["Reads the ceiling history; prints worst/median/best per direction and workload; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.summary.option-spelling.ceilings.summary.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/summary/option-spelling/option:route:entrypoint:iobench/ceilings/summary/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8522cd01218f521d1a7087e077adc328f8521e35758e9432cade5821ee7029c3"
+rationale = "--json is accepted by `ceilings summary`: the shared control --json prints the result as one JSON line"
+invocation = ["ceilings", "summary", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"history\""
+expected_stderr_contains = ""
+effects = ["Reads the ceiling history; prints worst/median/best per direction and workload; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.summary.option-spelling.ceilings.summary.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/summary/option-spelling/option:route:entrypoint:iobench/ceilings/summary/--state-dir/--state-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fd2b3d813440519d4702ae630ca348fc03d7eb6c804357c396256263f6e2420b"
+rationale = "--state-dir is accepted by `ceilings summary`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
+invocation = ["ceilings", "summary", "--state-dir", "/var/lib/iobench"]
+expected_exit_status = 0
+expected_stdout_contains = "\"history\""
+expected_stderr_contains = ""
+effects = ["Reads the ceiling history; prints worst/median/best per direction and workload; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.summary.option-spelling.ceilings.summary.--state-dir.--state-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/ceilings/summary/option-spelling/option:route:entrypoint:iobench/ceilings/summary/--window-days/--window-days"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2d20307de336ef83a83170f85c1249161b13a8977ca35d818b8acbb562bc9058"
+rationale = "--window-days is accepted by `ceilings summary`: Window in days."
+invocation = ["ceilings", "summary", "--window-days", "30"]
+expected_exit_status = 0
+expected_stdout_contains = "\"history\""
+expected_stderr_contains = ""
+effects = ["Reads the ceiling history; prints worst/median/best per direction and workload; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[ceilings.summary.option-spelling.ceilings.summary.--window-days.--window-days]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ac436f6266ab90089a55656d86bf9442d4e22a268b5eff8a20ceb3181095f42f"
+rationale = "The smallest valid `check` invocation: only the required inputs."
+invocation = ["check"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-choice/option:route:entrypoint:iobench/check/--section/2a456c1f08"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a698805d537f4f3d2e0f24dc2fca1c0548bc8ea4fca76c99900f7cdefea05675"
+rationale = "--section iocost_model is one of the closed choices of `check`."
+invocation = ["check", "--section", "iocost_model"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-choice.check.--section.2a456c1f08]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-choice/option:route:entrypoint:iobench/check/--section/83330de14c"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dfd245d7950273c5b8a4f41c2f487baa62b9599b0a64daf81577ca01bdbc9a40"
+rationale = "--section iocost_qos is one of the closed choices of `check`."
+invocation = ["check", "--section", "iocost_qos"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-choice.check.--section.83330de14c]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-choice/option:route:entrypoint:iobench/check/--section/dcc94bbabb"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9d1dc598b9319c2177bf60f0701bac582efd30e0d81af3d069d36e0ae4489d2c"
+rationale = "--section caps is one of the closed choices of `check`."
+invocation = ["check", "--section", "caps"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-choice.check.--section.dcc94bbabb]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-choice/option:route:entrypoint:iobench/check/--section/f75d215873"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:23f4522a7560499816e9e697cecd950d61dbc1889597a7592d39705174b3e736"
+rationale = "--section writeback is one of the closed choices of `check`."
+invocation = ["check", "--section", "writeback"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-choice.check.--section.f75d215873]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-spelling/option:route:entrypoint:iobench/check/--calibration/--calibration"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3f2934d0de2e79a3ce89422538e42da62c1fb5c67bea68073a907858f287d3bf"
+rationale = "--calibration is accepted by `check`: Check calibration.json instead of result.json."
+invocation = ["check", "--calibration"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-spelling.check.--calibration.--calibration]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-spelling/option:route:entrypoint:iobench/check/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e20f6e3588f7c4af6a27a5f33774a7fbec1fe76df7fa522c612f6ab1c6fe8aeb"
+rationale = "--debug-raw is accepted by `check`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["check", "--debug-raw"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-spelling.check.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-spelling/option:route:entrypoint:iobench/check/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c898a51f1b01c7fe66a6ce4daa9ef06ec816d4b53df783268e26effed4d1f8ec"
+rationale = "--json is accepted by `check`: the shared control --json prints the result as one JSON line"
+invocation = ["check", "--json"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-spelling.check.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-spelling/option:route:entrypoint:iobench/check/--require-strong-identity/--require-strong-identity"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6511c08c1900e5036b3c1e0127d84c7402ec916c1d5c20d92be9b6f9087a95a2"
+rationale = "--require-strong-identity is accepted by `check`: Treat a weak identity (no serial or wwn) as identity_weak on every value."
+invocation = ["check", "--require-strong-identity"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-spelling.check.--require-strong-identity.--require-strong-identity]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-spelling/option:route:entrypoint:iobench/check/--result/--result"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1d6084c407d25feb1c63a2dab0ddd3e581bb9bd0ff27f736ecef1c1a2f8eb865"
+rationale = "--result is accepted by `check`: Check this result file instead of the one in the state directory."
+invocation = ["check", "--result", "/var/lib/iobench/result.json"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-spelling.check.--result.--result]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-spelling/option:route:entrypoint:iobench/check/--section/--section"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3dfd2edea9517fe665119fcda9b275d4050e7e7a6ff9dc6d5930a0674a1453c3"
+rationale = "--section is accepted by `check`: Only this proposal group (repeatable)."
+invocation = ["check", "--section", "caps"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-spelling.check.--section.--section]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/check/option-spelling/option:route:entrypoint:iobench/check/--state-dir/--state-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5cc6520306bde2920a33ed78dbecef71ff83759f985afeacb5e16dac4b6d4921"
+rationale = "--state-dir is accepted by `check`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
+invocation = ["check", "--state-dir", "/var/lib/iobench"]
+expected_exit_status = 7
+expected_stdout_contains = "\"state\""
+expected_stderr_contains = ""
+effects = ["Reads the stored result and live identity; prints the check object; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[check.option-spelling.check.--state-dir.--state-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/constraint-requires/1"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5890ec52bc404fb8abdb15f1b780bd9bb60b99d45b3e19d29a2168ec61abccfb"
+rationale = "--candidates without --knob is refused: candidates only make sense for a knob comparison."
+invocation = ["matrix", "--target", "/dev/vda7", "--candidates", "16777216,33554432", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.constraint-requires.1]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/constraint-requires/2"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:67ba9afbf939e51944bb4972a2c44f23941d5e25690b34efe15ac69c7474c65d"
+rationale = "--repeat without --knob is refused: --repeat only makes sense for a knob comparison."
+invocation = ["matrix", "--target", "/dev/vda7", "--repeat", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.constraint-requires.2]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/constraint-requires/3"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:31cf7b6e5bab6e037291037f69bf745fbbc8d5dbcd8410179d48ef8bf4ae6569"
+rationale = "--knob without --candidates is refused: a knob comparison needs --candidates."
+invocation = ["matrix", "--target", "/dev/vda7", "--knob", "dirty_bytes", "--dry-run"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.constraint-requires.3]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e593e2ab5b2d6898b162626b8637ed1d3c4e944e043d3a2df80d89ac75a71e26"
+rationale = "The smallest valid `matrix` invocation: only the required inputs."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-choice/option:route:entrypoint:iobench/matrix/--knob/2e44431268"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1857fc83d9b2a97470a696705ce39a5373bd54b17315c1a2e991901fccc5f278"
+rationale = "--knob nr_requests is one of the closed choices of `matrix`."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--knob", "nr_requests", "--candidates", "16777216,33554432"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-choice.matrix.--knob.2e44431268]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-choice/option:route:entrypoint:iobench/matrix/--knob/4255a742be"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a285f8a609753dc91068699bb9e36384b530955827b52897ae2e3bc8d1e48aac"
+rationale = "--knob max_sectors_kb is one of the closed choices of `matrix`."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--knob", "max_sectors_kb", "--candidates", "16777216,33554432"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-choice.matrix.--knob.4255a742be]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-choice/option:route:entrypoint:iobench/matrix/--knob/4ee88907f9"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:76f269f9419d69eaebbc87e7adf0f2105565a88869fb6b13a3365dc2afcb0c47"
+rationale = "--knob dirty_bytes is one of the closed choices of `matrix`."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--knob", "dirty_bytes", "--candidates", "16777216,33554432"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-choice.matrix.--knob.4ee88907f9]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--abort-psi/--abort-psi"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:17f11130f903eacb2d7fa6b970b41c4ab7a3fff94a2ca7a60990f288a27b42d3"
+rationale = "--abort-psi is accepted by `matrix`: Abort when io.pressure some avg10 of the protected cgroup exceeds this for 3 consecutive samples."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--abort-psi", "40"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--abort-psi.--abort-psi]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--budget-minutes/--budget-minutes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cbf60fb38fe9094b2b07098831240b195c89c70835fb66767411d3019e1f4c6e"
+rationale = "--budget-minutes is accepted by `matrix`: Hard wall-clock budget in minutes; overrides the profile."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--budget-minutes", "60"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--budget-minutes.--budget-minutes]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--candidates/--candidates"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6e7347d20dcb97ae96fc215a738510256750cc1556527343870fcb8993ba0ef3"
+rationale = "--candidates is accepted by `matrix`: Comma list of 2-3 candidate values for --knob."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--candidates", "16777216,33554432", "--knob", "dirty_bytes"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--candidates.--candidates]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--confirm-quiet-window/--confirm-quiet-window"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:226986ec96e79915c7eb1ddb64bba05df1e737c667e45322d15afa831383b630"
+rationale = "--confirm-quiet-window is accepted by `matrix`: Confirm that production work may be disturbed now (required on a live host; unlisted systemd units are not detected)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--confirm-quiet-window"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--confirm-quiet-window.--confirm-quiet-window]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6c7022d8187a5d07928645973de795d57df69dfb312bd793065cf1a478170a05"
+rationale = "--debug-raw is accepted by `matrix`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0318525c8d74cd32548299cc5444775b4a7bbcc677dd7d541135ebcb1d026146"
+rationale = "--dry-run is accepted by `matrix`: the shared control --dry-run makes the verb change nothing"
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--dry-run.--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--f-read-ratio/--f-read-ratio"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8a6d08dda3922d5ef569e771e3c4c1b0f8318e116b7a79e4de3d36bb15f6f13b"
+rationale = "--f-read-ratio is accepted by `matrix`: Smallest acceptable sequential read ratio F (policy default 0.25)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--f-read-ratio", "0.25"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--f-read-ratio.--f-read-ratio]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--full-sweep/--full-sweep"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b777b11ce47646cbf52b87e6da5c03111c4e2a653154c898e6b0527419488162"
+rationale = "--full-sweep is accepted by `matrix`: Eight sweep cells instead of six."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--full-sweep"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--full-sweep.--full-sweep]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--governor-histogram/--governor-histogram"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:330379d79e4374fe9110b3c94a58d84b42a581c088ffc5734013303d9f8d8be6"
+rationale = "--governor-histogram is accepted by `matrix`: A governor latency histogram file; recorded as the latency source."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--governor-histogram", "/var/lib/iobench/gov.hist"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--governor-histogram.--governor-histogram]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--installer/--installer"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:96101638b8ba90fc38c3d5d750a0801ba6156f864192f6ea3f6dfbbdd7e43e44"
+rationale = "--installer is accepted by `matrix`: Installer run: waives only the live-host refusals; every target guard still applies."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--installer"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--installer.--installer]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2993745a81c690323241112f9a99363535ebac2cb046e8bea5fd41b4208e0ea8"
+rationale = "--json is accepted by `matrix`: the shared control --json prints the result as one JSON line"
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--knob/--knob"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e3017caa08e542a411927f3ed890f1b54c2f3683540d747d45d6ca4bbc394f80"
+rationale = "--knob is accepted by `matrix`: Compare one knob by interleaved A B A B cells instead of the default plan."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--knob", "dirty_bytes", "--candidates", "16777216,33554432"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--knob.--knob]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--p-ms/--p-ms"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8f584a11edf84ed480ee2d612de510b50453438b0643c3532ebab25b7e60a4f4"
+rationale = "--p-ms is accepted by `matrix`: Probe fdatasync p99 acceptance threshold P in milliseconds (policy default 250)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--p-ms", "250"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--p-ms.--p-ms]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--production-pattern/--production-pattern"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:59e798c2ed85ce2b8ad2e2017f0d32a2cd5e1cc31da4e519e499a2ac6a0be49b"
+rationale = "--production-pattern is accepted by `matrix`: Regular expression selecting the running containers that count as production (default: any running container)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--production-pattern", "^game"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--production-pattern.--production-pattern]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--production-unit/--production-unit"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4f9025b5ce967206ced775ac2c20f6a90d32e9cec9f48fdf038c902c265651ce"
+rationale = "--production-unit is accepted by `matrix`: A systemd unit that counts as production when active (repeatable)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--production-unit", "wings.service"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--production-unit.--production-unit]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--protect-cgroup/--protect-cgroup"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9c2fac8383403bb8c95097b02dc59de86fcb4eaf26485daaa356bd8f389851e0"
+rationale = "--protect-cgroup is accepted by `matrix`: Cgroup whose io.pressure is watched; a live-host run needs it with --abort-psi (no default)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--protect-cgroup", "wings.slice"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--protect-cgroup.--protect-cgroup]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--repeat/--repeat"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dde1bb13669ae05055f6cb23cbaad7793d8457bf5d2be4fb667f34cd749bdf56"
+rationale = "--repeat is accepted by `matrix`: Repeat the candidate cells (A B A B) so a decision can be made."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--repeat", "--knob", "dirty_bytes", "--candidates", "16777216,33554432"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--repeat.--repeat]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--state-dir/--state-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e4930cb3a5d36688985414ef55643578a46a16a461def4f9f1e089410e25e986"
+rationale = "--state-dir is accepted by `matrix`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--state-dir", "/var/lib/iobench"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--state-dir.--state-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--target/--target"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ef89864408e664299d91cc9486a2df4992adc70d013886b01fda95e3f31ff9e3"
+rationale = "--target is accepted by `matrix`: The prepared target: a device path or a file target (see `target init`)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--target.--target]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--u-dev-share/--u-dev-share"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a538d819ee6792e366bcef1d7049333039ce699c2ea85496ba96dc1c83a89bf2"
+rationale = "--u-dev-share is accepted by `matrix`: Dev aggregate share U of the measured basis (policy default 0.70)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--u-dev-share", "0.7"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--u-dev-share.--u-dev-share]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--w-seconds/--w-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7c6c62492df1ea331774aa545855ea4600f01bbb415028e008025bd3de08cbdf"
+rationale = "--w-seconds is accepted by `matrix`: Worst-case sync wait W in seconds (policy default 2)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--w-seconds", "2"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--w-seconds.--w-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/matrix/option-spelling/option:route:entrypoint:iobench/matrix/--work-dir/--work-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:21a0f1046c11314a33026bae372ceae8d2450c3a3c5c224223b79fb58c22b320"
+rationale = "--work-dir is accepted by `matrix`: A directory on an EXISTING filesystem for the writeback stages (new or empty)."
+invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--work-dir", "/bench/w"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--work-dir.--work-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/restore/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:28929e935636982f7a378f6333cde4cfd5be7ee436db47683bdb18ea41ac59fa"
+rationale = "The smallest valid `restore` invocation: only the required inputs."
+invocation = ["restore", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"would_restore\""
+expected_stderr_contains = ""
+effects = ["Dry run: reports the pending restore journal; changes no runtime setting"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[restore.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/restore/option-spelling/option:route:entrypoint:iobench/restore/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c556963f664c9abe8802170a05bcde306e3fcd9dd374e660155b666e18c3f96b"
+rationale = "--debug-raw is accepted by `restore`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["restore", "--dry-run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"would_restore\""
+expected_stderr_contains = ""
+effects = ["Dry run: reports the pending restore journal; changes no runtime setting"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[restore.option-spelling.restore.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/restore/option-spelling/option:route:entrypoint:iobench/restore/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2d5ccfd960b6fd5cbb29d99e7b07580b6d95dc1488d993008923b91ecb9e30d6"
+rationale = "--dry-run is accepted by `restore`: the shared control --dry-run makes the verb change nothing"
+invocation = ["restore", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"would_restore\""
+expected_stderr_contains = ""
+effects = ["Dry run: reports the pending restore journal; changes no runtime setting"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[restore.option-spelling.restore.--dry-run.--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/restore/option-spelling/option:route:entrypoint:iobench/restore/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ff8bdf354f0093bab6a4a77a18b0cd8398b3497187a65156cc9cb4684244f766"
+rationale = "--json is accepted by `restore`: the shared control --json prints the result as one JSON line"
+invocation = ["restore", "--dry-run", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"would_restore\""
+expected_stderr_contains = ""
+effects = ["Dry run: reports the pending restore journal; changes no runtime setting"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[restore.option-spelling.restore.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/restore/option-spelling/option:route:entrypoint:iobench/restore/--state-dir/--state-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:79193810989486e0fb52c08c2b7e4d4a99b5e3cc65648d8d38bac106826dcd65"
+rationale = "--state-dir is accepted by `restore`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
+invocation = ["restore", "--dry-run", "--state-dir", "/var/lib/iobench"]
+expected_exit_status = 0
+expected_stdout_contains = "\"would_restore\""
+expected_stderr_contains = ""
+effects = ["Dry run: reports the pending restore journal; changes no runtime setting"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[restore.option-spelling.restore.--state-dir.--state-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:48b6367595d438497215b8486832f9cb5d92352696c74eda386b5d3c891cdc26"
+rationale = "The smallest valid `run` invocation: only the required inputs."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--metering/0aa52ffaa6"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d1e6fcff5cdc05c6df92e48fbfe154f10747aa73a3b23228d8600012b42f44fe"
+rationale = "--metering mixed is one of the closed choices of `run`."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--metering", "mixed"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--metering.0aa52ffaa6]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--metering/1e88129891"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2cdba456b43e72fd82ea061803f5a51d6486ce4ea4076fb5b65b00831da95821"
+rationale = "--metering byte is one of the closed choices of `run`."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--metering", "byte"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--metering.1e88129891]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--metering/937423e60f"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cf289f4e7ef43db859aac82a047c9a0bdd374bae0c1faf175adf0c4d006cc1a0"
+rationale = "--metering iops is one of the closed choices of `run`."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--metering", "iops"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--metering.937423e60f]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--profile/acdbec3949"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e8e50962de267d46ccfc90cee9952602a5c8662c6d7c5bf0ff1ad1fad4aa555e"
+rationale = "--profile quick is one of the closed choices of `run`."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--profile", "quick"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--profile.acdbec3949]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--profile/cb2842d668"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e25faa062b0edff98dad62e858e3ebcdaa035f1cbf58ba8f72b97513b0cd13ab"
+rationale = "--profile standard is one of the closed choices of `run`."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--profile", "standard"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--profile.cb2842d668]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-choice/option:route:entrypoint:iobench/run/--profile/e0b457a3fb"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:916ff168b60104783b95fff1c204d766b9e3edb7652f3a8e7363a390a2448b27"
+rationale = "--profile thorough is one of the closed choices of `run`."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--profile", "thorough"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--profile.e0b457a3fb]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--abort-psi/--abort-psi"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:04af6302797ebf429b43148c34c6f584186b746d80278acbd3aa8d8a61a86688"
+rationale = "--abort-psi is accepted by `run`: Abort when io.pressure some avg10 of the protected cgroup exceeds this for 3 consecutive samples."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--abort-psi", "40"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--abort-psi.--abort-psi]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--assume-r-est/--assume-r-est"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e80a00b2d8146c8d3dcdd125a64422b53eeb6fbb4bef4cc849ad45baa9631bc5"
+rationale = "--assume-r-est is accepted by `run`: With --dry-run: the write rate (bytes/s) to plan with; otherwise READ from calibration.json."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--assume-r-est", "1.36e9"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--assume-r-est.--assume-r-est]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--budget-minutes/--budget-minutes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ac0f597c825dc7038e6b1bffd94d1214a9eb62dc27c53b7113acdfc8a11af853"
+rationale = "--budget-minutes is accepted by `run`: Hard wall-clock budget in minutes; overrides the profile."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--budget-minutes", "60"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--budget-minutes.--budget-minutes]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--confirm-quiet-window/--confirm-quiet-window"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:eaaeccbb356f84fe54d2c68d9eec3aaa8f63505ea51d1ab21cb5681d6ba7c928"
+rationale = "--confirm-quiet-window is accepted by `run`: Confirm that production work may be disturbed now (required on a live host; unlisted systemd units are not detected)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--confirm-quiet-window"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--confirm-quiet-window.--confirm-quiet-window]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7bf9d099e2cf952496273d4f54f8b8f257fd798029f31fa84d72369685077f82"
+rationale = "--debug-raw is accepted by `run`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d99d74ea8e1e2bf004fb4dfa03ac1b1592dfe75b7ddf6a4d6e7659588099a619"
+rationale = "--dry-run is accepted by `run`: the shared control --dry-run makes the verb change nothing"
+invocation = ["run", "--target", "/dev/vda7", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--dry-run.--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--f-read-ratio/--f-read-ratio"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b9245249cd9baf23028f9114fbdbce02fb590487e6045eb5ea82ac541f430434"
+rationale = "--f-read-ratio is accepted by `run`: Smallest acceptable sequential read ratio F (policy default 0.25)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--f-read-ratio", "0.25"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--f-read-ratio.--f-read-ratio]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--full-sweep/--full-sweep"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9d6016381f7235a23dff5cf8c61bb00f8621050565c1fbed08737ca84517d467"
+rationale = "--full-sweep is accepted by `run`: Eight sweep cells instead of six."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--full-sweep"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--full-sweep.--full-sweep]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--governor-histogram/--governor-histogram"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3678796bbfb8be2803aa619fbfd94fe25648ab2acb1f336d83b82404f47c0a4d"
+rationale = "--governor-histogram is accepted by `run`: A governor latency histogram file; recorded as the latency source."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--governor-histogram", "/var/lib/iobench/gov.hist"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--governor-histogram.--governor-histogram]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--installer/--installer"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:242aa84cb59877fcb5bc7b43c29c963b6abf6969b4ccb7be8670064aa97cbf1f"
+rationale = "--installer is accepted by `run`: Installer run: waives only the live-host refusals; every target guard still applies."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--installer"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--installer.--installer]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:af51995d6eab247c669fd3677bbeadbb4fddcb93a35e9102ec667882bd578037"
+rationale = "--json is accepted by `run`: the shared control --json prints the result as one JSON line"
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--metering/--metering"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d917cb45e1203038cc04fd8fc25e937d48210371cd37a400f0295c334d60ef39"
+rationale = "--metering is accepted by `run`: Typed metering override; dependent values become unproven: operator_override."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--metering", "byte"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--metering.--metering]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--p-ms/--p-ms"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e57ea0e854fd9aec310b73988e7d9266b2142d4691194fd5aca83d0f0e676f63"
+rationale = "--p-ms is accepted by `run`: Probe fdatasync p99 acceptance threshold P in milliseconds (policy default 250)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--p-ms", "250"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--p-ms.--p-ms]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--production-pattern/--production-pattern"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:603c93c94b753fbc3f351cd52be73517233e1d285ebdf4648a28b398a6a00f6e"
+rationale = "--production-pattern is accepted by `run`: Regular expression selecting the running containers that count as production (default: any running container)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--production-pattern", "^game"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--production-pattern.--production-pattern]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--production-unit/--production-unit"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7c8f087b1782e5fd84277af45230d54ed9cc8463fb62fb02261503363c630c2f"
+rationale = "--production-unit is accepted by `run`: A systemd unit that counts as production when active (repeatable)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--production-unit", "wings.service"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--production-unit.--production-unit]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--profile/--profile"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:32e3a29ecc30945b1ec2e4c98239eea16ac29ef7b1a809f11f414ffcc934704e"
+rationale = "--profile is accepted by `run`: Calibration profile (quick 12, standard 60, thorough 75 minutes)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--profile", "quick"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--profile.--profile]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--protect-cgroup/--protect-cgroup"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d07ad499dea68ecbd2389bbfe3524db882835d6da5c4c56c1dfd6e49cfb31301"
+rationale = "--protect-cgroup is accepted by `run`: Cgroup whose io.pressure is watched; a live-host run needs it with --abort-psi (no default)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--protect-cgroup", "wings.slice"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--protect-cgroup.--protect-cgroup]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--state-dir/--state-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:62aa62325286c8e3f60ef6b6db3342e1ea51abd6d9b8118cd1ae5343ae6ff4f8"
+rationale = "--state-dir is accepted by `run`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--state-dir", "/var/lib/iobench"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--state-dir.--state-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--target/--target"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:69250635066a6a7cf5b09a23ea4a2b348cad1992b4e6e79e35c4a7ded673e069"
+rationale = "--target is accepted by `run`: The prepared target: a device path or a file target (see `target init`)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--target.--target]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--u-dev-share/--u-dev-share"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:223bb6455baffe0ffd1fe80c8fbc52af3b93be707d6635456cb8acb41ba2fde2"
+rationale = "--u-dev-share is accepted by `run`: Dev aggregate share U of the measured basis (policy default 0.70)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--u-dev-share", "0.7"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--u-dev-share.--u-dev-share]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--w-seconds/--w-seconds"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b7d588fb198c7be250f1eba6562feb377462ac19767ff5e2b953f7d46676efc9"
+rationale = "--w-seconds is accepted by `run`: Worst-case sync wait W in seconds (policy default 2)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--w-seconds", "2"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--w-seconds.--w-seconds]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/run/option-spelling/option:route:entrypoint:iobench/run/--work-dir/--work-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:98ea552305f4111cb2974d40aa89e85586d37793000a4056a65f40a195fc1a3e"
+rationale = "--work-dir is accepted by `run`: A directory on an EXISTING filesystem for the writeback stages (new or empty)."
+invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--work-dir", "/bench/w"]
+expected_exit_status = 0
+expected_stdout_contains = "\"preflight\": \"not_run\""
+expected_stderr_contains = ""
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--work-dir.--work-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--calibration/option:route:entrypoint:iobench/show/--ceilings"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ec03d24c95a09ce54411c73c3d7a5173c697667e7f1f953bee1f6648af286350"
+rationale = "--calibration and --ceilings are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--calibration", "--ceilings"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--calibration.show.--ceilings]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--calibration/option:route:entrypoint:iobench/show/--evidence"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7941fc7e8a4225256d33cb21090144ce817fac1a835547f9690f450d89b50296"
+rationale = "--calibration and --evidence are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--calibration", "--evidence"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--calibration.show.--evidence]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--calibration/option:route:entrypoint:iobench/show/--paths"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:10ebea8331c640c245b3eaace3e88803acf44674c3e14684ac690c91f3d076ff"
+rationale = "--calibration and --paths are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--calibration", "--paths"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--calibration.show.--paths]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--calibration/option:route:entrypoint:iobench/show/--proposals"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:aea25929ad9f7ee295933778be2bf50055c2c10a38f049d33033b0dbde98bd3c"
+rationale = "--calibration and --proposals are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--calibration", "--proposals"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--calibration.show.--proposals]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--ceilings/option:route:entrypoint:iobench/show/--evidence"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2e427d55b030698a47c388971d52537b44e6616f7ea54ea50e1ea754df99e7d9"
+rationale = "--ceilings and --evidence are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--ceilings", "--evidence"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--ceilings.show.--evidence]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--ceilings/option:route:entrypoint:iobench/show/--paths"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2f1567b5ebebcdc83f1c2ff5f958af73433d35836d07850bfdc7a372c67d8966"
+rationale = "--ceilings and --paths are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--ceilings", "--paths"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--ceilings.show.--paths]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--ceilings/option:route:entrypoint:iobench/show/--proposals"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f8f7710325f56dc3b66755b30f4cd8c29c2734c73c0186e2acf4d16255ec0827"
+rationale = "--ceilings and --proposals are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--ceilings", "--proposals"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--ceilings.show.--proposals]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--evidence/option:route:entrypoint:iobench/show/--paths"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d314c580633f4a2599a27d10794aeb7fa5ec6b2091d22089e2c5ba1822a98ae2"
+rationale = "--evidence and --paths are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--evidence", "--paths"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--evidence.show.--paths]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--evidence/option:route:entrypoint:iobench/show/--proposals"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1dc134ede0c989314140986679575d6b6639e01dd1b51305ef8af1f09349821c"
+rationale = "--evidence and --proposals are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--evidence", "--proposals"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--evidence.show.--proposals]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-conflict/what/option:route:entrypoint:iobench/show/--paths/option:route:entrypoint:iobench/show/--proposals"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:75928592516fb3b47ccba5141094b3ba7935f04e1dc3288f0a17291b89634f70"
+rationale = "--paths and --proposals are mutually exclusive: the parser refuses the pair (exit 2)."
+invocation = ["show", "--paths", "--proposals"]
+expected_exit_status = 2
+expected_stdout_contains = ""
+expected_stderr_contains = "[ERROR]"
+effects = ["The invocation is refused before anything runs; nothing is read or written"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-conflict.what.show.--paths.show.--proposals]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-member/what/option:route:entrypoint:iobench/show/--calibration"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e0c9824fcdac8915e439cbb779c3908f0b8d5270feb35611b92d3e0da87607a4"
+rationale = "--calibration alone selects what `show` prints; exactly one member of the group is required."
+invocation = ["show", "--calibration"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-member.what.show.--calibration]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-member/what/option:route:entrypoint:iobench/show/--ceilings"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3413cfc70744178598b8dabf3858b93170b322ab1a37fed4c65d0590d631f189"
+rationale = "--ceilings alone selects what `show` prints; exactly one member of the group is required."
+invocation = ["show", "--ceilings"]
+expected_exit_status = 0
+expected_stdout_contains = "\"header\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-member.what.show.--ceilings]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-member/what/option:route:entrypoint:iobench/show/--evidence"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1647c96668ac8c8d3b955384dcd99e5e441eb7221677b858fd989d65099f7776"
+rationale = "--evidence alone selects what `show` prints; exactly one member of the group is required."
+invocation = ["show", "--evidence"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-member.what.show.--evidence]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-member/what/option:route:entrypoint:iobench/show/--paths"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:db00281cd6590be0be7fa2bd581955bf5a73e4a02150bdb53dad7c9038063e48"
+rationale = "--paths alone selects what `show` prints; exactly one member of the group is required."
+invocation = ["show", "--paths"]
+expected_exit_status = 0
+expected_stdout_contains = "\"calibration\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-member.what.show.--paths]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/exclusive-member/what/option:route:entrypoint:iobench/show/--proposals"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ee945f4c686fb3373060e97e76f383348109044937a75bcf62627cd2ba78dfb3"
+rationale = "--proposals alone selects what `show` prints; exactly one member of the group is required."
+invocation = ["show", "--proposals"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.exclusive-member.what.show.--proposals]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:55c9eeb392d6c36ab5754fe6d00ad795da86cb2a1d872f23545552a15511691e"
+rationale = "The smallest valid `show` invocation: only the required inputs."
+invocation = ["show", "--proposals"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-choice/option:route:entrypoint:iobench/show/--section/2a456c1f08"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9395b5a97bc1d0ddd2fef7af11f5ec0a139f2d12d23ba467d5a84b320e665179"
+rationale = "--section iocost_model is one of the closed choices of `show`."
+invocation = ["show", "--proposals", "--section", "iocost_model"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-choice.show.--section.2a456c1f08]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-choice/option:route:entrypoint:iobench/show/--section/83330de14c"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:72593c996f90797b3c0e1c46724ee2ec10d0c6978d5ab17928f4dd494023f73d"
+rationale = "--section iocost_qos is one of the closed choices of `show`."
+invocation = ["show", "--proposals", "--section", "iocost_qos"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-choice.show.--section.83330de14c]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-choice/option:route:entrypoint:iobench/show/--section/dcc94bbabb"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:17c38765b25c0dc4e7dc7c8d9ad5bcb266673f99d7978ca7fd2a2b33e85296e9"
+rationale = "--section caps is one of the closed choices of `show`."
+invocation = ["show", "--proposals", "--section", "caps"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-choice.show.--section.dcc94bbabb]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-choice/option:route:entrypoint:iobench/show/--section/f75d215873"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:8391e25230f280e90825f7ae1116a33a2c77e0ce0c48f71dbfca413b14084bf5"
+rationale = "--section writeback is one of the closed choices of `show`."
+invocation = ["show", "--proposals", "--section", "writeback"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-choice.show.--section.f75d215873]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-spelling/option:route:entrypoint:iobench/show/--calibration/--calibration"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6aaed5c52b293c777e20feba9986d8fa5e4e1c1bf9aaf511daa87d035f1d1d28"
+rationale = "--calibration is accepted by `show`: Print the calibration object."
+invocation = ["show", "--calibration"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-spelling.show.--calibration.--calibration]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-spelling/option:route:entrypoint:iobench/show/--ceilings/--ceilings"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:956977355cdfba44fa0d662118788ae41080a1d33c2e93d8e1524dc4f34589de"
+rationale = "--ceilings is accepted by `show`: Print the ceilings object."
+invocation = ["show", "--ceilings"]
+expected_exit_status = 0
+expected_stdout_contains = "\"header\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-spelling.show.--ceilings.--ceilings]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-spelling/option:route:entrypoint:iobench/show/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5c0fdf6ee7530a5e6911f338be65db84fb11906e9fb442d3cab71246c3626b0c"
+rationale = "--debug-raw is accepted by `show`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["show", "--proposals", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-spelling.show.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-spelling/option:route:entrypoint:iobench/show/--evidence/--evidence"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:377a4819bc40d90fcddffe19bb87ebfd9c32d634afeee7b195e5b03b90ef4674"
+rationale = "--evidence is accepted by `show`: Print the evidence object."
+invocation = ["show", "--evidence"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-spelling.show.--evidence.--evidence]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-spelling/option:route:entrypoint:iobench/show/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:43b8da4db34bb375e3e68071dfd48cdfa1323950e2360685078bd5e9b28765ff"
+rationale = "--json is accepted by `show`: the shared control --json prints the result as one JSON line"
+invocation = ["show", "--proposals", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-spelling.show.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-spelling/option:route:entrypoint:iobench/show/--paths/--paths"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6e85ef60984653e680b8356b53e8ffbedb97a391930788f170ff94120c7e54ba"
+rationale = "--paths is accepted by `show`: Print the paths object."
+invocation = ["show", "--paths"]
+expected_exit_status = 0
+expected_stdout_contains = "\"calibration\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-spelling.show.--paths.--paths]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-spelling/option:route:entrypoint:iobench/show/--proposals/--proposals"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1335608a36b22f510bc06a7f961d7fe716c66ca08125a213bde250c248a0bb2c"
+rationale = "--proposals is accepted by `show`: Print the proposals object."
+invocation = ["show", "--proposals"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-spelling.show.--proposals.--proposals]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-spelling/option:route:entrypoint:iobench/show/--section/--section"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:27c1366d72cde8af50041dc0a45a5d26cfebc8239b3224737014419b63aa9477"
+rationale = "--section is accepted by `show`: Only this proposal group (with --proposals)."
+invocation = ["show", "--proposals", "--section", "caps"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-spelling.show.--section.--section]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/show/option-spelling/option:route:entrypoint:iobench/show/--state-dir/--state-dir"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f42e4bb2d1ae32e60fa140b53c6e92af962e79019d930d2ad8372d9c75e6f474"
+rationale = "--state-dir is accepted by `show`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
+invocation = ["show", "--proposals", "--state-dir", "/var/lib/iobench"]
+expected_exit_status = 0
+expected_stdout_contains = "\"object\""
+expected_stderr_contains = ""
+effects = ["Reads one stored object and prints it unmodified; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[show.option-spelling.show.--state-dir.--state-dir]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/argument-shape/argument:route:entrypoint:iobench/target/init/device"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9a6c75fafe474d245cb57ad21055a435103bd0bfa6dde3945207ca30cbfc4929"
+rationale = "The positional argument of `target init` is accepted in its documented shape."
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.argument-shape.argument:route:entrypoint:iobench.target.init.device]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9ad5b2624eac6ecd3ac535a1ff363a4793729be5a10407f6fc9c8de5d47d1efd"
+rationale = "The smallest valid `target init` invocation: only the required inputs."
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--allow-large-root-target/--allow-large-root-target"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:4cc13b9896058f3c70e5e3a37dd9dbf456624c115b54c426534c3c4d44d2f8c7"
+rationale = "--allow-large-root-target is accepted by `target init`: Allow --size above 10 % of the free space of the root filesystem."
+invocation = ["target", "init", "--file", "/bench/t.img", "--size", "2147483648", "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--dry-run", "--allow-large-root-target"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--allow-large-root-target.--allow-large-root-target]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--confirm-quiet-window/--confirm-quiet-window"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1b0d2bc00ed75c46012f1beac73c08bad23307b025d0e83c1a9c6b80eec45a77"
+rationale = "--confirm-quiet-window is accepted by `target init`: Required for a file target on the root filesystem."
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run", "--confirm-quiet-window"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--confirm-quiet-window.--confirm-quiet-window]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1e714316c13f52bf1d888834d00b6af030d6a61dae111a6b393c749b61e3fe77"
+rationale = "--debug-raw is accepted by `target init`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3d461e909064440744f0bfe08823f34b5068a1a72f98a86734e93aaa668d1abe"
+rationale = "--dry-run is accepted by `target init`: the shared control --dry-run makes the verb change nothing"
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--dry-run.--dry-run]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--expect-fs-uuid/--expect-fs-uuid"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5b0669b86c91b01820fbba986e2c97ffd4025c3382d2f4b71326ffac162b6dc8"
+rationale = "--expect-fs-uuid is accepted by `target init`: The filesystem UUID; must equal the actual one."
+invocation = ["target", "init", "--file", "/bench/t.img", "--size", "2147483648", "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--expect-fs-uuid.--expect-fs-uuid]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--expect-partuuid/--expect-partuuid"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d45514d39a12471e2537060147724b8bc1969e6695b022e023f48fa4d52cba43"
+rationale = "--expect-partuuid is accepted by `target init`: The PARTUUID; must equal the actual one."
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--expect-partuuid.--expect-partuuid]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--expect-serial/--expect-serial"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:920ea22e7e7064cd89b8302f5cfaecbd35050673f9946a43ef84822491161d76"
+rationale = "--expect-serial is accepted by `target init`: The serial, when the device reports one."
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run", "--expect-serial", "SER-1"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--expect-serial.--expect-serial]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--expect-size/--expect-size"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bd7490d14682e3a554828a9c3a4c207bfa175f253d0b28b8c472fdc961899f10"
+rationale = "--expect-size is accepted by `target init`: The device size in bytes; must equal the actual size."
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--expect-size.--expect-size]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--file/--file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:26d9b93799fd9fa5a326a1f82b3bb114fb445a62a3f3fb022d8063c2cfe76935"
+rationale = "--file is accepted by `target init`: Create a file target at this path on an existing filesystem."
+invocation = ["target", "init", "--file", "/bench/t.img", "--size", "2147483648", "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--file.--file]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--i-own-this-device/--i-own-this-device"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ee05a5c80eb5a5b2c56196a630e8f4843524435ebbfd03af205f525b83cf9cb7"
+rationale = "--i-own-this-device is accepted by `target init`: You own this device and accept that iobench overwrites its last MiB (and writes to the rest under the guards)."
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--i-own-this-device.--i-own-this-device]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--i-own-this-file/--i-own-this-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d55a70f9f9f78ca66f76146bafd0de83c767dcda53254f6db4a3ef66668f5dc8"
+rationale = "--i-own-this-file is accepted by `target init`: You own this path and accept that iobench creates and overwrites it."
+invocation = ["target", "init", "--file", "/bench/t.img", "--size", "2147483648", "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--i-own-this-file.--i-own-this-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f6cd20fd6ab93769c0e0f09a835566482f46ae141cb2105a31621c5831229109"
+rationale = "--json is accepted by `target init`: the shared control --json prints the result as one JSON line"
+invocation = ["target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", "435853320192", "--expect-partuuid", "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007", "--dry-run", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/init/option-spelling/option:route:entrypoint:iobench/target/init/--size/--size"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:77b724749f630c75724c55c324aca6e4015c10e0dd187a3a3320c012ffaecba8"
+rationale = "--size is accepted by `target init`: File target size in bytes (required; the upper bound of everything iobench writes there)."
+invocation = ["target", "init", "--file", "/bench/t.img", "--size", "2147483648", "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--dry-run"]
+expected_exit_status = 0
+expected_stdout_contains = "\"marker_written\""
+expected_stderr_contains = ""
+effects = ["Dry run: runs every target guard and reports the target; writes no marker"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.init.option-spelling.target.init.--size.--size]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/show/argument-shape/argument:route:entrypoint:iobench/target/show/path"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:73f7a6663ee7dad8cef8ca72788320768e631af70cca60e33ad6714229968fd7"
+rationale = "The positional argument of `target show` is accepted in its documented shape."
+invocation = ["target", "show", "/dev/vda7"]
+expected_exit_status = 0
+expected_stdout_contains = "\"target\""
+expected_stderr_contains = ""
+effects = ["Reads the marker and live facts of the target; prints them; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.show.argument-shape.argument:route:entrypoint:iobench.target.show.path]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/show/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:747fad073230965535fc2d46515a03df0b0fefc0767502ff48e5b2820ae5780b"
+rationale = "The smallest valid `target show` invocation: only the required inputs."
+invocation = ["target", "show", "/dev/vda7"]
+expected_exit_status = 0
+expected_stdout_contains = "\"target\""
+expected_stderr_contains = ""
+effects = ["Reads the marker and live facts of the target; prints them; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.show.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/show/option-spelling/option:route:entrypoint:iobench/target/show/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ef8c5928d93fd5f436f5b479dd26f8d5ef33bf5fdcec332ae498bf8c97c9b589"
+rationale = "--debug-raw is accepted by `target show`: the shared control --debug-raw lifts redaction and warns that it did"
+invocation = ["target", "show", "/dev/vda7", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"target\""
+expected_stderr_contains = ""
+effects = ["Reads the marker and live facts of the target; prints them; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.show.option-spelling.target.show.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:iobench/target/show/option-spelling/option:route:entrypoint:iobench/target/show/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d30feed15e600a572b4cab1f8a6bd3a0a418065b64b2027c3284fa7265d68990"
+rationale = "--json is accepted by `target show`: the shared control --json prints the result as one JSON line"
+invocation = ["target", "show", "/dev/vda7", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"target\""
+expected_stderr_contains = ""
+effects = ["Reads the marker and live facts of the target; prints them; changes nothing"]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[target.show.option-spelling.target.show.--json.--json]"]

@@ -1,0 +1,20 @@
+{
+ "_provenance": {
+  "synthetic": true,
+  "generator": {
+   "kind": "single_tier_lru",
+   "capacity_gib": 265,
+   "cached_iops": 92000,
+   "backing_iops": 9800,
+   "formula": "1/((C/ws)/F + (1-C/ws)/R) for ws > C",
+   "calibrated_to": "the recorded r1002 300 GiB point 46315 (model 46440)"
+  }
+ },
+ "capacity_gib": 265,
+ "cached_iops": 92000,
+ "backing_iops": 9800,
+ "write_best_bps": 3200000000.0,
+ "write_worst_bps": 1400000000.0,
+ "best_read_rung": 92000,
+ "expected_qos_max": 1035
+}

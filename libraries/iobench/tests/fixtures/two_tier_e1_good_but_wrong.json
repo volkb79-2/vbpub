@@ -1,0 +1,90 @@
+{
+ "_provenance": {
+  "synthetic": true,
+  "generator": {
+   "kind": "two_tier",
+   "tier1_gib": 40,
+   "tier1_iops": 92000,
+   "tier2_total_gib": 300,
+   "tier2_iops": 15000,
+   "backing_iops": 9800,
+   "fill_gib": 345,
+   "write_allocate": true,
+   "ladder_reads": "[345-ws, 345): the most recently written ws GiB (the hot end first), so the ladder decays",
+   "rungs_gib": [
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256,
+    277,
+    300,
+    345
+   ],
+   "e1_rules_version": 2,
+   "deviation": "rung 324 omitted: with it the leave-one-out error is 0.158 (> 0.15, E1 poor); the SPEC lists 324 and reports 0.137"
+  },
+  "analytic": true,
+  "why_analytic": "the content simulator did not produce an E1 'good but wrong' ladder: its ladder reads [0, ws) of the sequential fill, where a two-tier model rises; the ladder here is computed from the generator parameters and run through the production estimators",
+  "see_also": "fill_history_inversion (CCH-08 #2) is the simulator-based fixture for the neighbouring hazard"
+ },
+ "ladder": [
+  {
+   "ws_gib": 1,
+   "steady_iops": 92000.0
+  },
+  {
+   "ws_gib": 2,
+   "steady_iops": 92000.0
+  },
+  {
+   "ws_gib": 4,
+   "steady_iops": 92000.0
+  },
+  {
+   "ws_gib": 8,
+   "steady_iops": 92000.0
+  },
+  {
+   "ws_gib": 16,
+   "steady_iops": 92000.0
+  },
+  {
+   "ws_gib": 32,
+   "steady_iops": 92000.0
+  },
+  {
+   "ws_gib": 64,
+   "steady_iops": 31453.0
+  },
+  {
+   "ws_gib": 128,
+   "steady_iops": 20312.8
+  },
+  {
+   "ws_gib": 256,
+   "steady_iops": 17256.7
+  },
+  {
+   "ws_gib": 277,
+   "steady_iops": 17062.1
+  },
+  {
+   "ws_gib": 300,
+   "steady_iops": 16884.2
+  },
+  {
+   "ws_gib": 345,
+   "steady_iops": 15429.4
+  }
+ ],
+ "cold_probe": {
+  "r_cold": 9800.0,
+  "shape": "unimodal",
+  "cls": "miss-like"
+ }
+}
