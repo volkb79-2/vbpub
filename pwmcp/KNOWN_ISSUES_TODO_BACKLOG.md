@@ -157,7 +157,7 @@ this lifecycle case.
 
 ## PWMCP-07 — every published pwmcp release ships a bundle its own `get.py` cannot download (asset name lacks the `v`)
 
-**Status: FIXED on main (merged 2026-10-21, gate-provisional PASS at b22b747a6), not released.**
+**Status: FIXED on main (merged 2026-10-21, gate-provisional PASS at b22b747a6), not released; fix C removed by PWMCP-08 (2026-10-21).**
 
 Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; independently reviewed, and the
 review's conclusions (contract, keystone scope, fallback trust, unblock preconditions) are inlined below.
@@ -212,25 +212,23 @@ fake release, so the template is compared with itself. `pwmcp/tests/test_script_
   `tarball-publish`, and a wheel's file name is pip's. A runtime refusal, if wanted later, must be scoped
   to installer projects and make `latest.json`, the release body and the download URL follow the placed
   name. Cross-reference CIU-99 (ciu is the listed no-producer exemption).
-- **C. get.py fallback for the already-published releases:** on a 404 for the canonical name, list the
-  release's assets via the GitHub API (one new request, same token handling as the private path) and take
-  the single `*{ASSET_SUFFIX}` asset whose sha256 sidecar verifies; zero or several, a variant request, or
-  a failed listing are loud refusals, a `<tag>-<variant>` asset never counts as a legacy name; log the path
-  taken. The checked-in installers (`ciu/get.py`, `tls-edge/get.py`, `pwmcp/get.py`) are re-rendered from
-  the changed template in the same change (`cmru get-py <project> --output <project>/get.py`, run
-  in-process from the worktree's cmru); ciu's byte-identity test depends on it. pwmcp's `get.py` sha256
-  must then be re-pinned in mdt-cockpit for C to reach that build. Trust: the sidecar is integrity, not
-  authenticity; the authenticity anchor is the minisign manifest where `manifest_pubkey` is configured,
-  and pwmcp configures none, so the fallback adds no trust beyond what the unfixed installer had.
+- **C. get.py fallback for the already-published releases: REMOVED (PWMCP-08, operator decision
+  2026-10-21: "just leave it be, we clean up eventually").** It had been implemented (listing the release's
+  assets on a 404 and taking the single `*{ASSET_SUFFIX}` asset whose sha256 sidecar verified). It is
+  gone from `get.py.tmpl` and its tests; `get.py` requests exactly `expected_asset_name` and a 404 is a
+  loud refusal naming the requested asset. **Consequence:** the already-published pwmcp releases
+  <= `v1.64.0-r2` (r1, r2, 1.63.0-r2, 1.62.0-r3 and earlier) stay undownloadable by `get.py`; consumers
+  must pin a release >= the next one published after A. The checked-in installers (`ciu/get.py`,
+  `tls-edge/get.py`, `pwmcp/get.py`) are re-rendered from the changed template
+  (`cmru get-py <project> --output <project>/get.py`, in-process from the worktree's cmru); pwmcp's
+  `get.py` sha256 must be re-pinned in mdt-cockpit after the release (not part of this change).
 
 **Unblock options for mdt-cockpit (not done here).**
 - (a) Release pwmcp r3 with fix A (a new tag: mdt-cockpit's `pwmcp.contract.json` version and the
   `PWMCP_VERSION`/get.py URL+sha256 pins change with it). Sound, and needs only A.
-- (b) Re-pin to a commit-pinned `get.py` that carries fix C and keep `pwmcp-v1.64.0-r2`: needs a cmru
-  release containing C, then pwmcp's `get.py` re-rendered with it and committed; not independent of cmru.
-  It also keeps the broken name for every future pwmcp release until A lands.
+- (b) WITHDRAWN: it depended on fix C, which was removed (PWMCP-08).
 - (c) A local-dev build is not set by hand: `MDT_BUILD_MODE=local-dev` is selected only by
   `build-push.py --build --local-dev <manifest.toml>`, which supplies artifacts through the
   `mdt-local-dev` context. Its image is provenance-marked as local-dev and not a releasable image, so (c)
   unblocks a developer build only.
-No existing release works with the current get.py without C.
+No existing release works with `get.py`; only a release published after A does.

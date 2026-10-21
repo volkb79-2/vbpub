@@ -233,7 +233,8 @@ sha256sum -c "pwmcp-v${VERSION}.tar.xz.sha256"
 ```
 
 Releases up to and including `1.64.0-r2` use the unprefixed name
-(`pwmcp-${VERSION}.tar.xz.sha256`); later releases use the `v`-prefixed name above.
+(`pwmcp-${VERSION}.tar.xz.sha256`); later releases use the `v`-prefixed name above. `get.py` installs
+only the later ones (PWMCP-08).
 
 The SHA256 digest is also embedded in the release notes for a quick manual check.
 

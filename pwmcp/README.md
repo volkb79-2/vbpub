@@ -345,7 +345,8 @@ pwmcp-v1.63.0-r4
 ```
 
 Releases up to and including `1.64.0-r2` carry the bundle without the `v`
-(`pwmcp-<version>.tar.xz`); the installer (`get.py`) handles both, see PWMCP-07.
+(`pwmcp-<version>.tar.xz`). The installer (`get.py`) requests only the `v`-prefixed name, so it
+cannot install those releases (PWMCP-08); pin a later release.
 
 The release notes embed the SHA256 digest. Verify any downloaded bundle with:
 
