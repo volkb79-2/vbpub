@@ -572,6 +572,7 @@ class FakeHost:
         return self._resolve(path)
 
     def put(self, path: str, text: str) -> None:
+        path = self._resolve(path)
         self.files[path] = text
         d = posixpath.dirname(path)
         while d and d not in self.dirs:
@@ -668,6 +669,7 @@ class FakeHost:
         for knob, value in (("nr_requests", "64"), ("max_sectors_kb", "1280"), ("max_hw_sectors_kb", "1280"),
                             ("rotational", rotational), ("scheduler", f"[{scheduler}] mq-deadline kyber")):
             self.put(f"{base}/queue/{knob}", value + "\n")
+        self.put(f"{base}/inflight", "0 0\n")
         if serial is not None:
             self.put(f"{base}/device/serial", serial + "\n")
         if model is not None:
@@ -956,4 +958,5 @@ def standard_host(scenario: Scenario | None = None, *, target_size: int = R1002_
         host.put(f"/proc/sys/vm/{name}", value + "\n")
     host.makedirs("/bench")
     host.makedirs("/run")
+    host.makedirs("/sys/fs/cgroup")
     return host

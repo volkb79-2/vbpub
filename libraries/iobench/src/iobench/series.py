@@ -26,6 +26,10 @@ class SeriesError(ValueError):
     """The series cannot be reduced to a trustworthy reading."""
 
 
+class IntegrityError(SeriesError):
+    """NaN, infinity, negative values or non-monotonic timestamps: a data-integrity failure (IOB-PLA-14)."""
+
+
 @dataclass(frozen=True)
 class Reading:
     state: str
@@ -62,11 +66,11 @@ def validate(points: Sequence[Point]) -> None:
     last_t = None
     for i, (t, v) in enumerate(points):
         if not (math.isfinite(t) and math.isfinite(v)):
-            raise SeriesError(f"non-finite value at index {i}")
+            raise IntegrityError(f"non-finite value at index {i}")
         if v < 0:
-            raise SeriesError(f"negative rate at index {i}")
+            raise IntegrityError(f"negative rate at index {i}")
         if last_t is not None and t <= last_t:
-            raise SeriesError(f"timestamps not strictly increasing at index {i}")
+            raise IntegrityError(f"timestamps not strictly increasing at index {i}")
         last_t = t
 
 
