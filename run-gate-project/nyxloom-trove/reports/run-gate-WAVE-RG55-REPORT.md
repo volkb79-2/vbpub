@@ -40,6 +40,10 @@ gates the dstdns brief.
   was stopped on purpose (RW-569). By operator decision the next releases go
   without R2 and the release notes must say so. R2 is revisited when the CP-24
   stop-protocol code lands (needs Assay B157/CP-23 for parallel attribution).
+- **R2 lane budget.** The unmerged `a612d8460` also set the R2 lane budget to
+  `unbounded`. Operator decision 2026-10-21: keep `4h` (`assay.toml`,
+  `run-gate.toml`); revisited together with R2 itself, which is deferred by
+  policy.
 - **cgprofile review blockers.** The Sol review REJECT of 1.0.0 (six blockers:
   placement after origin change, unconfirmed DAMON teardown reporting `ok:true`,
   implicit unbounded `cgprofile.slice`, missing live acceptance of the
