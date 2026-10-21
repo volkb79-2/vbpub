@@ -9,6 +9,29 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+- Fix (RG-55, baseline liveness): the in-process assay progress fallback now
+  bounds the R2 baseline. It follows Assay's `command_started` /
+  `command_running` heartbeat (300 s minimum idle bound, reset by each tick)
+  and keeps that bound from `command_finished` until the `plan` arrives
+  for a lane whose judge inventory PROVES it declares R2 (a `plan` will
+  follow), as a 600 s bound because Assay runs its R1 judge unheartbeated in
+  that window (253 s measured); an unprovable lane gets none and prints one
+  disclosure line; an R0/R1 lane gets only the command-phase heartbeat bound, because
+  its judge phase after `command_finished` (coverage, changed-line coverage)
+  legitimately writes nothing for minutes (measured up to 253 s). The
+  post-plan bound is unchanged. A stream holding only the `run` header remains
+  disclosure-only. Run-gate now requests the Assay heartbeat explicitly
+  (`--progress-heartbeat 60`) and refuses, at load, an assay lane whose
+  `stall_timeout` is below 120 s (twice the heartbeat), which would otherwise
+  stall a healthy baseline. The watch is armed for
+  an assay lane even when profiling is disabled (exec, bare-host and
+  container lanes). Bare-host fallback polling uses `wait4(WNOHANG)` at the
+  progress cadence and still reaps the exact child, so rusage accounting is
+  kept. A progress watch that raises, or a daemon watch that cannot be
+  re-attached, is disclosed and degrades to ordinary waiting instead of
+  affecting the lane's exit. A stall remains an infrastructure outcome.
+  Ported as a third version of the unmerged `a612d8460` against current main.
+
 <!-- cmru: release history -->
 
 ## [24.0.1] - 2026-10-18

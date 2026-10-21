@@ -281,7 +281,9 @@ with sqlfluff in a command lane if the project wants it.
   `"exec"`, or `"socket"`, set `socket_path`, and set `admission_wait`.
   `auto` uses the socket only after a successful version probe and otherwise
   uses Docker exec. The daemon watch is one reader per session; if it is
-  unavailable, the in-process assay watch uses the producer's calibrated
+  unavailable, the in-process assay watch bounds the R2 baseline by Assay's
+  heartbeat (`300s` minimum; run-gate requests a 60 s heartbeat, so an assay
+  lane's `stall_timeout` below `120s` is refused at load) and then uses the producer's calibrated
   cadence and pauses its idle clock during high host memory PSI. For an
   exec or bare-host lane without a placement request, daemon stall policy
   is `report`; a shared container is never a kill target.
