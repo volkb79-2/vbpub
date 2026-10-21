@@ -236,8 +236,9 @@ Placement can also be refused before moving any PID when moving the selected
 set would empty its original systemd unit. The session may still start for
 ordinary observation with `placement.leaf: null` and
 `placement.error: "place-refused:origin-scope-would-empty"`; a one-process
-container scope is the common example. Unknown source membership is refused
-as `place-refused:identity-unavailable`. Do not rely on an unrelated process
+container scope is the common example. Unknown source membership, or a selected
+live process that is no longer in its recorded source unit, is refused as
+`place-refused:identity-unavailable`. Do not rely on an unrelated process
 as a permanent source-unit lease: it can exit between the daemon's check and
 the systemd move. If exact restoration cannot be proved, retain the session
 directory and recovery journal; the daemon will not fall back to a parent

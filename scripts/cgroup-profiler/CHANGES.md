@@ -8,6 +8,18 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+Release scope (CGP-110): the six blockers of the cgprofile-v1.0.0 Sol review.
+**No R2 (mutation) pass for 1.1.0**: R2 is deferred by operator policy; the
+registered `r0-r1` and `r3` lanes are the qualification. No R2 verdict may be
+inferred from the r3 canaries.
+
+- Fix (Sol B1): placement now requires every selected, still-live process to
+  be listed in its recorded origin unit's census immediately before transfer.
+  A process that left the unit since capture is refused
+  (`place-refused:identity-unavailable`) and no scope is created or attached,
+  instead of being moved out of an unrelated unit and later restored to a stale
+  origin.
+
 <!-- cmru: release history -->
 
 ## [1.0.0] - 2026-10-17

@@ -114,7 +114,10 @@ source systemd units. If that empties a Docker-created `.scope`, systemd may
 retire the source unit immediately; the recorded unit/subgroup is then no
 longer a valid exact restoration target. Before the initial transfer,
 cgprofile inventories each recorded source unit's full cgroup subtree and
-requires at least one non-moving process to remain. It repeats the check
+requires at least one non-moving process to remain, and requires every
+selected, still-live process to be listed in its own recorded source unit
+(a process that left it since capture would otherwise be moved out of an
+unrelated unit and restored to a stale origin). It repeats the check
 immediately before each later migration from an origin unit. A known final
 member produces `place-refused:origin-scope-would-empty`; unavailable or
 inconsistent membership produces `place-refused:identity-unavailable`. Both
