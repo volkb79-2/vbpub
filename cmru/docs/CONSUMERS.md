@@ -787,9 +787,10 @@ The native-R2 `mutation` lane requests contract-2 event evidence from
 working observation to those command lanes. The release step for the current
 6.2.0 candidate runs `run-gate gate-provisional`, which skips the long mutation
 lane and records that deferral in `.assay/mutation-postponed-cmru.json` under
-KI-79. The deferral is authorized only for CMRU 6.2.0, so that release is
-`cmru release cmru --minor` (or `--set-version 6.2.0`); the default patch bump
-that `cmru status cmru` reports would be refused by the gate. That release
+KI-79. The deferral is authorized only for CMRU 6.2.0 and 6.2.1 (an explicit set;
+6.2.2, 6.3.0 and every other version refuse), so those releases are
+`cmru release cmru --set-version 6.2.0` / `--set-version 6.2.1` (6.2.0 also with `--minor`); a
+default bump that computes any other version is refused by the gate. That release
 therefore has no mutation event evidence. Read its result from
 `cmru/.assay/release-gate-snapshot.json`: `"state": "provisional"` with a `deferred_lanes`
 entry for `mutation` (never `"passed"`), for example
