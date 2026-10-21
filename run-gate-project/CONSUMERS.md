@@ -112,7 +112,7 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    unavailable, run-gate uses its in-process assay progress watch. That
    fallback bounds the R2 baseline by Assay's `command_started` /
    `command_running` heartbeat (`300s` minimum, reset by each tick; for a lane
-   proven to declare R2 it stays armed until the plan arrives, an R0/R1 lane's
+   proven to declare R2 a 600 s bound covers the wait for the plan, an R0/R1 lane's
    silent judge phase is never bounded; run-gate requests a 60 s heartbeat and
    refuses an assay `stall_timeout` below `120s`), then uses the plan's calibrated cadence (`max(300s, 3x
    the advertised next-event bound)`), and pauses its idle clock while host

@@ -88,7 +88,8 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    A daemon watch is one reader per session and records readings/verdicts;
    `killed` follows the declared stall path and `reported` is one warning,
    never a profiling verdict. When the daemon/watch is unavailable, the
-   in-process assay watch bounds the baseline heartbeat and the plan's
+   in-process assay watch bounds the baseline heartbeat, for an R2 lane the
+   wait for the plan (600 s), and the plan's
    calibrated cadence and pauses its idle clock while host memory PSI `full avg10` is above 5. Before a
    daemon-backed lane starts, R-45 admission checks the verified gates slice;
    any wait is bounded by `admission_wait` (10m default), then the lane

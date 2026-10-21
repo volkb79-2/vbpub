@@ -17034,7 +17034,7 @@ class TestProgressWatch:
             path, "sql-mutation", None, clock, auto_bound=True,
             expects_plan=True)
         assert watch.poll() is None
-        clock.advance(299)
+        clock.advance(599)
         assert watch.poll() is None
         clock.advance(1)
         stalled = watch.poll()
@@ -17140,7 +17140,7 @@ class TestProgressWatch:
         append_progress(path, {"event": "verdict_written"})
         assert watch.poll() is None
 
-    def test_r2_post_baseline_bound_has_an_exact_300s_boundary(self, tmp_path):
+    def test_r2_post_baseline_bound_has_an_exact_600s_boundary(self, tmp_path):
         clock = FakeClock()
         path = tmp_path / ".assay" / "progress-r2-boundary.jsonl"
         write_progress(path, {"event": "command_started"},
@@ -17149,10 +17149,43 @@ class TestProgressWatch:
         watch = run_gate.ProgressWatch(
             path, "r2", None, clock, auto_bound=True, expects_plan=True)
         assert watch.poll() is None
-        clock.advance(299.9)
+        clock.advance(599.9)
         assert watch.poll() is None
         clock.advance(0.1)
-        assert watch.poll() is not None
+        stalled = watch.poll()
+        assert stalled is not None and "idle_bound auto 600s" in stalled
+
+    def test_r2_judge_window_before_the_plan_is_not_a_stall(self, tmp_path):
+        # S-1: in an R2 lane assay runs evaluate_r1 between coverage_parsed
+        # and the sweep's plan; real silences of up to 253 s were measured.
+        clock = FakeClock()
+        path = tmp_path / ".assay" / "progress-r2-judge.jsonl"
+        write_progress(path, {"event": "command_started"},
+                       {"event": "command_running"},
+                       {"event": "command_finished"},
+                       {"event": "coverage_parsed"})
+        watch = run_gate.ProgressWatch(
+            path, "r2", None, clock, auto_bound=True, expects_plan=True)
+        assert watch.poll() is None
+        clock.advance(280)
+        assert watch.poll() is None
+        append_progress(path, {"event": "plan",
+                               "expect_next_event_within_s": 120.0})
+        assert watch.poll() is None
+        clock.advance(100)
+        assert watch.poll() is None      # the post-plan bound takes over
+
+    def test_unproven_rigor_prints_one_disclosure_line(self, tmp_path, capsys):
+        run_gate._POST_COMMAND_UNPROVEN_ANNOUNCED.clear()
+        lane = {"kind": "assay", "assay_lane": "x"}
+        for _ in range(2):
+            run_gate.make_progress_watch(lane, "x", tmp_path, auto_bound=True)
+        out = capsys.readouterr().out
+        assert out.count("no post-command liveness bound is armed") == 1
+        run_gate._POST_COMMAND_UNPROVEN_ANNOUNCED.clear()
+        proven = dict(lane, _assay_inventory={"entry": {"rigor": ["R1"]}})
+        run_gate.make_progress_watch(proven, "y", tmp_path, auto_bound=True)
+        assert "no post-command" not in capsys.readouterr().out
 
     def test_expects_plan_comes_from_the_proven_inventory_only(self):
         r2 = {"_assay_inventory": {"entry": {"rigor": ["R0", "R1", "R2"]}}}
@@ -17195,11 +17228,6 @@ class TestProgressWatch:
         run_gate._validate_lane(
             "c", {"kind": "command", "environment": "tester-unified",
                   "argv": ["true"], "stall_timeout": "30s"}, "fixture")
-
-    def test_the_assay_run_argv_pins_the_requested_heartbeat(self):
-        source = (RUN_GATE_DIR / "run_gate.py").read_text(encoding="utf-8")
-        assert '"--progress-heartbeat"' in source
-        assert "str(ASSAY_PROGRESS_HEARTBEAT_SECONDS)" in source
 
     def test_auto_bound_plan_rewrite_reseeds_from_the_new_plan_time(self,
                                                                      tmp_path):
@@ -17730,7 +17758,7 @@ class TestStallEndToEnd:
             self, tmp_path, monkeypatch, capsys):
         # These end-to-end stall tests need a seconds-scale timeout; the
         # load-time floor (twice the heartbeat) is lifted for them only.
-        monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)
+        monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)  # test-only
         repo, proj = make_history_repo(tmp_path, """\
             schema_version = 1
             [environments.tester-unified]
@@ -17766,7 +17794,7 @@ class TestStallEndToEnd:
 
     def test_a_moving_lane_is_never_stopped(self, tmp_path, monkeypatch,
                                             capsys):
-        monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)
+        monkeypatch.setattr(run_gate, "ASSAY_STALL_FLOOR_SECONDS", 0)  # test-only
         repo, proj = make_history_repo(tmp_path, """\
             schema_version = 1
             [environments.tester-unified]

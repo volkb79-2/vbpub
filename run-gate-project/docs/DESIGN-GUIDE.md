@@ -696,8 +696,8 @@ fallback therefore follows the events of the newest `run` segment in order:
 ```text
 run header
   └─ command_started / command_running  → 300 s minimum idle bound
-       └─ command_finished              → R2 lanes only: keep that bound
-            └─ plan                        while awaiting the plan, then
+       └─ command_finished              → R2 lanes only: a 600 s bound while
+            └─ plan                        awaiting the plan, then
                  │                         max(300 s, 3 × advertised cadence)
                  └─ candidate events    → each one resets the idle clock
 verdict_written                         → nothing left to wait for
@@ -711,9 +711,15 @@ the command phase ONLY. After `command_finished` an R0/R1 judge parses
 coverage and judges changed lines and writes nothing (silences of up to 253 s
 measured in real cmru R1 streams), so a bound there would kill healthy lanes;
 the post-command bound is armed only when the judge inventory proves the lane
-declares R2, i.e. a `plan` follows within seconds (0.6 to 3.3 s measured).
-When the declaration cannot be proved, no post-command bound is applied (the
-pre-existing behavior), never a guessed one. The previous
+declares R2, i.e. a `plan` will follow. That window is NOT short: an R2 lane
+runs its R1 judge between `coverage_parsed` and the sweep's `plan`, silently
+(253 s measured on cmru-class trees; the 0.6 to 3.3 s gaps seen in 25 other
+streams are tree-dependent, not a guarantee), so the R2 window is 600 s, more
+than twice the measurement, and exists to catch a wedge. If R1 fails no plan
+ever comes and the bound runs to `verdict_written`. When the declaration cannot
+be proved, no post-command bound is applied (the pre-existing behavior) and one
+line says so; never a guessed bound. Asking Assay for a judge-phase heartbeat
+would let this window shrink. The previous
 `run` segments are fenced off (see above), and during an automatic bound host
 memory PSI `full avg10 > 5` pauses the clock: pressure-affected time is not
 silence.

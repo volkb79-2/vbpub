@@ -658,6 +658,9 @@ PROGRESS_POLL_SECONDS = 30
 # `stall_timeout` must also leave room for it (see `_validate_stall_timeout`).
 ASSAY_PROGRESS_HEARTBEAT_SECONDS = 60
 ASSAY_STALL_FLOOR_SECONDS = 2 * ASSAY_PROGRESS_HEARTBEAT_SECONDS
+# Idle bound for an R2 lane between Assay's `command_finished` and its `plan`
+# (evaluate_r1 runs there, unheartbeated; 253 s measured, so 600 s is >2x).
+POST_COMMAND_BOUND_SECONDS = 600.0
 
 # RG-55 / SPEC R-43: cgroup-profiler daemon client
 # (RG55-INTERFACE-CONTRACT.md, contract 1). run-gate never depends on the
@@ -11166,6 +11169,15 @@ class ProgressWatch:
             return float(self.stall_seconds)
         if not self.auto_bound:
             return None
+        if self._baseline_finished and not self._plan_seen \
+                and not self._command_active:
+            # R2 lane between `command_finished` and the sweep's `plan`: Assay
+            # runs evaluate_r1 here and writes nothing while it does (measured
+            # silences up to 253 s on cmru-class trees, with no heartbeat in
+            # the judge phase). 600 s is more than twice that measurement; the
+            # window is a bound on a wedge, not an expectation of how long the
+            # judge takes.
+            return POST_COMMAND_BOUND_SECONDS
         # D-22: the producer's calibrated cadence is authoritative.  A
         # missing/torn plan event is genuinely unknown, so the mechanical
         # minimum is the only policy fact we can safely apply.
@@ -11591,6 +11603,9 @@ def print_lane_bounds(lane: dict, owner_pid: int | None = None) -> None:
               flush=True)
 
 
+_POST_COMMAND_UNPROVEN_ANNOUNCED: set = set()
+
+
 def lane_declares_r2(lane: dict) -> bool:
     """True only when the judge inventory PROVES the assay lane declares R2
     (so a `plan` event will follow its baseline). Unknown is False: an
@@ -11632,6 +11647,15 @@ def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
     if progress is None:
         return None
     stall = lane.get("stall_timeout")
+    if auto_bound and not isinstance(
+            (lane.get("_assay_inventory") or {}).get("entry"), dict):
+        key = lane_name
+        if key not in _POST_COMMAND_UNPROVEN_ANNOUNCED:
+            _POST_COMMAND_UNPROVEN_ANNOUNCED.add(key)
+            print(f"run-gate: progress {lane_name}: judge inventory "
+                  f"unavailable, R2 not proven: no post-command liveness "
+                  f"bound is armed (the command heartbeat and the post-plan "
+                  f"bound still apply)", flush=True)
     pressure_reader = None
     if auto_bound:
         def pressure_reader():

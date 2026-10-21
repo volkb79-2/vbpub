@@ -14,7 +14,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   `command_running` heartbeat (300 s minimum idle bound, reset by each tick)
   and keeps that bound from `command_finished` until the `plan` arrives
   for a lane whose judge inventory PROVES it declares R2 (a `plan` will
-  follow); an R0/R1 lane gets only the command-phase heartbeat bound, because
+  follow), as a 600 s bound because Assay runs its R1 judge unheartbeated in
+  that window (253 s measured); an unprovable lane gets none and prints one
+  disclosure line; an R0/R1 lane gets only the command-phase heartbeat bound, because
   its judge phase after `command_finished` (coverage, changed-line coverage)
   legitimately writes nothing for minutes (measured up to 253 s). The
   post-plan bound is unchanged. A stream holding only the `run` header remains

@@ -2092,9 +2092,11 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     command, so before the plan the baseline's `command_started` /
     `command_running` heartbeat (B064; run-gate requests it explicitly with
     `--progress-heartbeat 60`) arms a `300s` minimum bound that every
-    heartbeat resets. After `command_finished` the same `300s` minimum stays
-    armed until the `plan` arrives ONLY for a lane whose judge inventory proves
-    it declares R2; an R0/R1 lane (or one whose inventory is unavailable) has
+    heartbeat resets. After `command_finished` a `600s` bound stays armed until
+    the `plan` arrives ONLY for a lane whose judge inventory proves it declares
+    R2 (Assay runs its R1 judge in that window and writes nothing while it does:
+    up to 253 s measured, so 600 s is more than twice that; the window bounds a
+    wedge, it is not an expectation of how long the judge takes); an R0/R1 lane (or one whose inventory is unavailable) has
     no post-command bound, because its judge phase (coverage parse,
     changed-line coverage) writes nothing for minutes and no plan follows
     (`verdict_written` clears the bound in any case). After the `plan` the bound is `max(300s, 3 ×
