@@ -11,7 +11,7 @@ find_links = "vendor"
 
 [archive]
 # PWMCP_VERSION is written by CMRU's explicit pwmcp prepare phase (e.g. "1.60.0-r2").
-name_template = "pwmcp-{version}.tar.xz"
+name_template = "pwmcp-v{version}.tar.xz"
 format = "xztar"
 version_env = "PWMCP_VERSION"
 

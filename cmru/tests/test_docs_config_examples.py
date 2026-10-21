@@ -39,8 +39,25 @@ def test_every_documented_toml_example_is_current_toml_and_versioned(tmp_path):
     # The consumer document owns the only complete config pair. README and the
     # secret-file example; README and the design guide link to those rather than
     # publishing partial TOML fragments that cannot pass the installed reader.
-    # Its fourth block is the `oci-image-release` push-step excerpt (KI-78).
-    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 4}
+    # Its fourth block is the `oci-image-release` push-step excerpt (KI-78); its fifth is
+    # the `bundle.toml` `[archive] name_template` contract-name example (KI-89), which
+    # `test_consumers_bundle_name_template_example_is_the_contract_name` loads with the
+    # shipped archive-template validator.
+    assert block_counts == {"README.md": 0, "DESIGN-GUIDE.md": 0, "CONSUMERS.md": 5}
+
+
+def test_consumers_bundle_name_template_example_is_the_contract_name():
+    from cmru.bundle import _validate_archive_template
+    from cmru.release import bundle_asset_name
+
+    text = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    blocks = [
+        tomllib.loads(b) for b in re.findall(r"```toml\n(.*?)```", text, flags=re.DOTALL)
+    ]
+    (example,) = [b for b in blocks if "archive" in b]
+    template = example["archive"]["name_template"]
+    _validate_archive_template(template)
+    assert template.format(version="1.2.3") == bundle_asset_name("myproj", "1.2.3", ".tar.xz")
 
 
 def test_runtime_vocabulary_and_workspace_contract_are_documented():

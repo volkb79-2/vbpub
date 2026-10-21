@@ -254,6 +254,12 @@ SKIP_GUARDED_MODULES = {
     "test_bootstrap_from_zero_sequence.py": "_needs_repo / _needs_run_gate_tools skipifs (isolated canary tree)",
     "test_w2_integ.py": "reads ciu/cmru.toml and mdt files, which the fixture keeps out so the estate tests skip",
 }
+# NOTE (KI-88): test_installer_asset_names.py reads the sibling installer projects through a
+# non-literal path (`REPO / name / "cmru.toml"`), which the REPO_ROOT-literal scan below cannot
+# see, so it is not listed here. Its guard: the repo-reading checks skip only when the tree is
+# not a git checkout (the fixture copy has no .git), an UNSKIPPED test fails a checkout that
+# lacks an orchestrated project, and synthetic tests pin both polarities. A change to that
+# guard must be reviewed against this closure rule.
 # Individual repository-root paths a scanned module reads without needing them
 # copied: each is asserted ABSENT, or guarded by a skip, in that module.
 UNCARRIED_PATHS = {

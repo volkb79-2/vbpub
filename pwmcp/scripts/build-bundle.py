@@ -4,7 +4,7 @@
 Reads PWMCP_VERSION from cmru.vars (written by CMRU's pwmcp prepare phase).
 Uses cmru.bundle for the actual archive creation.
 
-Output: pwmcp/dist/pwmcp-<version>.tar.gz
+Output: pwmcp/dist/pwmcp-v<version>.tar.xz  (the contract name <tag><suffix>, PWMCP-07)
 """
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ def build_cli() -> RegisteredCli:
         long_name="stack bundle build",
         description="Build the consumer-facing pwmcp stack bundle into dist/ from the prepared coordinate.",
         handler=_build,
-        preview=lambda _args: "would build dist/pwmcp-<version>.tar.xz from bundle.toml",
+        preview=lambda _args: "would build dist/pwmcp-v<version>.tar.xz from bundle.toml",
     )
 
 

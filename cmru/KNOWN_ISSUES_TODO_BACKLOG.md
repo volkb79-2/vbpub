@@ -2266,3 +2266,52 @@ the test instead of imported from the fixture, and "under `cmru/`" counts as car
 **Fix direction:** an AST walk resolving `Name / "lit"` chains for every repository-root spelling; exclusions per test
 function or per skipif marker (assert the marker is still present); expose the fixture's pathspec list as a function and use
 it in both places; check tracked-ness. Optional: pin the read counts per module (F-06).
+
+### KI-89 — nothing compares a project's bundle producer with the asset name its rendered `get.py` downloads
+
+**Status:** FIXED on branch `pwmcp-07-fix-20261020`, not released; registered lanes pending. Filed 2026-10-20 from pwmcp PWMCP-07 (every pwmcp release ships
+`pwmcp-<ver>.tar.xz`; get.py requests `pwmcp-v<ver>.tar.xz` -> HTTP 404); same class as CIU-99.
+
+**Mechanism.** The contract is `<tag><asset_suffix>` (`docs/CONSUMERS.md:319`, SPEC S6.3). The primary
+asset keeps the file name the project's build produced (`release.py:745 publish_versioned`, used by
+`wheel-publish`, `tarball-publish` and pwmcp's own script), while `templates/get.py.tmpl:614` and
+`hosts/github.py:101` recompute `<tag><suffix>` independently; only the variants path
+(`release.py:940`) derives the name. `resolve_latest` falls back to the lone matching asset, masking a
+mismatch in cmru's own tooling. `tests/installer_fakes.py:138` types the template's formula out in the
+fake release, so template-vs-template passes.
+
+**Fix (scoped).** One name function (`asset_name_for_tag` / `bundle_asset_name`) used by the variants
+publisher and the host resolver, equality-tested against the rendered get.py's `expected_asset_name`; an
+integration test (render get.py, publish through the real `publish_versioned` into a fake host, run get.py's
+download against it); and a repo-reading oracle (`tests/test_installer_asset_names.py`) that, for every
+project with `[project.installer]` + `asset_suffix`, compares the producer's name (`bundle.toml` template
+or `tarball-publish --glob`) with the contract name, with a controlled wrong implementation that must go
+red and a self-checking exemption list (ciu, CIU-99). `publish_versioned` must not rename or refuse
+unconditionally (wheels). Plus the bounded, sidecar-verified get.py fallback for already-published
+releases (PWMCP-07 fix C).
+
+**Follow-up (review round 3): a committed `get.py` must equal a fresh render.** A template change
+left `ciu/get.py`, `tls-edge/get.py` and `pwmcp/get.py` stale, and only ciu has a byte-identity test
+(`ciu/tests/tests/test_ciu_host_enroll.py::TestRenderedInstaller`), so tls-edge and pwmcp would have
+drifted silently. Add a cmru check that, for EVERY project with `[project.installer]`, renders its
+`get.py` from the checkout's own `cmru/src` template (`cmru get-py <project> --output-dir`, in-process)
+and asserts it equals the committed file, with a controlled stale file that must go red. Until then the
+re-render in this change is the only guard; `pwmcp/get.py` is additionally pinned by sha256 in
+mdt-cockpit.
+
+### KI-90 — `_estate_complete()` skips the real-estate dependency-graph tests when a project is dropped from a FULL checkout
+
+**Status:** OPEN (recorded only). Found 2026-10-20 in review round 4 of PWMCP-07 / KI-89.
+
+**Mechanism.** `tests/test_dependency_levels_pyproject.py:152` `_estate_complete()` returns False when
+ANY project config named by `cmru.orchestration.toml` is missing from the working tree, and
+`TestRealEstate` plus the bootstrap-doc test then skip as "estate projects absent (isolated canary
+tree)". A project renamed, moved or deleted in a real checkout is thereby reported as "skipped", not
+failed: one status stands for two conditions (the intended isolated canary copy, and a real checkout
+that lost a project), so the graph oracle is switched off exactly when it should fire.
+
+**Fix.** Skip only when the tree is not a git checkout (`(REPO_ROOT / ".git").exists()` is False; the
+canary fixture copies `git ls-files` output, no `.git`) and FAIL otherwise, with an unskipped guard test
+and a synthetic test for both polarities, as `tests/test_installer_asset_names.py` now does for its own
+estate reads (KI-89). The same review applies to the other "isolated canary tree" skips (listed in
+`SKIP_GUARDED_MODULES`, `tests/test_project_fixture.py`).

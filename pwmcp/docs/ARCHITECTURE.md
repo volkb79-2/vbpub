@@ -140,7 +140,7 @@ Versioned bundles are published to GitHub Releases following the monorepo-wide s
 ### Bundle verification
 
 ```bash
-sha256sum -c pwmcp-<version>.tar.xz.sha256
+sha256sum -c pwmcp-v<version>.tar.xz.sha256
 ```
 
 ## Version Pin
