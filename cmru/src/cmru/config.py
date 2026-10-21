@@ -797,6 +797,9 @@ _RESERVED_CMRU_INTERNAL_ENV = frozenset({
     # Where a publisher reads the curated notes for the version it releases
     # (KI-75); a project cannot redirect its own release notes.
     "CMRU_RELEASE_NOTES_SOURCE",
+    # The operator's recorded `--skip-gates` reason, published in the release
+    # body; a project cannot forge or suppress it.
+    "CMRU_RELEASE_GATES_SKIPPED",
 })
 #: The whole ``CMRU_INTERNAL_`` namespace is cmru's own launch/log state
 #: (``CMRU_INTERNAL_BIN``, ``..._RUN_LOG``, ...): a project ``[env]`` may declare none of it.

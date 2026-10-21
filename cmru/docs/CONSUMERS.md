@@ -1483,6 +1483,33 @@ only when the state is `recorded`; the scope is `null` for `missing` and
 state. These fields are read from the shared Git sidecar without probing the
 listed worktree path.
 
+### Releasing without gates (`--skip-gates`)
+
+When the declared `run-tests` gate genuinely cannot run, the operator may release without it. The
+reason is required and is published:
+
+```bash
+cmru release ciu --skip-gates "operator: re-publish after release cleanup" --dry-run   # preview first
+cmru release ciu --skip-gates "operator: re-publish after release cleanup"
+```
+
+The release prints `[WARN] release gates skipped by operator: <reason>`, shows `run-tests` as
+`skipped (operator: <reason>)` in its plan, records the choice in the transaction, and adds
+`Released without gates (operator): <reason>` to each project's GitHub Release body. Everything else
+(prepare, build, push, tag, integration, the clean-tree and tool-dependency checks) runs as usual, and a
+project that declares no `run-tests` step is still refused. If the release fails and you resume it,
+use plain `cmru release --resume PATH`: the recorded choice applies, and `--skip-gates` with `--resume`
+is a usage error (exit 2). The reason may be at most 500 characters.
+
+If the final `oci-image-release` body step fails after the tag was pushed, retry it with
+`cmru publish <project> --from-checkout --release-tag <tag>`. That retry restates the ungated
+line from the retained transaction (or from the existing Release body); when neither states it, it
+refuses (exit 4) and you declare the fact: `--gates-ran`, or
+`--gates-skipped "operator: re-publish after release cleanup"`.
+
+The rationale is in the
+[design guide](DESIGN-GUIDE.md#an-ungated-release-is-an-explicit-recorded-flag-cmru-skip-01).
+
 ### Resuming a retained release
 
 Run `cmru worktrees` to see the candidate's recorded project scope and

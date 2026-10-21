@@ -34,7 +34,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Iterator, Mapping, NamedTuple, Sequence
 
 from cmru.git_auth import (
     GitHubGitAuth,
@@ -1006,6 +1006,144 @@ def read_release_version_plan(
     return dict(versions)
 
 
+def write_release_gates(
+    repo_root: Path, workspace: ReleaseWorkspace, skip_reason: str | None,
+) -> None:
+    """Record, once, whether this transaction skips its run-tests gate (CMRU-SKIP-01).
+
+    ``skip_reason`` is the operator's single-line ``--skip-gates`` reason, or
+    ``None`` for an ordinary gated release. Recording the gated case too makes
+    "no record" mean only "created before this feature". The record is bound to
+    this transaction's branch and base and is never rewritten: a resume uses it
+    and can neither add nor remove a skip.
+    """
+    if skip_reason is not None and (not skip_reason.strip() or "\n" in skip_reason):
+        raise RuntimeError("release gates record needs a non-empty single-line reason")
+    path = _ensure_scope_dir(repo_root) / f"{_release_token(workspace)}.gates.json"
+    payload = {
+        "schema_version": 1,
+        "transaction": workspace.branch,
+        "base": workspace.base,
+        "gates": {"skipped": skip_reason is not None, "reason": skip_reason},
+    }
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise RuntimeError(f"release gates record already exists: {path}") from exc
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def read_release_gates(
+    repo_root: Path, workspace: ReleaseWorkspace,
+) -> dict[str, object] | None:
+    """Return the validated ``{"skipped": bool, "reason": str | None}`` record.
+
+    ``None`` means only "no record exists". A record that is unreadable,
+    malformed, or bound to another transaction is an error, never a default.
+    """
+    path = _scope_dir(repo_root) / f"{_release_token(workspace)}.gates.json"
+    return _read_gates_file(path, branch=workspace.branch, base=workspace.base)
+
+
+def _read_gates_file(
+    path: Path, *, branch: str | None, base: str | None,
+) -> dict[str, object] | None:
+    """Parse one gates sidecar; ``branch``/``base`` ``None`` accept the record's own binding."""
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise RuntimeError(f"cannot inspect release gates record {path}: {exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise RuntimeError(f"release gates record is not a regular file: {path}")
+    try:
+        raw = json.loads(
+            path.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise RuntimeError(f"cannot read release gates record {path}: {exc}") from exc
+    gates = raw.get("gates") if isinstance(raw, dict) else None
+    reason = gates.get("reason") if isinstance(gates, dict) else None
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != {"schema_version", "transaction", "base", "gates"}
+        or type(raw["schema_version"]) is not int
+        or raw["schema_version"] != 1
+        or not isinstance(raw["transaction"], str)
+        or not isinstance(raw["base"], str)
+        or (branch is not None and raw["transaction"] != branch)
+        or (base is not None and raw["base"] != base)
+        or not isinstance(gates, dict)
+        or set(gates) != {"skipped", "reason"}
+        or type(gates["skipped"]) is not bool
+        or gates["skipped"] != (reason is not None)
+        or (reason is not None and (not isinstance(reason, str) or not reason.strip()))
+    ):
+        raise RuntimeError(
+            f"release gates record is malformed or does not match its transaction: {path}"
+        )
+    return {"skipped": gates["skipped"], "reason": reason}
+
+
+def find_release_gates_for_tag(
+    repo_root: Path, tag: str, tag_oid: str, *, warn: Callable[[str], None] = lambda _m: None,
+) -> dict[str, object] | None:
+    """The gates fact of the retained transaction that created exactly this tag object.
+
+    ``tag_oid`` is the tag REF's own object id (``git rev-parse refs/tags/<tag>``,
+    unpeeled: the annotated tag object CMRU creates), which is what a
+    transaction's tag-attempt record stores. Binding on the object rather than
+    the commit means a reused tag name, even at the same commit, never matches
+    another transaction's record.
+
+    Only a record that could bind to this tag counts. A file that cannot be
+    parsed, or is not a record at all, cannot name this tag: it is skipped with
+    ``warn``. A record that names this tag with anything but an object id is
+    malformed and an error. ``None`` means no retained transaction names this
+    tag object, or the one that does has no gates record (older than
+    CMRU-SKIP-01): the fact is then UNDETERMINED, never assumed gated. Two
+    transactions with different facts, or an unreadable matching gates record,
+    is an error.
+    """
+    scope_dir = _scope_dir(repo_root)
+    facts: list[dict[str, object]] = []
+    for attempts in sorted(scope_dir.glob("*.tag-attempts.json")):
+        try:
+            raw = json.loads(
+                attempts.read_text(encoding="utf-8"), object_pairs_hook=_unique_json_object,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            warn(f"skipping unreadable tag attempt record {attempts}: {exc}")
+            continue
+        if not isinstance(raw, dict):
+            warn(f"skipping tag attempt record {attempts}: not a record")
+            continue
+        if f"refs/tags/{tag}" not in raw:
+            continue
+        recorded = raw[f"refs/tags/{tag}"]
+        if not isinstance(recorded, str) or not COMMIT_ID_RE.fullmatch(recorded):
+            raise RuntimeError(f"release tag attempt record {attempts} is malformed for {tag}")
+        if recorded != tag_oid:
+            continue
+        token = attempts.name[: -len(".tag-attempts.json")]
+        fact = _read_gates_file(scope_dir / f"{token}.gates.json", branch=None, base=None)
+        if fact is not None:
+            facts.append(fact)
+    if not facts:
+        return None
+    if any(fact != facts[0] for fact in facts):
+        raise RuntimeError(
+            f"retained transactions disagree on whether {tag} was released without gates"
+        )
+    return facts[0]
+
+
 def _valid_local_branch_name(branch: str, repo_root: Path) -> bool:
     if not branch or branch.startswith("-"):
         return False
@@ -1500,6 +1638,7 @@ def forget_release_scope(repo_root: Path, workspace: ReleaseWorkspace) -> None:
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.source.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.version-plan.json").unlink(missing_ok=True)
+    (_scope_dir(repo_root) / f"{_release_token(workspace)}.gates.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.tags.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-attempts.json").unlink(missing_ok=True)
     (_scope_dir(repo_root) / f"{_release_token(workspace)}.tag-absent.json").unlink(missing_ok=True)

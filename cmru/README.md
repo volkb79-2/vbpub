@@ -348,6 +348,13 @@ diagnostics begin with the CMRU headline as line 1. Normal command output is
 unchanged. The compatibility rationale is in the
 [design guide](docs/DESIGN-GUIDE.md#top-level-version-compatibility).
 
+`cmru release --skip-gates REASON` releases **without running the `run-tests` gate**, as an explicit,
+recorded operator decision: the reason is required, shown as a `[WARN]` and in the plan and `--dry-run`,
+recorded in the transaction, and published as `Released without gates (operator): REASON` in each GitHub
+Release body. It skips nothing else, never excuses a project that declares no gate, and is refused with
+`--resume` (a resume uses the recorded choice); the post-tag body retry `cmru publish --release-tag` restates it from evidence or refuses until you declare `--gates-ran`/`--gates-skipped`; see the
+[design guide](docs/DESIGN-GUIDE.md#an-ungated-release-is-an-explicit-recorded-flag-cmru-skip-01).
+
 `release` detects changed projects, runs their explicit prepare/gate/tag/build/push/promote
 contract in dependency order, and retains a failed transaction for diagnosis. It publishes
 from the exact gated candidate commit and supplies its SHA to each gate as the protected

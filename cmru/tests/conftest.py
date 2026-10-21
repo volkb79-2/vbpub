@@ -54,6 +54,11 @@ def pytest_configure(config):
         "real_release_version_plan: run the real D-001 release version-plan step "
         "instead of the neutral stub unrelated release-child tests get",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_release_gates_plan: run the real CMRU-SKIP-01 gates record "
+        "instead of the pass-through stub unrelated release-child tests get",
+    )
 
 
 #: The release-controller identity unit tests see. The launcher records it and
@@ -150,6 +155,28 @@ def _neutral_release_version_plan(request):
         yield
     finally:
         cli._release_version_plan = saved
+
+
+@pytest.fixture(autouse=True)
+def _neutral_release_gates_plan(request):
+    """Release-child tests of OTHER behaviour fake their workspace.
+
+    The CMRU-SKIP-01 gates record lives in the transaction sidecars those mocked
+    workspaces lack, so they get a neutral step that passes the invocation's
+    ``--skip-gates`` through unrecorded; tests carrying ``real_release_gates_plan``
+    exercise the real record.
+    """
+    if request.node.get_closest_marker("real_release_gates_plan"):
+        yield
+        return
+    from cmru import cli
+
+    saved = cli._release_gates_plan
+    cli._release_gates_plan = lambda _root, _workspace, requested, **_kw: requested
+    try:
+        yield
+    finally:
+        cli._release_gates_plan = saved
 
 
 @pytest.fixture(autouse=True)
