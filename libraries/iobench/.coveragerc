@@ -1,0 +1,9 @@
+[run]
+branch = True
+source = iobench
+omit =
+    # host.py: the real-effect shim (subprocess, /sys, flock); every behaviour it implements is exercised through FakeHost
+    # parity and by the r1002 acceptance probe IOB-ACC-01, never in a unit run.
+    */iobench/host.py
+    # __main__.py: a two-line `python -m iobench` entry; the CLI it calls is fully covered.
+    */iobench/__main__.py

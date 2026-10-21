@@ -190,10 +190,10 @@ class CheckResult:
 
 
 def check(host: Host, state_dir: str, *, calibration: bool = False, sections: tuple[str, ...] | None = None, now: float,
-          require_strong_identity: bool = False) -> CheckResult:
-    """States and exit codes exactly per the tables of IOB-STA-05."""
+          require_strong_identity: bool = False, result_path: str | None = None) -> CheckResult:
+    """States and exit codes exactly per the tables of IOB-STA-05 (``result_path`` is ``--result P``)."""
     p = paths(state_dir)
-    path = p["calibration" if calibration else "result"]
+    path = result_path or p["calibration" if calibration else "result"]
     failed = p["calibration_failed" if calibration else "result_failed"]
     required = REQUIRED_CAL_TOP if calibration else REQUIRED_TOP
     asked = sections or proposals.SECTIONS

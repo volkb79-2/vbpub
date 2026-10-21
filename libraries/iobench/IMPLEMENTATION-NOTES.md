@@ -42,3 +42,8 @@ Remaining: see the last section.
 CCH-08 fixtures (the E1-good-but-wrong fixture is not yet reproducible, see below), EVD replay fixtures, STA-05 audit test, DOC/GATE tests,
 CLI + cli-extended surface/review artefacts, pyproject / cmru.toml / .coveragerc / probe_oracles.txt, SAF integration tests,
 ARC-04/05 integration tests, LAT, CER, coverage to 100 %.
+
+BLOCKED: IOB-REL-01 zipapp + sha256 -- "wheel plus zipapp plus sha256": cmru has no zipapp handler (`cmru handler` offers wheel-build and
+wheel-publish only) and a zipapp cannot bundle the cli-extended wheel dependency without a project-owned build script (assay owns
+`gate/distribution/build_release.py` for that). cmru.toml ships the wheel through `wheel-publish` (which publishes its sha256). Needs a decision:
+project build script (like assay) or wheel only. Not invented here.
