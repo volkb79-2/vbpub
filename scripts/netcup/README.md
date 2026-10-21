@@ -5,6 +5,8 @@ Control Panel API. They can optionally pass an operator-supplied cloud-init
 `customScript` hook to the provider. The hook may come from
 `debian-install-v2`, but this Netcup frontend does not build or interpret it.
 
+Known issues and open test gaps: [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
+
 ## First-time setup
 
 From the repository root, make an isolated environment for these scripts. The
