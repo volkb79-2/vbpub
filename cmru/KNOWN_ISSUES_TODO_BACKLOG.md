@@ -2305,7 +2305,7 @@ mdt-cockpit.
 
 ### KI-90 — `_estate_complete()` skips the real-estate dependency-graph tests when a project is dropped from a FULL checkout
 
-**Status:** OPEN (recorded only). Found 2026-10-20 in review round 4 of PWMCP-07 / KI-89.
+**Status:** FIXED 2026-10-21 (branch `cmru-ki79-ext-20261021`): the real-estate checks skip only in a tree without `.git`; a git checkout missing a project fails via the unskipped `test_a_full_checkout_carries_the_orchestrated_estate`, with synthetic tests for both polarities. The other "isolated canary tree" skips in `SKIP_GUARDED_MODULES` still deserve the same review. Found 2026-10-20 in review round 4 of PWMCP-07 / KI-89.
 
 **Mechanism.** `tests/test_dependency_levels_pyproject.py:152` `_estate_complete()` returns False when
 ANY project config named by `cmru.orchestration.toml` is missing from the working tree, and
