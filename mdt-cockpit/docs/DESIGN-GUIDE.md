@@ -251,7 +251,34 @@ caches and config directories.
 Everything else (`~/.aws`, `~/.docker`, `~/.config/gh`, pip/uv/npm caches, ...)
 is user state and is deliberately left at each tool's own home default.
 
-## Debian testing preview archive
+## Apt priority policy (stable, stable-backports, preview archives)
+
+`apt/debian-priorities.pref` (installed as `/etc/apt/preferences.d/debian-priorities`) is the operator's
+policy verbatim: `a=stable` 500, `a=stable-backports` 600, one stanza each. `apt/preview-archives.pref`
+holds `oldstable`, `oldstable-backports` and `testing` at 100. Resulting table: stable-backports 600 >
+stable 500 > testing / oldstable / oldstable-backports 100.
+
+* **Why `a=<archive name>`, and the defect this fixed (MDTC-05).** apt matches `a=` against the Release
+  file's `Suite:` and `n=` against `Codename:`. The backports archive has `Suite: stable-backports`,
+  `Codename: trixie-backports`. The former `backports.pref.in` was rendered to `a=trixie-backports`, which
+  matches NO archive: measured with a synthetic index (Suite `stable-backports`, Codename
+  `trixie-backports`, `NotAutomatic: yes`, `ButAutomaticUpgrades: yes` like the real archive) the
+  "600" pin left backports at its built-in 100 and stable won; `n=trixie-backports` did give 600. So
+  until MDTC-05 the image never preferred backports. Note the consequence of the fix: the Core-system
+  `apt-get install` now takes backports versions of the packages in `apt/packages.list` where backports
+  offers one, as the old file always intended.
+* **Source by codename, pin by archive name.** `trixie-backports.sources` stays codename-based (the Debian
+  recommendation for sources): an image built for trixie keeps following trixie when trixie becomes
+  oldstable. The pin, however, is by archive name, so on that day `a=stable` / `a=stable-backports` stop
+  matching the image's trixie sources: they fall to the defaults (500 for the archive, 100 for backports
+  because of `NotAutomatic`), and the new stable's archives are not configured. **Rebuild the image** for
+  the new stable at that point (new `DEBIAN_VERSION`); the pin file then needs no change.
+* **Not templated.** Because the pin carries archive names, there is no `@SUITE@` rendering any more; the
+  file is copied as is, and `scripts/test_apt_preview_archives.py` fails if it names a codename.
+* **Skopeo pin.** The temporary skopeo-only pin is 601 (was 501): a pin below 600 would let a backported
+  skopeo win over testing's, silently defeating the step.
+
+### Debian testing preview archive
 
 `apt/testing.sources` adds Debian `testing` (deb822, signed by the Debian archive keyring) and
 `apt/preview-archives.pref` pins `oldstable`, `oldstable-backports` and `testing` to priority 100:
@@ -263,7 +290,7 @@ visible for `apt-cache policy` and `apt install -t testing <pkg>`, never auto-se
   testing packages upgrade the system: the opposite of the intent. `scripts/test_apt_preview_archives.py`
   parses the file and fails on that form.
 * **Skopeo.** The former temporary `testing.list` is gone. The skopeo step now uses the permanent source
-  and a temporary skopeo-only pin of 501, removed in the same RUN, so the image leaves the step with testing
+  and a temporary skopeo-only pin of 601, removed in the same RUN, so the image leaves the step with testing
   at 100 and no build state hides a 500.
 * **Known tie (priority 100 is the operator's choice).** The installed version also sits at 100
   (`/var/lib/dpkg/status`). A package installed with `-t testing` that stable does not offer at a higher

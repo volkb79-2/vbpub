@@ -1,0 +1,11 @@
+# /etc/apt/preferences.d/debian-priorities
+
+# Current stable — normal priority
+Package: *
+Pin: release a=stable
+Pin-Priority: 500
+
+# Current stable backports — preferred over stable
+Package: *
+Pin: release a=stable-backports
+Pin-Priority: 600

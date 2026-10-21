@@ -82,7 +82,7 @@ POLICY_NOTES = {
         "**Version policy:** Debian repository versions (prefer backports when available). "
         "System packages come from the Debian Trixie main repos; devcontainer-features "
         "are installed via the features CLI.  Exception: `skopeo` is pulled from "
-        "Debian testing (pin-priority 501) for a newer version than trixie provides."
+        "Debian testing (pin-priority 601) for a newer version than trixie provides."
     ),
     "Python Packages": (
         "**Version policy:** PyPI latest at image build time (resolved via pip install). "

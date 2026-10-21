@@ -275,6 +275,11 @@ Container and system inspection, in-image:
 | `zswap-status` | prints kernel zswap counters directly from sysfs/debugfs |
 | `lnav` | ncurses log/JSONL viewer with SQL queries over parsed fields — see below |
 
+apt priorities (`/etc/apt/preferences.d/debian-priorities`, by archive name): `stable-backports` **600** >
+`stable` **500** > `testing`, `oldstable`, `oldstable-backports` **100** (visible, never automatic). Backports
+therefore win over stable for `apt install`; see [USAGE](USAGE.md#apt-priorities-backports-and-testing) and the
+[rationale](docs/DESIGN-GUIDE.md#apt-priority-policy-stable-stable-backports-preview-archives).
+
 Debian `testing` is configured as a **preview archive**: its package lists are visible to `apt`
 but pinned to priority 100 (as are `oldstable` and `oldstable-backports`), so nothing is ever
 upgraded or installed from it implicitly. Take a package from it deliberately with

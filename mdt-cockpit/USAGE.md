@@ -250,6 +250,24 @@ Counterexample (do NOT do this):
 }
 ```
 
+## Apt priorities, backports and testing
+
+| Archive | Priority | Effect |
+|---|---|---|
+| `stable-backports` (trixie-backports) | 600 | preferred over stable: plain `apt install`/`upgrade` take the backported version |
+| `stable` (trixie) | 500 | normal |
+| `testing`, `oldstable`, `oldstable-backports` | 100 | visible, never chosen automatically |
+
+```bash
+apt-cache policy <pkg>                       # shows every archive offering it and its priority
+sudo apt-get install <pkg>                   # backports version if backports has one, else stable
+sudo apt-get install -t trixie <pkg>         # force stable: a backports version is not taken
+sudo apt-get install <pkg>/testing           # explicit testing (see below)
+```
+
+When trixie becomes oldstable the pins by archive name (`a=stable`, `a=stable-backports`) stop matching this
+image's trixie sources; rebuild the image for the new stable (DESIGN-GUIDE, "Apt priority policy").
+
 ## Installing a package from Debian testing
 
 Debian `testing` (the next release) is a permanent apt source in the image, pinned to priority 100
