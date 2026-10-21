@@ -216,7 +216,7 @@ def test_cch_01_cold_probe_record():
     reading = flat_series(9800.0, n=40)
     uni = cache.modes(hist((1.0, 760.0)))
     cp = cache.cold_probe(reading, uni, 110.0, 32 * GIB)
-    assert cp.cls == "miss-like" and cp.r_cold == 9800.0 and cp.rate_limited == "not_assessed"
+    assert cp.cls == "miss-like" and cp.r_cold == 9800.0 and cp.rate_limited is True
     assert cp.as_dict()["R_cold_iops"] == 9800.0
     bi = cache.modes(hist((0.6, 110.0), (0.4, 760.0)))
     assert cache.cold_probe(reading, bi, 110.0, 1).cls == "n/a"
