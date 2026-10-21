@@ -480,7 +480,7 @@ class Calibrator(Runner):
         if self.cells:
             return shape.shape_summary(self.cells, override=self.cfg.metering)
         und = {"read": "undetermined", "write": "undetermined"}
-        return {"skipped": True, "cells": [], "fit": {}, "drift": {"spread": {}, "moved": False}, "metering_by_dir": und,
+        return {"skipped": True, "stage_status": self.stages.get("S6", "skipped"), "cells": [], "fit": {}, "drift": {"spread": {}, "moved": False}, "metering_by_dir": und,
                 "metering": "undetermined", "metering_detail": {}, "override": self.cfg.metering,
                 "linear_model_fit_by_dir": {"read": "insufficient", "write": "insufficient"}, "linear_model_fit": "insufficient"}
 

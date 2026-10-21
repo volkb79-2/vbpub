@@ -220,3 +220,112 @@ def test_cch_01_cold_probe_record():
     assert cp.as_dict()["R_cold_iops"] == 9800.0
     bi = cache.modes(hist((0.6, 110.0), (0.4, 760.0)))
     assert cache.cold_probe(reading, bi, 110.0, 1).cls == "n/a"
+
+
+# ---------------------------------------------------------------------------------------------------------
+# stage level
+# ---------------------------------------------------------------------------------------------------------
+import json  # noqa: E402
+
+from helpers import INVERSION, calibrate, fio_jobs, make_host, read_json  # noqa: E402
+from iobench import calibrate as cal_mod  # noqa: E402
+
+
+def assert_cold_probe_first(jobs, extent_end):
+    names = [j.name.split("-", 3)[-1] for j in jobs]
+    first_cold = names.index("ecold")
+    fill_last = max(i for i, n in enumerate(names) if n.startswith("fill-"))
+    # right after the fill, before any rung, reference cell or other job touches [0, cold_len)
+    assert first_cold == fill_last + 1
+    after = jobs[first_cold + 2:]
+    assert all(not (j.offset == 0 and "ecold" in j.name) for j in after)
+    touchers = [j for j in jobs[:first_cold] if not j.writes]
+    assert touchers == []  # nothing read the cold region before the probe
+    cold = [j for j in jobs if j.name.split("-", 3)[-1].startswith("ecold")]
+    assert all(j.end <= extent_end and not j.writes for j in cold)
+
+
+def test_cch_01_cold_probe_runs_first_and_reads_written_data_only():
+    host = make_host(cache=INVERSION)
+    out = calibrate(host)
+    cal = out.calibration["calibration"]
+    jobs = fio_jobs(host)
+    assert_cold_probe_first(jobs, cal["extent_written"][0][1])
+    cold = [j for j in jobs if "-ecold" in j.name]
+    assert [(j.iodepth, j.runtime_s, j.hist) for j in cold] == [(32, 70, False), (1, 60, True)]
+    cold_len = cal["cache"]["read"]["e_cold"]["region_bytes"]
+    assert cold_len == min(32 << 30, int(0.1 * cal["extent_written"][0][1])) // (1 << 20) * (1 << 20)
+    assert cold[0].offset == 0 and cold[0].end == cold_len // 2 and cold[1].offset == cold_len // 2 and cold[1].end == cold_len  # disjoint halves
+    # every rung and probe stores its touch map: bytes per 1/8 of the extent since the fill
+    tm = cal["touch_map"]
+    assert len(tm["fill"]) == 8 and sum(tm["fill"]) == pytest.approx(cal["extent_written"][0][1], rel=0.001)
+    assert tm["e_cold"][0] > 0 and sum(tm["e_cold"][1:]) < tm["e_cold"][0] and "ladder" in tm
+    # controlled wrong: a plan that reorders the cold probe behind the ladder fails the order check
+    wrong = make_host(cache=INVERSION)
+    orig = cal_mod.Calibrator.body
+
+    def reordered(self):
+        self.s0(need_workdir=False)
+        self.stage("S1", self.s1, required=True)
+        alloc = self.make_plan()
+        self.stage("fill", lambda: self.fill(alloc), required=True)
+        self.stage("ladder", self.run_ladder, required=True)       # ladder FIRST ...
+        self.stage("E-cold", self.e_cold, min_s=1)                # ... cold probe behind it
+        self.analyze()
+
+    cal_mod.Calibrator.body = reordered
+    try:
+        calibrate(wrong)
+    finally:
+        cal_mod.Calibrator.body = orig
+    with pytest.raises(AssertionError):
+        assert_cold_probe_first(fio_jobs(wrong), 345 << 30)
+
+
+def test_cch_03_e2_adjacency_and_crosscheck_in_a_run():
+    host = make_host(cache=INVERSION)
+    out = calibrate(host)
+    e2 = out.calibration["calibration"]["cache"]["read"]["E2"]
+    assert e2["shape"] in ("bimodal", "unimodal", "overlapping") and e2["voided"] is False
+    jobs = fio_jobs(host)
+    names = [j.name.split("-", 3)[-1] for j in jobs]
+    largest = names.index("e2-qd1")
+    assert names[largest - 1].startswith("rung-r32-")           # the QD1 histogram run immediately follows the QD32 read run
+    qd32, qd1 = jobs[largest - 1], jobs[largest]
+    assert (qd32.rw, qd32.iodepth, qd1.rw, qd1.iodepth, qd1.runtime_s, qd1.hist, qd1.end) == ("randread", 32, "randread", 1, 60, True, qd32.end)
+    # a gap larger than 60 s voids E2
+    slow = make_host(cache=INVERSION)
+    orig = cal_mod.Calibrator.e2
+
+    def late(self, ws, started):
+        self.host.sleep(70)
+        orig(self, ws, started)
+
+    cal_mod.Calibrator.e2 = late
+    try:
+        o2 = calibrate(slow)
+    finally:
+        cal_mod.Calibrator.e2 = orig
+    assert o2.calibration["calibration"]["cache"]["read"]["E2"]["voided"] is True
+    assert o2.calibration["calibration"]["cache"]["read"]["E2"]["R_E2_iops"] is None
+
+
+def test_cch_05_cold_probe_missing_is_residual_possible():
+    host = make_host(cache=INVERSION)
+    orig = cal_mod.Calibrator.e_cold
+
+    def broken(self):
+        raise cal_mod.S.TooFewPoints("no cold probe")
+
+    cal_mod.Calibrator.e_cold = broken
+    try:
+        out = calibrate(host)
+    finally:
+        cal_mod.Calibrator.e_cold = orig
+    c = out.calibration["calibration"]["cache"]["read"]
+    assert out.calibration["run"]["stages"]["E-cold"].startswith("failed")
+    assert c["cache_state"] == "undetermined" and c["reasons"] == ["cache_residual_possible"]
+    caps = out.result["proposals"]["caps"]["dev_aggregate"]
+    assert "cache_residual_possible" in caps["RIOPS"]["reasons"] and caps["RIOPS"]["status"] == "unproven"
+    # a cap value never exceeds the measured largest-rung rate
+    assert caps["RIOPS"]["inputs"]["basis_iops"] <= out.calibration["calibration"]["ladder"]["measured_largest"]["read"]

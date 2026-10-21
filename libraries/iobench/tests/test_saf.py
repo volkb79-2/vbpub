@@ -254,3 +254,163 @@ def test_saf_04_io_max_walk_is_depth_bounded():
     host.put("/sys/fs/cgroup/a/b/c/d/io.max", "deep\n")
     seen = restore.snapshot_io_max(host)
     assert "/sys/fs/cgroup/a/b/c" in seen and "/sys/fs/cgroup/a/b/c/d" not in seen
+
+
+# ---------------------------------------------------------------------------------------------------------
+# integration: the safety rules inside a real run on FakeHost
+# ---------------------------------------------------------------------------------------------------------
+from helpers import INVERSION, calibrate, config, fio_jobs, make_host, matrix, read_json  # noqa: E402
+from iobench import testing  # noqa: E402
+
+STATE = "/var/lib/iobench"
+
+
+def calibrated_host():
+    host = make_host(cache=INVERSION)
+    assert calibrate(host).status == "complete"
+    host.sweep_model = lambda k: testing.SweepOutcome(probe_p99_us=2e5, load_iops=800.0, load_fsync_p99_us=9e4, drain_bps=10.5e6)
+    return host
+
+
+def test_saf_01_journal_written_before_the_first_knob_in_a_run():
+    host = calibrated_host()
+    order = []
+    real_write, real_put = host.write_sysfs, host.write_atomic
+
+    def sysfs(path, value):
+        order.append(("knob", path, host.exists(restore.JOURNAL)))
+        return real_write(path, value)
+
+    host.write_sysfs = sysfs
+    out = matrix(host)
+    assert out.status == "complete" and order and all(journalled for _, _, journalled in order)
+    doc_files = [p for p in host.files if "iobench-" in p and p.startswith("/bench/w/")]
+    assert doc_files == []  # created work-dir files were removed again
+
+
+def test_saf_02_restore_on_exception_in_a_run():
+    host = calibrated_host()
+    host.crash_after = host.fio_spawns + 6
+    with pytest.raises(Exception, match="scenario crash"):
+        matrix(host)
+    assert host.read_text("/proc/sys/vm/dirty_bytes") == "0\n" and host.read_text("/sys/class/block/vda/queue/nr_requests") == "64\n"
+    assert host.read_text("/sys/class/block/vda/queue/max_sectors_kb") == "1280\n"
+    assert not host.exists(restore.JOURNAL) and not [p for p in host.files if p.startswith("/bench/w/")]
+    assert not host.locks  # the lock is released
+
+
+def test_saf_02_restore_on_signal_in_a_run():
+    host = calibrated_host()
+    host.at(host.now() + 300, lambda: host.deliver_signal("SIGTERM"))
+    out = matrix(host)
+    assert out.status == "aborted" and out.exit_code == 8 and "SIGTERM" in out.message
+    assert host.read_text("/proc/sys/vm/dirty_bytes") == "0\n" and host.read_text("/sys/class/block/vda/queue/max_sectors_kb") == "1280\n"
+    assert not host.exists(restore.JOURNAL)
+    failed = read_json(host, f"{STATE}/result.last-failed.json")
+    assert failed["run"]["status"] == "aborted" and failed["restore"]["verified"] is True
+
+
+def test_saf_02_restore_at_the_start_of_the_next_run():
+    host = calibrated_host()
+    dead = restore.Safety(host, "run-dead", "2026-10-21T03:00:00Z")
+    dead.set_knob("/sys/class/block/vda/queue/nr_requests", "4")
+    dead.register_file("/bench/w/leaked")
+    host.put("/bench/w/leaked", "x")
+    assert host.read_text("/sys/class/block/vda/queue/nr_requests") == "4\n"
+    out = matrix(host)
+    assert out.status == "complete"
+    assert host.read_text("/sys/class/block/vda/queue/nr_requests") == "64\n" and not host.exists("/bench/w/leaked")
+
+
+def test_saf_03_readback_mismatch_exit_9_in_a_run():
+    host = calibrated_host()
+    host.at(host.now() + 200, lambda: host.sysfs_swallow.add("/sys/class/block/vda/queue/max_sectors_kb"))
+    out = matrix(host)
+    assert out.exit_code == 9 and out.status == "failed" and "max_sectors_kb" in out.message
+    assert host.exists(restore.JOURNAL)  # kept for the next start
+    assert out.result["restore"]["verified"] is False
+
+
+def test_saf_04_io_max_changed_by_others_exit_9_in_a_run():
+    host = calibrated_host()
+    host.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=max\n")
+    host.at(host.now() + 100, lambda: host.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=1000\n"))
+    out = matrix(host)
+    assert out.exit_code == 9 and "io.max" in out.message and out.status == "failed"
+    ok = calibrated_host()
+    ok.put("/sys/fs/cgroup/wings.slice/io.max", "254:0 rbps=max\n")
+    res_ok = matrix(ok)
+    assert res_ok.result["restore"]["slice_io_max_unchanged"] is True
+    assert res_ok.result["evidence"]["preflight"]["slice_io_max_before"] == res_ok.result["evidence"]["preflight"]["slice_io_max_after"]
+
+
+def test_saf_05_live_host_refuses_in_a_run():
+    host = make_host(cache=INVERSION)
+    host.containers = ["game-1", "mm"]
+    with pytest.raises(Refusal) as err:
+        calibrate(host, confirm_quiet_window=False)
+    assert err.value.condition == "production_running" and not host.write_log
+    assert host.devices["/dev/vda7"].write_bytes == 0
+    assert calibrate(host, installer=True, confirm_quiet_window=False, protect_cgroup=None, abort_psi=None).status == "complete"
+
+
+def test_saf_06_abort_in_a_run_kills_fio_and_restores():
+    host = calibrated_host()
+    pressure = {"v": 0.0}
+    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: f"some avg10={pressure['v']} avg60=0.0 avg300=0.0 total=1\n"
+    host.at(host.now() + 200, lambda: pressure.update(v=95.0))
+    t0 = host.now()
+    out = matrix(host)
+    assert out.status == "aborted" and out.exit_code == 8 and "io.pressure" in out.message
+    assert host.now() - t0 < 215  # 3 consecutive samples after the pressure rose, not the end of the run
+    assert host.read_text("/sys/class/block/vda/queue/nr_requests") == "64\n" and not host.exists(restore.JOURNAL)
+    # the abort file
+    h2 = calibrated_host()
+    h2.at(h2.now() + 100, lambda: h2.put(restore.ABORT_FILE, ""))
+    assert matrix(h2).exit_code == 8
+    # calibrate aborted: knobs are not involved, the good calibration stays
+    h3 = calibrated_host()
+    good = h3.read_text(f"{STATE}/calibration.json")
+    h3.at(h3.now() + 100, lambda: h3.put(restore.ABORT_FILE, ""))
+    c = calibrate(h3)
+    assert c.exit_code == 8 and h3.read_text(f"{STATE}/calibration.json") == good
+
+
+def test_saf_07_aborted_run_keeps_good_result_in_a_run():
+    host = calibrated_host()
+    good_result = host.read_text(f"{STATE}/result.json")
+    host.at(host.now() + 100, lambda: host.deliver_signal("SIGINT"))
+    out = matrix(host)
+    assert out.status == "aborted"
+    assert host.read_text(f"{STATE}/result.json") == good_result
+    assert read_json(host, f"{STATE}/result.last-failed.json")["run"]["status"] == "aborted"
+    c = res_check(host)
+    assert c.state in ("current", "current_unproven") and "last_run_aborted" in c.warnings
+
+
+def res_check(host):
+    from iobench import result as res
+    return res.check(host, STATE, now=host.now())
+
+
+def test_saf_08_single_instance_in_a_run():
+    import copy
+    host = calibrated_host()
+    other = copy.copy(host)  # a second process on the same estate: shared files, shared lock registry, its own identity
+    other.holding = None
+    s = restore.Safety(host, "run-held", "2026-10-21T03:00:00Z")
+    s.acquire()
+    snapshot = dict(host.files)
+    with pytest.raises(Refusal) as err:
+        matrix(other)
+    assert err.value.condition == "already_running" and err.value.exit_code == 2 and other.files == snapshot
+    s.release()
+    assert matrix(other).status == "complete"
+
+
+def test_saf_09_namespace_mismatch_refused_in_a_run():
+    host = make_host(cache=INVERSION)
+    host.add_mount("254:7", "/mnt/elsewhere", "/dev/vda7", ns="init")
+    with pytest.raises(Refusal) as err:
+        calibrate(host)
+    assert err.value.condition in ("mounted_other_namespace", "namespace_mismatch") and host.devices["/dev/vda7"].write_bytes == 0

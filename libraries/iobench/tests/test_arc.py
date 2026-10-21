@@ -301,7 +301,6 @@ def test_arc_05_fakehost_sysfs_and_forbidden():
     with pytest.raises(HostError):
         h.write_sysfs("/sys/fs/cgroup/wings.slice/io.max", "8:0 rbps=1")
     for bad in (["fstrim", "/"], ["systemctl", "set-property", "x", "IOWeight=1"], ["systemctl", "daemon-reload"],
-                ["systemd-run", "-p", "IOReadBandwidthMax=1"], ["mkfs.ext4", "/dev/vda7"], ["wipefs", "-a", "/dev/vda7"],
                 ["mount", "a", "b"], ["dd", "of=/dev/vda7"], ["systemd-run", "-pIOWeight=3"]):
         with pytest.raises(HostError):
             check_argv(bad)
@@ -432,3 +431,65 @@ def test_arc_05_workdir_load_and_probe_models():
     assert not (h.odirect_unsupported or not h.probe_odirect("/bench"))
     h.odirect_unsupported.add("/bench")
     assert not h.probe_odirect("/bench/x") and h.probe_odirect("/mnt")
+
+
+# ---------------------------------------------------------------------------------------------------------
+# a full FakeHost run
+# ---------------------------------------------------------------------------------------------------------
+from helpers import INVERSION, calibrate, make_host, matrix  # noqa: E402
+
+
+def test_arc_04_deterministic_result():
+    import iobench.testing as T
+
+    def run(token):
+        host = make_host(cache=INVERSION)
+        host.token = lambda: token
+        calibrate(host)
+        return host.read_text("/var/lib/iobench/result.json"), host.read_text("/var/lib/iobench/calibration.json")
+
+    a, b = run("a1b2"), run("a1b2")
+    assert a == b
+    c = run("ffff")
+    assert c != a and all(x[0].replace("ffff", "a1b2") == x[1] for x in zip(c, a))  # a varying token changes the ids and nothing else
+    assert json.loads(a[0])["run"]["id"].endswith("-a1b2")
+
+
+def test_arc_05_builders_only():
+    host = make_host(cache=INVERSION)
+    calibrate(host)
+    host.sweep_model = lambda k: testing.SweepOutcome()
+    matrix(host)
+    seen = {a[0] for a in host.argv_log}
+    assert {"fio", "blkid", "wipefs", "blkdiscard", "docker"} <= seen
+    for argv in host.argv_log:
+        assert devio.is_allowed_argv(argv), argv
+    assert "systemd-run" in seen
+    # file-target builders
+    fhost = standard_host()
+    from iobench import guard
+    guard.init_file(fhost, "/bench/t.img", size=2 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+                    confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-21T03:00:00Z")
+    assert all(devio.is_allowed_argv(a) for a in fhost.argv_log) and ["fallocate", "-l"] == fhost.argv_log[-1][:2]
+
+
+FORBIDDEN_WORDS = ("fstrim", "mkfs", "mount", "umount", "dd", "set-property", "daemon-reload")
+
+
+def argv_strings(source: str) -> list[str]:
+    out = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.List, ast.Tuple)):
+            out += [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+    return out
+
+
+def test_arc_05_no_forbidden_argv_exists():
+    for path in SRC.glob("*.py"):
+        if path.name in ("host.py", "__main__.py"):  # host.py is where the refusals live
+            continue
+        words = argv_strings(path.read_text())
+        for w in FORBIDDEN_WORDS:
+            assert w not in words, (path.name, w)
+        assert not any(x.startswith("mkfs") for x in words), path.name
+    assert "fstrim" in argv_strings("x = ['fstrim', '/']")  # the scan can go red

@@ -16,6 +16,7 @@ from itertools import accumulate
 import json
 import math
 import posixpath
+import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
@@ -193,6 +194,7 @@ class Scenario:
 
 
 def _noise(seed: int, name: str, k: int) -> float:
+    name = re.sub(r"^run-\d{8}T\d{6}Z-[0-9a-f]+-", "", name)  # the run id (and its token) must not change the data
     h = (seed * 1_000_003 + sum(map(ord, name)) * 7919 + k * 104_729) % 2_147_483_647
     h = (h * 48_271) % 2_147_483_647
     return (h / 2_147_483_647) * 2 - 1
@@ -374,7 +376,7 @@ class FakeFio:
             ios = iops * span
             samples.append((end_t, iops, bps))
             io_bytes += bps * span
-            comps = self._components(d, job, h1, h2, iops, rho)
+            comps = self._components(d, job, h1, h2, iops, rho, mult)
             mix = mixture(comps, self.s.sigma)
             weighted_mean += ios * sum(w * lat for w, lat in comps)
             for idx, w in mix.items():
@@ -392,7 +394,7 @@ class FakeFio:
         total_ios = sum(w for w in total_w.values())
         return Sim(samples, io_bytes, runtime, hist, total_w, weighted_mean / total_ios)
 
-    def _components(self, d: DirScenario, job: FioJob, h1: float, h2: float, iops: float, rho: float) -> list[tuple[float, float]]:
+    def _components(self, d: DirScenario, job: FioJob, h1: float, h2: float, iops: float, rho: float, mult: float) -> list[tuple[float, float]]:
         base = d.lat_us + (job.bs - PAGE) * d.c_byte_ns / 1000
         if d.lat_hit_us is None or job.writes:
             comps = [(1.0, base)]
@@ -403,7 +405,7 @@ class FakeFio:
         if job.rate_iops is not None:
             factor = self.s.load_latency(rho)
         elif job.iodepth == 1:
-            factor = 1.0
+            factor = 1.0 / mult  # a slower disk takes proportionally longer per IO
         else:
             factor = job.iodepth / iops * 1e6 * self.s.little_factor / mean_raw
         return [(w, lat * factor) for w, lat in comps]

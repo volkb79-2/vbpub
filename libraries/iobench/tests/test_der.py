@@ -134,3 +134,115 @@ def test_der_07_recompute_rules():
                                               c_io_seq_us=None, c_io_rand_us=None, c_byte_ns=None)) == 6291456
     assert derive.recompute("R3", dict(R_drain_bps=10_500_000, max_hw_kb=4096, F=0.25, P_us=250_000.0, read_ratio=GST_RATIO,
                                        probe_p99_us={"128": 466_000.0})) == 64
+
+
+# ---------------------------------------------------------------------------------------------------------
+# on real run output
+# ---------------------------------------------------------------------------------------------------------
+from iobench import proposals as P  # noqa: E402
+
+from helpers import INVERSION, READ_MISS, calibrate, make_host, matrix, read_json  # noqa: E402
+
+
+def all_values(result):
+    for section in ("writeback", "caps", "iocost_model", "iocost_qos"):
+        for key, v in P.iter_values(result["proposals"][section]):
+            yield section, key, v
+
+
+def test_der_07_recomputable():
+    from iobench import testing
+    host = make_host(cache=INVERSION)
+    calibrate(host)
+    host.sweep_model = lambda k: testing.SweepOutcome(probe_p99_us=2e5, load_iops=800.0, load_fsync_p99_us=9e4, drain_bps=10.5e6)
+    result = matrix(host).result
+    checked = 0
+    for section, key, v in all_values(result):
+        if v["status"] == "absent":
+            continue
+        assert v["rule"] and "inputs" in v, (section, key)
+        if v["rule"] in ("R3",):
+            assert v["inputs"]["read_ratio"] is not None
+        recomputed = derive.recompute(v["rule"], v["inputs"])
+        assert recomputed == v["value"], (section, key, v["rule"], recomputed, v["value"])
+        checked += 1
+    assert checked >= 10
+    wb = result["proposals"]["writeback"]
+    assert "T_eff_bytes" in wb["dirty_bytes"]["inputs"] and wb["dirty_bytes"]["inputs"]["T_eff_bytes"] > 0
+
+
+def test_der_08_no_derivation_from_bad_basis():
+    # unsteady basis -> absent with the reason
+    h = make_host(cache=None, noise=0.6)
+    out = calibrate(h)
+    for _, _, v in all_values(out.result):
+        if v["rule"] in ("R5",):
+            assert v["status"] == "absent" and v["reason"] == "basis_unsteady"
+    # a failed stage -> absent, never a guessed value
+    h2 = make_host(cache=INVERSION)
+    from iobench import calibrate as cal_mod
+    orig = cal_mod.Calibrator.s6
+    cal_mod.Calibrator.s6 = lambda self: (_ for _ in ()).throw(cal_mod.S.TooFewPoints("x"))
+    try:
+        out2 = calibrate(h2)
+    finally:
+        cal_mod.Calibrator.s6 = orig
+    model = out2.result["proposals"]["iocost_model"]
+    assert all(v["status"] == "absent" for v in model.values())
+    assert out2.result["proposals"]["caps"]["dev_aggregate"]["RBPS"]["reason"] == "bps_basis_missing"
+    # a cached_tier figure is never a basis: with a cliff in the ladder, no cap equals a cached-tier rung
+    h3 = make_host(cache=dict(capacity_gib=330, hit_iops=92000, write_allocate=False))
+    h3.devices["/dev/vda7"].cache.order.update({i: 1.0 for i in range(330)})
+    out3 = calibrate(h3)
+    cal = out3.calibration["calibration"]
+    cached_tier = {r["steady_iops"] for r in cal["ladder"]["rungs"] if r["class"] == "cached_tier"}
+    caps = out3.result["proposals"]["caps"]["dev_aggregate"]
+    assert cal["ladder"]["cliff_bytes"] is not None and cached_tier
+    assert caps["RIOPS"]["inputs"]["basis_iops"] not in cached_tier and caps["RIOPS"]["inputs"]["basis_iops"] <= cal["ladder"]["measured_largest"]["read"]
+
+
+def test_der_08_best_read_rung_only_in_qos_max():
+    host = make_host(cache=INVERSION)
+    result = calibrate(host).result
+    cal = read_json(host, "/var/lib/iobench/calibration.json")["calibration"]
+    best = cal["ladder"]["best_read_rung_iops"]
+    assert best > 2 * cal["cache"]["read"]["R_iops"]
+    for section, key, v in all_values(result):
+        numbers = [x for x in v["inputs"].values() if isinstance(x, (int, float))]
+        if section == "iocost_qos" and key == "max":
+            assert v["inputs"]["best_read_rung"] == best
+        else:
+            assert best not in numbers, (section, key)
+    # mutation sanity: feeding the best read rung into a cap changes its value (so the assertion above can go red)
+    assert derive.r5(U=0.7, basis_iops=best, worst_over_median=1.0) != result["proposals"]["caps"]["dev_aggregate"]["RIOPS"]["value"]
+
+
+def test_der_09_fresh_consumed():
+    write = dict(iops_max=71584, lat_us=440, bps_cap_seq=1.36e9, bps_cap_rand=1.36e9, fresh_penalty=19.9)
+    host = make_host(cache=None, write=write, read=dict(iops_max=21600, lat_us=300), size=40 << 30)
+    out = calibrate(host)
+    fvr = out.calibration["calibration"]["fresh_vs_rewrite"]
+    assert fvr["penalty"] >= 3
+    wiops = out.result["proposals"]["caps"]["dev_aggregate"]["WIOPS"]["inputs"]["basis_iops"]
+    assert wiops == pytest.approx(min(fvr["fresh_iops"], fvr["rewrite_iops"])) and wiops < fvr["rewrite_iops"]
+    assert [n for n in out.result["proposals"]["notes"] if n["note"] == "fresh_write_penalty"][0]["penalty"] == fvr["penalty"]
+    # no penalty -> no note
+    plain = make_host(cache=None, read=dict(iops_max=21600, lat_us=300), size=40 << 30)
+    assert "fresh_write_penalty" not in {n["note"] for n in calibrate(plain).result["proposals"]["notes"]}
+
+
+def test_der_10_read_cache_headroom():
+    host = make_host(cache=INVERSION)
+    out = calibrate(host)
+    cal = read_json(host, "/var/lib/iobench/calibration.json")["calibration"]
+    c = cal["cache"]["read"]
+    assert c["cache_state"] == "cold_measured"
+    headroom = [n for n in out.result["proposals"]["notes"] if n["note"] == "read_cache_headroom"][0]["value"]
+    assert headroom == pytest.approx(cal["ladder"]["best_read_rung_iops"] / c["R_iops"]) == pytest.approx(c["read_cache_headroom"])
+    # synthetic r1002-model arithmetic: 92000 / 9800 = 9.39
+    cal_syn = {"cache": {"read": {"read_cache_headroom": 92000 / 9800}}}
+    assert P.build_notes(cal_syn)[0]["value"] == pytest.approx(9.39, abs=0.05)
+    # null when the read cache state is not proven
+    hit = make_host(cache=dict(capacity_gib=500, hit_iops=92000, write_allocate=True))
+    notes = calibrate(hit).result["proposals"]["notes"]
+    assert [n for n in notes if n["note"] == "read_cache_headroom"][0]["value"] is None

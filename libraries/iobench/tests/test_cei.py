@@ -107,3 +107,32 @@ def test_cei_05_run_appends_plateaus():
     assert [(r["dir"], r["workload"], r["duration_s"], r["source"]) for r in rows] == [("write", "rand4k", 240, "benchmark"), ("read", "rand4k", 120, "benchmark")]
     for r in rows:
         ceilings.validate(r)
+
+
+def test_cei_05_run_appends_plateaus_in_a_run():
+    from helpers import INVERSION, calibrate, make_host
+    host = make_host(cache=INVERSION)
+    out = calibrate(host)
+    rows = [json.loads(x) for x in host.read_text("/var/lib/iobench/ceilings.jsonl").splitlines()]
+    assert rows[0]["header"] is True and rows[0]["identity_digest"] == ceilings.identity_digest(out.result["identity"])
+    obs = [r for r in rows[1:] if r.get("note") is None]
+    assert {(r["dir"], r["workload"], r["source"]) for r in obs} == {("write", "rand4k", "benchmark"), ("read", "rand4k", "benchmark")}
+    assert {r["duration_s"] for r in obs} == {240, 120}   # only the >= 60 s sustained windows at the cap-basis rung
+    assert all(r["plateau_bps"] > 0 for r in obs)
+    # a quick run measured no >= 60 s window and appends nothing
+    q = make_host(cache=INVERSION)
+    calibrate(q, profile="quick")
+    assert not q.exists("/var/lib/iobench/ceilings.jsonl") or len(q.read_text("/var/lib/iobench/ceilings.jsonl").splitlines()) == 1
+    # a moved reference is appended as a reference_shift finding (15 s, exempt from the 60 s rule)
+    flag = {"on": False}
+    moved = make_host(cache=None, ceiling=lambda t: 0.5 if flag["on"] else 1.0, read=dict(iops_max=21600, lat_us=300))
+    real_wr = moved.write_range
+
+    def wr(argv, target, offset, length):
+        flag["on"] = flag["on"] or any("rung-w32-4096" in a for a in argv)  # the ceiling halves during the ladder
+        return real_wr(argv, target, offset, length)
+
+    moved.write_range = wr
+    calibrate(moved)
+    shifts = [json.loads(x) for x in moved.read_text("/var/lib/iobench/ceilings.jsonl").splitlines()[1:] if "reference_shift" in x]
+    assert shifts and all(s["duration_s"] == 15 and s["workload"] == "rand4k" for s in shifts)

@@ -150,7 +150,7 @@ def reduce_series(points: Sequence[Point]) -> Reading:
     burst = 0.0
     knee_s = None
     if knee is not None and state != "unsteady":
-        knee_s = points[knee][0]
+        knee_s = 0.0 if state == "flat" else points[knee][0]  # a flat series has no knee: it is flat from the start
         for i in range(knee):
             dt = points[i + 1][0] - points[i][0]
             burst += max(0.0, smooth[i] - steady) * dt

@@ -91,6 +91,14 @@ def section_summary(group: Mapping[str, Any], *, identity_weak: bool = False) ->
     return out
 
 
+def annotate_apply(group: Mapping[str, Any]) -> dict[str, Any]:
+    """A copy of a proposals section with ``apply`` (what the wizard may do) added to every value (IOB-STA-04)."""
+    out: dict[str, Any] = {}
+    for key, item in group.items():
+        out[key] = {**item, "apply": apply_requirement(item)} if "status" in item else annotate_apply(item)
+    return out
+
+
 def apply_requirement(item: Mapping[str, Any]) -> str:
     """IOB-STA-04: what the wizard may do with a value."""
     return {"proven": "ok", "unproven": "requires_accept", "absent": "not_possible"}[item["status"]]
@@ -134,7 +142,8 @@ def build_model(cal: Mapping[str, Any], history: Mapping[str, Any]) -> dict[str,
         bps_basis = cal["cap_basis"]["bps"][direction]
         iops_basis = cal["cap_basis"][direction]
         if shape.get("skipped"):
-            out.update({n: absent("stage_skipped", "R6-model", {"key": n}) for n in names})
+            why = "stage_failed" if str(shape["stage_status"]).startswith("failed") else "stage_skipped"
+            out.update({n: absent(why, "R6-model", {"key": n}) for n in names})
             continue
         if fit != "good":
             out.update({n: absent("stage_failed", "R6-model", {"key": n, "linear_model_fit": fit}) for n in names})
@@ -156,6 +165,10 @@ def build_model(cal: Mapping[str, Any], history: Mapping[str, Any]) -> dict[str,
             reasons.append("operator_override")
         fits = shape["fit"]
         seq, rand = fits.get(f"{direction}-seq-rewrite", {}), fits.get(f"{direction}-rand-rewrite", {})
+        if metering not in ("byte", "iops") and not all((x or 0) > 0 for x in (seq.get("c_io_us"), rand.get("c_io_us"), seq.get("c_byte_ns"))):
+            # the fit gave no positive per-IO / per-byte cost, so there is nothing to derive from it: never a guess
+            out.update({n: absent("stage_failed", "R6-model", {"key": n, "metering": metering}) for n in names})
+            continue
         worst_bps = bps_basis["value"] if hist_bps is None else min(hist_bps, bps_basis["value"])
         worst_iops = None
         if metering == "iops":
