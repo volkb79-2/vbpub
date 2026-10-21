@@ -26,6 +26,10 @@ class SeriesError(ValueError):
     """The series cannot be reduced to a trustworthy reading."""
 
 
+class TooFewPoints(SeriesError):
+    """Fewer than 8 points: the stage fails with ``insufficient_points`` (IOB-SLO-02)."""
+
+
 class IntegrityError(SeriesError):
     """NaN, infinity, negative values or non-monotonic timestamps: a data-integrity failure (IOB-PLA-14)."""
 
@@ -62,7 +66,7 @@ class Reading:
 
 def validate(points: Sequence[Point]) -> None:
     if len(points) < MIN_POINTS:
-        raise SeriesError(f"need at least {MIN_POINTS} points, got {len(points)}")
+        raise TooFewPoints(f"need at least {MIN_POINTS} points, got {len(points)}")
     last_t = None
     for i, (t, v) in enumerate(points):
         if not (math.isfinite(t) and math.isfinite(v)):

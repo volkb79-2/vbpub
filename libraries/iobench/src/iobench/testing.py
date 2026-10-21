@@ -48,13 +48,14 @@ class CacheModel:
 
     def __init__(self, capacity_gib: float, hit_iops: float, *, write_allocate: bool = True,
                  read_allocate: bool = False, tier2_capacity_gib: float | None = None,
-                 tier2_iops: float | None = None) -> None:
+                 tier2_iops: float | None = None, read_alloc_share: float = 1.0) -> None:
         self.cap1 = float(capacity_gib)
         self.total_cap = float(tier2_capacity_gib or capacity_gib)
         self.hit_iops = hit_iops
         self.tier2_iops = tier2_iops or hit_iops
         self.write_allocate = write_allocate
         self.read_allocate = read_allocate
+        self.read_alloc_share = read_alloc_share
         self.order: OrderedDict[int, float] = OrderedDict()
 
     def tiers(self) -> dict[int, tuple[float, float]]:
@@ -98,7 +99,7 @@ class CacheModel:
         for b, ov in self._buckets(start, end):
             if self.read_allocate:
                 f = self.order.get(b, 0.0)
-                share = ios * ov / span / (GIB / PAGE)
+                share = self.read_alloc_share * ios * ov / span / (GIB / PAGE)
                 self.order[b] = 1 - (1 - f) * math.exp(-share)
             if b in self.order:
                 self.order.move_to_end(b)
@@ -959,4 +960,5 @@ def standard_host(scenario: Scenario | None = None, *, target_size: int = R1002_
     host.makedirs("/bench")
     host.makedirs("/run")
     host.makedirs("/sys/fs/cgroup")
+    host.put("/proc/sys/kernel/osrelease", "7.2.9\n")
     return host
