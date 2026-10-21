@@ -442,6 +442,8 @@ def load_file_target(host: Host, path: str) -> Target:
 
 
 def _check_file(host: Host, target: Target, st, fs: FsInfo) -> Target:
+    _need(not st.is_symlink and st.nlink <= 1, "file_not_exclusive", f"{target.path} is a symlink or has a link count above 1 now",
+          "re-run `iobench target init --file` on a plain file with a single link")
     _need(st.inode == target.inode, "inode_changed", f"the inode of {target.path} changed (file replaced)", "re-run `iobench target init --file`")
     _need(st.size == target.size_bytes, "size_changed", f"{target.path} was truncated or grown", "re-run `iobench target init --file`")
     _need(fs.uuid == target.fs_uuid, "fs_uuid_changed", f"the filesystem UUID under {target.path} changed", "re-run `iobench target init --file`")

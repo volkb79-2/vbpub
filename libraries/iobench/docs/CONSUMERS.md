@@ -132,6 +132,11 @@ nothing; host-setup renders and verifies the persistent files.
 * `cache_state` (reads): `cold_measured` (the earliest-written region read as cache-free: proven), `rate_cap` (the cold-region probe itself is flat at a provider cap: proven; a flat line elsewhere is only a recorded fact), `no_cache_observed` (the cold region runs as fast as the warm one, no cliff, unimodal: **unproven**, `cache_not_excluded`, because it cannot be told from a cache at least as large as the written extent), `cold_hit_like` (hit-like with a cliff, on a file target, or a cold rate below the warm reference: unproven), `undetermined`. Writes have no cache state: they are proven by the time axis (>= 120 s after the knee, bytes after >= 2x the burst).
 * `metering`: `byte`, `iops`, `mixed`, `undetermined`; E1 `fit` (informational): `good`, `poor`, `insufficient`, `plateau`.
 * `limits`: `quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `filesystem_layer` (file target: extent mapping and journal overhead are inside every figure), `fresh_semantics_filesystem` (file target: the "fresh" write is `fresh_fs_alloc` and counts toward the cap only on a `discard` mount), `bucket_exclusion_s<=<N>` (the longest observation: bursts longer than that are not excluded).
+* Write caps are proven by one series: the observation runs at QD32 (240 s, `thorough` 900 s) and bounds `cap_basis.write.value` (`inputs` lists every figure the minimum was taken over); a cap without the fresh half says `fresh_not_measured`
+  (or `budget_limited`). BPS caps and the read model keys carry the real reasons of the basis they rest on. **Exit 0 of `check` for the BPS caps and the model needs a ceiling history for `seq1m`**: nothing iobench writes
+  populates it yet (the S6 sequential cells are 30 s, below the 60 s plateau rule), so add one with `ceilings add` or expect exit 7 (`worst_from_single_run`).
+* `quality.checks[]` now includes the run-level plausibility checks PLA-07, -09, -17 and -18 (and PLA-06/-13 per run); `restore.warnings[]` carries `inflight_not_drained`; `evidence.history_rotated` names a foreign
+  `ceilings.jsonl` that was moved aside; `calibration.reference.moved_by_dir` says which direction's reference moved.
 * Check ids in `quality.checks[]`: IOB-PLA-01 tail flat, IOB-PLA-02 working-set rule, IOB-PLA-03 cached-tier factor, IOB-PLA-04 mean vs steady, IOB-PLA-05 flat-line, IOB-PLA-06 Little's law, IOB-PLA-07 bytes consistency, IOB-PLA-08 read-only-written, IOB-PLA-09 fill vs sequential, IOB-PLA-10 cache state, IOB-PLA-11 shape fit, IOB-PLA-12 noise floor, IOB-PLA-13 fresh vs rewrite, IOB-PLA-14 data integrity, IOB-PLA-15 identity stable, IOB-PLA-16 extent integrity, IOB-PLA-17 outside history, IOB-PLA-18 fresh write bytes/s (info; also records whether a discard re-arms the fresh-block penalty, hypothesis). A `fail` degrades only the groups it lists; -14, -15 and -16 fail the whole run.
 
 ### 5.4 Basis, check states and warnings
@@ -192,6 +197,16 @@ iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile st
 ```
 
 prints the stage plan, each stage's allotted seconds, the exact fio argv and the written-byte bound, and writes nothing.
+
+A few more refusals you may meet (each names its condition and a remedy; all exit 2):
+
+* `container_pid_namespace` / `mount_namespace_mismatch` / `namespace_unprovable`: iobench is not running in the host's initial PID/mount namespace (or cannot prove it): "run on the host, not in a container".
+* `probe_failed`: `blkid`, `wipefs`, `docker ps`, `systemctl` or `fio --version` failed (not "found nothing"); fix the tool (run as root) and rerun. `unit_not_found`: a `--production-unit` that does not exist.
+* `abort_psi_invalid` (`--abort-psi` must be a finite percentage in (0, 100]), `protect_cgroup_unreadable` (no `io.pressure` for that cgroup), `abort_guard_incomplete` (`--installer` with one guard flag), `stale_abort_file`
+  (remove `/run/iobench/abort` yourself), `orphan_fio` (an fio from a dead run still runs), `journal_corrupt` (inspect `/run/iobench/restore.json`).
+* `holder_active` (an md/dm holder), `path_colon`, `exists_without_sidecar` (the sidecar must match the file's inode, size and filesystem UUID), `dry_run_rate_other_target` / `dry_run_rate_unusable`
+  (`--dry-run` plans only with `--assume-r-est` or the current calibration of the same target).
+* `check --section writeback --calibration` is a usage error (a calibration carries no writeback); `check` exit 5 also covers `damaged_proposals` and a `schema_minor` newer than the installed iobench.
 
 ## 10. What a refusal looks like
 

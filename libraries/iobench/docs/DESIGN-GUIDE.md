@@ -243,3 +243,39 @@ token bucket longer than the observation cannot be excluded by a one-off benchma
 * **CAL-01.** The rule wins over the literal numbers: the two densification rungs are the geometric thirds (282.8 and 312.4 GiB). They add a fixed two rungs, so the section 15 allotment sum (3310 s standard, 4150 s thorough) is unchanged and `test_slo_05_*` pins it.
 * **REL-01.** Wheel and sha256 only.
 
+
+## Decisions added in the IOB-03 P3 review wave (2026-10-21)
+
+Two independent reviews (A: safety and the real host; B: measurement, estimators, derivations, proof model) found 11 blocking defects. Each is fixed with a test that goes red without the fix; the reasoning:
+
+* **A single owner for the restore journal.** `restore()` used to end with `remove(journal)` whether or not the session had written it, so a refused or lock-contended invocation deleted the live run's journal. Only the lock
+  holder writes, restores or removes the journal (`Safety` refuses to journal without the lock and tracks `journal_written`); `recover_previous` demands the lock.
+* **The kernel couples the dirty knobs.** Writing `dirty_bytes` zeroes `dirty_ratio` (and likewise the background pair), and the restore write re-fires the handler. Restoring only the bytes knob left a production host with ratio 0
+  while the read-back "verified" the knob that was not the problem. The ratio is journalled before the first change; the originally non-zero member of each pair is written last; both are verified.
+* **A container cannot prove the host's mount namespace.** `/proc/1` inside a container is the container's own init, so comparing `/proc/self/mountinfo` with `/proc/1/mountinfo` always agrees. The fact is derived from the PID
+  namespace link (the initial namespace has a fixed inode) and the mount namespace link; anything unreadable is a refusal ("run on the host, not in a container"). The same reasoning applies to `/run` (private per container: a lock
+  and a journal there exclude nobody).
+* **A silent probe is not an empty answer.** `blkid`, `wipefs`, `docker ps` and `systemctl` return codes are checked (`blkid` exits 2 for "nothing found", which is a normal answer; anything else is `probe_failed`), and unit
+  names are checked with `systemctl show` because `is-active` reports 3 for both "inactive" and a typo. This is the estate rule "absence for emptiness" applied to subprocesses.
+* **Bursts are integrated over the raw series.** A rolling median of 5 removes a burst of one or two samples, so the smoothed integral under-counted the gstammtisch burst (2.98e9 instead of 3.97e9) and a one-sample burst was
+  `flat`. The proof's 2x rule now compares against the raw burst bytes (500 s and 540 s are unproven, 560 s proven). Noise cancels in the signed sum; a raw sample above the band within the first two moves the knee.
+* **The cap and its proof are one series (B-B3).** The 30 s QD32 fresh/rewrite runs can sit wholly inside a 60 s burst that the 240 s observation outlives, so a `proven` write cap could be twice the sustained rate. Of the two
+  remedies the review offered (cap from the observation series, or prove at QD32) the change is the smaller one: the observation runs at QD32, the depth of the cap, on the same extent classes (rewrite extent, fresh extent), and
+  the cap is additionally bounded by the observation's own steady rate. The recorded inputs make `value == min(inputs)` checkable.
+* **Every input of `proven` must be present.** A missing fresh observation, an unmeasured fresh penalty (`fresh_not_measured`, or `budget_limited` for a budget skip) and a moved WRITE reference of the fresh-vs-rewrite pair
+  now make the write cap unproven. The movement flag is per direction because a read reference follows the read cache: a rewrite that evicts the read cache moves the read reference, not the write ceiling.
+* **A drifting cold probe is not a rate.** `ColdProbe` carries the series state; only `steady`/`flat` can vouch for `rate_cap` or `cold_measured`, `rate_limited` is judged on the final 60 s window (the one that defines
+  `steady`), and a flat cold probe now also respects the E2 cross-check (STA-03). The residual that a limiter on cache-resident data looks like a provider cap remains (R-11 ruling) and is the reason E2 disagreement blocks it.
+* **`check` cannot certify what it did not read.** An absent or empty section was "nothing wrong" (exit 0); now a section the document does not carry is a usage error, an emptied one is `absent`, an unknown status is a
+  damaged file (exit 5) and a newer schema minor is refused. `section_summary` whitelists the three statuses.
+* **S6 read keys are a cached rate.** The S6 cells run on the cache-basis working set, so the read model keys derived from the fit carry the same cache residue as the largest rung: they are scaled by `cache_ratio` exactly as the
+  BPS basis is, and unproven otherwise. Unsteady cells leave the fit.
+* **Plausibility checks run.** PLA-07, -09, -17 and -18 existed as unit-tested functions that no run called; the calibration now evaluates them (per direction, from the run's own cells), and without the closing S6 reference
+  they are `not_applicable` instead of asserting "unmoved".
+* **A fresh reference before S6.** The "before" reference of the shape group was taken at the end of rearm, before 480 s of heavy writes; a draining bucket then made a healthy disk look like a moved ceiling and every BPS cap
+  `unproven: ceiling_moved`. Six references now cost 180 s (standard 3310 s, thorough 4150 s).
+* **Smaller rulings.** The coupled `IO*`/`BlockIO*` argv forms are all refused; a file target is identified by its resolved path and filesystem (a bind mount of `/` is `/`); a re-init needs a sidecar that matches the file; `:` in
+  a path is refused (fio splits it); an active holder is refused outright; an `fio` left by a dead run refuses the next run; a failed second spawn kills the first; the dry run no longer creates an O_DIRECT probe file; a foreign
+  `ceilings.jsonl` is rotated aside before the run instead of refusing after the result is written; a dry run only plans with the rate of the same target and a current calibration.
+
+Not decided here (see IMPLEMENTATION-NOTES `DECISION-NEEDED`): a `--dry-run` that runs the live-host preflight, `fio --exclusive_open=1` (an unverified fio argv shape: needs the IOB-ACC-01 probe), a sequential-cell time proof for BPS writes, and a ceiling-history writer for `seq1m`.

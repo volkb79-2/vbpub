@@ -543,3 +543,18 @@ def test_rev_a_s9_requests_still_in_flight_after_a_kill_are_a_warning_in_the_res
     clean = make_host(cache=INVERSION)
     clean.deliver_signal("SIGTERM")
     assert calibrate(clean).result["restore"]["warnings"] == []
+
+
+def test_rev_a_s12_a_target_file_that_became_a_link_is_refused_at_every_stage():
+    host = standard_host()
+    target = finit(host)
+    assert guard.load_target(host, "/bench/target.img") == target
+    host.nlinks["/bench/target.img"] = 2  # a hard link appeared after init
+    with pytest.raises(Refusal) as err:
+        guard.verify_target(host, target)
+    assert err.value.condition == "file_not_exclusive"
+    host.nlinks.pop("/bench/target.img")
+    host.symlinks["/bench/target.img"] = "/bench/elsewhere.img"
+    with pytest.raises(Refusal) as err:
+        guard.load_target(host, "/bench/target.img")
+    assert err.value.condition in ("file_not_exclusive", "target_missing", "inode_changed")

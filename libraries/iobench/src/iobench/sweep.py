@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Sequence
 
 from . import plan
+from .series import SeriesError
 
 GIB = 1 << 30
 DRAIN_CONSISTENCY = 1.3
@@ -38,6 +39,8 @@ PROBE_BYTES = 200
 def drain_rate(cumulative_bytes: Sequence[float], dt: float = 1.0) -> float:
     """Median of the last 25 % of the 1 s samples of device write bytes/s."""
     rates = [(b - a) / dt for a, b in zip(cumulative_bytes, cumulative_bytes[1:])]
+    if len(rates) < 2:
+        raise SeriesError(f"a drain rate needs at least 2 samples, got {len(rates)}")
     tail = rates[len(rates) - max(3, math.ceil(len(rates) * 0.25)):]
     return statistics.median(tail)
 

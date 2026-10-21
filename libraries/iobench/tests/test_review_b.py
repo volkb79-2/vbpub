@@ -771,3 +771,10 @@ def test_rev_b_b7_a_run_without_the_shape_reference_does_not_claim_an_unmoved_co
     assert cal_of(out)["shape"]["cells"] and out.calibration["run"]["stages"]["S6"].startswith("failed")
     for check_id in ("IOB-PLA-07", "IOB-PLA-09", "IOB-PLA-18"):
         assert check_of(out, check_id)["status"] == "not_applicable", check_id
+
+
+def test_rev_b_n7_drain_rate_needs_two_samples():
+    from iobench import sweep
+    with pytest.raises(SeriesError, match="at least 2 samples"):
+        sweep.drain_rate([0.0, 10.0])
+    assert sweep.drain_rate([0.0, 10.0, 20.0, 30.0]) == 10.0

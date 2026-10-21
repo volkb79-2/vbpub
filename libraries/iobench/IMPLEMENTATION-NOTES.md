@@ -35,7 +35,7 @@ Remaining: see the last section.
 * File targets: `free` for `WS_max = min(size - fresh - tail, 0.85 x free - margin, ...)` is the space that was free BEFORE the file was
   preallocated (`fs.free + size`). Where a file-target cache is hit-like without a cliff the reason is `device_smaller_than_cache_margin`
   (IOB-TGT-10 text) instead of `no_cliff_hit_like_mode`.
-* `check` accepts a newer schema minor (unknown keys are ignored); only an unknown major is refused.
+* `check` ignores unknown KEYS but refuses a newer schema minor and an unknown major (IOB-RES-02; changed by the P3 review wave, B-B5).
 * Reporting threshold for `mean_overstates` (PLA-04, info only): 1.10 x steady.
 
 ## Final state (IOB-03 P3)
@@ -64,3 +64,57 @@ Resolved IOB-CCH-08 #5: was a logic flaw (a bare flat cap read as hit-like); fix
 Coordinator rulings applied (second commit): REL-01 wheel only; CAL-01 numbers 282.8/312.4 GiB (allotment sum unchanged); SHP-04 wins over PLA-11; CCH-08 #1 analytic and #2 range documented
 (DESIGN-GUIDE "Decisions added in IOB-03 P3"); new `cache_state` `no_cache_observed` (R-11, first version proven - corrected, see below).
 R-11 was corrected by the coordinator in a follow-up commit: `no_cache_observed` is `unproven: cache_not_excluded` (no_cache and cache >= fill are one observation); `rate_cap` for a flat cold probe stays proven.
+
+
+## IOB-03 P3 review wave (implementer, 2026-10-21): findings, fixes, tests
+
+Reviews: `review-IOB-03-P3-A.md` (safety), `review-IOB-03-P3-B.md` (estimators). New tests: `tests/test_review_a.py`, `tests/test_review_b.py` (each fix was checked red by temporarily reverting it). Controller rulings applied as given.
+
+| Finding | Fix | Test |
+|---|---|---|
+| A-B1 refused run deleted the live journal | only the lock holder writes/restores/removes the journal (`journal_written`, lock required) | `test_rev_a_b1_*` |
+| A-B2 dirty_ratio left at 0 | ratio knobs journalled; originally non-zero member written last; pair verified by read-back; FakeHost models the coupling | `test_rev_a_b2_*`, `test_swp_04_only_allowed_knobs` |
+| A-B3 container passes the mount check | `require_host_namespaces` (initial PID ns inode, mnt ns == PID 1's), unreadable evidence refused, `/proc/1/mountinfo` OSError -> Refusal | `test_rev_a_b3_*` |
+| A-B4 probe return codes | `devio.probe` (blkid 0/2, wipefs/docker/fio 0), `systemctl show` LoadState + is-active 0/3 | `test_rev_a_b4_*` |
+| A-S2 holders / exclusive open | `holder_active` refusal; `O_EXCL` on the device marker open (RealHost) | `test_rev_a_s2_*` |
+| A-S3 abort guards | psi finite in (0,100], cgroup pressure readable, installer half guard refused, `AbortWatch` threshold None safe | `test_rev_a_s3_*` |
+| A-S4 stale abort file | `stale_abort_file` refusal in S0 | `test_rev_a_s4_*` |
+| A-S5 io.max verdict | no verdict without a before snapshot; compare common cgroups; tolerate vanishing cgroups | `test_rev_a_s5_*` |
+| A-S6 clamped values | journalled `applied` = value read back; rejected write drops the entry; journal I/O errors propagate | `test_rev_a_s6_*` |
+| A-S7 restore stops at first error / unvalidated journal | all entries attempted, failures aggregated (exit 9); `parse_journal` validation | `test_rev_a_s7_*` |
+| A-S8 orphans, partial spawn | process group + PDEATHSIG + reap (RealHost), `orphan_fio` refusal, `spawn_all` kills the first on a failed second | `test_rev_a_s8_*` |
+| A-S9 drain ignored | `restore.warnings[]: inflight_not_drained` (see "not done" for the signal deferral) | `test_rev_a_s9_*` |
+| A-S10 argv denylist | one regex for every `IO*`/`BlockIO*` spelling | `test_rev_a_s10_*` |
+| A-S11 file target identity | realpath before the mount lookup, octal unescape, root by device, `:` refused | `test_rev_a_s11_*` |
+| A-S12 stale sidecar | matching sidecar (inode, size, uuid); symlink/nlink re-checked every stage | `test_rev_a_s12_*` |
+| A-S13 dry run writes | no O_DIRECT probe file in a dry run (RealHost probe is O_EXCL/O_NOFOLLOW) | `test_rev_a_s13_*` |
+| A-S14 exit codes | `RealHost.devno` returns None for unusable paths; identity failure while claiming a device is exit 2 | `test_rev_a_s14_*` |
+| B-B1 burst under-count | raw signed integral; leading raw sample moves the knee | `test_rev_b_b1_*` (240/500/540/560 s, one-sample 5 GB, run level) |
+| B-B2 unsteady cold probe | `ColdProbe.state`; `rate_limited` on the final 60 s window | `test_rev_b_b2_*` (run level drifting probe) |
+| B-B3 cap vs proof | **observation runs at QD32** (no SPEC change to the cap's definition) and the cap is also bounded by the observation steady; inputs recorded | `test_rev_b_b3_*` (60 s burst scenario) |
+| B-B4 write basis inputs | missing fresh observation, `fresh_not_measured` (new unproven reason), WRITE-reference movement of the fvr pair, `skipped` not `failed`, real `fresh_vs_rewrite.reason` | `test_rev_b_b4_*` |
+| B-B5 check | unknown/absent section exit 2, empty section absent, whitelisted statuses (`damaged_proposals`, exit 5), newer minor refused | `test_rev_b_b5_*` |
+| B-B6 read model keys | scaled by `cache_ratio` (derive.r6_keys requires it), unproven otherwise; unsteady cells leave fit/metering | `test_rev_b_b6_*` |
+| B-B7 PLA-07/09/17/18 | `Calibrator.bytes_checks` in `assemble`; PLA-06/-13 run-level tests | `test_rev_b_b7_*` |
+| B-S1/S2 QoS inheritance | `max` inherits budget/moved, `wlat/rlat` inherit the ceiling reasons, unsteady rungs ignored | `test_rev_b_s1_*`, `_s2_*` |
+| B-S3 stale S6 reference | `r3s` reference before S6 (reference 150 -> 180 s: standard 3310, thorough 4150) | `test_rev_b_s3_*`, `test_slo_05_*` |
+| B-S4..S7 | unsteady depth voids QD90; E2 optional stage and `HistError` is a `SeriesError`; worst write window; no TypeError | `test_rev_b_s4_*` .. `_s7_*` |
+| B-S8 | rejected knob = skipped cell; per-cell budget in S4/S6/S7/knob plan; budget starts at the run start; matrix inherits `short_observation` | `test_rev_b_s8_*` |
+| B-S9/S10 | dry-run rate bound to target and currency; foreign `ceilings.jsonl` rotated aside before the run | `test_rev_b_s9_*`, `_s10_*` |
+| B-S11 | flat cold probe respects E2 tolerance (the cache-resident limiter residual stays documented) | `test_rev_b_s11_*` |
+| B-S12 | real reasons on BPS bases (`bps_basis` takes `read_reasons`/`write_reasons`, no defaults) | `test_rev_b_s12_*` |
+| B-S13/S14 | every failing PLA-06 rung listed and `iocost_qos` degraded by the run-level test; E2 start timestamps recorded | `test_rev_b_b7_pla_06_*`, `test_rev_b_s14_*` |
+| B-N3, N5, N7, N10, N11 | `modes` with no peak, non-finite fio log values fail the run, `drain_rate` < 2 samples, sparse windows not assessed, newer minor | covered in the files above |
+
+Choice for B-B3 (as asked): the observation series is also the cap's bound AND runs at the cap's depth (QD32). This needed SPEC text changes in CAL-05 and CAL-07 only (stated there); the `fresh_not_measured` reason is a vocabulary addition (SPEC, CONSUMERS).
+
+### DECISION-NEEDED (SPEC-changing; not implemented)
+* DECISION-NEEDED: A-S13 `--dry-run` should run the live-host preflight/namespace/work-dir checks in report mode and exit 2 where a real run would (today it exits 0; the 173 reviewed CLI cases and PRF-01 encode the plan-only behaviour).
+* DECISION-NEEDED: A-S2b add `--exclusive_open=1` to every fio argv for a device target. The fio option name could not be verified here (no fio in the cockpit); a new argv shape needs one live probe (IOB-ACC-01) before it ships.
+* DECISION-NEEDED: B-S12 time-prove the BPS write cap on the sequential 1 MiB series itself (today it is proven by the 4 KiB random IOPS observation, a different workload); needs a longer sequential observation run.
+* DECISION-NEEDED: B-S16 append `seq1m` plateaus to the ceiling history (the S6 sequential cells are 30 s, below the 60 s plateau rule of CEI-02), otherwise `check` exit 0 is unreachable for BPS caps and model keys without a manual `ceilings add` (documented in CONSUMERS).
+* DECISION-NEEDED: B-S15 a dynamic two-tier fixture through `Calibrator` (E-cold measures the backing rate); the existing analytic fixture only proves the precedence.
+* DECISION-NEEDED: B-N1 SPEC section 18 vs code shapes (`cap_basis.*.value` vs `iops`, `reference` shape, CAL-06 QD16 vs QD32); `cap_basis.write.inputs` and `reference.moved_by_dir` were added.
+
+### Not done (small, no SPEC impact; for a follow-up wave)
+A-S1 (bind `RealHost.write_range`/`run` argv to the authorised extent and use the allowlist at runtime), A-S9 second half (poll blocking `host.run`/`discard_range` so a second SIGTERM is not deferred), A-N1, N2 (`systemd-run --wait`), N4-N10, B-N2, N4, N6, N8, N9, N12; B-S13 second half (the faked PLA-06 rung still feeds `best_read_rung`, `cached_ref` and the cliff). RealHost changes (process group, PDEATHSIG, O_EXCL, probe O_EXCL) are excluded from coverage and untested until IOB-ACC-01.
