@@ -145,86 +145,39 @@ class TestRealProducerRealConsumer:
         assert "demo-1.2.3-py3-none-any.whl" in host.assets["demo-v1.2.3"]
 
 
-class TestLegacyNameFallback:
-    """Releases published before the fix carry ``<prefix>-<version>.tar.xz`` (pwmcp r1..r2)."""
+class TestNoLegacyNameFallback:
+    """PWMCP-08 (operator decision 2026-10-21): get.py requests exactly the contract name.
+
+    A release published under another name (pwmcp <= 1.64.0-r2: ``pwmcp-<ver>.tar.xz``) is NOT
+    guessed at: the installer refuses loudly and names the asset it requested."""
 
     @pytest.mark.parametrize("token", [None, "tok"])
-    def test_single_legacy_asset_is_taken_and_logged(self, tmp_path, capsys, token):
+    def test_a_single_wrongly_named_asset_is_refused_not_taken(self, tmp_path, capsys, token):
         host = _FakeHost()
         _put_raw(host, tmp_path, TAG, f"demo-{VERSION}.tar.xz", b"legacy")
-        ns = _render()
-        _serve(ns, host)
-        wd = tmp_path / "wd"
-        wd.mkdir()
-        got = ns["download_and_verify"](TAG, wd, token)
-        assert got.name == f"demo-{VERSION}.tar.xz" and got.read_bytes() == b"legacy"
-        out = capsys.readouterr()
-        assert "legacy" in (out.out + out.err).lower()
-        assert f"demo-{VERSION}.tar.xz" in (out.out + out.err)
-
-    def test_zero_candidates_fails_loudly(self, tmp_path):
-        host = _FakeHost()
-        _put_raw(host, tmp_path, TAG, "get.py", b"x")
         ns = _render()
         _serve(ns, host)
         wd = tmp_path / "wd"
         wd.mkdir()
         with pytest.raises(SystemExit) as stopped:
-            ns["download_and_verify"](TAG, wd, None)
-        assert stopped.value.code != 0
-
-    def test_two_candidates_fail_loudly_and_never_guess(self, tmp_path, capsys):
-        host = _FakeHost()
-        _put_raw(host, tmp_path, TAG, "a-1.tar.xz", b"a")
-        _put_raw(host, tmp_path, TAG, "b-1.tar.xz", b"b")
-        ns = _render()
-        _serve(ns, host)
-        wd = tmp_path / "wd"
-        wd.mkdir()
-        with pytest.raises(SystemExit):
-            ns["download_and_verify"](TAG, wd, None)
+            ns["download_and_verify"](TAG, wd, token)
+        assert stopped.value.code not in (0, None)
         err = capsys.readouterr().err
-        assert "a-1.tar.xz" in err and "b-1.tar.xz" in err
+        assert f"{TAG}.tar.xz" in err  # names the requested (contract) asset
+        assert not list(wd.iterdir())  # nothing was fetched under another name
 
-    def test_legacy_asset_with_a_bad_sidecar_is_refused(self, tmp_path):
-        host = _FakeHost()
-        _put_raw(host, tmp_path, TAG, f"demo-{VERSION}.tar.xz", b"legacy",
-                 sidecar_digest="0" * 64)
-        ns = _render()
-        _serve(ns, host)
-        wd = tmp_path / "wd"
-        wd.mkdir()
-        with pytest.raises(SystemExit):
-            ns["download_and_verify"](TAG, wd, None)
+    def test_the_template_carries_no_asset_discovery(self):
+        src = (Path(__file__).resolve().parents[1] / "src/cmru/templates/get.py.tmpl").read_text()
+        for gone in ("_legacy_asset_name", "_AssetNotFound", "_download_required"):
+            assert gone not in src
 
-    def test_a_variant_request_never_uses_the_fallback(self, tmp_path):
+    def test_a_variant_request_for_a_missing_asset_is_refused(self, tmp_path, capsys):
         host = _FakeHost()
-        _put_raw(host, tmp_path, TAG, f"demo-{VERSION}.tar.xz", b"legacy")
+        _put_raw(host, tmp_path, TAG, f"{TAG}.tar.xz", b"plain")
         ns = _render()
         _serve(ns, host)
         wd = tmp_path / "wd"
         wd.mkdir()
         with pytest.raises(SystemExit):
             ns["download_and_verify"](TAG, wd, None, "py311")
-
-    def test_a_release_with_only_a_variant_asset_is_refused_not_guessed(self, tmp_path):
-        # <tag>-<variant><suffix> belongs to the variants namespace: it is not a legacy name
-        host = _FakeHost()
-        _put_raw(host, tmp_path, TAG, f"{TAG}-py311.tar.xz", b"variant")
-        ns = _render()
-        _serve(ns, host)
-        wd = tmp_path / "wd"
-        wd.mkdir()
-        with pytest.raises(SystemExit):
-            ns["download_and_verify"](TAG, wd, None)
-        assert not (wd / f"{TAG}-py311.tar.xz").exists()
-
-    def test_a_variant_asset_beside_one_legacy_asset_leaves_the_legacy_one(self, tmp_path):
-        host = _FakeHost()
-        _put_raw(host, tmp_path, TAG, f"{TAG}-py311.tar.xz", b"variant")
-        _put_raw(host, tmp_path, TAG, f"demo-{VERSION}.tar.xz", b"legacy")
-        ns = _render()
-        _serve(ns, host)
-        wd = tmp_path / "wd"
-        wd.mkdir()
-        assert ns["download_and_verify"](TAG, wd, None).name == f"demo-{VERSION}.tar.xz"
+        assert f"{TAG}-py311.tar.xz" in capsys.readouterr().err

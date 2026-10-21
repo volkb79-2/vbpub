@@ -1413,10 +1413,10 @@ Choices and the rejected alternatives:
   scoped to installer projects remains possible later (then `latest.json`, the release body and
   the download URL follow the placed name, as in the variants path); it was not needed to close
   the defect.
-- **A bounded `get.py` fallback for already-published releases**, because immutable releases
-  cannot be republished: on a 404 for the canonical name it lists the release's assets (one new
-  API request, with the same token handling as the private download path) and accepts exactly one
-  `*<asset_suffix>` asset (never a `<tag>-<variant>` one) whose `.sha256` sidecar verifies. Zero or several candidates, a
-  variant request, or a failing listing are loud refusals. It adds no trust: a sidecar proves
-  integrity only; authenticity is the signed manifest when `manifest_pubkey` is configured, and
-  pwmcp configures none, exactly as before.
+- **No `get.py` fallback for already-published releases (PWMCP-08, 2026-10-21).** An earlier
+  revision listed a release's assets on a 404 and took the single `*<asset_suffix>` asset when its
+  sidecar verified. The operator decided to remove it ("just leave it be, we clean up eventually"):
+  `get.py` requests exactly `expected_asset_name` and a 404 is a loud refusal naming it, with no
+  second code path, no extra API request and no guessing from what a release happens to carry.
+  Consequence: releases published under the old name (pwmcp <= `1.64.0-r2`) stay undownloadable by
+  `get.py`; consumers pin a release published under the contract name.

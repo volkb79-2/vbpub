@@ -31,6 +31,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+### Changed
+- One asset-name function now serves bundle producers and the rendered `get.py`, and a test compares every installer project's published bundle name with the name its `get.py` requests (KI-89). The `get.py` download behaviour is unchanged: it requests only `<tag><asset_suffix>` (a legacy-name fallback was added and removed before release, PWMCP-08).
+
 <!-- cmru: release history -->
 
 ## [6.2.0] - 2026-10-20

@@ -2,6 +2,11 @@
 
 All notable changes to this project are recorded here. Entries marked `cmru: generated` are produced from the project-scoped release range before the release gate runs.
 
+## [Unreleased]
+
+### Changed
+- `get.py` re-rendered from the current cmru installer template; download behaviour unchanged (it requests only `<tag><asset_suffix>`).
+
 <!-- cmru: release history -->
 
 ## [2.0.0] - 2026-09-13

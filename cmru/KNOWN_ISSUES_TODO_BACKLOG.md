@@ -2287,8 +2287,10 @@ download against it); and a repo-reading oracle (`tests/test_installer_asset_nam
 project with `[project.installer]` + `asset_suffix`, compares the producer's name (`bundle.toml` template
 or `tarball-publish --glob`) with the contract name, with a controlled wrong implementation that must go
 red and a self-checking exemption list (ciu, CIU-99). `publish_versioned` must not rename or refuse
-unconditionally (wheels). Plus the bounded, sidecar-verified get.py fallback for already-published
-releases (PWMCP-07 fix C).
+unconditionally (wheels). The get.py fallback for already-published releases (PWMCP-07 fix C) was
+REMOVED on 2026-10-21 (PWMCP-08, operator: "just leave it be, we clean up eventually"): get.py requests
+exactly the contract name and a 404 is a loud refusal naming it; releases published under another name
+(pwmcp <= v1.64.0-r2) stay undownloadable by get.py.
 
 **Follow-up (review round 3): a committed `get.py` must equal a fresh render.** A template change
 left `ciu/get.py`, `tls-edge/get.py` and `pwmcp/get.py` stale, and only ciu has a byte-identity test
