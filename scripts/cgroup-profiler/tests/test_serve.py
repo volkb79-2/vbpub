@@ -2509,6 +2509,72 @@ def test_a_permanently_wedged_worker_is_finalized_by_the_bounded_escalation(
     release.set()
 
 
+def test_closed_flag_is_set_before_placement_release_and_damon_close(
+    simple_server, monkeypatch,
+):
+    """Sol S6: the closed flag must already be true when release/close run."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    seen = {}
+    real_release = sess.placement.release
+
+    def spy_release():
+        seen["placement"] = sess.closed
+        real_release()
+
+    sess.placement.release = spy_release
+    real_exit = sess.damon_session.__class__.__exit__
+
+    def spy_exit(self, *args):
+        seen["damon"] = sess.closed
+        return real_exit(self, *args)
+
+    sess.damon_session.__class__.__exit__ = spy_exit
+    with simple_server._lock:
+        assert simple_server._finalize_session_locked(
+            sess, aborted_reason=None, force=True)
+    assert seen == {"placement": True, "damon": True}
+    release.set()
+
+
+def test_sample_arriving_after_the_closed_flag_touches_nothing(
+    simple_server, monkeypatch,
+):
+    """Sol S6: between the flag and the release a wedged worker's sample is
+    discarded: no migrate, no DAMON recommit, no record, no counters."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    calls: List[str] = []
+    sess.placement.placed = True
+    sess.placement.migrate = lambda pids: calls.append("migrate")
+    sess.placement.leaf_readings = lambda: {
+        "psi_full_avg10": None, "memory_high_applied": False}
+    sess.damon_session.recommit_targets = lambda pids: calls.append("recommit")
+    sess.damon_session.collect = lambda: []
+    sess.damon_session.last_class_bytes = {"hot": 1, "warm": 1, "cold": 1, "idle": 1}
+    sess.last_discovery_mono = None            # makes the sample "due"
+    samples_before = len(list(sess.rundir.read("samples")))
+    live_before = sess.live_samples
+    with sess.lock:
+        sess.closed = True                      # the state before release()
+    simple_server._on_session_sample(
+        sess, {"seq": 7, "mono": 50.0, "t": EPOCH_START + 50,
+               "cg": {sess.cgroup: {}}, "host": {}},
+        os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/")), None,
+    )
+    assert calls == []
+    assert len(list(sess.rundir.read("samples"))) == samples_before
+    assert sess.live_samples == live_before
+    # The open path still works (control): without the flag the sample lands.
+    sess.closed = False
+    simple_server._on_session_sample(
+        sess, {"seq": 8, "mono": 60.0, "t": EPOCH_START + 60,
+               "cg": {sess.cgroup: {}}, "host": {}},
+        os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/")), None,
+    )
+    assert "migrate" in calls
+    assert len(list(sess.rundir.read("samples"))) == samples_before + 1
+    release.set()
+
+
 def test_sigterm_shutdown_finalizes_a_session_whose_sampler_is_blocked(
     simple_server, monkeypatch,
 ):

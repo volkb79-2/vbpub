@@ -204,6 +204,18 @@ its placement and DAMON resources, and `stop` may be retried; the third
 consecutive incomplete attempt finalizes anyway with `stop_forced`), and from §8.8 `peer-refused`,
 `place-refused:*`, `bad-policy`, `not-streaming`.
 
+Additive optional Summary keys (cgprofile 1.1.0; the contract number stays 1
+and the Summary schema stays v1.1; full definitions in
+`RG55-INTERFACE-CONTRACT.md` §8.7):
+
+* `summary.damon_cleanup` — `{confirmed, slot, quarantined}`, present when a
+  DAMON owner was closed; `confirmed: false` means the kdamond teardown could
+  not be verified (it may still be active), which is NOT the same as DAMON off.
+* `summary.stop_forced` — `"sampler-still-running"` when the session was
+  finalized while its sampling worker was still alive (the third consecutive
+  `stop-incomplete`, or daemon shutdown); the manifest is then `aborted` with
+  the same reason. Absent otherwise.
+
 ## 7. Goldens
 
 `tests/fixtures/rg55/socket/<verb>-request.json` and `<verb>-response.json`

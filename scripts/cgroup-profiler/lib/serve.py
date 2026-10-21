@@ -295,6 +295,11 @@ class _Session:
     stop_event: threading.Event = field(default_factory=threading.Event)
     stop_attempts: int = 0
     stop_forced: bool = False
+    # Set under ``lock`` BEFORE placement is released and DAMON is closed
+    # (Sol S6). Every sample-side action that touches those resources or the
+    # session's records re-checks it under the same lock, so a wedged worker
+    # cannot migrate, recommit or append after release has begun.
+    closed: bool = False
     thread: Optional[threading.Thread] = None
     damon_cleanup: Optional[Dict[str, Any]] = None
     live_samples: int = 0
@@ -1515,10 +1520,11 @@ class SessionServer:
     def _on_session_sample(
         self, sess: _Session, record: Dict[str, Any], abs_target: str, abs_slice: Optional[str],
     ) -> None:
-        if sess.finished:
-            # A wedged worker that outlived a forced finalization must not
-            # append to the finalized session's records.
-            return
+        with sess.lock:
+            if sess.closed or sess.finished:
+                # A wedged worker that outlived (or raced) finalization must
+                # not touch the session's resources or records.
+                return
         mono = record.get("mono", 0.0)
         target_metrics = (record.get("cg") or {}).get(sess.cgroup, {})
         host_metrics = record.get("host") or {}
@@ -1538,7 +1544,8 @@ class SessionServer:
                     and set(pids) != previous_pids
                 ):
                     try:
-                        sess.damon_session.recommit_targets(pids)
+                        self._run_if_open(
+                            sess, lambda: sess.damon_session.recommit_targets(pids))
                     except Exception as exc:  # noqa: BLE001 - profiling is best-effort
                         self._disable_damon_for_session(sess, exc)
             else:
@@ -1564,7 +1571,8 @@ class SessionServer:
                 sess.last_discovery_mono = mono
                 if sess.damon_session is not None and set(new_pids) != set(sess.no_token_pids):
                     try:
-                        sess.damon_session.recommit_targets(new_pids)
+                        self._run_if_open(
+                            sess, lambda: sess.damon_session.recommit_targets(new_pids))
                     except Exception as exc:  # noqa: BLE001 - profiling is best-effort
                         self._disable_damon_for_session(sess, exc)
                 sess.no_token_pids = new_pids
@@ -1577,7 +1585,7 @@ class SessionServer:
         # cadence as the resolution above (`migrate` skips what it already
         # moved, so this is a set difference, not a re-write per tick).
         if due and sess.placement is not None and sess.placement.placed:
-            sess.placement.migrate(pids)
+            self._run_if_open(sess, lambda: sess.placement.migrate(pids))
 
         # CP-5: limit_drift is the one Detector event kind observe() cannot
         # produce on its own (it needs an old/new lib.limits.Effective pair,
@@ -1592,7 +1600,8 @@ class SessionServer:
                 for event in sess.detector.limits_changed(
                     sess.cgroup, sess.last_effective_limits, new_effective_limits, drift_t, mono,
                 ):
-                    sess.rundir.append("events", event.to_dict())
+                    self._run_if_open(
+                        sess, lambda event=event: sess.rundir.append("events", event.to_dict()))
             sess.last_effective_limits = new_effective_limits
 
         damon_bytes: Optional[Dict[str, int]] = None
@@ -1605,6 +1614,8 @@ class SessionServer:
                 self._disable_damon_for_session(sess, exc)
 
         with sess.lock:
+            if sess.closed:
+                return
             sess.summary_acc.add_sample(
                 cgroup=target_metrics, host=host_metrics, slice_cgroup=slice_metrics,
                 damon=damon_bytes, pids=pids, mono=mono,
@@ -1660,7 +1671,8 @@ class SessionServer:
             )
 
         for event in detected_events:
-            sess.rundir.append("events", event.to_dict())
+            self._run_if_open(
+                sess, lambda event=event: sess.rundir.append("events", event.to_dict()))
 
         # RW-14: persisted keyed by cgroup path, one row per `mono` tick —
         # the same on-disk shape `cgprofile run`'s own collector writes
@@ -1673,19 +1685,34 @@ class SessionServer:
         # and no "mono" at all — silently unreadable by `to_frame`, caught
         # by RW-14 before it shipped. `_finalize_orphan`'s replay path reads
         # this same shape back (see its own RW-14 comment).
-        sess.rundir.append("samples", {
-            "seq": record.get("seq"), "t": record.get("t"), "mono": mono,
-            "cg": {sess.cgroup: target_metrics},
-        })
-        sess.rundir.append("host", {"host": host_metrics, "slice": slice_metrics})
-        if damon_bytes is not None:
-            if isinstance(record.get("seq"), int):
-                sess.rundir.append("damon", {"_seq": record.get("seq"), **damon_bytes})
-            else:
-                # Direct unit callers may provide a sample record without a
-                # sampler sequence; retain the historical flat shape for
-                # those synthetic records.
-                sess.rundir.append("damon", damon_bytes)
+        def append_records() -> None:
+            sess.rundir.append("samples", {
+                "seq": record.get("seq"), "t": record.get("t"), "mono": mono,
+                "cg": {sess.cgroup: target_metrics},
+            })
+            sess.rundir.append("host", {"host": host_metrics, "slice": slice_metrics})
+            if damon_bytes is not None:
+                if isinstance(record.get("seq"), int):
+                    sess.rundir.append("damon", {"_seq": record.get("seq"), **damon_bytes})
+                else:
+                    # Direct unit callers may provide a sample record without
+                    # a sampler sequence; retain the historical flat shape for
+                    # those synthetic records.
+                    sess.rundir.append("damon", damon_bytes)
+
+        self._run_if_open(sess, append_records)
+
+    @staticmethod
+    def _run_if_open(sess: _Session, action: Callable[[], Any]) -> bool:
+        """Run ``action`` under ``sess.lock`` only while the session is not
+        closed (Sol S6). Finalization sets ``closed`` under the same lock
+        before releasing placement and closing DAMON, so an action either
+        completes before the release begins or is not run at all."""
+        with sess.lock:
+            if sess.closed:
+                return False
+            action()
+            return True
 
     def _close_damon_session(
         self, damon_session: Any, *, session_id: str, context: str,
@@ -2233,6 +2260,7 @@ class SessionServer:
                 )
         ended_at = self._iso(self.clock())
         with sess.lock:
+            sess.closed = True      # before release/close; see _Session.closed
             if sess.summary_acc.sample_count == 0:
                 # Stopped before a single tick landed — contract §1.5 still
                 # promises a summary, so take one sample right now rather

@@ -766,6 +766,10 @@ and DAMON forever. The third consecutive incomplete `stop` therefore finalizes
 anyway (`stop_forced: sampler-still-running`, aborted manifest, resources
 released) and daemon shutdown forces the same way; a late sample from the
 worker is discarded because the session is finished. If the worker holds the
-session lock the forced path refuses rather than deadlock the daemon. Known
+session lock the forced path refuses rather than deadlock the daemon. The
+`finished` flag is set only after release, so finalization first sets a
+`closed` flag under the session lock; every sample-side action that touches
+placement, DAMON or the records re-checks it under that same lock, which closes
+the window in which a late sample could migrate or recommit after release began. Known
 limit: each attempt joins for up to 10 s while holding the server-wide lock, so
 a wedged sampler delays every verb for that long per retry.

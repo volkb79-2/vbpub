@@ -55,6 +55,11 @@ inferred from the r3 canaries.
   writing an `aborted` manifest with reason `sampler-still-running` and an
   additive `summary.stop_forced`; a late sample from the worker is discarded.
   Daemon shutdown (SIGTERM) forces the same way instead of stranding resources.
+- Fix (Sol S6, use-after-release): finalization now sets a `closed` flag under
+  the session lock BEFORE it releases placement and closes DAMON, and the
+  sample path (migrate, DAMON recommit, summary accumulation, every record
+  append) runs only while the flag is clear, under the same lock. A wedged
+  worker's sample that arrives between the flag and the release is discarded.
 - Fix (Sol B3): an unconfirmed DAMON teardown is no longer indistinguishable
   from "DAMON off". `stop` (and `summary.json`/`manifest.json`) now carry
   `damon_cleanup: {confirmed, slot, quarantined}` whenever a DAMON owner was
