@@ -2333,7 +2333,10 @@ tls-edge dry-runs that succeeded removed their worktrees ("Release transaction c
 `cmru abandon cmru-release-20261021_012919-pwmcp-oes4gj --dry-run` and `--yes` both answered
 `Withheld ... transaction scope: unavailable; refs/assets involved: unknown; reason: release scope metadata is missing,
 malformed, or ambiguous`, so the supported verb cannot retire it (a dry run writes no scope record, and abandon treats
-the absence as ambiguity). The branch was local only (no origin branch, no tag).
+the absence as ambiguity). The branch was local only (no origin branch, no tag). The controller removed it afterwards
+by hand, after bundling it to `.worktrees/_archive/cleanup-20261020/cmru-release-20261021_012919-pwmcp-oes4gj.bundle`
+(its parent worktree's `git worktree remove` had already deleted the nested directory). Compare KI-86: there the scope
+record exists but its `source_commit` does not match `workspace.base`; here no scope record is written at all.
 
 **Impact:** a dry run is advertised as non-mutating ("No tags pushed, nothing built/published") but leaves retained
 local state whose supported cleanup refuses; the alternative is hand-deleting worktrees and branches, which AGENTS.md
