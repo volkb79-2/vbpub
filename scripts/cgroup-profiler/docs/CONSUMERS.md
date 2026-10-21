@@ -440,6 +440,13 @@ DAMON marked unavailable when reservation is refused. Treat `damon: "on"` plus a
 `damon.jsonl` series as the evidence that DAMON actually ran, not `ctl version`
 alone.
 
+A stopped session whose DAMON owner was closed carries
+`summary.damon_cleanup: {"confirmed": <bool>, "slot": <int|null>,
+"quarantined": <bool>}` (also in `manifest.json`). `confirmed: false` means the
+kdamond teardown could not be verified and it may still be running; do not read
+that as "DAMON off". `quarantined: true` means the daemon will not reuse the
+slot. The workload verdict is unaffected, and `stop` still answers `ok: true`.
+
 ### Host DAMON_STAT exclusivity
 
 `DAMON_STAT` and the generic DAMON sysfs interface serve different consumers.

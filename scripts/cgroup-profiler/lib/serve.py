@@ -239,6 +239,7 @@ class _Session:
     lock: threading.Lock = field(default_factory=threading.Lock)
     stop_event: threading.Event = field(default_factory=threading.Event)
     thread: Optional[threading.Thread] = None
+    damon_cleanup: Optional[Dict[str, Any]] = None
     live_samples: int = 0
     live_memory_current_bytes: Optional[int] = None
     live_memory_peak_bytes: Optional[int] = None
@@ -700,6 +701,7 @@ class SessionServer:
             "damon_kdamond": sess.damon_session.kdamond_idx if sess.damon_session else None,
             "damon_thresholds": sess.damon_session.thresholds if sess.damon_session else None,
             "damon_unavailable_reason": sess.damon_unavailable_reason,
+            "damon_cleanup": sess.damon_cleanup,
             "placement": _placement_block(sess),
             "meta": sess.meta,
             "aborted_reason": None,
@@ -1624,8 +1626,13 @@ class SessionServer:
 
     def _close_damon_session(
         self, damon_session: Any, *, session_id: str, context: str,
-    ) -> None:
-        """Close one DAMON owner without letting optional cleanup alter a verdict."""
+    ) -> Dict[str, Any]:
+        """Close one DAMON owner without letting optional cleanup alter a verdict.
+
+        Returns the cleanup disposition (Sol B3): ``confirmed`` is True only
+        when the owner affirmatively reports a verified teardown. An exception
+        from ``__exit__`` or a missing confirmation is "unconfirmed", which a
+        consumer must be able to tell apart from "off"."""
         try:
             damon_session.__exit__(None, None, None)
         except Exception as cleanup_exc:  # noqa: BLE001 - cleanup cannot affect verdict
@@ -1633,11 +1640,17 @@ class SessionServer:
                 f"session {session_id}: DAMON cleanup raised during {context}: "
                 f"{type(cleanup_exc).__name__}: {cleanup_exc}"
             )
-        if not getattr(damon_session, "cleanup_confirmed", False):
+        confirmed = bool(getattr(damon_session, "cleanup_confirmed", False))
+        slot_idx = getattr(damon_session, "kdamond_idx", None)
+        disposition_doc: Dict[str, Any] = {
+            "confirmed": confirmed, "slot": slot_idx, "quarantined": False,
+        }
+        if not confirmed:
             pool = self.damon_pool
             quarantined = set(getattr(pool, "quarantined_indices", ()))
             slot_idx = getattr(damon_session, "kdamond_idx", None)
             if slot_idx is not None and slot_idx in quarantined:
+                disposition_doc["quarantined"] = True
                 disposition = (
                     f"owned slot {slot_idx} is quarantined and will not be reused"
                 )
@@ -1651,6 +1664,7 @@ class SessionServer:
                 f"session {session_id}: DAMON stop is unconfirmed during {context}; "
                 f"{disposition}"
             )
+        return disposition_doc
 
     def _disable_damon_for_session(self, sess: _Session, exc: Exception) -> None:
         """Stop only DAMON after a runtime profiling failure.
@@ -1672,7 +1686,7 @@ class SessionServer:
             sess.damon_unavailable_reason = reason
             sess.summary_acc.mark_damon_unavailable(reason)
 
-        self._close_damon_session(
+        sess.damon_cleanup = self._close_damon_session(
             damon_session, session_id=sess.session_id,
             context=f"runtime failure ({reason})",
         )
@@ -2135,11 +2149,17 @@ class SessionServer:
                 sess.placement.release()
                 summary_doc["placement"] = sess.placement.block()
         if sess.damon_session is not None:
-            self._close_damon_session(
+            # Sol B3: an unverified (possibly still active) kdamond must not
+            # look like "DAMON off" to the consumer. The disposition travels
+            # in the Summary (additive `damon_cleanup`) and the manifest; it
+            # never changes the workload verdict.
+            sess.damon_cleanup = self._close_damon_session(
                 sess.damon_session,
                 session_id=sess.session_id,
                 context="session finalization",
             )
+        if sess.damon_cleanup is not None:
+            summary_doc["damon_cleanup"] = dict(sess.damon_cleanup)
         sess.ended_at = ended_at
         sess.summary_doc = summary_doc
         sess.finished = True

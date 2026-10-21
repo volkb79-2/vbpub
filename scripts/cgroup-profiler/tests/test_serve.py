@@ -1611,7 +1611,11 @@ def _strip_v1_1_summary_keys(summary_doc: Dict[str, Any]) -> Dict[str, Any]:
     v1 goldens stay BYTE-identical (contract §8's own "the existing goldens
     stay byte-identical") — the same treatment C5 gave `host`'s two new
     keys and C6 gave `version.transports`."""
-    return {k: v for k, v in summary_doc.items() if k not in ("liveness", "watch")}
+    # `damon_cleanup` (Sol B3) is the same kind of additive v1.1 key: present
+    # whenever a DAMON owner was closed, so the v1 goldens are compared
+    # without it and its own tests pin it.
+    return {k: v for k, v in summary_doc.items()
+            if k not in ("liveness", "watch", "damon_cleanup")}
 
 
 class TestFullLifecycleGoldenReproduction:
@@ -2352,6 +2356,73 @@ def test_finalize_session_swallows_optional_damon_cleanup_failure(
     err = capsys.readouterr().err
     assert "DAMON cleanup raised during session finalization" in err
     assert "DAMON stop is unconfirmed" in err
+    # Sol B3: the consumer-visible stop result and the persisted records say
+    # the teardown was NOT confirmed (and the slot is not known quarantined),
+    # so it cannot be mistaken for "DAMON off". The workload verdict is
+    # untouched.
+    stored = json.loads(
+        (Path(simple_server.sessions_dir) / sess.session_id / "summary.json").read_text()
+    )
+    assert stored["damon_cleanup"] == {
+        "confirmed": False, "slot": 7, "quarantined": False,
+    }
+    manifest = json.loads(
+        (Path(simple_server.sessions_dir) / sess.session_id / "manifest.json").read_text()
+    )
+    assert manifest["damon_cleanup"]["confirmed"] is False
+    stop = simple_server._stop_response(
+        sess.session_id, sess.summary_doc, already_stopped=True,
+    )
+    assert stop["summary"]["damon_cleanup"]["confirmed"] is False
+
+
+def test_confirmed_damon_cleanup_is_reported_as_confirmed(simple_server):
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+
+    class _ConfirmedDamon:
+        cleanup_confirmed = True
+        kdamond_idx = 3
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
+
+        def __exit__(self, *_args):
+            return None
+
+    sess.damon_session = _ConfirmedDamon()
+    with simple_server._lock:
+        simple_server._finalize_session_locked(sess, aborted_reason=None)
+    assert sess.summary_doc["damon_cleanup"] == {
+        "confirmed": True, "slot": 3, "quarantined": False,
+    }
+
+
+def test_session_without_damon_has_no_cleanup_fact(simple_server):
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+    with simple_server._lock:
+        simple_server._finalize_session_locked(sess, aborted_reason=None)
+    assert "damon_cleanup" not in sess.summary_doc
+
+
+def test_unconfirmed_cleanup_of_a_quarantined_slot_is_reported_quarantined(
+    simple_server,
+):
+    class _Pool:
+        quarantined_indices = {7}
+
+    class _Unconfirmed:
+        cleanup_confirmed = False
+        kdamond_idx = 7
+
+        def __exit__(self, *_args):
+            return None
+
+    simple_server.damon_pool = _Pool()
+    doc = simple_server._close_damon_session(
+        _Unconfirmed(), session_id="s-q", context="test",
+    )
+    assert doc == {"confirmed": False, "slot": 7, "quarantined": True}
 
 
 def test_missing_cleanup_confirmation_property_is_reported_as_unconfirmed(

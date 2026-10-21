@@ -705,3 +705,17 @@ project's documentation, changelog or release configuration claims one. A
 later R2 result applies only to the exact tree and base it judged. Passing
 `r0-r1` and `r3` qualifies a release for exactly what those lanes test; it is
 not mutation evidence.
+
+## An unverified DAMON teardown is a reported fact, not a log line
+
+DAMON is optional evidence, so a failed or unverifiable kdamond teardown must
+not change the workload verdict or turn `stop` into an error. But the old
+behavior logged `cleanup_confirmed=False` and then returned the same
+successful stop as a session whose DAMON was never on, so a consumer could not
+tell "off" from "possibly still running". The daemon therefore reports the
+disposition separately and additively: `summary.damon_cleanup` (also in the
+manifest) is `{confirmed, slot, quarantined}`. `confirmed` is True only when the
+owner affirmatively verified its teardown; an exception from the owner, or no
+confirmation property at all, is unconfirmed. `quarantined` states whether the
+daemon will refuse to reuse that slot, so "unverified" is never read as a
+no-reuse guarantee it did not establish.
