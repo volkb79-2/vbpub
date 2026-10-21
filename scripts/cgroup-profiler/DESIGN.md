@@ -730,7 +730,11 @@ admission.md` §A1 (D-27..D-29), §A2 (D-30), A3 (D-31), and A4 (D-32); the wire
   systemd unit (`infra/cgprofile.slice`) the operator installs once per
   host, never software the daemon writes itself (see `infra/README.md`);
   `ctl host`'s `daemon_slice`/`gates_slice` blocks (§8.5) report presence
-  either way rather than assuming installation happened.
+  rather than assuming installation happened. Since 1.1.0 (Sol B4) the daemon
+  does not merely report: `serve` refuses to start unless the slice's
+  `memory.max` is finite and positive, because an implicitly auto-created
+  slice is unbounded and a "governed-looking" daemon without limits is the
+  silent-default hazard. Unprovable (unreadable) counts as unbounded.
 - **D-30 — the socket carrier, host-visible.** `/run/cgprofile/ctl.sock`
   is bind-mounted to the host, `SO_PEERCRED`-gated
   (`CGPROFILE_ALLOW_UIDS`), so a consumer that should not or cannot use

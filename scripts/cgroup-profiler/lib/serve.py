@@ -83,6 +83,20 @@ DEFAULT_MAX_SESSIONS = 16
 # `cgroup_parent: cgprofile.slice` to match, so there is nothing to resolve.
 DEFAULT_GATES_SLICE_NAME = "dev-gates.slice"
 DAEMON_SLICE_NAME = "cgprofile.slice"
+
+
+def daemon_slice_bounded(cgroup_root: str) -> bool:
+    """True only when the daemon's own slice carries a finite, positive
+    ``memory.max`` (Sol B4). An implicitly auto-created ``cgprofile.slice``
+    (the unit was never installed) reads back as the unbounded default, so
+    the daemon cannot honestly claim its containment; unreadable counts as
+    unbounded -- unprovable refuses."""
+    path = os.path.join(
+        cgroup_root, targets_mod.slice_to_path(DAEMON_SLICE_NAME).lstrip("/"),
+        "memory.max",
+    )
+    value = util.read_int(path)
+    return value is not None and value > 0
 DEFAULT_KEEP_SESSIONS = 200
 DEFAULT_KEEP_DAYS = 14
 DEFAULT_INTERVAL = 1.0

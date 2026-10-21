@@ -402,7 +402,8 @@ see the consumer note for the live probe and safe host procedure.
   step, once per host, **before** the first `ciu up` on that host: see
   `infra/README.md` (`sudo cp infra/cgprofile.slice
   /etc/systemd/system/ && sudo systemctl daemon-reload`). Not installed →
-  the daemon still starts, under an implicitly-created, unbounded slice;
+  `serve` REFUSES to start (exit 2): systemd would auto-create an unbounded
+  slice and the daemon would look governed while running unlimited.
   `ctl host` reports the actual `daemon_slice.memory_min_bytes` and
   `memory_high_bytes` (a zero or null floor means no memory reservation).
   This is a

@@ -596,6 +596,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-147 | `ciu up` reports success for a stack whose rendered, bind-mounted config file changed, while the running container keeps serving the OLD config: Compose's recreate diff hashes the service definition, not the content of a bind-mounted file, and CIU never forces a recreate or warns | Medium | OPEN |
 | CIU-148 | `docs/SPEC.md` S15.20 and `docs/DESIGN-NOTES.md` D8 cite dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`, which dstdns merged into `docs/RESOURCE-GOVERNANCE.md` (dstdns docs-sync W20) | Low | OPEN |
 | CIU-149 | `tests/tests/test_ciu_cli_worktree.py::TestWorktreeCreateDispatch::test_forwards_all_options` fails in the registered `ciu` lane (and on origin/main): `--profile` without `--root-folder` hits the S16 selected-root refusal because ciu's own directory is not a CIU root, so `--maxfail=1` ends the lane as EMPTY_COVERAGE | Medium |
+| CIU-150 | `ciu up` preflight cannot prove a named governance slice is loaded on the Docker host from a cockpit (the `systemctl` check is skipped as inconclusive) and does not look at compose-authored `cgroup_parent` at all, so a stack such as cgprofile's can start under an implicit unbounded slice | Major | OPEN (filed 2026-10-21 from the cgprofile-v1.0.0 Sol review B4; cgprofile 1.1.0 added a daemon-side refusal as the interim guard) |
 
 
 The approved milestone decisions and serial package order are in
@@ -5499,3 +5500,17 @@ It printed `Active service profile(s): apps,worker-io,worker-db,identity,observa
 **Required contract.** Give the test an explicit root (`--root-folder` to a temp CIU root, or `monkeypatch.chdir` into one), so it asserts option forwarding rather than cwd luck; consider dropping `--maxfail=1` from the lane (or declaring the failure honestly) so one failure cannot masquerade as an empty-coverage measurement.
 
 **Oracles.** `run-gate ciu` completes with a verdict that reflects the whole suite; the test passes from the lane's cwd.
+
+## CIU-150 — no Docker-host proof that a stack's cgroup parent slice is loaded before container creation
+
+**Evidence (2026-10-21).** The cgprofile-v1.0.0 Sol review (blocker 4) found that `scripts/cgroup-profiler/ciu.compose.yml.j2:94` authors `cgroup_parent: "cgprofile.slice"` outright, and that systemd auto-creates an uninstalled slice with no limits while the container still starts. CIU's `governance_preflight` (`ciu/src/ciu/deploy.py`, the `check_slice_unit` loop) (a) only examines slices resolved from the stack's `[governance]` table, never a compose-authored `cgroup_parent`, and (b) `return`s silently when `governance.check_slice_unit` is inconclusive, which is the normal cockpit case (no systemd PID 1 in the devcontainer).
+
+**Why CIU owns it.** Placement of a deployed container is CIU's supported workflow; the fix needs a probe that runs on the Docker host, not in the cockpit.
+
+**Required contract.** Before creating any container whose resolved `cgroup_parent` (governance OR compose-authored) is a named non-default slice, prove `LoadState=loaded` through a Docker-host systemd probe; a missing or unprovable unit refuses (exit 2) naming the unit and the install step. Do not treat an inconclusive probe as success.
+
+**Oracles.** An installed-unit host passes; a missing-unit host refuses; a cockpit with no host probe refuses (not skips) for a stack that names a non-default slice.
+
+**Interim.** cgprofile 1.1.0 (CGP-110) refuses to start `serve` when `cgprofile.slice` has no finite `memory.max` (`scripts/cgroup-profiler/lib/serve.py` `daemon_slice_bounded`). That guards the one known case after container creation; it does not replace this probe.
+
+**SPEC owner.** S15.G9-1.
