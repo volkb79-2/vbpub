@@ -460,6 +460,13 @@ that RAM is taken from every other tier, including production.
 
 ## `vm.swappiness` — common settings, and how to tell if the current one is right
 
+> **Update 2026-10-21 (SWAP-01, operator decision): swappiness is set LOW on these hosts.** gstammtisch's repo file now
+> says **10** (matching the host) and `debian-install-v2`'s default moved from 100 to **10**; reasoning (write-capped disk,
+> cheap reads, the risk of too low) is canonical in
+> `scripts/gstammtisch-guide/MEMORY-ARCHITECTURE.md`, §4 "`vm.swappiness` — why low on these hosts". The table and the
+> "live discrepancy" paragraph below describe the earlier state (100 staged, 10 live, `debian-install-v2` 50/100) and are
+> kept as history. mdt host-setup does not manage this knob (no key, no code); this section is documentation only.
+
 **Host-global only — there is no per-cgroup knob in cgroup v2** (confirmed
 both by `ls /sys/fs/cgroup/**/memory.swappiness` finding nothing, and by
 `MEASUREMENTS.md` M5's own note: *"There is no per-cgroup swappiness in
@@ -494,7 +501,7 @@ regime, the opposite of the zswap-aware design it's actually built for.
 ### The tool/metric that tells you if a given setting is right
 
 Not a single number — a **refault-source split**, already worked out in
-`MEASUREMENTS.md` M5 (titled, verbatim, "is swappiness=100 right?" — the
+`MEASUREMENTS.md` M5 (then titled "is swappiness=100 right?"; since 2026-10-21 "Is the swappiness setting right?" — the
 recipe generalizes to any value):
 
 ```bash

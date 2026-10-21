@@ -5328,7 +5328,8 @@ def _current_git_root() -> Path:
 
 
 def _gate_snapshots(args, runtime) -> None:
-    """List retained release-gate snapshots; ``--remove`` deletes the removable ones.
+    """List retained release-gate snapshots; ``--remove`` deletes the removable ones and
+    drops the ``stale-record`` ones (directory and Git registration both gone).
 
     Removal is judged from fresh facts per snapshot (``gate_snapshot``): a live or
     unprovable lease, an unobservable source, or a mismatched record keeps the
@@ -5373,11 +5374,13 @@ def _gate_snapshots(args, runtime) -> None:
         return
     failures = 0
     for item in reports:
-        if item.status != gate_snapshot.REMOVABLE:
+        if item.status not in (gate_snapshot.REMOVABLE, gate_snapshot.STALE_RECORD):
             continue
         path = item.record.worktree_path
         if args.dry_run:
-            log_info(f"[DRY RUN] Would remove gate snapshot {path}")
+            what = ("drop the stale record of gate snapshot"
+                    if item.status == gate_snapshot.STALE_RECORD else "remove gate snapshot")
+            log_info(f"[DRY RUN] Would {what} {path}")
             continue
         try:
             gate_snapshot.remove_gate_snapshot(

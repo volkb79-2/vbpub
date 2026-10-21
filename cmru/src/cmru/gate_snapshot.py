@@ -1283,6 +1283,12 @@ def _snapshot_branch(source_root: Path, commit: str) -> str:
 
 def _validate_gate_snapshot_record(record, expected_common: Path) -> None:
     """Prove the record still names the snapshot created for its source HEAD."""
+    _validate_record_identity(record, expected_common)
+    _validate_snapshot_checkout(record, expected_common)
+
+
+def _validate_record_identity(record, expected_common: Path) -> None:
+    """The record's own fields name the snapshot CMRU would create for its source HEAD."""
     source_root = record.source_git_root
     expected_branch = _snapshot_branch(source_root, record.base_commit)
     expected_path = (source_root.parent / expected_branch).resolve(strict=False)
@@ -1298,6 +1304,10 @@ def _validate_gate_snapshot_record(record, expected_common: Path) -> None:
             f"CMRU gate snapshot record does not match its source identity: "
             f"{record.record_path}"
         )
+
+
+def _validate_snapshot_checkout(record, expected_common: Path) -> None:
+    """The directory is a real linked worktree on the recorded branch and HEAD."""
     try:
         metadata = record.worktree_path.lstat()
     except OSError as exc:
@@ -1408,6 +1418,10 @@ def _remove_snapshot_assay_state(record) -> None:
 
 REMOVABLE = "removable"
 RETAINED = "retained"
+#: The record outlived its snapshot: the directory is gone AND Git no longer registers the
+#: worktree (nor lists its branch anywhere). Only the record, the derived Assay state and a
+#: leftover branch at the recorded commit remain to drop. See ``_worktree_presence``.
+STALE_RECORD = "stale-record"
 
 
 @dataclass(frozen=True)
@@ -1420,6 +1434,60 @@ class SnapshotReport:
     source_present: bool
 
 
+def _worktree_presence(record, executor: Path) -> tuple[str, str]:
+    """Classify the snapshot checkout from two independent facts: the directory (``lstat``)
+    and Git's worktree registry. Returns ``(condition, detail)``, ``condition`` being:
+
+    * ``present`` -- directory exists and Git registers it at that path: judged as before;
+    * ``stale`` -- directory is gone AND Git neither registers the path nor lists the record's
+      branch at any other path (a path this process cannot see may be another mount
+      namespace's spelling, so the branch cross-check is required): the record is stale;
+    * ``registered-missing`` -- directory is gone but Git still registers the path (prunable);
+    * ``branch-elsewhere`` -- directory not visible here and Git lists the branch at another
+      path: possibly the same checkout seen from another namespace; never inferred gone;
+    * ``unregistered`` -- the directory exists but Git does not register it (deregistered);
+    * ``unreadable`` -- the directory cannot be inspected for a reason other than absence.
+    """
+    api = _worktree_api()
+    try:
+        record.worktree_path.lstat()
+        directory = True
+    except FileNotFoundError:
+        directory = False
+    except OSError as exc:
+        return "unreadable", f"cannot inspect CMRU gate snapshot {record.worktree_path}: {exc}"
+    entries = api.list_git_worktrees(executor)
+    at_path = next((item for item in entries if item.path == record.worktree_path), None)
+    on_branch = next(
+        (item for item in entries
+         if item.branch in (record.branch, f"refs/heads/{record.branch}")
+         and item.path != record.worktree_path),
+        None,
+    )
+    if directory:
+        if at_path is None:
+            return "unregistered", (
+                f"the directory {record.worktree_path} exists but Git does not register it as "
+                "a worktree; inspect it before removing anything"
+            )
+        return "present", ""
+    if at_path is not None:
+        return "registered-missing", (
+            f"Git still registers {record.worktree_path}"
+            f"{' (prunable)' if at_path.is_prunable else ''} but its directory is missing; "
+            "inspect it and run `git worktree prune` once it is confirmed gone"
+        )
+    if on_branch is not None:
+        return "branch-elsewhere", (
+            f"the directory {record.worktree_path} is not visible here and Git lists branch "
+            f"{record.branch} at {on_branch.path}: possibly another mount namespace"
+        )
+    return "stale", (
+        f"the directory {record.worktree_path} is gone and Git no longer registers the "
+        "worktree or its branch; only the record, derived Assay state and a leftover branch remain"
+    )
+
+
 def _judge_snapshot(record, common: Path, executor: Path, *, include_current: bool) -> SnapshotReport:
     """Decide cleanup eligibility; any indeterminate fact retains the snapshot."""
 
@@ -1427,9 +1495,17 @@ def _judge_snapshot(record, common: Path, executor: Path, *, include_current: bo
         return SnapshotReport(record, RETAINED, reason, present)
 
     try:
-        _validate_gate_snapshot_record(record, common)
+        _validate_record_identity(record, common)
     except RuntimeError as exc:
         return retained(str(exc))
+    condition, detail = _worktree_presence(record, executor)
+    if condition in ("registered-missing", "branch-elsewhere", "unregistered", "unreadable"):
+        return retained(detail)
+    if condition == "present":
+        try:
+            _validate_snapshot_checkout(record, common)
+        except RuntimeError as exc:
+            return retained(str(exc))
     state = gate_lease_state(record.lease)
     if state == LEASE_LIVE:
         return retained(f"a gate lease is live (holder {record.lease.holder})")
@@ -1438,6 +1514,8 @@ def _judge_snapshot(record, common: Path, executor: Path, *, include_current: bo
             f"lease liveness cannot be proven from this namespace (holder "
             f"{record.lease.holder}); run cleanup where the gate ran"
         )
+    if condition == "stale":
+        return SnapshotReport(record, STALE_RECORD, detail, False)
     disposition, reason, present = _source_disposition(record, common, executor)
     if disposition == SOURCE_UNKNOWN:
         return retained(reason, present)
@@ -1473,17 +1551,40 @@ def remove_gate_snapshot(
         if record.purpose != "cmru-gate":
             raise RuntimeError(f"not a CMRU gate snapshot record: {record_path}")
         report = _judge_snapshot(record, common, executor, include_current=include_current)
-        if report.status != REMOVABLE:
+        if report.status not in (REMOVABLE, STALE_RECORD):
             raise RuntimeError(
                 f"CMRU gate snapshot {record.worktree_path} is retained: {report.reason}"
             )
         if record.lease is not None:
             record = api.release_lease(record)  # judged dead above
         _remove_snapshot_assay_state(record)
-        if report.source_present:
+        if report.status == STALE_RECORD:
+            _drop_stale_record(record, common, executor)
+        elif report.source_present:
             api.remove_workspace(record)
         else:
             api.remove_orphan_workspace(record, executor_git_root=executor)
+
+
+def _drop_stale_record(record, common: Path, executor: Path) -> None:
+    """Drop a record whose snapshot is already gone. Touches no worktree: it removes the
+    record file (under the family allocation lock) and, only if it still points at the
+    recorded commit, the snapshot's leftover local branch."""
+    api = _worktree_api()
+    try:
+        head = _git(executor, "rev-parse", "--verify", "--quiet",
+                    f"refs/heads/{record.branch}").stdout.decode("ascii", "replace").strip()
+    except RuntimeError:
+        head = ""  # no such branch
+    if head == record.base_commit:
+        _git(executor, "branch", "-D", record.branch)
+    with api.workspace_lock(common):
+        current = api.read_record(record.record_path)
+        if current.worktree_path != record.worktree_path or current.branch != record.branch:
+            raise RuntimeError(
+                f"CMRU gate snapshot record changed while it was being dropped: {record.record_path}"
+            )
+        current.record_path.unlink(missing_ok=True)
 
 
 def remove_gate_snapshots_for_source(source_root: Path) -> None:

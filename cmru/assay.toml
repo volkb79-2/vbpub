@@ -43,7 +43,13 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
 # environment's installed release (CX-D1/CX-D3, BG-04).
 env = { PYTHONPATH = "src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-budget = "20m"
+# 50m (was 20m, 2026-10-21): this is the lane-wide deadline and covers the baseline run AND the import-break
+# canary. On the shared gstammtisch host the baseline measured lane-elapsed 901 s (pytest 842 s + 59 s
+# snapshot) and the canary did not finish inside the remaining time. One canary attempt = control run of the
+# FULL suite + the transformed fast-fail run, ~1020 s, so the lane needs ~1930 s (~32 min) at the observed
+# load; 50m is ~1.5x that. The budget is a hang bound, not a speed target. run-gate.toml's outer budget must
+# stay >= this + 10m (tests/test_gate_budgets.py enforces >= +5m).
+budget = "50m"
 allow_argv_append = false
 
 [lanes.cmru.isolation]
@@ -71,7 +77,8 @@ artifact = "coverage.json"
 # source snapshot, independent of the mutation campaign's individual tests.
 mechanism = "import-break"
 target = "src/cmru/config.py"
-budget_per_attempt = "20m"
+# One attempt ~1020 s (control full suite + transformed fast fail); 30m is ~1.7x. It nests inside the lane budget.
+budget_per_attempt = "30m"
 
 # A repository with no published stable CMRU tag has no diff baseline. The
 # first release therefore qualifies every production source file under R0/R1/
@@ -85,7 +92,7 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
   "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
 env = { PYTHONPATH = "src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-budget = "20m"
+budget = "50m"   # same baseline + canary shape and sizing as [lanes.cmru]
 allow_argv_append = false
 
 [lanes.cmru-first-release.isolation]
@@ -150,7 +157,7 @@ artifact = "coverage.json"
 [lanes.cmru-first-release.judge.canary]
 mechanism = "import-break"
 target = "src/cmru/config.py"
-budget_per_attempt = "20m"
+budget_per_attempt = "30m"
 
 # Run after the first stable CMRU tag has been published. It is still a
 # whole-source claim: the first release has no earlier tree to diff against.

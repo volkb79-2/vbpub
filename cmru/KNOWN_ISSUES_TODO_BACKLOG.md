@@ -1918,21 +1918,23 @@ one-command UX without shell-specific pipe-status traps.
 
 **Oracle:** a gate run against Run-Gate below SemVer `24.0.0`, a development/local package, or a CLI/package version mismatch refuses before any CMRU sub-lane; the manifest records the stable wheel version. The mutation lane demonstrates contract-2 event evidence; other lanes do not claim event evidence until they consume it. Tests also prove a lane cannot rewrite/delete a release tag or move `main` non-fast-forward.
 
-### KI-79 — CMRU 6.2.0 provisional release defers the long R2 campaign
+### KI-79 — CMRU 6.2.x provisional releases defer the long R2 campaign
 
-**Status:** implementation in the 2026-10-14 release candidate; exact-tree gate and independent review pending; severity: major (mutation evidence gap).
+**Status:** IN FORCE for the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`): first applied to the 2026-10-14 6.2.0 release candidate, widened by the operator on 2026-10-21 (see the extension paragraph); R2 itself still owed (see Follow-up); severity: major (mutation evidence gap).
 
 **Reason:** the full CMRU mutation lane is a multi-hour R2 campaign. The operator's release objective explicitly permits long R2 to run asynchronously or be postponed so short correctness, coverage, and integration gates can unblock the tool release wave.
 
-**Chosen behavior:** the 6.2.0 release step invokes `gate-provisional`. It runs every lane in the full `gate` conjunction except `mutation`, including ref-probe, installed-wheel/live, Assay R0/R1/R3, coverage, and canary. `tools/run_release_gate.py --postpone-mutation KI-79` writes a timestamped marker bound to the candidate commit under `.assay/mutation-postponed-cmru.json` and emits a WARN; that marker is deferral evidence, not an R2 pass. The full `gate` remains available for the exact tagged source after release.
+**Chosen behavior:** the 6.2.x release step invokes `gate-provisional`. It runs every lane in the full `gate` conjunction except `mutation`, including ref-probe, installed-wheel/live, Assay R0/R1/R3, coverage, and canary. `tools/run_release_gate.py --postpone-mutation KI-79` writes a timestamped marker bound to the candidate commit under `.assay/mutation-postponed-cmru.json` and emits a WARN; that marker is deferral evidence, not an R2 pass. The full `gate` remains available for the exact tagged source after release.
+
+**Extension to the whole 6.2 line (operator decisions 2026-10-21):** first "extend the mutation postponement to 6.2.1" (the cmru 6.2.1 release refused in its gate: `mutation postponement KI-79 is authorized only for CMRU 6.2.0; prepared changelog identifies 6.2.1`), then, the same day, "release more cmru also without prior R2; revisit R2 when we are confident we have a release worth testing". `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py` now binds KI-79 to the window `>= 6.2.0` and `< 6.3.0`; 6.3.0 and later (7.x included) still refuse before a lane runs (`tests/test_release_gate_provisional.py`: 6.2.0, 6.2.1, 6.2.9 and 6.2.10 allowed; 6.3.0, 7.0.0 and below-6.2 refused). Every 6.2.x release shipped this way is a provisional release without an R2 pass (6.2.1 is the second). **R2 obligation:** one full-`gate` R2 run (a branch at the chosen release tag, the same prerequisites) before the first release judged worth R2, and at the latest before 6.3.0, which the guard refuses to defer; it judges the accumulated 6.2.x source, not each patch. A wider window needs a new operator decision and a reviewed change to that constant.
 
 **Provisional representation (2026-10-15 hardening):** a deferred gate still exits 0, but its retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) records `state: "provisional"` (never `"passed"`) and a `deferred_lanes` entry `{lane: "mutation", tracking_id, reason, follow_up_lane, follow_up_prerequisites}`; the marker carries `result: "provisional"`. Both are written only after every required non-mutation lane and the final canary succeeded, a gate start deletes any earlier marker, a failed lane or canary leaves no success-shaped record, and a full `gate` records `state: "passed"` with `deferred_lanes: []`. The report line is `WARN: PROVISIONAL PASS ... NOT an R2 pass`. Follow-up hardening (2026-10-15, review `release-hardening-followup-claude-opus-high-2026-10-15.md` M-1/L-1/L-2): success is decided only after snapshot cleanup, so a canary-removal or snapshot-close failure after all lanes passed exits non-zero, removes the marker and records `state: "failed"` with empty `deferred_lanes`; the recorded `follow_up_lane` is `gate` (the standalone `mutation` lane needs gate-prepared baseline facts), or `assay-first-release-r2` for a first release; input validation runs before any evidence is touched so a refused invocation preserves the previous run's evidence, and a valid new gate clears stale success-shaped state before its first lane (`tests/test_release_gate_provisional.py`). No survivor or mutation-quality claim is made until that campaign completes and survivors are triaged.
 
-**Release command:** `cmru release cmru --minor` (or `--set-version 6.2.0`). The gate binds `KI-79` to 6.2.0, while the candidate's commit subjects alone compute a patch bump (`cmru status cmru` reported `cmru-v6.1.1` at `d8d5e9250`); a default release would prepare and back up the candidate and then refuse in the gate.
+**Release command:** a 6.2.x release is an ordinary patch release (`cmru release cmru`). `--minor` or `--major` (6.3.0 or later) is refused by the gate AFTER the candidate has been prepared and backed up, because KI-79 covers only `>= 6.2.0`, `< 6.3.0`; for that release the step returns to full `gate`.
 
-**Follow-up prerequisites (exact):** (1) a branch created at the published release tag `cmru-v6.2.0`, so the exact tagged source is judged; (2) the CGProfile host observer deployed through the declared CIU workflow and reachable (the follow-up lane declares `resource_observer = "cgprofile"`); (3) the D-4 capacity evidence the Run-Gate follow-up lane requires for a multi-hour R2 run. Item 3's artifact is defined by the Run-Gate RG-55 program, not by CMRU (see the work-log note in `nyxloom-trove/reports/`); CMRU records it as a named prerequisite and never fabricates it.
+**Follow-up prerequisites (exact):** (1) a branch created at the published release tag of the newest 6.2.x release at the time, so the exact tagged source (which includes all earlier 6.2.x changes) is judged; (2) the CGProfile host observer deployed through the declared CIU workflow and reachable (the follow-up lane declares `resource_observer = "cgprofile"`); (3) the D-4 capacity evidence the Run-Gate follow-up lane requires for a multi-hour R2 run. Item 3's artifact is defined by the Run-Gate RG-55 program, not by CMRU (see the work-log note in `nyxloom-trove/reports/`); CMRU records it as a named prerequisite and never fabricates it.
 
-**Follow-up:** run full R2 against the exact 6.2.0 tag and the declared nearest published baseline, triage and fix/backport any survivors, then retain the report. Restore the release step to full `gate` before the next CMRU release. This does not retroactively qualify earlier releases or close KI-62's historical 6.0.0 evidence gap.
+**Follow-up:** run full R2 against the exact tag of the newest 6.2.x release at the time, so it judges the accumulated 6.2.x source, with the declared nearest published baseline; do it before the first release judged worth R2 and at the latest before 6.3.0. Triage and fix/backport any survivors, then retain the report. The release step returns to full `gate` for the first release this guard no longer covers (6.3.0) or when the operator decides to stop deferring. This does not retroactively qualify earlier releases or close KI-62's historical 6.0.0 evidence gap.
 
 **Oracles:** the release step selects `gate-provisional`; the marker records KI-79 and the judged commit; every non-mutation lane runs and passes; the gate summary makes the R2 deferral visible; full `gate` still includes `mutation`; docs and changelog distinguish provisional release evidence from a mutation pass; a finished deferred gate has a machine-readable `provisional` manifest state with `mutation` deferred, a failed canary or other lane has no provisional marker, and a full gate clears stale deferral state (`tests/test_release_gate_provisional.py`).
 
@@ -2303,7 +2305,7 @@ mdt-cockpit.
 
 ### KI-90 — `_estate_complete()` skips the real-estate dependency-graph tests when a project is dropped from a FULL checkout
 
-**Status:** OPEN (recorded only). Found 2026-10-20 in review round 4 of PWMCP-07 / KI-89.
+**Status:** FIXED 2026-10-21 (branch `cmru-ki79-ext-20261021`): the real-estate checks skip only in a tree without `.git`; a git checkout missing a project fails via the unskipped `test_a_full_checkout_carries_the_orchestrated_estate`, with synthetic tests for both polarities. The other "isolated canary tree" skips in `SKIP_GUARDED_MODULES` still deserve the same review. Found 2026-10-20 in review round 4 of PWMCP-07 / KI-89.
 
 **Mechanism.** `tests/test_dependency_levels_pyproject.py:152` `_estate_complete()` returns False when
 ANY project config named by `cmru.orchestration.toml` is missing from the working tree, and
@@ -2347,3 +2349,33 @@ early.
 file for the dry-run candidate so `abandon` can classify it, and (3) make `abandon` distinguish "scope record absent
 for a dry-run candidate with no tag/release/origin evidence" (abandonable) from "ambiguous". Test: a dry-run that fails
 the changelog check leaves no branch or worktree (or leaves one that `abandon --yes` removes).
+
+### KI-92 — `cmru gate-snapshots` lists a snapshot as "retained" after its directory and Git registration are gone
+
+**Status:** FIXED 2026-10-21 (branch `cmru-ki79-ext-20261021`, 6.2.1 batch). Found 2026-10-21: `cmru-gate-ad61a1146ae971f80547`.
+
+**Observed.** After the 2026-10-20 cleanup removed the snapshot with `git worktree remove`, its workspace record remained and
+`cmru gate-snapshots` kept listing it as `retained`, reason `cannot inspect CMRU gate snapshot <path>: [Errno 2] ...`.
+
+**Mechanism.** `_judge_snapshot` ran `_validate_gate_snapshot_record`, whose first filesystem fact is `lstat(worktree_path)`; any
+`OSError` (a missing directory included) became `retained`. One status therefore stood for four different conditions, so a
+fully gone snapshot was reported as if something were still being kept. A check-is-only-as-strong-as-its-comparison defect.
+
+**Fix.** `_worktree_presence` combines two independent facts, the directory (`lstat`) and Git's worktree registry
+(including the record's branch, so a checkout seen under another mount namespace's path spelling is never called gone):
+
+| condition | directory | Git registry | status |
+|---|---|---|---|
+| present | exists | registers the path | judged as before (lease, source, validation): `removable` / `retained` |
+| stale | missing | no entry at the path and none on the branch | **`stale-record`** (removable: record, derived Assay state, leftover branch only if still at the recorded commit) |
+| registered-missing | missing | registers the path (prunable) | `retained`: run `git worktree prune` after confirming |
+| branch-elsewhere | not visible | lists the branch at another path | `retained`: possibly another namespace |
+| unregistered | exists | does not register it | `retained`: inspect it |
+| unreadable | cannot be inspected (not ENOENT) | any | `retained` with the OS error |
+
+A stale record whose lease is live or unprovable is still `retained`. `cmru gate-snapshots --remove` (after `--dry-run`)
+drops `stale-record` entries; it touches no worktree. Tests (`tests/test_gate_snapshots_cli.py`): the stale case is not
+`retained` (controlled wrong: the old code fails all six new tests), dry-run changes nothing, remove is repeatable, a moved
+leftover branch is kept, and each lookalike condition stays `retained` with its own reason. An existing assertion in
+`tests/test_release_gate.py` now expects the more precise reason for the registered-but-missing case.
+

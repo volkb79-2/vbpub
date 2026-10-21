@@ -929,7 +929,7 @@ shared worktree library enforces that for orphan removal too
 
 `cmru gate-snapshots` is the supported way to see and remove retained snapshots
 (`cmru release`'s own cleanup removes its candidate's). It lists each snapshot
-as `removable` or `retained` with the reason, re-judges every candidate from
+as `removable`, `retained` or `stale-record` with the reason (a record whose directory and Git registration are both gone is `stale-record`, never `retained`, KI-92), re-judges every candidate from
 fresh facts at removal, and is safe to repeat. A snapshot whose source is still
 at its commit is retained for resume unless `--include-current` says otherwise.
 

@@ -337,6 +337,29 @@ def _resolve_version(requested: str | None, repo: str) -> str:
     return _resolve_latest_release(repo)
 
 
+# gdu and dust are pinned, not "latest": estate freshness rule = the newest release that is at least
+# 14 days old when pinned (gdu 5.38.0 released 2026-10-05, dust 1.2.6 released 2026-09-16; pinned 2026-10-21).
+# Bumping needs a deliberate edit here, never a silent float.
+GDU_PINNED_VERSION = "5.38.0"
+DUST_PINNED_VERSION = "1.2.6"
+# dust publishes no checksum file or signature (assets are bare tarballs), so its sha256 is pinned here per
+# version. It was computed over the downloaded asset and equals the digest GitHub itself records for it
+# (`gh api repos/bootandy/dust/releases/tags/v1.2.6`). A new dust version without an entry here fails staging.
+DUST_PINNED_SHA256 = {
+    "1.2.6": "cbf2cb5c9d6227e46fc4b29c03dc43b8632020dfc5cf269d263d6e29c399e044",
+}
+
+
+def _resolve_pinned_version(requested: str | None, default: str, label: str) -> str:
+    value = (requested or "").strip()
+    if value == "latest":
+        raise StageError(
+            f"{label}: 'latest' is not accepted; it is pinned to a release at least 14 days old. "
+            "Set an explicit version or edit the pin in stage_tool_artifacts.py"
+        )
+    return value or default
+
+
 def _resolve_npm_version(requested: str | None, package_name: str) -> str:
     value = (requested or "").strip()
     if value and value != "latest":
@@ -873,6 +896,80 @@ def _stage_regctl(version: str, records: list[StagedArtifact]) -> None:
     )
 
 
+def _stage_gdu(version: str, records: list[StagedArtifact]) -> None:
+    # Static linux/amd64 build; upstream publishes sha256sums.txt (+ a detached .asc signature).
+    asset_name = "gdu_linux_amd64_static.tgz"
+    base_url = f"https://github.com/dundee/gdu/releases/download/v{version}"
+    archive_url = f"{base_url}/{asset_name}"
+    sums_url = f"{base_url}/sha256sums.txt"
+    archive_path = DOWNLOADS_DIR / f"gdu-{version}.tgz"
+    sums_path = DOWNLOADS_DIR / f"gdu-{version}-sha256sums.txt"
+
+    sums_final_url = _download(sums_url, sums_path)
+    archive_final_url = _download(archive_url, archive_path)
+    expected_sha256 = _parse_hashicorp_sha256(sums_path, asset_name)
+    actual_sha256 = _sha256(archive_path)
+    if expected_sha256 != actual_sha256:
+        raise StageError(f"gdu checksum mismatch: expected {expected_sha256}, got {actual_sha256}")
+    if not _tar_contains_binary(archive_path, "gdu_linux_amd64_static"):
+        raise StageError("Downloaded gdu archive does not contain gdu_linux_amd64_static")
+
+    _record_artifact(
+        records,
+        tool="gdu",
+        version=version,
+        source_url=archive_url,
+        final_url=archive_final_url,
+        path=archive_path,
+        kind="tar.gz",
+        verification="sha256 from upstream sha256sums.txt + archive contains gdu_linux_amd64_static",
+    )
+    _record_artifact(
+        records,
+        tool="gdu-checksums",
+        version=version,
+        source_url=sums_url,
+        final_url=sums_final_url,
+        path=sums_path,
+        kind="checksum-file",
+        verification="downloaded",
+    )
+
+
+def _stage_dust(version: str, records: list[StagedArtifact]) -> None:
+    # Static (musl) linux/amd64 build. Upstream publishes no checksum file, so the sha256 is pinned in
+    # DUST_PINNED_SHA256 and written to an offline sidecar for the Dockerfile to repeat the check.
+    expected_sha256 = DUST_PINNED_SHA256.get(version)
+    if expected_sha256 is None:
+        raise StageError(
+            f"dust {version} has no pinned sha256 (upstream publishes no checksum file); "
+            "add the verified digest to DUST_PINNED_SHA256 in stage_tool_artifacts.py"
+        )
+    asset_name = f"dust-v{version}-x86_64-unknown-linux-musl.tar.gz"
+    archive_url = f"https://github.com/bootandy/dust/releases/download/v{version}/{asset_name}"
+    archive_path = DOWNLOADS_DIR / f"dust-{version}.tar.gz"
+    sidecar_path = DOWNLOADS_DIR / f"dust-{version}.sha256"
+
+    archive_final_url = _download(archive_url, archive_path)
+    actual_sha256 = _sha256(archive_path)
+    if expected_sha256 != actual_sha256:
+        raise StageError(f"dust checksum mismatch: expected {expected_sha256}, got {actual_sha256}")
+    if not _tar_contains_binary(archive_path, "dust"):
+        raise StageError("Downloaded dust archive does not contain dust")
+    sidecar_path.write_text(f"{expected_sha256}  {archive_path.name}\n", encoding="utf-8")
+
+    _record_artifact(
+        records,
+        tool="dust",
+        version=version,
+        source_url=archive_url,
+        final_url=archive_final_url,
+        path=archive_path,
+        kind="tar.gz",
+        verification="sha256 pinned in stage_tool_artifacts.py (upstream publishes no checksum) + archive contains dust",
+    )
+
+
 def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     records: list[StagedArtifact] = []
 
@@ -881,6 +978,8 @@ def _stage_tools(resolved: dict[str, str]) -> list[StagedArtifact]:
     _stage_b2(resolved["B2_VER"], records)
     _stage_crane(resolved["CRANE_VER"], records)
     _stage_regctl(resolved["REGCTL_VER"], records)
+    _stage_gdu(resolved["GDU_VER"], records)
+    _stage_dust(resolved["DUST_VER"], records)
 
     _stage_tarball_tool(
         tool="bat",
@@ -1726,6 +1825,8 @@ def _resolve_versions() -> dict[str, str]:
         ),
         "REGCTL_VER": _resolve_version(os.getenv("REGCTL_VERSION"), "regclient/regclient"),
         "B2_VER": _resolve_version(os.getenv("B2_VERSION"), "Backblaze/B2_Command_Line_Tool"),
+        "GDU_VER": _resolve_pinned_version(os.getenv("GDU_VERSION"), GDU_PINNED_VERSION, "GDU_VERSION"),
+        "DUST_VER": _resolve_pinned_version(os.getenv("DUST_VERSION"), DUST_PINNED_VERSION, "DUST_VERSION"),
         "BAT_VER": _resolve_version(os.getenv("BAT_VERSION"), "sharkdp/bat"),
         "FD_VER": _resolve_version(os.getenv("FD_VERSION"), "sharkdp/fd"),
         "RIPGREP_VER": _resolve_version(os.getenv("RIPGREP_VERSION"), "BurntSushi/ripgrep"),

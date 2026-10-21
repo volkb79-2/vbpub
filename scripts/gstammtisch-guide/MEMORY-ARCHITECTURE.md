@@ -34,7 +34,7 @@
 | Pool `max_pool_percent` | 35 % | 25 % | **30 %** | ceiling, not reservation; shrinker prevents starvation; tune by observation |
 | `accept_threshold_percent` | — | 80 % | **90 %** | SWAP-2's addition; reduces fill/evict thrash |
 | Shrinker enable | cmdline ✓ | `vm.zswap_shrinker_enabled` sysctl ✗ | **module/post-boot** | that sysctl doesn't exist; it's `/sys/module/zswap/parameters/shrinker_enabled` |
-| `vm.swappiness` | 30 ✗ | 80–100 ✓ | **100** | with zswap, anon reclaim is cheap — *want* it; protect game with cgroup, not swappiness |
+| `vm.swappiness` | 30 ✗ | 80–100 ✓ | **10** (superseded 2026-10-21; was 100) | operator decision: low, because the disk is write-capped and reads are cheap, see §4 "`vm.swappiness`"; protect game with cgroup, not swappiness (the ✗/✓ marks are as of 2026-07; the decision has since moved, see §4) |
 | cgroup model | CPU/IO weights | `memory.low/min` + `zswap.writeback` + `io.max` | **SWAP-2's model** | precise, protection-first |
 | Build I/O cap | BuildKit env | `io.max` 200 MB/s | **io.max / systemd IO\*Max** | robust, runtime-independent |
 | Network | fq_codel + DSCP/tc | prio qdisc + filters | **fq_codel only** | don't build speculative QoS; revisit only if starvation observed |
@@ -192,12 +192,52 @@ File: [`99-gstammtisch-memory.conf`](files/etc/sysctl.d/99-gstammtisch-memory.co
 
 | Knob | Value | Reasoning |
 |---|---|---|
-| `vm.swappiness` | **100** | With zswap, reclaiming anon pages is cheap (compressed RAM, not disk). High swappiness pushes cold anon into the pool and keeps file cache (Docker layers, build cache) resident. **SWAP-1's 30 was backwards** — it would hoard cold anon in uncompressed RAM and evict useful cache. *Do not use swappiness to protect the game* — that's `memory.min`'s job (cgroup v2 has no per-cgroup swappiness). |
+| `vm.swappiness` | **10** (operator decision 2026-10-21; was 100) | Low on purpose: this disk is write-capped, reads are cheap, so prefer evicting clean file cache over anon. Reasoning, measurements and risks in the subsection "`vm.swappiness` — why low on these hosts" below. *Do not use swappiness to protect the game* — that's `memory.min`'s job (cgroup v2 has no per-cgroup swappiness). |
 | `vm.vfs_cache_pressure` | **50** | Keep dentry/inode caches; Docker does huge amounts of path lookup during create/teardown/builds. |
 | `vm.watermark_scale_factor` | **50** | Wake kswapd earlier → background reclaim starts before pressure is acute → less blocking direct reclaim under build storms. A 200 trial (2026-10-20) was superseded; see the subsection below. |
 | `vm.watermark_boost_factor` | **0** (operator decision 2026-10-20) | The kernel default 15000 lets a fragmentation event raise every watermark by up to 1.5 × high until kswapd clears it; on this swap-backed, memory-protected host the boost stuck once and forced all reclaim into the allocating threads. See "Watermark boost" below. |
 | `vm.page-cluster` | **0** | No swap readahead. Wasteful on SSD/thin backing and on zswap fault-back (random access). |
 | `vm.admin_reserve_kbytes` | **65536** | ~64 MB so root can always SSH in and act under OOM. |
+
+### `vm.swappiness` — why low on these hosts
+
+**Decision (operator, 2026-10-21):** set `vm.swappiness` low ("with cheap reads and RAM constrained, tend to a very low
+setting"): **10**, which gstammtisch had already been running for days. This resolves backlog GG-6 (host 10 versus repo
+100) by moving the repo to the host's value.
+
+**What it is.** A bias between reclaiming anonymous memory (process memory) and file cache. With MGLRU
+(`/sys/kernel/mm/lru_gen/enabled` = 0x0007 on gstammtisch **[M]**) it biases the kernel's own refault feedback rather than
+acting as a hard switch **[I]**.
+
+**Why low [I, from the measurements below].**
+- **Anon eviction is expensive here.** First a zswap store (cheap, CPU), but when the pool is full (`max_pool_percent` 25;
+  `pool_limit_hit` 16 697 **[M]**) or the shrinker runs, it becomes 4K random swap **writes**, the scarcest resource on a
+  write-capped, provider-metered disk (6–18 MiB/s measured **[M]**, IO-STALL-TESTING-GUIDE §14/§15, program directory).
+  Those writes are also charged to the page owner's cgroup as io.cost debt (the 57.7 s freeze, §15).
+- **Clean file eviction is cheap.** Zero writes; a refault is a **read**. Reads are fast: the provider does not limit
+  them (1.3 GB/s sequential observed) and `r_await` is ~0.2–0.3 ms **[M]** (OBSERVATION.md; IO-STALL-TESTING-GUIDE §12, §13).
+  The 290 MB/s in the io.cost model is a *modelled* `rbps`, and `dev.slice` has its own read cap (290M / 10 000 riops), so
+  reads are capped per tier by configuration, not by the provider.
+- **The measured stalls were swap-in waits and write/debt waits [M]:** 229.4 s in `do_swap_page` in the B0 window
+  (HOST-IO-INTERFERENCE.md §4.6), the dirty-limit stalls (§4.2), and the 57.7 s io.cost freeze (IO-STALL-TESTING-GUIDE
+  §15). The write-side share is [M] for the debt and dirty-limit cases; that the swap-in waits queued behind write-side
+  load is **[I]**. Swap-ins exist only for evicted anon, so preferring file eviction, i.e. low swappiness, follows **[I]**.
+
+**Risk of too low: file-cache thrash.** Counters from `/proc/vmstat` on gstammtisch, read 2026-10-21 ~00:43 UTC (02:42:58 CEST) at uptime
+2 d 13 h: `workingset_refault_file` 239 M against `pgsteal_file` 619 M (~39 % refaulted, ~0.9 TiB re-read) **[M]**.
+**[I]** Cheap here because reads are fast, but each refault a game thread waits on is a small stall.
+
+**Who it affects.** The games are governed by `memory.min`/`low`, not by swappiness. Swappiness mainly decides
+dev/system memory (VS Code anon against build file cache), and low keeps the interactive tier resident **[I]**.
+
+**Why not 0.** With 0, anon is barely reclaimed until file is nearly exhausted, so hot executables and mapped files thrash
+and the overcommitted host risks OOM **[I]**.
+
+**No A/B test was run.** The operator deferred tests on this host because its surroundings are not controlled; the value
+is a reasoned decision backed by the observations above, not a measured optimum.
+
+**History (superseded):** the earlier value 100 rested on "with zswap, anon reclaim is cheap, so push cold anon into
+the pool and keep file cache resident" (validation recipe: MEASUREMENTS.md M5).
 
 ### `vm.watermark_scale_factor` — what it does, what we measured, status
 
@@ -290,8 +330,8 @@ Rewriting the same wsf (200) cleared the boost: kswapd resumed at once (`node_un
 **Related knobs:** `min_free_kbytes`, `watermark_scale_factor`, `watermark_boost_factor`, `lowmem_reserve_ratio`,
 `extfrag_threshold`, `compaction_proactiveness`, THP `enabled`/`defrag`.
 
-**Drift found:** the gstammtisch host has `vm.swappiness = 10`, while the repo's `99-gstammtisch-memory.conf` says
-100 (table above). Neither was changed; the operator decides (backlog GG-6).
+**Swappiness drift (resolved 2026-10-21):** the host had `vm.swappiness = 10` while the repo said 100; the operator
+decided 10 and the repo now says 10 (backlog GG-6, subsection "`vm.swappiness`" above).
 
 **Wizard and host-check follow-up:** the mdt host-setup does not manage the watermarks yet; backlog MDT-021 and the
 decision summary in [`mdt-cockpit/docs/DESIGN-GUIDE.md`](../../mdt-cockpit/docs/DESIGN-GUIDE.md#memory-watermarks-and-watermark-boost-are-kernel-settings-this-host-setup-does-not-own-yet-follow-up).
@@ -438,7 +478,7 @@ Wings creates the Soulmask container under Docker's default cgroup parent, and r
 3. **`gstammtisch-cgroups.service`** re-asserts the raw Soulmask knobs; optionally trigger it from a Wings post-start hook or a `.timer` to survive container recreation.
 
 ### 5.3 systemd-oomd — the safety net
-With this much oversubscription the in-kernel OOM killer is slow and may pick a poor victim. [`oomd.conf.d/gstammtisch.conf`](files/etc/systemd/oomd.conf.d/gstammtisch.conf) + `ManagedOOMMemoryPressure=kill` on `besteffort.slice` makes systemd-oomd kill the worst **best-effort** offender fast on PSI/swap pressure — never touching the protected game or the IDE tier. This is what makes `swappiness=100` + large swap safe.
+With this much oversubscription the in-kernel OOM killer is slow and may pick a poor victim. [`oomd.conf.d/gstammtisch.conf`](files/etc/systemd/oomd.conf.d/gstammtisch.conf) + `ManagedOOMMemoryPressure=kill` on `besteffort.slice` makes systemd-oomd kill the worst **best-effort** offender fast on PSI/swap pressure — never touching the protected game or the IDE tier. This is what makes the swappiness setting (now 10, see section 4) + large swap safe.
 
 ---
 

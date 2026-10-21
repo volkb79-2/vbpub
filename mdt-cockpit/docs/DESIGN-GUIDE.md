@@ -251,6 +251,83 @@ caches and config directories.
 Everything else (`~/.aws`, `~/.docker`, `~/.config/gh`, pip/uv/npm caches, ...)
 is user state and is deliberately left at each tool's own home default.
 
+## Apt priority policy (stable, stable-backports, preview archives)
+
+`apt/debian-priorities.pref` (installed as `/etc/apt/preferences.d/debian-priorities`) is the operator's
+policy verbatim: `a=stable` 500, `a=stable-backports` 600, one stanza each. `apt/preview-archives.pref`
+holds `oldstable`, `oldstable-backports` and `testing` at 100. Resulting table: stable-backports 600 >
+stable 500 > testing / oldstable / oldstable-backports 100.
+
+* **Why `a=<archive name>`, and the defect this fixed (MDTC-05).** apt matches `a=` against the Release
+  file's `Suite:` and `n=` against `Codename:`. The backports archive has `Suite: stable-backports`,
+  `Codename: trixie-backports`. The former `backports.pref.in` was rendered to `a=trixie-backports`, which
+  matches NO archive: measured with a synthetic index (Suite `stable-backports`, Codename
+  `trixie-backports`, `NotAutomatic: yes`, `ButAutomaticUpgrades: yes` like the real archive) the
+  "600" pin left backports at its built-in 100 and stable won; `n=trixie-backports` did give 600. So
+  until MDTC-05 the image never preferred backports. Note the consequence of the fix: the Core-system
+  `apt-get install` now takes backports versions of the packages in `apt/packages.list` where backports
+  offers one, as the old file always intended.
+* **Source by codename, pin by archive name.** `trixie-backports.sources` stays codename-based (the Debian
+  recommendation for sources): an image built for trixie keeps following trixie when trixie becomes
+  oldstable. The pin, however, is by archive name, so on that day `a=stable` / `a=stable-backports` stop
+  matching the image's trixie sources, and `preview-archives.pref` takes over: trixie is then `a=oldstable`
+  and trixie-backports `a=oldstable-backports`, both pinned to **100**. The image's own sources drop to 100
+  (not 500/600), and the new stable's archives are not configured. **Rebuild the image** for the new stable
+  at that point (new `DEBIAN_VERSION`); the pin files then need no change.
+* **Vendor repositories at 700.** The image adds sury PHP, pgdg, redis.io and docker.com on purpose. They
+  get the default 500, and a higher priority beats a higher version, so with backports at 600 apt would pick
+  a Debian backports build of `postgresql-client`, `redis-tools` or `docker-*` over the vendor's.
+  `apt/vendor-origins.pref` therefore pins each vendor host (`Pin: origin <host>`, one stanza each) to 700:
+  an explicitly added repository is the chosen source for its packages. The oracle derives the vendor hosts
+  from the `deb ...` lines the Dockerfile writes and fails for a host without a 700 stanza. These repos do
+  not ship skopeo (docker-ce/pgdg/redis/sury ship their own packages), so the temporary 701 skopeo pin
+  outranks them anyway.
+* **Not templated.** Because the pin carries archive names, there is no `@SUITE@` rendering any more; the
+  file is copied as is, and `scripts/test_apt_preview_archives.py` fails if it names a codename.
+* **Skopeo pin.** The temporary skopeo-only pin is 701 (was 501): chosen to outrank both the vendor origin pins (700) and
+  backports (600). A lower pin would let a vendor or backported skopeo win over testing's, silently defeating
+  the step; the `^Inst skopeo ` dry-run check cannot tell which archive supplied it.
+
+### Debian testing preview archive
+
+`apt/testing.sources` adds Debian `testing` (deb822, signed by the Debian archive keyring) and
+`apt/preview-archives.pref` pins `oldstable`, `oldstable-backports` and `testing` to priority 100:
+visible for `apt-cache policy` and `apt install -t testing <pkg>`, never auto-selected.
+
+* **One stanza per archive.** In apt_preferences(5) the comma-separated conditions of one
+  `Pin: release` line are a logical AND. The tempting `Pin: release a=oldstable, a=oldstable-backports,
+  a=testing` therefore matches nothing and leaves testing at the default 500, which would let
+  testing packages upgrade the system: the opposite of the intent. `scripts/test_apt_preview_archives.py`
+  parses the file and fails on that form.
+* **Skopeo.** The former temporary `testing.list` is gone. The skopeo step now uses the permanent source
+  and a temporary skopeo-only pin of 701, removed in the same RUN, so the image leaves the step with testing
+  at 100 and no build state hides a 500.
+* **Known tie (priority 100 is the operator's choice).** The installed version also sits at 100
+  (`/var/lib/dpkg/status`). A package installed with `-t testing` that stable does not offer at a higher
+  version (testing-only packages, new-soname libraries, a local `.deb`) therefore ties with testing at 100
+  and the newer version wins: it keeps following testing on every `apt upgrade`. Packages stable also
+  offers stay on stable (500 beats 100, and apt does not downgrade). **Alternative:** Pin-Priority 99 for the
+  three archives makes the installed version win, so nothing already installed upgrades from them, while
+  `apt install -t testing <pkg>` (990) and `pkg/testing` still work and a not-installed package is still
+  installable. Changing it means the pref file, the oracle's priority argument, the runtime test's regexes
+  and these docs.
+* **Skopeo fails closed.** If testing offers no skopeo apt would install, or the install fails, the build
+  stops with an error rather than quietly keeping trixie's older skopeo. The testing files are copied just
+  after the last other `apt-get update` in the image, so this step is the only one that fetches testing indexes
+  (a testing-mirror hiccup cannot fail an unrelated layer). Skopeo has no ordering dependency on the layers above.
+* **Acceptance** is image-level: `tests/runtime/test_apt_preview.py` builds a synthetic index in the container
+  (the image carries no apt lists and the lane is offline) and lets apt apply the image's real files.
+
+## gdu and dust
+
+Both are static linux/amd64 binaries pinned to the newest release at least 14 days old when pinned
+(estate freshness rule), not "latest": a bump is a deliberate edit in `scripts/stage_tool_artifacts.py`.
+gdu is checked against upstream `sha256sums.txt`. dust publishes no checksum file, so its sha256 is pinned
+in the same file (it equals the digest GitHub records for the asset) and written to an offline sidecar that
+the Dockerfile re-verifies. The gdu sums file comes from the same origin as the archive, so it guards
+against corruption, not against a compromised release (upstream's detached `.asc` is not verified); this is
+the same trust model as crane and regctl.
+
 ## System-wide defaults
 
 Every default the image ships is installed where its tool reads *system-wide*

@@ -250,6 +250,52 @@ Counterexample (do NOT do this):
 }
 ```
 
+## Apt priorities, backports and testing
+
+| Archive | Priority | Effect |
+|---|---|---|
+| `stable-backports` (trixie-backports) | 600 | preferred over stable: plain `apt install`/`upgrade` take the backported version |
+| `stable` (trixie) | 500 | normal |
+| `testing`, `oldstable`, `oldstable-backports` | 100 | visible, never chosen automatically |
+
+```bash
+apt-cache policy <pkg>                       # shows every archive offering it and its priority
+sudo apt-get install <pkg>                   # backports version if backports has one, else stable
+sudo apt-get install -t trixie <pkg>         # force stable: a backports version is not taken
+sudo apt-get install <pkg>/testing           # explicit testing (see below)
+```
+
+Vendor repositories added on purpose (sury PHP, pgdg, redis.io, docker.com) are pinned to 700 by origin, above
+backports, so their packages are not replaced by Debian backports builds.
+
+When trixie becomes oldstable the pins by archive name (`a=stable`, `a=stable-backports`) stop matching this
+image's trixie sources; `preview-archives.pref` then pins trixie (`a=oldstable`) and trixie-backports
+(`a=oldstable-backports`) to 100, so the image's own sources drop to 100. Rebuild the image for the new
+stable (DESIGN-GUIDE, "Apt priority policy").
+
+## Installing a package from Debian testing
+
+Debian `testing` (the next release) is a permanent apt source in the image, pinned to priority 100
+together with `oldstable` and `oldstable-backports`: `apt install <pkg>` and `apt upgrade` never take
+a version from it. Refresh the lists and ask for it explicitly:
+
+```bash
+sudo apt-get update
+apt-cache policy <pkg>                     # shows the testing candidate at priority 100
+sudo apt-get install -t testing <pkg>      # or: sudo apt-get install <pkg>/testing
+```
+
+`-t testing` raises testing to 990 for that one command, so the package's new dependencies may also
+come from testing. Afterwards, on plain `apt upgrade`:
+
+* a package that stable (trixie, 500) also offers stays on stable: apt never picks testing for it;
+* a package installed with `-t testing` that stable does **not** offer at a higher version (testing-only
+  packages, libraries with a new soname, a locally installed `.deb`) keeps **following testing**: the
+  installed version also sits at priority 100, ties with testing at 100, and the newer version wins.
+
+Priority 99 for the three archives would stop those upgrades while `-t testing` and `pkg/testing`
+would still work; the image keeps the operator's 100. Image-level check: `tests/runtime/test_apt_preview.py`.
+
 ## Manifest
 
 The canonical user-facing manifest lives at:

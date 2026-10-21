@@ -188,7 +188,7 @@ cmru build   <name>               # isolated local build; retains logs/artifacts
 cmru worktrees                    # list retained failed build/release worktrees
 cmru gate-snapshots               # list retained release-gate snapshots (read-only)
 cmru gate-snapshots --remove --dry-run  # preview removing the ones proven unneeded
-cmru gate-snapshots --remove      # remove them; a live or unprovable gate is never touched
+cmru gate-snapshots --remove      # remove them (and drop stale records); a live or unprovable gate is never touched
 cmru gate-snapshots --remove --include-current  # also the resumable one at its source commit
 cmru abandon --dry-run            # inspect exact retained release candidates, no writes
 cmru abandon <branch> --yes       # abandon exactly the named verified candidate
@@ -916,13 +916,12 @@ changed-source mutation campaign based on the highest-version published
 The native-R2 `mutation` lane requests contract-2 `cgprofile` resource-event
 observation. Other tester lanes declare memory and PID ceilings but do not yet
 collect event evidence; [KI-77](KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-gate-lacks-container-resource-event-evidence-on-non-mutation-lanes-and-cannot-confine-every-shared-git-ref)
-tracks that gap. The current 6.2.0 release candidate selects
+tracks that gap. The 6.2.x release candidates select
 `gate-provisional`: it runs the ref, installed-wheel, Assay R0/R1/R3, coverage,
 and canary checks, then records the operator-approved R2 deferral under KI-79.
-That deferral is bound to version 6.2.0, so run the release as
-`cmru release cmru --minor` (or `--set-version 6.2.0`): the candidate's commit
-subjects alone compute a patch bump, which the gate refuses after the candidate
-is prepared. It therefore records no mutation event evidence. The full `gate` lane remains
+That deferral is bound to the 6.2 patch line, `>= 6.2.0` and `< 6.3.0` (operator decisions
+2026-10-14 and 2026-10-21): the gate refuses a prepared 6.3.0 or later after the candidate
+is prepared. It therefore records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 (KI-79). The full `gate` lane remains
 available for the post-release mutation campaign.
 Both are `bare-host` lanes (the controller starts lane containers itself), so they need
 the estate Python environment that holds the installed `cmru` wheel and its declared

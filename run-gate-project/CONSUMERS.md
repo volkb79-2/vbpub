@@ -110,10 +110,17 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    stalls and keeps its declared local watch as the verdict authority; it
    cannot authorize a shared-cgroup kill. If the daemon or its watch transport is
    unavailable, run-gate uses its in-process assay progress watch. That
-   fallback uses the assay plan's calibrated cadence (`max(300s, 3x the
-   advertised next-event bound)`) and pauses its idle clock while host memory
-   PSI `full avg10` is above 5, so host contention cannot become a false
-   liveness verdict.
+   fallback bounds the R2 baseline by Assay's `command_started` /
+   `command_running` heartbeat (`300s` minimum, reset by each tick; for a lane
+   proven to declare R2 a 600 s bound covers the wait for the plan, an R0/R1 lane's
+   silent judge phase is never bounded; run-gate requests a 60 s heartbeat and
+   refuses an assay `stall_timeout` below `120s`), then uses the plan's calibrated cadence (`max(300s, 3x
+   the advertised next-event bound)`), and pauses its idle clock while host
+   memory PSI `full avg10` is above 5, so host contention cannot become a
+   false liveness verdict. It stays armed for an assay lane even when
+   profiling is disabled; a stall is an infrastructure error, never a mutant
+   classification (see
+   [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md#liveness-is-evidence-not-a-verdict)).
 
    <!-- run-gate-config -->
    ```toml

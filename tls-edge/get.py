@@ -497,6 +497,11 @@ def expected_asset_name(tag: str, variant: Optional[str] = None) -> str:
     return f"{tag}-{variant}{ASSET_SUFFIX}" if variant else f"{tag}{ASSET_SUFFIX}"
 
 
+_CONTRACT_NOTE = (
+    "get.py requests exactly the contract name <tag><asset_suffix>; it never guesses another asset"
+)
+
+
 def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str]) -> None:
     """Download a release asset — private path if token present, public URL otherwise.
 
@@ -519,7 +524,7 @@ def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str])
         if asset is None:
             fatal(
                 f"Asset {asset_name!r} not found in release {tag}. "
-                f"Available: {[a.get('name') for a in assets]}",
+                f"Available: {[a.get('name') for a in assets]}. {_CONTRACT_NOTE}",
                 EXIT_FAIL,
             )
         # Download by asset ID — the token is never forwarded across the redirect (S5)
@@ -537,7 +542,10 @@ def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str])
         status, _ = _gh_request(url, token=None, accept="application/octet-stream",
                                 stream_to=dest, timeout=300, max_bytes=_MAX_DOWNLOAD_BYTES)
     if status != 200:
-        fatal(f"Download of {asset_name} failed (HTTP {status}).", EXIT_FAIL)
+        detail = (f": download of {asset_name} from release {tag} returned HTTP 404 (missing "
+                  f"asset, release or tag, or a private repository without a token). {_CONTRACT_NOTE}"
+                  if status == 404 else ".")
+        fatal(f"Download of {asset_name} failed (HTTP {status}){detail}", EXIT_FAIL)
     if not dest.exists() or dest.stat().st_size == 0:
         fatal(f"Download produced empty file: {dest}", EXIT_FAIL)
 

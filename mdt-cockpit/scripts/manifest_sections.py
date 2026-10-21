@@ -82,7 +82,7 @@ POLICY_NOTES = {
         "**Version policy:** Debian repository versions (prefer backports when available). "
         "System packages come from the Debian Trixie main repos; devcontainer-features "
         "are installed via the features CLI.  Exception: `skopeo` is pulled from "
-        "Debian testing (pin-priority 501) for a newer version than trixie provides."
+        "Debian testing (pin-priority 701) for a newer version than trixie provides."
     ),
     "Python Packages": (
         "**Version policy:** PyPI latest at image build time (resolved via pip install). "
@@ -112,8 +112,10 @@ PROJECT_HOMES = {
     "delta": "https://github.com/dandavison/delta",
     "dive": "https://github.com/wagoodman/dive",
     "dtop": "https://github.com/amir20/dtop",
+    "dust": "https://github.com/bootandy/dust",
     "fd": "https://github.com/sharkdp/fd",
     "fzf": "https://github.com/junegunn/fzf",
+    "gdu": "https://github.com/dundee/gdu",
     "gh": "https://github.com/cli/cli",
     "glances": "https://github.com/nicolargo/glances",
     "grpcurl": "https://github.com/fullstorydev/grpcurl",
