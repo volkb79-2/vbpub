@@ -1,0 +1,7 @@
+# Testing — next release, for preview only
+# Pinned to 100 in preferences — never auto-installed
+Types: deb
+URIs: http://deb.debian.org/debian
+Suites: testing
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg

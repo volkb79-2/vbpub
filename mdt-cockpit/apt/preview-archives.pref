@@ -1,0 +1,17 @@
+# Oldstable / oldstable-backports / testing — visible but never auto-selected.
+#
+# apt_preferences(5): the comma-separated conditions of ONE `Pin: release` line must ALL match
+# (logical AND), so `Pin: release a=oldstable, a=oldstable-backports, a=testing` matches nothing and
+# testing would silently keep the default priority 500. One stanza per archive, each at 100.
+# Install explicitly with `apt install -t testing <pkg>` (or `pkg/testing`).
+Package: *
+Pin: release a=oldstable
+Pin-Priority: 100
+
+Package: *
+Pin: release a=oldstable-backports
+Pin-Priority: 100
+
+Package: *
+Pin: release a=testing
+Pin-Priority: 100
