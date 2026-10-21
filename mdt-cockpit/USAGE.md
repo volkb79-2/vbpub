@@ -262,10 +262,16 @@ apt-cache policy <pkg>                     # shows the testing candidate at prio
 sudo apt-get install -t testing <pkg>      # or: sudo apt-get install <pkg>/testing
 ```
 
-`-t testing` raises testing to 990 for that one command, so the package's dependencies may also come
-from testing; the next plain `apt upgrade` leaves them alone again. Nothing stays installed from
-testing implicitly, but anything you installed from it is held at its installed version only while no
-500-priority archive offers a newer one. Image-level check: `tests/runtime/test_apt_preview.py`.
+`-t testing` raises testing to 990 for that one command, so the package's new dependencies may also
+come from testing. Afterwards, on plain `apt upgrade`:
+
+* a package that stable (trixie, 500) also offers stays on stable: apt never picks testing for it;
+* a package installed with `-t testing` that stable does **not** offer at a higher version (testing-only
+  packages, libraries with a new soname, a locally installed `.deb`) keeps **following testing**: the
+  installed version also sits at priority 100, ties with testing at 100, and the newer version wins.
+
+Priority 99 for the three archives would stop those upgrades while `-t testing` and `pkg/testing`
+would still work; the image keeps the operator's 100. Image-level check: `tests/runtime/test_apt_preview.py`.
 
 ## Manifest
 

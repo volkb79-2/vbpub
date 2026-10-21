@@ -61,13 +61,18 @@ def test_the_testing_source_is_deb822_and_signed_by_the_archive_keyring() -> Non
     assert fields["Signed-By"] == "/usr/share/keyrings/debian-archive-keyring.gpg"
 
 
-def test_the_dockerfile_installs_both_files_and_never_leaves_testing_at_default_priority() -> None:
+def test_the_dockerfile_installs_both_files_after_the_main_install_and_never_leaves_testing_at_default_priority() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert "COPY --chmod=0644 apt/testing.sources /etc/apt/sources.list.d/testing.sources" in dockerfile
-    assert "COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archives" in dockerfile
+    copy_sources = "COPY --chmod=0644 apt/testing.sources /etc/apt/sources.list.d/testing.sources"
+    copy_pref = "COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archives"
+    assert dockerfile.count(copy_sources) == 1 and dockerfile.count(copy_pref) == 1
+    # Copied just before the skopeo step, after the core install, so earlier apt-get updates never fetch testing.
+    assert dockerfile.index("# Core system packages") < dockerfile.index(copy_sources)
+    assert dockerfile.index(copy_pref) < dockerfile.index("# Skopeo from Debian testing")
     # The old ad-hoc testing.list is gone; the skopeo pin is the only temporary pin and is removed again.
     assert "sources.list.d/testing.list" not in dockerfile
-    # The only testing pin the Dockerfile writes is the temporary skopeo one, and it is removed again.
-    assert dockerfile.count("preferences.d/skopeo-testing") == 2
-    assert "rm -f /etc/apt/preferences.d/skopeo-testing" in dockerfile
-    assert "Package: skopeo" in dockerfile and "Package: *" not in dockerfile.split("# Skopeo:")[1].split("# Upstream Node.js")[0]
+    skopeo = dockerfile.split("# Skopeo from Debian testing")[1].split("# Upstream Node.js")[0]
+    assert "Package: skopeo" in skopeo and "Package: *" not in skopeo
+    assert "rm -f \"${pin}\"" in skopeo
+    # Fail closed: a missing testing skopeo is an error, never an [INFO] fallback to trixie's.
+    assert "exit 1" in skopeo and "keeping trixie" not in skopeo

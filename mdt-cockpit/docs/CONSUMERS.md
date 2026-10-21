@@ -307,7 +307,11 @@ apt-cache policy skopeo
 sudo apt-get install -t testing skopeo
 ```
 
-Plain `apt install` / `apt upgrade` never choose testing (priority 100). If you add your own preference
+Plain `apt install` never chooses testing (priority 100), and a package that stable also offers stays on
+stable on `apt upgrade`. A package you installed with `-t testing` that stable does not offer at a higher
+version keeps following testing on later upgrades (the installed version ties at 100 and the newer one
+wins); pinning the archives at 99 instead would stop that, `-t testing` and `pkg/testing` still working.
+If you add your own preference
 for these archives, write ONE `Pin: release a=<archive>` stanza per archive: the comma-separated
 conditions of a single `Pin: release` line must all match, so a line naming three archives matches none.
 

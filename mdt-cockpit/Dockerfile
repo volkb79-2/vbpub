@@ -133,9 +133,6 @@ USER root
 
 COPY apt/backports.sources.in /tmp/backports.sources.in
 COPY apt/backports.pref.in /tmp/backports.pref.in
-# Preview archives (oldstable, oldstable-backports, testing): visible to apt, pinned to 100, never auto-selected.
-COPY --chmod=0644 apt/testing.sources /etc/apt/sources.list.d/testing.sources
-COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archives
 COPY apt/packages.list /tmp/packages.list
 COPY pip/wheels.list /tmp/pip/wheels.list
 COPY pip/wheels/ /tmp/pip/wheels/
@@ -216,25 +213,31 @@ RUN set -euo pipefail; \
     echo "user_allow_other" >> /etc/fuse.conf; \
     rm -rf /var/lib/apt/lists/*
 
-# Skopeo: try to get the latest version from Debian testing.
-# The trixie release ships skopeo 1.18.x; testing has 1.22.x.
-# Testing is a permanent source (apt/testing.sources) pinned to 100 by apt/preview-archives.pref, so
-# nothing is auto-selected from it. For skopeo ONLY, a temporary 501 pin (just above trixie's 500)
-# lifts that one package; the pin file is removed right
-# after, so the image leaves this step with testing back at 100. If this fails (testing unavailable,
-# dependency conflict), we keep the trixie version silently.
+# Debian testing, the preview archive: a permanent source (apt/testing.sources) pinned to 100 together with
+# oldstable and oldstable-backports (apt/preview-archives.pref) - visible, never auto-selected. Both files
+# are copied HERE, after the main package install, so no earlier `apt-get update` fetches testing indexes
+# and a testing-mirror hiccup cannot fail unrelated layers. The final image has both.
+COPY --chmod=0644 apt/testing.sources /etc/apt/sources.list.d/testing.sources
+COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archives
+
+# Skopeo from Debian testing (trixie ships 1.18.x, testing 1.22.x). FAILS CLOSED: if testing does not offer
+# a skopeo that apt would install, or the install fails, the build stops with a clear message instead of
+# silently shipping the older trixie skopeo. Only for skopeo, a temporary pin of 501 (just above trixie's
+# 500) lifts testing's package; the pin is removed in the same RUN, so the image leaves this step with
+# testing at 100.
 RUN set -euo pipefail; \
-    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > /etc/apt/preferences.d/skopeo-testing; \
+    pin=/etc/apt/preferences.d/skopeo-testing; \
+    trap 'rm -f "${pin}"' EXIT; \
+    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > "${pin}"; \
     apt-get update; \
-    if apt-get install --dry-run -y skopeo 2>/dev/null | grep -q "^Inst skopeo "; then \
-        apt-get install -y --no-install-recommends skopeo && \
-        echo "[INFO] skopeo installed from Debian testing: $(skopeo --version)"; \
-    else \
-        echo "[INFO] skopeo from testing not available — keeping trixie version"; \
+    if ! apt-get install --dry-run -y skopeo 2>&1 | grep -q "^Inst skopeo "; then \
+        echo "[ERROR] Debian testing offers no skopeo that apt would install; refusing to silently keep trixie's skopeo" >&2; \
+        exit 1; \
     fi; \
-    rm -f /etc/apt/preferences.d/skopeo-testing; \
-    rm -rf /var/lib/apt/lists/*; \
-    skopeo --version || echo "[WARN] skopeo not installed"
+    apt-get install -y --no-install-recommends skopeo; \
+    echo "[INFO] skopeo installed from Debian testing: $(skopeo --version)"; \
+    rm -f "${pin}"; \
+    rm -rf /var/lib/apt/lists/*
 
 # Upstream Node.js runtime for npm-based AI tooling.
 RUN set -euo pipefail; \

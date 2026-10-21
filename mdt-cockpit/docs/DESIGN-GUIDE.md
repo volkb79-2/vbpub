@@ -265,10 +265,18 @@ visible for `apt-cache policy` and `apt install -t testing <pkg>`, never auto-se
 * **Skopeo.** The former temporary `testing.list` is gone. The skopeo step now uses the permanent source
   and a temporary skopeo-only pin of 501, removed in the same RUN, so the image leaves the step with testing
   at 100 and no build state hides a 500.
-* **Known tie.** The installed version also sits at 100 (`/var/lib/dpkg/status`). A package installed from
-  a source with no list (a locally installed `.deb`) that testing offers in a newer version can be upgraded
-  by `apt upgrade`, because the two priorities tie and the higher version wins. Packages that a 500+ archive
-  also offers are not affected.
+* **Known tie (priority 100 is the operator's choice).** The installed version also sits at 100
+  (`/var/lib/dpkg/status`). A package installed with `-t testing` that stable does not offer at a higher
+  version (testing-only packages, new-soname libraries, a local `.deb`) therefore ties with testing at 100
+  and the newer version wins: it keeps following testing on every `apt upgrade`. Packages stable also
+  offers stay on stable (500 beats 100, and apt does not downgrade). **Alternative:** Pin-Priority 99 for the
+  three archives makes the installed version win, so nothing already installed upgrades from them, while
+  `apt install -t testing <pkg>` (990) and `pkg/testing` still work and a not-installed package is still
+  installable. Changing it means the pref file, the oracle's priority argument, the runtime test's regexes
+  and these docs.
+* **Skopeo fails closed.** If testing offers no skopeo apt would install, or the install fails, the build
+  stops with an error rather than quietly keeping trixie's older skopeo. The testing files are copied just
+  before this step so earlier `apt-get update` layers never fetch testing indexes.
 * **Acceptance** is image-level: `tests/runtime/test_apt_preview.py` builds a synthetic index in the container
   (the image carries no apt lists and the lane is offline) and lets apt apply the image's real files.
 
@@ -278,7 +286,9 @@ Both are static linux/amd64 binaries pinned to the newest release at least 14 da
 (estate freshness rule), not "latest": a bump is a deliberate edit in `scripts/stage_tool_artifacts.py`.
 gdu is checked against upstream `sha256sums.txt`. dust publishes no checksum file, so its sha256 is pinned
 in the same file (it equals the digest GitHub records for the asset) and written to an offline sidecar that
-the Dockerfile re-verifies.
+the Dockerfile re-verifies. The gdu sums file comes from the same origin as the archive, so it guards
+against corruption, not against a compromised release (upstream's detached `.asc` is not verified); this is
+the same trust model as crane and regctl.
 
 ## System-wide defaults
 

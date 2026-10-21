@@ -32,12 +32,24 @@ printf 'Suite: testing\nCodename: forky\nArchitectures: %s\nComponents: main con
     > "$d/lists/deb.debian.org_debian_dists_testing_Release"
 printf 'Package: bash\nVersion: 99:9.9-1\nArchitecture: %s\nDescription: fake\n\nPackage: mdt-preview-only\nVersion: 1\nArchitecture: %s\nDescription: fake\n' "$arch" "$arch" \
     > "$d/lists/deb.debian.org_debian_dists_testing_main_binary-${arch}_Packages"
+cat > "$d/src/old.sources" <<SRC
+Types: deb
+URIs: http://old.invalid/debian
+Suites: oldstable oldstable-backports
+Components: main
+SRC
+for suite in oldstable oldstable-backports; do
+    printf 'Suite: %s\nCodename: bookworm\nArchitectures: %s\nComponents: main\n' "$suite" "$arch" \
+        > "$d/lists/old.invalid_debian_dists_${suite}_Release"
+    printf 'Package: mdt-%s-only\nVersion: 1\nArchitecture: %s\nDescription: fake\n' "$suite" "$arch" \
+        > "$d/lists/old.invalid_debian_dists_${suite}_main_binary-${arch}_Packages"
+done
 printf 'Suite: stable\nCodename: trixie\nArchitectures: %s\nComponents: main\n' "$arch" \
     > "$d/lists/stable.invalid_debian_dists_stable_Release"
 printf 'Package: bash\nVersion: %s\nArchitecture: %s\nDescription: fake\n' "$installed" "$arch" \
     > "$d/lists/stable.invalid_debian_dists_stable_main_binary-${arch}_Packages"
 apt-cache -o Dir::State::lists="$d/lists" -o Dir::Etc::sourcelist=/dev/null -o Dir::Etc::sourceparts="$d/src" \
-    -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= policy bash mdt-preview-only
+    -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= policy bash mdt-preview-only mdt-oldstable-only mdt-oldstable-backports-only
 """
 
 
@@ -46,6 +58,10 @@ def _section(output: str, package: str) -> str:
     if not match:
         raise AssertionError(f"no apt-cache policy section for {package}:\n{output}")
     return match.group(1)
+
+
+def _fake_archives_are_all_at_100(output: str) -> dict[str, str]:
+    return {p: _section(output, p) for p in ("mdt-oldstable-only", "mdt-oldstable-backports-only")}
 
 
 class Contract:
@@ -74,6 +90,13 @@ class Contract:
         only = _section(result.stdout, "mdt-preview-only")
         self.assertRegex(only, r"Candidate: 1\n", "visible: `apt install -t testing <pkg>` can reach it")
         self.assertRegex(only, r"1 100\n", "and only at priority 100")
+
+    def test_oldstable_and_oldstable_backports_are_pinned_to_100_too(self) -> None:
+        result = self.sh(SCRIPT)
+        self.assertOk(result, "synthetic apt-cache policy")
+        for package, section in _fake_archives_are_all_at_100(result.stdout).items():
+            self.assertRegex(section, r"Candidate: 1\n", f"{package} must stay visible")
+            self.assertRegex(section, r"1 100\n", f"{package} must sit at priority 100, not the default 500")
 
 
 class NativeContract(Contract, harness.NativeCase):
