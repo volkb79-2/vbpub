@@ -751,15 +751,16 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
                 continue
             if not parent and field in ("MemoryMin", "MemoryLow"):
                 warnings.append(
-                    f"{slice_name} {field}={values[child_key]} has no configured "
-                    f"ancestor dev.slice {field}; the requested protection may be "
-                    "ineffective"
+                    f"{slice_name} {field} ({child_key}={values[child_key]}) has no configured "
+                    f"ancestor dev.slice {field} ({parent_key} is empty); the requested protection may be "
+                    f"ineffective. Set {parent_key} to at least {values[child_key]}, or clear {child_key} "
+                    "with `-` if the protection is not wanted"
                 )
             elif parent and child > parent and field in ("MemoryMin", "MemoryLow"):
                 warnings.append(
-                    f"{slice_name} {field}={values[child_key]} exceeds parent "
-                    f"dev.slice {field}={values[parent_key]}; review the effective "
-                    "ancestor limit"
+                    f"{slice_name} {field} ({child_key}={values[child_key]}) exceeds parent "
+                    f"dev.slice {field} ({parent_key}={values[parent_key]}); review the effective "
+                    f"ancestor limit: raise {parent_key} or lower {child_key}"
                 )
     aggregate_fields = (
         ("MemoryLow", "DEV_MEMORY_LOW", 1),
@@ -776,13 +777,14 @@ def memory_review_warnings(values: dict[str, str]) -> list[str]:
             child = parse_size_to_kib(values.get(child_key, "")) if _memory_value_configured(values.get(child_key, "")) else 0
             if child:
                 total += child
-                contributing.append(f"{slice_name}={values[child_key]}")
+                contributing.append(f"{child_key}={values[child_key]}")
         if total > parent and contributing:
             warnings.append(
                 f"configured child {field} values ({', '.join(contributing)}; "
-                f"{kib_to_size_str(total)} combined) exceed dev.slice {field}="
-                f"{values[parent_key]}; advisory only, not a summed-budget "
-                "error—the parent still caps the combined subtree"
+                f"{kib_to_size_str(total)} combined) exceed dev.slice {field} "
+                f"({parent_key}={values[parent_key]}); advisory only, not a summed-budget "
+                "error—the parent still caps the combined subtree. Nothing to fix unless you "
+                f"intended the children to fit {parent_key}"
             )
     return warnings
 
@@ -825,13 +827,13 @@ def _config_value_validators() -> dict[str, Validator]:
         "WATCHER_GATES_MEMORY_HIGH": validate_optional_positive_size,
         "WATCHER_GATES_MEMORY_MAX": validate_optional_positive_size,
         "CGROUP2_FLAGS": validate_cgroup2_flags,
-        "DEV_IO_CAP_PCT": validate_cap_pct,
+        "DEV_IO_CAP_PCT": cap_pct_validator("DEV_IO_CAP_PCT"),
         "IO_BASELINE_ROTATIONAL_FLAG": validate_rotational_flag,
         "DEV_IO_RBPS_MAX": validate_io_pin,
         "DEV_IO_WBPS_MAX": validate_io_pin,
         "DEV_IO_RIOPS_MAX": validate_io_pin,
         "DEV_IO_WIOPS_MAX": validate_io_pin,
-        "WATCHER_IO_CAP_PCT": validate_cap_pct,
+        "WATCHER_IO_CAP_PCT": cap_pct_validator("WATCHER_IO_CAP_PCT"),
         "WATCHER_BUILDKIT_NAME_PATTERNS": validate_watcher_patterns,
         "WATCHER_INTERVAL": validate_systemd_timespan,
         "IO_BASELINE_ENV": validate_absolute_path,
@@ -1195,7 +1197,14 @@ def validate_size_or_empty(value: str) -> str | None:
     return None
 
 
-def validate_cap_pct(value: str) -> str | None:
+def cap_pct_validator(name: str) -> Validator:
+    """validate_cap_pct bound to the variable it validates, so its warning can name it."""
+    def validate(value: str) -> str | None:
+        return validate_cap_pct(value, name)
+    return validate
+
+
+def validate_cap_pct(value: str, name: str | None = None) -> str | None:
     """DEV_IO_CAP_PCT / WATCHER_IO_CAP_PCT.
 
     Two different rules, deliberately not merged into one:
@@ -1222,9 +1231,12 @@ def validate_cap_pct(value: str) -> str | None:
     if pct < 1 or pct > 99:
         return f"{pct} is outside 1-99; 100% or more of the measured ceiling leaves no safety headroom, and 0% would stall the tier outright"
     if pct < 60 or pct > 80:
+        which = name or "DEV_IO_CAP_PCT / WATCHER_IO_CAP_PCT"
         out(
-            f"WARN: {pct}% is outside the recommended 60-80 band explained above "
-            f"-- accepted, but re-read that reasoning before keeping it."
+            f"WARN: {which}={pct} is outside the recommended 60-80 band explained in "
+            f"host-setup.env.example (under 'Runtime caps') -- accepted, but re-read that reasoning "
+            f"before keeping it. Change it in /etc/mdt/host-setup.env (a runtime key, no reinstall) "
+            f"or with install.sh --wizard."
         )
     return None
 
@@ -2216,7 +2228,7 @@ def step_io_settings(
         "DEV_IO_CAP_PCT",
         cfg_current,
         example_defaults,
-        validate=validate_cap_pct,
+        validate=cap_pct_validator("DEV_IO_CAP_PCT"),
         default_display=_io_cap_result_text(results, dev_default),
     )
     watcher_pct = walk_key(
@@ -2224,7 +2236,7 @@ def step_io_settings(
         "WATCHER_IO_CAP_PCT",
         cfg_current,
         example_defaults,
-        validate=validate_cap_pct,
+        validate=cap_pct_validator("WATCHER_IO_CAP_PCT"),
         default_display=_io_cap_result_text(results, watcher_default),
     )
     values["DEV_IO_CAP_PCT"] = dev_pct
@@ -2261,14 +2273,14 @@ def step_io_cap_pct(cfg_current: dict[str, str], example_defaults: dict[str, str
         "DEV_IO_CAP_PCT",
         cfg_current,
         example_defaults,
-        validate=validate_cap_pct,
+        validate=cap_pct_validator("DEV_IO_CAP_PCT"),
     )
     sweep_pct = walk_key(
         "Per-container IO cap (percentage of measured device ceiling)",
         "WATCHER_IO_CAP_PCT",
         cfg_current,
         example_defaults,
-        validate=validate_cap_pct,
+        validate=cap_pct_validator("WATCHER_IO_CAP_PCT"),
     )
     return dev_pct, sweep_pct
 

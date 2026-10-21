@@ -710,6 +710,36 @@ check_buildkit_guard() {
 }
 check_buildkit_guard
 # END guard-status
+# Every build must reach mdt-managed whoever starts it (docs/BUILD-ARCHITECTURE.md "Making every
+# build use mdt-managed"): the shim must be the plugin Docker resolves, /etc/environment must carry the
+# MDT block, and a user with an EMPTY environment must resolve the managed remote builder.
+check_buildx_default_builder() {
+  local shim=/usr/local/lib/docker/cli-plugins/docker-buildx resolved probe_home out
+  if [ ! -x "$shim" ]; then
+    warn "docker-buildx shim $shim is not installed — only shells that read /etc/profile.d or /etc/environment select BUILDX_BUILDER=mdt-managed; VS Code's SSH server, cron and systemd units build on Docker's built-in builder (outside dev-buildkitd.slice). Run host-setup/install.sh on this host."
+    return 0
+  fi
+  resolved=$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "buildx"}}{{.Path}}{{end}}{{end}}' 2>/dev/null)
+  if [ "$resolved" = "$shim" ]; then
+    ok "docker resolves the buildx plugin to the MDT shim ($shim)"
+  else
+    warn "docker resolves the buildx plugin to '${resolved:-<unknown>}', not the MDT shim $shim — a plugin earlier in Docker's search path (e.g. ~/.docker/cli-plugins) bypasses the managed-builder default"
+  fi
+  if grep -q '^# BEGIN mdt-buildkit ' /etc/environment 2>/dev/null; then
+    ok "/etc/environment carries the MDT BuildKit block (BUILDX_BUILDER for ssh, sudo, su, login and cron sessions)"
+  else
+    warn "/etc/environment has no '# BEGIN mdt-buildkit' block (BUILDX_BUILDER, BUILDKIT_HOST) — ssh/sudo/su/cron sessions rely on the docker-buildx shim alone, and tools that read BUILDX_BUILDER or BUILDKIT_HOST themselves (buildctl, scripts) see nothing; run host-setup/install.sh"
+  fi
+  probe_home=$(mktemp -d "${TMPDIR:-/tmp}/mdt-check-home.XXXXXXXX") || { warn "could not create a probe home to test a fresh user's builder"; return 0; }
+  out=$(env -i PATH="$PATH" HOME="$probe_home" docker buildx inspect --bootstrap 2>&1)
+  rm -rf -- "$probe_home"
+  if printf '%s\n' "$out" | grep -Eq '^Name:[[:space:]]+mdt-managed$' && printf '%s\n' "$out" | grep -Eq '^Driver:[[:space:]]+remote$'; then
+    ok "a fresh user with an empty environment resolves mdt-managed (remote driver)"
+  else
+    fail "a fresh user with an empty environment does NOT resolve mdt-managed (remote driver) — builds started from VS Code's SSH server, cron or systemd leave dev-buildkitd.slice. Check the shim line above and 'systemctl status mdt-buildkitd.service'. docker said: $(printf '%s' "$out" | head -n 3 | tr '\n' ' ')"
+  fi
+}
+check_buildx_default_builder
 # BEGIN io-writeback-check (extracted verbatim by tests/test_hs05.py)
 # Writeback and root-queue settings (MDT-HS-05): the live value against host-setup.env, each state
 # distinct: OK, MISMATCH, not managed (`kernel`/empty), could not read (never reported as OK).

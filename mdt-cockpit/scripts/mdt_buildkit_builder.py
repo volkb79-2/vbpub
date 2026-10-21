@@ -62,21 +62,25 @@ def _run_docker(
     buildx_config: str | None = None,
     runner: Runner = subprocess.run,
 ) -> subprocess.CompletedProcess[str]:
-    environment = None
+    # This module manages builders explicitly, so it must see Buildx exactly as asked: the host's
+    # docker-buildx shim (host-setup/scripts/docker-buildx-shim.sh) would otherwise select
+    # mdt-managed itself, and `buildx create --name mdt-managed` then reads that as an existing
+    # instance. The variable is inert where no shim is installed (the devcontainer).
+    environment = os.environ.copy()
+    environment["MDT_BUILDX_PASSTHROUGH"] = "1"
     if buildx_config is not None:
         buildx_config = buildx_config.strip()
         if not buildx_config or not buildx_config.startswith("/"):
             raise BuilderError(
                 "BUILDX_CONFIG must be an absolute path when explicitly supplied"
             )
-        environment = os.environ.copy()
         environment["BUILDX_CONFIG"] = buildx_config
     return runner(
         [docker, *args],
         capture_output=True,
         text=True,
         check=False,
-        **({"env": environment} if environment is not None else {}),
+        env=environment,
     )
 
 
@@ -148,6 +152,10 @@ def ensure_managed_builder(
                 MANAGED_BUILDER,
                 "--driver",
                 "remote",
+                # `docker build` and a bare `docker buildx build` then leave the image in the local
+                # Docker image store, as they do on the built-in builder (same option the shim sets).
+                "--driver-opt",
+                "default-load=true",
                 "--use",
                 endpoint,
             ],

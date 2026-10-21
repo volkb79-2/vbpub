@@ -30,8 +30,11 @@ Runs on the host before Docker starts and prepares `$HOME` bind-mount sources. I
 idempotent. It parses the sibling `devcontainer.json` and inspects every `type=bind` source under
 `$HOME` by its actual filesystem type. Existing regular files and directories are accepted without
 name or suffix heuristics. Under the default policy, MDT creates its known directory sources as
-**real dirs** with the right mode: the complete `mdt-cockpit-home` source gets `0700`,
-`mdt-cockpit-tmp` gets `1777`, and other directories get `0755`. For missing custom directories, a trailing `/` on the source is an MDT bootstrap hint
+**real dirs** with the right mode, chosen by the mount's **target**, not by the source's name: the source
+mounted at the container home (`/home/<remoteUser>`) gets `0700`, the source mounted at `/tmp` gets `1777`
+(re-asserted on every run), and other directories get `0755`. A consumer that spells its own sources, such as
+`~/mdt-cockpit-vbpub-home/` and `~/mdt-cockpit-vbpub-tmp/`, therefore gets the same modes and the old-state
+notice names the source it actually mounts. For missing custom directories, a trailing `/` on the source is an MDT bootstrap hint
 that selects directory creation under the default `create-by-spelling` policy; a missing source
 without `/` becomes an empty regular file (`0600`). The host-setup wizard can select
 `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` to require every `$HOME` source managed by the

@@ -38,13 +38,22 @@ def _template_mounts() -> list[tuple[str, str, str]]:
     return mounts
 
 
-def _bootstrap_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sources: list[str]) -> Path:
+def _as_mounts(sources: list) -> list[tuple[str, str]]:
+    """Give each bare source string its template target (a (source, target) pair passes through)."""
+    template_targets = {HOME_SOURCE: "/home/vscode", TMP_SOURCE: "/tmp"}
+    return [
+        item if isinstance(item, tuple) else (item, template_targets.get(item, "/mnt/other"))
+        for item in sources
+    ]
+
+
+def _bootstrap_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sources: list) -> Path:
     """Point the bootstrap at a throwaway host $HOME with the given mount sources."""
     host_home = tmp_path / "host"
     host_home.mkdir(exist_ok=True)
     monkeypatch.setattr(bootstrap, "HOME", host_home)
     monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
-    monkeypatch.setattr(bootstrap, "host_bind_sources", lambda _path: sources)
+    monkeypatch.setattr(bootstrap, "host_bind_mounts", lambda _path: _as_mounts(sources))
     monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: True)
     return host_home
 
@@ -171,6 +180,75 @@ def test_bootstrap_creates_a_private_home_and_a_sticky_tmp(
     assert (host_home / "mdt-cockpit-tmp").stat().st_mode & 0o7777 == 0o1777
 
 
+CUSTOM_HOME = ("${localEnv:HOME}/mdt-cockpit-vbpub-home/", "/home/vscode")
+CUSTOM_TMP = ("${localEnv:HOME}/mdt-cockpit-vbpub-tmp/", "/tmp")
+
+
+def test_bootstrap_modes_follow_the_mount_target_not_the_source_name(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [CUSTOM_HOME, CUSTOM_TMP])
+
+    assert bootstrap.main() == 0
+
+    assert (host_home / "mdt-cockpit-vbpub-home").stat().st_mode & 0o7777 == 0o700
+    assert (host_home / "mdt-cockpit-vbpub-tmp").stat().st_mode & 0o7777 == 0o1777
+    # the canonical names are not created just because the template spells them
+    assert not (host_home / "mdt-cockpit-home").exists()
+    assert not (host_home / "mdt-cockpit-tmp").exists()
+
+
+def test_bootstrap_reasserts_sticky_tmp_on_a_custom_named_source(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [CUSTOM_TMP])
+    scratch = host_home / "mdt-cockpit-vbpub-tmp"
+    scratch.mkdir()
+    scratch.chmod(0o755)
+
+    assert bootstrap.main() == 0
+
+    assert scratch.stat().st_mode & 0o7777 == 0o1777
+
+
+def test_bootstrap_gives_an_unrelated_source_the_default_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host_home = _bootstrap_home(
+        monkeypatch, tmp_path, [("${localEnv:HOME}/mdt-cockpit-home-backup/", "/mnt/backup")]
+    )
+
+    assert bootstrap.main() == 0
+
+    assert (host_home / "mdt-cockpit-home-backup").stat().st_mode & 0o7777 == 0o755
+
+
+def test_bootstrap_derives_the_home_target_from_remote_user(tmp_path: Path) -> None:
+    dc = tmp_path / "devcontainer.json"
+    dc.write_text('{ // comment\n "remoteUser": "builder", }', encoding="utf-8")
+    assert bootstrap.container_home_target(dc) == "/home/builder"
+    dc.write_text("{}", encoding="utf-8")
+    assert bootstrap.container_home_target(dc) == "/home/vscode"
+    dc.write_text('{"remoteUser": "../root"}', encoding="utf-8")
+    with pytest.raises(ValueError, match="remoteUser"):
+        bootstrap.container_home_target(dc)
+
+
+def test_bootstrap_refuses_one_source_mounted_as_both_home_and_tmp(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    shared = "${localEnv:HOME}/mdt-cockpit-shared/"
+    host_home = _bootstrap_home(
+        monkeypatch, tmp_path, [(shared, "/home/vscode"), (shared, "/tmp")]
+    )
+
+    assert bootstrap.main() == 1
+    assert not (host_home / "mdt-cockpit-shared").exists()
+    err = capsys.readouterr().err
+    assert "mounted both as the container home (/home/vscode) and as /tmp" in err
+    assert "its own host directory" in err
+
+
 def test_bootstrap_notes_old_split_state_but_never_fails_or_migrates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -189,6 +267,33 @@ def test_bootstrap_notes_old_split_state_but_never_fails_or_migrates(
     # Nothing was read into, copied to, or removed from either place.
     assert list((host_home / "mdt-cockpit-home").iterdir()) == []
     assert (old_codex / "auth.json").read_text(encoding="utf-8") == "secret"
+
+
+def test_bootstrap_note_names_the_custom_home_source_actually_mounted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [CUSTOM_HOME])
+    (host_home / "mdt--mounted-folders").mkdir()
+    (host_home / "mdt--mounted-folders" / "leftover").write_text("old", encoding="utf-8")
+
+    assert bootstrap.main() == 0
+
+    notes = [line for line in capsys.readouterr().err.splitlines() if "NOTE" in line]
+    assert len(notes) == 1
+    assert "~/mdt-cockpit-vbpub-home/" in notes[0]
+    assert "~/mdt-cockpit-home/" not in notes[0]
+
+
+def test_bootstrap_policy_banner_lists_the_variable_and_allowed_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _bootstrap_home(monkeypatch, tmp_path, [CUSTOM_HOME])
+
+    assert bootstrap.main() == 0
+
+    out = capsys.readouterr().out
+    assert "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY" in out
+    assert "allowed values: create-by-spelling, fail" in out
 
 
 @pytest.mark.parametrize(
@@ -292,7 +397,28 @@ def test_bootstrap_reads_strict_missing_source_policy_from_host_config(
 
     assert bootstrap.main() == 1
     assert not (host_home / "mdt-cockpit-strict-state").exists()
-    assert "policy is `fail`" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    # The message names the variable and file the operator must change, lists the allowed
+    # values, and prescribes a correct manual remedy for the exact missing path.
+    assert "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail" in err
+    assert "/etc/mdt/host-setup.env" in err
+    assert "allowed values: create-by-spelling, fail" in err
+    assert f"touch {host_home / 'mdt-cockpit-strict-state'}" in err
+
+
+def test_bootstrap_strict_policy_remedy_creates_the_directory_with_its_role_mode(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    host_home = _bootstrap_home(monkeypatch, tmp_path, [CUSTOM_HOME, CUSTOM_TMP])
+    config_path = tmp_path / "host-setup.env"
+    config_path.write_text("DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail\n", encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", config_path)
+
+    assert bootstrap.main() == 1
+
+    err = capsys.readouterr().err
+    assert f"mkdir -p -m 0700 {host_home / 'mdt-cockpit-vbpub-home'}" in err
+    assert f"mkdir -p -m 1777 {host_home / 'mdt-cockpit-vbpub-tmp'}" in err
 
 
 def test_bootstrap_rejects_invalid_missing_source_policy(
@@ -318,7 +444,9 @@ def test_bootstrap_refuses_conflicting_source_markers_without_fallback_creation(
     assert bootstrap.main() == 1
     assert not (host_home / "mdt-cockpit-conflicted").exists()
     assert not (host_home / "mdt-cockpit-home").exists()
-    assert "conflicting file/directory source spellings" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "conflicting file/directory source spellings" in err
+    assert "Spell every mount of this source the same way" in err
 
 
 def test_bootstrap_creates_missing_custom_directory_with_trailing_slash(
@@ -366,7 +494,7 @@ def test_bootstrap_main_uses_complete_fallback_when_template_is_unreadable(
     host_home = _bootstrap_home(monkeypatch, tmp_path, [])
     ensured: list[tuple[Path, str, str]] = []
 
-    def record(path: Path, *, expected_type: str, missing_policy: str) -> None:
+    def record(path: Path, *, expected_type: str, missing_policy: str, role: str | None) -> None:
         ensured.append((path, expected_type, missing_policy))
 
     monkeypatch.setattr(bootstrap, "ensure", record)
@@ -629,7 +757,9 @@ def test_host_cgroup_slice_query_timeout_is_refused(capsys) -> None:
     assert "cannot verify host cgroup slice" in capsys.readouterr().err
 
 
-def test_loaded_host_cgroup_unit_must_have_an_installed_file(capsys) -> None:
+def test_loaded_host_cgroup_unit_must_have_an_installed_file(tmp_path, capsys) -> None:
+    # A path under tmp_path that is never created: the test must not depend on whether the
+    # machine running it happens to have the real unit installed in /etc/systemd/system.
     def runner(argv, **kwargs):
         unit = argv[2]
         return subprocess.CompletedProcess(
@@ -637,7 +767,7 @@ def test_loaded_host_cgroup_unit_must_have_an_installed_file(capsys) -> None:
             0,
             stdout=(
                 f"Id={unit}\nLoadState=loaded\n"
-                f"FragmentPath=/etc/systemd/system/{unit}\n"
+                f"FragmentPath={tmp_path / 'never-installed' / unit}\n"
             ),
             stderr="",
         )
@@ -655,7 +785,7 @@ def test_bootstrap_checks_slices_before_preparing_host_sources(
     source = "${localEnv:HOME}/mdt-cockpit-must-not-create/"
     monkeypatch.setattr(bootstrap, "HOME", host_home)
     monkeypatch.setattr(bootstrap, "HOST_CONFIG_PATH", tmp_path / "no-mdt-config")
-    monkeypatch.setattr(bootstrap, "host_bind_sources", lambda _path: [source])
+    monkeypatch.setattr(bootstrap, "host_bind_mounts", lambda _path: _as_mounts([source]))
     monkeypatch.setattr(bootstrap, "verify_host_cgroup_slices", lambda *_: False)
 
     assert bootstrap.main() == 1

@@ -188,9 +188,15 @@ broadly writable as a substitute for socket permissions.
 
 The installer verifies Docker and Buildx before changing host state, waits for
 the service socket, verifies the service container's image/cgroup/labels, then
-creates or verifies the remote builder. It installs `/etc/profile.d/mdt-buildkit.sh`
-with `BUILDX_CONFIG=/etc/mdt/buildx`, `BUILDX_BUILDER=mdt-managed`, and the
-socket endpoint. The devcontainer template repeats the builder and endpoint,
+creates or verifies the remote builder (the root-owned reference in `/etc/mdt/buildx`). Users
+do not build with that directory: Buildx writes build state into its config directory on every
+build, so each user gets the same `remote` node in their own `~/.docker/buildx`, registered by the
+`docker-buildx` shim on first use. The installer installs that shim to
+`/usr/local/lib/docker/cli-plugins/docker-buildx`, a marked `BUILDX_BUILDER`/`BUILDKIT_HOST`
+block in `/etc/environment`, and `/etc/profile.d/mdt-buildkit.sh`, then proves a fresh user with an
+empty environment resolves `mdt-managed` (exit 2 otherwise); the reasoning is in
+[docs/BUILD-ARCHITECTURE.md](../docs/BUILD-ARCHITECTURE.md#making-every-build-use-mdt-managed).
+The devcontainer template repeats the builder and endpoint,
 sets its own persistent `BUILDX_CONFIG` below the already-mounted
 `/home/vscode/.config`, and bind-mounts `/run/mdt-buildkitd`; the mount is
 mandatory, so a missing host prerequisite fails container start.
@@ -694,6 +700,8 @@ the test stacks.
 | `units/mdt-buildkit-guard.service`, `scripts/mdt-buildkit-guard.py` | systemd (enabled) + `/usr/local/sbin/` | Docker-events guard for unapproved Buildx/BuildKit workers |
 | `scripts/mdt_buildkit_builder.py` | `/usr/local/sbin/mdt-buildkit-builder.py` | idempotent `mdt-managed` remote registration/verification; never creates a container-driver worker |
 | `etc/profile.d/mdt-buildkit.sh` | `/etc/profile.d/` | host-shell `BUILDX_BUILDER` and `BUILDKIT_HOST` exports |
+| `scripts/docker-buildx-shim.sh` | `/usr/local/lib/docker/cli-plugins/docker-buildx` | Docker CLI plugin shim: `mdt-managed` is the default builder for every caller, registered per user on first use |
+| `etc/environment.mdt-buildkit` | marked block in `/etc/environment` | `BUILDX_BUILDER`/`BUILDKIT_HOST` for PAM sessions (ssh, sudo, su, login, cron) |
 | `units/docker-scope-default-limits.conf.in` | `/etc/systemd/system/docker-.scope.d/50-default-limits.conf` | D-G8 backstop — a generous "never truly unbounded" floor for EVERY container's transient scope, regardless of which slice (or none) it named |
 | `units/mdt-dev-governance-reconcile.service` | systemd (enabled) | boot-time reconciliation of measured IO, zswap, transient IO caps, mount flags, and the memory min/low audit |
 | `units/mdt-dev-governance-reconcile.timer.in` | systemd (enabled) | periodic reconciliation (default 5min) — the event watchers are immediate paths; this is the backstop |

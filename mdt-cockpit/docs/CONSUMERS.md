@@ -654,8 +654,15 @@ A directory mount must keep its trailing `/`, including in copied template entri
 `$HOME` source without `/`, MDT creates a file regardless of its basename or suffix. Other existing
 host sources retain their actual type. The MDT host-setup wizard can instead set
 `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail`; this requires every `$HOME` source managed by the
-bootstrap to exist before Docker starts the devcontainer. `mdt-cockpit-gitconfig` is recognized as
+bootstrap to exist before Docker starts the devcontainer (allowed values: `create-by-spelling`, `fail`);
+under `fail` the bootstrap's error names the variable, `/etc/mdt/host-setup.env`, the allowed values and the
+exact `mkdir -p`/`touch` for the missing path. `mdt-cockpit-gitconfig` is recognized as
 a file source and a directory at that path is refused.
+
+Which source is the home and which is `/tmp` comes from each mount's **target** (the container home is
+`/home/<remoteUser>` from `devcontainer.json`, and `/tmp`), so renaming the sources, for example
+`mdt-cockpit-<project>-home` / `mdt-cockpit-<project>-tmp` for several checkouts on one host, keeps the
+`0700`/`1777` modes. The source *names* are free; the *targets* are the contract.
 
 Choose the policy with `sudo ./install.sh --wizard` from MDT's `host-setup/` directory on the Docker
 host. The bootstrap reads the resulting `/etc/mdt/host-setup.env` when `initializeCommand` runs.

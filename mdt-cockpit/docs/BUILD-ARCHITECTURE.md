@@ -37,7 +37,9 @@ CPU/memory/I/O limits. Local release repack has separate controls,
 `REPACK_JOBS` and `REPACK_CONCURRENCY`, because repack runs in the caller
 outside the BuildKit worker.
 
-Host shells receive the same exports from `/etc/profile.d/mdt-buildkit.sh`.
+Host shells receive the same exports from `/etc/profile.d/mdt-buildkit.sh`, and the
+`docker-buildx` shim makes the choice for callers that read no profile at all; see
+[Making every build use mdt-managed](#making-every-build-use-mdt-managed).
 The MDT template and derived dstdns container explicitly carry both exports
 and a mandatory `/run/mdt-buildkitd` socket mount, so a missing host setup is a
 visible container-start failure rather than an embedded-Builder fallback.
@@ -105,6 +107,157 @@ settings live in `cmru.toml`. See
 [Image delivery benchmarks](IMAGE-DELIVERY-BENCHMARKS.md) for cold-pull
 evidence and [OCI image tooling](OCI-IMAGE-TOOLING.md) for the distinction
 between OCI manifests, attestations and MDT's human manifest.
+
+## Making every build use mdt-managed
+
+Goal (operator, 2026-10-22): every build on this host, whoever starts it and from
+wherever, runs in `mdt-buildkitd` inside `dev-buildkitd.slice`, so one set of cgroup
+limits governs all of them. This section records how that is achieved, why each step
+exists, what was measured, and what was rejected. The mechanism is host-wide and needs
+no per-user setup.
+
+### The incident that exposed the gap
+
+VS Code over Remote-SSH, user `vb`, "Reopen in Container" on `vbpub`: the Dev Containers
+CLI ran `docker buildx build --load` for the docker-outside-of-docker Feature and failed
+with `Error response from daemon: No such container: buildx_buildkit_keen_mestorf0`.
+Diagnosis, in the order it was established:
+
+1. `initializeCommand` passed and the base image was local; the failure was the Features
+   build, which runs **on the host**, before any container exists.
+2. `~/.docker/buildx/current` of `vb` selected `keen_mestorf`, a container-driver builder
+   from 2025. Buildx therefore tried to boot a BuildKit container for it. Reproduced
+   outside VS Code with an empty environment.
+3. `mdt-buildkit-guard.service` removed that container within seconds, by design (it
+   terminates any `buildx_buildkit_*` worker that is not the inspected managed service).
+   The client saw only "No such container"; the explanation existed only in the host's journal.
+4. The host's `BUILDX_BUILDER=mdt-managed` came from `/etc/profile.d/mdt-buildkit.sh`, which
+   only bash/sh **login** shells read. `vb` uses zsh (Debian's zsh does not read
+   `/etc/profile`) and VS Code's SSH server is not a login shell at all. Its process had no
+   `BUILDX_*` variable, so Buildx fell back to the per-user state.
+
+The stated design, "a missing registration is an error rather than a fallback", only held
+where the variable was set. Everywhere else the fallback was silent and wrong.
+
+### Second finding: the shared registration could not serve non-root users
+
+With the correct variables set, every build as `vb` still failed:
+`failed to update builder last activity time: open /etc/mdt/buildx/activity/.tmp-mdt-managed...: permission denied`.
+`install.sh` made `/etc/mdt/buildx` root-owned `0755` on purpose ("readable, not writable"),
+but Buildx writes into its state directory on **every** build. Measured with a scratch copy that
+had the real ownership: after making `activity/` group-writable, the next failure was
+`refs/mdt-managed/mdt-managed0/.tmp-...: permission denied` (build history references per
+builder and node). Making `refs/` writable too would have produced a root-owned directory
+mixing every user's `0600` files; that is not a registration any more.
+
+**Decision:** the shared directory stays what it is good for (root-owned reference and the
+installer's reachability proof) and is no longer what users build with. **Each user has the
+same remote node in their own Buildx state** (`~/.docker/buildx`). The node holds no secret: it
+is a name, `driver = remote` and the socket path.
+
+### What the Docker CLI actually does (measured, Docker 29.9.1, Buildx 0.38.0)
+
+A probe plugin that logged its environment showed:
+
+| Invocation | `BUILDX_BUILDER` the plugin receives |
+|---|---|
+| `docker buildx build ...` | unset (the caller's value, if any) |
+| `docker build ...` | **`default`**, injected by the CLI |
+| `docker compose build` | goes through `buildx bake`, i.e. the plugin, with the caller's value |
+
+So exporting `BUILDX_BUILDER` helps `docker build` only if it is set before the CLI starts, and
+the CLI's own `default` cannot be told from a deliberate choice. Also measured: `buildx create
+--name X` with `BUILDX_BUILDER=X` already exported fails ("existing instance ... no append
+mode"), and the plugin binary invoked standalone for `create` misbehaves while the
+`DOCKER_CLI_PLUGIN_*` variables the CLI hands plugins are present. Both shaped the shim below.
+
+### The layers
+
+No single layer reaches every way a build can start, so there are three, from the one that
+cannot be bypassed outward:
+
+1. **`docker-buildx` shim** (`host-setup/scripts/docker-buildx-shim.sh`, installed to
+   `/usr/local/lib/docker/cli-plugins/docker-buildx`). Docker's CLI scans `~/.docker/cli-plugins`,
+   `/usr/local/lib`, `/usr/local/libexec`, `/usr/lib` and `/usr/libexec` (`docker/cli-plugins`) in that order
+   (traced on this host), and the packaged plugin lives in the last, so every process
+   that runs the docker CLI passes through it: a login shell, VS Code's SSH server, cron, a
+   systemd unit, `docker compose build`. It hands the call to the packaged plugin after it:
+   - selects `mdt-managed` when `BUILDX_BUILDER` is unset **or `default`**;
+   - registers `mdt-managed` once for the calling user (a `remote` node, `default-load=true` so
+     `docker build` and a bare `docker buildx build` leave the image in the local Docker store as
+     they do on the built-in builder), with the plugin-specific environment stripped (see above);
+   - reports a registration failure on stderr and lets Buildx fail with "no builder
+     mdt-managed found". It never falls back to the built-in builder, which would build outside
+     the governed slice;
+   - leaves alone: the metadata handshake, `MDT_BUILDX_PASSTHROUGH=1`, a builder the caller named
+     (`--builder other`, `BUILDX_BUILDER=other`), and any `DOCKER_HOST` that is not `unix://` (a build
+     for another engine must not be sent to this host's worker);
+   - drops a stale `BUILDX_CONFIG=/etc/mdt/buildx` that the caller cannot write (shells opened before
+     the upgrade still carry it).
+   `--builder default` still reaches the built-in builder deliberately: a flag outranks the environment.
+2. **`/etc/environment`** gets a marked block (`BUILDX_BUILDER`, `BUILDKIT_HOST`). `pam_env` reads
+   it for ssh (including VS Code's server), sudo, su, login and cron, so tools that read the variable
+   directly (`buildctl`, scripts) agree with the shim. `install.sh` replaces only its own block and warns
+   about a conflicting assignment elsewhere in the file instead of editing it.
+3. **`/etc/profile.d/mdt-buildkit.sh`** keeps the explicit export for bash/sh login shells but no
+   longer exports `BUILDX_CONFIG`.
+
+Why the shim and not something simpler (all considered, rejected):
+
+| Alternative | Why not |
+|---|---|
+| Set variables in VS Code (`remote.SSH` env, `~/.ssh/environment`, `terminal.integrated.env`) | per user, per client, silently absent for the next tool; the Dev Containers CLI is spawned by the server, not the terminal |
+| Make the shared `/etc/mdt/buildx` writable | build refs of every user mix in one directory (above) |
+| `docker buildx use mdt-managed` per user | does not cover `docker build` (the CLI injects `default`); needs per-user setup; a stale `current` is what broke here |
+| A daemon-side switch | `dockerd` has no setting that redirects its built-in builder to a remote BuildKit |
+| Replace or wrap `/usr/bin/docker` | breaks on every package update, and the plugin hook is the supported extension point |
+| Disable the built-in builder | not possible without removing `docker build` itself |
+
+### Host versus devcontainer
+
+No distinction is needed for *where the work runs*: the remote node's endpoint is the same socket
+path on the host and, through the mandatory `/run/mdt-buildkitd` bind mount, in the devcontainer, and
+the build executes in `mdt-buildkitd` either way. Inside the container the template pins
+`BUILDX_BUILDER`, `BUILDKIT_HOST` and a persistent `BUILDX_CONFIG` under the mounted home, and the
+finalizer verifies them; no shim is installed there (the image has its own docker CLI).
+
+What this design does **not** give is a different limit per origin: all callers share one worker and
+one slice. Per-origin limits (for example a tighter tier for IDE builds) need a second worker in
+another slice, registered under another builder name and selected with `BUILDX_BUILDER`; the shim's
+"leave a named builder alone" rule already permits that.
+
+### Making the failure visible
+
+The guard's journal line now names the stale builder (derived from the container name, labelled as
+such) and the fix (`docker buildx rm <builder>`, then build normally or with `--builder mdt-managed`).
+`mdt-host-check.sh` reports whether Docker resolves the buildx plugin to the shim, whether the
+`/etc/environment` block exists, and whether a fresh user with an **empty environment** resolves
+`mdt-managed` with the remote driver. `install.sh` runs that last probe itself and exits non-zero if it
+fails, so an install that did not take effect is not reported as done.
+
+### What is not covered
+
+- Clients that talk to the Docker API directly (for example `docker compose` without Bake, SDKs, CI
+  agents) build on the daemon's built-in builder; only `buildx`-backed builds are redirected.
+- `MDT_BUILDX_PASSTHROUGH=1` and `--builder default` are deliberate escape hatches; the installer's own
+  builder management (`mdt_buildkit_builder.py`) sets the former so it sees Buildx exactly as asked.
+- A plugin earlier in Docker's search path (`~/.docker/cli-plugins/docker-buildx`) shadows the shim;
+  `mdt-host-check.sh` warns when the resolved path is not the shim.
+- A user who sets `DOCKER_HOST` to another engine builds there, by design.
+
+### Operating it
+
+```bash
+sudo ./install.sh                      # installs the shim, the /etc/environment block, probes a fresh user
+mdt-host-check.sh                      # shim / environment block / fresh-user probe
+docker buildx ls                       # per user: mdt-managed (remote) appears after the first build
+docker buildx rm <stale-builder>       # remove a leftover container-driver builder named in the guard log
+MDT_BUILDX_PASSTHROUGH=1 docker ...    # bypass the shim for one command
+```
+
+Oracles: `host-setup/tests/test_docker_buildx_shim.py` (the shim under `/bin/sh` with a fake plugin;
+selection, registration, pass-through, failure, stale-config cases), `test_buildkit_governance.py`
+(profile contract, builder module passthrough, guard remedy), and `scripts/test_docs_in_sync.py`.
 
 ## Canonical release path
 

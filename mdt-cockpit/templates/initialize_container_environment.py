@@ -8,27 +8,36 @@ with sane permissions. Docker's `--mount` form refuses a missing source; this
 script applies MDT's configured policy before Docker starts.
 
 Layout (fresh home; docs/HOME-PERSISTENCE.md):
-- The complete home is one real directory at `~/mdt-cockpit-home/` (mode 0700),
-  bind-mounted at `/home/vscode`. Image-owned tools and defaults live outside this
-  mount, so a new home starts EMPTY and the image fills in nothing but what the
-  tools themselves create.
-- `/tmp` is a separate host-backed directory at `~/mdt-cockpit-tmp/` (mode 1777),
-  so worktrees survive rebuilds and are visible to the sibling test-runner container.
+- The complete home is one real directory (template default `~/mdt-cockpit-home/`,
+  mode 0700), bind-mounted at `/home/<remoteUser>` (`/home/vscode`). Image-owned tools
+  and defaults live outside this mount, so a new home starts EMPTY and the image fills
+  in nothing but what the tools themselves create.
+- `/tmp` is a separate host-backed directory (template default `~/mdt-cockpit-tmp/`,
+  mode 1777), so worktrees survive rebuilds and are visible to the sibling test-runner
+  container.
 - Any further mount source is named `~/mdt-cockpit-<purpose>`.
 - The host's native `~/.ssh` is read-only at `/run/mdt/host-ssh`, outside the home.
+
+The ROLE of a source (home, tmp) comes from the mount's `target`, never from the
+source's name, so a consumer that spells its own sources (for example
+`~/mdt-cockpit-vbpub-home/` -> `/home/vscode`) gets the same modes and notices as the
+template defaults. The canonical names above are used only when the sibling
+devcontainer.json cannot be read (see `fallback_bind_paths`).
 
 Design: stdlib-only and idempotent. Reads the sibling `devcontainer.json` and inspects each `type=bind`
 source under the host `$HOME`. Existing regular files and directories are handled according to their
 actual type, regardless of their names or suffixes. For a missing source, the host config policy
 defaults to `create-by-spelling`: a source ending in `/` creates a directory; a source without `/`
 creates an empty regular file. Set `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` in the host config
-to require every `$HOME` source managed here to exist already. `~/.ssh` gets 0700; `mdt-cockpit-tmp`
-gets 1777; the home gets 0700; everything else 0755.
+(allowed values: `create-by-spelling`, `fail`) to require every `$HOME` source managed here to exist
+already. `~/.ssh` gets 0700; the source mounted at `/tmp` gets 1777; the source mounted at the
+container home gets 0700; everything else 0755.
 
 No migration: this fork starts with an empty home and the user copies old content by hand.
 When the previous split-mount state (`~/mdt--mounted-folders/`) still holds files and the new
 home is absent or empty, `notify_legacy_split_state()` prints one informational line pointing at
-the manual-copy section of docs/HOME-PERSISTENCE.md (printed as its full GitHub URL). It never changes the exit status.
+the manual-copy section of docs/HOME-PERSISTENCE.md (printed as its full GitHub URL). It names the
+source actually mounted as the home. It never changes the exit status.
 """
 from __future__ import annotations
 
@@ -45,6 +54,12 @@ HOME_SOURCE_NAME = SOURCE_PREFIX + "home"
 TMP_SOURCE_NAME = SOURCE_PREFIX + "tmp"
 TMP_MODE = 0o1777  # persisted host-backed /tmp: sticky + world-writable, like a normal /tmp
 HOME_MODE = 0o700
+# Roles a `$HOME` source can have, derived from the mount target (see module docstring).
+ROLE_HOME = "home"
+ROLE_TMP = "tmp"
+TMP_TARGET = "/tmp"
+# The mdt image has exactly one login user; devcontainer.json's `remoteUser` names it.
+DEFAULT_REMOTE_USER = "vscode"
 # ssh insists on a private directory, whoever created it.
 MODE_OVERRIDES = {".ssh": 0o700}
 DEFAULT_MODE = 0o755
@@ -69,6 +84,7 @@ MANUAL_COPY_DOC = (
 MISSING_SOURCE_POLICY_KEY = "DEVCONTAINER_MISSING_BIND_SOURCE_POLICY"
 DEFAULT_MISSING_SOURCE_POLICY = "create-by-spelling"
 MISSING_SOURCE_POLICIES = {DEFAULT_MISSING_SOURCE_POLICY, "fail"}
+HOST_CONFIG_DISPLAY = "/etc/mdt/host-setup.env"
 HOST_CONFIG_PATH = Path("/etc/mdt/host-setup.env")
 CGROUP_ENV_KEYS = (
     "CGROUP_PARENT_DEV_INTERACTIVE",
@@ -117,20 +133,49 @@ DOCKER_RUN_BOOLEAN_SHORT_OPTIONS = frozenset({"d", "i", "P", "q", "t"})
 
 HOME = Path(os.path.expanduser("~"))
 # Matches the devcontainer mount string: "source=...,target=...,type=bind[,...]"
-BIND_RE = re.compile(r'source=([^,"]+),target=[^,"]+,type=bind')
+BIND_RE = re.compile(r'source=([^,"]+),target=([^,"]+),type=bind')
 
 
-def host_bind_sources(dc_path: Path) -> list:
-    """Return bind-mount source strings from devcontainer.json (skipping // comment lines)."""
-    sources = []
+def host_bind_mounts(dc_path: Path) -> list[tuple[str, str]]:
+    """Return (source, target) bind-mount pairs from devcontainer.json (skipping // comment lines)."""
+    mounts: list[tuple[str, str]] = []
     try:
         for line in dc_path.read_text(encoding="utf-8").splitlines():
             if line.lstrip().startswith("//"):
                 continue  # commented-out mount
-            sources.extend(BIND_RE.findall(line))
+            mounts.extend(BIND_RE.findall(line))
     except OSError:
         return []
-    return sources
+    return mounts
+
+
+def host_bind_sources(dc_path: Path) -> list:
+    """Return bind-mount source strings from devcontainer.json (skipping // comment lines)."""
+    return [source for source, _target in host_bind_mounts(dc_path)]
+
+
+def container_home_target(dc_path: Path) -> str:
+    """The in-container home directory, derived from devcontainer.json's `remoteUser`.
+
+    A missing `remoteUser` means the image's single login user. An unreadable or
+    malformed file is not guessed around: `main()` has already parsed the same file
+    for the cgroup tiers and refused to continue if it was unusable.
+    """
+    document = _parse_jsonc_object(dc_path.read_text(encoding="utf-8"))
+    user = document.get("remoteUser", DEFAULT_REMOTE_USER)
+    if not isinstance(user, str) or re.fullmatch(r"[a-z_][a-z0-9_-]*", user) is None:
+        raise ValueError(f"{dc_path} remoteUser must be a plain user name, got {user!r}")
+    return f"/home/{user}"
+
+
+def role_for_target(target: str, home_target: str) -> str | None:
+    """Map a mount target to the role that decides its host-side mode, or None."""
+    normalized = target.rstrip("/") or "/"
+    if normalized == home_target:
+        return ROLE_HOME
+    if normalized == TMP_TARGET:
+        return ROLE_TMP
+    return None
 
 
 def host_cgroup_slices(dc_path: Path) -> tuple[str, ...]:
@@ -353,10 +398,10 @@ def has_directory_marker(source: str) -> bool:
     return s.endswith("/")
 
 
-def _mode_for(p: Path) -> int:
-    if p == HOME / TMP_SOURCE_NAME:
+def _mode_for(p: Path, role: str | None = None) -> int:
+    if role == ROLE_TMP:
         return TMP_MODE
-    if p == HOME / HOME_SOURCE_NAME:
+    if role == ROLE_HOME:
         return HOME_MODE
     return MODE_OVERRIDES.get(p.name, DEFAULT_MODE)
 
@@ -408,11 +453,15 @@ def load_missing_source_policy(config_path: Path | None = None) -> str:
         raise ValueError(f"duplicate {MISSING_SOURCE_POLICY_KEY} in {config_path}")
     policy = declared[0] if declared else DEFAULT_MISSING_SOURCE_POLICY
     if policy not in MISSING_SOURCE_POLICIES:
-        choices = " or ".join(sorted(MISSING_SOURCE_POLICIES))
         raise ValueError(
-            f"{MISSING_SOURCE_POLICY_KEY} in {config_path} must be {choices}; found {policy!r}"
+            f"{MISSING_SOURCE_POLICY_KEY} in {config_path} must be {_policy_choices(' or ')}; "
+            f"found {policy!r}"
         )
     return policy
+
+
+def _policy_choices(separator: str = ", ") -> str:
+    return separator.join(sorted(MISSING_SOURCE_POLICIES))
 
 
 def verify_host_cgroup_slices(slices: tuple[str, ...], *, runner=None) -> bool:
@@ -469,7 +518,10 @@ def verify_host_cgroup_slices(slices: tuple[str, ...], *, runner=None) -> bool:
             print(
                 f"[mdt-bootstrap] ERROR host cgroup slice {unit} must be loaded from an installed unit "
                 f"(exit={result.returncode}, Id={unit_id!r}, LoadState={load_state!r}, "
-                f"FragmentPath={fragment_path!r}); refusing to create the devcontainer.",
+                f"FragmentPath={fragment_path!r}); refusing to create the devcontainer. Docker would "
+                "otherwise create an unlimited transient slice. Install the tiers from the Docker host with "
+                "`sudo host-setup/install.sh` (mdt-cockpit), or correct the CGROUP_PARENT_DEV_* names in "
+                "devcontainer.json containerEnv.",
                 file=sys.stderr,
             )
             return False
@@ -481,12 +533,14 @@ def ensure(
     *,
     expected_type: str | None = None,
     missing_policy: str = DEFAULT_MISSING_SOURCE_POLICY,
+    role: str | None = None,
 ) -> bool:
     """Accept existing sources by actual type and prepare missing ones by policy.
 
     For missing paths, `expected_type` comes from the raw source spelling: a
     trailing `/` means directory and no trailing `/` means file. Existing
-    custom sources are classified from the host filesystem instead.
+    custom sources are classified from the host filesystem instead. `role`
+    (home or tmp, from the mount target) selects the directory mode.
     """
     if expected_type not in (None, "file", "directory"):
         raise ValueError(f"unsupported bind-source type {expected_type!r}")
@@ -545,17 +599,22 @@ def ensure(
         print(f"[mdt-bootstrap] exists  {p} (special source; unchanged)")
         return True
     else:
-        if missing_policy == "fail":
-            print(
-                f"[mdt-bootstrap] ERROR missing bind source {p}; policy is `fail`, so no path was "
-                "created. Create the intended host source or choose "
-                "`create-by-spelling` in the MDT host-setup wizard.",
-                file=sys.stderr,
-            )
-            return False
         created_type = expected_type or (
             "directory" if _is_known_directory_source(p) else "file"
         )
+        if missing_policy == "fail":
+            create_command = (
+                f"mkdir -p -m {_mode_for(p, role):04o} {p}" if created_type == "directory" else f"touch {p}"
+            )
+            print(
+                f"[mdt-bootstrap] ERROR missing bind source {p}; {MISSING_SOURCE_POLICY_KEY}=fail "
+                f"({HOST_CONFIG_DISPLAY}), so no path was created. Either create the intended host "
+                f"source yourself (`{create_command}`), or set {MISSING_SOURCE_POLICY_KEY}="
+                f"{DEFAULT_MISSING_SOURCE_POLICY} (allowed values: {_policy_choices()}) in "
+                f"{HOST_CONFIG_DISPLAY} with `install.sh --wizard` on the host.",
+                file=sys.stderr,
+            )
+            return False
         if created_type == "file":
             try:
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -578,7 +637,7 @@ def ensure(
             return True
         target = p
 
-    mode = _mode_for(p)
+    mode = _mode_for(p, role)
     is_tmp = mode == TMP_MODE
     try:
         if target.exists():
@@ -610,6 +669,11 @@ def fallback_bind_paths() -> list[tuple[Path, str]]:
         + [(HOME / name, "directory") for name in FALLBACK]
         + [(HOME / name, "file") for name in FALLBACK_FILES]
     )
+
+
+def fallback_roles() -> dict[Path, str]:
+    """Roles of the canonical sources, used with `fallback_bind_paths` only."""
+    return {HOME / HOME_SOURCE_NAME: ROLE_HOME, HOME / TMP_SOURCE_NAME: ROLE_TMP}
 
 
 def _holds_file_or_symlink(path: Path) -> bool | None:
@@ -647,25 +711,35 @@ def _is_absent_or_empty(path: Path) -> bool | None:
         return None
 
 
-def notify_legacy_split_state() -> bool:
+def _display_home_relative(path: Path) -> str:
+    """`~/name/` for a path under the host $HOME, so the notice names the real source."""
+    try:
+        return f"~/{path.relative_to(HOME)}/"
+    except ValueError:
+        return f"{path}/"
+
+
+def notify_legacy_split_state(new_home: Path | None = None) -> bool:
     """Print the one-line manual-copy pointer when old split state is left behind.
 
     Informational only (D1): the exit status never depends on it. Fires when the
     previous template's `~/mdt--mounted-folders/` holds files/symlinks AND the new
-    home is absent or empty. Returns whether the line was printed.
+    home is absent or empty. `new_home` is the source actually mounted as the container
+    home (the canonical `~/mdt-cockpit-home` when omitted). Returns whether the line was printed.
     """
     legacy = HOME / LEGACY_PARENT_NAME
     legacy_state = _holds_file_or_symlink(legacy)
     if legacy_state is False:
         return False
-    new_home_empty = _is_absent_or_empty(HOME / HOME_SOURCE_NAME)
+    new_home = new_home if new_home is not None else HOME / HOME_SOURCE_NAME
+    new_home_empty = _is_absent_or_empty(new_home)
     if new_home_empty is False:
         return False
     legacy_text = "holds files" if legacy_state else "could not be fully inspected"
     home_text = "is empty" if new_home_empty else "could not be inspected"
     print(
         f"[mdt-bootstrap] NOTE the previous split state ~/{LEGACY_PARENT_NAME}/ {legacy_text} "
-        f"and the new home ~/{HOME_SOURCE_NAME}/ {home_text}: this template starts with an empty "
+        f"and the new home {_display_home_relative(new_home)} {home_text}: this template starts with an empty "
         f"home and migrates nothing - copy what you need by hand, see {MANUAL_COPY_DOC}.",
         file=sys.stderr,
     )
@@ -678,7 +752,10 @@ def main() -> int:
     except ValueError as exc:
         print(f"[mdt-bootstrap] ERROR {exc}", file=sys.stderr)
         return 1
-    print(f"[mdt-bootstrap] missing bind-source policy: {missing_policy}")
+    print(
+        f"[mdt-bootstrap] missing bind-source policy: {missing_policy} "
+        f"({MISSING_SOURCE_POLICY_KEY}; allowed values: {_policy_choices()})"
+    )
     dc = Path(__file__).resolve().parent / "devcontainer.json"
     try:
         cgroup_slices = host_cgroup_slices(dc)
@@ -687,22 +764,42 @@ def main() -> int:
         return 1
     if not verify_host_cgroup_slices(cgroup_slices):
         return 1
+    try:
+        home_target = container_home_target(dc)
+    except ValueError as exc:
+        print(f"[mdt-bootstrap] ERROR {exc}", file=sys.stderr)
+        return 1
 
     requested: dict[Path, str] = {}
+    roles: dict[Path, str] = {}
     conflicted: set[Path] = set()
     failed = False
     found_home_source = False
-    sources = host_bind_sources(dc)
-    for source in sources:
+    for source, target in host_bind_mounts(dc):
         path = to_home_dir(source)
         if path is not None:
             found_home_source = True
+            role = role_for_target(target, home_target)
+            if role is not None and roles.get(path, role) != role:
+                print(
+                    f"[mdt-bootstrap] ERROR {path} is mounted both as the container home ({home_target}) "
+                    "and as /tmp in devcontainer.json; the two need different modes (0700 and 1777). "
+                    "Give each mount its own host directory. No source was prepared.",
+                    file=sys.stderr,
+                )
+                conflicted.add(path)
+                requested.pop(path, None)
+                failed = True
+                continue
+            if role is not None:
+                roles[path] = role
             source_type = "directory" if has_directory_marker(source) else "file"
             previous_type = requested.get(path)
             if previous_type is not None and previous_type != source_type:
                 print(
-                    f"[mdt-bootstrap] ERROR conflicting file/directory source spellings for {path}; "
-                    "no source was prepared.",
+                    f"[mdt-bootstrap] ERROR conflicting file/directory source spellings for {path} in "
+                    "devcontainer.json: one mount ends the source in `/` (directory), another does not (file). "
+                    "Spell every mount of this source the same way. No source was prepared.",
                     file=sys.stderr,
                 )
                 conflicted.add(path)
@@ -711,14 +808,20 @@ def main() -> int:
             elif path not in conflicted:
                 requested[path] = source_type
     if not found_home_source:
-        print("[mdt-bootstrap] no parseable $HOME bind mounts; using fallback set", file=sys.stderr)
+        print(
+            f"[mdt-bootstrap] no parseable $HOME bind mounts in {dc}; using the canonical fallback set "
+            f"(~/{HOME_SOURCE_NAME}, ~/{TMP_SOURCE_NAME}, ~/.ssh)",
+            file=sys.stderr,
+        )
         requested = dict(fallback_bind_paths())
-    notify_legacy_split_state()
+        roles = fallback_roles()
+    notify_legacy_split_state(next((p for p, r in roles.items() if r == ROLE_HOME), None))
     for p, expected_type in requested.items():
         result = ensure(
             p,
             expected_type=expected_type,
             missing_policy=missing_policy,
+            role=roles.get(p),
         )
         if result is False:
             failed = True

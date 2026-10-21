@@ -268,6 +268,18 @@ if ! "$DOCKER_BIN" buildx version >/dev/null 2>&1; then
   echo "ERROR: Docker Buildx is unavailable; install/enable the Buildx CLI plugin and re-run install.sh" >&2
   exit 2
 fi
+# The docker-buildx shim (installed below) hands every call to the packaged plugin. It
+# looks in these directories, in this order; refuse before touching the host if none holds
+# one, rather than replace a working `docker buildx` with a shim that has nothing to run.
+BUILDX_SHIM_TARGET=/usr/local/lib/docker/cli-plugins/docker-buildx
+_mdt_real_buildx=
+for _dir in /usr/local/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins; do
+  if [ -x "$_dir/docker-buildx" ]; then _mdt_real_buildx="$_dir/docker-buildx"; break; fi
+done
+if [ -z "$_mdt_real_buildx" ]; then
+  echo "ERROR: no packaged Buildx plugin found in /usr/local/libexec, /usr/lib or /usr/libexec docker/cli-plugins; the docker-buildx shim has nothing to run. Install docker-buildx-plugin and re-run install.sh" >&2
+  exit 2
+fi
 
 # --with-baseline is an explicit request for the wizard to start the
 # measurement before its resource questions. Make the benchmark prerequisites
@@ -304,6 +316,25 @@ echo "== config =="
 CONFIG_DIR=/etc/mdt
 CONFIG_PATH="$CONFIG_DIR/host-setup.env"
 BUILDX_CONFIG_DIR=/etc/mdt/buildx
+# Replace (or append) the marked block of KEY=VALUE lines in a pam_env-style file such as
+# /etc/environment: idempotent, keeps every other line byte for byte, never duplicates a
+# key that is already set OUTSIDE the block (that is reported, not overwritten).
+_mdt_install_environment_block() {
+  local block_file="$1" target="$2" tmp key
+  tmp="$(mktemp "${target}.mdt.XXXXXXXX")"
+  [ -f "$target" ] || : > "$target"
+  awk '/^# BEGIN mdt-buildkit /{skip=1} !skip{print} /^# END mdt-buildkit$/{skip=0}' "$target" > "$tmp"
+  while IFS= read -r key; do
+    case "$key" in \#*|"") continue ;; esac
+    key="${key%%=*}"
+    if grep -q "^${key}=" "$tmp"; then
+      echo "WARN: $target already sets $key ($(grep -m1 "^${key}=" "$tmp")) outside the MDT BuildKit block; pam_env applies the later assignment, which is the MDT block's ${key}=$(grep -m1 "^${key}=" "$block_file" | cut -d= -f2-). Remove the older line if it is not intended; the docker-buildx shim selects mdt-managed either way." >&2
+    fi
+  done < "$block_file"
+  cat "$block_file" >> "$tmp"
+  chmod 0644 "$tmp"
+  mv -f -- "$tmp" "$target"
+}
 HAD_CONFIG=0
 if [ -f "$CONFIG_PATH" ]; then
   HAD_CONFIG=1
@@ -935,6 +966,12 @@ install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-b
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
 install -D -m 0644 "$HERE/etc/profile.d/mdt-buildkit.sh" /etc/profile.d/mdt-buildkit.sh
+# Every way a build can start: the shim makes mdt-managed the default builder for ANY process
+# that runs the docker CLI (no profile script involved), /etc/environment covers PAM sessions
+# (ssh incl. VS Code's SSH server, sudo, su, login, cron) and the profile script covers the
+# remaining bash/sh login shells. docs/BUILD-ARCHITECTURE.md "Making every build use mdt-managed".
+install -D -m 0755 "$HERE/scripts/docker-buildx-shim.sh" "$BUILDX_SHIM_TARGET"
+_mdt_install_environment_block "$HERE/etc/environment.mdt-buildkit" /etc/environment
 if [ "$INOTIFY_OK" = 1 ]; then
   install -m 0755 "$HERE/scripts/mdt-container-memory-inotify-watcher.py" /usr/local/sbin/mdt-container-memory-inotify-watcher.py
 fi
@@ -1041,15 +1078,30 @@ python3 "$HERE/scripts/mdt-buildkit-guard.py" \
 python3 "$HERE/../scripts/mdt_buildkit_builder.py" configure \
   --docker "$DOCKER_BIN" --endpoint unix:///run/mdt-buildkitd/buildkitd.sock \
   --buildx-config "$BUILDX_CONFIG_DIR"
-# Buildx's shared state contains only the public remote-node registration. Keep
-# the directory root-owned and readable, but not writable, for ordinary users:
-# their exported BUILDX_BUILDER selects this node directly and never falls back
-# to a per-user Docker builder. Any user who can use Docker can read the
-# registration; only root can change which endpoint the host profile selects.
+# /etc/mdt/buildx is the install-time proof that the service is reachable through a
+# Buildx remote node, and the root-owned reference registration. It is NOT what ordinary
+# users build with: Buildx writes build refs and a last-activity stamp into its state
+# directory on every build, so a root-owned directory fails for them with "permission
+# denied" (measured, docs/BUILD-ARCHITECTURE.md). Each user gets the same remote node in
+# their own ~/.docker/buildx, registered by the docker-buildx shim on first use.
 find "$BUILDX_CONFIG_DIR" -xdev -type d -exec chown root:root {} + -exec chmod 0755 {} +
 find "$BUILDX_CONFIG_DIR" -xdev -type f -exec chown root:root {} + -exec chmod 0644 {} +
 systemctl enable --now mdt-buildkit-guard.service
 systemctl restart mdt-buildkit-guard.service
+# End-to-end proof for a brand-new user with an EMPTY environment (env -i: no BUILDX_*, no DOCKER_*,
+# no profile): the shim must register mdt-managed in that user's own state and Buildx must
+# reach the service through it. This is the path VS Code's SSH server, cron and systemd units take.
+echo "== managed builder as a fresh user with an empty environment =="
+_probe_home="$(mktemp -d "${TMPDIR:-/tmp}/mdt-probe-home.XXXXXXXX")"
+_probe_out="$(env -i PATH="$PATH" HOME="$_probe_home" "$DOCKER_BIN" buildx inspect --bootstrap 2>&1 || true)"
+rm -rf -- "$_probe_home"
+if ! printf '%s\n' "$_probe_out" | grep -Eq '^Name:[[:space:]]+mdt-managed$' \
+  || ! printf '%s\n' "$_probe_out" | grep -Eq '^Driver:[[:space:]]+remote$'; then
+  echo "ERROR: a fresh user with an empty environment does not get mdt-managed (remote driver) from 'docker buildx inspect'; the docker-buildx shim at $BUILDX_SHIM_TARGET is not taking effect. Check: 'docker info | grep -A3 buildx' must show Path: $BUILDX_SHIM_TARGET (a ~/.docker/cli-plugins/docker-buildx of the installing user would shadow it); 'systemctl status mdt-buildkitd.service' must be active; /run/mdt-buildkitd/buildkitd.sock must exist. Output of the probe:" >&2
+  printf '%s\n' "$_probe_out" | head -20 >&2
+  exit 2
+fi
+echo "ok: fresh user resolves mdt-managed (remote) without any environment"
 if [ "$MEMORY_WATCHER_CONFIGURED" = 1 ]; then
   systemctl enable --now mdt-container-memory-inotify-watcher.service
 else

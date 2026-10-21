@@ -335,9 +335,34 @@ class BuildKitGovernanceTests(unittest.TestCase):
         }
         warnings = WIZARD.memory_review_warnings(values)
         self.assertEqual(len(warnings), 1)
-        self.assertIn("dev-interactive.slice MemoryLow=2G", warnings[0])
-        self.assertIn("no configured ancestor dev.slice MemoryLow", warnings[0])
+        self.assertIn("dev-interactive.slice MemoryLow (DEV_INTERACTIVE_MEMORY_LOW=2G)", warnings[0])
+        self.assertIn("no configured ancestor dev.slice MemoryLow (DEV_MEMORY_LOW is empty)", warnings[0])
         self.assertIn("ineffective", warnings[0])
+        # the warning says which variable to change, not just which slice is affected
+        self.assertIn("Set DEV_MEMORY_LOW to at least 2G, or clear DEV_INTERACTIVE_MEMORY_LOW", warnings[0])
+
+    def test_aggregate_memory_warning_names_the_variables_it_adds_up(self) -> None:
+        values = {
+            "DEV_MEMORY_HIGH": "10G",
+            "DEV_INTERACTIVE_MEMORY_HIGH": "6G",
+            "DEV_BACKGROUND_MEMORY_HIGH": "8G",
+        }
+        (warning,) = WIZARD.memory_review_warnings(values)
+        self.assertIn("DEV_INTERACTIVE_MEMORY_HIGH=6G", warning)
+        self.assertIn("DEV_BACKGROUND_MEMORY_HIGH=8G", warning)
+        self.assertIn("(DEV_MEMORY_HIGH=10G)", warning)
+
+    def test_cap_percentage_warning_names_the_variable_and_where_to_change_it(self) -> None:
+        for key in ("DEV_IO_CAP_PCT", "WATCHER_IO_CAP_PCT"):
+            with mock.patch.object(WIZARD, "out") as out:
+                self.assertIsNone(WIZARD.cap_pct_validator(key)("30"))
+            (line,) = [call.args[0] for call in out.call_args_list]
+            self.assertIn(f"{key}=30", line)
+            self.assertIn("/etc/mdt/host-setup.env", line)
+        with mock.patch.object(WIZARD, "out") as out:
+            self.assertIsNone(WIZARD.validate_cap_pct("70"))
+        out.assert_not_called()
+        self.assertIsNotNone(WIZARD.validate_cap_pct("100"))
 
     def test_io_discovery_does_not_promote_container_overlay_to_host_device(self) -> None:
         def runner(argv, **kwargs):
@@ -1269,6 +1294,41 @@ done
         self.assertEqual(decision.status, "unapproved-buildkit-worker")
         self.assertIn("TERMINATED", output.call_args.args[0])
 
+    def test_guard_names_the_stale_builder_and_the_remedy_in_its_decision_line(self) -> None:
+        # Live incident 2026-10-22: VS Code's Features build selected a stale user-level builder
+        # `keen_mestorf`; the guard removed its worker and the client only saw "No such container".
+        info = GUARD.ContainerInfo(
+            container_id="worker-id",
+            name="buildx_buildkit_keen_mestorf0",
+            image="moby/buildkit:buildx-stable-1-rootless",
+            cgroup_parent="system.slice",
+            labels={},
+        )
+        completed = subprocess.CompletedProcess(["docker", "rm"], 0, "", "")
+        for policy, marker in (("terminate", "TERMINATED"), ("report-only", "REPORT-ONLY")):
+            config = GUARD.GuardConfig(policy, info.image)
+            with mock.patch.object(GUARD, "_docker", return_value=completed), mock.patch(
+                "builtins.print"
+            ) as output:
+                GUARD.handle_container("docker", info, config)
+            line = output.call_args.args[0]
+            self.assertIn(marker, line)
+            self.assertIn("'keen_mestorf' (from the container name)", line)
+            self.assertIn("docker buildx rm keen_mestorf", line)
+            self.assertIn("mdt-managed", line)
+            self.assertIn("Making every build use mdt-managed", line)
+
+    def test_guard_builder_name_is_derived_only_from_reserved_prefixes(self) -> None:
+        self.assertEqual(GUARD.builder_name_from_container("buildx_buildkit_keen_mestorf0"), "keen_mestorf")
+        self.assertEqual(GUARD.builder_name_from_container("buildx_buildkit_multi12"), "multi")
+        self.assertIsNone(GUARD.builder_name_from_container("buildx_buildkit_0"))
+        self.assertIsNone(GUARD.builder_name_from_container("some_other_container"))
+
+    def test_guard_adds_no_remedy_to_an_approved_or_ignored_container(self) -> None:
+        info = GUARD.ContainerInfo("id", "web", "nginx", "system.slice", {})
+        decision = GUARD.decide(info, GUARD.GuardConfig("terminate", "moby/buildkit:x"))
+        self.assertEqual(GUARD.remedy_for(info, decision), "")
+
     def test_guard_wizard_requires_explicit_termination_confirmation(self) -> None:
         with mock.patch.object(WIZARD, "ask_yn", return_value=False) as confirm:
             self.assertEqual(WIZARD.confirm_guard_termination("terminate"), "report-only")
@@ -1426,9 +1486,15 @@ done
         self.assertNotIn("docker-container", " ".join(creates[0]))
         for _, kwargs in fake.calls:
             self.assertEqual(kwargs["env"]["BUILDX_CONFIG"], "/etc/mdt/buildx")
+            # explicit builder management must bypass the host's docker-buildx shim
+            self.assertEqual(kwargs["env"]["MDT_BUILDX_PASSTHROUGH"], "1")
+        self.assertIn("default-load=true", creates[0])
         profile = (ROOT / "etc/profile.d/mdt-buildkit.sh").read_text()
-        self.assertIn("export BUILDX_CONFIG=/etc/mdt/buildx", profile)
+        # The shared, root-owned /etc/mdt/buildx cannot serve non-root users (Buildx writes build refs
+        # and a last-activity stamp into its state directory), so no profile may export it any more.
+        self.assertNotIn("export BUILDX_CONFIG", profile)
         self.assertIn("export BUILDX_BUILDER=mdt-managed", profile)
+        self.assertIn("export BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock", profile)
         install = (ROOT / "install.sh").read_text()
         self.assertIn('--buildx-config "$BUILDX_CONFIG_DIR"', install)
 

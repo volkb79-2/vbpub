@@ -93,8 +93,9 @@ See the [PWMCP browser service](../docs/CONSUMERS.md#pwmcp-browser-service).
 The host initializer is stdlib-only and distinguishes existing bind sources by
 actual host type. For missing custom sources, `create-by-spelling` treats a
 trailing `/` as a directory and no trailing `/` as a regular file. The
-host-setup wizard can set `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` to
-require sources to exist. See [the Git config example](../docs/CONSUMERS.md#optional-git-config-mount).
+host-setup wizard can set `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY=fail` (allowed: `create-by-spelling`,
+`fail`) to require sources to exist. Modes follow the mount **target** (container home `0700`, `/tmp` `1777`),
+so the source directories may be renamed freely, for example per project. See [the Git config example](../docs/CONSUMERS.md#optional-git-config-mount).
 
 The initializer name is `initialize_container_environment.py`. CMRU uses
 `get.py` for a different, manually-run project installer.

@@ -288,6 +288,41 @@ def decide(info: ContainerInfo, config: GuardConfig) -> Decision:
     )
 
 
+def builder_name_from_container(name: str) -> str | None:
+    """The Buildx builder a `buildx_buildkit_<builder><node>` container belongs to.
+
+    Buildx names the container after the builder plus the node index (`keen_mestorf0`), so the
+    builder is the name without its trailing digits; a builder whose own name ends in digits is
+    ambiguous, which is why callers print it as "builder (from the container name)".
+    """
+    for prefix in _CANDIDATE_PREFIXES:
+        if name.startswith(prefix):
+            builder = name[len(prefix):].rstrip("0123456789")
+            return builder or None
+    return None
+
+
+def remedy_for(info: ContainerInfo, decision: Decision) -> str:
+    """What the person whose build just failed with "No such container" should do.
+
+    The guard's journal line is the only place this host explains why a worker disappeared; the
+    client only sees Docker's "No such container". A builder registered by an earlier Buildx
+    (selected in ~/.docker/buildx/current) is the usual cause, so say how to leave it.
+    """
+    if decision.status != "unapproved-buildkit-worker":
+        return ""
+    builder = builder_name_from_container(info.name)
+    named = f"builder {builder!r} (from the container name)" if builder else "a Buildx builder"
+    return (
+        f" Remedy: {named} was started by a docker-container Buildx driver, which this host does not "
+        "allow; builds go through the managed worker 'mdt-managed' (BuildKit service in "
+        f"{MANAGED_CGROUP_PARENT}). Remove the stale builder"
+        + (f" with `docker buildx rm {builder}`" if builder else "")
+        + " and build with the host's docker-buildx shim or `--builder mdt-managed`; see "
+        "docs/BUILD-ARCHITECTURE.md 'Making every build use mdt-managed'."
+    )
+
+
 def _docker(docker: str, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [docker, *args], capture_output=True, text=True, check=False
@@ -316,7 +351,8 @@ def handle_container(docker: str, info: ContainerInfo, config: GuardConfig) -> D
         return decision
     if config.policy == "report-only":
         print(
-            f"[mdt-buildkit-guard] REPORT-ONLY {decision.status}: {prefix}; {decision.reason}",
+            f"[mdt-buildkit-guard] REPORT-ONLY {decision.status}: {prefix}; {decision.reason}."
+            f"{remedy_for(info, decision)}",
             flush=True,
         )
         return decision
@@ -330,7 +366,8 @@ def handle_container(docker: str, info: ContainerInfo, config: GuardConfig) -> D
             f"policy=terminate could not remove {prefix}: {detail[:300]}"
         )
     print(
-        f"[mdt-buildkit-guard] TERMINATED {decision.status}: {prefix}; {decision.reason}",
+        f"[mdt-buildkit-guard] TERMINATED {decision.status}: {prefix}; {decision.reason}."
+        f"{remedy_for(info, decision)}",
         flush=True,
     )
     return decision
