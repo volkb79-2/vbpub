@@ -188,7 +188,7 @@ cmru build   <name>               # isolated local build; retains logs/artifacts
 cmru worktrees                    # list retained failed build/release worktrees
 cmru gate-snapshots               # list retained release-gate snapshots (read-only)
 cmru gate-snapshots --remove --dry-run  # preview removing the ones proven unneeded
-cmru gate-snapshots --remove      # remove them; a live or unprovable gate is never touched
+cmru gate-snapshots --remove      # remove them (and drop stale records); a live or unprovable gate is never touched
 cmru gate-snapshots --remove --include-current  # also the resumable one at its source commit
 cmru abandon --dry-run            # inspect exact retained release candidates, no writes
 cmru abandon <branch> --yes       # abandon exactly the named verified candidate

@@ -2383,7 +2383,7 @@ def test_a_snapshot_whose_own_checkout_changed_is_retained_for_inspection(tmp_pa
 
     shutil.rmtree(path)
     (report,) = gs.inspect_gate_snapshots(repo)
-    assert report.status == gs.RETAINED and "cannot inspect CMRU gate snapshot" in report.reason
+    assert report.status == gs.RETAINED and "still registers" in report.reason and "directory is missing" in report.reason
     path.write_text("not a checkout", encoding="utf-8")
     (report,) = gs.inspect_gate_snapshots(repo)
     assert report.status == gs.RETAINED and "is not a real directory" in report.reason

@@ -2349,3 +2349,33 @@ early.
 file for the dry-run candidate so `abandon` can classify it, and (3) make `abandon` distinguish "scope record absent
 for a dry-run candidate with no tag/release/origin evidence" (abandonable) from "ambiguous". Test: a dry-run that fails
 the changelog check leaves no branch or worktree (or leaves one that `abandon --yes` removes).
+
+### KI-92 — `cmru gate-snapshots` lists a snapshot as "retained" after its directory and Git registration are gone
+
+**Status:** FIXED 2026-10-21 (branch `cmru-ki79-ext-20261021`, 6.2.1 batch). Found 2026-10-21: `cmru-gate-ad61a1146ae971f80547`.
+
+**Observed.** After the 2026-10-20 cleanup removed the snapshot with `git worktree remove`, its workspace record remained and
+`cmru gate-snapshots` kept listing it as `retained`, reason `cannot inspect CMRU gate snapshot <path>: [Errno 2] ...`.
+
+**Mechanism.** `_judge_snapshot` ran `_validate_gate_snapshot_record`, whose first filesystem fact is `lstat(worktree_path)`; any
+`OSError` (a missing directory included) became `retained`. One status therefore stood for four different conditions, so a
+fully gone snapshot was reported as if something were still being kept. A check-is-only-as-strong-as-its-comparison defect.
+
+**Fix.** `_worktree_presence` combines two independent facts, the directory (`lstat`) and Git's worktree registry
+(including the record's branch, so a checkout seen under another mount namespace's path spelling is never called gone):
+
+| condition | directory | Git registry | status |
+|---|---|---|---|
+| present | exists | registers the path | judged as before (lease, source, validation): `removable` / `retained` |
+| stale | missing | no entry at the path and none on the branch | **`stale-record`** (removable: record, derived Assay state, leftover branch only if still at the recorded commit) |
+| registered-missing | missing | registers the path (prunable) | `retained`: run `git worktree prune` after confirming |
+| branch-elsewhere | not visible | lists the branch at another path | `retained`: possibly another namespace |
+| unregistered | exists | does not register it | `retained`: inspect it |
+| unreadable | cannot be inspected (not ENOENT) | any | `retained` with the OS error |
+
+A stale record whose lease is live or unprovable is still `retained`. `cmru gate-snapshots --remove` (after `--dry-run`)
+drops `stale-record` entries; it touches no worktree. Tests (`tests/test_gate_snapshots_cli.py`): the stale case is not
+`retained` (controlled wrong: the old code fails all six new tests), dry-run changes nothing, remove is repeatable, a moved
+leftover branch is kept, and each lookalike condition stays `retained` with its own reason. An existing assertion in
+`tests/test_release_gate.py` now expects the more precise reason for the registered-but-missing case.
+

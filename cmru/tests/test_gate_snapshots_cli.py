@@ -127,3 +127,104 @@ def test_outside_a_repository_is_a_usage_error(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
     assert cli.main(["gate-snapshots"]) == exit_codes.CONFIG_ERROR
     assert "must run inside the repository" in capsys.readouterr().err
+
+
+# ─── false "retained": a record whose snapshot is already gone (KI-92) ────────────────
+
+import shutil  # noqa: E402
+
+
+def _report(source):
+    (item,) = gate_snapshot.inspect_gate_snapshots(source, include_current=True)
+    return item
+
+
+def _branch_exists(root, branch) -> bool:
+    return bool(_git(root, "branch", "--list", branch))
+
+
+def test_a_record_whose_directory_and_registration_are_gone_is_stale_not_retained(
+        repository, capsys):
+    source, snapshot = repository
+    _git(source, "worktree", "remove", "--force", str(snapshot.worktree_path))  # the cleanup
+    assert not snapshot.worktree_path.exists()
+    assert _branch_exists(source, snapshot.branch)  # git leaves the branch behind
+
+    assert cli.main(["gate-snapshots"]) == 0
+    output = capsys.readouterr().out
+    assert f"stale-record: {snapshot.branch}" in output
+    assert "retained:" not in output  # the controlled-wrong status
+    assert "no longer registers" in output
+
+
+def test_remove_dry_run_changes_nothing_then_remove_drops_the_stale_record(repository, capsys):
+    source, snapshot = repository
+    record_path = _report(source).record.record_path
+    _git(source, "worktree", "remove", "--force", str(snapshot.worktree_path))
+
+    assert cli.main(["gate-snapshots", "--remove", "--dry-run"]) == 0
+    captured = capsys.readouterr()
+    assert "drop the stale record" in captured.err + captured.out
+    assert record_path.exists() and _branch_exists(source, snapshot.branch)
+
+    assert cli.main(["gate-snapshots", "--remove"]) == 0
+    assert not record_path.exists()
+    assert not _branch_exists(source, snapshot.branch)  # it still pointed at the recorded commit
+    capsys.readouterr()
+    assert cli.main(["gate-snapshots"]) == 0  # repeatable: nothing left to list
+    assert "No retained CMRU gate snapshots" in capsys.readouterr().out
+
+
+def test_a_leftover_branch_that_moved_is_kept_when_the_stale_record_is_dropped(repository):
+    source, snapshot = repository
+    record_path = _report(source).record.record_path
+    _git(source, "worktree", "remove", "--force", str(snapshot.worktree_path))
+    _git(source, "commit", "--quiet", "--allow-empty", "-m", "moved")  # advance gate-source
+    _git(source, "branch", "-f", snapshot.branch, "HEAD")  # branch no longer at the record's commit
+
+    assert cli.main(["gate-snapshots", "--remove"]) == 0
+
+    assert not record_path.exists()
+    assert _branch_exists(source, snapshot.branch)  # not ours any more: never deleted
+
+
+def test_a_registered_but_missing_directory_is_retained_and_distinct(repository, capsys):
+    source, snapshot = repository
+    shutil.rmtree(snapshot.worktree_path)  # directory gone, `git worktree` still registers it
+
+    item = _report(source)
+    assert item.status == gate_snapshot.RETAINED
+    assert "still registers" in item.reason and "git worktree prune" in item.reason
+    assert cli.main(["gate-snapshots", "--remove"]) == 0
+    assert item.record.record_path.exists()  # --remove did not touch it
+
+
+def test_an_existing_but_deregistered_directory_is_retained_and_distinct(repository):
+    source, snapshot = repository
+    common = Path(_git(source, "rev-parse", "--git-common-dir"))
+    common = common if common.is_absolute() else source / common
+    shutil.rmtree(common / "worktrees" / snapshot.worktree_path.name)  # deregister, keep dir
+
+    item = _report(source)
+    assert item.status == gate_snapshot.RETAINED
+    assert "exists but Git does not register it" in item.reason
+    assert snapshot.worktree_path.is_dir()
+
+
+def test_a_missing_directory_with_the_branch_at_another_path_is_not_inferred_gone(
+        repository, monkeypatch):
+    # another mount namespace may spell the same checkout differently: never call it stale
+    source, snapshot = repository
+    shutil.rmtree(snapshot.worktree_path)
+    api = gate_snapshot._worktree_api()
+    real = api.list_git_worktrees
+    elsewhere = api.GitWorktree(
+        path=Path("/host/spelling/of/it"), head=None, branch=f"refs/heads/{snapshot.branch}",
+        is_primary=False,
+    )
+    monkeypatch.setattr(
+        api, "list_git_worktrees",
+        lambda path: [e for e in real(path) if e.path != snapshot.worktree_path] + [elsewhere],
+    )
+    item = _report(source)
+    assert item.status == gate_snapshot.RETAINED and "another mount namespace" in item.reason

@@ -992,11 +992,13 @@ source checkout, so a failed or interrupted gate can resume. Inspect and clean t
 with the supported verb, never with `git worktree remove`:
 
 ```bash
-cmru gate-snapshots                        # list: removable / retained, with the reason
+cmru gate-snapshots                        # list: removable / retained / stale-record, with the reason
 cmru gate-snapshots --remove --dry-run     # preview exactly what would be removed
-cmru gate-snapshots --remove               # remove the snapshots whose source moved on
+cmru gate-snapshots --remove               # remove the snapshots whose source moved on; drop stale records
 cmru gate-snapshots --remove --include-current   # also the resumable one for the current HEAD
 ```
+
+A `stale-record` is a record whose snapshot directory is gone AND whose worktree Git no longer registers (nor lists its branch anywhere, so a path only invisible from this mount namespace is never called stale); `--remove` drops just the record, its derived Assay state and a leftover branch that still points at the recorded commit. Two lookalike states stay `retained`, each with its own reason: the directory is gone but Git still registers it (`git worktree prune` after confirming), and the directory exists but Git does not register it (inspect it).
 
 It keeps a snapshot whose gate is still running, whose lease holder lives in another
 PID namespace and cannot be proven dead from where you are (run the verb where the gate
