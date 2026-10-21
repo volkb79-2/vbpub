@@ -6,6 +6,7 @@
 > - Section 4 (RG-88 / assay B148): superseded. On main, RG-88 is a different defect (nullable DAMON `hot_bytes`) and assay B148 ("native R2 discovers a private cgroup namespace only after R0") already exists, so the filings described here were not made. The cgroupns analysis stands as evidence for B148.
 > - Section 1 (status reconciliation of RG-45/81/84/86) was not integrated; those rows on main were not re-verified here.
 > - Section 5 (RG-46 decision ask A/B/C) is still an open operator decision.
+> - The `__revision__` statements in the header, the release-note text at the end, the "RG-82 (carve in flight)" row in section 1, and the section-6 gate result (`1702 passed ...`) describe the 2026-10-07 tree and are historical. Main has no `__revision__` (dropped in 24.0.0), RG-82 is only partly shipped (see its backlog status), and the integrated tests have not yet been run through the registered `selftest`.
 > - Commit hashes below refer to the `rg-small` branch, not to main.
 
 Worktree `rg-small`, base `main` at `4670f53a6`. Commits: `44434c6aa` (RG-62 tests), `72c3a0a58` (RG-85, backlog, assay B148), plus this report. `__revision__` NOT bumped (it is 55): the CHANGES test `test_unreleased_changelog_matches_revision_and_recovery_contract` pins `source rev {__revision__}` to the released 23.10.0 section, and RG-86 set the precedent that the release owner bumps. Release-note text for the controller is at the end.

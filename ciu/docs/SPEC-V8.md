@@ -1164,8 +1164,9 @@ are cgroup-charge accounting since placement, not a total-RSS measurement or
 cap (pre-existing page charges do not migrate). Where this note and the
 sketch above disagree on daemon, namespace or placement facts, this note
 wins; the v8 spec text closed in draft.8 (items above) derives from RG-55's
-final v1.1 interface contract and decisions D-30..D-32, not from the
-superseded sketch.
+final v1.1 interface contract (S16.6 traceability row) and is consistent
+with the placement and trust decisions D-30..D-32, not with the superseded
+sketch.
 
 ### D.7 — operator note (2026-09-12) — **closed in draft.8**: liveness, placement and the gates slice (design of record: vbpub `run-gate-project/nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md`, D-17..D-26)
 
@@ -1175,21 +1176,14 @@ superseded sketch.
 
 **Closed in draft.8, revised in draft.9:** (1) is S16.2.1: the gate slice is declared once in `capacity.tiers.gates` (`slice` or `slice_env`); draft.8's `testing.cgroup_slice*` keys and its hardwired `$CGROUP_PARENT_DEV_GATES` default are withdrawn (V8R-13). (2) is superseded by D-651 Q4 and D-655: the profiler's sessions are measurement, not an admission ledger, and the clock does not pause under pressure. (3) is S16.6.7 and S16.6.4. (4) is S16.6.8 and S16.9 (`liveness`, `stall_timeout`). (5) — the daemon's own slice and an authored `cgroup_parent` — is not carried by Appendix R (open item O-7).
 
-**Supersession note (2026-10-01).** D-30..D-32 settled the placement and
-security details for RG-55. In particular, the daemon does not use
-`cgroupns=host`, and cgprofile does not create a leaf directly below
-`dev-gates.slice`; each placed lane gets a systemd-owned delegated transient
-scope under that slice and a profiler-owned leaf below the scope. The daemon
-is a trusted privileged host service in `cgprofile.slice`, with explicit host
-observation mounts and the system bus, but without the Docker socket. The
-operator selected the direct system-manager bridge without a broker for the
-current rootful-Docker deployment; this does not contain a compromised
-daemon. Placement memory limits and measurements are charge-based after
-placement, not total-RSS caps. These details supersede only the old
-implementation sketch above (the daemon's namespaces, the placement path and
-the trust model); the draft.8/draft.9 closures stated above for admission,
-liveness and the result model stand, and the daemon-slice question remains
-open item O-7.
+**Supersession note (2026-10-01).** For D.7's scope (liveness, placement and
+the gates slice): the facts in the D.6 "RG-55 implementation update" above
+supersede this 2026-09-12 sketch where they differ. In particular this
+sketch's `cgroupns=host` daemon and its leaf directly below `dev-gates.slice`
+are not what shipped; each placed lane gets a systemd-owned delegated scope
+with a profiler-owned leaf below it. The draft.8/draft.9 closures stated
+above for admission, liveness and the result model stand, and the daemon-slice
+question remains open item O-7.
 
 ### D.5 — operator note (2026-09-10) — **closed in draft.8**: the owner token is dropped
 

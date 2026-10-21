@@ -11775,6 +11775,7 @@ class TestEstateBudgetTimeoutPairing:
         paired = []
         for gate_name, gate in gates.items():
             timeout = gate.get("timeout_seconds")
+            # An unparseable timeout used to be silently skipped; fail loudly.
             if timeout is not None and not isinstance(timeout, int):
                 pytest.fail(
                     f"{trove}: [gates.{gate_name}] timeout_seconds must be "
@@ -11787,6 +11788,8 @@ class TestEstateBudgetTimeoutPairing:
                 budget = lane.get("budget")
                 if budget is None:
                     continue
+                # Whole-token on both sides, anchored at whitespace/ends: the
+                # old lookaround let `out/suite.json` pair as lane `suite`.
                 if re.search(rf"(?:^|\s){re.escape(lane_name)}(?:\s|$)",
                              argv_text):
                     paired.append((gate_name, lane_name, timeout, budget))

@@ -64,7 +64,7 @@ assay_lane = "r2"
 environment = "tester-unified"
 resource_observer = "cgprofile"
 # `assay.toml` delegates the changed-lines base to the request. Invoke with
-# `./run-gate.py --base <exact-ref> r2`, and inspect the exact Assay plan before
+# `run-gate --base <exact-ref> r2`, and inspect the exact Assay plan before
 # the campaign: run-gate can derive a base if the flag is omitted, so the
 # acceptance command must supply the recorded ref explicitly.
 # Selective diagnostics use run-gate's assay-only request controls

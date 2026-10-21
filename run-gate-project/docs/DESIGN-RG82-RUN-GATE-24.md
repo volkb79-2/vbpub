@@ -2,7 +2,7 @@
 
 Status: design for implementation (carve), 2026-10-07. Base commit: `vbpub@4670f53a6` (main). Author role: design carver; no code changed.
 
-Record note (2026-10-21): this is the historical design record. run-gate 24.0.0 and 24.0.1 have since been released from main; where this text says "to be implemented", read the shipped code and `CHANGES.md` as authoritative.
+Record note (2026-10-21): historical design record. run-gate 24.0.0 and 24.0.1 were released from main but delivered only the wheel-SemVer-only interface; the cli-extended grammar adoption this document designs is NOT yet shipped (see the RG-82 status in `KNOWN_ISSUES_TODO_BACKLOG.md`). Where this text says "to be implemented", read the shipped code and `CHANGES.md` as authoritative.
 
 Operator decisions D1-D6 are final and implemented here, not re-argued:
 
