@@ -2575,6 +2575,138 @@ def test_sample_arriving_after_the_closed_flag_touches_nothing(
     release.set()
 
 
+def _stub_open_session_io(sess):
+    """Stubs a wedged-session fixture needs so a sample can run end to end."""
+    sess.placement.placed = True
+    sess.placement.leaf_readings = lambda: {
+        "psi_full_avg10": None, "memory_high_applied": False}
+    sess.damon_session.recommit_targets = lambda pids: None
+    sess.damon_session.last_class_bytes = {"hot": 1, "warm": 1, "cold": 1, "idle": 1}
+
+
+def _sample_record(seq):
+    return {"seq": seq, "mono": 50.0 + seq, "t": EPOCH_START + 50 + seq,
+            "host": {}}
+
+
+def test_forced_finalize_with_a_worker_holding_the_session_lock_forever_returns(
+    simple_server, monkeypatch,
+):
+    """Sol S9: a worker wedged INSIDE a locked action must not hang the daemon:
+    the bounded acquire fails, finalize returns False quickly, and verbs that
+    take the server lock still answer."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    holding = threading.Event()
+
+    def hold_forever():
+        with sess.lock:
+            holding.set()
+            release.wait()
+
+    threading.Thread(target=hold_forever, daemon=True).start()
+    assert holding.wait(timeout=5.0)
+    started = time.monotonic()
+    with simple_server._lock:
+        assert simple_server._finalize_session_locked(
+            sess, aborted_reason=None, force=True) is False
+    assert time.monotonic() - started < 2.0
+    assert not sess.finished and closed == [] and released == []
+    # The daemon-wide lock was released: a verb that takes it answers.
+    assert simple_server._dispatch(_wire("version"))["ok"] is True
+    release.set()
+
+
+def test_observe_liveness_after_close_never_reaches_the_kill(
+    simple_server, monkeypatch,
+):
+    """Sol S7: a stall kill must not fire once finalization has begun."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    _stub_open_session_io(sess)
+    kills: List[str] = []
+    monkeypatch.setattr(
+        simple_server, "_enforce_stall_kill", lambda *a: kills.append("kill"))
+
+    class _Tracker:
+        class policy:
+            progress_stream = None
+
+        stream = None
+        kill_requested = True
+
+        def observe(self, _sample):
+            # Finalization begins between the top-of-function check and the
+            # kill decision.
+            sess.closed = True
+
+    sess.watch = _Tracker()
+    abs_target = os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/"))
+    simple_server._observe_liveness(
+        sess, mono=1.0, record=_sample_record(1), abs_target=abs_target,
+        target_metrics={}, host_metrics={}, pids=[],
+    )
+    assert kills == []
+    # And entering already closed returns before touching the tracker at all.
+    sess.watch = None
+    sess.closed = True
+    simple_server._observe_liveness(
+        sess, mono=2.0, record=_sample_record(2), abs_target=abs_target,
+        target_metrics={}, host_metrics={}, pids=[],
+    )
+    release.set()
+
+
+def test_closed_session_neither_collects_nor_double_closes_damon(
+    simple_server, monkeypatch,
+):
+    """Sol S8: after the closed flag, a late tick must not read the DAMON
+    session, and a disable must not close it a second time or overwrite the
+    cleanup disposition."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    _stub_open_session_io(sess)
+    collected: List[str] = []
+    sess.damon_session.collect = lambda: collected.append("collect")
+    sess.closed = True
+    simple_server._on_session_sample(
+        sess, _sample_record(3),
+        os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/")), None,
+    )
+    assert collected == []
+    sess.damon_cleanup = {"confirmed": True, "slot": 1, "quarantined": False}
+    simple_server._disable_damon_for_session(sess, RuntimeError("late"))
+    assert closed == []                       # no second close
+    assert sess.damon_cleanup == {"confirmed": True, "slot": 1, "quarantined": False}
+    assert sess.damon_session is not None
+    release.set()
+
+
+def test_flipping_closed_mid_sample_stops_every_later_action(
+    simple_server, monkeypatch,
+):
+    """The interleaving the closed flag exists for: it flips AFTER the entry
+    check, from inside migrate. Nothing after the flip may act."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    _stub_open_session_io(sess)
+    acted: List[str] = []
+
+    def migrate(pids):
+        acted.append("migrate")
+        sess.closed = True                    # finalization begins here
+
+    sess.placement.migrate = migrate
+    sess.damon_session.collect = lambda: acted.append("collect")
+    sess.last_discovery_mono = None           # due: migrate runs
+    samples_before = len(list(sess.rundir.read("samples")))
+    live_before = sess.live_samples
+    simple_server._on_session_sample(
+        sess, _sample_record(4),
+        os.path.join(simple_server.cgroup_root, sess.cgroup.lstrip("/")), None,
+    )
+    assert acted == ["migrate"]               # no collect, nothing after
+    assert len(list(sess.rundir.read("samples"))) == samples_before
+    assert sess.live_samples == live_before
+    release.set()
+
+
 def test_sigterm_shutdown_finalizes_a_session_whose_sampler_is_blocked(
     simple_server, monkeypatch,
 ):
@@ -2606,7 +2738,7 @@ def test_forced_stop_that_cannot_take_the_session_lock_does_not_deadlock(
     finally:
         sess.lock.release()
     assert not sess.finished and closed == [] and released == []
-    assert "holds the session lock" in capsys.readouterr().err
+    assert "session lock is held" in capsys.readouterr().err
     release.set()
 
 

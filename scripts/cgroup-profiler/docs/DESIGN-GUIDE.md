@@ -770,6 +770,10 @@ session lock the forced path refuses rather than deadlock the daemon. The
 `finished` flag is set only after release, so finalization first sets a
 `closed` flag under the session lock; every sample-side action that touches
 placement, DAMON or the records re-checks it under that same lock, which closes
-the window in which a late sample could migrate or recommit after release began. Known
+the window in which a late sample could migrate or recommit after release began.
+The liveness stall kill and the DAMON `collect()`/disable paths are guarded the
+same way, and finalization acquires the session lock once, bounded, so a
+worker wedged inside a locked action costs one failed finalize (orphan
+recovery on restart) rather than a daemon-wide hang. Known
 limit: each attempt joins for up to 10 s while holding the server-wide lock, so
 a wedged sampler delays every verb for that long per retry.

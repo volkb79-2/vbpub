@@ -248,6 +248,20 @@ def daemon_slice_bounded(cgroup_root: str, proc_root: str) -> bool:
     return daemon_slice_problem(cgroup_root, proc_root) is None
 
 
+class _HeldLock:
+    """Context manager that releases an ALREADY-acquired lock on exit, so the
+    finalize section can acquire with a timeout and still read as a ``with``."""
+
+    def __init__(self, lock: Any) -> None:
+        self._lock = lock
+
+    def __enter__(self) -> "_HeldLock":
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        self._lock.release()
+
+
 class RequestError(Exception):
     """A verb refused the request — becomes ``{"ok": false, "error": {...}}``
     (contract exit code 2), never an uncaught traceback back to the socket."""
@@ -1608,8 +1622,12 @@ class SessionServer:
         if sess.damon_session is not None:
             damon_session = sess.damon_session
             try:
-                damon_session.collect()
-                damon_bytes = damon_session.last_class_bytes
+                def collect_damon() -> None:
+                    nonlocal damon_bytes
+                    damon_session.collect()
+                    damon_bytes = damon_session.last_class_bytes
+
+                self._run_if_open(sess, collect_damon)
             except Exception as exc:  # noqa: BLE001 - profiling is best-effort
                 self._disable_damon_for_session(sess, exc)
 
@@ -1768,7 +1786,9 @@ class SessionServer:
         reason = f"{type(exc).__name__}: {exc}"
         with sess.lock:
             damon_session = sess.damon_session
-            if damon_session is None:
+            if damon_session is None or sess.closed:
+                # Closed: finalization owns (and is closing) the DAMON
+                # session; a second close would overwrite its disposition.
                 return
             sess.damon_session = None
             sess.damon_status = f"unavailable:{reason}"
@@ -1792,6 +1812,11 @@ class SessionServer:
         tracker = sess.watch
         if tracker is None:  # pragma: no cover - every session gets one
             return
+        with sess.lock:
+            if sess.closed:
+                # Finalization has begun: a stall kill must not reach a
+                # leaf that release is restoring or has removed (Sol S7).
+                return
         # The daemon's OWN wall clock, not the sampler's `record["t"]`:
         # every other timestamp a consumer reads (`status.at`, `started_at`,
         # `ended_at`) comes from `self.clock()`, and `last_activity_at` is
@@ -1850,7 +1875,10 @@ class SessionServer:
             tracker.observe(sample)
             kill_now = tracker.kill_requested
         if kill_now:
-            self._enforce_stall_kill(sess, pids)
+            with sess.lock:
+                still_open = not sess.closed
+            if still_open:
+                self._enforce_stall_kill(sess, pids)
 
     def _gates_slice_psi_full_avg10(self) -> Optional[float]:
         """The gates slice's own memory `full avg10` — half of §8.4's pause
@@ -2243,23 +2271,30 @@ class SessionServer:
                         f"{STOP_FORCE_AFTER_ATTEMPTS})"
                     )
                     return False
-                if not sess.lock.acquire(timeout=STOP_JOIN_SECONDS):
-                    self._log(
-                        f"session {sess.session_id}: sampling worker holds the "
-                        f"session lock; cannot force the stop"
-                    )
-                    return False
-                sess.lock.release()
                 worker_alive = True
-                sess.stop_forced = True
-                aborted_reason = STOP_FORCED_REASON
-                self._log(
-                    f"session {sess.session_id}: finalizing with the sampling "
-                    f"worker still running ({STOP_FORCED_REASON}); resources "
-                    f"are released and the manifest is aborted"
-                )
+        # Take the session lock ONCE, bounded, and keep it for the whole
+        # section (Sol S9): an unbounded wait here would hold the daemon-wide
+        # lock while a worker wedged inside a locked action never lets go.
+        # On timeout nothing has changed; the caller falls back to the
+        # documented orphan recovery.
+        if not sess.lock.acquire(timeout=STOP_JOIN_SECONDS):
+            self._log(
+                f"session {sess.session_id}: the session lock is held "
+                f"(a worker is wedged inside a locked action) for "
+                f"{STOP_JOIN_SECONDS:g}s; cannot finalize, the session keeps "
+                f"its resources and a restart recovers it as an orphan"
+            )
+            return False
+        if worker_alive:
+            sess.stop_forced = True
+            aborted_reason = STOP_FORCED_REASON
+            self._log(
+                f"session {sess.session_id}: finalizing with the sampling "
+                f"worker still running ({STOP_FORCED_REASON}); resources "
+                f"are released and the manifest is aborted"
+            )
         ended_at = self._iso(self.clock())
-        with sess.lock:
+        with _HeldLock(sess.lock):
             sess.closed = True      # before release/close; see _Session.closed
             if sess.summary_acc.sample_count == 0:
                 # Stopped before a single tick landed — contract §1.5 still

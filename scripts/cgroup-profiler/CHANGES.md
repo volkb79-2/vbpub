@@ -55,6 +55,15 @@ inferred from the r3 canaries.
   writing an `aborted` manifest with reason `sampler-still-running` and an
   additive `summary.stop_forced`; a late sample from the worker is discarded.
   Daemon shutdown (SIGTERM) forces the same way instead of stranding resources.
+- Fix (Sol S7/S8/S9, closed-session paths): `_observe_liveness` returns when the
+  session is closed and re-checks before a stall kill, so a kill can never reach
+  a leaf that release is restoring; the DAMON `collect()` runs only while open
+  and `_disable_damon_for_session` is a no-op once closed (no second close, the
+  cleanup disposition is not overwritten). Finalize takes the session lock ONCE
+  with a bounded acquire (`STOP_JOIN_SECONDS`) and keeps it for the whole
+  section; if a worker is wedged inside a locked action it returns False
+  instead of hanging the daemon-wide lock, and a restart recovers the session
+  as an orphan.
 - Fix (Sol S6, use-after-release): finalization now sets a `closed` flag under
   the session lock BEFORE it releases placement and closes DAMON, and the
   sample path (migrate, DAMON recommit, summary accumulation, every record
