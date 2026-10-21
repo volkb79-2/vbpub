@@ -157,7 +157,7 @@ this lifecycle case.
 
 ## PWMCP-07 — every published pwmcp release ships a bundle its own `get.py` cannot download (asset name lacks the `v`)
 
-**Status: FIXED on branch `pwmcp-07-fix-20261020` (A+B+C), not released; registered lanes pending.**
+**Status: FIXED on main (merged 2026-10-21, gate-provisional PASS at b22b747a6), not released.**
 
 Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; independently reviewed, and the
 review's conclusions (contract, keystone scope, fallback trust, unblock preconditions) are inlined below.

@@ -2269,7 +2269,7 @@ it in both places; check tracked-ness. Optional: pin the read counts per module 
 
 ### KI-89 — nothing compares a project's bundle producer with the asset name its rendered `get.py` downloads
 
-**Status:** FIXED on branch `pwmcp-07-fix-20261020`, not released; registered lanes pending. Filed 2026-10-20 from pwmcp PWMCP-07 (every pwmcp release ships
+**Status:** FIXED on main (merged 2026-10-21), not released. Filed 2026-10-20 from pwmcp PWMCP-07 (every pwmcp release ships
 `pwmcp-<ver>.tar.xz`; get.py requests `pwmcp-v<ver>.tar.xz` -> HTTP 404); same class as CIU-99.
 
 **Mechanism.** The contract is `<tag><asset_suffix>` (`docs/CONSUMERS.md:319`, SPEC S6.3). The primary
