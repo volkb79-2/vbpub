@@ -45,7 +45,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,6 +80,9 @@ WORKTREE_INSTANCE_BASE_SCHEMA_VERSION = 1
 WORKTREE_INSTANCE_SCHEMA_VERSIONS = frozenset({1, 2, 3, 4, 5})
 _NETWORK_OWNER_LABEL = NETWORK_OWNER_LABEL
 _NETWORK_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_CIU_WORKTREE_RECORD_METADATA = "ciu_worktree_record"
+_CIU_CHECKOUT_RESET_PHASE_METADATA = "ciu_checkout_reset_phase"
+_CIU_CHECKOUT_RESET_PHASES = frozenset({"not-started", "started", "complete"})
 
 
 def _shared_worktree():
@@ -109,14 +112,49 @@ def _shared_record_for_checkout(path: Path):
     try:
         top, common, _branch, _head = shared.discover_git_context(Path(path))
     except shared.WorkspaceError as exc:
-        # A legacy/unit-test CIU record may exist outside Git and therefore has
-        # no neutral record to mirror.  Real shared allocations always have a
-        # discoverable Git family; preserve that adapter compatibility without
-        # swallowing errors from an actual shared record lookup.
-        if exc.category == "git-error":
+        # A legacy/unit-test CIU record may exist in a real non-Git directory.
+        # Return None only when the filesystem positively shows there is no Git
+        # metadata in this path's ancestry and no external Git dir was supplied.
+        # A broken .git file, inaccessible repository, or failed Git executable
+        # is indeterminate and must not make a managed checkout look unmanaged.
+        if exc.category == "git-error" and not _path_may_have_git_context(path):
             return None
-        raise
+        raise WorktreeError(
+            f"[S16] cannot determine Git-family ownership for {Path(path)}: {exc}"
+        ) from exc
     return shared.find_workspace(common, top.resolve())
+
+
+def _path_may_have_git_context(path: Path) -> bool:
+    """Return true when Git metadata or an external Git selector may exist."""
+    import os
+
+    if any(os.environ.get(key) for key in (
+        "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"
+    )):
+        return True
+    candidate = Path(path)
+    try:
+        candidate = candidate.resolve(strict=True)
+        if not candidate.is_dir():
+            candidate = candidate.parent
+        current = candidate
+        while True:
+            try:
+                (current / ".git").lstat()
+                return True
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # An unreadable marker is evidence of an indeterminate Git
+                # checkout, not proof that the directory is unmanaged.
+                return True
+            parent = current.parent
+            if parent == current:
+                return False
+            current = parent
+    except OSError:
+        return True
 
 
 def _physical_workspace_target(repo_root: Path, target: Path) -> Path:
@@ -167,6 +205,108 @@ def _ensure_shared_record(
         raise WorktreeError(
             f"[S16] could not adopt CIU checkout into shared workspace lifecycle: {exc}"
         ) from exc
+
+
+def _shared_record_for_logical_name(
+    repo_root: Path, logical_name: str
+) -> object | None:
+    """Find a CIU-owned shared record when its per-root record is missing."""
+    shared = _shared_worktree()
+    try:
+        _top, common, _branch, _head = shared.discover_git_context(repo_root)
+        records = shared.list_workspaces(common)
+    except shared.WorkspaceError as exc:
+        raise WorktreeError(
+            f"[S16] cannot inspect shared worktree records while recovering "
+            f"{logical_name!r}: {exc}"
+        ) from exc
+    matches = [
+        record for record in records
+        if record.purpose == "ciu"
+        and record.labels.get("ciu.logical_name") == logical_name
+    ]
+    if len(matches) > 1:
+        raise WorktreeError(
+            f"[S16] multiple shared CIU workspaces claim logical identity "
+            f"{logical_name!r}; refusing ambiguous recovery"
+        )
+    return matches[0] if matches else None
+
+
+def _restore_missing_instance_record(
+    repo_root: Path, logical_name: str
+) -> WorktreeInstanceRecord | None:
+    """Restore a lost CIU record only from its durable shared snapshot.
+
+    CIU allocation spans two records: the neutral workspace record and this
+    adapter record. The shared record carries the exact CIU allocation intent
+    so an interruption between their writes does not strand an occupied Git
+    checkout or lose its requested overlay.
+    """
+    shared = _shared_worktree()
+    shared_record = _shared_record_for_logical_name(repo_root, logical_name)
+    if shared_record is None:
+        return None
+    snapshot = shared_record.metadata.get(_CIU_WORKTREE_RECORD_METADATA)
+    if not isinstance(snapshot, dict):
+        raise WorktreeError(
+            f"[S16] shared CIU workspace {logical_name!r} exists at "
+            f"{shared_record.worktree_path}, but it has no durable CIU "
+            "record snapshot; refusing to create a second checkout. Inspect "
+            "the existing workspace and recover its CIU record first."
+        )
+    raw_offset = shared_record.metadata.get("ciu_root_offset")
+    if not isinstance(raw_offset, str):
+        raise WorktreeError(
+            f"[S16] shared CIU workspace {logical_name!r} has no valid root offset"
+        )
+    offset = Path(raw_offset)
+    if offset.is_absolute() or ".." in offset.parts:
+        raise WorktreeError(
+            f"[S16] shared CIU workspace {logical_name!r} has unsafe root offset "
+            f"{offset}"
+        )
+    record_path = shared_record.worktree_path / offset / WORKTREE_INSTANCE_RECORD
+    try:
+        record = _record_from_dict(snapshot, record_path)
+        context = shared.ensure_workspace(shared_record)
+    except (WorktreeError, shared.WorkspaceError) as exc:
+        raise WorktreeError(
+            f"[S16] cannot safely restore CIU record for {logical_name!r}: {exc}"
+        ) from exc
+    selected_offset = _ciu_root_offset(Path(repo_root))
+    if (
+        record.logical_name != logical_name
+        or record.git_worktree_path.resolve() != shared_record.worktree_path.resolve()
+        or record.git_worktree_path.resolve() != Path(context.worktree_path).resolve()
+        or record.branch != shared_record.branch
+        or record.ciu_root_offset != offset
+        or record.ciu_root_offset != selected_offset
+        or record.base_ref != shared_record.base_commit
+        or shared_record.labels.get("ciu.logical_name") != logical_name
+    ):
+        raise WorktreeError(
+            f"[S16] shared CIU workspace {logical_name!r} disagrees with its "
+            "saved CIU allocation snapshot; refusing recovery"
+        )
+    if record.adopted is not True and record.fork_point_sha is None:
+        reset_phase = shared_record.metadata.get(
+            _CIU_CHECKOUT_RESET_PHASE_METADATA
+        )
+        if reset_phase != "not-started" or record.checkout_reset_pending is not True:
+            raise WorktreeError(
+                f"[S16] cannot restore incomplete allocation {logical_name!r}: "
+                "its durable shared snapshot says the initial checkout reset "
+                f"is {reset_phase!r}, not definitely `not-started`. Inspect the "
+                "checkout and choose an operator-directed recovery."
+            )
+    if record.state == "ready":
+        # The shared record owns the current lease mirror. Initial overlay
+        # payload is cleared in the ready snapshot, so recovery cannot replay
+        # it over a later operator edit or deletion.
+        record = replace(record, lease=shared_record.lease)
+    _write_instance_record(record)
+    return record
 
 
 def _sync_shared_lease(ciu_root: Path, lease) -> None:
@@ -527,6 +667,26 @@ def _ciu_root_marker_present(root: Path) -> bool:
     raise WorktreeError(
         f"[S16] CIU root marker {marker} is not a regular file"
     )
+
+
+def _ciu_root_committed_at_checkout(worktree_path: Path, offset: Path) -> bool:
+    """Determine root membership from the sibling's committed tree, not disk.
+
+    A local deletion of the tracked marker cannot turn an unreadable managed
+    sibling into a rootless checkout while its generated runtime may remain.
+    """
+    from .workspace import CiuWorkspaceError, discover_committed_roots
+
+    try:
+        git_root = git_toplevel(worktree_path)
+        roots = discover_committed_roots(git_root, base="HEAD")
+    except (WorktreeError, CiuWorkspaceError) as exc:
+        raise WorktreeError(
+            f"[S16] could not determine committed CIU-root membership for "
+            f"{worktree_path}: {exc}"
+        ) from exc
+    selected = git_root if offset == Path(".") else git_root / offset
+    return selected.resolve() in roots
 
 
 def _record_from_dict(raw: Any, path: Path) -> WorktreeInstanceRecord:
@@ -1762,7 +1922,12 @@ def _preflight_shared_infra_for_add(
     )
 
 
-def _generate_env_in(worktree: Path, *, identity_only: bool = False) -> int:
+def _generate_env_in(
+    worktree: Path,
+    *,
+    identity_only: bool = False,
+    allocation_lock_held: bool = False,
+) -> int:
     """Run ``ciu env generate`` INSIDE *worktree*, with the primary checkout's
     repo-path variables STRIPPED from the child environment.
 
@@ -1788,7 +1953,16 @@ def _generate_env_in(worktree: Path, *, identity_only: bool = False) -> int:
     }
     argv = [sys.executable, "-m", "ciu.cli", "env", "generate"]
     if identity_only:
+        if allocation_lock_held:
+            raise WorktreeError(
+                "[S16] identity-only env generation cannot reuse the allocation lock"
+            )
         argv.append("--identity-only")
+    elif allocation_lock_held:
+        # This private child is launched while its parent owns the family lock.
+        # The marker lets only this allocation child verify the allocating
+        # record without trying to reacquire the same flock and deadlocking.
+        argv.append("--allocation-lock-held")
     try:
         return subprocess.run(argv, cwd=str(worktree), env=env, check=False).returncode
     except OSError as exc:  # pragma: no cover - environmental
@@ -4214,8 +4388,8 @@ def _check_runtime_collision(
     runtime_problems = []
     for problem in scan.problems:
         try:
-            has_runtime_root = _ciu_root_marker_present(
-                problem.worktree_path / offset
+            has_runtime_root = _ciu_root_committed_at_checkout(
+                problem.worktree_path, offset
             )
         except WorktreeError as exc:
             raise RuntimeNetworkVerificationError(
@@ -4334,6 +4508,7 @@ def _verify_and_record_network(
     network: str,
     *,
     claim_unlabeled_network: bool,
+    require_network_present: bool = False,
 ) -> WorktreeInstanceRecord:
     """Accept only the recorded Docker object or a network labeled for this ID.
 
@@ -4343,6 +4518,11 @@ def _verify_and_record_network(
     """
     details = _docker_network_details(network)
     if details is None:
+        if require_network_present:
+            raise RuntimeNetworkVerificationError(
+                f"[S16] managed runtime network {network!r} disappeared before "
+                "Compose startup; refusing to let Compose resolve or create it"
+            )
         if claim_unlabeled_network:
             raise RuntimeNetworkVerificationError(
                 f"[S16] no existing runtime network {network!r} is available "
@@ -4381,25 +4561,164 @@ def _verify_and_record_network(
     )
 
 
+def _verify_unrecorded_nested_root_runtime(
+    ciu_root: Path,
+    shared_record: object,
+    *,
+    expected_instance_id: str | None,
+    expected_network: str,
+) -> None:
+    """Verify a prepared CIU root whose checkout record belongs to a sibling root.
+
+    A shared checkout has one CIU instance record at its selected root offset,
+    while the family record carries prepared identity facts for every committed
+    CIU root. A different root offset must prove itself against that entry and
+    the runtime family before startup; absence of a per-root record alone does
+    not make it unmanaged.
+    """
+    metadata = shared_record.metadata
+    raw_selected_offset = metadata.get("ciu_root_offset")
+    if not isinstance(raw_selected_offset, str):
+        raise RuntimeNetworkVerificationError(
+            "[S16] shared CIU checkout has no selected root offset"
+        )
+    selected_offset = Path(raw_selected_offset)
+    if selected_offset.is_absolute() or ".." in selected_offset.parts:
+        raise RuntimeNetworkVerificationError(
+            f"[S16] shared CIU checkout has unsafe selected root offset {selected_offset}"
+        )
+    root_offset = _ciu_root_offset(ciu_root)
+    if root_offset == selected_offset:
+        logical_name = shared_record.labels.get("ciu.logical_name", "unknown")
+        raise RuntimeNetworkVerificationError(
+            f"[S16] managed checkout {logical_name!r} at {ciu_root} has no CIU "
+            f"instance record; run `ciu worktree ensure {logical_name}` to restore it"
+        )
+
+    entries = metadata.get("root_entries")
+    if not isinstance(entries, list):
+        raise RuntimeNetworkVerificationError(
+            "[S16] shared CIU checkout has no valid committed root entries"
+        )
+    offset_text = root_offset.as_posix() if root_offset != Path(".") else "."
+    matches = [
+        entry for entry in entries
+        if isinstance(entry, dict)
+        and entry.get("offset") == offset_text
+    ]
+    if len(matches) != 1:
+        raise RuntimeNetworkVerificationError(
+            f"[S16] nested CIU root {ciu_root} has {len(matches)} committed "
+            "runtime entries; expected exactly one"
+        )
+    entry = matches[0]
+    try:
+        actual_instance_id, actual_network = _runtime_identity(ciu_root)
+    except WorktreeError as exc:
+        raise RuntimeNetworkVerificationError(str(exc)) from exc
+    if (
+        expected_instance_id != actual_instance_id
+        or expected_network != actual_network
+        or entry.get("root_instance_id") != actual_instance_id
+        or entry.get("network") != actual_network
+        or entry.get("state") != "ready"
+    ):
+        raise RuntimeNetworkVerificationError(
+            f"[S16] nested CIU root {ciu_root} runtime identity does not match "
+            "its committed shared-workspace entry"
+        )
+
+    snapshot = metadata.get(_CIU_WORKTREE_RECORD_METADATA)
+    if not isinstance(snapshot, dict):
+        raise RuntimeNetworkVerificationError(
+            "[S16] shared CIU checkout has no parent instance snapshot for "
+            "nested-root verification"
+        )
+    record_path = (
+        Path(shared_record.worktree_path) / selected_offset / WORKTREE_INSTANCE_RECORD
+    )
+    try:
+        parent_record = _record_from_dict(snapshot, record_path)
+    except WorktreeError as exc:
+        raise RuntimeNetworkVerificationError(
+            f"[S16] cannot verify nested-root runtime from the shared snapshot: {exc}"
+        ) from exc
+    nested_record = replace(
+        parent_record,
+        logical_name=f"#{parent_record.logical_name}@{offset_text}",
+        ciu_root_offset=root_offset,
+        instance_id=actual_instance_id,
+        network=actual_network,
+        network_id=None,
+        state="ready",
+    )
+    _check_runtime_collision(
+        ciu_root, nested_record, actual_instance_id, actual_network
+    )
+    # Nested roots have no separate CIU instance record in which to persist a
+    # network object id. Requiring the exact owner label still rejects an
+    # unlabelled or foreign same-name object before CIU can attach to it.
+    _verify_and_record_network(
+        nested_record,
+        actual_instance_id,
+        actual_network,
+        claim_unlabeled_network=False,
+    )
+
+
 def verify_own_runtime_network(
     ciu_root: Path,
     *,
     expected_instance_id: str | None,
     expected_network: str,
+    allow_allocating_instance: bool = False,
+    allocation_lock_held: bool = False,
+    require_network_present: bool = False,
 ) -> WorktreeInstanceRecord | None:
     """Verify and checkpoint this managed checkout's live runtime network.
 
     Unmanaged and rootless checkouts remain untouched. A managed checkout must
     be ready and its generated identity must match the saved record before it
-    may start. An absent network is allowed so the normal startup path can
-    create it; a second call then verifies and records the new Docker object.
+    may start. The explicit allocation-time caller may also verify a matching
+    allocating record after identity preflight. An absent network is allowed
+    so the normal startup path can create it; a second call then verifies and
+    records the new Docker object. A final pre-Compose caller sets
+    ``require_network_present`` so Compose cannot resolve or create a network
+    that disappeared after the normal startup check.
     """
     ciu_root = Path(ciu_root).resolve()
-    with _allocation_lock(ciu_root):
+    if allocation_lock_held and not allow_allocating_instance:
+        raise RuntimeNetworkVerificationError(
+            "[S16] internal allocation-lock reuse requires an allocating-record check"
+        )
+    lock = nullcontext() if allocation_lock_held else _allocation_lock(ciu_root)
+    with lock:
         record = read_own_instance_record(ciu_root)
         if record is None:
+            try:
+                shared_record = _shared_record_for_checkout(ciu_root)
+            except WorktreeError as exc:
+                raise RuntimeNetworkVerificationError(
+                    f"[S16] could not determine whether {ciu_root} is a managed "
+                    f"checkout without its CIU record: {exc}"
+                ) from exc
+            if shared_record is not None and shared_record.purpose == "ciu":
+                if not isinstance(
+                    shared_record.labels.get("ciu.logical_name"), str
+                ):
+                    raise RuntimeNetworkVerificationError(
+                        "[S16] shared CIU checkout has no valid logical-name label"
+                    )
+                _verify_unrecorded_nested_root_runtime(
+                    ciu_root,
+                    shared_record,
+                    expected_instance_id=expected_instance_id,
+                    expected_network=expected_network,
+                )
             return None
-        if record.state != "ready":
+        if record.state != "ready" and not (
+            allow_allocating_instance and record.state == "allocating"
+        ):
             raise RuntimeNetworkVerificationError(
                 f"[S16] managed worktree {record.logical_name!r} is "
                 f"{record.state!r}; run `ciu worktree ensure "
@@ -4421,11 +4740,19 @@ def verify_own_runtime_network(
                 "its managed worktree record"
             )
         try:
+            _check_runtime_collision(
+                ciu_root, record, record.instance_id, record.network
+            )
+        except RuntimeNetworkOwnershipError:
+            _mark_recovery(record, "runtime-collision")
+            raise
+        try:
             verified = _verify_and_record_network(
                 record,
                 record.instance_id,
                 record.network,
                 claim_unlabeled_network=False,
+                require_network_present=require_network_present,
             )
         except RuntimeNetworkOwnershipError:
             _mark_recovery(record, "runtime-collision")
@@ -4434,6 +4761,9 @@ def verify_own_runtime_network(
             _mark_recovery(record, "runtime-verification-failed")
             raise
         if verified != record:
+            shared_context = _shared_record_for_checkout(ciu_root)
+            if shared_context is not None:
+                _write_shared_ciu_record_snapshot(shared_context, verified)
             _write_instance_record(verified)
         return verified
 
@@ -4769,6 +5099,62 @@ def _write_committed_root_entries(
         )
 
 
+def _write_shared_ciu_record_snapshot(
+    workspace_context: object | None,
+    record: WorktreeInstanceRecord,
+    *,
+    checkout_reset_phase: str | None = None,
+) -> None:
+    """Keep the recoverable CIU allocation snapshot in the shared record."""
+    if workspace_context is None:
+        raise WorktreeError(
+            "[S16] cannot checkpoint CIU record recovery without a shared workspace"
+        )
+    if (
+        checkout_reset_phase is not None
+        and checkout_reset_phase not in _CIU_CHECKOUT_RESET_PHASES
+    ):
+        raise WorktreeError(
+            f"[S16] invalid durable checkout-reset phase {checkout_reset_phase!r}"
+        )
+    snapshot = record
+    if record.state == "ready":
+        if record.schema_version >= WORKTREE_INSTANCE_OVERLAY_SCHEMA_VERSION:
+            snapshot = replace(snapshot, initial_overlay=None)
+        if record.schema_version >= WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION:
+            snapshot = replace(snapshot, initial_overlay_pending=False)
+        if record.schema_version >= WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION:
+            snapshot = replace(snapshot, checkout_reset_pending=False)
+
+    shared = _shared_worktree()
+    with shared.workspace_lock(workspace_context.git_common_dir):
+        generic_record = shared.read_record(workspace_context.record_path)
+        metadata = {
+            **dict(generic_record.metadata),
+            _CIU_WORKTREE_RECORD_METADATA: snapshot.to_dict(),
+        }
+        if checkout_reset_phase is not None:
+            metadata[_CIU_CHECKOUT_RESET_PHASE_METADATA] = checkout_reset_phase
+        shared.write_record(replace(generic_record, metadata=metadata))
+
+
+def _shared_checkout_reset_phase(workspace_context: object | None) -> str | None:
+    """Read the durable first-reset phase from the family-owned record."""
+    if workspace_context is None:
+        raise WorktreeError(
+            "[S16] cannot recover the checkout reset without its shared workspace record"
+        )
+    shared = _shared_worktree()
+    with shared.workspace_lock(workspace_context.git_common_dir):
+        generic_record = shared.read_record(workspace_context.record_path)
+    phase = generic_record.metadata.get(_CIU_CHECKOUT_RESET_PHASE_METADATA)
+    if phase is not None and phase not in _CIU_CHECKOUT_RESET_PHASES:
+        raise WorktreeError(
+            f"[S16] shared workspace has invalid checkout-reset phase {phase!r}"
+        )
+    return phase
+
+
 def _ready_roots_are_complete(
     repo_root: Path,
     record: WorktreeInstanceRecord,
@@ -4815,9 +5201,19 @@ def _finish_allocation(
                 f"[S16] cannot perform the initial checkout reset for "
                 f"{record.logical_name!r}: its durable reset phase is missing"
             )
-        # The pending marker is durable before this first attempt. A later
-        # ensure never repeats the reset while the result is uncheckpointed.
+        reset_phase = _shared_checkout_reset_phase(workspace_context)
+        if reset_phase != "not-started":
+            raise WorktreeError(
+                f"[S16] cannot perform the initial checkout reset for "
+                f"{record.logical_name!r}: its shared phase is {reset_phase!r}, "
+                "not definitely `not-started`"
+            )
+        # Persist that the destructive operation may begin before invoking Git.
+        # If the process stops during reset, recovery stays operator-directed.
         _assert_allocation_checkout_reset_is_safe(record)
+        _write_shared_ciu_record_snapshot(
+            workspace_context, record, checkout_reset_phase="started"
+        )
         checkout = _git(["reset", "--hard", record.base_ref], record.git_worktree_path)
         if checkout.returncode != 0:
             _mark_recovery(record, "checkout-incomplete")
@@ -4841,12 +5237,16 @@ def _finish_allocation(
                 "exact HEAD. The initial reset will not be repeated automatically."
             )
         # The reset result and cleared pending marker are published together.
-        # A crash before this write leaves the true marker and ensure refuses
-        # to run another destructive reset over an ambiguous checkout.
+        # Publish the exact checked-out commit in the shared snapshot before
+        # the local record. If the local record is then lost, recovery knows
+        # the reset completed and does not need to repeat it.
         record = replace(
             record,
             fork_point_sha=candidate,
             checkout_reset_pending=False,
+        )
+        _write_shared_ciu_record_snapshot(
+            workspace_context, record, checkout_reset_phase="complete"
         )
         _write_instance_record(record)
 
@@ -4926,7 +5326,9 @@ def _finish_allocation(
                     "[S16] selected root identity preflight did not complete"
                 )
             instance_id, network = selected_root_identity
-            rc = _generate_env_in(record.ciu_root)
+            rc = _generate_env_in(
+                record.ciu_root, allocation_lock_held=True
+            )
             if rc != 0:
                 raise WorktreeError(
                     f"[S16] worktree exists at {record.git_worktree_path}, but full "
@@ -4935,7 +5337,7 @@ def _finish_allocation(
                 )
             confirmed_id, confirmed_network = _runtime_identity(record.ciu_root)
             if (confirmed_id, confirmed_network) != (instance_id, network):
-                recovery_status = "runtime-collision"
+                recovery_status = "runtime-verification-failed"
                 raise WorktreeError(
                     "[S16] runtime identity changed between identity-only and full env generation"
                 )
@@ -4954,6 +5356,28 @@ def _finish_allocation(
                 raise
             _write_instance_record(allocating)
 
+        def publish_ready() -> None:
+            ready = replace(
+                allocating,
+                state="ready",
+                recovery_status=None,
+                **(
+                    {"initial_overlay_pending": False}
+                    if allocating.schema_version
+                    >= WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION
+                    else {}
+                ),
+            )
+            # The shared snapshot is written first. If the process stops
+            # before the checkout-local record replacement, `ensure` can
+            # restore this ready state without replaying initial overlay data.
+            _write_shared_ciu_record_snapshot(
+                workspace_context,
+                ready,
+                checkout_reset_phase=("complete" if not ready.adopted else None),
+            )
+            _write_instance_record(ready)
+
         _committed_root_entries(
             repo_root, allocating, workspace_context, prepare=True, persist=True,
             preflight_selected_root=(
@@ -4964,19 +5388,7 @@ def _finish_allocation(
                 prepare_selected_root
                 if _ciu_root_marker_present(record.ciu_root) else None
             ),
-            publish_ready=lambda: _write_instance_record(
-                replace(
-                    allocating,
-                    state="ready",
-                    recovery_status=None,
-                    **(
-                        {"initial_overlay_pending": False}
-                        if allocating.schema_version
-                        >= WORKTREE_INSTANCE_OVERLAY_PENDING_SCHEMA_VERSION
-                        else {}
-                    ),
-                )
-            ),
+            publish_ready=publish_ready,
         )
     except Exception as exc:
         _mark_recovery(allocating, recovery_status)
@@ -5176,33 +5588,10 @@ def create(
                 "[S16] generated branch and worktree directory basename must be identical"
             )
 
-        try:
-            # Git lifecycle and the family allocation record belong to the
-            # neutral library. CIU's record below remains the adapter-owned
-            # root/runtime state and is intentionally separate.
-            shared = _shared_worktree()
-            physical_target = _physical_workspace_target(repo_root, target)
-            shared_context = shared.create_workspace(
-                repo_root,
-                target,
-                branch=candidate_branch,
-                base=base_commit,
-                purpose="ciu",
-                physical_target=physical_target,
-                labels={"ciu.logical_name": logical_name},
-                metadata={"ciu_root_offset": str(offset), "root_entries": []},
-            )
-        except Exception as exc:
-            if isinstance(exc, WorktreeError):
-                raise
-            raise WorktreeError(f"[S16] shared workspace allocation failed: {exc}") from exc
-
-        # CIU-106: `fork_point_sha` is deliberately NOT set here. It is
-        # checkpointed only after `_finish_allocation` resets to this exact
-        # `base_commit` and reads the resulting HEAD from the linked checkout.
-        # The symbolic request has already been resolved once, before any
-        # allocation mutation, so a moving branch cannot change which tree was
-        # validated or checked out.
+        # Prepare the CIU record before either record store is written. The
+        # shared workspace record carries this exact snapshot so `ensure` can
+        # recover if the process stops after Git/shared allocation but before
+        # the checkout-local CIU record is durable.
         record = WorktreeInstanceRecord(
             logical_name=logical_name,
             display_name=candidate_display,
@@ -5219,6 +5608,35 @@ def create(
             checkout_reset_pending=True,
             schema_version=WORKTREE_INSTANCE_RECOVERY_SCHEMA_VERSION,
         )
+
+        try:
+            # Git lifecycle and the family allocation record belong to the
+            # neutral library. CIU's record below remains the adapter-owned
+            # root/runtime state and is intentionally separate.
+            shared = _shared_worktree()
+            physical_target = _physical_workspace_target(repo_root, target)
+            shared_context = shared.create_workspace(
+                repo_root,
+                target,
+                branch=candidate_branch,
+                base=base_commit,
+                purpose="ciu",
+                physical_target=physical_target,
+                labels={"ciu.logical_name": logical_name},
+                metadata={
+                    "ciu_root_offset": str(offset),
+                    _CIU_CHECKOUT_RESET_PHASE_METADATA: "not-started",
+                    "root_entries": [],
+                    _CIU_WORKTREE_RECORD_METADATA: record.to_dict(),
+                },
+            )
+        except Exception as exc:
+            if isinstance(exc, WorktreeError):
+                raise
+            raise WorktreeError(f"[S16] shared workspace allocation failed: {exc}") from exc
+
+        # CIU-106: `fork_point_sha` remains unset until `_finish_allocation`
+        # resets to this exact `base_commit` and reads the resulting HEAD.
         _write_instance_record(record)
         return _finish_allocation(
             repo_root, record, checkout_required=True,
@@ -5236,6 +5654,8 @@ def ensure(
     _validate_name(logical_name, label="logical name")
     with _allocation_lock(repo_root):
         record = find_instance_record(repo_root, logical_name)
+        if record is None:
+            record = _restore_missing_instance_record(repo_root, logical_name)
         claim_unlabeled_network = create_kwargs.pop(
             "adopt_existing_network", False
         )
@@ -5340,6 +5760,9 @@ def ensure(
                                 "is available to adopt"
                             )
                         if verified != record:
+                            _write_shared_ciu_record_snapshot(
+                                workspace_context, verified
+                            )
                             _write_instance_record(verified)
                         return verified
                     if claim_unlabeled_network:
@@ -5400,13 +5823,18 @@ def ensure(
                     )
                 )
                 if checkout_required:
-                    raise WorktreeError(
-                        f"[S16] cannot safely resume {record.logical_name!r}: the "
-                        "initial checkout reset may already have run, but its exact "
-                        "commit was not checkpointed. CIU will not repeat that "
-                        "destructive reset; inspect the checkout and choose an "
-                        "operator-directed recovery."
-                    )
+                    reset_phase = _shared_checkout_reset_phase(workspace_context)
+                    if (
+                        record.checkout_reset_pending is not True
+                        or reset_phase != "not-started"
+                    ):
+                        raise WorktreeError(
+                            f"[S16] cannot safely resume {record.logical_name!r}: the "
+                            "initial checkout reset may already have run, but its exact "
+                            f"commit was not checkpointed (shared phase {reset_phase!r}). "
+                            "CIU will not repeat that destructive reset; inspect the "
+                            "checkout and choose an operator-directed recovery."
+                        )
                 try:
                     _allocated_commit_sha(record, workspace_context)
                 except WorktreeError:

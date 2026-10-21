@@ -5249,11 +5249,30 @@ MUST perform the same ownership check immediately before it launches the
 managed child. Direct native and shipped `ciu up` MUST perform the same check
 in the shared network-startup path, before accepting or creating the network
 and again after creation before attaching the devcontainer. A same-name
-replacement is not hidden by any of these paths. If the Docker executable or
-network is genuinely absent, the ready record remains usable, but its last
-verified object id stays available to detect a later replacement. A Docker
-permission or execution error is indeterminate, not absence: the command
-refuses and does not rewrite the saved ready state as a collision.
+replacement is not hidden by any of these paths. Full `ciu env generate` MUST
+perform managed ownership verification before network creation or attachment;
+it may accept an `allocating` record only during the explicit allocation path,
+after generated identity facts have been checkpointed. The shared native and
+shipped Compose runner MUST perform one final ownership check immediately
+before starting the Compose process. At that boundary the managed network
+must still exist; CIU MUST NOT let Compose create or resolve a replacement
+after the final check. This final check is point-in-time: Compose resolves the
+network by name, and Docker provides no atomic operation for passing the
+inspected object id to Compose. An external actor can still replace the
+network after CIU's check and before Compose's name lookup; CIU does not claim
+to eliminate that race. A Docker permission or execution error is
+indeterminate, not absence: the command refuses and does not rewrite the
+saved ready state as a collision.
+
+If a worktree-local CIU instance record is missing but the neutral shared
+workspace record identifies the checkout as CIU-managed, direct startup MUST
+refuse before Docker side effects. `ensure` MAY restore the local record only
+from a durable CIU snapshot in that exact shared record, after verifying the
+logical name, checkout path, branch, base commit, and root offset. The ready
+snapshot MUST omit the initial overlay payload and mark overlay recovery
+complete, so restoring it cannot overwrite or recreate later operator-owned
+overlay state. A primary checkout without a managed shared workspace record
+remains an allowed unmanaged checkout.
 
 During an incomplete allocation, a proven identity or ownership conflict uses
 `runtime-collision`. Failure to read the Git-family identity registry or
@@ -5265,9 +5284,13 @@ or a duplicate identity/network in readable sibling records is a proven
 conflict and uses `runtime-collision`. Allocation MUST refuse with
 `runtime-verification-failed` when an unreadable sibling record belongs to a
 CIU root at the selected root offset, because CIU cannot certify runtime
-identity uniqueness. Best-effort listing remains available, and unreadable
-rootless siblings do not block runtime admission. Retry `ensure` after the
-registry or Docker probe is available.
+identity uniqueness. Sibling CIU-root membership MUST be determined from its
+committed `HEAD` tree, not a mutable working-tree marker. Direct startup MUST
+run the same family identity-admission check as allocation, so duplicate or
+unreadable CIU-root siblings block direct native and shipped startup.
+Best-effort listing remains available, and unreadable rootless siblings do
+not block runtime admission. Retry `ensure` after the registry or Docker
+probe is available.
 
 The explicit `--adopt-existing-network` assertion is one-time: it may record
 an unlabelled object's id only when no network id is already saved. It cannot
@@ -5278,9 +5301,11 @@ remains separate ownership evidence.
 
 For worktree CLI operations that select a CIU record root, an explicit
 `--root-folder` must resolve either to a CIU root or to the Git-family root.
-When it names the Git-family root, the invocation directory may select a
-nested CIU root. Any other explicit path refuses; CIU does not fall back to a
-different root selected from the current directory.
+It must name the exact CIU root, not an arbitrary descendant. When it names
+the Git-family root, the invocation directory selects its nearest nested CIU
+root even if the family root itself is also a CIU root. Any other explicit
+path refuses; CIU does not fall back to a different root selected from the
+current directory.
 
 All record read-modify-write operations, including lease changes, serialize
 through the Git family's allocation lock and read the record only after taking

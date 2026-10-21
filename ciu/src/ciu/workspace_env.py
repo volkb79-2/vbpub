@@ -179,6 +179,10 @@ class WorkspaceEnvError(ValueError):
     """Raised when workspace environment file is missing or invalid."""
 
 
+class ManagedRuntimeVerificationError(WorkspaceEnvError):
+    """A managed checkout could not prove ownership of its runtime network."""
+
+
 def _log_info(message: str) -> None:
     print(f"[INFO] {message}", flush=True)
 
@@ -1098,6 +1102,8 @@ def ensure_workspace_network(
     *,
     owner_instance_id: str | None = None,
     verify_managed_instance: bool = False,
+    allow_allocating_instance: bool = False,
+    allocation_lock_held: bool = False,
 ) -> None:
     """Ensure the shared network exists and verify managed startup ownership.
 
@@ -1124,9 +1130,11 @@ def ensure_workspace_network(
                 Path(managed_root),
                 expected_instance_id=owner,
                 expected_network=resolved,
+                allow_allocating_instance=allow_allocating_instance,
+                allocation_lock_held=allocation_lock_held,
             )
         except worktree.WorktreeError as exc:
-            raise WorkspaceEnvError(str(exc)) from exc
+            raise ManagedRuntimeVerificationError(str(exc)) from exc
 
     # Reject a non-ready or foreign same-name network before CIU can create it
     # or attach this devcontainer to it. The second call checkpoints an object
@@ -1136,6 +1144,30 @@ def ensure_workspace_network(
     verify_managed_record()
     if auto_connect:
         _connect_devcontainer_to_network(resolved)
+
+
+def verify_workspace_runtime_network(repo_root: Path) -> None:
+    """Recheck a managed checkout's network immediately before Compose.
+
+    Startup setup may run hooks and render configuration after its first
+    ownership check. The final check closes that ordinary time gap. Docker
+    Compose still resolves the network by name after this function returns,
+    so an external daemon actor can race the final check; callers must not
+    describe the check as an atomic binding to Compose's later lookup.
+    """
+    if _test_suite_gate_active():
+        return
+    from . import worktree
+
+    try:
+        worktree.verify_own_runtime_network(
+            Path(repo_root),
+            expected_instance_id=os.environ.get("INSTANCE_ID"),
+            expected_network=os.environ.get("DOCKER_NETWORK_INTERNAL", ""),
+            require_network_present=True,
+        )
+    except worktree.WorktreeError as exc:
+        raise WorkspaceEnvError(str(exc)) from exc
 
 
 def generated_facts_path(ciu_root: Path) -> Path:
@@ -2118,7 +2150,11 @@ def generate_ciu_env(
     return output_path
 
 
-def bootstrap_env_init(repo_root: Path) -> Path:
+def bootstrap_env_init(
+    repo_root: Path,
+    *,
+    allocation_lock_held: bool = False,
+) -> Path:
     """Single bootstrap entry point for --generate-env (S2.8).
 
     Performs the full S2.8 duty order:
@@ -2144,8 +2180,18 @@ def bootstrap_env_init(repo_root: Path) -> Path:
     if network_name:
         try:
             ensure_workspace_network(
-                network_name, owner_instance_id=os.environ.get("INSTANCE_ID")
+                network_name,
+                owner_instance_id=os.environ.get("INSTANCE_ID"),
+                verify_managed_instance=True,
+                allow_allocating_instance=allocation_lock_held,
+                allocation_lock_held=allocation_lock_held,
             )
+        except ManagedRuntimeVerificationError:
+            # A managed checkout with a missing, allocating, drifted, or
+            # foreign runtime identity must not report successful env setup.
+            # Allocation children receive the private lock-reuse marker and
+            # may verify their parent's allocating record without deadlocking.
+            raise
         except WorkspaceEnvError as exc:
             _log_warn(f"Network setup skipped: {exc}")
 

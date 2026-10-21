@@ -5476,7 +5476,12 @@ def action_list_profiles(config: dict) -> int:
 # ===========================================================================
 
 
-def action_generate_env(define_root: Optional[Path], dir_hint: Path) -> int:
+def action_generate_env(
+    define_root: Optional[Path],
+    dir_hint: Path,
+    *,
+    allocation_lock_held: bool = False,
+) -> int:
     """--generate-env: the single bootstrap entry point (S2.8). Returns exit code."""
     info("Generating ciu.env (S2.8 bootstrap)...")
     env_root = resolve_env_root(
@@ -5484,7 +5489,11 @@ def action_generate_env(define_root: Optional[Path], dir_hint: Path) -> int:
         define_root=define_root,
         defaults_filename=GLOBAL_CONFIG_DEFAULTS,
     )
-    env_path = bootstrap_env_init(env_root)
+    env_path = (
+        bootstrap_env_init(env_root, allocation_lock_held=True)
+        if allocation_lock_held
+        else bootstrap_env_init(env_root)
+    )
     success(f"Generated {env_path}")
     return 0
 

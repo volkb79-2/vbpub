@@ -713,15 +713,24 @@ def write_record(record: WorkspaceRecord) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     payload = json.dumps(record.as_dict(), indent=2, sort_keys=True) + "\n"
+    directory_fd: int | None = None
     try:
         with temporary.open("w", encoding="utf-8") as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, path)
+        directory_fd = os.open(
+            path.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        os.fsync(directory_fd)
     except OSError as exc:
         temporary.unlink(missing_ok=True)
         raise WorkspaceError(f"could not write workspace record {path}: {exc}", category="record-write") from exc
+    finally:
+        if directory_fd is not None:
+            os.close(directory_fd)
     return path
 
 
