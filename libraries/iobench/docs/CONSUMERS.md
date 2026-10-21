@@ -1,22 +1,24 @@
 # iobench CONSUMERS (how to adopt it)
 
-Every block below is pasteable; the docs-sync test (`IOB-DOC-02`) runs each `bash` block's `iobench` invocation through the CLI's `--dry-run` parser and
-parses each `json` block with the shipped loader. WHAT is in the [README](../README.md); WHY in the [DESIGN-GUIDE](DESIGN-GUIDE.md); the contract in the [SPEC](SPEC.md).
+Every block below is pasteable. The docs-sync test (`IOB-DOC-02`) parses each `json` block with the shipped loader and each `bash` `iobench` invocation with the CLI's own
+parser in `--dry-run` mode. WHAT is in the [README](../README.md); WHY in the [DESIGN-GUIDE](DESIGN-GUIDE.md); the contract in the [SPEC](SPEC.md).
 
 ## 0. Install
 
-In this repo (zero dependencies besides `fio` and Python 3):
+The measurement core needs only Python 3 and `fio` >= 3.30 (JSON output with `clat_ns` percentiles). The **command line** (`iobench.cli`) adopts `cli-extended`, so it also needs that
+library on `PYTHONPATH` (or installed). In this repo:
 
 ```bash
-install -d /usr/local/lib/iobench && cp -r libraries/iobench/src/iobench /usr/local/lib/iobench/
+install -d /usr/local/lib/iobench && cp -r libraries/iobench/src/iobench libraries/cli-extended/src/cli_extended /usr/local/lib/iobench/
 PYTHONPATH=/usr/local/lib/iobench python3 -m iobench --version
 ```
 
-Out of repo: the cmru-released wheel or `iobench.pyz` (with its `.sha256`), never PyPI. Needs `fio` >= 3.30 (JSON output with `clat_ns` percentiles).
+Out of repo: the cmru-released wheel or `iobench.pyz` (with its `.sha256`), never PyPI.
 
 ## 1. Prepare the scratch target (once per host)
 
-iobench writes to a **dedicated** block device or partition and refuses anything else. The prepared target carries an iobench marker in its first MiB.
+iobench writes to a **dedicated** block device or partition and refuses anything else. The prepared target carries an iobench marker in its **last** MiB (nothing else is ever written
+there). iobench never creates, mounts or unmounts a filesystem: the work dir for the matrix is a directory on an **existing** filesystem.
 
 ```bash
 lsblk -b -o NAME,SIZE,PARTUUID,FSTYPE,MOUNTPOINTS /dev/vda
@@ -24,108 +26,155 @@ iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --e
 iobench target show /dev/vda7 --json
 ```
 
-`target init` refuses a mounted, swap-active, signature-bearing (`blkid -p`) or root-disk target unless **both** `--i-own-this-device` and the matching
-`--expect-size` / `--expect-partuuid` (or `--expect-serial` when the device reports one) are given. Without a marker no `calibrate`, `matrix` or probe command
-will open the device.
+`target init` refuses a mounted (in the caller's or PID 1's mount namespace), swap-active, signature-bearing (`blkid -p`) or root-disk target; the override requires `--i-own-this-device`
+**and** the matching `--expect-size` and `--expect-partuuid` (or `--expect-serial` when the device reports one). A device with neither a PARTUUID nor a serial is refused. Mounted, swap and
+root refusals can never be overridden. Without a marker no `calibrate` or `matrix` command opens the device.
 
 ## 2. Calibrate (once per host or storage class)
 
 ```bash
-iobench calibrate --target /dev/vda7 --mount-dir /var/lib/iobench/work --profile standard --confirm-quiet-window
+iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --confirm-quiet-window --protect-cgroup wings.slice --abort-psi 40
 ```
 
-* Takes 30 min (`standard`), 12 min (`quick`), 75 min (`thorough`). It is a hard wall-clock budget; skipped stages are recorded, never shortened silently.
-* On a live host it refuses with production containers running unless `--confirm-quiet-window` (it saturates the disk).
-* Output: `/var/lib/iobench/calibration.json`. Re-run on an identity change, or when `iobench check` reports `recalibrate_recommended`.
+* Hard budgets: `quick` 12 min, `standard` 60 min, `thorough` 75 min. Skipped stages are recorded, never shortened silently.
+* A live host REQUIRES `--confirm-quiet-window`, `--protect-cgroup` and `--abort-psi` (no defaults; the run refuses without them). Unlisted systemd units are not detected: you are the guard.
+* Output: `/var/lib/iobench/calibration.json`. Re-run on an identity change (`check` exit 3) or when `check` warns `recalibrate_recommended`.
+* `quick` reports every cache-dependent value as `unproven: quick_profile` (honest, not absent).
 
 ## 3. Matrix iteration (the fast path)
 
 ```bash
-iobench matrix --target /dev/vda7 --mount-dir /var/lib/iobench/work --confirm-quiet-window
-iobench matrix --target /dev/vda7 --mount-dir /var/lib/iobench/work --knob max_sectors_kb --candidates 64,128,256 --repeat
+iobench matrix --target /dev/vda7 --work-dir /bench/iobench-work --confirm-quiet-window --protect-cgroup wings.slice --abort-psi 40
+iobench matrix --target /dev/vda7 --work-dir /bench/iobench-work --knob max_sectors_kb --candidates 64,128,256 --repeat --confirm-quiet-window --protect-cgroup wings.slice --abort-psi 40
 ```
 
-The first form runs 6 cells (~10-15 min) and writes `/var/lib/iobench/result.json`; the second compares one knob (~3-4 min with a repeat). Every runtime
-setting it changes is journalled in `/run/iobench/restore.json` and restored on exit, signal or crash (and by the next start). It never writes `io.max`.
+The first form runs 6 cells (typical 11 min, worst case 15 min) and writes `/var/lib/iobench/result.json`; the second compares one knob (A B A B, typical 4 min, worst case 8 min). Every runtime
+setting it changes is journalled in `/run/iobench/restore.json` and restored on exit, signal or crash (and by the next start); a knob someone else changed meanwhile is left alone. It
+never writes `io.max`.
 
 ## 4. Read the result (the wizard and `check.sh` use only this)
 
 ```bash
 iobench check --json; echo "exit=$?"
+iobench check --section caps --json
 iobench show --proposals --json
-iobench show --proposals --section writeback --json
 ```
 
-Exit codes of `check`: `0` current and plausible, `3` stale (identity mismatch), `4` no result, `5` corrupt or unsupported schema, `6` only an aborted run exists,
-`7` current identity but not plausible. `check` also prints `warnings` (scheduler or RAM changed, `recalibrate_recommended`, result older than 180 days) that
-never invalidate.
+Exit codes of `check`: `0` every requested proposal is `proven`; `3` stale (disk identity differs); `4` no result; `5` unreadable (`reasons`: `corrupt`, `schema_unsupported`,
+`unreadable`, `calibration_missing`); `6` only an aborted or failed record exists; `7` identity current but at least one requested proposal is `unproven` or `absent`.
+Also from `iobench`: `1` runtime failure, `2` refusal or usage, `8` run aborted (restored), `9` restore or `io.max` verification failure.
 
 ```json
-{"state": "current", "reasons": [], "warnings": ["scheduler changed: bfq -> mq-deadline (sweep was run under bfq)"], "result": "/var/lib/iobench/result.json", "calibration_id": "cal-20261021T031500Z-7b2d0c1e"}
+{"state": "current_unproven", "reasons": [], "warnings": ["scheduler_changed"], "limits": ["bucket_exclusion_s<=240"], "identity_strength": "weak",
+ "sections": {"caps": {"proven": 0, "unproven": [{"key": "RIOPS", "reasons": ["cache_model_undetermined"]}], "absent": []}},
+ "result": "/var/lib/iobench/result.json", "calibration_id": "cal-20261021T020000Z-7b2d0c1e"}
 ```
 
-The `proposals` object (schema 1):
+The `proposals` object (schema 1). Every value has its own status, rule and inputs:
 
 ```json
 {
   "writeback": {
-    "dirty_bytes": {"value": 16777216, "rule": "R1", "inputs": {"W_s": 2.0, "R_drain_bps": 10500000, "inflight_bytes": 1048576}, "confidence": "measured+confirmed"},
-    "dirty_background_bytes": {"value": 4194304, "rule": "R1b", "inputs": {"dirty_bytes": 16777216}, "confidence": "ratio-inferred"},
-    "nr_requests": {"value": 16, "rule": "R2", "inputs": {"qd90": 8}, "confidence": "measured+confirmed"},
-    "max_sectors_kb": {"value": 64, "rule": "R3", "inputs": {"R_drain_bps": 10500000, "read_ratio": 0.21, "F": 0.25}, "confidence": "measured", "flags": ["read_floor_violated"]}
+    "dirty_bytes": {"value": 16777216, "status": "proven", "rule": "R1", "inputs": {"W_s": 2.0, "R_drain_bps": 10500000, "inflight_bytes": 1048576, "T_eff_bytes": 1717986918}, "basis": "confirmed-by-sweep", "flags": []},
+    "dirty_background_bytes": {"value": 4194304, "status": "proven", "rule": "R1b", "inputs": {"dirty_bytes": 16777216}, "basis": "ratio-inferred", "flags": []},
+    "nr_requests": {"value": 16, "status": "proven", "rule": "R2", "inputs": {"qd90": 8}, "basis": "confirmed-by-sweep", "flags": []},
+    "max_sectors_kb": {"value": 64, "status": "proven", "rule": "R3", "inputs": {"R_drain_bps": 10500000, "read_ratio": 0.21, "F": 0.25}, "basis": "measured", "flags": ["read_floor_violated"]}
   },
-  "caps": {"dev_aggregate": {"RIOPS": 6500, "WIOPS": 5900, "RBPS": 1000000000, "WBPS": 9800000}, "rule": "R5"},
-  "iocost_model": {"rbps": 290000000, "rseqiops": 4900, "rrandiops": 4900, "wbps": 6291456, "wseqiops": 1536, "wrandiops": 1536, "rule": "R6"},
-  "iocost_qos": {"rpct": 95, "rlat": 5000, "wpct": 90, "wlat": 25000, "min": 100, "max": 300, "rule": "R6"}
+  "caps": {"dev_aggregate": {
+    "RIOPS": {"value": 2829, "status": "unproven", "reasons": ["cache_model_undetermined", "worst_from_single_run"], "rule": "R5", "inputs": {"U": 0.7, "basis_iops": 9400, "worst_over_median": 0.43}, "basis": "measured", "flags": []},
+    "WIOPS": {"value": 1100, "status": "unproven", "reasons": ["cache_model_undetermined", "worst_from_single_run"], "rule": "R5", "inputs": {"U": 0.7, "basis_iops": 3596, "worst_over_median": 0.43}, "basis": "measured", "flags": []},
+    "RBPS": {"value": 0, "status": "absent", "reason": "bps_basis_missing", "rule": "R5", "inputs": {}, "basis": "measured", "flags": []},
+    "WBPS": {"value": 0, "status": "absent", "reason": "bps_basis_missing", "rule": "R5", "inputs": {}, "basis": "measured", "flags": []}}},
+  "iocost_model": {"wbps": {"value": 6291456, "status": "unproven", "reasons": ["worst_from_single_run"], "rule": "R6", "inputs": {"worst_bps": 6291456, "metering": "byte"}, "basis": "single-run", "flags": []}},
+  "iocost_qos": {"min": {"value": 100, "status": "proven", "rule": "R6", "inputs": {}, "basis": "measured", "flags": []},
+                 "max": {"value": 330, "status": "unproven", "reasons": ["worst_from_single_run"], "rule": "R6", "inputs": {"best_over_worst": 3.0}, "basis": "single-run", "flags": []}}
 }
 ```
 
-A value is a number or the word `kernel` ("leave the kernel's own value; the device is fast enough"). A proposal with `flags` or `confidence` other than
-`measured+confirmed` is shown with that label, never silently defaulted. `iobench` never persists anything; host-setup renders and verifies the persistent files.
+A value is a number or the word `kernel` ("leave the kernel's own value; the device is fast enough"). Absent keys carry `value: 0` only as a placeholder; their `status` is the truth. iobench persists
+nothing; host-setup renders and verifies the persistent files.
 
-## 5. mdt-cockpit wizard (MDT-HS-05 and the io.cost wizard, D-IOC-4)
+## 5. What the statuses mean and what to do
 
-* The wizard **asks whether to run the benchmark, default yes (a configurable key)**; it never starts one silently. It calls `iobench calibrate` if `iobench check --calibration` says no
-  current calibration exists, then `iobench matrix`.
-* Proposal precedence for each key: **benchmark (only when `check` exits 0) > the configured value > `kernel`**.
-* Latency source (D-IOC-3): the governor's histogram when one is running, otherwise `proposals.iocost_qos` (S7).
-* The io.cost model and bounds come from `proposals.iocost_model` and `proposals.iocost_qos`; the worst/best plateaus come from `ceilings.jsonl` (below).
+| You see | Meaning | What to do |
+|---|---|---|
+| `proven` | the basis is steady and any cache dependence is excluded by independent evidence | usable; the wizard may take it as the proposal |
+| `unproven` + reasons | a value is shown, but the listed condition means it may be too high or is not yet verified | the wizard/installer shows the value **with the reasons** and applies it only after an explicit operator accept; otherwise use the configured value |
+| `absent` + reason | nothing to propose | run the missing stage or keep the configured value; nothing can be applied |
+| exit `3` stale | the disk identity changed | recalibrate |
+| exit `7` | valid result, some requested proposal is not proven | read `sections` in `check --json`, accept or rerun with a better profile |
+| exit `8` aborted | the protect-cgroup pressure rule or `/run/iobench/abort` stopped the run; knobs were restored; no result replaced | rerun in a quieter window |
+| exit `9` | a restore or `io.max` verification failed | inspect the named file; `iobench restore` is idempotent; do not run another benchmark until it is clean |
+
+### 5.1 Unproven reasons
+
+| Reason | Meaning |
+|---|---|
+| `cache_model_undetermined` | the two cache estimators were unavailable, non-monotone, overlapping or disagreed (rerun `thorough`, or accept) |
+| `cache_residual_possible` | a figure from the measured largest rung is shown while a cache hit share cannot be excluded |
+| `no_cliff_hit_like_mode` | no cliff, and the latency is hit-like: everything may be cached |
+| `device_smaller_than_cache_margin` | the largest rung is below 1.2x the cliff: the device is too small to see past the cache |
+| `ceiling_moved` | the provider rate changed during a comparison; both values are in the evidence |
+| `budget_limited` / `short_observation` / `quick_profile` | the time budget, the observation length or the `quick` profile limited the evidence |
+| `worst_from_single_run` | worst/best plateaus come from this run only (no ceiling history yet) |
+| `metering_undetermined` / `operator_override` | S6 did not pass both metering tests / you typed `--metering` |
+| `shape_fit_poor` | the per-IO + per-byte linear fit is poor |
+| `noise_floor_high` / `target_missed` / `drain_below_ladder` / `formula_only` / `cross_disk` / `identity_weak` | sweep noise > 4 / the chosen settings missed the sync-latency target / drain rate disagrees with the ladder / sweep skipped / work dir on another disk / disk has no serial |
+
+### 5.2 Absent reasons
+
+`stage_skipped`, `stage_failed`, `basis_unsteady`, `basis_missing`, `bps_basis_missing`, `no_calibration`.
+
+### 5.3 Cache state, metering, fit, limits
+
+* `cache_state`: `plateau_cache_free` (best case), `cliff_modeled`, `no_cliff_miss_like`, `no_cliff_hit_like`, `undetermined`.
+* `metering`: `byte`, `iops`, `mixed`, `undetermined`; `fit`: `good`, `poor`, `insufficient`.
+* `limits`: `quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `bucket_exclusion_s<=<N>` (the longest observation: bursts longer than that are not excluded).
+* Check ids in `quality.checks[]`: IOB-PLA-01 tail flat, -02 working-set rule, -03 cached-tier factor, -04 mean vs steady, -05 flat-line, -06 Little's law, -07 bytes consistency,
+  -08 read-only-written, -09 fill vs sequential, -10 cache state, -11 shape fit, -12 noise floor, -13 fresh vs rewrite, -14 data integrity, -15 identity stable, -16 extent integrity,
+  -17 outside history. A `fail` degrades only the groups it lists; -14, -15 and -16 fail the whole run.
+
+## 6. mdt-cockpit wizard (MDT-HS-05 and the io.cost wizard, D-IOC-4)
+
+* The wizard **asks whether to run the benchmark, default yes (a configurable key)**; it never starts one silently. It calls `iobench calibrate` if `iobench check --calibration` reports no current calibration, then `iobench matrix`.
+* Precedence for each key: **benchmark (a `proven` value, or an `unproven` one the operator explicitly accepted with its reasons shown) > the configured value > `kernel`**. An `absent` value is never applied.
+* Latency source (D-IOC-3): the governor's histogram when one runs (`--governor-histogram`), otherwise `proposals.iocost_qos` (S7).
 * `check.sh` uses `iobench check --json` and reports OK / MISMATCH / "not managed" / "could not read" distinctly.
 
-## 6. Ceiling history (governor or timer probe)
+## 7. Ceiling history (governor or timer probe)
 
 ```bash
-iobench ceilings add --dir write --bps 14680064 --duration-s 600 --source governor
+iobench ceilings add --dir write --workload seq1m --bps 14680064 --duration-s 600 --source governor
 iobench ceilings summary --window-days 30 --json
 ```
 
 ```json
-{"write": {"worst": 6291456, "median": 14680064, "best": 18874368, "n": 41}, "read": {"worst": 290000000, "median": 1300000000, "best": 1400000000, "n": 12}, "window_days": 30, "history": "history"}
+{"history": "recorded", "window_days": 30, "write": {"seq1m": {"worst": 6291456, "median": 14680064, "best": 18874368, "n": 41}}, "read": {"seq1m": {"worst": 1300000000, "median": 1400000000, "best": 1400000000, "n": 12}}}
 ```
 
-`worst` and `best` feed `min = 100` and `max = ceil(110 * best / worst)`. With no history the summary says `"history": "single-run"` and uses the run's own windows.
+`worst` and `best` feed `min = 100` and `max = ceil(110 x best / worst)` (here 330). With no records the summary says `"history": "single-run"` and every dependent value is `unproven: worst_from_single_run`.
+Until a probe or governor appends observations (D-011), the history is `single-run` on hosts that only ran the benchmark.
 
-## 7. debian-install-v2 (installer profile)
+## 8. debian-install-v2 (installer profile)
 
-The installer owns the throwaway tail partition lifecycle (create, mkfs, restore) exactly as today; it passes the partition to iobench:
+The installer owns the throwaway partition lifecycle. iobench needs a raw target **and** an existing filesystem for the work dir (open item OI-1 in the SPEC: two partitions, or a
+calibrate-then-mkfs sequence). `--installer` only waives the live-host refusals; every target guard still applies.
 
 ```bash
 iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 7b2d0c1e-07
-iobench calibrate --target /dev/vda7 --mount-dir /mnt/iobench --profile quick --installer
+iobench calibrate --target /dev/vda7 --work-dir /mnt/iobench-work --profile quick --installer
 ```
 
-`--installer` skips the live-host refusals (pre-production) and allows the fresh-block rung (`blkdiscard`). The installer persists nothing from iobench; it
-records `result.json` and reads `proposals`.
-
-## 8. Dry run and planning
+## 9. Dry run and planning
 
 ```bash
-iobench calibrate --target /dev/vda7 --mount-dir /var/lib/iobench/work --profile standard --dry-run
+iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --dry-run
 ```
 
-prints the stage plan, time budget and the exact fio argv per stage, and writes nothing.
+prints the stage plan, each stage's allotted seconds, the exact fio argv and the written-byte bound, and writes nothing.
 
-## 9. What a refusal looks like
+## 10. What a refusal looks like
 
 `error: refused: /dev/vda4 is swap-active (swapon); no iobench marker. iobench target init needs --i-own-this-device with --expect-size and --expect-partuuid.` (exit 2).
-`error: refused: production containers are running (3); rerun with --confirm-quiet-window in an agreed window.` (exit 2).
+`error: refused: production containers are running (3); rerun with --confirm-quiet-window in an agreed window. Units not named with --production-unit are not detected.` (exit 2).
+`error: refused: live-host runs need --protect-cgroup and --abort-psi.` (exit 2).

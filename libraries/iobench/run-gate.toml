@@ -1,6 +1,6 @@
-# iobench's executable gate matrix. All lanes run inside tester-unified; no test
-# runs in the cockpit. The VM lane (real small virtio disk, mechanics only) is a
-# separate registered lane because it needs the QEMU harness, not tester-unified.
+# iobench's executable gate matrix. All lanes run inside tester-unified; no test or
+# mutation run happens in the cockpit. There is deliberately no VM lane (ruling R-10,
+# IOB-03): live acceptance of mechanics is the r1002 run (IOB-ACC-01, a probe).
 schema_version = 1
 
 [lanes.r0-r1]
@@ -8,7 +8,7 @@ kind = "command"
 environment = "tester-unified"
 argv = [
   "bash", "-c",
-  "cd {worktree}/libraries/iobench && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q -m 'not vm' --cov=iobench --cov-branch --cov-fail-under=100 --cov-report=term-missing --cov-report=json:coverage.json",
+  "cd {worktree}/libraries/iobench && PYTHONPATH=src:{worktree}/libraries/cli-extended/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python3 -m pytest tests -q --cov=iobench --cov-branch --cov-fail-under=100 --cov-report=term-missing --cov-report=json:coverage.json",
 ]
 clean_tree = false
 budget = "20m"
@@ -17,12 +17,28 @@ artifacts = ["coverage.json"]
 [lanes.r0-r1.resources]
 memory = "1g"
 
+[lanes.r2]
+kind = "command"
+resource_observer = "cgprofile"
+environment = "tester-unified"
+argv = [
+  "bash", "-c",
+  "export PYTHONPATH={worktree}/assay/src && cd {worktree}/libraries/iobench && mkdir -p .assay && exec /opt/tester-venv/bin/python3 -m assay.cli run iobench --resume --state-dir .assay/mutation-state-r2 --progress .assay/progress-r2.jsonl --verdict-json .assay/verdict-r2.json",
+]
+clean_tree = false
+budget = "360m"
+artifacts = [".assay/verdict-r2.json", ".assay/progress-r2.jsonl"]
+
+[lanes.r2.resources]
+pids = 8192
+memory = "1536m"
+
 [lanes.gate]
 kind = "command"
 environment = "bare-host"
 argv = [
   "bash", "-c",
-  "cd {worktree}/libraries/iobench && run-gate --worktree {worktree} r0-r1",
+  "cd {worktree}/libraries/iobench && run-gate --worktree {worktree} r0-r1 && run-gate --worktree {worktree} r2",
 ]
 clean_tree = false
-budget = "30m"
+budget = "400m"
