@@ -185,9 +185,10 @@ w! /sys/kernel/mm/ksm/use_zero_pages           - - - - 1
 SWAP_SYSCTL = """\
 # vbpub debian-install v2 -- memory/swap tuning for a zswap-fronted host.
 
-# With zswap, reclaiming anonymous pages is cheap (they land in a compressed
-# RAM pool, not on disk), so cold anonymous memory is pushed out early and file
-# cache stays resident. Kernel range is 0-200; systemd-oomd is the safety net.
+# Low on purpose: on a RAM-constrained host with cheap reads, evicting clean file
+# cache costs no writes (a refault is a read), while evicting anonymous memory
+# becomes swap WRITES once the zswap pool is full. 0 is avoided (hot mapped files
+# would thrash). Kernel range is 0-200; systemd-oomd is the safety net.
 vm.swappiness = {swappiness}
 
 # Prefer keeping dentry/inode caches (<100): path-heavy work such as container

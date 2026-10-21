@@ -121,7 +121,12 @@ whenever the band or writeback policy changes.
 
 ---
 
-## M5. File-cache hotness — is 2–3 G of buff/cache justified? Is swappiness=100 right?
+## M5. File-cache hotness — is 2–3 G of buff/cache justified? Is the swappiness setting right?
+
+> **Conclusion superseded 2026-10-21:** the operator set `vm.swappiness` to 10 (write-capped disk, cheap reads; reasoning
+> in [MEMORY-ARCHITECTURE.md §4, "`vm.swappiness`"](MEMORY-ARCHITECTURE.md#vmswappiness--why-low-on-these-hosts)). The
+> measurement recipe below stays valid as the way to watch the cost of a *low* value: sustained `rf_f/s` is the
+> file-cache-thrash signal. The table row and paragraph that argued for 100 are rewritten below as superseded.
 
 buff/cache decomposition first:
 
@@ -148,20 +153,19 @@ grep -E 'workingset_refault_file|pgmajfault' /proc/vmstat
 # per cgroup: grep '^workingset_refault_file ' <cg>/memory.stat
 ```
 
-**Swappiness validation recipe** (this is the empirical answer to "is 100
-right for our workload"): watch both refault streams for a representative day —
+**Swappiness validation recipe** (the empirical answer to "is the current value right for our workload"): watch
+both refault streams for a representative day —
 
 | Observation | Meaning | Action |
 |---|---|---|
-| file refaults ≈ 0, anon rf_z modest, rf_d ≈ 0 | cache is big enough AND anon reclaim is absorbed by zswap | swappiness=100 is right; nothing to change |
-| file refaults sustained ≫ 0 (esp. game/wings cgroups) | kernel is dropping needed file pages (code!) | swappiness even higher is impossible-ish (max 200) → protect cache by capping anon hogs instead |
+| file refaults ≈ 0, anon rf_z modest, rf_d ≈ 0 | cache is big enough AND anon reclaim is absorbed by zswap | nothing to change |
+| file refaults sustained ≫ 0 (esp. game/wings cgroups) | kernel is dropping needed file pages (code!): the cost of a LOW swappiness is showing | raise swappiness toward 30–60 (**[I]**, a suggestion and a decision for the operator, not a new recommended value), or protect the file cache (floors, capping anon hogs); see MEMORY-ARCHITECTURE §4 "`vm.swappiness`" |
 | anon rf_d sustained ≫ 0 on the game | cold tail not really cold / floor too low | fix floors/writeback (M4), NOT swappiness |
 
-The asymmetry to remember: with zswap, an anon refault costs µs; a file
-refault always costs a disk read. swappiness=100 deliberately trades the
-cheap direction. Lowering it to 5–10 would evict executable pages (the game
-binary itself) to "protect" anon that zswap already handles — the wrong trade
-on this host. There is no per-cgroup swappiness in cgroup v2.
+(Superseded 2026-10-21: this section used to conclude "100 is right" and that 5–10 would be "the wrong trade" because
+zswap makes anon reclaim cheap. The operator decided on a low value; see MEMORY-ARCHITECTURE §4.) The measurement
+itself still holds: an anon refault from zswap costs µs, a file refault costs a read. There is no per-cgroup
+swappiness in cgroup v2.
 
 DAMON option for deeper file-cache analysis: `damo` in **paddr** (physical)
 mode samples ALL memory including page cache — use to build a hot/warm/cold

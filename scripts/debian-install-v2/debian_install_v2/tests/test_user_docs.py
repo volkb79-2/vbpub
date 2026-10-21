@@ -103,7 +103,7 @@ def _slug(heading: str) -> str:
     heading = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", heading)
     heading = re.sub(r"<[^>]+>", "", heading).lower()
     heading = re.sub(r"[^a-z0-9 _-]", "", heading)
-    return re.sub(r"\s+", "-", heading.strip())
+    return heading.strip().replace(" ", "-")
 
 
 def _heading_slugs(path: Path) -> set[str]:
