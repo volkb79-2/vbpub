@@ -159,7 +159,7 @@ both refault streams for a representative day —
 | Observation | Meaning | Action |
 |---|---|---|
 | file refaults ≈ 0, anon rf_z modest, rf_d ≈ 0 | cache is big enough AND anon reclaim is absorbed by zswap | nothing to change |
-| file refaults sustained ≫ 0 (esp. game/wings cgroups) | kernel is dropping needed file pages (code!): the cost of a LOW swappiness is showing | raise swappiness toward 30–60, or protect the file cache (floors, capping anon hogs); see MEMORY-ARCHITECTURE §4 "`vm.swappiness`" |
+| file refaults sustained ≫ 0 (esp. game/wings cgroups) | kernel is dropping needed file pages (code!): the cost of a LOW swappiness is showing | raise swappiness toward 30–60 (**[I]**, a suggestion and a decision for the operator, not a new recommended value), or protect the file cache (floors, capping anon hogs); see MEMORY-ARCHITECTURE §4 "`vm.swappiness`" |
 | anon rf_d sustained ≫ 0 on the game | cold tail not really cold / floor too low | fix floors/writeback (M4), NOT swappiness |
 
 (Superseded 2026-10-21: this section used to conclude "100 is right" and that 5–10 would be "the wrong trade" because

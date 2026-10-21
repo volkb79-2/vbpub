@@ -501,7 +501,7 @@ regime, the opposite of the zswap-aware design it's actually built for.
 ### The tool/metric that tells you if a given setting is right
 
 Not a single number — a **refault-source split**, already worked out in
-`MEASUREMENTS.md` M5 (titled, verbatim, "is swappiness=100 right?" — the
+`MEASUREMENTS.md` M5 (then titled "is swappiness=100 right?"; since 2026-10-21 "Is the swappiness setting right?" — the
 recipe generalizes to any value):
 
 ```bash

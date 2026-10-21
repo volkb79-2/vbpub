@@ -215,7 +215,7 @@ acting as a hard switch **[I]**.
   write-capped, provider-metered disk (6–18 MiB/s measured **[M]**, IO-STALL-TESTING-GUIDE §14/§15, program directory).
   Those writes are also charged to the page owner's cgroup as io.cost debt (the 57.7 s freeze, §15).
 - **Clean file eviction is cheap.** Zero writes; a refault is a **read**. Reads are fast: the provider does not limit
-  them (1.3 GB/s sequential observed) and `r_await` is ~0.2–0.3 ms **[M]** (OBSERVATION.md; IO-STALL-TESTING-GUIDE §11, §13).
+  them (1.3 GB/s sequential observed) and `r_await` is ~0.2–0.3 ms **[M]** (OBSERVATION.md; IO-STALL-TESTING-GUIDE §12, §13).
   The 290 MB/s in the io.cost model is a *modelled* `rbps`, and `dev.slice` has its own read cap (290M / 10 000 riops), so
   reads are capped per tier by configuration, not by the provider.
 - **The measured stalls were swap-in waits and write/debt waits [M]:** 229.4 s in `do_swap_page` in the B0 window
@@ -223,7 +223,7 @@ acting as a hard switch **[I]**.
   §15). The write-side share is [M] for the debt and dirty-limit cases; that the swap-in waits queued behind write-side
   load is **[I]**. Swap-ins exist only for evicted anon, so preferring file eviction, i.e. low swappiness, follows **[I]**.
 
-**Risk of too low: file-cache thrash.** Counters from `/proc/vmstat` on gstammtisch, read 2026-10-21 ~02:43 local at uptime
+**Risk of too low: file-cache thrash.** Counters from `/proc/vmstat` on gstammtisch, read 2026-10-21 ~00:43 UTC (02:42:58 CEST) at uptime
 2 d 13 h: `workingset_refault_file` 239 M against `pgsteal_file` 619 M (~39 % refaulted, ~0.9 TiB re-read) **[M]**.
 **[I]** Cheap here because reads are fast, but each refault a game thread waits on is a small stall.
 
