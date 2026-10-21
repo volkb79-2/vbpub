@@ -122,7 +122,7 @@ SPEC §9.
 | RG-102 | Run-Gate raw Docker ephemeral launch duplicates CIU service identity and cannot preserve CIU-rendered network/secrets/mounts/cgroup/user or hand the exact one-shot container identity to the RG-89 observer | Medium | OPEN — after the current release wave, integrate with CIU-141's v7 `ciu run`; structured container-ID and observer lifecycle handoff required |
 | RG-103 | `run-gate doctor` crashes with `KeyError: 'environment'` when the config declares a `kind = "sequence"` lane: the per-lane environment pass calls `resolve_environment`, which reads `lane["environment"]`, a key R-07/RG-74 forbid on sequences | Major | FIXED IN CANDIDATE (filed 2026-10-15, dstdns P242): `doctor` walks sequence members and reports each member's environment facts, names malformed members, and `--check-env` skips the sequence; behavioral tests; registered gate pending |
 | RG-104 | The observer-unavailable rollup rejects Assay's own pre-R0 refusal: Assay (B148/A-484) refuses the whole lane before R0 and stamps `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on every requested rigor, but `_observer_unavailable_rollup` accepts the reason only on an R2 claim, so a correct environment refusal surfaces as ERROR `invalid-assay-observer-refusal-claim` (a malformed-verdict reason) | Minor | SUPERSEDED by Assay A-494/A-496 (filed 2026-10-15, dstdns P242 under the 24.0.0 candidate). A-494 replaced the pre-R0 whole-lane refusal with an R2-only one: completed R0/R1 claims and the independent R3 claim are kept, and `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` is stamped on R2 alone, which `_observer_unavailable_rollup` already accepts; A-496 sets the verdict-v16 floor at Assay 10.0.0, which CONSUMERS requires. The all-rigors shape is no longer produced, so no production change; `test_observer_refusal_follows_assay_a494_r2_only_shape` pins R0/R1 PASS + R2 refusal + R3 PASS and refuses the old shape. |
-| RG-108 | A SIGTERM to `run-gate` while a detached lane container runs ends the wrapper but leaves the container running: an orphan that keeps load on a production-shared host (found 2026-10-21 on a `gate-provisional` run, 24.0.1) | Medium | OPEN (filed 2026-10-21, BL-01); root cause not investigated |
+| RG-109 | A SIGTERM to `run-gate` while a detached lane container runs ends the wrapper but leaves the container running: an orphan that keeps load on a production-shared host (found 2026-10-21 on a `gate-provisional` run, 24.0.1) | Medium | OPEN (filed 2026-10-21, BL-01); root cause not investigated |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -6394,7 +6394,7 @@ the cause).
 tag (the pattern of the neighbouring `test_first_release_*` tests) instead of reading the checkout's, or skip with a stated
 reason when the checkout has no tags. A checked-in lane that is red for an environment reason hides real R0 failures.
 
-## RG-108 — a SIGTERM to `run-gate` leaves the detached lane container running
+## RG-109 — a SIGTERM to `run-gate` leaves the detached lane container running
 
 **Status:** OPEN (found 2026-10-21 ~03:50 UTC, filed by BL-01; severity: medium). No existing entry covers it (checked this
 file and `CHANGES.md` for SIGTERM, signal, orphan and stale-container wording: the nearest are RG-44 `GONE_SIGNALS`, an unrelated

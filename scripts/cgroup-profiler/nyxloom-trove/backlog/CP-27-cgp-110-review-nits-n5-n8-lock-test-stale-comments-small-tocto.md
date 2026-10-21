@@ -1,7 +1,7 @@
 ---
 kind: backlog-entry
 schema_version: 1
-id: CP-24
+id: CP-27
 title: "CGP-110 review NITs N5-N8: held-lock test does not pin S9, stale comments, small TOCTOU, misleading stop message"
 status: open
 type: "bugfix"

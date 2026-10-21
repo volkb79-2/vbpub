@@ -596,7 +596,7 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-147 | `ciu up` reports success for a stack whose rendered, bind-mounted config file changed, while the running container keeps serving the OLD config: Compose's recreate diff hashes the service definition, not the content of a bind-mounted file, and CIU never forces a recreate or warns | Medium | OPEN |
 | CIU-148 | `docs/SPEC.md` S15.20 and `docs/DESIGN-NOTES.md` D8 cite dstdns `docs/KSM-OPTIN-MEASUREMENTS.md`, which dstdns merged into `docs/RESOURCE-GOVERNANCE.md` (dstdns docs-sync W20) | Low | OPEN |
 | CIU-149 | `tests/tests/test_ciu_cli_worktree.py::TestWorktreeCreateDispatch::test_forwards_all_options` fails in the registered `ciu` lane (and on origin/main): `--profile` without `--root-folder` hits the S16 selected-root refusal because ciu's own directory is not a CIU root, so `--maxfail=1` ends the lane as EMPTY_COVERAGE | Medium |
-| CIU-150 | `ciu worktree rm` / `clean` cannot find a CIU root in an old checkout that predates the root marker, so it refuses and only `--force` works (found 2026-10-05, again 2026-10-21); related to CIU-115 (stale identity file) and CIU-134 (partial removal, third reproduction 2026-10-21) | Medium | OPEN (filed 2026-10-21, BL-01) |
+| CIU-151 | `ciu worktree rm` / `clean` cannot find a CIU root in an old checkout that predates the root marker, so it refuses and only `--force` works (found 2026-10-05, again 2026-10-21); related to CIU-115 (stale identity file) and CIU-134 (partial removal, third reproduction 2026-10-21) | Medium | OPEN (filed 2026-10-21, BL-01) |
 
 
 The approved milestone decisions and serial package order are in
@@ -5070,7 +5070,7 @@ Severity: High (a lifecycle command can complete resource cleanup but leave a br
 a tree that contains read-only directories only in part: it half-deleted the tree and the operator had to finish the removal by
 hand. This is the same permission-protected-descendant shape as above, now with read-only (not only root-owned) directories.
 The exact error text of this run is **not recorded** in `memory/worktree-sprawl-cleanup.md` or in
-`WORKTREE-TRIAGE-20261021.md` (the memory note records the 2026-10-05 symptom of a different bug, see CIU-150); only the
+`WORKTREE-TRIAGE-20261021.md` (the memory note records the 2026-10-05 symptom of a different bug, see CIU-151); only the
 operator's description is available. Required contract unchanged; additionally, the removal should clear the read-only bit
 on directories it owns before deleting (or report them by name) instead of stopping half-way.
 
@@ -5509,7 +5509,7 @@ It printed `Active service profile(s): apps,worker-io,worker-db,identity,observa
 
 **Oracles.** `run-gate ciu` completes with a verdict that reflects the whole suite; the test passes from the lane's cwd.
 
-## CIU-150 — `ciu worktree rm` / `clean` cannot find a CIU root in an old checkout that predates the root marker; only `--force` works
+## CIU-151 — `ciu worktree rm` / `clean` cannot find a CIU root in an old checkout that predates the root marker; only `--force` works
 
 Severity: Medium. Type: bugfix. Filed 2026-10-21 (BL-01) from the worktree cleanups of 2026-10-05 and 2026-10-21.
 
