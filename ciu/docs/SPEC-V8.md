@@ -1175,7 +1175,6 @@ superseded sketch.
 
 **Closed in draft.8, revised in draft.9:** (1) is S16.2.1: the gate slice is declared once in `capacity.tiers.gates` (`slice` or `slice_env`); draft.8's `testing.cgroup_slice*` keys and its hardwired `$CGROUP_PARENT_DEV_GATES` default are withdrawn (V8R-13). (2) is superseded by D-651 Q4 and D-655: the profiler's sessions are measurement, not an admission ledger, and the clock does not pause under pressure. (3) is S16.6.7 and S16.6.4. (4) is S16.6.8 and S16.9 (`liveness`, `stall_timeout`). (5) — the daemon's own slice and an authored `cgroup_parent` — is not carried by Appendix R (open item O-7).
 
-
 **Supersession note (2026-10-01).** D-30..D-32 settled the placement and
 security details for RG-55. In particular, the daemon does not use
 `cgroupns=host`, and cgprofile does not create a leaf directly below
