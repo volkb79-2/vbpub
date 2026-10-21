@@ -107,7 +107,7 @@ def _size(host: Host, devno: str) -> int:
 
 
 def blkid_fields(host: Host, path: str) -> dict[str, str]:
-    out = host.run(devio.blkid_argv(path)).stdout
+    out = devio.probe(host, "blkid", devio.blkid_argv(path), ok=(0, 2)).stdout  # 2 = "no signature found"
     return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
 
 
@@ -127,9 +127,38 @@ def _touching(entries: Sequence[MountEntry], devnos: set[str], names: set[str]) 
     return {e for e in entries if e.devno in devnos or e.source in names}
 
 
+INIT_PID_NS = "pid:[4026531836]"  # the kernel's fixed inode (PROC_PID_INIT_INO) of the initial PID namespace
+
+
+def require_host_namespaces(host: Host) -> None:
+    """SAF-09 / TGT-01: refuse unless this process provably runs in the host's initial PID namespace and mount namespace.
+
+    Inside a container /proc/1 is the container's own init, so ``/proc/self`` and ``/proc/1`` always agree and cannot
+    expose a mount that exists only in the host's namespace; the fact is therefore derived from the namespace link
+    targets (the initial PID namespace has a fixed inode), and anything that cannot be read is a refusal.
+    """
+    try:
+        own_pid, init_pid = host.readlink("/proc/self/ns/pid"), host.readlink("/proc/1/ns/pid")
+        own_mnt, init_mnt = host.readlink("/proc/self/ns/mnt"), host.readlink("/proc/1/ns/mnt")
+    except OSError as exc:
+        raise Refusal("namespace_unprovable", f"cannot prove that this process runs in the host's initial PID namespace ({exc})",
+                      "run on the host, not in a container (as root, so that /proc/1/ns is readable)") from exc
+    if own_pid != INIT_PID_NS or init_pid != INIT_PID_NS:
+        raise Refusal("container_pid_namespace", f"this process is not in the host's initial PID namespace ({own_pid}; PID 1 is {init_pid}, "
+                      f"the host's is {INIT_PID_NS})", "run on the host, not in a container")
+    if own_mnt != init_mnt:
+        raise Refusal("mount_namespace_mismatch", f"this process is in a different mount namespace ({own_mnt}) than PID 1 ({init_mnt})",
+                      "run on the host, not in a container or a private mount namespace")
+
+
 def mount_evidence(host: Host, devnos: set[str], names: set[str]) -> tuple[set[MountEntry], set[MountEntry]]:
-    own = parse_mountinfo(host.read_text("/proc/self/mountinfo"))
-    init = parse_mountinfo(host.read_text("/proc/1/mountinfo"))
+    require_host_namespaces(host)
+    try:
+        own = parse_mountinfo(host.read_text("/proc/self/mountinfo"))
+        init = parse_mountinfo(host.read_text("/proc/1/mountinfo"))
+    except OSError as exc:
+        raise Refusal("namespace_unprovable", f"cannot read the mount tables of this process and PID 1 ({exc})",
+                      "run on the host, not in a container (as root, so that /proc/1/mountinfo is readable)") from exc
     return _touching(own, devnos, names), _touching(init, devnos, names)
 
 
@@ -177,7 +206,7 @@ def violations(host: Host, facts: DeviceFacts) -> list[Violation]:
         out.append(Violation("swap", f"{facts.path} (or a partition or holder of it) is swap-active (swapon)"))
     fields = blkid_fields(host, facts.path)
     sigs = [k for k in fields if f"{k}=".startswith(SIGNATURE_KEYS)]
-    wipe = [ln for ln in host.run(devio.wipefs_check_argv(facts.path)).stdout.splitlines() if ln.strip() and not ln.startswith("#")]
+    wipe = [ln for ln in devio.probe(host, "wipefs", devio.wipefs_check_argv(facts.path)).stdout.splitlines() if ln.strip() and not ln.startswith("#")]
     if sigs or wipe:
         what = ", ".join(f"{k}={fields[k]}" for k in sigs) or "a wipefs signature"
         out.append(Violation("signature", f"{facts.path} carries a signature ({what}) other than an iobench marker", True))

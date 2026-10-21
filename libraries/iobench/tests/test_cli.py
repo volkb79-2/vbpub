@@ -149,6 +149,7 @@ def test_cli_matrix_dry_run_needs_a_calibration():
 def test_cli_restore_and_ceilings_refusals():
     host = make_host(cache=INVERSION)
     dead = __import__("iobench.restore", fromlist=["Safety"]).Safety(host, "run-dead", "2026-10-21T03:00:00Z")
+    dead.acquire()
     dead.set_knob("/sys/class/block/vda/queue/nr_requests", "4")
     code, out, _ = run(host, "restore", "--dry-run", "--json")
     assert code == 0 and json.loads(out)["would_restore"] is True and host.read_text("/sys/class/block/vda/queue/nr_requests") == "4\n"

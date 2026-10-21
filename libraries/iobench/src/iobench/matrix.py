@@ -78,12 +78,9 @@ class Matrixer(Runner):
         """Set the cell's knobs through the restore journal; ``False`` if the kernel rejects one."""
         wanted = {"dirty_bytes": knobs["dirty_bytes"], "dirty_background_bytes": knobs["dirty_bytes"] // 4,
                   "nr_requests": knobs["nr_requests"], "max_sectors_kb": knobs["max_sectors_kb"]}
-        try:
-            for knob, value in wanted.items():
-                if self.read_knob(knob) != value:
-                    self.safety.set_knob(KNOB_FILES.get(knob) or disk_knob(self.workdir.disk_name, knob), str(value))
-        except OSError:
-            return False
+        for knob, value in wanted.items():
+            if self.read_knob(knob) != value and not self.safety.set_knob(KNOB_FILES.get(knob) or disk_knob(self.workdir.disk_name, knob), str(value)):
+                return False  # the kernel rejected or clamped the value: the cell would run at a setting it is not recorded under
         return True
 
     def load_jobs(self, tag: str, seconds: int) -> tuple[devio.FioJob, devio.FioJob]:

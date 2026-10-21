@@ -522,9 +522,15 @@ class FakeHost:
         self.odirect_unsupported: set[str] = set()
         self.sysfs_reject: set[str] = set()
         self.sysfs_swallow: set[str] = set()
+        self.sysfs_clamp: dict[str, str] = {}  # path -> the value the kernel stores whatever is written (clamped or rounded)
         self.events: list[tuple[float, int, Callable[[], None]]] = []
         self.pending: str | None = None
         self.signals_installed = False
+        self.probe_failures: dict[str, RunResult] = {}  # command basename -> a failing result to return instead of the normal one
+        self.known_units: set[str] = set()
+        init_pid, init_mnt = "pid:[4026531836]", "mnt:[4026531841]"
+        self.ns_links: dict[str, str] = {"/proc/self/ns/pid": init_pid, "/proc/1/ns/pid": init_pid,
+                                         "/proc/self/ns/mnt": init_mnt, "/proc/1/ns/mnt": init_mnt}
         self.locks = lock_registry if lock_registry is not None else {}
         self.holding: str | None = None
         self.fio_spawns = 0
@@ -652,16 +658,32 @@ class FakeHost:
     def remove(self, path: str) -> None:
         self.files.pop(path, None)
 
+    COUPLED = (("/proc/sys/vm/dirty_bytes", "/proc/sys/vm/dirty_ratio"),
+               ("/proc/sys/vm/dirty_background_bytes", "/proc/sys/vm/dirty_background_ratio"))
+
+    def readlink(self, path: str) -> str:
+        if path not in self.ns_links:
+            raise PermissionError(path)  # unreadable, like /proc/1/ns/* without privilege
+        return self.ns_links[path]
+
     def write_sysfs(self, path: str, value: str) -> None:
         check_sysfs_path(path)
         if path in self.sysfs_reject:
             raise OSError(f"EINVAL writing {path}")
         self.write_log.append((path, value))
+        value = self.sysfs_clamp.get(path, value)
         real = self._resolve(path)
         if real not in self.files:
             raise FileNotFoundError(path)
         if path not in self.sysfs_swallow:
+            before = self.files[real].strip()
             self.files[real] = value + "\n"
+            if value != before:  # the kernel's coupling: a changed bytes knob zeroes its ratio and vice versa
+                for bytes_path, ratio_path in self.COUPLED:
+                    if path == bytes_path and ratio_path in self.files:
+                        self.files[ratio_path] = "0\n"
+                    elif path == ratio_path and bytes_path in self.files:
+                        self.files[bytes_path] = "0\n"
 
     # -- sysfs / mounts / diskstats builders --------------------------------
     def add_disk(self, name: str, major: int, size: int, *, model: str | None = None, serial: str | None = None,
@@ -761,6 +783,8 @@ class FakeHost:
     def run(self, argv: Sequence[str], timeout: float | None = None) -> RunResult:
         self._log(argv)
         name = posixpath.basename(argv[0])
+        if name in self.probe_failures:
+            return self.probe_failures[name]
         if name == "fio" and list(argv[1:]) == ["--version"]:
             return RunResult(0, "fio-3.36\n", "")
         if name == "blkid":
@@ -776,6 +800,9 @@ class FakeHost:
             return self._fallocate(argv[3], int(argv[2]))
         if name == "docker":
             return RunResult(0, "".join(c + "\n" for c in self.containers), "")
+        if name == "systemctl" and argv[1] == "show":
+            known = argv[-1] in self.active_units or argv[-1] in self.known_units
+            return RunResult(0, "loaded\n" if known else "not-found\n", "")
         if name == "systemctl":
             active = argv[2] in self.active_units
             return RunResult(0 if active else 3, "active\n" if active else "inactive\n", "")

@@ -15,7 +15,10 @@ MS = "/sys/class/block/vda/queue/max_sectors_kb"
 
 
 def safety(host, **kw):
-    return Safety(host, "run-1", "2026-10-21T03:00:00Z", **kw)
+    """A Safety that holds the lock, like the one a real invocation acquires in S0 (only the lock holder journals and restores)."""
+    s = Safety(host, "run-1", "2026-10-21T03:00:00Z", **kw)
+    s.acquire()
+    return s
 
 
 def test_saf_01_journal_before_first_write():
@@ -87,13 +90,13 @@ def test_saf_02_restore_on_next_start():
     host = standard_host()
     dead = safety(host)
     dead.set_knob(DIRTY, "16777216")
-    dead.register_file("/bench/w/leak")
-    host.put("/bench/w/leak", "x")
+    dead.register_file("/bench/w/iobench-leak")
+    host.put("/bench/w/iobench-leak", "x")
     # the process died; a fresh invocation restores the leftover journal first
     fresh = safety(host)
     report = fresh.recover_previous()
     assert host.read_text(DIRTY) == "0\n" and report.verified
-    assert not host.exists(restore.JOURNAL) and not host.exists("/bench/w/leak")
+    assert not host.exists(restore.JOURNAL) and not host.exists("/bench/w/iobench-leak")
     assert safety(host).recover_previous() is None  # idempotent
 
 
@@ -160,8 +163,14 @@ def test_saf_04_io_max_changed_by_others_detected():
     assert s.report.as_dict()["slice_io_max_unchanged"] is False
 
 
+def pressure_host(**kw):
+    host = standard_host(**kw)
+    host.dynamic["/sys/fs/cgroup/wings.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    return host
+
+
 def test_saf_05_refuses_with_containers_and_units():
-    host = standard_host()
+    host = pressure_host()
     kw = dict(confirm_quiet_window=False, installer=False, production_pattern=None, production_units=[], protect_cgroup="wings.slice", abort_psi=40.0)
     assert restore.live_preflight(host, **kw)["containers_active"] == 0
     host.containers = ["mm-1", "wings-a", "game"]
@@ -171,16 +180,17 @@ def test_saf_05_refuses_with_containers_and_units():
     assert restore.live_preflight(host, **{**kw, "confirm_quiet_window": True})["confirmed_quiet_window"]
     with pytest.raises(Refusal):  # the pattern matches wings-a
         restore.live_preflight(host, **{**kw, "production_pattern": "^wings"})
-    host2 = standard_host()
+    host2 = pressure_host()
     host2.containers = ["wings-a", "mm"]
     with pytest.raises(Refusal):
         restore.live_preflight(host2, **{**kw, "production_pattern": "^wings"})
-    host3 = standard_host()
+    host3 = pressure_host()
     host3.containers = ["mm"]
     assert restore.live_preflight(host3, **{**kw, "production_pattern": "^wings"})["containers_active"] == 0
     # listed units
-    host4 = standard_host()
+    host4 = pressure_host()
     host4.active_units.add("wings.service")
+    host4.known_units.add("other.service")
     with pytest.raises(Refusal, match="listed units are active"):
         restore.live_preflight(host4, **{**kw, "production_units": ["wings.service", "other.service"]})
     assert restore.live_preflight(host4, **{**kw, "production_units": ["other.service"]})["containers_active"] == 0
@@ -235,7 +245,7 @@ def test_saf_07_failed_run_keeps_good_result():
 def test_saf_08_single_instance():
     first = standard_host()
     second = FakeHost(lock_registry=first.locks)
-    a, b = safety(first), safety(second)
+    a, b = Safety(first, "run-a", "2026-10-21T03:00:00Z"), Safety(second, "run-b", "2026-10-21T03:00:00Z")
     a.acquire()
     writes_before = dict(second.files)
     with pytest.raises(Refusal) as err:
@@ -313,13 +323,14 @@ def test_saf_02_restore_on_signal_in_a_run():
 def test_saf_02_restore_at_the_start_of_the_next_run():
     host = calibrated_host()
     dead = restore.Safety(host, "run-dead", "2026-10-21T03:00:00Z")
+    dead.acquire()
     dead.set_knob("/sys/class/block/vda/queue/nr_requests", "4")
-    dead.register_file("/bench/w/leaked")
-    host.put("/bench/w/leaked", "x")
+    dead.register_file("/bench/w/iobench-leaked")
+    host.put("/bench/w/iobench-leaked", "x")
     assert host.read_text("/sys/class/block/vda/queue/nr_requests") == "4\n"
     out = matrix(host)
     assert out.status == "complete"
-    assert host.read_text("/sys/class/block/vda/queue/nr_requests") == "64\n" and not host.exists("/bench/w/leaked")
+    assert host.read_text("/sys/class/block/vda/queue/nr_requests") == "64\n" and not host.exists("/bench/w/iobench-leaked")
 
 
 def test_saf_03_readback_mismatch_exit_9_in_a_run():

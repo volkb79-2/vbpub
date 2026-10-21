@@ -170,11 +170,13 @@ class Runner:
     def s0(self, *, need_workdir: bool) -> None:
         """Preflight: fio, lock, leftover journal, live-host rules, the target, the work dir, identity."""
         cfg = self.cfg
-        version = parse_fio_version(self.host.run(devio.fio_version_argv()).stdout)
+        guard.require_host_namespaces(self.host)
+        version = parse_fio_version(devio.probe(self.host, "fio --version", devio.fio_version_argv()).stdout)
         if version < FIO_FLOOR:
             raise Refusal("fio_version", f"fio {version[0]}.{version[1]} is older than 3.30 (clat_ns percentiles)", "install fio >= 3.30")
         self.safety.acquire()
         self.safety.recover_previous()
+        restore.stale_abort_file(self.host)
         self.preflight = restore.live_preflight(self.host, confirm_quiet_window=cfg.confirm_quiet_window, installer=cfg.installer,
                                                 production_pattern=cfg.production_pattern, production_units=cfg.production_units,
                                                 protect_cgroup=cfg.protect_cgroup, abort_psi=cfg.abort_psi)
@@ -247,10 +249,11 @@ class Runner:
 
     def cleanup(self, status: str, message: str, exit_code: int) -> tuple[str, str, int]:
         """Restore every knob, verify io.max, release the lock (IOB-SAF-02/-03/-04)."""
+        if not self.safety.locked:
+            return status, message, exit_code  # refused before the lock: this invocation owns no journal and restores nothing
         try:
             self.safety.restore()
-            if self.target is not None:
-                self.safety.verify_io_max()
+            self.safety.verify_io_max()
         except VerificationFailure as exc:
             return "failed", str(exc), exc.exit_code
         finally:

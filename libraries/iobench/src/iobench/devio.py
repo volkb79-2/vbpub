@@ -12,6 +12,7 @@ import posixpath
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
+from .errors import Refusal
 from .host import TAIL_BYTES, Host, RunResult
 
 PERCENTILES = (50.0, 90.0, 95.0, 99.0, 99.9)
@@ -148,6 +149,19 @@ def unit_active_argv(unit: str) -> list[str]:
     return ["systemctl", "is-active", unit]
 
 
+def unit_loadstate_argv(unit: str) -> list[str]:
+    return ["systemctl", "show", "-p", "LoadState", "--value", unit]
+
+
+def probe(host: Host, name: str, argv: Sequence[str], ok: Sequence[int] = (0,)) -> RunResult:
+    """Run a read-only probe; a return code outside ``ok`` is a refusal naming the probe (never "nothing found")."""
+    res = host.run(argv)
+    if res.returncode not in ok:
+        raise Refusal("probe_failed", f"the {name} probe failed (exit {res.returncode}: {res.stderr.strip() or 'no message'}); "
+                      "its silence cannot be read as 'nothing found'", f"fix {name} (run as root, binary on PATH) and rerun")
+    return res
+
+
 def probe_unit_argv(unit: str, slice_name: str, runtime_max_s: int, script: str, args: Sequence[str]) -> list[str]:
     """Transient unit for the sync-latency probe: no IO limits, bounded lifetime."""
     return ["systemd-run", f"--unit={unit}", f"--slice={slice_name}", "--collect",
@@ -162,7 +176,7 @@ _ALLOWED = {
     "swapon": lambda a: a[1].startswith("--show"),
     "fallocate": lambda a: a[1] in ("-l", "-p"),
     "docker": lambda a: a[1] == "ps",
-    "systemctl": lambda a: a[1] == "is-active",
+    "systemctl": lambda a: a[1] == "is-active" or a[1:3] == ["show", "-p"],
     "systemd-run": lambda a: any(t.startswith("RuntimeMaxSec=") for t in a),
 }
 

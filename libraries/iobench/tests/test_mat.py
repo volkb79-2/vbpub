@@ -133,12 +133,15 @@ def test_swp_04_only_allowed_knobs(calibrated):
     matrix(host)
     paths = {p for p, _ in host.write_log[before:]}
     allowed = {"/proc/sys/vm/dirty_bytes", "/proc/sys/vm/dirty_background_bytes", "/sys/class/block/vda/queue/nr_requests",
-               "/sys/class/block/vda/queue/max_sectors_kb"}
+               "/sys/class/block/vda/queue/max_sectors_kb", "/proc/sys/vm/dirty_ratio", "/proc/sys/vm/dirty_background_ratio"}
     assert paths <= allowed and paths
     assert not any("io.max" in p for p in paths)
     # every knob is back at its original value afterwards
     assert host.read_text("/proc/sys/vm/dirty_bytes") == "0\n" and host.read_text("/sys/class/block/vda/queue/max_sectors_kb") == "1280\n"
     assert host.read_text("/sys/class/block/vda/queue/nr_requests") == "64\n"
+    # IOB-SAF-02 (review A-B2): the coupled ratio knobs come back too, not only the bytes knobs the matrix wrote
+    assert host.read_text("/proc/sys/vm/dirty_ratio") == "20\n" and host.read_text("/proc/sys/vm/dirty_background_ratio") == "10\n"
+    assert host.read_text("/proc/sys/vm/dirty_background_bytes") == "0\n"
     assert not host.exists("/run/iobench/restore.json")
 
 

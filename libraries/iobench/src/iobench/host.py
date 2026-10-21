@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import re
 import secrets
 import signal
 import subprocess
@@ -64,6 +65,8 @@ class Handle(Protocol):
 
 FORBIDDEN_ARGV_TOKENS = ("set-property", "daemon-reload")
 FORBIDDEN_ARGV0 = ("mkfs", "mount", "umount", "fstrim", "dd")
+# Every spelling of a systemd IO limit: `IOWeight=`, `-pIOWriteBandwidthMax=`, `--property=BlockIOWeight=`, `-p=IO...`, any case.
+_IO_LIMIT_TOKEN = re.compile(r"^(?:-p=?|--property=)?(?:block)?io(?:device)?(?:weight|read|write|latency)[a-z]*=", re.IGNORECASE)
 
 
 def check_argv(argv: Sequence[str]) -> None:
@@ -76,7 +79,7 @@ def check_argv(argv: Sequence[str]) -> None:
     for token in argv:
         if token in FORBIDDEN_ARGV_TOKENS:
             raise HostError(f"forbidden argument: {token}")
-        if token.startswith(("IO", "-pIO")) and ("Max=" in token or "Weight=" in token):
+        if _IO_LIMIT_TOKEN.match(token):
             raise HostError(f"forbidden argument: {token}")
 
 
@@ -98,6 +101,7 @@ class Host(Protocol):
     def stat(self, path: str) -> StatInfo | None: ...
     def statfs(self, path: str) -> tuple[int, int]: ...
     def realpath(self, path: str) -> str: ...
+    def readlink(self, path: str) -> str: ...
     def devno(self, path: str) -> str | None: ...
     def makedirs(self, path: str) -> None: ...
     def probe_odirect(self, directory: str) -> bool: ...
@@ -189,9 +193,15 @@ class RealHost:
     def realpath(self, path: str) -> str:
         return os.path.realpath(path)
 
+    def readlink(self, path: str) -> str:
+        return os.readlink(path)
+
     def devno(self, path: str) -> str | None:
         import stat as _stat
-        st = os.stat(path)
+        try:
+            st = os.stat(path)
+        except (FileNotFoundError, NotADirectoryError, PermissionError):
+            return None  # not a usable block device: the caller turns None into a refusal (exit 2), never a traceback
         if not _stat.S_ISBLK(st.st_mode):
             return None
         return f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}"
@@ -262,8 +272,10 @@ class RealHost:
             live_size = int(fh.read()) * 512
         if live_size != target.size_bytes:
             raise HostError(f"device size changed: {target.path}")
-        out = subprocess.run(["blkid", "-p", "-o", "export", target.path], capture_output=True, text=True, check=False).stdout
-        live = dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+        probe = subprocess.run(["blkid", "-p", "-o", "export", target.path], capture_output=True, text=True, check=False)
+        if probe.returncode not in (0, 2):  # 2 = no signature; anything else is a failed probe, not an empty device
+            raise HostError(f"blkid failed (exit {probe.returncode}) while verifying {target.path}: {probe.stderr.strip()}")
+        live = dict(line.split("=", 1) for line in probe.stdout.splitlines() if "=" in line)
         if target.partuuid is not None and live.get("PART_ENTRY_UUID") != target.partuuid:
             raise HostError(f"PARTUUID changed: {target.path}")
 
