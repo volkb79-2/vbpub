@@ -536,8 +536,8 @@ class FakeHost:
         self._seq = 0
         self.dynamic["/proc/diskstats"] = self._diskstats
         self.dynamic["/proc/meminfo"] = self._meminfo
-        self.dynamic["/proc/self/mountinfo"] = lambda: self._mountinfo("self")
-        self.dynamic["/proc/1/mountinfo"] = lambda: self._mountinfo("init")
+        self.dynamic["/proc/self/mountinfo"] = self._mountinfo_self
+        self.dynamic["/proc/1/mountinfo"] = self._mountinfo_init
 
     # -- clock -------------------------------------------------------------
     def now(self) -> float:
@@ -706,6 +706,12 @@ class FakeHost:
     def add_mount(self, devno: str, mountpoint: str, source: str, fstype: str = "ext4", options: str = "rw,relatime",
                   ns: str = "both") -> None:
         self.mounts.append((ns, devno, mountpoint, source, fstype, options))
+
+    def _mountinfo_self(self) -> str:
+        return self._mountinfo("self")
+
+    def _mountinfo_init(self) -> str:
+        return self._mountinfo("init")
 
     def _mountinfo(self, ns: str) -> str:
         lines = []
@@ -882,7 +888,7 @@ class FakeHost:
         dev.marker = text
 
     def read_marker(self, target: TargetRef) -> str:
-        return self._verify(target).marker or ""
+        return self.devices[target.path].marker or ""
 
     def _spawn_workdir(self, job: FioJob) -> FakeHandle:
         sc = self.scenario
