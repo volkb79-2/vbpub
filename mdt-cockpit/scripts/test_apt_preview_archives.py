@@ -96,7 +96,7 @@ def test_the_old_templated_backports_pref_is_gone() -> None:
 
 def test_the_temporary_skopeo_pin_beats_stable_backports() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
-    assert r"Pin: release a=testing\nPin-Priority: 601" in dockerfile
+    assert r"Pin: release a=testing\nPin-Priority: 701" in dockerfile
 
 # The operator's original line. In apt_preferences(5) its three conditions are ANDed, so it matches no
 # archive and testing would keep the default priority 500. Kept as the negative control.

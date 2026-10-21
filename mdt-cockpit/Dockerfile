@@ -737,13 +737,13 @@ COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archi
 
 # Skopeo from Debian testing (trixie ships 1.18.x, testing 1.22.x). FAILS CLOSED: if testing does not offer
 # a skopeo that apt would install, or the install fails, the build stops with a clear message instead of
-# silently shipping the older trixie skopeo. Only for skopeo, a temporary pin of 601 (just above stable-backports'
-# 600, so a backported skopeo cannot win either) lifts testing's package; the pin is removed in the same RUN, so the image leaves this step with
+# silently shipping the older trixie skopeo. Only for skopeo, a temporary pin of 701 (chosen to outrank both the vendor
+# origin pins at 700 and stable-backports at 600, so neither a vendor nor a backported skopeo can win) lifts testing's package; the pin is removed in the same RUN, so the image leaves this step with
 # testing at 100.
 RUN set -euo pipefail; \
     pin=/etc/apt/preferences.d/skopeo-testing; \
     trap 'rm -f "${pin}"' EXIT; \
-    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 601\n' > "${pin}"; \
+    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 701\n' > "${pin}"; \
     apt-get update; \
     simulated="$(apt-get install --dry-run -y skopeo 2>&1)"; \
     if ! grep -q "^Inst skopeo " <<<"${simulated}"; then \

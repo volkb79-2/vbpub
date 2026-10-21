@@ -280,12 +280,13 @@ stable 500 > testing / oldstable / oldstable-backports 100.
   `apt/vendor-origins.pref` therefore pins each vendor host (`Pin: origin <host>`, one stanza each) to 700:
   an explicitly added repository is the chosen source for its packages. The oracle derives the vendor hosts
   from the `deb ...` lines the Dockerfile writes and fails for a host without a 700 stanza. These repos do
-  not ship skopeo (docker-ce/pgdg/redis/sury ship their own packages), so the temporary 601 skopeo pin still
-  beats everything for skopeo; if a vendor ever did, 700 would win and the dry-run check would not notice.
+  not ship skopeo (docker-ce/pgdg/redis/sury ship their own packages), so the temporary 701 skopeo pin
+  outranks them anyway.
 * **Not templated.** Because the pin carries archive names, there is no `@SUITE@` rendering any more; the
   file is copied as is, and `scripts/test_apt_preview_archives.py` fails if it names a codename.
-* **Skopeo pin.** The temporary skopeo-only pin is 601 (was 501): a pin below 600 would let a backported
-  skopeo win over testing's, silently defeating the step.
+* **Skopeo pin.** The temporary skopeo-only pin is 701 (was 501): chosen to outrank both the vendor origin pins (700) and
+  backports (600). A lower pin would let a vendor or backported skopeo win over testing's, silently defeating
+  the step; the `^Inst skopeo ` dry-run check cannot tell which archive supplied it.
 
 ### Debian testing preview archive
 
@@ -299,7 +300,7 @@ visible for `apt-cache policy` and `apt install -t testing <pkg>`, never auto-se
   testing packages upgrade the system: the opposite of the intent. `scripts/test_apt_preview_archives.py`
   parses the file and fails on that form.
 * **Skopeo.** The former temporary `testing.list` is gone. The skopeo step now uses the permanent source
-  and a temporary skopeo-only pin of 601, removed in the same RUN, so the image leaves the step with testing
+  and a temporary skopeo-only pin of 701, removed in the same RUN, so the image leaves the step with testing
   at 100 and no build state hides a 500.
 * **Known tie (priority 100 is the operator's choice).** The installed version also sits at 100
   (`/var/lib/dpkg/status`). A package installed with `-t testing` that stable does not offer at a higher
