@@ -542,7 +542,8 @@ def _download_asset(tag: str, asset_name: str, dest: Path, token: Optional[str])
         status, _ = _gh_request(url, token=None, accept="application/octet-stream",
                                 stream_to=dest, timeout=300, max_bytes=_MAX_DOWNLOAD_BYTES)
     if status != 200:
-        detail = (f": release {tag} has no asset {asset_name!r}. {_CONTRACT_NOTE}"
+        detail = (f": download of {asset_name} from release {tag} returned HTTP 404 (missing "
+                  f"asset, release or tag, or a private repository without a token). {_CONTRACT_NOTE}"
                   if status == 404 else ".")
         fatal(f"Download of {asset_name} failed (HTTP {status}){detail}", EXIT_FAIL)
     if not dest.exists() or dest.stat().st_size == 0:

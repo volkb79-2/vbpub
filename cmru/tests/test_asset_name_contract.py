@@ -195,5 +195,8 @@ class TestNoLegacyNameFallback:
             ns["download_and_verify"](TAG, wd, token)
         err = capsys.readouterr().err
         assert f"{TAG}.tar.xz" in err                    # the requested asset
-        assert f"release {TAG!r}" in err or f"release {TAG}" in err  # the tag, explicitly
+        assert f"release {TAG}" in err                    # the tag, explicitly
+        if token is None:  # a bare 404 proves less than "no such asset": say what else it can be
+            assert "missing asset, release or tag, or a private repository without a token" in err
+            assert "has no asset" not in err
         assert "<tag><asset_suffix>" in err               # the contract it requests
