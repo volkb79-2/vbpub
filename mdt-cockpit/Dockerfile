@@ -213,25 +213,6 @@ RUN set -euo pipefail; \
     echo "user_allow_other" >> /etc/fuse.conf; \
     rm -rf /var/lib/apt/lists/*
 
-# Skopeo: try to get the latest version from Debian testing.
-# The trixie release ships skopeo 1.18.x; testing has 1.22.x.
-# We add testing as a temporary source with pin-priority 501 for skopeo ONLY,
-# so no other packages are affected.  If this fails (e.g. testing repo
-# unavailable, dependency conflict), we keep the trixie version silently.
-RUN set -euo pipefail; \
-    echo "deb http://deb.debian.org/debian testing main" > /etc/apt/sources.list.d/testing.list; \
-    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > /etc/apt/preferences.d/skopeo-testing; \
-    apt-get update; \
-    if apt-get install --dry-run -y skopeo 2>/dev/null | grep -q "^Inst skopeo "; then \
-        apt-get install -y --no-install-recommends skopeo && \
-        echo "[INFO] skopeo installed from Debian testing: $(skopeo --version)"; \
-    else \
-        echo "[INFO] skopeo from testing not available — keeping trixie version"; \
-    fi; \
-    rm -f /etc/apt/sources.list.d/testing.list /etc/apt/preferences.d/skopeo-testing; \
-    rm -rf /var/lib/apt/lists/*; \
-    skopeo --version || echo "[WARN] skopeo not installed"
-
 # Upstream Node.js runtime for npm-based AI tooling.
 RUN set -euo pipefail; \
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -; \
@@ -516,6 +497,19 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     require_file "${DOWNLOADS_DIR}/regctl-${REGCTL_VER}-linux-amd64"; \
     (cd "${DOWNLOADS_DIR}" && sha256sum -c "regctl-${REGCTL_VER}.sha256"); \
     install -m 755 "${DOWNLOADS_DIR}/regctl-${REGCTL_VER}-linux-amd64" /usr/local/bin/regctl; \
+    require_file "${DOWNLOADS_DIR}/gdu-${GDU_VER}-sha256sums.txt"; \
+    require_file "${DOWNLOADS_DIR}/gdu-${GDU_VER}.tgz"; \
+    EXPECTED_GDU_SHA256="$(grep 'gdu_linux_amd64_static.tgz$' "${DOWNLOADS_DIR}/gdu-${GDU_VER}-sha256sums.txt" | awk '{print $1}')"; \
+    echo "${EXPECTED_GDU_SHA256}  ${DOWNLOADS_DIR}/gdu-${GDU_VER}.tgz" | sha256sum -c -; \
+    mkdir -p /tmp/gdu-extract; \
+    tar -xzf "${DOWNLOADS_DIR}/gdu-${GDU_VER}.tgz" -C /tmp/gdu-extract; \
+    require_file /tmp/gdu-extract/gdu_linux_amd64_static; \
+    install -m 755 /tmp/gdu-extract/gdu_linux_amd64_static /usr/local/bin/gdu; \
+    # dust: upstream publishes no checksum file; the staged sidecar carries the sha256 pinned in stage_tool_artifacts.py. \
+    require_file "${DOWNLOADS_DIR}/dust-${DUST_VER}.sha256"; \
+    require_file "${DOWNLOADS_DIR}/dust-${DUST_VER}.tar.gz"; \
+    (cd "${DOWNLOADS_DIR}" && sha256sum -c "dust-${DUST_VER}.sha256"); \
+    install_from_tar "${DOWNLOADS_DIR}/dust-${DUST_VER}.tar.gz" dust /tmp/dust-extract; \
     require_file "${DOWNLOADS_DIR}/bat-${BAT_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/delta-${DELTA_VER}.tar.gz"; \
     require_file "${DOWNLOADS_DIR}/fd-${FD_VER}.tar.gz"; \
@@ -658,6 +652,8 @@ RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     rm -rf \
         /tmp/bat-extract \
         /tmp/crane-extract \
+        /tmp/gdu-extract \
+        /tmp/dust-extract \
         /tmp/grpcurl-extract \
         /tmp/delta-extract \
         /tmp/fd-extract \
@@ -725,6 +721,35 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo "${VERSION_CODENAME}") stable" > /etc/apt/sources.list.d/docker.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends docker-ce-cli docker-buildx-plugin docker-compose-plugin; \
+    rm -rf /var/lib/apt/lists/*
+
+# Debian testing, the preview archive: a permanent source (apt/testing.sources) pinned to 100 together with
+# oldstable and oldstable-backports (apt/preview-archives.pref) - visible, never auto-selected. Both files
+# are copied HERE, after the LAST other `apt-get update` in the image (the docker-cli layer above), so no
+# other layer fetches testing indexes and a testing-mirror hiccup cannot fail an unrelated layer. Only the
+# skopeo step below runs `apt-get update` with testing configured. The final image has both files. Skopeo has
+# no ordering dependency on the layers above (nothing uses it before the manifest listing at the end).
+COPY --chmod=0644 apt/testing.sources /etc/apt/sources.list.d/testing.sources
+COPY --chmod=0644 apt/preview-archives.pref /etc/apt/preferences.d/preview-archives
+
+# Skopeo from Debian testing (trixie ships 1.18.x, testing 1.22.x). FAILS CLOSED: if testing does not offer
+# a skopeo that apt would install, or the install fails, the build stops with a clear message instead of
+# silently shipping the older trixie skopeo. Only for skopeo, a temporary pin of 501 (just above trixie's
+# 500) lifts testing's package; the pin is removed in the same RUN, so the image leaves this step with
+# testing at 100.
+RUN set -euo pipefail; \
+    pin=/etc/apt/preferences.d/skopeo-testing; \
+    trap 'rm -f "${pin}"' EXIT; \
+    printf 'Package: skopeo\nPin: release a=testing\nPin-Priority: 501\n' > "${pin}"; \
+    apt-get update; \
+    simulated="$(apt-get install --dry-run -y skopeo 2>&1)"; \
+    if ! grep -q "^Inst skopeo " <<<"${simulated}"; then \
+        echo "[ERROR] Debian testing offers no skopeo that apt would install; refusing to silently keep trixie's skopeo" >&2; \
+        exit 1; \
+    fi; \
+    apt-get install -y --no-install-recommends skopeo; \
+    echo "[INFO] skopeo installed from Debian testing: $(skopeo --version)"; \
+    rm -f "${pin}"; \
     rm -rf /var/lib/apt/lists/*
 
 # ── Primary Python venv — full development toolkit ────────────────────────────
@@ -1043,6 +1068,8 @@ RUN set -euo pipefail; \
         echo "b2=${b2_version_output}"; \
         echo "bat=$(bat --version 2>&1 | head -1)"; \
         echo "crane=$(crane version 2>&1 | head -1)"; \
+        echo "gdu=$(gdu --version 2>&1 | awk '/^Version:/ { sub(/^v/, "", $2); print $2; exit }')"; \
+        echo "dust=$(dust --version 2>&1 | awk '{ print $2; exit }')"; \
         echo "regctl=$(regctl version 2>&1 | awk '/^VCSTag:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         if command -v claude >/dev/null 2>&1; then \
             echo "claude=$(claude --version 2>&1 | head -1)"; \

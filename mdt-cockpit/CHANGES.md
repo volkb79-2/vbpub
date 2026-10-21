@@ -6,6 +6,11 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## UNRELEASED
 
+### Added (MDTC-04)
+- Tools: `gdu` 5.38.0 (released 2026-10-05; sha256 from upstream `sha256sums.txt`) and `dust` 1.2.6 (released 2026-09-16; upstream publishes no checksum, sha256 pinned in `stage_tool_artifacts.py`), static linux/amd64, pinned to the newest release at least 14 days old
+- Debian `testing` as a permanent apt source (`apt/testing.sources`) pinned with `oldstable` and `oldstable-backports` to priority 100 (`apt/preview-archives.pref`, one stanza per archive: a comma list in one `Pin: release` line is an AND and matches nothing); install a package with `apt install -t testing <pkg>`. The skopeo step uses it with a temporary skopeo-only pin removed in the same layer. Oracle `scripts/test_apt_preview_archives.py`; image check `tests/runtime/test_apt_preview.py`
+- pwmcp examples re-pointed at 1.64.0-r3 (the build derives the pinned release and `get.py` sha256 from `pwmcp/pwmcp.contract.json` and `pwmcp/get.py` at the source commit; the published `get.py.sha256` f91c7018... matches)
+
 ### Added (MDT-HS-07)
 - host-setup (review round 3): buildkitd is idle only when the container scope holds exactly the measured daemon chain `rootlesskit` -> `exe` -> `buildkitd` (comm and parent chain); any `buildkit-runc` or other process is busy; the pause reader enforces the 240-minute bound itself and refuses a symlink, a non-regular file, a file or directory not owned by the reconcile's user, or a group/world-writable one
 - host-setup (review round 2): the re-assert is split by mechanism (udev trigger / `sysctl -p` / `_mdt_apply_iocost`) with a 30-minute back-off after a failed re-apply, and an explicit time-bounded pause (`mdt-io-reassert-pause <minutes> <reason>`, shown by `mdt-host-check.sh`); the running mdt-buildkitd records what it was started from, so a pending restart is reported by install.sh (exit 2), check.sh and the reconcile and never as "unchanged"; busy detection reads the buildkitd container scope; `--restart-buildkitd` documented

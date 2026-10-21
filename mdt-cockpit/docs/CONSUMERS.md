@@ -296,6 +296,25 @@ one. CIU can also apply `MemoryMin` to a scope, so any explicitly configured
 watcher limits must be compatible with that value. The wizard requires a
 separate confirmation before it writes any non-`-` per-container memory pair.
 
+## Installing a package from Debian testing
+
+The image ships `/etc/apt/sources.list.d/testing.sources` and `/etc/apt/preferences.d/preview-archives`
+(from `apt/`). Paste to preview a newer package without changing anything else:
+
+```bash
+sudo apt-get update
+apt-cache policy skopeo
+sudo apt-get install -t testing skopeo
+```
+
+Plain `apt install` never chooses testing (priority 100), and a package that stable also offers stays on
+stable on `apt upgrade`. A package you installed with `-t testing` that stable does not offer at a higher
+version keeps following testing on later upgrades (the installed version ties at 100 and the newer one
+wins); pinning the archives at 99 instead would stop that, `-t testing` and `pkg/testing` still working.
+If you add your own preference
+for these archives, write ONE `Pin: release a=<archive>` stanza per archive: the comma-separated
+conditions of a single `Pin: release` line must all match, so a line naming three archives matches none.
+
 ## Per-container memory watcher
 
 The shipped policy disables MDT's inotify memory watcher. Correctly placed
@@ -683,9 +702,9 @@ version = "7.11.0"
 
 [[artifact]]
 name = "pwmcp-bundle"
-path = "/path/to/pwmcp-1.64.0-r2.tar.xz"
+path = "/path/to/pwmcp-1.64.0-r3.tar.xz"
 sha256 = "<64 hex digits>"
-version = "1.64.0-r2"
+version = "1.64.0-r3"
 ```
 
 ```bash

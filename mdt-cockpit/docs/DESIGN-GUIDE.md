@@ -251,6 +251,46 @@ caches and config directories.
 Everything else (`~/.aws`, `~/.docker`, `~/.config/gh`, pip/uv/npm caches, ...)
 is user state and is deliberately left at each tool's own home default.
 
+## Debian testing preview archive
+
+`apt/testing.sources` adds Debian `testing` (deb822, signed by the Debian archive keyring) and
+`apt/preview-archives.pref` pins `oldstable`, `oldstable-backports` and `testing` to priority 100:
+visible for `apt-cache policy` and `apt install -t testing <pkg>`, never auto-selected.
+
+* **One stanza per archive.** In apt_preferences(5) the comma-separated conditions of one
+  `Pin: release` line are a logical AND. The tempting `Pin: release a=oldstable, a=oldstable-backports,
+  a=testing` therefore matches nothing and leaves testing at the default 500, which would let
+  testing packages upgrade the system: the opposite of the intent. `scripts/test_apt_preview_archives.py`
+  parses the file and fails on that form.
+* **Skopeo.** The former temporary `testing.list` is gone. The skopeo step now uses the permanent source
+  and a temporary skopeo-only pin of 501, removed in the same RUN, so the image leaves the step with testing
+  at 100 and no build state hides a 500.
+* **Known tie (priority 100 is the operator's choice).** The installed version also sits at 100
+  (`/var/lib/dpkg/status`). A package installed with `-t testing` that stable does not offer at a higher
+  version (testing-only packages, new-soname libraries, a local `.deb`) therefore ties with testing at 100
+  and the newer version wins: it keeps following testing on every `apt upgrade`. Packages stable also
+  offers stay on stable (500 beats 100, and apt does not downgrade). **Alternative:** Pin-Priority 99 for the
+  three archives makes the installed version win, so nothing already installed upgrades from them, while
+  `apt install -t testing <pkg>` (990) and `pkg/testing` still work and a not-installed package is still
+  installable. Changing it means the pref file, the oracle's priority argument, the runtime test's regexes
+  and these docs.
+* **Skopeo fails closed.** If testing offers no skopeo apt would install, or the install fails, the build
+  stops with an error rather than quietly keeping trixie's older skopeo. The testing files are copied just
+  after the last other `apt-get update` in the image, so this step is the only one that fetches testing indexes
+  (a testing-mirror hiccup cannot fail an unrelated layer). Skopeo has no ordering dependency on the layers above.
+* **Acceptance** is image-level: `tests/runtime/test_apt_preview.py` builds a synthetic index in the container
+  (the image carries no apt lists and the lane is offline) and lets apt apply the image's real files.
+
+## gdu and dust
+
+Both are static linux/amd64 binaries pinned to the newest release at least 14 days old when pinned
+(estate freshness rule), not "latest": a bump is a deliberate edit in `scripts/stage_tool_artifacts.py`.
+gdu is checked against upstream `sha256sums.txt`. dust publishes no checksum file, so its sha256 is pinned
+in the same file (it equals the digest GitHub records for the asset) and written to an offline sidecar that
+the Dockerfile re-verifies. The gdu sums file comes from the same origin as the archive, so it guards
+against corruption, not against a compromised release (upstream's detached `.asc` is not verified); this is
+the same trust model as crane and regctl.
+
 ## System-wide defaults
 
 Every default the image ships is installed where its tool reads *system-wide*
