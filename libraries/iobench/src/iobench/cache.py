@@ -158,17 +158,20 @@ class E2:
     gap_ratio: float | None
     r_e2: float | None
     voided: bool
+    qd32_start: float  # both start timestamps are recorded (CCH-03): the adjacency evidence must be auditable from the artefact
+    qd1_start: float
 
     def as_dict(self) -> dict:
-        return {"shape": self.shape, "gap_ratio": self.gap_ratio, "R_E2_iops": self.r_e2, "voided": self.voided}
+        return {"shape": self.shape, "gap_ratio": self.gap_ratio, "R_E2_iops": self.r_e2, "voided": self.voided,
+                "qd32_start": self.qd32_start, "qd1_start": self.qd1_start}
 
 
 def e2_estimate(qd32_steady: float, qd1: Modes, qd32_start_s: float, qd1_start_s: float) -> E2:
     """R_E2 = steady(QD32) x (1 - h2) when the QD1 run is bimodal and adjacent (gap <= 60 s)."""
     voided = qd1_start_s - qd32_start_s > E2_GAP_MAX_S
     if voided or qd1.shape != "bimodal":
-        return E2(qd1.shape, None, None, voided)
-    return E2("bimodal", qd1.t_miss_us / qd1.t_hit_us, qd32_steady * (1 - qd1.h2), False)
+        return E2(qd1.shape, None, None, voided, qd32_start_s, qd1_start_s)
+    return E2("bimodal", qd1.t_miss_us / qd1.t_hit_us, qd32_steady * (1 - qd1.h2), False, qd32_start_s, qd1_start_s)
 
 
 # -- E1 (informational) ------------------------------------------------------------
@@ -268,6 +271,9 @@ def classify_cache(cold: ColdProbe | None, e2: E2 | None, *, cliff_bytes: float 
         state, r = "undetermined", None
     elif cold.state not in ("steady", "flat"):
         # a drifting or noisy cold probe is not a rate: the one value that confers `proven` on every read cap needs a certified basis
+        state, r, reasons = "undetermined", None, ["cache_model_undetermined"]
+    elif cold.rate_limited is True and r_e2 is not None and not _within(cold.r_cold / r_e2):
+        # STA-03: the E2 cross-check applies to a flat cold probe too; a limiter on cache-resident data would disagree with it
         state, r, reasons = "undetermined", None, ["cache_model_undetermined"]
     elif cold.rate_limited is True:
         state, r, reasons = "rate_cap", cold.r_cold, []

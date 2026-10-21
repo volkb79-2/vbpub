@@ -8,11 +8,13 @@ is deliberately no builder for ``fstrim``, ``mkfs*``, ``wipefs`` without ``-n``,
 from __future__ import annotations
 
 import json
+import math
 import posixpath
 from dataclasses import dataclass, replace
 from typing import Any, Sequence
 
 from .errors import Refusal
+from .series import IntegrityError
 from .host import TAIL_BYTES, Host, RunResult
 
 PERCENTILES = (50.0, 90.0, 95.0, 99.0, 99.9)
@@ -228,7 +230,10 @@ def parse_rate_log(text: str, metric: str) -> list[tuple[float, float]]:
     out = []
     for line in text.splitlines():
         parts = [p.strip() for p in line.split(",")]
-        out.append((int(parts[0]) / 1000.0, float(parts[1]) * scale))
+        t, v = int(parts[0]) / 1000.0, float(parts[1]) * scale
+        if not (math.isfinite(t) and math.isfinite(v)):
+            raise IntegrityError(f"IOB-PLA-14: non-finite value in the fio log line {line!r}")
+        out.append((t, v))
     return out
 
 

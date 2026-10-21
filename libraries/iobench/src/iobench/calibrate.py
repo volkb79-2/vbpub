@@ -73,6 +73,7 @@ class Calibrator(Runner):
         self.reads: list[dict[str, Any]] = []
         self.writes: list[dict[str, Any]] = []
         self.depth: dict[str, dict[int, float]] = {"read": {}, "write": {}}
+        self.depth_unsteady: set[str] = set()  # directions with an unsteady depth rung: QD90 would rest on a drifting figure
         self.qd1_p99: dict[str, float] = {}
         self.evidence: dict[str, Any] = {"histograms": {}}
         self.refs: dict[str, dict[str, float]] = {}
@@ -99,6 +100,7 @@ class Calibrator(Runner):
         self.curve: list[dict[str, Any]] = []
         self.little: list[plausibility.Check] = []
         self.last_started = 0.0
+        self.history_rotated: str | None = None
         self.calibration_id = f"cal-{self.run_id[4:].rsplit('-', 1)[0]}-{host.token()}{host.token()}"
 
     # -- helpers ---------------------------------------------------------------------------------------
@@ -257,6 +259,8 @@ class Calibrator(Runner):
             for qd in (1, 8) + ((64,) if self.profile == "thorough" else ()):
                 rec = self.rung(ws, direction, qd, RUNG_S, "-d")
                 self.depth[direction][qd] = rec["steady_iops"]
+                if rec["state"] == "unsteady":
+                    self.depth_unsteady.add(direction)
                 if qd == 1:
                     self.qd1_p99[direction] = rec["lat_us"]["p99"]
 
@@ -278,6 +282,8 @@ class Calibrator(Runner):
             self.reads.append(rec)
             if ws == largest:
                 self.depth["read"][32] = rec["steady_iops"]
+                if rec["state"] == "unsteady":
+                    self.depth_unsteady.add("read")
                 if not self.quick:
                     # E2 is an optional estimator (CCH-03): a missing or unusable histogram is recorded, never a failed calibration
                     started = self.last_started
@@ -289,6 +295,8 @@ class Calibrator(Runner):
                 self.stage("hit_ref", self.hit_ref, min_s=HIST_S)
             if ws == largest:
                 self.depth["write"][32] = self.writes[-1]["steady_iops"]
+                if self.writes[-1]["state"] == "unsteady":
+                    self.depth_unsteady.add("write")
             if not densified and len(self.reads) > MIN_RUNGS:
                 ref = statistics.median(r["steady_iops"] for r in self.reads[:MIN_RUNGS])
                 if rec["steady_iops"] < ladder.CLIFF_RATIO * ref:
@@ -351,7 +359,16 @@ class Calibrator(Runner):
 
     # -- S6 ------------------------------------------------------------------------------------------------
     def s6(self) -> None:
+        if not self.quick:
+            # the "before" reference of the shape group is taken NOW: the one from the end of rearm is several minutes of heavy writes old
+            # and a draining bucket would make a healthy disk look like a moved ceiling (review B-S3)
+            self.reference("r3s")
+            self.ref_tag = "r3s"
         for n, cell in enumerate(shape.grid_plan(quick=self.quick)):
+            if not self.fits(cell.seconds + 5):
+                self.budget_limited = True
+                self.limits.append("limited-by-budget")
+                break  # never decide on a partial grid beyond what the budget allows; the fit sees fewer cells
             if cell.block_state == "fresh":
                 if not self.fresh_ok:
                     continue
@@ -374,6 +391,9 @@ class Calibrator(Runner):
             if ceiling is None:
                 continue
             for pct in (S7_QUICK_POINTS if self.quick else S7_POINTS):
+                if not self.fits(S7_S + 5):
+                    self.limits.append("limited-by-budget")
+                    return
                 offered = max(1, int(ceiling * pct / 100))
                 out = self.run_job(f"s7-{direction[0]}{pct}", "randread" if direction == "read" else "randwrite", 4096, 32, S7_S,
                                    0, self.ws, key="ladder", rate_iops=offered)
@@ -406,7 +426,7 @@ class Calibrator(Runner):
         best = ladder.best_read_rung(classes)
         self.a = {"cliff": cliff, "cached_ref": cached_ref, "classes": classes, "writes": writes, "largest": largest, "cold": cold, "e2": e2,
                   "e1": e1, "state": state, "read_value": value, "best": best,
-                  "headroom": best / state.r if state.status == "proven" else None}
+                  "headroom": best / state.r if state.status == "proven" and best is not None else None}
         extras = (["budget_limited"] if self.budget_limited else []) + (["ceiling_moved"] if self.moved.get("ladder") else [])
         unsteady = "unsteady" if "unsteady" in (largest["state"], writes[-1]["state"]) else "steady"
         self.checks += [plausibility.pla_01(unsteady),
@@ -417,7 +437,7 @@ class Calibrator(Runner):
                         plausibility.pla_05([f"{r['dir']}-{r['ws_bytes'] // MIB}M" for r in classes + writes if r["rate_limited"] is True]),
                         plausibility.pla_10(state.state, list(state.reasons))]
         failing = [c for c in self.little if c.status == "fail"]
-        self.checks.append(failing[0] if failing else self.little[0])
+        self.checks.append(replace(failing[0], detail="; ".join(c.detail for c in failing)) if failing else self.little[0])
         # read basis
         if largest["state"] == "unsteady":
             read = _basis(None, [], "basis_unsteady")
@@ -516,9 +536,12 @@ class Calibrator(Runner):
         ratio = None
         if self.a["state"].status == "proven":
             ratio = self.a["state"].r / self.a["largest"]["steady_iops"]
+        # the reasons are the real ones of the basis the figure rests on (quick profile, undetermined cache, budget, time proof ...)
+        write_reasons = tuple(self.bases["write"].get("reasons", ())) or (() if self.write_proven else ("short_observation",))
         out = {}
         for direction in ("read", "write"):
-            b = ladder.bps_basis(direction, cell(direction), cache_ratio=ratio, write_proven=self.write_proven)
+            b = ladder.bps_basis(direction, cell(direction), cache_ratio=ratio, read_reasons=tuple(self.a["state"].reasons),
+                                 write_reasons=write_reasons)
             d = b.as_dict()
             extra = (["budget_limited"] if self.budget_limited else []) + (["ceiling_moved"] if self.moved.get("shape") else [])
             out[direction] = _basis(b.value, [*b.reasons, *extra]) if b.status != "absent" else d
@@ -545,7 +568,7 @@ class Calibrator(Runner):
                 "linear_model_fit_by_dir": {"read": "insufficient", "write": "insufficient"}, "linear_model_fit": "insufficient"}
 
     def qd90_doc(self) -> dict[str, Any]:
-        return {d: (ladder.qd90(self.depth[d]) if {1, 8, 32} <= set(self.depth[d]) else None) for d in ("read", "write")}
+        return {d: (ladder.qd90(self.depth[d]) if {1, 8, 32} <= set(self.depth[d]) and d not in self.depth_unsteady else None) for d in ("read", "write")}
 
     def assemble(self, report: Any) -> tuple[dict[str, Any], dict[str, Any]]:
         a = self.a
@@ -600,7 +623,7 @@ class Calibrator(Runner):
         targets = {**self.cfg.targets, "source": "default" if self.cfg.targets == tgt else "operator"}
         writeback = {n: proposals.absent("stage_skipped", r) for n, r in (("dirty_bytes", "R1"), ("dirty_background_bytes", "R1b"),
                                                                          ("nr_requests", "R2"), ("max_sectors_kb", "R3"))}
-        evidence = {**self.evidence, "drain": {}, "sweep": {}, "read_cost": {},
+        evidence = {**self.evidence, "drain": {}, "sweep": {}, "read_cost": {}, "history_rotated": self.history_rotated,
                     "preflight": {**self.preflight, "slice_io_max_after": report.io_max_after}}
         result = {"schema": res.SCHEMA, "schema_minor": res.SCHEMA_MINOR, "tool": self.tool(),
                   "run": self.run_record("complete", "", self.calibration_id), "identity": self.identity, "targets": targets,
@@ -646,10 +669,11 @@ class Calibrator(Runner):
             res.write_failed(self.host, p["result"], doc)
             res.write_failed(self.host, p["calibration"], doc)
             return Outcome(status, code, message, doc, doc)
+        digest = ceilings.identity_digest(self.identity)
+        self.history_rotated = ceilings.rotate_foreign(self.host, p["ceilings"], digest, ceilings.iso(self.host.now()))
         calibration, result = self.assemble(report)
         res.write_json(self.host, p["calibration"], calibration)
         res.write_json(self.host, p["result"], result)
-        digest = ceilings.identity_digest(self.identity)
         ts = ceilings.iso(self.host.now())
         plateaus = [{"dir": d, "workload": "rand4k", "plateau_bps": self.obs[d].steady * 4096, "observation_s": self.obs[d].observation_s,
                      "state": self.obs[d].state} for d in ("read", "write") if d in self.obs]

@@ -115,7 +115,7 @@ def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: 
         stages += [Stage("ladder-qd", 120 + (60 if thorough else 0), False, "largest rung QD1/QD8" + (" + QD64" if thorough else "")),
                    Stage("E2", 120), Stage("fresh-vs-rewrite", 90), Stage("fresh-observation", 120),
                    Stage("rearm", 100)]
-    stages.append(Stage("reference", 60 if quick else 150))
+    stages.append(Stage("reference", 60 if quick else 180))
     if not quick:
         stages.append(Stage("observation", 1140 if thorough else 360))
     stages.append(Stage("S6", 160 if quick else 720))
@@ -153,10 +153,11 @@ class Budget:
 
     now: Callable[[], float]
     total_s: float
-    started: float = field(default=0.0)
+    started: float | None = None  # the run's own start (S0 and S1 count against the budget); the creation time if not given
 
     def __post_init__(self) -> None:
-        self.started = self.now()
+        if self.started is None:
+            self.started = self.now()
 
     def elapsed(self) -> float:
         return self.now() - self.started

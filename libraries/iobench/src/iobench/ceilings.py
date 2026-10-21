@@ -75,6 +75,25 @@ def header_of(text: str) -> str:
     return json.loads(text.splitlines()[0])["identity_digest"]
 
 
+def rotate_foreign(host: Host, path: str, digest: str, stamp: str) -> str | None:
+    """Move a history that belongs to another disk identity (or is unreadable) aside BEFORE a run writes its records.
+
+    ``load`` already ignores such a file, but ``append`` refuses it: refusing after the result is written would leave a complete
+    record and a non-zero exit.  Returns the new path, or ``None`` when nothing needed to move."""
+    if not host.exists(path):
+        return None
+    text = host.read_text(path)
+    try:
+        if header_of(text) == digest:
+            return None
+    except (ValueError, KeyError, IndexError):
+        pass  # an empty or garbled header cannot be appended to either
+    aside = f"{path}.foreign-{stamp.replace(':', '')}"
+    host.write_atomic(aside, text)
+    host.remove(path)
+    return aside
+
+
 def load(host: Host, path: str, digest: str) -> tuple[list[dict[str, Any]], list[str]]:
     """``(observations, warnings)``; a history of another identity is ignored with a warning."""
     if not host.exists(path):

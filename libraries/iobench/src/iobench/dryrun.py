@@ -19,9 +19,19 @@ def rate_source(host: Any, cfg: Config) -> float:
     """R_est for a dry run: ``--assume-r-est``, else the existing calibration's S1 value; never invented."""
     if cfg.assume_r_est is not None:
         return cfg.assume_r_est
-    path = res.paths(res.state_dir_of(host, cfg.state_dir))["calibration"]
+    state = res.state_dir_of(host, cfg.state_dir)
+    path = res.paths(state)["calibration"]
     if host.exists(path):
-        return res.load(host, path, res.REQUIRED_CAL_TOP)["calibration"]["R_est_bps"]
+        # a stored rate is a fact about ONE disk: another target's calibration, or one whose disk has changed, must not plan this run
+        chk = res.check(host, state, calibration=True, now=host.now())
+        if chk.state in ("stale", "corrupt", "aborted_only"):
+            raise Refusal("dry_run_rate_unusable", f"the stored calibration cannot supply a write rate ({chk.state}{': ' + chk.reasons[0] if chk.reasons else ''})",
+                          "pass --assume-r-est BYTES_PER_S or calibrate this disk again")
+        doc = res.load(host, path, res.REQUIRED_CAL_TOP)["calibration"]
+        if doc["target"]["path"] != cfg.target:
+            raise Refusal("dry_run_rate_other_target", f"the stored calibration belongs to {doc['target']['path']}, not {cfg.target}",
+                          "pass --assume-r-est BYTES_PER_S or calibrate this target first")
+        return doc["R_est_bps"]
     raise Refusal("dry_run_rate", "a dry run cannot measure S1, so it has no write rate to plan with",
                   "pass --assume-r-est BYTES_PER_S or calibrate once first")
 

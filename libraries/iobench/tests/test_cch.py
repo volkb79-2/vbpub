@@ -98,11 +98,11 @@ def test_cch_05_cache_state_table():
     s = classify(probe())
     assert (s.state, s.status, s.r) == ("cold_measured", "proven", 9800.0)
     # E2 agrees: R = min(R_cold, R_E2); E2 overlapping or voided is not a failure
-    s = classify(probe(), E2("bimodal", 6.9, 9000.0, False))
+    s = classify(probe(), E2("bimodal", 6.9, 9000.0, False, 100.0, 105.0))
     assert s.state == "cold_measured" and s.r == 9000.0
-    assert classify(probe(), E2("overlapping", None, None, False)).state == "cold_measured"
+    assert classify(probe(), E2("overlapping", None, None, False, 100.0, 105.0)).state == "cold_measured"
     # E2 disagrees (ratio outside [0.7, 1.43])
-    s = classify(probe(), E2("bimodal", 6.9, 5000.0, False))
+    s = classify(probe(), E2("bimodal", 6.9, 5000.0, False, 100.0, 105.0))
     assert (s.state, s.reasons, s.r) == ("undetermined", ("cache_model_undetermined",), None)
     # rate cap needs the COLD PROBE itself flat and not hit-like
     s = classify(probe(rl=True, cls="indeterminate"))
@@ -450,14 +450,14 @@ def test_cch_08_5_flat_rate_cap():
 
 
 def test_cch_08_6_e2_disagrees():
-    s = classify(probe(), E2("bimodal", 6.9, 9800.0 * 0.5, False))
+    s = classify(probe(), E2("bimodal", 6.9, 9800.0 * 0.5, False, 100.0, 105.0))
     assert (s.state, s.reasons) == ("undetermined", ("cache_model_undetermined",))
-    assert classify(probe(), E2("bimodal", 6.9, 9800.0 / 1.44, False)).state == "undetermined"
-    assert classify(probe(), E2("bimodal", 6.9, 9800.0 / 1.42, False)).state == "cold_measured"
+    assert classify(probe(), E2("bimodal", 6.9, 9800.0 / 1.44, False, 100.0, 105.0)).state == "undetermined"
+    assert classify(probe(), E2("bimodal", 6.9, 9800.0 / 1.42, False, 100.0, 105.0)).state == "cold_measured"
 
 
 def test_cch_08_7_overlapping_modes_e2():
-    s = classify(probe(), E2("overlapping", 1.8, None, False))
+    s = classify(probe(), E2("overlapping", 1.8, None, False, 100.0, 105.0))
     assert (s.state, s.status) == ("cold_measured", "proven")      # E2 is a cross-check, not a gate
 
 

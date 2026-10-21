@@ -240,6 +240,6 @@ token bucket longer than the observation cannot be excluded by a one-off benchma
   `cached_ref` equals the miss rate, no cliff appears, and the cap still comes from the cold probe.
 * **CCH-08 #2 range.** `R = min(R_cold, R_E2)` with `R_E2 = steady(QD32) x (1 - h2)` is conservative on the mixed largest rung (about 7.3k against a cold 9.8k); the fixture asserts 0.7 to 1.06 x 9.8k.
 * **SHP-04 wins over PLA-11.** A poor fit makes the model keys `absent: stage_failed` and the QoS `max` `unproven: shape_fit_poor`; the PLA-11 text now says the same.
-* **CAL-01.** The rule wins over the literal numbers: the two densification rungs are the geometric thirds (282.8 and 312.4 GiB). They add a fixed two rungs, so the section 15 allotment sum (3280 s standard, 4120 s thorough) is unchanged and `test_slo_05_*` pins it.
+* **CAL-01.** The rule wins over the literal numbers: the two densification rungs are the geometric thirds (282.8 and 312.4 GiB). They add a fixed two rungs, so the section 15 allotment sum (3310 s standard, 4150 s thorough) is unchanged and `test_slo_05_*` pins it.
 * **REL-01.** Wheel and sha256 only.
 

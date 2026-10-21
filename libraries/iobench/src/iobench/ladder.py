@@ -75,9 +75,12 @@ def cached_tier_factor(rungs: Sequence[dict[str, Any]]) -> float:
     return ordered[0]["steady_iops"] / ordered[-1]["steady_iops"]
 
 
-def best_read_rung(rungs: Sequence[dict[str, Any]]) -> float:
-    """The maximum steady read IOPS over all rungs (the only permitted use of a cached figure, IOB-DER-06)."""
-    return max(r["steady_iops"] for r in rungs)
+def best_read_rung(rungs: Sequence[dict[str, Any]]) -> float | None:
+    """The maximum steady read IOPS over the steady rungs (the only permitted use of a cached figure, IOB-DER-06).
+
+    An unsteady rung has no trustworthy rate; ``None`` when no rung is steady."""
+    steady = [r["steady_iops"] for r in rungs if r["state"] in ("steady", "flat")]
+    return max(steady) if steady else None
 
 
 def fresh_extent(usable: int, ws_max: int) -> tuple[int, int] | None:
@@ -146,15 +149,17 @@ class Basis:
 
 
 def bps_basis(direction: str, seq_cell: dict[str, Any] | None, *, cache_ratio: float | None,
-              write_proven: bool = True) -> Basis:
-    """BPS cap basis: the sequential 1 MiB QD16 cell, scaled by ``cache_ratio`` for proven reads (IOB-CAL-06).
+              read_reasons: Sequence[str], write_reasons: Sequence[str]) -> Basis:
+    """BPS cap basis: the sequential 1 MiB QD32 cell, scaled by ``cache_ratio`` for proven reads (IOB-CAL-06).
 
+    ``read_reasons`` (used when the read cache state is unproven) and ``write_reasons`` (empty = the write series is proven)
+    are the real reasons of the basis, supplied by the caller: there is no default that could stand in for them.
     A flat-line (``rate_limited``) cell is not a proof: it is treated exactly like any other cell."""
     if seq_cell is None:
         return Basis(None, "absent", reason="bps_basis_missing")
     bps = seq_cell["steady_bps"]
     if direction == "read":
         if cache_ratio is None:
-            return Basis(bps, "unproven", ("cache_residual_possible",))
+            return Basis(bps, "unproven", tuple(read_reasons))
         return Basis(bps * min(1.0, cache_ratio), "proven")
-    return Basis(bps, "proven" if write_proven else "unproven", () if write_proven else ("short_observation",))
+    return Basis(bps, "unproven" if write_reasons else "proven", tuple(write_reasons))

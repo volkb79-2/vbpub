@@ -159,7 +159,13 @@ class Matrixer(Runner):
 
     def s4(self) -> None:
         plan_cells = sweep.sweep_plan(self.base, self.max_hw, full=self.cfg.full_sweep)
-        records = [self.run_cell(c, f"s4-{k}") for k, c in enumerate(plan_cells)]
+        records = []
+        for k, c in enumerate(plan_cells):
+            if not self.fits(sweep.cell_need_s(sweep.SWEEP_CELL_S)):
+                records.append({"name": c.name, "knobs": c.knobs, "varies": c.varies, "skipped": "budget"})
+                self.limits.append("limited-by-budget")
+                continue  # never decide on a partial set: a lost REF cell fails the stage below
+            records.append(self.run_cell(c, f"s4-{k}"))
         measured = [r for r in records if "skipped" not in r]
         self.sweep_cells = records
         if len(measured) < 3 or measured[0]["name"] != "REF" or measured[-1]["name"] != "REF2":
@@ -182,13 +188,17 @@ class Matrixer(Runner):
         self.cands = sweep.rdc_candidates([self.r3_cand, up], self.max_hw)
         bps: dict[int, float] = {}
         for kb in self.cands:
-            self.apply({**self.base, "max_sectors_kb": kb})
+            if not self.apply({**self.base, "max_sectors_kb": kb}):
+                continue  # the kernel did not take this size: a read at the unchanged setting would be recorded under the wrong one
             bps[kb] = self.read_job(f"rdc-{kb}", sweep.RDC_CELL_S, direct=True).stats.bw_bps
+        if self.max_hw not in bps:
+            raise S.SeriesError("the native request size could not be applied: no read-cost baseline")
         native = bps[self.max_hw]
         self.read_ratio = {str(kb): sweep.read_ratio(v, native) for kb, v in bps.items()}
         buffered = {}
         for kb in (64, 256):
-            self.apply({**self.base, "max_sectors_kb": kb})
+            if not self.apply({**self.base, "max_sectors_kb": kb}):
+                raise S.SeriesError(f"max_sectors_kb={kb} could not be applied: no buffered read-cost comparison")
             buffered[kb] = self.read_job(f"rdc-buf-{kb}", sweep.RDC_BUFFERED_S // 2, direct=False).stats.bw_bps
         self.evidence["read_cost"] = {"native_bps": native, "candidates": [{"max_sectors_kb": kb, "bps": v, "read_ratio": self.read_ratio[str(kb)]}
                                                                            for kb, v in bps.items()],
@@ -208,6 +218,10 @@ class Matrixer(Runner):
         cells = []
         for k, value in enumerate(order):
             cell = sweep.SweepCell(f"{name}={value}", {**current, name: value}, name)
+            if not self.fits(sweep.cell_need_s(plan.KNOB_CELL_S)):
+                cells.append({"name": cell.name, "knobs": cell.knobs, "varies": cell.varies, "skipped": "budget"})
+                self.limits.append("limited-by-budget")
+                continue
             cells.append(self.run_cell(cell, f"knob-{k}", plan.KNOB_CELL_S))
         measured = [c for c in cells if "skipped" not in c]
         decision = None
@@ -227,7 +241,8 @@ class Matrixer(Runner):
         sweep_ok = self.stage_ok("S4")
         winners = self.decision["winners"] if sweep_ok else {}
         common = (["cross_disk"] if self.workdir.cross_disk else []) + (["noise_floor_high"] if sweep_ok and self.decision["noise_high"] else []) \
-            + ([] if sweep_ok else ["formula_only"])
+            + ([] if sweep_ok else ["formula_only"]) \
+            + (["short_observation"] if "short_observation" in self.cal["cap_basis"]["write"].get("reasons", []) else [])  # R_drain over a short buffered load can sit inside a burst
         qd90 = self.cal["ladder"]["qd90"]["write"]
         out: dict[str, Any] = {}
         cur_nr = self.read_knob("nr_requests")

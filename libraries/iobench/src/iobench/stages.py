@@ -96,7 +96,7 @@ class Runner:
 
     # -- budget and stage records ---------------------------------------------------------
     def start_budget(self, total_s: int) -> None:
-        self.budget = plan.Budget(self.host.now, total_s)
+        self.budget = plan.Budget(self.host.now, total_s, self.started)
 
     def fits(self, seconds: float) -> bool:
         return self.budget.fits(seconds)

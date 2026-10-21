@@ -120,23 +120,26 @@ def test_cal_05_observation_limits():
 
 def test_cal_06_bps_basis_rules():
     cell = {"steady_bps": 4096 * 1024 * 1024.0, "rate_limited": True}
+    CRP = ("cache_residual_possible",)
+    kw = dict(read_reasons=CRP, write_reasons=())
     # proven read cache state: scaled by cache_ratio (<= 1)
-    b = ladder.bps_basis("read", cell, cache_ratio=0.25)
+    b = ladder.bps_basis("read", cell, cache_ratio=0.25, **kw)
     assert (b.value, b.status) == (1024 * 1024 * 1024.0, "proven")
-    assert ladder.bps_basis("read", cell, cache_ratio=3.0).value == cell["steady_bps"]  # never above the cell
-    # unproven: not scaled, cache_residual_possible
-    u = ladder.bps_basis("read", cell, cache_ratio=None)
+    assert ladder.bps_basis("read", cell, cache_ratio=3.0, **kw).value == cell["steady_bps"]  # never above the cell
+    # unproven: not scaled, with the REAL reasons of the cache state (quick profile, undetermined ...), none invented
+    u = ladder.bps_basis("read", cell, cache_ratio=None, **kw)
     assert (u.value, u.status, u.reasons) == (cell["steady_bps"], "unproven", ("cache_residual_possible",))
-    flat_free = ladder.bps_basis("read", {"steady_bps": 5e8, "rate_limited": False}, cache_ratio=None)
+    flat_free = ladder.bps_basis("read", {"steady_bps": 5e8, "rate_limited": False}, cache_ratio=None, **kw)
     assert flat_free.reasons == ("cache_residual_possible",)
+    assert ladder.bps_basis("read", cell, cache_ratio=None, read_reasons=("quick_profile",), write_reasons=()).reasons == ("quick_profile",)
     # missing cell
-    m = ladder.bps_basis("read", None, cache_ratio=0.5)
+    m = ladder.bps_basis("read", None, cache_ratio=0.5, **kw)
     assert (m.value, m.status, m.reason) == (None, "absent", "bps_basis_missing")
     assert m.as_dict() == {"value": None, "status": "absent", "reason": "bps_basis_missing"}
-    # writes: status of the time proof, never scaled
-    assert ladder.bps_basis("write", {"steady_bps": 14e6}, cache_ratio=0.1).status == "proven"
-    w = ladder.bps_basis("write", {"steady_bps": 14e6}, cache_ratio=None, write_proven=False)
-    assert (w.status, w.reasons, w.value) == ("unproven", ("short_observation",), 14e6)
+    # writes: the reasons of the write basis, never scaled
+    assert ladder.bps_basis("write", {"steady_bps": 14e6}, cache_ratio=0.1, **kw).status == "proven"
+    w = ladder.bps_basis("write", {"steady_bps": 14e6}, cache_ratio=None, read_reasons=CRP, write_reasons=("short_observation", "budget_limited"))
+    assert (w.status, w.reasons, w.value) == ("unproven", ("short_observation", "budget_limited"), 14e6)
     assert u.as_dict()["reasons"] == ["cache_residual_possible"]
 
 

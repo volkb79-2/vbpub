@@ -20,6 +20,14 @@ REF_LOAD_S = 60
 QUIET_DIRTY_BYTES = 4 * 1024 * 1024
 QUIET_FOR_S = 5
 QUIET_MAX_S = 60
+CELL_OVERHEAD_S = 15  # probe-unit slack and spawn gaps around one cell
+
+
+def cell_need_s(seconds: int) -> int:
+    """What one sweep cell can take at most: the quiet gap, the load and the overhead."""
+    return QUIET_MAX_S + seconds + CELL_OVERHEAD_S
+
+
 RDC_CELL_S = 10
 RDC_BUFFERED_S = 20
 PROBE_INTERVAL_S = 0.5

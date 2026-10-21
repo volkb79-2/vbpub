@@ -142,7 +142,7 @@ reported complete. *Reference cell*: the fixed short cell of section 8.
 * **IOB-SLO-02** No stage writes more than `1.2 x R_est x stage_seconds` bytes, enforced by fio's `--io_size` (fio stops at the earlier of runtime and io_size) and by the free-space bound. A stage truncated by its byte cap yields a short series; if it has < 8 points the stage status is `failed: insufficient_points` and dependents are `absent: stage_failed` (never a guessed value). *Oracle:* `test_slo_02_volume_bound` (14 MB/s scenario; also the **3 x `R_est` scenario**: actual rate triples mid-run, bytes written still <= the bound, truncated stage reported).
 * **IOB-SLO-03** If `R_est < 5 MB/s`, or the fill does not fit `fill_budget_s`, the calibration runs time-bounded from the measured cap: `WS_max` shrinks by IOB-CAL-01, `limits += limited-by-budget`, cache-dependent values `unproven: budget_limited`. The sweep is skipped only if the quiet gap cannot drain the dirty pool within its bound (then writeback `unproven: formula_only`). *Oracle:* `test_slo_03_slow_disk_time_bounded`.
 * **IOB-SLO-04** A hard wall-clock budget bounds the run. Stages run in priority order S0, S1, fill, E-cold, ladder, E2 runs, reference cells, S3, S4, S5, S6, S7 (calibration: S0, S1, fill, E-cold, ladder, E2, fresh/rewrite, rearm, refs, observation, S6, S7); a stage that cannot fit its minimum is skipped and recorded `skipped: budget`. *Oracle:* `test_slo_04_priority_and_skip_record`.
-* **IOB-SLO-05 (allotment table, finding S-8)** Section 15 contains the per-stage allotment. A planner function `plan(profile, geometry)` returns it; *Oracle:* `test_slo_05_standard_fits_on_r1002_geometry` asserts `sum(allotments) == 3280 <= 3600` for `standard` and `4120 <= 4500` for `thorough` on the r1002 geometry with E-cold, S6 and S7 included, and `test_slo_05_matrix_worst_case_fits` asserts the matrix worst case <= 900 s and the knob plan typical <= 240 s, worst <= 480 s.
+* **IOB-SLO-05 (allotment table, finding S-8)** Section 15 contains the per-stage allotment. A planner function `plan(profile, geometry)` returns it; *Oracle:* `test_slo_05_standard_fits_on_r1002_geometry` asserts `sum(allotments) == 3310 <= 3600` for `standard` and `4150 <= 4500` for `thorough` on the r1002 geometry with E-cold, S6 and S7 included, and `test_slo_05_matrix_worst_case_fits` asserts the matrix worst case <= 900 s and the knob plan typical <= 240 s, worst <= 480 s.
 
 ## 8. Reference cells and the moving ceiling (ruling R-8)
 
@@ -240,7 +240,7 @@ Proposals live in `proposals.*`; each value is `{value, status, reasons|reason, 
 |---|---|---|---|
 | `quick` | `calibrate --profile quick` | 12 min | S0, S1, fill up to `R_est x 60 s`, rungs 1 GiB / 16 GiB / `WS_max`, reference cells, S6 reduced (4 KiB and 64 KiB x seq/rand x read/write rewrite = 8 cells), S7 at 10/30/90 %; **no E-cold, no E2: all cache-dependent values `unproven: quick_profile`** (reported honestly, not absent) |
 | `standard` | `calibrate --profile standard` (default) | 60 min | the table below |
-| `thorough` | `calibrate --profile thorough` | 75 min (4500 s) | standard + QD64 (60 s) + the 900 s / 240 s observation runs (replacing 240/120 s, +780 s): 4120 s planned; `--full-sweep` is a matrix option |
+| `thorough` | `calibrate --profile thorough` | 75 min (4500 s) | standard + QD64 (60 s) + the 900 s / 240 s observation runs (replacing 240/120 s, +780 s): 4150 s planned; `--full-sweep` is a matrix option |
 | `matrix` | `matrix` | 15 min | S0, S3, 6-cell sweep, S5 |
 | `matrix --knob` | `matrix --knob K --candidates ...` | 8 min | A B A B cells |
 | `run` | `run` | sum | calibrate if no current calibration, then matrix |
@@ -259,11 +259,11 @@ Proposals live in `proposals.*`; each value is `{value, status, reasons|reason, 
 | fresh vs rewrite | 90 | 2 x 30 s + discards |
 | fresh observation | 120 | write run on the fresh extent |
 | rearm cell (IOB-CAL-10) | 100 | 2 x 30 s + discard + references |
-| reference cells | 150 | 5 pairs x 2 dirs x 15 s |
+| reference cells | 180 | 6 pairs x 2 dirs x 15 s (r0 to r4, plus a fresh reference immediately before S6) |
 | observation runs | 360 | 240 write + 120 read |
 | S6 | 720 | 22 cells x 30 s + anchor repeats (60 s) |
 | S7 | 160 | 4 points x 2 dirs x 20 s |
-| **total** | **3280** | <= 3600 (320 s slack) |
+| **total** | **3310** | <= 3600 (290 s slack) |
 
 * **IOB-PRF-01** `--budget-minutes N` overrides the profile; `--dry-run` prints each stage's allotment, fio argv and written-byte bound and writes nothing. *Oracle:* `test_prf_01_dry_run_plan_complete_and_writes_nothing`.
 * **IOB-PRF-02** `quick` marks `limits += quick-profile` and its cache-dependent values `unproven: quick_profile`. *Oracle:* `test_prf_02_quick_statuses`.

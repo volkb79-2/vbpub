@@ -188,7 +188,9 @@ def build_model(cal: Mapping[str, Any], history: Mapping[str, Any]) -> dict[str,
             # the fit gave no positive per-IO / per-byte cost, so there is nothing to derive from it: never a guess
             out.update({n: absent("stage_failed", "R6-model", {"key": n, "metering": metering}) for n in names})
             continue
-        worst_bps = bps_basis["value"] if hist_bps is None else min(hist_bps, bps_basis["value"])
+        # DER-05: the WORST plateau; without history that is the run's lowest steady window (a draining bucket makes the first cell the highest)
+        windows = cal["windows"]["write_seq1m_bps"] if direction == "write" else []
+        worst_bps = min([bps_basis["value"], *windows, *([] if hist_bps is None else [hist_bps])])
         worst_iops = None
         if metering == "iops":
             if iops_basis["status"] == "absent":
@@ -217,13 +219,15 @@ def build_qos(cal: Mapping[str, Any], targets: Mapping[str, Any], history: Mappi
     else:
         best_w, worst_w = hist_w["best"], hist_w["worst"]
     out: dict[str, Any] = {"min": value(derive.QOS_MIN, "R6-min", {}, "measured")}
-    if read_value is None or best_w is None:
+    if read_value is None or best_w is None or ladder["best_read_rung_iops"] is None:
         out["max"] = absent("basis_missing", "R6-qos-max")
     else:
         inputs = {"best_read_rung": ladder["best_read_rung_iops"], "R": read_value, "best_w": best_w, "worst_w": worst_w}
         shape_poor = ["shape_fit_poor"] if "poor" in cal["shape"]["linear_model_fit_by_dir"].values() else []
+        # the cap it depends on may be unproven for reasons the cache state does not carry (a truncated ladder, a moved reference)
+        inherited = [r for r in cal["cap_basis"]["read"].get("reasons", []) if r in ("budget_limited", "ceiling_moved")]
         out["max"] = value(derive.recompute("R6-qos-max", inputs), "R6-qos-max", inputs,
-                           "measured" if hist_w else "single-run", reasons=[*reasons, *shape_poor])
+                           "measured" if hist_w else "single-run", reasons=[*reasons, *inherited, *shape_poor])
     out["wpct"] = value(derive.WPCT, "R6-wpct", {}, "measured")
     out["rpct"] = value(derive.RPCT, "R6-rpct", {}, "measured")
     curve = cal["latency_curve"]
@@ -236,7 +240,8 @@ def build_qos(cal: Mapping[str, Any], targets: Mapping[str, Any], history: Mappi
             out[key] = absent("basis_missing", rule)
             continue
         inputs = {f"light_{pct_key}_us": light}
-        out[key] = value(fn(light), rule, inputs, "measured")
+        # the load points are fractions of the direction's ceiling: a latency is not stronger than the ceiling it was measured under
+        out[key] = value(fn(light), rule, inputs, "measured", reasons=cal["cap_basis"][direction].get("reasons", []))
     return out
 
 
