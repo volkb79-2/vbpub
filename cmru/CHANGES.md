@@ -31,12 +31,50 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
      volume); it skips it with a stderr WARN. The release-notes generator picks this up from
      the `fix(cmru): ...` commit subject. -->
 
+<!-- cmru: release history -->
+
+## [6.2.1] - 2026-10-21
+<!-- cmru: generated -->
+<!-- cmru: source-end=a7a58b68ea6750261f7862ec8697b12d21eef613 -->
+
+### Fixed
+- fix(cmru): gate-snapshots reports a snapshot whose directory and Git registration are gone as stale-record, not retained; --remove drops it (KI-92) (04757d4de)
+- fix(cmru): the public-path 404 no longer over-claims: asset, release or tag missing, or a private repository without a token (C-03a) (004548b87)
+- fix(cmru): get.py's missing-asset refusal names the asset, the tag and the <tag><asset_suffix> contract on both download paths (R6-03) (323d22f73)
+- fix(cmru): _estate_complete skips only in a non-git tree; a full checkout missing a project fails (KI-90) (beba78f05)
+- fix(cmru): authorize the KI-79 postponement for the whole 6.2 patch line (>= 6.2.0, < 6.3.0) (0830c4e91)
+- fix(cmru): authorize the KI-79 mutation postponement for exactly CMRU 6.2.0 and 6.2.1 (af7ad82da)
+- fix(cmru): remove the get.py legacy-name asset fallback; a 404 on the contract name is a loud refusal (PWMCP-08, KI-89) (2ec1679b2)
+- fix(cmru): installer oracle skips only in a non-git tree, derives projects from the orchestration, fails a checkout missing one; file KI-90 (KI-89) (b22b747a6)
+- fix(cmru): installer-producer oracle skips its estate-reading checks in an isolated canary tree (KI-89) (1c7fc3826)
+- fix(cmru): CONSUMERS bundle.toml example declares schema_version; pin and load it in the docs-example test (KI-89) (dbf9f862a)
+- fix(cmru): exclude variant assets from the legacy-name fallback; strengthen the installer-producer oracle (KI-89) (5ed0113d1)
+- fix(cmru): one asset-name function, installer-producer oracle, bounded legacy-name get.py fallback (KI-89) (2a47f7167)
+
+### Changed
+- gate(cmru): size the assay lane budgets to the measured run (50m lane, 30m canary attempt, 60m outer) for both lanes; coverage 30m, canary 45m; a test pins outer >= inner + 5m (e52813e55)
+- gate(cmru): raise the binding assay lane deadline (assay.toml [lanes.cmru] budget 20m -> 40m) (22fe808b0)
+- gate(cmru): assay lane budget 20m -> 45m on the shared host (three BUDGET_EXCEEDED runs, no failing test) (a5fb48255)
+- backlog(cmru): KI-91 records the manual cleanup and the KI-86 distinction (review R8-01) (043bb0a72)
+- backlog(cmru): file KI-91, a failed release --dry-run leaves a candidate that abandon withholds (PWMCP-09) (7992e772c)
+- backlog: PWMCP-07 / KI-89 status after merge (fixed on main, not released) (716ceb514)
+- backlog: KI-89 follow-up, every committed get.py must equal a fresh render (cce3488e4)
+- backlog: file PWMCP-07 / cmru KI-89 (pwmcp get.py cannot download its own release asset) (42251319c)
+
+### Documentation
+- docs(cmru): KI-79 release command is a default patch release; R2 follow-up judges the accumulated 6.2.x source; README and CONSUMERS state the R2 obligation (C-01, C-02, C-03) (4a606663a)
+
+### Testing
+- test(cmru): drive the remaining KI-92 branches through the production functions (unreadable directory, absent leftover branch, record changed while dropped) (673ffe2f7)
+- test(cmru): the 'renders from this checkout's cmru/src' assertion moves into render_project (C-04) (e7c427da1)
+- test(cmru): every committed installer get.py equals a fresh render of this checkout's template; skips only in a non-git tree (KI-89 follow-up) (8f8c99f05)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - `cmru gate-snapshots` reports a snapshot whose directory and Git registration are both gone as `stale-record` instead of `retained`, and `--remove` drops it; a missing directory that Git still registers, and an existing directory Git does not register, stay `retained` with their own reasons (KI-92).
 - The KI-79 provisional R2 deferral is authorized for the whole 6.2 patch line (`>= 6.2.0`, `< 6.3.0`; operator decisions 2026-10-21); 6.3.0 and later still refuse. R2 is owed before the first release judged worth R2 and at the latest before 6.3.0 (KI-79).
 - One asset-name function now serves bundle producers and the rendered `get.py`, and a test compares every installer project's published bundle name with the name its `get.py` requests (KI-89). The `get.py` download behaviour is unchanged: it requests only `<tag><asset_suffix>` (a legacy-name fallback was added and removed before release, PWMCP-08).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [6.2.0] - 2026-10-20
 <!-- cmru: generated -->
