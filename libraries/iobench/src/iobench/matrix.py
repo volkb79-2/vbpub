@@ -7,7 +7,7 @@ from typing import Any
 from . import ceilings, derive, devio, ladder, plan, plausibility, proposals, sweep
 from . import result as res
 from . import series as S
-from .errors import Aborted, IobenchError, Refusal
+from .errors import Aborted, IobenchError, Refusal, RunFailed
 from .extents import Extents
 from .host import HostError
 from .stages import GIB, MIB, Config, Outcome, Runner
@@ -153,7 +153,9 @@ class Matrixer(Runner):
         self.supervise(handles)
         self.finish(writer, handles[0], t0)
         out = self.finish(fsyncj, handles[1], t0)
-        handles[2].wait()
+        unit_result = handles[2].wait()
+        if unit_result.returncode != 0:
+            raise RunFailed(f"the sync-latency probe unit failed ({unit_result.returncode}): {unit_result.stderr.strip()}")
         lats = [float(x) for x in self.host.read_text(out_path).split()]
         return sweep.cell_record(cell, lats, out.stats.iops, out.stats.pct_us["99.000000"])
 

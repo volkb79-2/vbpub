@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fcntl
 import os
+import posixpath
 import re
 import secrets
 import signal
@@ -81,6 +82,32 @@ def check_argv(argv: Sequence[str]) -> None:
             raise HostError(f"forbidden argument: {token}")
         if _IO_LIMIT_TOKEN.match(token):
             raise HostError(f"forbidden argument: {token}")
+    if not is_allowed_argv(argv):
+        raise HostError(f"argv outside the allowlist: {' '.join(argv[:3])} ...")
+
+
+_FIO_FORBIDDEN = ("--exec_prerun", "--exec_postrun", "--daemonize", "--server", "--client", "--write_iolog", "--read_iolog", "--ioscheduler")
+_ALLOWED = {
+    "fio": lambda a: all(t.startswith("--") for t in a[1:]) and len(a) >= 2 and ((len(a) == 2 and a[1].split("=")[0] in ("--version", "--cmdhelp")) or any(t.startswith("--filename=") for t in a[1:]))
+    and not any(t.split("=")[0] in _FIO_FORBIDDEN for t in a[1:]),
+    "blkdiscard": lambda a: a[1] == "-o" and a[3] == "-l" and len(a) == 6,
+    "blkid": lambda a: a[1:4] == ["-p", "-o", "export"],
+    "wipefs": lambda a: a[1] in ("-n", "--no-act"),
+    "swapon": lambda a: a[1].startswith("--show"),
+    "fallocate": lambda a: a[1] in ("-l", "-p"),
+    "docker": lambda a: a[1] == "ps",
+    "systemctl": lambda a: a[1] == "is-active" or a[1:3] == ["show", "-p"],
+    "systemd-run": lambda a: any(t.startswith("RuntimeMaxSec=") for t in a),
+}
+
+
+def is_allowed_argv(argv: Sequence[str]) -> bool:
+    check = _ALLOWED.get(posixpath.basename(argv[0]))
+    try:
+        return bool(check and check(list(argv)))
+    except IndexError:  # an argv too short for its tool's shape is not an allowed argv
+        return False
+
 
 
 def check_sysfs_path(path: str) -> None:
@@ -119,10 +146,12 @@ class Host(Protocol):
     def install_signals(self) -> None: ...
 
 
-def _die_with_parent() -> None:
+def _die_with_parent(parent: int) -> None:
     """Child side of the spawn: SIGKILL this process when iobench itself dies (an orphan fio must not keep writing to the device)."""
     import ctypes
     ctypes.CDLL(None, use_errno=True).prctl(1, signal.SIGKILL)  # PR_SET_PDEATHSIG
+    if os.getppid() != parent:  # iobench died between fork and the prctl: the signal will never come
+        os._exit(1)
 
 
 class _ProcHandle:
@@ -131,7 +160,7 @@ class _ProcHandle:
         self._err = tempfile.TemporaryFile("w+")
         # its own session/process group (the whole group is killed) and a parent-death signal (S8)
         self._p = subprocess.Popen(list(argv), stdout=self._out, stderr=self._err, text=True, start_new_session=True,
-                                   preexec_fn=_die_with_parent)
+                                   preexec_fn=lambda parent=os.getpid(): _die_with_parent(parent))
 
     def poll(self) -> int | None:
         return self._p.poll()
@@ -160,6 +189,7 @@ class RealHost:
     def __init__(self) -> None:
         self._lock_fd: Any = None
         self._signal: str | None = None
+        self._escalated = False  # a second signal arrived while the first was still pending
 
     def now(self) -> float:
         return time.time()
@@ -175,8 +205,28 @@ class RealHost:
 
     def run(self, argv: Sequence[str], timeout: float | None = None) -> RunResult:
         check_argv(argv)
-        p = subprocess.run(list(argv), capture_output=True, text=True, timeout=timeout, check=False)
-        return RunResult(p.returncode, p.stdout, p.stderr)
+        return self._run_polled(argv, timeout)
+
+    def _run_polled(self, argv: Sequence[str], timeout: float | None) -> RunResult:
+        """A blocking command in slices of 0.5 s: a SECOND signal (operator insistence) kills it and aborts instead of being deferred
+        until a multi-second blkdiscard returns (the first signal is only a flag the run loop honours at its next tick)."""
+        from .errors import Aborted
+        proc = subprocess.Popen(list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True)
+        waited = 0.0
+        while True:
+            try:
+                out, err = proc.communicate(timeout=0.5)
+                return RunResult(proc.returncode, out, err)
+            except subprocess.TimeoutExpired:
+                waited += 0.5
+            if self._escalated:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                raise Aborted("second signal during a blocking command")
+            if timeout is not None and waited >= timeout:
+                os.killpg(proc.pid, signal.SIGKILL)
+                proc.communicate()
+                raise subprocess.TimeoutExpired(list(argv), timeout)
 
     def spawn(self, argv: Sequence[str]) -> Handle:
         check_argv(argv)
@@ -305,7 +355,10 @@ class RealHost:
         flags = os.O_WRONLY | getattr(os, "O_DIRECT", 0)
         if target.kind == "device":
             flags |= os.O_EXCL  # the kernel refuses (EBUSY) a device that is mounted, swap-active or claimed by md/dm
-        fd = os.open(target.path, flags)
+        try:
+            fd = os.open(target.path, flags)
+        except OSError as exc:  # EBUSY: the kernel's exclusive open found the device mounted, swap-active or claimed (md/dm)
+            raise HostError(f"{target.path} cannot be opened exclusively ({exc.strerror}): it is mounted, swap-active or claimed by md/dm") from exc
         try:
             import mmap
             buf = mmap.mmap(-1, 4096)
@@ -321,14 +374,18 @@ class RealHost:
             return fh.read(4096).split(b"\0", 1)[0].decode("utf-8", "replace")
 
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> Handle:
+        from . import devio  # late: devio imports this module
         self._verify_live(target)
         self._check_extent(target, offset, length)
+        devio.assert_writer_bound(argv, target, offset, length)  # the argv writes exactly the authorised extent
         check_argv(argv)
         return _ProcHandle(argv)
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
+        from . import devio
         self._verify_live(target)
         self._check_extent(target, offset, length)
+        devio.assert_discard_bound(argv, target, offset, length)
         return self.run(argv)
 
     # -- single instance and signals --------------------------------------
@@ -353,6 +410,8 @@ class RealHost:
 
     def install_signals(self) -> None:
         def handler(signum: int, _frame: Any) -> None:
+            if self._signal is not None:
+                self._escalated = True
             self._signal = signal.Signals(signum).name
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             signal.signal(sig, handler)

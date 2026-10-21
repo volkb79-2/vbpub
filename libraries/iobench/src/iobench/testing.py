@@ -21,6 +21,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
+from . import devio
 from .devio import HIST_BINS, PERCENTILES, FioJob, bin_value_ns, parse_job
 from .extents import Extents
 from .host import (TAIL_BYTES, HostError, RunResult, StatInfo, TargetRef, check_argv,
@@ -528,6 +529,8 @@ class FakeHost:
         self.signals_installed = False
         self.probe_failures: dict[str, RunResult] = {}  # command basename -> a failing result to return instead of the normal one
         self.known_units: set[str] = set()
+        self.probe_start_delay_s = 2.0  # the transient unit starts a little after the fio jobs it observes
+        self.fio_options: set[str] = {"exclusive_open"}  # the options the installed (fake) fio documents
         init_pid, init_mnt = "pid:[4026531836]", "mnt:[4026531841]"
         self.ns_links: dict[str, str] = {"/proc/self/ns/pid": init_pid, "/proc/1/ns/pid": init_pid,
                                          "/proc/self/ns/mnt": init_mnt, "/proc/1/ns/mnt": init_mnt}
@@ -787,6 +790,9 @@ class FakeHost:
             return self.probe_failures[name]
         if name == "fio" and list(argv[1:]) == ["--version"]:
             return RunResult(0, "fio-3.36\n", "")
+        if name == "fio" and len(argv) == 2 and argv[1].startswith("--cmdhelp="):
+            opt = argv[1].split("=", 1)[1]
+            return RunResult(0, f"{opt:<20}: help text\n" if opt in self.fio_options else f"Bad option <{opt}>\n", "")
         if name == "blkid":
             return self._blkid(argv[-1])
         if name == "wipefs":
@@ -885,11 +891,9 @@ class FakeHost:
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FakeHandle:
         self._log(argv)
         dev = self._verify(target)
-        job = parse_job(argv)
-        if job.filename != target.path or job.offset != offset or job.size != length:
-            raise HostError("writer extent differs from the extent it was authorised for")
-        self._crash_check()
         dev.check_range(offset, length, "fio")
+        job = devio.assert_writer_bound(argv, target, offset, length)  # the same binding RealHost enforces (parity)
+        self._crash_check()
 
         handle = self._launch(job, dev)
         assert handle.sim is not None
@@ -905,6 +909,7 @@ class FakeHost:
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
         self._log(argv)
         dev = self._verify(target)
+        devio.assert_discard_bound(argv, target, offset, length)
         dev.check_range(offset, length, "discard")
         if not dev.discard_supported:
             return RunResult(1, "", "Operation not supported")
@@ -943,8 +948,13 @@ class FakeHost:
         n = int(duration / float(argv[-1]))
         low = outcome.probe_p99_us / 10
         lats = [low] * (n - 3) + [outcome.probe_p99_us, outcome.probe_p99_us, outcome.probe_p99_us * 1.5]
-        self.put(outpath, "".join(f"{v}\n" for v in lats))
-        return FakeHandle(self, self.clock + duration, RunResult(0, "", ""))
+        text = "".join(f"{v}\n" for v in lats)
+        done = self.clock + duration + self.probe_start_delay_s
+        # like the real unit: the output file exists only once the unit has run to its end, and systemd-run returns at that moment
+        # only with --wait (without it, it returns as soon as the unit is queued)
+        self.at(done, lambda: self.put(outpath, text))
+        waits = "--wait" in argv
+        return FakeHandle(self, done if waits else self.clock, RunResult(0, "", ""))
 
     # -- locks, signals --------------------------------------------------------
     def lock(self, path: str) -> bool:

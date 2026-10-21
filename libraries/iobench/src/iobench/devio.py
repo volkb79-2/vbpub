@@ -15,7 +15,7 @@ from typing import Any, Sequence
 
 from .errors import Refusal
 from .series import IntegrityError
-from .host import TAIL_BYTES, Host, RunResult
+from .host import TAIL_BYTES, Host, HostError, RunResult, TargetRef, is_allowed_argv  # noqa: F401  (is_allowed_argv re-exported)
 
 PERCENTILES = (50.0, 90.0, 95.0, 99.0, 99.9)
 HIST_BINS = 1856
@@ -41,6 +41,7 @@ class FioJob:
     fsync: int | None = None
     numjobs: int = 1
     prefix: str = ""
+    exclusive: bool = False  # device targets: open with O_EXCL so the kernel refuses a mounted, swap-active or claimed device (TOCTOU, review A-S2)
 
     @property
     def writes(self) -> bool:
@@ -69,6 +70,8 @@ class FioJob:
             "--percentile_list=" + ":".join(str(p) for p in PERCENTILES),
             f"--log_avg_msec={self.log_avg_ms}", f"--write_{self.metric}_log={self.prefix}",
         ]
+        if self.exclusive:
+            a.append("--exclusive_open=1")
         if not self.writes:
             a.append("--readonly")
         if self.io_size is not None:
@@ -110,13 +113,28 @@ def parse_job(argv: Sequence[str]) -> FioJob:
         direct=opts["direct"] == "1", log_avg_ms=int(opts["log_avg_msec"]), metric=metric,
         hist="write_hist_log" in opts, rate_iops=int(opts["rate_iops"]) if "rate_iops" in opts else None,
         fsync=int(opts["fsync"]) if "fsync" in opts else None, numjobs=int(opts["numjobs"]),
-        prefix=opts[f"write_{metric}_log"],
+        prefix=opts[f"write_{metric}_log"], exclusive=opts.get("exclusive_open") == "1",
     )
 
 
 # -- other typed builders ---------------------------------------------------
 def fio_version_argv() -> list[str]:
     return ["fio", "--version"]
+
+
+def fio_option_help_argv(option: str) -> list[str]:
+    return ["fio", f"--cmdhelp={option}"]
+
+
+def require_fio_option(host: Host, option: str) -> None:
+    """Fail closed: refuse unless the installed fio documents ``option`` (return code checked AND the option named in the answer).
+
+    An unknown option makes fio abort the job at its first open; dropping the option silently would lose the protection it gives."""
+    res = probe(host, f"fio --cmdhelp={option}", fio_option_help_argv(option))
+    documented = any(line.strip().startswith(option) for line in res.stdout.splitlines()) and "Bad option" not in res.stdout
+    if not documented:
+        raise Refusal("fio_option_unsupported", f"the installed fio does not document the option {option!r}; iobench needs it to open a device exclusively",
+                      "install a newer fio (>= 3.30) that supports it; iobench never runs a device job without it")
 
 
 def blkdiscard_argv(device: str, offset: int, length: int) -> list[str]:
@@ -165,27 +183,12 @@ def probe(host: Host, name: str, argv: Sequence[str], ok: Sequence[int] = (0,)) 
 
 
 def probe_unit_argv(unit: str, slice_name: str, runtime_max_s: int, script: str, args: Sequence[str]) -> list[str]:
-    """Transient unit for the sync-latency probe: no IO limits, bounded lifetime."""
-    return ["systemd-run", f"--unit={unit}", f"--slice={slice_name}", "--collect",
+    """Transient unit for the sync-latency probe: no IO limits, bounded lifetime.
+
+    ``--wait`` makes systemd-run return only when the unit has finished (its exit status is the unit's): the probe script writes its
+    output file at the very end, so without it the caller would read the file before it exists (review A N2)."""
+    return ["systemd-run", "--wait", f"--unit={unit}", f"--slice={slice_name}", "--collect",
             "-p", f"RuntimeMaxSec={runtime_max_s}", "python3", "-c", script, *args]
-
-
-_ALLOWED = {
-    "fio": lambda a: True,
-    "blkdiscard": lambda a: a[1] == "-o" and a[3] == "-l" and len(a) == 6,
-    "blkid": lambda a: a[1:4] == ["-p", "-o", "export"],
-    "wipefs": lambda a: a[1] == "-n",
-    "swapon": lambda a: a[1].startswith("--show"),
-    "fallocate": lambda a: a[1] in ("-l", "-p"),
-    "docker": lambda a: a[1] == "ps",
-    "systemctl": lambda a: a[1] == "is-active" or a[1:3] == ["show", "-p"],
-    "systemd-run": lambda a: any(t.startswith("RuntimeMaxSec=") for t in a),
-}
-
-
-def is_allowed_argv(argv: Sequence[str]) -> bool:
-    check = _ALLOWED.get(posixpath.basename(argv[0]))
-    return bool(check and check(list(argv)))
 
 
 # -- fio output ---------------------------------------------------------------
@@ -270,3 +273,21 @@ def collect(host: Host, job: FioJob, run: RunResult, started: float) -> FioResul
 
 def tail_start(size: int) -> int:
     return size - TAIL_BYTES
+
+
+# -- runtime bindings (review A-S1) ---------------------------------------------------------------------
+def assert_writer_bound(argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FioJob:
+    """The argv a Host is about to spawn writes exactly the extent it was authorised for, on the authorised target, outside the tail."""
+    job = parse_job(argv)
+    if job.filename != target.path or job.offset != offset or job.size != length:
+        raise HostError("writer extent differs from the extent it was authorised for")
+    if length <= 0 or offset < 0 or job.end > target.size_bytes - TAIL_BYTES:
+        raise HostError(f"writer extent [{offset}, {offset + length}) overlaps the reserved tail or the end of {target.path}")
+    return job
+
+
+def assert_discard_bound(argv: Sequence[str], target: TargetRef, offset: int, length: int) -> None:
+    """The discard / hole-punch argv is exactly what the typed builder produces for the authorised extent."""
+    build = blkdiscard_argv if target.kind == "device" else punch_hole_argv
+    if list(argv) != build(target.path, offset, length):
+        raise HostError("discard argv differs from the extent it was authorised for")

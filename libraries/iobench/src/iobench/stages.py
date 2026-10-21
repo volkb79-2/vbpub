@@ -120,7 +120,7 @@ class Runner:
             direct: bool = True, fsync: int | None = None) -> FioJob:
         return FioJob(f"{self.run_id}-{name}", filename or self.target.path, rw, bs, qd, runtime_s, offset, size, io_size,
                       direct=direct, log_avg_ms=log_avg_ms, metric=metric, hist=hist, rate_iops=rate_iops, fsync=fsync,
-                      prefix=f"{self.scratch}/{name}")
+                      prefix=f"{self.scratch}/{name}", exclusive=self.target.kind == "device" and (filename is None or filename == self.target.path))
 
     def _tick(self) -> None:
         sig = self.host.signal_pending()
@@ -206,6 +206,8 @@ class Runner:
                                                 production_pattern=cfg.production_pattern, production_units=cfg.production_units,
                                                 protect_cgroup=cfg.protect_cgroup, abort_psi=cfg.abort_psi)
         self.target = guard.load_target(self.host, cfg.target)
+        if self.target.kind == "device":
+            devio.require_fio_option(self.host, "exclusive_open")
         self.disk_name = self.target.disk_name or guard.device_chain(self.host, guard.fs_info(self.host, posixpath.dirname(cfg.target)).devno).disk_name
         workdir = None
         if need_workdir:

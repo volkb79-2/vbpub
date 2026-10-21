@@ -9,9 +9,9 @@ reviewed_signature = "sha256:e9472f15680f10599711d4553330b1bdb07e2cbf52385708fa9
 rationale = "The smallest valid `calibrate` invocation: only the required inputs."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.minimum]"]
 
 [[cases]]
@@ -22,9 +22,9 @@ reviewed_signature = "sha256:a98be9de2cb55a2dc46c600e31c01fbdec5f46794d6f36bde30
 rationale = "--metering mixed is one of the closed choices of `calibrate`."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--metering", "mixed"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--metering.0aa52ffaa6]"]
 
 [[cases]]
@@ -35,9 +35,9 @@ reviewed_signature = "sha256:c978a1a1749c691a9b1f264193c6b1be6ceb572f5520496d365
 rationale = "--metering byte is one of the closed choices of `calibrate`."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--metering", "byte"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--metering.1e88129891]"]
 
 [[cases]]
@@ -48,9 +48,9 @@ reviewed_signature = "sha256:9efc5780ebbec81b79528b1ca8e786b9e5d1853d526dcd6a65f
 rationale = "--metering iops is one of the closed choices of `calibrate`."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--metering", "iops"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--metering.937423e60f]"]
 
 [[cases]]
@@ -61,9 +61,9 @@ reviewed_signature = "sha256:6e6d917f251259b334057f3542460cf6f0bbb2c4a0071ecaa4b
 rationale = "--profile quick is one of the closed choices of `calibrate`."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--profile", "quick"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--profile.acdbec3949]"]
 
 [[cases]]
@@ -74,9 +74,9 @@ reviewed_signature = "sha256:b6d097002038e428ff7eed51e46e04fc667bc31e28e384fdd05
 rationale = "--profile standard is one of the closed choices of `calibrate`."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--profile", "standard"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--profile.cb2842d668]"]
 
 [[cases]]
@@ -87,9 +87,9 @@ reviewed_signature = "sha256:100017811d828f6edcf6aa8521241e8e8399fa16bb37b8f4211
 rationale = "--profile thorough is one of the closed choices of `calibrate`."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--profile", "thorough"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-choice.calibrate.--profile.e0b457a3fb]"]
 
 [[cases]]
@@ -100,9 +100,9 @@ reviewed_signature = "sha256:63abe0cc07046cfa1f3c0bc40795faa314dcd55bd55e26e2952
 rationale = "--abort-psi is accepted by `calibrate`: Abort when io.pressure some avg10 of the protected cgroup exceeds this for 3 consecutive samples."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--abort-psi", "40"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--abort-psi.--abort-psi]"]
 
 [[cases]]
@@ -113,9 +113,9 @@ reviewed_signature = "sha256:b222883c70c3f7591725d828c411f7e16b9fd7d219235f2e4e5
 rationale = "--assume-r-est is accepted by `calibrate`: With --dry-run: the write rate (bytes/s) to plan with; otherwise READ from calibration.json."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--assume-r-est", "1.36e9"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--assume-r-est.--assume-r-est]"]
 
 [[cases]]
@@ -126,9 +126,9 @@ reviewed_signature = "sha256:5b11aea2d84aae4653a5e3f97942a41f5fb2f8df908bf573cd9
 rationale = "--budget-minutes is accepted by `calibrate`: Hard wall-clock budget in minutes; overrides the profile."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--budget-minutes", "60"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--budget-minutes.--budget-minutes]"]
 
 [[cases]]
@@ -139,9 +139,9 @@ reviewed_signature = "sha256:1a0c516a05f2d157af8cb359df68de0e57fd2af640af1c0a4a3
 rationale = "--confirm-quiet-window is accepted by `calibrate`: Confirm that production work may be disturbed now (required on a live host; unlisted systemd units are not detected)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--confirm-quiet-window"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--confirm-quiet-window.--confirm-quiet-window]"]
 
 [[cases]]
@@ -152,9 +152,9 @@ reviewed_signature = "sha256:936af1005813df4ee208a8af8374f6f7de4454ed68a5684417e
 rationale = "--debug-raw is accepted by `calibrate`: the shared control --debug-raw lifts redaction and warns that it did"
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--debug-raw"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--debug-raw.--debug-raw]"]
 
 [[cases]]
@@ -165,9 +165,9 @@ reviewed_signature = "sha256:19b03f1f0e940cf6b5445ee2da5499da6a80014e39f5de1810f
 rationale = "--dry-run is accepted by `calibrate`: the shared control --dry-run makes the verb change nothing"
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--dry-run.--dry-run]"]
 
 [[cases]]
@@ -178,9 +178,9 @@ reviewed_signature = "sha256:926c633179c4ef78a42a53602663a2a7f246de1f31708af1b10
 rationale = "--f-read-ratio is accepted by `calibrate`: Smallest acceptable sequential read ratio F (policy default 0.25)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--f-read-ratio", "0.25"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--f-read-ratio.--f-read-ratio]"]
 
 [[cases]]
@@ -191,9 +191,9 @@ reviewed_signature = "sha256:d524314af90014b28cce878df87c9950b53ed0a1fc1b60e714b
 rationale = "--governor-histogram is accepted by `calibrate`: A governor latency histogram file; recorded as the latency source."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--governor-histogram", "/var/lib/iobench/gov.hist"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--governor-histogram.--governor-histogram]"]
 
 [[cases]]
@@ -204,9 +204,9 @@ reviewed_signature = "sha256:376e3c490b21e0bcf86fbee61af8c4e736c9b3e84e8b25c78b4
 rationale = "--installer is accepted by `calibrate`: Installer run: waives only the live-host refusals; every target guard still applies."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--installer"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--installer.--installer]"]
 
 [[cases]]
@@ -217,9 +217,9 @@ reviewed_signature = "sha256:8be5bf83dba046e2c2cf1ede38e8f2de55cc9c31a8655fbb551
 rationale = "--json is accepted by `calibrate`: the shared control --json prints the result as one JSON line"
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--json"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--json.--json]"]
 
 [[cases]]
@@ -230,9 +230,9 @@ reviewed_signature = "sha256:f8731fc1f73f4a14668a9e19689675de937446adf9c4057becf
 rationale = "--metering is accepted by `calibrate`: Typed metering override; dependent values become unproven: operator_override."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--metering", "byte"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--metering.--metering]"]
 
 [[cases]]
@@ -243,9 +243,9 @@ reviewed_signature = "sha256:f2d7475d4511c55cb4fb3552b248e75b1fa8ec23746bb747d6a
 rationale = "--p-ms is accepted by `calibrate`: Probe fdatasync p99 acceptance threshold P in milliseconds (policy default 250)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--p-ms", "250"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--p-ms.--p-ms]"]
 
 [[cases]]
@@ -256,9 +256,9 @@ reviewed_signature = "sha256:c555bceae2bca1d0a67058d30268adc2e4e5fd0968b0ecb55ac
 rationale = "--production-pattern is accepted by `calibrate`: Regular expression selecting the running containers that count as production (default: any running container)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--production-pattern", "^game"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--production-pattern.--production-pattern]"]
 
 [[cases]]
@@ -269,9 +269,9 @@ reviewed_signature = "sha256:6f30721f9fa443b90ef86b950c6d7cbea932f3a7cc980017907
 rationale = "--production-unit is accepted by `calibrate`: A systemd unit that counts as production when active (repeatable)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--production-unit", "wings.service"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--production-unit.--production-unit]"]
 
 [[cases]]
@@ -282,9 +282,9 @@ reviewed_signature = "sha256:25f6b084c8eb213ef2ee558164a982050a655ea392504f34df0
 rationale = "--profile is accepted by `calibrate`: Calibration profile (quick 12, standard 60, thorough 75 minutes)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--profile", "quick"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--profile.--profile]"]
 
 [[cases]]
@@ -295,9 +295,9 @@ reviewed_signature = "sha256:dc9b992a96d35770ceeabc14ad7739aeb5e8407233cfee3b969
 rationale = "--protect-cgroup is accepted by `calibrate`: Cgroup whose io.pressure is watched; a live-host run needs it with --abort-psi (no default)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--protect-cgroup", "wings.slice"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--protect-cgroup.--protect-cgroup]"]
 
 [[cases]]
@@ -308,9 +308,9 @@ reviewed_signature = "sha256:d8a5cc6554a7d5e68cb8e91708c5a31385522a506e449e30344
 rationale = "--state-dir is accepted by `calibrate`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--state-dir", "/var/lib/iobench"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--state-dir.--state-dir]"]
 
 [[cases]]
@@ -321,9 +321,9 @@ reviewed_signature = "sha256:ef7ca3387d6596e19d3ba45e758976d136547b67cc18efba2cc
 rationale = "--target is accepted by `calibrate`: The prepared target: a device path or a file target (see `target init`)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--target.--target]"]
 
 [[cases]]
@@ -334,9 +334,9 @@ reviewed_signature = "sha256:7e009db6c998868a8834c7b929af543927e43e677b4f4964fa6
 rationale = "--u-dev-share is accepted by `calibrate`: Dev aggregate share U of the measured basis (policy default 0.70)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--u-dev-share", "0.7"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--u-dev-share.--u-dev-share]"]
 
 [[cases]]
@@ -347,9 +347,9 @@ reviewed_signature = "sha256:5a56303fd36bb87435c4a81668aa852da4ef1c8270414789cb6
 rationale = "--w-seconds is accepted by `calibrate`: Worst-case sync wait W in seconds (policy default 2)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--w-seconds", "2"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--w-seconds.--w-seconds]"]
 
 [[cases]]
@@ -360,9 +360,9 @@ reviewed_signature = "sha256:b21c34e04c4ffb4a6f8acfdcdd52dc474bb10debfc647f156e7
 rationale = "--work-dir is accepted by `calibrate`: A directory on an EXISTING filesystem for the writeback stages (new or empty)."
 invocation = ["calibrate", "--target", "/dev/vda7", "--dry-run", "--work-dir", "/bench/w"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"calibrate\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting"]
+effects = ["Dry run: prints the stage plan (allotted seconds, fio argv, written-byte bounds) from the stored calibration/target; writes nothing to the target and changes no runtime setting; the live preflight (production, abort guards, namespaces) is NOT run: the output says `preflight: not_run`"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[calibrate.option-spelling.calibrate.--work-dir.--work-dir]"]
 
 [[cases]]
@@ -854,9 +854,9 @@ reviewed_signature = "sha256:e593e2ab5b2d6898b162626b8637ed1d3c4e944e043d3a2df80
 rationale = "The smallest valid `matrix` invocation: only the required inputs."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.minimum]"]
 
 [[cases]]
@@ -867,9 +867,9 @@ reviewed_signature = "sha256:1857fc83d9b2a97470a696705ce39a5373bd54b17315c1a2e99
 rationale = "--knob nr_requests is one of the closed choices of `matrix`."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--knob", "nr_requests", "--candidates", "16777216,33554432"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-choice.matrix.--knob.2e44431268]"]
 
 [[cases]]
@@ -880,9 +880,9 @@ reviewed_signature = "sha256:a285f8a609753dc91068699bb9e36384b530955827b52897ae2
 rationale = "--knob max_sectors_kb is one of the closed choices of `matrix`."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--knob", "max_sectors_kb", "--candidates", "16777216,33554432"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-choice.matrix.--knob.4255a742be]"]
 
 [[cases]]
@@ -893,9 +893,9 @@ reviewed_signature = "sha256:76f269f9419d69eaebbc87e7adf0f2105565a88869fb6b13a33
 rationale = "--knob dirty_bytes is one of the closed choices of `matrix`."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--knob", "dirty_bytes", "--candidates", "16777216,33554432"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-choice.matrix.--knob.4ee88907f9]"]
 
 [[cases]]
@@ -906,9 +906,9 @@ reviewed_signature = "sha256:17f11130f903eacb2d7fa6b970b41c4ab7a3fff94a2ca7a6099
 rationale = "--abort-psi is accepted by `matrix`: Abort when io.pressure some avg10 of the protected cgroup exceeds this for 3 consecutive samples."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--abort-psi", "40"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--abort-psi.--abort-psi]"]
 
 [[cases]]
@@ -919,9 +919,9 @@ reviewed_signature = "sha256:cbf60fb38fe9094b2b07098831240b195c89c70835fb6676741
 rationale = "--budget-minutes is accepted by `matrix`: Hard wall-clock budget in minutes; overrides the profile."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--budget-minutes", "60"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--budget-minutes.--budget-minutes]"]
 
 [[cases]]
@@ -932,9 +932,9 @@ reviewed_signature = "sha256:6e7347d20dcb97ae96fc215a738510256750cc1556527343870
 rationale = "--candidates is accepted by `matrix`: Comma list of 2-3 candidate values for --knob."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--candidates", "16777216,33554432", "--knob", "dirty_bytes"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--candidates.--candidates]"]
 
 [[cases]]
@@ -945,9 +945,9 @@ reviewed_signature = "sha256:226986ec96e79915c7eb1ddb64bba05df1e737c667e45322d15
 rationale = "--confirm-quiet-window is accepted by `matrix`: Confirm that production work may be disturbed now (required on a live host; unlisted systemd units are not detected)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--confirm-quiet-window"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--confirm-quiet-window.--confirm-quiet-window]"]
 
 [[cases]]
@@ -958,9 +958,9 @@ reviewed_signature = "sha256:6c7022d8187a5d07928645973de795d57df69dfb312bd793065
 rationale = "--debug-raw is accepted by `matrix`: the shared control --debug-raw lifts redaction and warns that it did"
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--debug-raw"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--debug-raw.--debug-raw]"]
 
 [[cases]]
@@ -971,9 +971,9 @@ reviewed_signature = "sha256:0318525c8d74cd32548299cc5444775b4a7bbcc677dd7d54113
 rationale = "--dry-run is accepted by `matrix`: the shared control --dry-run makes the verb change nothing"
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--dry-run.--dry-run]"]
 
 [[cases]]
@@ -984,9 +984,9 @@ reviewed_signature = "sha256:8a6d08dda3922d5ef569e771e3c4c1b0f8318e116b7a79e4de3
 rationale = "--f-read-ratio is accepted by `matrix`: Smallest acceptable sequential read ratio F (policy default 0.25)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--f-read-ratio", "0.25"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--f-read-ratio.--f-read-ratio]"]
 
 [[cases]]
@@ -997,9 +997,9 @@ reviewed_signature = "sha256:b777b11ce47646cbf52b87e6da5c03111c4e2a653154c898e6b
 rationale = "--full-sweep is accepted by `matrix`: Eight sweep cells instead of six."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--full-sweep"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--full-sweep.--full-sweep]"]
 
 [[cases]]
@@ -1010,9 +1010,9 @@ reviewed_signature = "sha256:330379d79e4374fe9110b3c94a58d84b42a581c088ffc573401
 rationale = "--governor-histogram is accepted by `matrix`: A governor latency histogram file; recorded as the latency source."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--governor-histogram", "/var/lib/iobench/gov.hist"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--governor-histogram.--governor-histogram]"]
 
 [[cases]]
@@ -1023,9 +1023,9 @@ reviewed_signature = "sha256:96101638b8ba90fc38c3d5d750a0801ba6156f864192f6ea3f6
 rationale = "--installer is accepted by `matrix`: Installer run: waives only the live-host refusals; every target guard still applies."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--installer"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--installer.--installer]"]
 
 [[cases]]
@@ -1036,9 +1036,9 @@ reviewed_signature = "sha256:2993745a81c690323241112f9a99363535ebac2cb046e8bea5f
 rationale = "--json is accepted by `matrix`: the shared control --json prints the result as one JSON line"
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--json"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--json.--json]"]
 
 [[cases]]
@@ -1049,9 +1049,9 @@ reviewed_signature = "sha256:e3017caa08e542a411927f3ed890f1b54c2f3683540d747d45d
 rationale = "--knob is accepted by `matrix`: Compare one knob by interleaved A B A B cells instead of the default plan."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--knob", "dirty_bytes", "--candidates", "16777216,33554432"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--knob.--knob]"]
 
 [[cases]]
@@ -1062,9 +1062,9 @@ reviewed_signature = "sha256:8f584a11edf84ed480ee2d612de510b50453438b0643c3532eb
 rationale = "--p-ms is accepted by `matrix`: Probe fdatasync p99 acceptance threshold P in milliseconds (policy default 250)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--p-ms", "250"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--p-ms.--p-ms]"]
 
 [[cases]]
@@ -1075,9 +1075,9 @@ reviewed_signature = "sha256:59e798c2ed85ce2b8ad2e2017f0d32a2cd5e1cc31da4e519e49
 rationale = "--production-pattern is accepted by `matrix`: Regular expression selecting the running containers that count as production (default: any running container)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--production-pattern", "^game"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--production-pattern.--production-pattern]"]
 
 [[cases]]
@@ -1088,9 +1088,9 @@ reviewed_signature = "sha256:4f9025b5ce967206ced775ac2c20f6a90d32e9cec9f48fdf038
 rationale = "--production-unit is accepted by `matrix`: A systemd unit that counts as production when active (repeatable)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--production-unit", "wings.service"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--production-unit.--production-unit]"]
 
 [[cases]]
@@ -1101,9 +1101,9 @@ reviewed_signature = "sha256:9c2fac8383403bb8c95097b02dc59de86fcb4eaf26485daaa35
 rationale = "--protect-cgroup is accepted by `matrix`: Cgroup whose io.pressure is watched; a live-host run needs it with --abort-psi (no default)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--protect-cgroup", "wings.slice"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--protect-cgroup.--protect-cgroup]"]
 
 [[cases]]
@@ -1114,9 +1114,9 @@ reviewed_signature = "sha256:dde1bb13669ae05055f6cb23cbaad7793d8457bf5d2be4fb667
 rationale = "--repeat is accepted by `matrix`: Repeat the candidate cells (A B A B) so a decision can be made."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--repeat", "--knob", "dirty_bytes", "--candidates", "16777216,33554432"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--repeat.--repeat]"]
 
 [[cases]]
@@ -1127,9 +1127,9 @@ reviewed_signature = "sha256:e4930cb3a5d36688985414ef55643578a46a16a461def4f9f1e
 rationale = "--state-dir is accepted by `matrix`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--state-dir", "/var/lib/iobench"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--state-dir.--state-dir]"]
 
 [[cases]]
@@ -1140,9 +1140,9 @@ reviewed_signature = "sha256:ef89864408e664299d91cc9486a2df4992adc70d013886b01fd
 rationale = "--target is accepted by `matrix`: The prepared target: a device path or a file target (see `target init`)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--target.--target]"]
 
 [[cases]]
@@ -1153,9 +1153,9 @@ reviewed_signature = "sha256:a538d819ee6792e366bcef1d7049333039ce699c2ea85496ba9
 rationale = "--u-dev-share is accepted by `matrix`: Dev aggregate share U of the measured basis (policy default 0.70)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--u-dev-share", "0.7"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--u-dev-share.--u-dev-share]"]
 
 [[cases]]
@@ -1166,9 +1166,9 @@ reviewed_signature = "sha256:7c6c62492df1ea331774aa545855ea4600f01bbb415028e0080
 rationale = "--w-seconds is accepted by `matrix`: Worst-case sync wait W in seconds (policy default 2)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--w-seconds", "2"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--w-seconds.--w-seconds]"]
 
 [[cases]]
@@ -1179,9 +1179,9 @@ reviewed_signature = "sha256:21a0f1046c11314a33026bae372ceae8d2450c3a3c5c224223b
 rationale = "--work-dir is accepted by `matrix`: A directory on an EXISTING filesystem for the writeback stages (new or empty)."
 invocation = ["matrix", "--target", "/dev/vda7", "--dry-run", "--work-dir", "/bench/w"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\": \"matrix\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting"]
+effects = ["Dry run: prints the matrix stage plan from the stored calibration; writes nothing and changes no runtime setting; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[matrix.option-spelling.matrix.--work-dir.--work-dir]"]
 
 [[cases]]
@@ -1257,9 +1257,9 @@ reviewed_signature = "sha256:48b6367595d438497215b8486832f9cb5d92352696c74eda386
 rationale = "The smallest valid `run` invocation: only the required inputs."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.minimum]"]
 
 [[cases]]
@@ -1270,9 +1270,9 @@ reviewed_signature = "sha256:d1e6fcff5cdc05c6df92e48fbfe154f10747aa73a3b23228d86
 rationale = "--metering mixed is one of the closed choices of `run`."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--metering", "mixed"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--metering.0aa52ffaa6]"]
 
 [[cases]]
@@ -1283,9 +1283,9 @@ reviewed_signature = "sha256:2cdba456b43e72fd82ea061803f5a51d6486ce4ea4076fb5b65
 rationale = "--metering byte is one of the closed choices of `run`."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--metering", "byte"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--metering.1e88129891]"]
 
 [[cases]]
@@ -1296,9 +1296,9 @@ reviewed_signature = "sha256:cf289f4e7ef43db859aac82a047c9a0bdd374bae0c1faf175ad
 rationale = "--metering iops is one of the closed choices of `run`."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--metering", "iops"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--metering.937423e60f]"]
 
 [[cases]]
@@ -1309,9 +1309,9 @@ reviewed_signature = "sha256:e8e50962de267d46ccfc90cee9952602a5c8662c6d7c5bf0ff1
 rationale = "--profile quick is one of the closed choices of `run`."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--profile", "quick"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--profile.acdbec3949]"]
 
 [[cases]]
@@ -1322,9 +1322,9 @@ reviewed_signature = "sha256:e25faa062b0edff98dad62e858e3ebcdaa035f1cbf58ba8f72b
 rationale = "--profile standard is one of the closed choices of `run`."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--profile", "standard"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--profile.cb2842d668]"]
 
 [[cases]]
@@ -1335,9 +1335,9 @@ reviewed_signature = "sha256:916ff168b60104783b95fff1c204d766b9e3edb7652f3a8e736
 rationale = "--profile thorough is one of the closed choices of `run`."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--profile", "thorough"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-choice.run.--profile.e0b457a3fb]"]
 
 [[cases]]
@@ -1348,9 +1348,9 @@ reviewed_signature = "sha256:04af6302797ebf429b43148c34c6f584186b746d80278acbd3a
 rationale = "--abort-psi is accepted by `run`: Abort when io.pressure some avg10 of the protected cgroup exceeds this for 3 consecutive samples."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--abort-psi", "40"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--abort-psi.--abort-psi]"]
 
 [[cases]]
@@ -1361,9 +1361,9 @@ reviewed_signature = "sha256:e80a00b2d8146c8d3dcdd125a64422b53eeb6fbb4bef4cc849a
 rationale = "--assume-r-est is accepted by `run`: With --dry-run: the write rate (bytes/s) to plan with; otherwise READ from calibration.json."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--assume-r-est", "1.36e9"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--assume-r-est.--assume-r-est]"]
 
 [[cases]]
@@ -1374,9 +1374,9 @@ reviewed_signature = "sha256:ac0f597c825dc7038e6b1bffd94d1214a9eb62dc27c53b7113a
 rationale = "--budget-minutes is accepted by `run`: Hard wall-clock budget in minutes; overrides the profile."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--budget-minutes", "60"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--budget-minutes.--budget-minutes]"]
 
 [[cases]]
@@ -1387,9 +1387,9 @@ reviewed_signature = "sha256:eaaeccbb356f84fe54d2c68d9eec3aaa8f63505ea51d1ab21cb
 rationale = "--confirm-quiet-window is accepted by `run`: Confirm that production work may be disturbed now (required on a live host; unlisted systemd units are not detected)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--confirm-quiet-window"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--confirm-quiet-window.--confirm-quiet-window]"]
 
 [[cases]]
@@ -1400,9 +1400,9 @@ reviewed_signature = "sha256:7bf9d099e2cf952496273d4f54f8b8f257fd798029f31fa84d7
 rationale = "--debug-raw is accepted by `run`: the shared control --debug-raw lifts redaction and warns that it did"
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--debug-raw"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--debug-raw.--debug-raw]"]
 
 [[cases]]
@@ -1413,9 +1413,9 @@ reviewed_signature = "sha256:d99d74ea8e1e2bf004fb4dfa03ac1b1592dfe75b7ddf6a4d6e7
 rationale = "--dry-run is accepted by `run`: the shared control --dry-run makes the verb change nothing"
 invocation = ["run", "--target", "/dev/vda7", "--dry-run"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--dry-run.--dry-run]"]
 
 [[cases]]
@@ -1426,9 +1426,9 @@ reviewed_signature = "sha256:b9245249cd9baf23028f9114fbdbce02fb590487e6045eb5ea8
 rationale = "--f-read-ratio is accepted by `run`: Smallest acceptable sequential read ratio F (policy default 0.25)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--f-read-ratio", "0.25"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--f-read-ratio.--f-read-ratio]"]
 
 [[cases]]
@@ -1439,9 +1439,9 @@ reviewed_signature = "sha256:9d6016381f7235a23dff5cf8c61bb00f8621050565c1fbed087
 rationale = "--full-sweep is accepted by `run`: Eight sweep cells instead of six."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--full-sweep"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--full-sweep.--full-sweep]"]
 
 [[cases]]
@@ -1452,9 +1452,9 @@ reviewed_signature = "sha256:3678796bbfb8be2803aa619fbfd94fe25648ab2acb1f336d83b
 rationale = "--governor-histogram is accepted by `run`: A governor latency histogram file; recorded as the latency source."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--governor-histogram", "/var/lib/iobench/gov.hist"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--governor-histogram.--governor-histogram]"]
 
 [[cases]]
@@ -1465,9 +1465,9 @@ reviewed_signature = "sha256:242aa84cb59877fcb5bc7b43c29c963b6abf6969b4ccb7be867
 rationale = "--installer is accepted by `run`: Installer run: waives only the live-host refusals; every target guard still applies."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--installer"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--installer.--installer]"]
 
 [[cases]]
@@ -1478,9 +1478,9 @@ reviewed_signature = "sha256:af51995d6eab247c669fd3677bbeadbb4fddcb93a35e9102ec6
 rationale = "--json is accepted by `run`: the shared control --json prints the result as one JSON line"
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--json"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--json.--json]"]
 
 [[cases]]
@@ -1491,9 +1491,9 @@ reviewed_signature = "sha256:d917cb45e1203038cc04fd8fc25e937d48210371cd37a400f02
 rationale = "--metering is accepted by `run`: Typed metering override; dependent values become unproven: operator_override."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--metering", "byte"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--metering.--metering]"]
 
 [[cases]]
@@ -1504,9 +1504,9 @@ reviewed_signature = "sha256:e57ea0e854fd9aec310b73988e7d9266b2142d4691194fd5aca
 rationale = "--p-ms is accepted by `run`: Probe fdatasync p99 acceptance threshold P in milliseconds (policy default 250)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--p-ms", "250"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--p-ms.--p-ms]"]
 
 [[cases]]
@@ -1517,9 +1517,9 @@ reviewed_signature = "sha256:603c93c94b753fbc3f351cd52be73517233e1d285ebdf4648a2
 rationale = "--production-pattern is accepted by `run`: Regular expression selecting the running containers that count as production (default: any running container)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--production-pattern", "^game"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--production-pattern.--production-pattern]"]
 
 [[cases]]
@@ -1530,9 +1530,9 @@ reviewed_signature = "sha256:7c8f087b1782e5fd84277af45230d54ed9cc8463fb62fb02261
 rationale = "--production-unit is accepted by `run`: A systemd unit that counts as production when active (repeatable)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--production-unit", "wings.service"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--production-unit.--production-unit]"]
 
 [[cases]]
@@ -1543,9 +1543,9 @@ reviewed_signature = "sha256:32e3a29ecc30945b1ec2e4c98239eea16ac29ef7b1a809f11f4
 rationale = "--profile is accepted by `run`: Calibration profile (quick 12, standard 60, thorough 75 minutes)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--profile", "quick"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--profile.--profile]"]
 
 [[cases]]
@@ -1556,9 +1556,9 @@ reviewed_signature = "sha256:d07ad499dea68ecbd2389bbfe3524db882835d6da5c4c56c1df
 rationale = "--protect-cgroup is accepted by `run`: Cgroup whose io.pressure is watched; a live-host run needs it with --abort-psi (no default)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--protect-cgroup", "wings.slice"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--protect-cgroup.--protect-cgroup]"]
 
 [[cases]]
@@ -1569,9 +1569,9 @@ reviewed_signature = "sha256:62aa62325286c8e3f60ef6b6db3342e1ea51abd6d9b8118cd1a
 rationale = "--state-dir is accepted by `run`: Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--state-dir", "/var/lib/iobench"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--state-dir.--state-dir]"]
 
 [[cases]]
@@ -1582,9 +1582,9 @@ reviewed_signature = "sha256:69250635066a6a7cf5b09a23ea4a2b348cad1992b4e6e79e35c
 rationale = "--target is accepted by `run`: The prepared target: a device path or a file target (see `target init`)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--target.--target]"]
 
 [[cases]]
@@ -1595,9 +1595,9 @@ reviewed_signature = "sha256:223bb6455baffe0ffd1fe80c8fbc52af3b93be707d6635456cb
 rationale = "--u-dev-share is accepted by `run`: Dev aggregate share U of the measured basis (policy default 0.70)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--u-dev-share", "0.7"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--u-dev-share.--u-dev-share]"]
 
 [[cases]]
@@ -1608,9 +1608,9 @@ reviewed_signature = "sha256:b7d588fb198c7be250f1eba6562feb377462ac19767ff5e2b95
 rationale = "--w-seconds is accepted by `run`: Worst-case sync wait W in seconds (policy default 2)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--w-seconds", "2"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--w-seconds.--w-seconds]"]
 
 [[cases]]
@@ -1621,9 +1621,9 @@ reviewed_signature = "sha256:98ea552305f4111cb2974d40aa89e85586d37793000a4056a65
 rationale = "--work-dir is accepted by `run`: A directory on an EXISTING filesystem for the writeback stages (new or empty)."
 invocation = ["run", "--target", "/dev/vda7", "--dry-run", "--work-dir", "/bench/w"]
 expected_exit_status = 0
-expected_stdout_contains = "\"command\""
+expected_stdout_contains = "\"preflight\": \"not_run\""
 expected_stderr_contains = ""
-effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing"]
+effects = ["Dry run: prints the plan of the calibration or matrix that would run; writes nothing; the live preflight is NOT run (`preflight: not_run`)"]
 test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[run.option-spelling.run.--work-dir.--work-dir]"]
 
 [[cases]]

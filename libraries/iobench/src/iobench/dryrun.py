@@ -15,6 +15,11 @@ from .stages import GIB, MIB, Config
 COLD_QD32_S = 70
 
 
+# A clean plan is not an acceptance: the live preflight (production containers, abort guards, namespaces, work dir) is not run by --dry-run.
+NOT_RUN = {"preflight": "not_run",
+           "preflight_note": "the live-host preflight was NOT run: a real run may still be refused (production running, missing abort guards, namespaces, work dir)"}
+
+
 def rate_source(host: Any, cfg: Config) -> float:
     """R_est for a dry run: ``--assume-r-est``, else the existing calibration's S1 value; never invented."""
     if cfg.assume_r_est is not None:
@@ -88,7 +93,7 @@ def calibrate_plan(host: Any, cfg: Config) -> dict[str, Any]:
         stages.append({"name": st.name, "allotted_s": st.allotted_s, "required": st.required, "jobs": [entry(run, j) for j in jobs],
                        "note": st.note or ("offered rates are percentages of the measured cap basis" if st.name == "S7" else "")})
     return {"command": "calibrate", "profile": cfg.profile, "budget_s": alloc.budget_s, "total_s": alloc.total, "r_est_bps": run.r_est,
-            "ws_max_bytes": alloc.ws_max, "target": run.target.path, "stages": stages}
+            "ws_max_bytes": alloc.ws_max, "target": run.target.path, "stages": stages, **NOT_RUN}
 
 
 def matrix_plan(host: Any, cfg: Config) -> dict[str, Any]:
@@ -108,4 +113,4 @@ def matrix_plan(host: Any, cfg: Config) -> dict[str, Any]:
               {"name": "S4", "allotted_s": plan.sweep_seconds(cells), "jobs": [entry(run, w.with_(name=f"s4-{k}-w", runtime_s=sweep.SWEEP_CELL_S)) for k in range(cells)]},
               {"name": "S5", "allotted_s": sweep.rdc_seconds(3), "jobs": [entry(run, FioJob(f"rdc-{kb}", run.target.path, "read", MIB, 4, sweep.RDC_CELL_S, 0, run.ws, None,
                                                                                            log_avg_ms=1000, prefix="/run/iobench/rdc")) for kb in (64, 128, 1280)]}]
-    return {"command": "matrix", "budget_s": plan.matrix_seconds(), "total_s": sum(s["allotted_s"] for s in stages), "stages": stages}
+    return {"command": "matrix", "budget_s": plan.matrix_seconds(), "total_s": sum(s["allotted_s"] for s in stages), "stages": stages, **NOT_RUN}

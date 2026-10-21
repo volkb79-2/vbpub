@@ -381,6 +381,7 @@ def sidecar_path(path: str) -> str:
 def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_uuid: str | None, confirm_quiet_window: bool,
               allow_large_root_target: bool, created: str, dry_run: bool = False) -> Target:
     """``iobench target init --file`` (IOB-TGT-06)."""
+    require_host_namespaces(host)  # the root-filesystem and free-space rules read the mount table: it must be the host's
     _need(size is not None, "size_required", "a file target needs --size (the operator's upper bound for everything iobench writes)",
           "pass --size BYTES")
     _need(own, "own_file_required", f"{path} would be created and overwritten by iobench", "pass --i-own-this-file")
@@ -431,6 +432,7 @@ def sidecar_matches(host: Host, path: str, st, fs: FsInfo) -> bool:
 
 
 def load_file_target(host: Host, path: str) -> Target:
+    require_host_namespaces(host)
     side = host.read_text(sidecar_path(path)) if host.exists(sidecar_path(path)) else None
     _need(side is not None, "no_marker", f"{path} has no iobench sidecar", "run `iobench target init --file` first")
     doc = json.loads(side)
