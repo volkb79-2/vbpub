@@ -26,6 +26,11 @@ def test_vm_swappiness_default_is_10():
     assert Config().vm_swappiness == 10
 
 
+def test_vm_swappiness_default_is_10_through_load_config():
+    # the JSON path with no vm_swappiness key must yield the same default as the dataclass
+    assert load_config(raw_json=json.dumps(BASE)).vm_swappiness == 10
+
+
 @pytest.mark.parametrize("value", [-1, 201])
 def test_vm_swappiness_out_of_range_rejected(value):
     with pytest.raises(ConfigError, match="vm_swappiness"):

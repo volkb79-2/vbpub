@@ -353,6 +353,8 @@ that RAM is taken from every other tier, including production.
 
 ## `vm.swappiness` — common settings, and how to tell if the current one is right
 
+> Superseded 2026-10-21: the table below is the earlier state (100 staged for gstammtisch, 50 as the installer default); both moved to 10, see the newer copy of this file under `mdt-cockpit/host-setup/`.
+
 **Host-global only — there is no per-cgroup knob in cgroup v2** (confirmed
 both by `ls /sys/fs/cgroup/**/memory.swappiness` finding nothing, and by
 `MEASUREMENTS.md` M5's own note: *"There is no per-cgroup swappiness in

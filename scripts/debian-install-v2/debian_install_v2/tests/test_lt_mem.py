@@ -275,6 +275,9 @@ def test_sysctl_values_and_why_comments(tmp_path):
     lowered = text.lower()
     for word in ("game", "soulmask", "docker", "wings"):
         assert word not in lowered
+    # the swappiness rationale is the low-value one, not the earlier "push cold anon out early" wording
+    assert "Low on purpose" in text
+    assert "pushed out early" not in text
 
 
 def test_min_free_is_not_a_static_sysctl(tmp_path):

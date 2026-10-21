@@ -34,7 +34,7 @@
 | Pool `max_pool_percent` | 35 % | 25 % | **30 %** | ceiling, not reservation; shrinker prevents starvation; tune by observation |
 | `accept_threshold_percent` | — | 80 % | **90 %** | SWAP-2's addition; reduces fill/evict thrash |
 | Shrinker enable | cmdline ✓ | `vm.zswap_shrinker_enabled` sysctl ✗ | **module/post-boot** | that sysctl doesn't exist; it's `/sys/module/zswap/parameters/shrinker_enabled` |
-| `vm.swappiness` | 30 ✗ | 80–100 ✓ | **10** (superseded 2026-10-21; was 100) | operator decision: low, because the disk is write-capped and reads are cheap, see §4 "`vm.swappiness`"; protect game with cgroup, not swappiness |
+| `vm.swappiness` | 30 ✗ | 80–100 ✓ | **10** (superseded 2026-10-21; was 100) | operator decision: low, because the disk is write-capped and reads are cheap, see §4 "`vm.swappiness`"; protect game with cgroup, not swappiness (the ✗/✓ marks are as of 2026-07; the decision has since moved, see §4) |
 | cgroup model | CPU/IO weights | `memory.low/min` + `zswap.writeback` + `io.max` | **SWAP-2's model** | precise, protection-first |
 | Build I/O cap | BuildKit env | `io.max` 200 MB/s | **io.max / systemd IO\*Max** | robust, runtime-independent |
 | Network | fq_codel + DSCP/tc | prio qdisc + filters | **fq_codel only** | don't build speculative QoS; revisit only if starvation observed |
@@ -214,12 +214,18 @@ acting as a hard switch **[I]**.
   `pool_limit_hit` 16 697 **[M]**) or the shrinker runs, it becomes 4K random swap **writes**, the scarcest resource on a
   write-capped, provider-metered disk (6–18 MiB/s measured **[M]**, IO-STALL-TESTING-GUIDE §14/§15, program directory).
   Those writes are also charged to the page owner's cgroup as io.cost debt (the 57.7 s freeze, §15).
-- **Clean file eviction is cheap.** Zero writes; a refault is a **read**, and reads are fast and uncapped (~290 MB/s in the
-  io.cost model, ~0.3 ms) **[M]**.
-- **Every measured stall was write-side or swap debt [M].** So prefer file eviction, i.e. low swappiness.
+- **Clean file eviction is cheap.** Zero writes; a refault is a **read**. Reads are fast: the provider does not limit
+  them (1.3 GB/s sequential observed) and `r_await` is ~0.2–0.3 ms **[M]** (OBSERVATION.md; IO-STALL-TESTING-GUIDE §11, §13).
+  The 290 MB/s in the io.cost model is a *modelled* `rbps`, and `dev.slice` has its own read cap (290M / 10 000 riops), so
+  reads are capped per tier by configuration, not by the provider.
+- **The measured stalls were swap-in waits and write/debt waits [M]:** 229.4 s in `do_swap_page` in the B0 window
+  (HOST-IO-INTERFERENCE.md §4.6), the dirty-limit stalls (§4.2), and the 57.7 s io.cost freeze (IO-STALL-TESTING-GUIDE
+  §15). The write-side share is [M] for the debt and dirty-limit cases; that the swap-in waits queued behind write-side
+  load is **[I]**. Swap-ins exist only for evicted anon, so preferring file eviction, i.e. low swappiness, follows **[I]**.
 
-**Risk of too low: file-cache thrash.** Over 2.5 days on gstammtisch `workingset_refault_file` was 239 M against
-`pgsteal_file` 619 M (~39 % refaulted, ~0.9 TB re-read) **[M]**: cheap here, but a small stall when it hits a game thread.
+**Risk of too low: file-cache thrash.** Counters from `/proc/vmstat` on gstammtisch, read 2026-10-21 ~02:43 local at uptime
+2 d 13 h: `workingset_refault_file` 239 M against `pgsteal_file` 619 M (~39 % refaulted, ~0.9 TiB re-read) **[M]**.
+**[I]** Cheap here because reads are fast, but each refault a game thread waits on is a small stall.
 
 **Who it affects.** The games are governed by `memory.min`/`low`, not by swappiness. Swappiness mainly decides
 dev/system memory (VS Code anon against build file cache), and low keeps the interactive tier resident **[I]**.
@@ -472,7 +478,7 @@ Wings creates the Soulmask container under Docker's default cgroup parent, and r
 3. **`gstammtisch-cgroups.service`** re-asserts the raw Soulmask knobs; optionally trigger it from a Wings post-start hook or a `.timer` to survive container recreation.
 
 ### 5.3 systemd-oomd — the safety net
-With this much oversubscription the in-kernel OOM killer is slow and may pick a poor victim. [`oomd.conf.d/gstammtisch.conf`](files/etc/systemd/oomd.conf.d/gstammtisch.conf) + `ManagedOOMMemoryPressure=kill` on `besteffort.slice` makes systemd-oomd kill the worst **best-effort** offender fast on PSI/swap pressure — never touching the protected game or the IDE tier. This is what makes `swappiness=100` + large swap safe.
+With this much oversubscription the in-kernel OOM killer is slow and may pick a poor victim. [`oomd.conf.d/gstammtisch.conf`](files/etc/systemd/oomd.conf.d/gstammtisch.conf) + `ManagedOOMMemoryPressure=kill` on `besteffort.slice` makes systemd-oomd kill the worst **best-effort** offender fast on PSI/swap pressure — never touching the protected game or the IDE tier. This is what makes the swappiness setting (now 10, see section 4) + large swap safe.
 
 ---
 
