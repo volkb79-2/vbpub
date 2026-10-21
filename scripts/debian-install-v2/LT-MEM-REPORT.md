@@ -54,7 +54,7 @@ fixture-level evidence; no live host was touched.
 | zswap shrinker_enabled | Y hard-coded | Y default, field | operator |
 | THP enabled / defrag | madvise / never | madvise / madvise | gstammtisch, operator |
 | KSM | oneshot unit, same 4 values | tmpfiles.d, run=1 advisor scan-time target 200 use_zero_pages=1 | gstammtisch |
-| vm.swappiness | 50 (range 0-100) | 100 (range 0-200) | operator |
+| vm.swappiness | 50 (range 0-100) | 100 (range 0-200); **10 since 2026-10-21 (operator, SWAP-01)** | operator |
 | vm.watermark_scale_factor | 125 | 50 | operator |
 | vm.vfs_cache_pressure / page-cluster | 50 / 0 | 50 / 0 | unchanged |
 | vm.dirty_ratio / dirty_background_ratio | 15 / 5 | 15 / 5 | unchanged |

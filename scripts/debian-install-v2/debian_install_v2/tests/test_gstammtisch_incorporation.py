@@ -22,8 +22,8 @@ BASE = {
 
 # --- config validation -------------------------------------------------
 
-def test_vm_swappiness_default_is_100():
-    assert Config().vm_swappiness == 100
+def test_vm_swappiness_default_is_10():
+    assert Config().vm_swappiness == 10
 
 
 @pytest.mark.parametrize("value", [-1, 201])

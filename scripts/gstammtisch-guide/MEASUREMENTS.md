@@ -123,6 +123,11 @@ whenever the band or writeback policy changes.
 
 ## M5. File-cache hotness — is 2–3 G of buff/cache justified? Is swappiness=100 right?
 
+> **Conclusion superseded 2026-10-21:** the operator set `vm.swappiness` to 10 (write-capped disk, cheap reads; reasoning
+> in [MEMORY-ARCHITECTURE.md §4, "`vm.swappiness`"](MEMORY-ARCHITECTURE.md#vmswappiness--why-low-on-these-hosts)). The
+> recipe below stays valid as the way to watch the cost of a *low* value: sustained `rf_f/s` is the file-cache-thrash
+> signal. Its "100 is right" and "5–10 is the wrong trade" statements are the earlier view.
+
 buff/cache decomposition first:
 
 ```bash

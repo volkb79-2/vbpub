@@ -110,9 +110,8 @@ that `writeback=1` and the shrinker are required stands.
 
 ## GG-6 — swappiness drift: host 10 versus repo 100
 
-**Status:** OPEN, operator to decide (filed by DOCS-FOLD-01, 2026-10-20). Neither value was changed.
-
-The gstammtisch host runs `vm.swappiness = 10`, while the repo's `files/etc/sysctl.d/99-gstammtisch-memory.conf` says
-100 (reasoning in MEMORY-ARCHITECTURE.md §4: with zswap, reclaiming anon pages is cheap, so high swappiness keeps file
-cache resident). Which one is intended, and whether the repo or the host should move, is the operator's call; until
-then the repo file and the host disagree, and `sysctl --system` from the repo would change the live value.
+**Status:** RESOLVED 2026-10-21 (SWAP-01). Operator decision: `vm.swappiness` LOW on these hosts ("with cheap reads and
+RAM constrained, tend to a very low setting"), 10. The repo file `files/etc/sysctl.d/99-gstammtisch-memory.conf` now says
+10, matching the host (filed by DOCS-FOLD-01, 2026-10-20, when the host ran 10 and the repo 100). `scripts/debian-install-v2`'s
+default moved 100 → 10 in the same change. Reasoning, measurements and the risk of too low (file-cache thrash, watched via
+`rf_f/s`): MEMORY-ARCHITECTURE.md §4, "`vm.swappiness`". No A/B test was run (the operator deferred tests on this host).

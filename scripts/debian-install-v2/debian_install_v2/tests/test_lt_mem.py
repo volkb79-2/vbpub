@@ -264,7 +264,7 @@ def test_sysctl_values_and_why_comments(tmp_path):
     installer._configure_zswap()
     text = installer.actions.dry_run_writes["/etc/sysctl.d/99-vbpub-swap.conf"]
     assert sysctl_values(text) == {
-        "vm.swappiness": "100", "vm.vfs_cache_pressure": "50", "vm.watermark_scale_factor": "50",
+        "vm.swappiness": "10", "vm.vfs_cache_pressure": "50", "vm.watermark_scale_factor": "50",
         "vm.page-cluster": "0", "vm.admin_reserve_kbytes": "65536",
         "vm.dirty_ratio": "15", "vm.dirty_background_ratio": "5",
     }

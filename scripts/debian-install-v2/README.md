@@ -296,10 +296,13 @@ and can be omitted independently in a profile or config.
 cgroup2 mount flags `memory_recursiveprot`, `nsdelegate`. The rendered
 sysctl file carries a one-line "why" per value:
 
-- `vm.swappiness` default **100**, range 0–200 (the kernel range): with zswap
-  in front of swap, reclaiming cold anonymous pages is cheap, so they go to
-  the compressed pool early and file cache stays resident. systemd-oomd is the
-  safety net. An already-saved resume state keeps its saved value.
+- `vm.swappiness` default **10** (was 100 until 2026-10-21; operator decision), range 0–200 (the kernel
+  range) and still configurable: on a RAM-constrained host with cheap reads, evicting clean file cache costs
+  no writes while evicting anonymous memory becomes swap writes once the zswap pool is full, so a low value
+  is preferred; 0 is avoided. Reasoning and measurements:
+  [`gstammtisch-guide/MEMORY-ARCHITECTURE.md`](../gstammtisch-guide/MEMORY-ARCHITECTURE.md#vmswappiness--why-low-on-these-hosts).
+  systemd-oomd is the safety net. **Behaviour change:** a fresh install now writes 10; an already-saved
+  resume state keeps its saved value.
 - `vm.watermark_scale_factor = 50`, `vm.vfs_cache_pressure = 50`,
   `vm.page-cluster = 0`, `vm.dirty_ratio = 15`, `vm.dirty_background_ratio = 5`.
 - `vm.watermark_boost_factor` is **not written** by this installer (the kernel default, 15000, applies). On the
