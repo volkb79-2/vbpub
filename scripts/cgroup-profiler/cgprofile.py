@@ -1048,17 +1048,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
     # Sol B4: Docker/systemd auto-create an uninstalled `cgprofile.slice`
     # with no limits, and the daemon would appear governed while running
     # unbounded. Refuse to serve unless the slice is provably bounded.
-    if not serve_mod.daemon_slice_bounded(access.CGROUP_ROOT):
+    if not serve_mod.daemon_slice_bounded(access.CGROUP_ROOT, access.PROC_ROOT):
+        problem = serve_mod.daemon_slice_problem(access.CGROUP_ROOT, access.PROC_ROOT)
         _err(
-            f"serve refuses to run: {serve_mod.DAEMON_SLICE_NAME} is not "
-            "provably bounded (memory.max is unlimited or unreadable), which "
-            "means its unit is not installed and systemd auto-created an "
-            "implicit slice with no limits. Install infra/cgprofile.slice on "
-            "the Docker host (sudo cp infra/cgprofile.slice "
+            f"serve refuses to run: {serve_mod.DAEMON_SLICE_NAME} does not "
+            f"provably contain this daemon: {problem}. A missing unit makes "
+            "systemd auto-create an implicit slice with no limits (zero, "
+            "'max', unreadable and non-numeric memory.max are all refused; "
+            "zero is refused because a slice that can hold no memory is a "
+            "misconfiguration, not containment). Install infra/cgprofile.slice "
+            "on the Docker host (sudo cp infra/cgprofile.slice "
             "/etc/systemd/system/ && sudo systemctl daemon-reload), verify "
             "`systemctl show cgprofile.slice --property=LoadState,MemoryMax`, "
             "then recreate the daemon container (its cgroup parent is chosen "
-            "at creation)"
+            "at creation). LoadState itself cannot be read from inside the "
+            "container (CIU-150)"
         )
     observe_slices = tuple(
         name for name in (s.strip() for s in args.observe_slices.split(",")) if name

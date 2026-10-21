@@ -53,9 +53,12 @@ This is reported, never silently accepted:
   reports exactly what is on disk — `memory_min_bytes`/`memory_high_bytes`
   read back as the cgroup v2 defaults (`0` / unset) instead of this unit's
   authored values.
-- `serve` itself reads `memory.max` of `cgprofile.slice` at startup and
-  **refuses to start** (exit 2, message naming the install steps) when it is
-  unlimited or unreadable. Installation state is never inferred from anything
+- `serve` itself derives its OWN cgroup from the host proc view at startup and
+  **refuses to start** (exit 2, message naming the install steps) unless that
+  cgroup is under `cgprofile.slice` and the slice's `memory.max` is a finite
+  positive integer (unlimited `max`, zero, empty, unreadable and non-numeric
+  values all refuse; zero because a slice that can hold no memory is not
+  containment). Installation state is never inferred from anything
   this container cannot see (there is no bind-mount of
   `/etc/systemd/system`, so "is the unit file present" is never answerable
   from inside the daemon — only "what do the resulting cgroup files say").
@@ -64,7 +67,7 @@ The unit is therefore a hard prerequisite for the daemon to serve (Sol review
 B4, cgprofile 1.1.0): a missing unit used to leave a daemon that looked
 governed (`cgroup_parent` set) but ran unbounded next to production workloads.
 A supported Docker-host probe that refuses BEFORE container creation belongs
-to CIU (see the CIU backlog); until it ships, the daemon's own refusal is the
+to CIU (CIU-150, not in the 1.1.0 window); until it ships, the daemon's own refusal is the
 fail-closed guard, and the container restarts into the refusal until the unit
 is installed and the container recreated.
 

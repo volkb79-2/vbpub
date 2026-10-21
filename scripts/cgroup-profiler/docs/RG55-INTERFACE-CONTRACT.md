@@ -680,6 +680,12 @@ and "DAMON off" must not look alike. It never changes the workload verdict
 and the daemon still answers `stop` `ok: true` with the summary. A consumer
 that needs a clean DAMON registry must check `confirmed`.
 
+`stop_forced` (cgprofile 1.1.0, additive): `"sampler-still-running"` when the
+daemon finalized the session while its sampling worker was still alive
+(bounded escalation after repeated `stop-incomplete`, or shutdown). Resources
+are released and the manifest is `aborted`. Both keys are optional Summary
+keys; the contract number stays 1 and the Summary schema stays v1.1.
+
 ### 8.8 New error codes
 
 `peer-refused` (socket carrier), `place-refused:no-token`,

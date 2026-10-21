@@ -1737,6 +1737,9 @@ class LanePlacement:
             # unit since capture would otherwise be moved out of an unrelated
             # unit by StartTransientUnit(PIDs=...) and later restored to the
             # stale origin (Sol review B1). Exited PIDs are not moved at all.
+            # `_pid_exists` is existence only: a recycled PID that is alive
+            # and IN the census passes here and is caught by the start-time
+            # identity recheck that follows, not by this loop.
             for pid in sorted(candidates):
                 if pid in members or not self._pid_exists(pid):
                     continue

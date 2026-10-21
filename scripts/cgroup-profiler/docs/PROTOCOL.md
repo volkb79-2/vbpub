@@ -200,7 +200,8 @@ exit code 2 over the exec carrier (§1.3). Codes: `bad-argument`,
 `target-not-found`, `too-many-sessions`, `unknown-session`,
 `report-unavailable`, `report-failed`, `stop-incomplete` (a `stop` whose
 sampling worker did not exit within 10 s: the session is NOT finalized, keeps
-its placement and DAMON resources, and `stop` may be retried), and from §8.8 `peer-refused`,
+its placement and DAMON resources, and `stop` may be retried; the third
+consecutive incomplete attempt finalizes anyway with `stop_forced`), and from §8.8 `peer-refused`,
 `place-refused:*`, `bad-policy`, `not-streaming`.
 
 ## 7. Goldens

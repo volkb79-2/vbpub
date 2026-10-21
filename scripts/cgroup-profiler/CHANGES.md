@@ -25,19 +25,36 @@ inferred from the r3 canaries.
   well-formed local maps, sibling-only versus enforced-at-ancestor deltas),
   with the operator procedure in `docs/CONSUMERS.md`. The live run itself is
   NOT part of this change and is required before CP-20 is closed.
-- Fix (Sol B4): `cgprofile serve` now refuses to start (exit 2) when its own
-  `cgprofile.slice` is unbounded (`memory.max` unlimited or unreadable), i.e.
-  when the unit was never installed and systemd auto-created an implicit,
-  limitless slice. The documentation that said the daemon "still serves"
-  without the unit, and a `doctor` message the code never emitted, are
-  corrected. A pre-creation Docker-host `LoadState=loaded` probe in CIU's
-  preflight is a separate CIU change (filed in the CIU backlog).
+- **BREAKING / operational (Sol B4):** `cgprofile serve` now refuses to start
+  (exit 2) unless the slice the daemon is ACTUALLY IN is bounded: its own
+  cgroup (derived from the host proc view, not looked up by name) must sit
+  under the top-level `cgprofile.slice` and that slice must carry a finite,
+  positive `memory.max` (unlimited, zero, empty, unreadable and non-numeric
+  values are all refused; zero because a slice that can hold no memory is a
+  misconfiguration, not containment). Hosts without the installed unit
+  (`sudo cp infra/cgprofile.slice /etc/systemd/system/ && sudo systemctl
+  daemon-reload`, then recreate the container, since its cgroup parent is
+  chosen at creation) refuse, and with the compose `restart: unless-stopped`
+  the container CRASH-LOOPS until the unit is installed. Install the unit
+  BEFORE upgrading. A non-container or development `serve` run has no
+  `cgprofile.slice` ancestry and is refused too. The pre-creation Docker-host
+  `LoadState=loaded` probe the review asked for is NOT delivered in 1.1.0: it
+  is CIU-150 (`ciu/KNOWN_ISSUES_TODO_BACKLOG.md`), explicitly outside this
+  window; the daemon's own refusal is the interim fail-closed guard and runs
+  after container creation. The documentation that said the daemon "still
+  serves" without the unit, and a `doctor` message the code never emitted, are
+  corrected.
 - Fix (Sol B2): `stop` no longer claims completion while the sampling worker is
   still running. If the worker does not exit within 10 s the daemon answers the
   new error `stop-incomplete`, writes no `finished` manifest or summary, and
   keeps the session's placement and DAMON resources; a retry after the worker
   exits finalizes normally. Previously the join result was ignored, so a blocked
-  sampler could append records to a finalized session.
+  sampler could append records to a finalized session. A permanently wedged
+  worker cannot hold resources forever: the third consecutive incomplete `stop`
+  (`STOP_FORCE_AFTER_ATTEMPTS`) finalizes anyway, releasing placement and DAMON,
+  writing an `aborted` manifest with reason `sampler-still-running` and an
+  additive `summary.stop_forced`; a late sample from the worker is discarded.
+  Daemon shutdown (SIGTERM) forces the same way instead of stranding resources.
 - Fix (Sol B3): an unconfirmed DAMON teardown is no longer indistinguishable
   from "DAMON off". `stop` (and `summary.json`/`manifest.json`) now carry
   `damon_cleanup: {confirmed, slot, quarantined}` whenever a DAMON owner was

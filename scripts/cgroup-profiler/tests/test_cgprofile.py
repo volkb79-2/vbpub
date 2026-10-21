@@ -2739,7 +2739,7 @@ class TestCmdServe:
         monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
         monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")
         monkeypatch.setattr(access, "have_host_proc_view", lambda proc: True)
-        monkeypatch.setattr(serve_lib, "daemon_slice_bounded", lambda root: True)
+        monkeypatch.setattr(serve_lib, "daemon_slice_bounded", lambda *_a: True)
         captured: Dict[str, Any] = {}
 
         class FakeServer:
@@ -2772,7 +2772,7 @@ class TestCmdServe:
         monkeypatch.setattr(access, "have_host_cgroup_view", lambda root: True)
         monkeypatch.setenv(access.PID_NAMESPACE_MODE_ENV, "host")
         monkeypatch.setattr(access, "have_host_proc_view", lambda proc: True)
-        monkeypatch.setattr(serve_lib, "daemon_slice_bounded", lambda root: True)
+        monkeypatch.setattr(serve_lib, "daemon_slice_bounded", lambda *_a: True)
         captured: Dict[str, Any] = {}
 
         class FakeServer:

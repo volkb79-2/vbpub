@@ -1021,7 +1021,7 @@ def test_cli_serve_gates_slice_flag_reaches_session_server(monkeypatch):
             return None
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
-    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda root: True)  # Sol B4
+    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda *_a: True)  # Sol B4
     monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
@@ -1041,7 +1041,7 @@ def test_cli_serve_gates_slice_defaults_to_dev_gates(monkeypatch):
             return None
 
     monkeypatch.setattr(serve, "SessionServer", _FakeServer)
-    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda root: True)  # Sol B4
+    monkeypatch.setattr(serve, "daemon_slice_bounded", lambda *_a: True)  # Sol B4
     monkeypatch.setattr("lib.access.have_host_cgroup_view", lambda root: True)
     monkeypatch.setenv(cg.access.PID_NAMESPACE_MODE_ENV, "host")
     monkeypatch.setattr("lib.access.have_host_proc_view", lambda root: True)
@@ -2439,6 +2439,109 @@ def test_stop_with_a_blocked_sampler_is_incomplete_and_finalizes_nothing(
     assert again["ok"] is True and again["already_stopped"] is False
     assert sess.finished and closed == [True] and released == [True]
     assert summary_path.is_file()
+
+
+def _wedge(simple_server, monkeypatch):
+    """A started session whose sampling worker ignores stop_event, with
+    spies on placement release and DAMON close."""
+    monkeypatch.setattr(serve, "STOP_JOIN_SECONDS", 0.05)
+    started = simple_server._dispatch(_start_req())
+    sess = simple_server._sessions[started["session"]]
+    sess.stop_event.set()
+    sess.thread.join(timeout=5.0)
+    sess.stop_event.clear()
+    release = threading.Event()
+    blocked = threading.Thread(target=release.wait, daemon=True)
+    blocked.start()
+    sess.thread = blocked
+    closed: List[bool] = []
+    released: List[bool] = []
+
+    class _Damon:
+        cleanup_confirmed = True
+        kdamond_idx = 1
+        thresholds = {"hot_rate_pct": 50, "warm_rate_pct": 5,
+                      "cold_age_s": 30, "idle_age_s": 120}
+
+        def __exit__(self, *_args):
+            closed.append(True)
+
+    class _Placement:
+        def release(self):
+            released.append(True)
+
+        def block(self):
+            return {"leaf": None}
+
+    sess.damon_session = _Damon()
+    sess.placement = _Placement()
+    return sess, release, closed, released
+
+
+def test_a_permanently_wedged_worker_is_finalized_by_the_bounded_escalation(
+    simple_server, monkeypatch,
+):
+    """Sol S1: stop-incomplete cannot hold resources forever. The
+    STOP_FORCE_AFTER_ATTEMPTS-th attempt finalizes with stop_forced and an
+    aborted manifest, releases placement and DAMON, and a late sample from the
+    still-running worker is discarded."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    for attempt in range(1, serve.STOP_FORCE_AFTER_ATTEMPTS):
+        response = simple_server._dispatch(_wire("stop", session=sess.session_id))
+        assert response["error"]["code"] == "stop-incomplete"
+        assert f"attempt {attempt} of" in response["error"]["message"]
+        assert closed == [] and released == []
+    forced = simple_server._dispatch(_wire("stop", session=sess.session_id))
+    assert forced["ok"] is True
+    assert forced["summary"]["stop_forced"] == serve.STOP_FORCED_REASON
+    assert closed == [True] and released == [True]
+    manifest = json.loads(
+        (Path(simple_server.sessions_dir) / sess.session_id / "manifest.json").read_text()
+    )
+    assert manifest["status"] == "aborted"
+    assert manifest["aborted_reason"] == serve.STOP_FORCED_REASON
+    samples_before = sess.live_samples
+    simple_server._on_session_sample(
+        sess, {"seq": 99, "mono": 99.0, "t": EPOCH_START, "cg": {}, "host": {}},
+        "/nonexistent", None,
+    )
+    assert sess.live_samples == samples_before
+    release.set()
+
+
+def test_sigterm_shutdown_finalizes_a_session_whose_sampler_is_blocked(
+    simple_server, monkeypatch,
+):
+    """Sol S1: shutdown must not strand placement/DAMON behind a wedged
+    sampler; it forces, marking the manifest aborted."""
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    simple_server.request_shutdown()       # what the SIGTERM handler does
+    simple_server._stop_all_sessions(aborted_reason="daemon-stopped")
+    assert sess.finished and closed == [True] and released == [True]
+    manifest = json.loads(
+        (Path(simple_server.sessions_dir) / sess.session_id / "manifest.json").read_text()
+    )
+    assert manifest["status"] == "aborted"
+    assert manifest["aborted_reason"] == serve.STOP_FORCED_REASON
+    assert sess.summary_doc["stop_forced"] == serve.STOP_FORCED_REASON
+    release.set()
+
+
+def test_forced_stop_that_cannot_take_the_session_lock_does_not_deadlock(
+    simple_server, monkeypatch, capsys,
+):
+    sess, release, closed, released = _wedge(simple_server, monkeypatch)
+    sess.stop_attempts = serve.STOP_FORCE_AFTER_ATTEMPTS
+    sess.lock.acquire()                      # the wedged worker holds it
+    try:
+        with simple_server._lock:
+            assert simple_server._finalize_session_locked(
+                sess, aborted_reason=None, force=True) is False
+    finally:
+        sess.lock.release()
+    assert not sess.finished and closed == [] and released == []
+    assert "holds the session lock" in capsys.readouterr().err
+    release.set()
 
 
 def test_confirmed_damon_cleanup_is_reported_as_confirmed(simple_server):

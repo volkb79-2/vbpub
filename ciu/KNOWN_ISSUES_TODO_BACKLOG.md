@@ -5507,6 +5507,8 @@ It printed `Active service profile(s): apps,worker-io,worker-db,identity,observa
 
 **Why CIU owns it.** Placement of a deployed container is CIU's supported workflow; the fix needs a probe that runs on the Docker host, not in the cockpit.
 
+**Sol requirement (verbatim).** "The supported deployment workflow needs a Docker-host systemd probe that proves `LoadState=loaded` before container creation; missing or unprovable units must refuse. Test both installed and missing-unit hosts."
+
 **Required contract.** Before creating any container whose resolved `cgroup_parent` (governance OR compose-authored) is a named non-default slice, prove `LoadState=loaded` through a Docker-host systemd probe; a missing or unprovable unit refuses (exit 2) naming the unit and the install step. Do not treat an inconclusive probe as success.
 
 **Oracles.** An installed-unit host passes; a missing-unit host refuses; a cockpit with no host probe refuses (not skips) for a stack that names a non-default slice.

@@ -473,6 +473,17 @@ DAMON marked unavailable when reservation is refused. Treat `damon: "on"` plus a
 `damon.jsonl` series as the evidence that DAMON actually ran, not `ctl version`
 alone.
 
+`stop` answers `stop-incomplete` while a session's sampling worker is still
+running and the session keeps its resources; retry. After the third
+consecutive incomplete attempt the daemon finalizes anyway and the Summary
+carries `stop_forced: "sampler-still-running"` (manifest `aborted`), which is
+the operator recovery for a wedged worker; a daemon restart recovers a session
+left `running` as an orphan.
+
+`serve` refuses to run anywhere but inside a container whose cgroup is under a
+bounded top-level `cgprofile.slice` (see `infra/README.md`); a non-container or
+development `serve` run is refused too. Pre-creation proof is CIU-150.
+
 A stopped session whose DAMON owner was closed carries
 `summary.damon_cleanup: {"confirmed": <bool>, "slot": <int|null>,
 "quarantined": <bool>}` (also in `manifest.json`). `confirmed: false` means the

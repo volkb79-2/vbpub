@@ -735,3 +735,37 @@ shutdown logs the incomplete stop and leaves the manifest `running`, which the
 next start recovers as an orphan. This is deliberately NOT the CP-24 stop
 protocol (bounded finalization with kill evidence); it only forbids the false
 completion.
+
+## The daemon proves the slice it is in, not a slice by name
+
+Docker and systemd accept any `cgroup_parent` and auto-create an uninstalled
+slice without limits, so a daemon whose compose file names `cgprofile.slice`
+can still run unbounded next to production workloads. `serve` therefore refuses
+to start unless the cgroup it is actually running in, derived from the host
+proc view (`/proc/<host pid>/cgroup` normalized through the cgroup-namespace
+root, the same path derivation placement uses), is under the top-level
+`cgprofile.slice` and that slice's `memory.max` is a finite positive integer.
+A bounded `cgprofile.slice` that merely exists while the container was created
+under another parent, or a nested look-alike, does not pass (name for object).
+Zero is refused: it is finite but a slice that can hold no memory is a
+misconfiguration, and `read_int` folds `max`, empty, unreadable and garbage
+into one "not a number" outcome, so the message names every cause.
+
+Rejected alternatives: reading `LoadState` from inside the container (the
+daemon has no view of `/etc/systemd/system` or the host systemd, so it cannot
+be proven there); a flag to run unbounded anyway (the point is that unbounded
+must not look governed). The pre-creation Docker-host `LoadState=loaded` probe
+remains the complete fix and is CIU-150, outside the 1.1.0 window. The
+refusal runs after container creation, so on `restart: unless-stopped` a host
+without the unit crash-loops; that loud failure is intended.
+
+### A wedged worker has a bounded way out
+
+`stop-incomplete` alone would let a permanently wedged sampler hold placement
+and DAMON forever. The third consecutive incomplete `stop` therefore finalizes
+anyway (`stop_forced: sampler-still-running`, aborted manifest, resources
+released) and daemon shutdown forces the same way; a late sample from the
+worker is discarded because the session is finished. If the worker holds the
+session lock the forced path refuses rather than deadlock the daemon. Known
+limit: each attempt joins for up to 10 s while holding the server-wide lock, so
+a wedged sampler delays every verb for that long per retry.

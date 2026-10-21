@@ -403,7 +403,11 @@ see the consumer note for the live probe and safe host procedure.
   `infra/README.md` (`sudo cp infra/cgprofile.slice
   /etc/systemd/system/ && sudo systemctl daemon-reload`). Not installed →
   `serve` REFUSES to start (exit 2): systemd would auto-create an unbounded
-  slice and the daemon would look governed while running unlimited.
+  slice and the daemon would look governed while running unlimited. The
+  daemon's OWN cgroup must be under `cgprofile.slice`, whose `memory.max` must
+  be finite and positive (unlimited, zero, empty, unreadable and non-numeric are
+  all refused); with `restart: unless-stopped` a host without the unit
+  crash-loops. Pre-creation `LoadState` proof is CIU-150, not in 1.1.0.
   `ctl host` reports the actual `daemon_slice.memory_min_bytes` and
   `memory_high_bytes` (a zero or null floor means no memory reservation).
   This is a
