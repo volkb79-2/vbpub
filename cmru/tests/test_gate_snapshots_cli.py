@@ -228,3 +228,130 @@ def test_a_missing_directory_with_the_branch_at_another_path_is_not_inferred_gon
     )
     item = _report(source)
     assert item.status == gate_snapshot.RETAINED and "another mount namespace" in item.reason
+
+
+# ─── the remaining KI-92 branches, driven through the production functions ────────────
+
+import dataclasses  # noqa: E402
+import errno  # noqa: E402
+import os  # noqa: E402
+
+
+def _lstat_fails_for(monkeypatch, target: Path, *, after: int = 0, code: int = errno.EACCES):
+    """Make ``Path.lstat`` raise ``OSError(code)`` for ``target`` only, after ``after`` good calls."""
+    real = Path.lstat
+    seen = {"calls": 0}
+
+    def lstat(self, *args, **kwargs):
+        if self == target:
+            seen["calls"] += 1
+            if seen["calls"] > after:
+                raise OSError(code, os.strerror(code), str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", lstat)
+    return seen
+
+
+def test_a_directory_that_cannot_be_inspected_is_unreadable_retained_and_never_removed(
+        repository, monkeypatch, capsys):
+    source, snapshot = repository
+    seen = _lstat_fails_for(monkeypatch, snapshot.worktree_path, after=0)
+
+    item = _report(source)
+
+    assert seen["calls"] >= 1
+    assert item.status == gate_snapshot.RETAINED  # not stale, not removable: the fact is unknown
+    assert item.reason == (
+        f"cannot inspect CMRU gate snapshot {snapshot.worktree_path}: "
+        f"[Errno {errno.EACCES}] {os.strerror(errno.EACCES)}: '{snapshot.worktree_path}'"
+    )
+    assert cli.main(["gate-snapshots", "--remove"]) == 0
+    capsys.readouterr()
+    assert item.record.record_path.exists()  # --remove left it alone
+    assert _branch_exists(source, snapshot.branch)
+
+
+def test_a_directory_that_becomes_unreadable_between_the_two_checks_is_retained(
+        repository, monkeypatch):
+    # first lstat (presence) succeeds, the second (checkout validation) fails: a race, not a stale record
+    source, snapshot = repository
+    seen = _lstat_fails_for(monkeypatch, snapshot.worktree_path, after=1)
+
+    item = _report(source)
+
+    assert seen["calls"] == 2
+    assert item.status == gate_snapshot.RETAINED
+    assert item.reason.startswith(f"cannot inspect CMRU gate snapshot {snapshot.worktree_path}: ")
+    assert os.strerror(errno.EACCES) in item.reason
+
+
+def test_validate_snapshot_checkout_names_an_uninspectable_directory(repository, monkeypatch):
+    source, snapshot = repository
+    record = _report(source).record
+    _lstat_fails_for(monkeypatch, snapshot.worktree_path, after=0, code=errno.EIO)
+
+    with pytest.raises(RuntimeError) as refused:
+        gate_snapshot._validate_snapshot_checkout(record, record.git_common_dir)
+
+    assert str(refused.value).startswith(
+        f"cannot inspect CMRU gate snapshot {snapshot.worktree_path}: "
+    )
+    assert os.strerror(errno.EIO) in str(refused.value)
+    assert isinstance(refused.value.__cause__, OSError)
+
+
+def test_dropping_a_stale_record_does_not_delete_a_branch_that_does_not_exist(
+        repository, monkeypatch, capsys):
+    source, snapshot = repository
+    record_path = _report(source).record.record_path
+    _git(source, "worktree", "remove", "--force", str(snapshot.worktree_path))
+    _git(source, "branch", "-D", snapshot.branch)  # the leftover branch is already gone
+    assert not _branch_exists(source, snapshot.branch)
+    calls: list[tuple[str, ...]] = []
+    real_git = gate_snapshot._git
+
+    def spy(root, *args, **kwargs):
+        calls.append(args)
+        return real_git(root, *args, **kwargs)
+
+    monkeypatch.setattr(gate_snapshot, "_git", spy)
+
+    assert cli.main(["gate-snapshots", "--remove"]) == 0
+    capsys.readouterr()
+
+    assert not record_path.exists()  # the record was still dropped
+    assert any(call[:2] == ("rev-parse", "--verify") for call in calls)  # it looked for the branch
+    assert not any(call[:1] == ("branch",) for call in calls)  # and never ran `branch -D`
+
+
+def test_a_record_that_changed_while_it_was_being_dropped_is_not_removed(repository, monkeypatch):
+    source, snapshot = repository
+    record = _report(source).record
+    _git(source, "worktree", "remove", "--force", str(snapshot.worktree_path))
+    api = gate_snapshot._worktree_api()
+    changed = dataclasses.replace(record, branch="cmru-gate-someone-elses-branch")
+    monkeypatch.setattr(api, "read_record", lambda _path: changed)  # the record moved under the lock
+
+    with pytest.raises(RuntimeError) as refused:
+        gate_snapshot._drop_stale_record(record, record.git_common_dir, source)
+
+    assert str(refused.value) == (
+        f"CMRU gate snapshot record changed while it was being dropped: {record.record_path}"
+    )
+    assert record.record_path.exists()  # nothing was unlinked
+
+
+def test_a_record_that_moved_its_path_while_being_dropped_is_not_removed_either(
+        repository, monkeypatch):
+    source, snapshot = repository
+    record = _report(source).record
+    _git(source, "worktree", "remove", "--force", str(snapshot.worktree_path))
+    api = gate_snapshot._worktree_api()
+    changed = dataclasses.replace(record, worktree_path=record.worktree_path.parent / "elsewhere")
+    monkeypatch.setattr(api, "read_record", lambda _path: changed)
+
+    with pytest.raises(RuntimeError, match="changed while it was being dropped"):
+        gate_snapshot._drop_stale_record(record, record.git_common_dir, source)
+
+    assert record.record_path.exists()
