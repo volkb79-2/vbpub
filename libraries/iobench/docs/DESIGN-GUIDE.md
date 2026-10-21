@@ -87,7 +87,7 @@ comparison is `unproven: ceiling_moved`, both values are kept, and the move is a
 | Technique | What it defeats | What it does not |
 |---|---|---|
 | `--direct=1` | guest page cache | any host/provider cache |
-| The cold-region probe (earliest-written region right after the fill), cross-checked by E2 | host/provider read caches, whatever their allocation policy, as long as the fill exceeds the cache | a cache larger than the fill (reported `cold_hit_like`) |
+| The cold-region probe (earliest-written region right after the fill), cross-checked by E2 | host/provider read caches, whatever their allocation policy, as long as the fill exceeds the cache | a cache at least as large as the fill: on a device target it reads as `no_cache_observed` (R-11), because rate and latency cannot tell it from no cache |
 | The time axis (>= 120 s after the knee, bytes after >= 2x burst) | write-back caches and token buckets for writes | a burst longer than the observation (`unproven: short_observation`) |
 | Steady tail = median of the last 25 % of a <= 2 s series, knee/burst detection | warm-up and bursts shorter than the observation | a token bucket longer than the observation: every result records `bucket_exclusion_s<=N`; `standard` adds a 240 s write and 120 s read observation, `thorough` 900/240 s (the 0.9 -> 3.2 GB/s step at ~430 s seen on r1002 needs `thorough`) |
 | Read only data **written by this calibration** (argv-confined to the recorded extent) | zero-page reads of unmapped space (99.9k IOPS on a discarded range [M r1002]) | - |
@@ -158,7 +158,7 @@ the last 12 h differs from the calibration's by > 25 % in two consecutive window
 
 New library `libraries/iobench`: stdlib plus `fio`, a pure core behind an injected `Host`, a thin `iobench.cli` that adopts `cli-extended` (so the **CLI** needs `cli-extended` on
 `PYTHONPATH`; the measurement core does not). In-repo consumers copy the source (precedent: `install.sh` installs the generator; AGENTS "Consuming assay from inside vbpub"); out-of-repo
-consumers get a cmru-released wheel and zipapp with sha256 (never PyPI). New code, no GPL code.
+consumers get a cmru-released wheel with its sha256 (never PyPI; no zipapp: it could not carry the `cli-extended` wheel dependency, and in-repo consumers copy the source). New code, no GPL code.
 
 | Phase | Change |
 |---|---|
@@ -199,7 +199,7 @@ D-010 never branch on hypervisor detection, D-011 long-term probe later, D-012 r
 | R-1 per-proposal `proven`/`unproven`/`absent`; exit 7 = valid with unproven; collapse table; accept to apply; BPS own basis | SPEC section 4, IOB-CAL-06, IOB-CHK-01 |
 | R-2 second independent estimator (latency modes); two must agree; degenerate cases with fixtures | SPEC section 6, DG 3.1 |
 | R-3 rung sizes from the device; largest <= 0.85 x usable; PLA-02 = largest >= 1.2 x cliff else `device_smaller_than_cache_margin` | IOB-CAL-01, IOB-PLA-02 |
-| R-4 no cliff is valid; miss-like unimodal => proven, hit-like => unproven; `quick` reports unproven | IOB-CCH-04, IOB-PRF |
+| R-4 no cliff is valid; miss-like unimodal => proven; hit-like => unproven unless the cold region is as fast as the warm one (R-11); `quick` reports unproven | IOB-CCH-04, IOB-PRF |
 | R-5 "fresh" is writes only; one matrix count | IOB-CAL-07, IOB-SHP-01, IOB-SWP-01 |
 | R-6 discard, fill, mkfs through the same marker guard; no installer bypass; tail oracle for every writer | IOB-TGT-03/04, IOB-ARC-05 |
 | R-7 noisy-knee fixture fixed (18000/22000 alternation, CV 0.10) | IOB-SER-02 |
@@ -224,3 +224,20 @@ D-010 never branch on hypervisor detection, D-011 long-term probe later, D-012 r
 Rejected: memory balloon (guest-only), fsync/O_DSYNC as cache-proofing, a `rotational` heuristic, hypervisor detection to relax checks, a fixed 16 GiB file, a single global `plausible` bit,
 a VM lane (r1002 is the live acceptance). Open (SPEC section 20): installer filesystem lifecycle (OI-1), ceiling history population (OI-2), the `[I]` 10 ms request-time constant (OI-3). A provider
 token bucket longer than the observation cannot be excluded by a one-off benchmark; only the ceiling history can show it, and every result states the observation length.
+
+## Decisions added in IOB-03 P3 (coordinator rulings)
+
+* **R-11 `no_cache_observed`.** A hit-or-miss label for the cold probe is relative to `hit_ref_us` (the QD1 latency of the smallest working set) and only means something when a cache exists. On a disk with no cache,
+  or with a flat provider cap (the gstammtisch class), the cold latency equals `hit_ref`, so the probe reads "hit-like" and nothing could ever be proven. The state `no_cache_observed` is `proven` when the cold probe is
+  unimodal, there is no cliff, the target is a device and the cold rate is at least 0.9 x `cached_ref`: the cold region runs as fast as the warm one, so caching does not change the sustained rate, and `R = R_cold`. A flat
+  cold probe stays `rate_cap`. `cold_hit_like` (unproven) remains for a cliff, a file target, or a cold rate clearly below the warm reference. **Residual risk, stated plainly:** a cache at least as large as the fill is
+  indistinguishable from no cache by rate or latency, so it is reported `no_cache_observed` too; the proof then covers data up to the fill size, not a dataset larger than the cache. The ruling accepts this; file targets are
+  excluded because their size bounds what could be shown.
+* **CCH-08 #1 is analytic.** The content simulator did not produce an E1 "good but wrong" ladder (the E1 criteria are strict and its ladder reads `[0, ws)`, which a two-tier model makes rise), so the ladder is generated
+  from the header parameters and run through the production estimators. The simulator-based fixture that demonstrates the neighbouring hazard is #2 `fill_history_inversion`: the ladder rises with the working set,
+  `cached_ref` equals the miss rate, no cliff appears, and the cap still comes from the cold probe.
+* **CCH-08 #2 range.** `R = min(R_cold, R_E2)` with `R_E2 = steady(QD32) x (1 - h2)` is conservative on the mixed largest rung (about 7.3k against a cold 9.8k); the fixture asserts 0.7 to 1.06 x 9.8k.
+* **SHP-04 wins over PLA-11.** A poor fit makes the model keys `absent: stage_failed` and the QoS `max` `unproven: shape_fit_poor`; the PLA-11 text now says the same.
+* **CAL-01.** The rule wins over the literal numbers: the two densification rungs are the geometric thirds (282.8 and 312.4 GiB). They add a fixed two rungs, so the section 15 allotment sum (3280 s standard, 4120 s thorough) is unchanged and `test_slo_05_*` pins it.
+* **REL-01.** Wheel and sha256 only.
+

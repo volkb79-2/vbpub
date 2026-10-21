@@ -397,7 +397,8 @@ class Calibrator(Runner):
         before = [r["steady_iops"] for r in classes if r["class"] == "cached_tier"]
         post = [(r["ws_bytes"], r["steady_iops"]) for r in classes if r["class"] == "post_cliff" and r["state"] in ("steady", "flat")]
         e1 = cache.e1_fit(post, statistics.median(before) if before else None)
-        state = cache.classify_cache(cold, e2, cliff_bytes=cliff, largest_rung=largest["ws_bytes"], quick=self.quick)
+        state = cache.classify_cache(cold, e2, cliff_bytes=cliff, largest_rung=largest["ws_bytes"], quick=self.quick,
+                                    cached_ref=cached_ref, cache_excludable=self.target.kind == "device")
         if self.target.kind == "file" and state.state == "cold_hit_like" and cliff is None:
             # a file target is bounded by --size and free space: its cliff is unreachable (IOB-TGT-10), so the honest reason is the margin
             state = replace(state, reasons=("device_smaller_than_cache_margin",))

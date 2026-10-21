@@ -90,8 +90,8 @@ def probe(r=9800.0, shape="unimodal", cls="miss-like", rl=False):
     return ColdProbe(r, rl, shape, cls, 760.0, 32 * GIB)
 
 
-def classify(cold, e2=None, cliff=None, largest=345 * GIB, quick=False):
-    return cache.classify_cache(cold, e2, cliff_bytes=cliff, largest_rung=largest, quick=quick)
+def classify(cold, e2=None, cliff=None, largest=345 * GIB, quick=False, ref=None, excludable=True):
+    return cache.classify_cache(cold, e2, cliff_bytes=cliff, largest_rung=largest, quick=quick, cached_ref=ref, cache_excludable=excludable)
 
 
 def test_cch_05_cache_state_table():
@@ -109,10 +109,22 @@ def test_cch_05_cache_state_table():
     assert (s.state, s.status) == ("rate_cap", "proven")
     assert classify(probe(rl=True, shape="bimodal", cls="n/a")).state == "rate_cap"
     s = classify(probe(rl=True, cls="hit-like"))
-    assert (s.state, s.reasons) == ("cold_hit_like", ("no_cliff_hit_like_mode",))
+    assert (s.state, s.status, s.r) == ("rate_cap", "proven", 9800.0)       # a flat cold probe stays rate_cap, whatever its latency class
     # hit-like with / without a cliff
     assert classify(probe(cls="hit-like"), cliff=300 * GIB).reasons == ("device_smaller_than_cache_margin",)
-    assert classify(probe(cls="hit-like")).reasons == ("no_cliff_hit_like_mode",)
+    assert classify(probe(cls="hit-like")).reasons == ("no_cliff_hit_like_mode",)      # no reference rate: nothing to compare with
+    assert classify(probe(cls="hit-like"), ref=20000.0).reasons == ("no_cliff_hit_like_mode",)   # cold 9.8k < 0.9 x 20k: not "as fast as warm"
+    # no cache observed: the cold region is as fast as the warm one, unimodal, no cliff
+    n = classify(probe(cls="hit-like"), ref=9800.0)
+    assert (n.state, n.status, n.reasons, n.r) == ("no_cache_observed", "proven", (), 9800.0)
+    assert classify(probe(cls="indeterminate"), ref=10000.0).state == "no_cache_observed"
+    assert classify(probe(cls="hit-like"), ref=10888.0).state == "no_cache_observed" and classify(probe(cls="hit-like"), ref=10890.0).state == "cold_hit_like"
+    # ... but never with a cliff, on a file target, or for a non-unimodal probe
+    assert classify(probe(cls="hit-like"), cliff=300 * GIB, ref=9800.0).state == "cold_hit_like"
+    assert classify(probe(cls="hit-like"), ref=9800.0, excludable=False).state == "cold_hit_like"
+    assert classify(probe(shape="bimodal", cls="n/a"), ref=9800.0).state == "undetermined"
+    # the margin row still applies on top of the proven state
+    assert classify(probe(cls="hit-like"), cliff=None, ref=9800.0, largest=1 * GIB).status == "proven"
     # bimodal / overlapping / indeterminate cold probe
     for shape, cls in (("bimodal", "n/a"), ("overlapping", "n/a"), ("unimodal", "indeterminate")):
         assert classify(probe(shape=shape, cls=cls)).reasons == ("cache_model_undetermined",)
@@ -407,24 +419,31 @@ def test_cch_08_3_read_alloc_cold_ladder():
 
 
 def test_cch_08_4_cache_larger_than_fill():
-    host = make_host(cache=dict(capacity_gib=500, hit_iops=92000, write_allocate=True))
-    c = read_cache(calibrate(host))
-    assert c["cache_state"] == "cold_hit_like" and c["status"] == "unproven" and c["reasons"] == ["no_cliff_hit_like_mode"]
+    # The cold region is cache-resident and as fast as the warm region; with no cliff that is what "no cache observed" means
+    # (IOB-CCH-05). A cache at least as large as the fill is physically indistinguishable from no cache at all by rate or latency,
+    # so this scenario classifies as no_cache_observed on a device target; on a file target (size-bounded) it stays unproven.
+    c = read_cache(calibrate(make_host(cache=dict(capacity_gib=500, hit_iops=92000, write_allocate=True))))
+    assert (c["cache_state"], c["status"]) == ("no_cache_observed", "proven") and c["R_iops"] > 80000
+    # cold_hit_like needs a hit-like probe that cannot be called "as fast as warm": a cliff exists, or the rate is below the reference
+    table = classify(probe(cls="hit-like"), cliff=300 * GIB, ref=9800.0)
+    assert (table.state, table.status) == ("cold_hit_like", "unproven")
 
 
 def test_cch_08_5_flat_rate_cap():
+    # a bare flat provider cap on a disk with no cache: the cold probe is flat -> rate_cap, proven
     capped = dict(iops_max=3600, lat_us=8000, lat_hit_us=110)
-    host = make_host(cache=None, read=capped, noise=0.001)
-    c = read_cache(calibrate(host))
-    # on a bare flat line the small-working-set reference is as slow as the cold probe, so the probe is hit-like
-    assert c["E_cold"]["rate_limited"] is True if "E_cold" in c else True
-    assert (c["cache_state"], c["status"]) == ("cold_hit_like", "unproven")
-    # the cold probe itself flat and miss-like or indeterminate -> rate_cap, proven
+    c = read_cache(calibrate(make_host(cache=None, read=capped, noise=0.001)))
+    assert (c["cache_state"], c["status"], c["reasons"]) == ("rate_cap", "proven", [])
+    assert c["R_iops"] == pytest.approx(3600, rel=0.02)
+    # no cache and not flat -> no_cache_observed, proven, R is the cold rate
+    plain = read_cache(calibrate(make_host(cache=None, read=dict(iops_max=21600, lat_us=300))))
+    assert (plain["cache_state"], plain["status"], plain["reasons"]) == ("no_cache_observed", "proven", [])
+    assert plain["R_iops"] == pytest.approx(plain["R_cold_iops"])
     for cls in ("miss-like", "indeterminate"):
         s = classify(probe(rl=True, cls=cls))
         assert (s.state, s.status) == ("rate_cap", "proven")
     s = classify(probe(rl=True, cls="hit-like"))
-    assert (s.state, s.status) == ("cold_hit_like", "unproven")
+    assert (s.state, s.status) == ("rate_cap", "proven")
 
 
 def test_cch_08_6_e2_disagrees():

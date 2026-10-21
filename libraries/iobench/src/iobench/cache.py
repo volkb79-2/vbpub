@@ -235,7 +235,7 @@ def e1_fit(post_cliff: Sequence[tuple[int, float]], f_cached: float | None) -> E
 # -- classification (IOB-CCH-05) --------------------------------------------------
 @dataclass(frozen=True)
 class CacheState:
-    state: str  # cold_measured | rate_cap | cold_hit_like | undetermined
+    state: str  # cold_measured | rate_cap | no_cache_observed | cold_hit_like | undetermined
     status: str  # proven | unproven
     reasons: tuple[str, ...]
     r: float | None  # the cache-free read rate this state vouches for
@@ -251,21 +251,29 @@ def _within(ratio: float) -> bool:
     return E2_TOLERANCE[0] <= ratio <= E2_TOLERANCE[1]
 
 
+NO_CACHE_RATIO = 0.9
+
+
 def classify_cache(cold: ColdProbe | None, e2: E2 | None, *, cliff_bytes: float | None, largest_rung: int,
-                   quick: bool = False, hit_ref_us: float | None = None) -> CacheState:
-    """The table of IOB-CCH-05."""
+                   quick: bool = False, hit_ref_us: float | None = None, cached_ref: float | None = None,
+                   cache_excludable: bool = True) -> CacheState:
+    """The table of IOB-CCH-05 (``cache_excludable`` is False for a file target, whose size bounds what can be shown)."""
     r_cold = cold.r_cold if cold else None
     r_e2 = e2.r_e2 if e2 else None
     if cold is None:
         reasons = ["quick_profile"] if quick else ["cache_residual_possible"]
         state, r = "undetermined", None
-    elif cold.rate_limited is True and cold.cls != "hit-like":
+    elif cold.rate_limited is True:
         state, r, reasons = "rate_cap", cold.r_cold, []
     elif cold.shape == "unimodal" and cold.cls == "miss-like":
         if r_e2 is not None and not _within(cold.r_cold / r_e2):
             state, r, reasons = "undetermined", None, ["cache_model_undetermined"]
         else:
             state, r, reasons = "cold_measured", min(cold.r_cold, r_e2) if r_e2 is not None else cold.r_cold, []
+    elif (cold.shape == "unimodal" and cold.cls in ("hit-like", "indeterminate") and cliff_bytes is None and cache_excludable
+          and cached_ref is not None and cold.r_cold >= NO_CACHE_RATIO * cached_ref):
+        # the cold region runs as fast as the warm one and there is no cliff: caching does not change the sustained rate
+        state, r, reasons = "no_cache_observed", cold.r_cold, []
     elif cold.shape == "unimodal" and cold.cls == "hit-like":
         state, r = "cold_hit_like", None
         reasons = ["device_smaller_than_cache_margin" if cliff_bytes is not None else "no_cliff_hit_like_mode"]

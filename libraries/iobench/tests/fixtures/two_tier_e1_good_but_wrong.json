@@ -27,7 +27,10 @@
    ],
    "e1_rules_version": 2,
    "deviation": "rung 324 omitted: with it the leave-one-out error is 0.158 (> 0.15, E1 poor); the SPEC lists 324 and reports 0.137"
-  }
+  },
+  "analytic": true,
+  "why_analytic": "the content simulator did not produce an E1 'good but wrong' ladder: its ladder reads [0, ws) of the sequential fill, where a two-tier model rises; the ladder here is computed from the generator parameters and run through the production estimators",
+  "see_also": "fill_history_inversion (CCH-08 #2) is the simulator-based fixture for the neighbouring hazard"
  },
  "ladder": [
   {

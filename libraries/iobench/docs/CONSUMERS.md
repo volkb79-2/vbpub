@@ -13,7 +13,7 @@ install -d /usr/local/lib/iobench && cp -r libraries/iobench/src/iobench librari
 PYTHONPATH=/usr/local/lib/iobench python3 -m iobench --version
 ```
 
-Out of repo: the cmru-released `iobench` wheel (GitHub Releases only, never PyPI; its `cli-extended` dependency comes from the same releases). A zipapp is not shipped yet (see IMPLEMENTATION-NOTES, IOB-REL-01).
+Out of repo: the cmru-released `iobench` wheel (GitHub Releases only, never PyPI; its `cli-extended` dependency comes from the same releases). There is no zipapp; in-repo consumers copy the source as shown above.
 
 ## 1. Prepare the scratch target (once per host)
 
@@ -127,7 +127,7 @@ nothing; host-setup renders and verifies the persistent files.
 
 ### 5.3 Cache state, metering, fit, limits
 
-* `cache_state` (reads): `cold_measured` (the earliest-written region read as cache-free: proven), `rate_cap` (the cold-region probe itself is flat at a provider cap: proven; a flat line elsewhere is only a recorded fact), `cold_hit_like` (the cache is larger than the fill), `undetermined`. Writes have no cache state: they are proven by the time axis (>= 120 s after the knee, bytes after >= 2x the burst).
+* `cache_state` (reads): `cold_measured` (the earliest-written region read as cache-free: proven), `rate_cap` (the cold-region probe itself is flat at a provider cap: proven; a flat line elsewhere is only a recorded fact), `no_cache_observed` (the cold region runs as fast as the warm one, no cliff, device target: proven; it cannot be told from a cache at least as large as the fill), `cold_hit_like` (hit-like with a cliff, on a file target, or a cold rate below the warm reference: unproven), `undetermined`. Writes have no cache state: they are proven by the time axis (>= 120 s after the knee, bytes after >= 2x the burst).
 * `metering`: `byte`, `iops`, `mixed`, `undetermined`; E1 `fit` (informational): `good`, `poor`, `insufficient`, `plateau`.
 * `limits`: `quick-profile`, `limited-by-budget`, `short-observation`, `single-run`, `stage_skipped:<Sn>`, `filesystem_layer` (file target: extent mapping and journal overhead are inside every figure), `fresh_semantics_filesystem` (file target: the "fresh" write is `fresh_fs_alloc` and counts toward the cap only on a `discard` mount), `bucket_exclusion_s<=<N>` (the longest observation: bursts longer than that are not excluded).
 * Check ids in `quality.checks[]`: IOB-PLA-01 tail flat, IOB-PLA-02 working-set rule, IOB-PLA-03 cached-tier factor, IOB-PLA-04 mean vs steady, IOB-PLA-05 flat-line, IOB-PLA-06 Little's law, IOB-PLA-07 bytes consistency, IOB-PLA-08 read-only-written, IOB-PLA-09 fill vs sequential, IOB-PLA-10 cache state, IOB-PLA-11 shape fit, IOB-PLA-12 noise floor, IOB-PLA-13 fresh vs rewrite, IOB-PLA-14 data integrity, IOB-PLA-15 identity stable, IOB-PLA-16 extent integrity, IOB-PLA-17 outside history, IOB-PLA-18 fresh write bytes/s (info; also records whether a discard re-arms the fresh-block penalty, hypothesis). A `fail` degrades only the groups it lists; -14, -15 and -16 fail the whole run.

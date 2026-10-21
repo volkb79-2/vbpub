@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from iobench import cache, ceilings, guard, plan, proposals as P, result as res, shape, testing
+from iobench import cache as cache_mod, cache, ceilings, guard, plan, proposals as P, result as res, shape, testing
 from iobench import calibrate as cal_mod
 from iobench.proposals import DEFAULT_TARGETS
 from iobench.testing import Bucket
@@ -36,7 +36,7 @@ def test_sta_02_closed_vocabularies():
         P.absent("lazy", "R1")
     with pytest.raises(ValueError):
         P.worsen(P.value(1, "R1", {}, "measured"), ["nope"])
-    assert P.CACHE_STATES == ("cold_measured", "rate_cap", "cold_hit_like", "undetermined")
+    assert P.CACHE_STATES == ("cold_measured", "rate_cap", "no_cache_observed", "cold_hit_like", "undetermined")
     assert P.METERING == ("byte", "iops", "mixed", "undetermined") and P.FITS == ("good", "poor", "insufficient", "plateau")
     for limit in ("quick-profile", "limited-by-budget", "short-observation", "single-run", "stage_skipped:S6", "bucket_exclusion_s<=240",
                   "filesystem_layer", "fresh_semantics_filesystem"):
@@ -178,6 +178,15 @@ def test_sta_05_status_collapse_audit():
     def mat(model, host_kw=None, **kw):
         return lambda: run_matrix(model, host_kw, **kw)[1].result
 
+    def not_as_fast_as_warm():
+        # a hit-like cold probe with no cliff whose rate is below the warm reference (the "no cache observed" rate condition fails)
+        saved = cache_mod.NO_CACHE_RATIO
+        cache_mod.NO_CACHE_RATIO = 1.5
+        try:
+            return run_cal(host_kw=dict(cache=dict(capacity_gib=500, hit_iops=92000, write_allocate=True)))[1].result
+        finally:
+            cache_mod.NO_CACHE_RATIO = saved
+
     def cross():
         h = make_host(cache=INVERSION)
         seed_history(h)
@@ -241,7 +250,7 @@ def test_sta_05_status_collapse_audit():
     rows = {
         # name: (owner key, scenario)
         "cache_model_undetermined": ("caps.RIOPS", cal(host_kw=dict(read=dict(iops_max=9800, lat_us=200, lat_hit_us=110)))),
-        "no_cliff_hit_like_mode": ("caps.RIOPS", cal(host_kw=dict(cache=dict(capacity_gib=500, hit_iops=92000, write_allocate=True)))),
+        "no_cliff_hit_like_mode": ("caps.RIOPS", not_as_fast_as_warm),
         "cache_residual_possible": ("caps.RIOPS", residual),
         "device_smaller_than_cache_margin": ("caps.RIOPS", margin),
         "ceiling_moved": ("caps.RIOPS", moved),
@@ -316,3 +325,39 @@ CONSEQUENCES = {
     "ceiling_moved": {"cache_model_undetermined", "no_cliff_hit_like_mode"},
     "quick_profile": {"budget_limited"},  # the quick fill is time-bounded to R_est x 60 s, so the working set is budget-limited too
 }
+
+
+def cache_state_of(host_kw, **kw):
+    c = calibrate(make_host(**host_kw), **kw).calibration["calibration"]["cache"]["read"]
+    return c["cache_state"], c["status"], c["reasons"]
+
+
+def test_sta_05_cache_state_collapse_audit():
+    """Every cache_state is reachable only from its own row, in both directions (IOB-CCH-05)."""
+    plain = dict(cache=None, read=dict(iops_max=21600, lat_us=300))
+    rows = {
+        "no_cache_observed": (plain, {}, ("no_cache_observed", "proven", [])),                    # as fast cold as warm, unimodal, no cliff
+        "rate_cap": (dict(cache=None, read=dict(iops_max=3600, lat_us=8000), noise=0.001), {}, ("rate_cap", "proven", [])),
+        "cold_measured": (dict(cache=INVERSION), {}, ("cold_measured", "proven", [])),            # a slower cold region than the warm one
+    }
+    for name, (host_kw, kw, want) in rows.items():
+        assert cache_state_of(host_kw, **kw) == want, name
+    # the look-alikes must NOT collapse into no_cache_observed
+    # (1) a cliff exists: the same hit-like probe stays cold_hit_like / unproven
+    s = cache.classify_cache(cache.ColdProbe(9800.0, False, "unimodal", "hit-like", 100.0, GIB), None, cliff_bytes=300 * GIB, largest_rung=345 * GIB,
+                             cached_ref=9800.0)
+    assert (s.state, s.status) == ("cold_hit_like", "unproven")
+    # (2) a file target is size-bounded: not excludable
+    s = cache.classify_cache(cache.ColdProbe(9800.0, False, "unimodal", "hit-like", 100.0, GIB), None, cliff_bytes=None, largest_rung=GIB,
+                             cached_ref=9800.0, cache_excludable=False)
+    assert (s.state, s.reasons) == ("cold_hit_like", ("no_cliff_hit_like_mode",))
+    # (3) the cold rate is clearly below the warm rate: the cache does matter
+    s = cache.classify_cache(cache.ColdProbe(5000.0, False, "unimodal", "hit-like", 100.0, GIB), None, cliff_bytes=None, largest_rung=GIB, cached_ref=9800.0)
+    assert s.state == "cold_hit_like"
+    # (4) a flat cold probe is rate_cap even when the rate also satisfies the no-cache condition: the flat line wins
+    s = cache.classify_cache(cache.ColdProbe(9800.0, True, "unimodal", "hit-like", 100.0, GIB), None, cliff_bytes=None, largest_rung=GIB, cached_ref=9800.0)
+    assert s.state == "rate_cap"
+    # and in the other direction: no other state's scenario reports no_cache_observed
+    for host_kw in (dict(cache=INVERSION), dict(cache=dict(capacity_gib=265, hit_iops=41800, write_allocate=False, read_allocate=True, read_alloc_share=1.0))):
+        assert cache_state_of(host_kw)[0] != "no_cache_observed"
+    assert cache_state_of(plain, profile="quick")[0] != "cold_measured"

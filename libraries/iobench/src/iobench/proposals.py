@@ -16,7 +16,7 @@ UNPROVEN_REASONS = (
     "operator_override", "shape_fit_poor", "noise_floor_high", "drain_below_ladder", "formula_only", "target_missed",
     "cross_disk", "identity_weak")
 ABSENT_REASONS = ("stage_skipped", "stage_failed", "basis_unsteady", "basis_missing", "bps_basis_missing", "no_calibration")
-CACHE_STATES = ("cold_measured", "rate_cap", "cold_hit_like", "undetermined")
+CACHE_STATES = ("cold_measured", "rate_cap", "no_cache_observed", "cold_hit_like", "undetermined")
 METERING = ("byte", "iops", "mixed", "undetermined")
 FITS = ("good", "poor", "insufficient", "plateau")
 LIMIT_FIXED = ("quick-profile", "limited-by-budget", "short-observation", "single-run", "filesystem_layer", "fresh_semantics_filesystem")

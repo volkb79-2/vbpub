@@ -47,6 +47,6 @@ libraries/iobench/
 ## Status
 
 Implemented (IOB-03 P3): the measurement core, safety, proposals, the `iobench` CLI over `cli-extended`, and the replay fixtures, all tested on a fake host (`FakeHost` / `FakeFio`). Not yet done: the live
-acceptance run on r1002 (IOB-ACC-01, IOB-03 P4) and the first cmru release (IOB-REL-01; wheel only, no zipapp yet). The CLI review cases in `docs/cli-review.toml` record real invocations and
+acceptance run on r1002 (IOB-ACC-01, IOB-03 P4) and the first cmru release (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
 the outcomes observed on the fake host; an independent semantic review still has to confirm their rationales. The decisions behind it are IOB-D-001..014 and the rulings
 R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
