@@ -326,7 +326,7 @@ class Calibrator(Runner):
         mount_discard = guard.fs_info(self.host, self.target.path.rsplit("/", 1)[0]).mount_discard if self.target.kind == "file" else None
         self.fvr = ladder.fresh_vs_rewrite(self.target.kind, rewrite.steady, fresh.steady, mount_discard)
         self.close_group("fresh_vs_rewrite", "r2")
-        self.checks.append(plausibility.pla_13(fresh.steady, rewrite.steady, self.moved["fresh_vs_rewrite"]))
+        self.checks.append(plausibility.pla_13(fresh.steady, rewrite.steady, self.moved_dirs["fresh_vs_rewrite"]["write"]))
 
     def rearm(self) -> None:
         if not self.fresh_ok:
@@ -339,7 +339,7 @@ class Calibrator(Runner):
         after = self.reading(self.fresh_cell("rearm-after", rng)).steady
         self.discard(self.fresh)
         self.close_group("rearm", "r3")
-        self.rearm_info = ladder.rearm_verdict(before, after, self.moved["rearm"])
+        self.rearm_info = ladder.rearm_verdict(before, after, self.moved_dirs["rearm"]["write"])
 
     def observation(self) -> None:
         plan_s = ladder.observation_plan(self.profile)
@@ -493,16 +493,18 @@ class Calibrator(Runner):
     def bytes_checks(self, history: dict[str, Any]) -> list[plausibility.Check]:
         """PLA-07 (random-4K bytes/s vs sequential, per direction), PLA-09 (fill vs sequential rewrite), PLA-17 (steady vs the ceiling
         history), PLA-18 (fresh sequential bytes/s).  Each is evaluated from the run's own measurements; none is a unit-only function."""
-        moved = bool(self.moved.get("shape"))
+        # a bytes comparison of one direction is judged by that direction's reference; without the closing reference of the S6 group
+        # (quick profile, or S6 cut by the budget) "unmoved" cannot be asserted, so the reference-dependent checks are not applicable
+        moved_by = self.moved_dirs.get("shape")
         p7 = []
         for d in ("read", "write"):
             rand, seq = self.cell_bps(d, "rand", 4096), self.cell_bps(d, "seq", MIB)
-            if rand is not None and seq is not None:
-                p7.append((d, plausibility.pla_07(rand, seq, moved)))
+            if rand is not None and seq is not None and moved_by is not None:
+                p7.append((d, plausibility.pla_07(rand, seq, moved_by[d])))
         p9 = []
         seq_w = self.cell_bps("write", "seq", MIB)
-        if seq_w is not None and self.fill_info.get("fill_bps"):
-            p9 = [("write", plausibility.pla_09(self.fill_info["fill_bps"], seq_w, moved))]
+        if seq_w is not None and self.fill_info.get("fill_bps") and moved_by is not None:
+            p9 = [("write", plausibility.pla_09(self.fill_info["fill_bps"], seq_w, moved_by["write"]))]
         p17 = []
         for d in ("read", "write"):
             if d in self.obs:
@@ -510,10 +512,14 @@ class Calibrator(Runner):
                 p17.append((d, plausibility.pla_17(self.obs[d].steady * 4096, median)))
         fresh_w = self.cell_bps("write", "seq", MIB, "fresh")
         rearm = self.rearm_info["rearm_ratio"] if self.rearm_info else None
-        p18 = [("write", plausibility.pla_18(fresh_w, seq_w, moved, rearm))]
+        p18 = []
+        if fresh_w is None or seq_w is None:
+            p18 = [("write", plausibility.pla_18(fresh_w, seq_w, False, rearm))]  # not_applicable: the check names what is missing
+        elif moved_by is not None:
+            p18 = [("write", plausibility.pla_18(fresh_w, seq_w, moved_by["write"], rearm))]
         return [worst_check(cid, found, f"{cid} was not evaluated: " + why) for cid, found, why in (
             ("IOB-PLA-07", p7, "random-4K and sequential 1 MiB cells are missing"), ("IOB-PLA-09", p9, "no fill rate or sequential rewrite cell"),
-            ("IOB-PLA-17", p17, "no observation run"), ("IOB-PLA-18", p18, "no fresh sequential cell"))]
+            ("IOB-PLA-17", p17, "no observation run"), ("IOB-PLA-18", p18, "no fresh sequential cell or no closing reference"))]
 
     def fresh_gap_reason(self) -> str:
         """Why the fresh-block penalty is absent from the write cap on a standard run (an unproven reason, never silence)."""
@@ -604,7 +610,7 @@ class Calibrator(Runner):
             "cap_basis": cap_basis,
             "fresh_vs_rewrite": self.fvr or {"measured": False, "reason": self.fresh_unmeasured_note()},
             "rearm": self.rearm_info,
-            "reference": {"cells": self.refs, "moved": self.moved},
+            "reference": {"cells": self.refs, "moved": self.moved, "moved_by_dir": self.moved_dirs},
             "shape": shape_doc,
             "latency_curve": self.curve,
             "latency_knee": {d: latency_knee(self.curve, d) for d in ("read", "write")},
