@@ -100,6 +100,7 @@ class Host(Protocol):
     def realpath(self, path: str) -> str: ...
     def devno(self, path: str) -> str | None: ...
     def makedirs(self, path: str) -> None: ...
+    def probe_odirect(self, directory: str) -> bool: ...
     def write_atomic(self, path: str, text: str, mode: int = 0o644) -> None: ...
     def append_line(self, path: str, line: str) -> None: ...
     def remove(self, path: str) -> None: ...
@@ -197,6 +198,16 @@ class RealHost:
 
     def makedirs(self, path: str) -> None:
         os.makedirs(path, exist_ok=True)
+
+    def probe_odirect(self, directory: str) -> bool:
+        probe = os.path.join(directory, ".iobench-odirect-probe")
+        try:
+            fd = os.open(probe, os.O_WRONLY | os.O_CREAT | getattr(os, "O_DIRECT", 0), 0o600)
+        except OSError:
+            return False
+        os.close(fd)
+        os.unlink(probe)
+        return True
 
     def write_atomic(self, path: str, text: str, mode: int = 0o644) -> None:
         directory = os.path.dirname(path) or "."

@@ -428,4 +428,7 @@ def test_arc_05_workdir_load_and_probe_models():
     h.add_holder("/dev/vda7", "dm-0", 253, 0, GIB)
     assert h.listdir(h.realpath("/sys/dev/block/254:7") + "/holders") == ["dm-0"]
     h.set_fs("/mnt", GIB, GIB)
-    assert h.fs_uuid["/mnt"].startswith("0000")
+    assert h.statfs("/mnt") == (GIB, GIB)
+    assert not (h.odirect_unsupported or not h.probe_odirect("/bench"))
+    h.odirect_unsupported.add("/bench")
+    assert not h.probe_odirect("/bench/x") and h.probe_odirect("/mnt")

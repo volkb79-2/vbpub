@@ -510,12 +510,12 @@ class FakeHost:
         self.dynamic: dict[str, Callable[[], str]] = {}
         self.mounts: list[tuple[str, str, str, str, str, str]] = []  # (ns, devno, mountpoint, source, fstype, opts)
         self.fs_space: dict[str, list[int]] = {}
-        self.fs_uuid: dict[str, str] = {}
         self.containers: list[str] = []
         self.active_units: set[str] = set()
         self.env: dict[str, str] = {}
         self.argv_log: list[list[str]] = []
         self.write_log: list[tuple[str, str]] = []
+        self.odirect_unsupported: set[str] = set()
         self.sysfs_reject: set[str] = set()
         self.sysfs_swallow: set[str] = set()
         self.events: list[tuple[float, int, Callable[[], None]]] = []
@@ -633,6 +633,9 @@ class FakeHost:
             self.dirs.add(d)
             d = posixpath.dirname(d)
 
+    def probe_odirect(self, directory: str) -> bool:
+        return self._mount_for(directory) not in self.odirect_unsupported
+
     def write_atomic(self, path: str, text: str, mode: int = 0o644) -> None:
         self.put(path, text)
         self.modes[path] = mode
@@ -706,9 +709,8 @@ class FakeHost:
                 lines.append(f"{30 + i} 1 {devno} / {mp} {opts} - {fstype} {source} rw")
         return "\n".join(lines) + "\n"
 
-    def set_fs(self, mountpoint: str, total: int, free: int, uuid: str = "00000000-0000-0000-0000-000000000000") -> None:
+    def set_fs(self, mountpoint: str, total: int, free: int) -> None:
         self.fs_space[mountpoint] = [total, free]
-        self.fs_uuid[mountpoint] = uuid
 
     def _written_bytes(self) -> float:
         total = 0.0
@@ -774,6 +776,8 @@ class FakeHost:
         out = []
         if dev.partuuid:
             out.append(f"PART_ENTRY_UUID={dev.partuuid}")
+        if dev.fs_uuid:
+            out.append(f"UUID={dev.fs_uuid}")
         out += [f"TYPE={sig}" for sig in dev.signatures]
         return RunResult(0 if out else 2, "".join(line + "\n" for line in out), "")
 
@@ -783,7 +787,8 @@ class FakeHost:
             return RunResult(1, "", "No space left on device")
         self.consume(path, size)
         self._inode += 1
-        dev = FakeDevice(path, size, kind="file", inode=self._inode, fs_uuid=self.fs_uuid[mp])
+        source = next(e[3] for e in self.mounts if e[2] == mp)
+        dev = FakeDevice(path, size, kind="file", inode=self._inode, fs_uuid=self.devices[source].fs_uuid)
         self.devices[path] = dev
         self.dirs.add(posixpath.dirname(path))
         return RunResult(0, "", "")
@@ -937,11 +942,14 @@ def standard_host(scenario: Scenario | None = None, *, target_size: int = R1002_
     root.signatures.append("ext4")
     work = host.add_partition("vda", "vda5", 254, 5, 30 * GIB, "3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0005")
     work.signatures.append("ext4")
+    work.fs_uuid = "22222222-2222-2222-2222-222222222222"
+    root.fs_uuid = "11111111-1111-1111-1111-111111111111"
     host.add_partition("vda", "vda7", 254, 7, target_size, R1002_PARTUUID)
+    host.devices["/dev/vda"] = FakeDevice("/dev/vda", 500 * GIB, devno="254:0")
     host.add_mount("254:3", "/", "/dev/vda3")
     host.add_mount("254:5", "/bench", "/dev/vda5")
-    host.set_fs("/", 40 * GIB, 20 * GIB, "11111111-1111-1111-1111-111111111111")
-    host.set_fs("/bench", 30 * GIB, workdir_free, "22222222-2222-2222-2222-222222222222")
+    host.set_fs("/", 40 * GIB, 20 * GIB)
+    host.set_fs("/bench", 30 * GIB, workdir_free)
     host.put("/proc/swaps", "Filename Type Size Used Priority\n")
     for name, value in (("dirty_ratio", "20"), ("dirty_background_ratio", "10"), ("dirty_bytes", "0"),
                         ("dirty_background_bytes", "0")):
