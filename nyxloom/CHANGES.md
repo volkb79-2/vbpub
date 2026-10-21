@@ -4,11 +4,53 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.11.0] - 2026-10-21
+<!-- cmru: generated -->
+<!-- cmru: source-end=b44ee3604f3460d74c7d82d6e78f92cbfb7dfbc1 -->
+
+### Added
+- feat(assay,ciu,cmru,cgroup-profiler,nyxloom,run-gate): complete integrated release wave (1fa737782)
+- feat(run-gate): make wheel SemVer the only supported interface (9a0e192ab)
+- feat: add contract-2 resource event attribution (90dc9078d)
+
+### Fixed
+- fix: close remaining release wave review findings (edac3e69c)
+- fix: close release-wave followup findings (08632f747)
+- fix: close release-wave review findings (49e4be092)
+- fix: bind image builds to exact source identity (a0ad6f40d)
+- fix(nyxloom): clarify cli-extended upgrade ownership (b89ad60bc)
+
+### Changed
+- Merge main into CGProfile release candidate (f4933a2d5)
+- backlog: file NL-46..50 for nyxloom-harness search gaps (cc9cdadc8)
+- nyxloom: NL-23 note, second batch of stale canonical skill evidence (dstdns W05) (7b033ff49)
+- nyxloom: NL-23 note, canonical skills carry retired consumer mechanics (dstdns W04 evidence) (b261b03a2)
+- Merge branch 'cmru-release-readiness-20261015' into run-gate-rg93-git-metadata-20261013 (a23adb85a)
+- Merge branch 'tool-release-wave-20261014' into run-gate-rg93-git-metadata-20261013 (9df3aba6a)
+- merge main into run-gate-rg93-git-metadata-20261013 (1ba70a8ea)
+- Merge branch 'main' into cmru-release-readiness-20261015 (b5bf27485)
+- merge: sync release wave with main (a49c7ad9e)
+- merge latest main into Run-Gate SemVer candidate (7af06b66c)
+- chore(gates): declare mutation resource ceilings (da06e52de)
+- chore: integrate contract-2 release wave (336336d81)
+
+### Documentation
+- docs(nyxloom): add operator backlog follow-ups (673d0a709)
+- docs(nyxloom): file unique short session ID lookup (f3db44ce9)
+- docs: preserve final release-wave reviews (d6cf64998)
+- docs(nyxloom): add compact assignment audit feedback (d9ac353fd)
+- docs(nyxloom): file successor brief scope preservation (0e9d6219e)
+
+### Testing
+- test(run-gate): repair five selftest cases; complete the observer wrapper example (a1638d1d1)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - Declare released `cli-extended>=0.3.0` as a runtime dependency instead of vendoring it; install the released cli-extended wheel first (GitHub Releases only, never PyPI). Details: `nyxloom/nyxloom-trove/reports/MM-MOVE-REPORT.md`.
 - The remote mutation-audit host launcher requires a loaded systemd cgroup parent before cloning or starting Docker containers, and applies that parent to builder, staging, worker, and report-relay containers.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.10.1] - 2026-10-09
 <!-- cmru: generated -->
