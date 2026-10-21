@@ -118,3 +118,33 @@ Choice for B-B3 (as asked): the observation series is also the cap's bound AND r
 
 ### Not done (small, no SPEC impact; for a follow-up wave)
 A-S1 (bind `RealHost.write_range`/`run` argv to the authorised extent and use the allowlist at runtime), A-S9 second half (poll blocking `host.run`/`discard_range` so a second SIGTERM is not deferred), A-N1, N2 (`systemd-run --wait`), N4-N10, B-N2, N4, N6, N8, N9, N12; B-S13 second half (the faked PLA-06 rung still feeds `best_read_rung`, `cached_ref` and the cliff). RealHost changes (process group, PDEATHSIG, O_EXCL, probe O_EXCL) are excluded from coverage and untested until IOB-ACC-01.
+
+
+## Coordinator rulings after the first review wave (second implementation pass)
+
+| Item | Done | Test |
+|---|---|---|
+| 1 A-S13 dry run | plan-only; `preflight: not_run` + `preflight_note` in the object (human and `--json`); 83 reviewed CLI cases now assert it; CLI-SPEC regenerated; docs triad; backlog IOB-BL-01 | `test_rev_c_1_*` |
+| 2 A-S2b exclusive open | `--exclusive_open=1` on every device job; S0 `fio --cmdhelp=exclusive_open` (rc checked, option must be named) else `fio_option_unsupported`; IOB-ACC-01 checklist | `test_rev_c_2_*` |
+| 3 B-S12 write BPS | write BPS cap always carries `short_observation` (existing vocabulary); sequential time proof recorded as IOB-BL-02 (not small: needs a >= 150 s sequential run) | `test_rev_c_3_*` (write unproven, read untouched) |
+| 4 B-S16 | exit 7 documented in CONSUMERS; IOB-BL-03 | docs |
+| 5 B-S15 | dynamic two-tier fixture through the Calibrator | `test_rev_c_s15_*` |
+| 6 B-N1 | SPEC 18.2 rewritten from the code (list below) | `test_doc_*` |
+| A-S1 | allowlist in `host.py` enforced by `RealHost.run/spawn` and FakeHost; `devio.assert_writer_bound` / `assert_discard_bound` used by both hosts | `test_rev_c_s1_*` |
+| A-S9 second half | `RealHost._run_polled`: a second signal kills a blocking command and aborts (RealHost, tested directly) | `test_rev_c_s9_*` |
+| A N2 | `systemd-run --wait` + unit return code checked; FakeHost models a unit that starts 2 s late and writes at its end (the old argv fails: `test_rev_c_n2_without_wait_*`) | `test_rev_c_n2_*` |
+| A N-r2-1 | EBUSY on the O_EXCL marker open becomes `HostError` -> `Refusal` exit 2 | `test_rev_c_nr2_1_*` |
+| A N-r2-2 | `init_file` and `load_file_target` call `require_host_namespaces` | `test_rev_c_nr2_2_*` |
+| A N-r2-3 | PDEATHSIG race: `getppid()` re-check in the child | RealHost only |
+| B NEW-1 | `check` takes sections and leaves from the schema; missing/emptied = `absent: missing_from_document` (new absent reason, 7 in the closed list) | `test_rev_b_new1_*` (all five reproductions) |
+| B S13 | a rung failing PLA-06 is dropped before ladder, cliff, cached_ref, best_read_rung, E1, QD90; `ladder.excluded_rungs`; the earlier notes row overstated this | `test_rev_c_s13_*` |
+| B 120 s margin | fresh observation 150 s (`ladder.FRESH_OBS_S`), no tolerance in the rule; standard 3340 s, thorough 4180 s | `test_rev_c_margin_*` |
+| B cross-direction movement | not redesigned; DESIGN-GUIDE blind spot; IOB-BL-04; ACC-01 checklist | docs |
+| B file target without discard | `fresh_not_measured` also when measured but excluded by design | `test_rev_c_fresh_excluded_*` |
+| B `check` labels | emptied required section is `missing_from_document`, not `stage_skipped`; `calibration_superseded` vs `calibration_missing` (LOAD reason added); `IndexError` dropped from the damaged-file catch | `test_chk_01_*`, `test_rev_b_new1_*` |
+
+### SPEC section 18 divergences resolved (B-N1): SPEC now follows the code
+`cap_basis.<dir>.iops` -> `value` (+ write `inputs`, `bps` sub-object); `reference` `{read,write,moved:bool}` -> `{cells, moved:{group}, moved_by_dir}`; `touch_map` per rung/probe -> per stage; E2 timestamps ISO -> epoch seconds; `shape.fit` `{read:{rand:..}}` -> `<dir>-<pattern>-rewrite` plus `metering_by_dir`, `linear_model_fit_by_dir`; `fresh_vs_rewrite` gains `label` and a `{measured:false, reason}` form; `cache.read` gains `status, reasons, R_iops, R_cold_iops, R_E2_iops, read_value`; `e_cold` gains `state`; `ladder` gains `best_read_rung_iops`, `measured_largest`, `excluded_rungs`, rung `bs/knee_s/burst_units`, classes `no_cliff|cached_tier|post_cliff|write`; `calibration` gains `fill`, `rearm`, `windows`, `plateau_bps`, `stages`, `proposals`; result `evidence` gains `histograms`, `history_rotated`; `restore.warnings`; CAL-06 "QD16 cell" -> QD32 (SHP-01). No divergence was resolved in favour of the old SPEC text.
+
+### Could not do / left
+IOB-BL-01..05 (BACKLOG.md). The write BPS time proof (IOB-BL-02) was not small. Nothing here ran against a real device, fio or systemd: RealHost changes (`_run_polled` aside) are untested until IOB-ACC-01.
