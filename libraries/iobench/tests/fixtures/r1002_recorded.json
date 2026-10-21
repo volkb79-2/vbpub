@@ -1,0 +1,66 @@
+{
+ "_provenance": {
+  "recorded": "8808428b9c83b1d1b8e450d90b0d3bbc8e47c3efff51f763d4983caa8b8f2a09",
+  "tarball": "IO-BENCH-01-data/r1002-fio-out.tgz",
+  "host": "r1002",
+  "usable_bytes": 435853320192,
+  "condensed": "steady random-read IOPS (QD32, 4 KiB) per working-set size from the fio JSON of each run; one number each",
+  "note": "no cold probe was ever recorded on this host (CCH-08 #10)"
+ },
+ "rungs_le_0_85_usable": [
+  {
+   "ws_gib": 1,
+   "steady_iops": 97850,
+   "source": "A_r_qd32_ws1G.json"
+  },
+  {
+   "ws_gib": 16,
+   "steady_iops": 93083,
+   "source": "A_r_qd32_ws16G.json"
+  },
+  {
+   "ws_gib": 100,
+   "steady_iops": 91937,
+   "source": "C_r_size_100G.json"
+  },
+  {
+   "ws_gib": 150,
+   "steady_iops": 89878,
+   "source": "C_r_size_150G.json"
+  },
+  {
+   "ws_gib": 200,
+   "steady_iops": 92315,
+   "source": "C_r_size_200G.json"
+  },
+  {
+   "ws_gib": 250,
+   "steady_iops": 85872,
+   "source": "C_r_size_250G.json"
+  },
+  {
+   "ws_gib": 300,
+   "steady_iops": 46315,
+   "source": "C_r_size_300G.json"
+  }
+ ],
+ "rungs_beyond": [
+  {
+   "ws_gib": 350,
+   "steady_iops": 30883,
+   "source": "C_r_size_350G.json"
+  },
+  {
+   "ws_gib": 400,
+   "steady_iops": 23922,
+   "source": "C_r_size_400G.json"
+  }
+ ],
+ "facts": {
+  "fresh_first_touch_randwrite_iops": 3596,
+  "rewrite_randwrite_iops": 71519,
+  "seq_read_mib_s_flat": 4096,
+  "rewrite_source": "C_w_size_200G.json",
+  "fresh_source": "IO-BENCH-01-report.md section F_rand_firsttouch"
+ }
+}

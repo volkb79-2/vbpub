@@ -1,0 +1,61 @@
+{
+ "_provenance": {
+  "recorded": "48eaac43b53d122378342de51246491e0562960638d22f6c1967eb06a86155e2",
+  "document": "scripts/gstammtisch-guide/HOST-IO-INTERFERENCE.md (sha256 above)",
+  "sections": "4.3, 4.4, 4.6",
+  "condensed": "the settings and measured values the replay needs; numbers copied from the tables"
+ },
+ "drain_bps": 10500000,
+ "queue": {
+  "nr_requests": 16,
+  "max_sectors_kb": 64
+ },
+ "inflight_bytes_q16_r64": 1048576,
+ "read_ratio_by_sectors_kb": {
+  "64": 0.21,
+  "128": 0.35,
+  "256": 0.55,
+  "4096": 1.0
+ },
+ "probe_p99_ms_4_4": {
+  "d16 q16 r64": [
+   104,
+   203
+  ],
+  "d16 q8 r64": [
+   129,
+   127
+  ],
+  "d16 q8 r128": [
+   105,
+   221
+  ],
+  "d16 q16 r128": [
+   280,
+   466
+  ],
+  "d16 q16 r256": [
+   342,
+   523
+  ],
+  "d32 q16 r128": [
+   199,
+   570
+  ]
+ },
+ "qos_example": {
+  "write_best_bps": 18874368,
+  "write_worst_bps": 6291456,
+  "best_read_over_R": 2.9
+ },
+ "expected": {
+  "dirty_bytes": 16777216,
+  "dirty_background_bytes": 4194304,
+  "nr_requests": 16,
+  "max_sectors_kb": 64,
+  "flags": [
+   "read_floor_violated"
+  ],
+  "qos_max": 330
+ }
+}

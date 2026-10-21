@@ -1,0 +1,47 @@
+# iobench release contract -- parsed ONLY by cmru (IOB-REL-01). Tags `iobench-v*`; a wheel and
+# its sha256 go to GitHub Releases only, never PyPI. External tool floor: fio >= 3.30 (reason in pyproject.toml).
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+IOBENCH_RELEASE_NOTES = "## iobench wheel\n\nCache-proof disk benchmark. Requires fio >= 3.30 on the host.\n\n**Install (wheel)**\n```bash\npython -m pip install --no-index --find-links . iobench-*.whl\n```"
+
+[project]
+id = "iobench"
+description = "iobench -- cache-proof disk benchmark"
+template_revision = 4
+prefix = "iobench-v"
+# SPEC IOB-REL-01 also asks for a zipapp + sha256. cmru has no zipapp handler and a zipapp cannot carry the
+# cli-extended wheel dependency without a project-owned build script; recorded as BLOCKED in IMPLEMENTATION-NOTES.md.
+artifacts = ["wheel"]
+scm_dist = "iobench"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "iobench: r0-r1 (unit + 100% branch coverage)", argv = ["run-gate", "r0-r1"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "iobench: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "iobench: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "iobench", "--cwd", ".", "--notes-env", "IOBENCH_RELEASE_NOTES"], cwd = "." },
+]

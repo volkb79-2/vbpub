@@ -1,0 +1,13 @@
+{
+  "_provenance": {"synthetic": true, "generator": {"kind": "background_qd_sweep_shape", "note": "derived from the shape of the IO-BENCH-01 background-QD sweep, because that data was not recorded at rate-limited load points", "write_p99_us_by_load_pct": {"10": 2000, "30": 2600, "60": 4800, "90": 21000}}},
+  "curve": [
+    {"dir": "write", "load_pct": 10, "lat_us": {"p50": 900, "p90": 1500, "p95": 1800, "p99": 2000}},
+    {"dir": "write", "load_pct": 30, "lat_us": {"p50": 1000, "p90": 2000, "p95": 2300, "p99": 2600}},
+    {"dir": "write", "load_pct": 60, "lat_us": {"p50": 1400, "p90": 3600, "p95": 4200, "p99": 4800}},
+    {"dir": "write", "load_pct": 90, "lat_us": {"p50": 4000, "p90": 14000, "p95": 17000, "p99": 21000}},
+    {"dir": "read", "load_pct": 10, "lat_us": {"p50": 300, "p90": 400, "p95": 450, "p99": 700}},
+    {"dir": "read", "load_pct": 30, "lat_us": {"p50": 330, "p90": 450, "p95": 520, "p99": 900}},
+    {"dir": "read", "load_pct": 60, "lat_us": {"p50": 400, "p90": 600, "p95": 700, "p99": 1100}},
+    {"dir": "read", "load_pct": 90, "lat_us": {"p50": 700, "p90": 1100, "p95": 1400, "p99": 1900}}
+  ]
+}
