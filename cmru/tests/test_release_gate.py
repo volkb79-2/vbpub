@@ -849,7 +849,7 @@ def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     (repo / "cmru" / "CHANGES.md").write_text(
-        "# Changelog\n\n## [6.2.2] - 2026-10-15\n\n- later release\n",
+        "# Changelog\n\n## [6.3.0] - 2026-10-15\n\n- later release\n",
         encoding="utf-8",
     )
     # The gate judges an exact commit and refuses a dirty tracked tree before it
@@ -857,7 +857,7 @@ def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
     _git(repo, "add", "cmru/CHANGES.md")
     _git(repo, "commit", "--quiet", "-m", "prepare a later release")
 
-    with pytest.raises(RuntimeError, match="authorized only for CMRU 6.2.0 and 6.2.1; prepared changelog identifies 6.2.2"):
+    with pytest.raises(RuntimeError, match=r"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .*identifies 6\.3\.0"):
         run_release_gate.run_release_gate(
             repo, temp_parent=private_root, postpone_mutation="KI-79",
         )

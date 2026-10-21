@@ -1809,8 +1809,8 @@ otherwise unchanged.
 
 #### Release-gate provisional evidence
 
-A deferral tracking id is bound to one release version: `KI-79` authorizes only CMRU `6.2.0` and
-`6.2.1` (an explicit set, not a range; operator decisions 2026-10-14 and 2026-10-21), read from
+A deferral tracking id is bound to one release version: `KI-79` authorizes only CMRU `>= 6.2.0` and
+`< 6.3.0` (the 6.2 patch line; operator decisions 2026-10-14 and 2026-10-21), read from
 the prepared changelog, and `FIRST-RELEASE-R2` only a first release with no published
 stable tag. Any other id or prepared version refuses before a lane runs.
 
