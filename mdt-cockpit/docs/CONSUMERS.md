@@ -695,6 +695,11 @@ cp <vbpub>/mdt-cockpit/templates/{devcontainer.json,initialize_container_environ
 # then "Dev Containers: Rebuild Container"
 ```
 
+Working in several repositories from one cockpit? Use the host-side-folder variant instead: the config
+lives in a folder outside every repo and the container opens a directory of repos
+([templates/host-folder](../templates/host-folder/README.md)). An optional per-user btrfs copy-on-write area
+is described in [BTRFS-COW.md](BTRFS-COW.md).
+
 The template binds the complete home from `${localEnv:HOME}/mdt-cockpit-home/`; the host
 initializer prepares that directory (mode `0700`) and `${localEnv:HOME}/mdt-cockpit-tmp/` (mode
 `1777`, the separate `/tmp` mount). The new home starts **empty**. Nothing is migrated: there is

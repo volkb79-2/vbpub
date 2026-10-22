@@ -25,7 +25,7 @@ explained in [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md).
 | [`scripts/`](scripts/) | Release-time machinery: base resolver, bake/repack lanes, tool staging, OCI validation, benchmarks |
 | [`requirements/`](requirements/), [`apt/`](apt/), [`pip/`](pip/), [`ai-cli-tools.list`](ai-cli-tools.list) | What goes *into* the image: venv toolkit, Debian packages, first-party wheels, AI CLIs |
 | [`customization/`](customization/README.md) | Shipped shell/profile/editor assets (`zshrc`, `aliases.sh`, `ai.env.example`, `htoprc`, …) |
-| [`templates/`](templates/README.md) | The consumer-facing `devcontainer.json` + bootstrap script |
+| [`templates/`](templates/README.md) | The consumer-facing `devcontainer.json` + bootstrap script, per-repo and [host-side-folder](templates/host-folder/README.md) variants |
 | [`host-setup/`](host-setup/README.md) | **Host-side** companion: cgroup v2 tiers that govern devcontainers and the containers they spawn |
 | [`docs/`](#documentation) | Architecture and doctrine documents — see the index below |
 | [`package-manifests-versioned/`](package-manifests-versioned/README.md) | Generated GHCR-facing release pages, one per published tag |
@@ -820,6 +820,7 @@ production-quality. Windows as of June 2026:
 | [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Why the Python, tester-unified, and QEMU lanes are separate; managed socket access and host namespace access |
 | [docs/CONSUMERS.md](docs/CONSUMERS.md) | Pasteable host governance, host escape, managed BuildKit, release adoption, the fresh-home template, and local-dev builds |
 | [docs/HOME-PERSISTENCE.md](docs/HOME-PERSISTENCE.md) | The fresh-home design, the home path inventory, and moving from the original project |
+| [docs/BTRFS-COW.md](docs/BTRFS-COW.md) | Optional btrfs copy-on-write area for the cockpit: concepts, filesystem setup, per-user layout, tool contract, devcontainer mount, self-check |
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
 | [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |

@@ -130,6 +130,16 @@
     // ── Persisted host-backed /tmp (mode 1777) ─────────────────────────────────
     "source=${localEnv:HOME}/mdt-cockpit-tmp/,target=/tmp,type=bind,consistency=cached",
 
+    // ── Optional btrfs copy-on-write area (OFF by default; docs/BTRFS-COW.md) ───
+    // Snapshots/rollback, reflinked copies and per-directory compression for tools such
+    // as assay and ciu. Mounts ONLY this user's directory, at the same path as on the host.
+    // HOST PREREQUISITE: a btrfs filesystem mounted at /srv/devcontainers-cow with the
+    // user's directory created (host-setup/scripts/mdt-cow-init-user.sh). Uncomment this
+    // mount AND MDT_COW_ROOT in containerEnv together, and only after the host side works:
+    // `mounts` entries are --mount, which refuses to start the container while the source
+    // is missing (that refusal is also the fail-closed guarantee afterwards).
+    // "source=/srv/devcontainers-cow/${localEnv:USER},target=/srv/devcontainers-cow/${localEnv:USER},type=bind,bind-propagation=rslave",
+
     // ── Sibling-repo workspace mounts (multi-root workspace) ───────────────────
     // "source=${localWorkspaceFolder}/../vbpub,target=/workspaces/vbpub,type=bind,consistency=cached"
   ],
@@ -167,6 +177,9 @@
     "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
     "CGROUP_PARENT_DEV_BACKGROUND": "dev-background.slice",
     "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+    // Optional CoW area root (see the opt-in mount above): per user, tools append the target
+    // repo. Uncomment together with that mount.
+    // "MDT_COW_ROOT": "/srv/devcontainers-cow/${localEnv:USER}",
     // Buildx and agent settings persist as part of the complete home mount.
     "BUILDX_CONFIG": "/home/vscode/.config/docker/buildx",
     // Explicitly select the durable host-managed remote for all builds.

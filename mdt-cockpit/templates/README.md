@@ -7,6 +7,18 @@ image executables and runtime payloads live under `/opt/mdt` and `/srv`, and
 every image default is wired system-wide (`/etc`,
 `/usr/local/share/mdt-cockpit`), so nothing is copied into the home.
 
+## Choose a layout
+
+| | Per-repo (this directory) | Host-side folder ([`host-folder/`](host-folder/README.md)) |
+|---|---|---|
+| Config lives in | the consuming repo's `.devcontainer/` | one folder on the host, outside every repo |
+| Containers | one per repo | one cockpit that sees the repos you choose |
+| Fixed names | derived from the repo folder | `mdt-cockpit-<user>` |
+
+Same image, mounts, cgroup parent and bootstrap in both; the exact differences are listed in the host-folder
+README and enforced by `scripts/test_devcontainer_template_variants.py`. The rest of this page describes what
+both share.
+
 ## Adopt
 
 Copy the host-side files into the consuming repo's `.devcontainer` directory:
@@ -54,6 +66,13 @@ inside a cockpit, use the host-exec helper:
 
 The template deliberately sets neither `PATH` nor `NPM_CONFIG_PREFIX`: the image
 defines both once ([One PATH order](../docs/DESIGN-GUIDE.md#one-path-order)).
+
+## Optional: btrfs copy-on-write area
+
+Both variants ship two commented-out lines for a per-user btrfs area (snapshots, reflinks, per-directory
+compression for tools such as assay and ciu): one `mounts` entry binding `/srv/devcontainers-cow/<user>` and
+`MDT_COW_ROOT` in `containerEnv`. They are off because they need a host prerequisite; follow
+[BTRFS-COW.md](../docs/BTRFS-COW.md) on the host, then uncomment both lines.
 
 ## Image paths and home defaults
 
