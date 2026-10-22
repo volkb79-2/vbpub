@@ -15,7 +15,9 @@ missing, stale or ambiguous layout makes the lane FAIL - it never falls back to 
 
 * the container is placed in the gate tier (`--cgroup-parent $CGROUP_PARENT_DEV_GATES`),
   `--init`, uniquely named and removed BY EXACT NAME;
-* the host docker socket is mounted (the test starts a registry:2 container and a buildx builder);
+* the host docker socket is mounted (the test starts a registry:2 container), and so is the managed
+  mdt-buildkitd socket directory (`BUILDKIT_HOST`, required): the test builds only through that
+  service. A `docker-container` builder of its own is terminated by the host's mdt-buildkit-guard;
 * the sources travel as a tar stream of the tracked `mdt-cockpit/` files on stdin, so no
   devcontainer-local path is ever bind-mounted;
 * MDT_OCI_PUSH_REQUIRED=1: a missing tool or unreachable registry FAILS the test.
@@ -33,6 +35,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENV_GATES = "CGROUP_PARENT_DEV_GATES"
+ENV_BUILDKIT_HOST = "BUILDKIT_HOST"
 SOCKET = "/var/run/docker.sock"
 INNER = (
     "set -euo pipefail; mkdir -p /work && cd /work && tar -x && cd mdt-cockpit && "
@@ -46,6 +49,16 @@ def require_gates(environ: dict[str, str]) -> str:
     value = environ.get(ENV_GATES, "").strip()
     if not value:
         raise SystemExit(f"{ENV_GATES} is not set; the lane never guesses a cgroup tier.")
+    return value
+
+
+def require_buildkit_host(environ: dict[str, str]) -> str:
+    """The managed mdt-buildkitd endpoint, from the caller's own environment (the devcontainer
+    template exports it). The host guard terminates every other BuildKit worker, so the lane
+    never starts a builder of its own and never guesses a socket."""
+    value = environ.get(ENV_BUILDKIT_HOST, "").strip()
+    if not value.startswith("unix:///"):
+        raise SystemExit(f"{ENV_BUILDKIT_HOST} is not a unix:/// endpoint; the lane builds only through the managed mdt-buildkitd.")
     return value
 
 
@@ -155,11 +168,15 @@ def import_image(layout: Path, tag: str) -> None:
         raise SystemExit(f"oci-push: could not import {layout} into docker: {loaded.stderr.strip()}")
 
 
-def docker_run_argv(image: str, gates: str, name: str) -> list[str]:
+def docker_run_argv(image: str, gates: str, name: str, buildkit_host: str) -> list[str]:
+    # The socket's DIRECTORY is mounted (a file-level mount pins one inode, see the devcontainer
+    # template), at the same path, so BUILDKIT_HOST means the same thing inside.
+    buildkit_dir = str(Path(buildkit_host.removeprefix("unix://")).parent)
     return [
         "docker", "run", "--rm", "-i", "--name", name, "--init", "--user", "0",
-        "--cgroup-parent", gates, "-v", f"{SOCKET}:{SOCKET}",
-        "-e", "MDT_OCI_PUSH_REQUIRED=1", "--entrypoint", "bash", image, "-c", INNER,
+        "--cgroup-parent", gates, "-v", f"{SOCKET}:{SOCKET}", "-v", f"{buildkit_dir}:{buildkit_dir}",
+        "-e", "MDT_OCI_PUSH_REQUIRED=1", "-e", f"{ENV_BUILDKIT_HOST}={buildkit_host}",
+        "--entrypoint", "bash", image, "-c", INNER,
     ]
 
 
@@ -177,6 +194,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     gates = require_gates(dict(os.environ))
+    buildkit_host = require_buildkit_host(dict(os.environ))
     layout = find_layout(layout_root(), args.target)
     tag = f"mdt-cockpit-oci-push:{os.getpid()}"
     name = f"mdt-cockpit-oci-push-{os.getpid()}"
@@ -186,7 +204,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import_image(layout, tag)
         tar = subprocess.Popen(tracked_tar_argv(), cwd=repo_root, stdout=subprocess.PIPE)
-        run = subprocess.run(docker_run_argv(tag, gates, name), stdin=tar.stdout, check=False)
+        run = subprocess.run(docker_run_argv(tag, gates, name, buildkit_host), stdin=tar.stdout, check=False)
         tar.stdout.close()
         if tar.wait() != 0:
             print("oci-push: could not stream the tracked sources", file=sys.stderr)

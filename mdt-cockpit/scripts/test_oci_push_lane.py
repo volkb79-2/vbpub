@@ -45,7 +45,7 @@ class Driver(unittest.TestCase):
 
         declared = tomllib.loads((Path(lane.__file__).resolve().parents[1] / "run-gate.toml").read_text(encoding="utf-8"))
         required = declared["lanes"]["oci-push"]["required_env"]
-        self.assertEqual(required, ["CGROUP_PARENT_DEV_GATES"])
+        self.assertEqual(required, ["CGROUP_PARENT_DEV_GATES", "BUILDKIT_HOST"])
         self.assertFalse(hasattr(lane, "ENV_IMAGE"))
         source = Path(lane.__file__).read_text(encoding="utf-8")
         self.assertNotIn("MDT_OCI_PUSH_IMAGE", source.split('"""', 2)[2])
@@ -256,7 +256,7 @@ class Driver(unittest.TestCase):
         self.assertEqual(lane.layout_root(), Path(lane.__file__).resolve().parents[1] / "build" / "oci-layouts")
 
     def test_the_container_is_gate_placed_reaped_named_and_forces_the_requirement(self) -> None:
-        argv = lane.docker_run_argv("img:1", "g.slice", "mdt-cockpit-oci-push-7")
+        argv = lane.docker_run_argv("img:1", "g.slice", "mdt-cockpit-oci-push-7", "unix:///run/mdt-buildkitd/buildkitd.sock")
         joined = " ".join(argv)
         self.assertIn("--cgroup-parent g.slice", joined)
         self.assertIn("--init", argv)
@@ -265,9 +265,30 @@ class Driver(unittest.TestCase):
         self.assertIn("MDT_OCI_PUSH_REQUIRED=1", argv)
         self.assertIn("/var/run/docker.sock:/var/run/docker.sock", joined)
         self.assertEqual(argv[argv.index("img:1") - 1], "bash", "image follows --entrypoint bash")
-        # nothing from the devcontainer filesystem is bind-mounted except the daemon socket
-        self.assertEqual([a for i, a in enumerate(argv) if argv[i - 1] == "-v"], ["/var/run/docker.sock:/var/run/docker.sock"])
+        # nothing from the devcontainer filesystem is bind-mounted except the daemon socket and the
+        # managed BuildKit socket directory (the only builder the host guard lets run)
+        self.assertEqual(
+            [a for i, a in enumerate(argv) if argv[i - 1] == "-v"],
+            ["/var/run/docker.sock:/var/run/docker.sock", "/run/mdt-buildkitd:/run/mdt-buildkitd"],
+        )
+        self.assertIn("BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock", argv)
         self.assertNotIn("--network", argv)
+
+    def test_the_managed_buildkit_endpoint_is_required_never_guessed(self) -> None:
+        for env in ({}, {lane.ENV_BUILDKIT_HOST: ""}, {lane.ENV_BUILDKIT_HOST: "tcp://x:1"}):
+            with self.assertRaises(SystemExit):
+                lane.require_buildkit_host(env)
+        self.assertEqual(
+            lane.require_buildkit_host({lane.ENV_BUILDKIT_HOST: " unix:///run/mdt-buildkitd/buildkitd.sock "}),
+            "unix:///run/mdt-buildkitd/buildkitd.sock",
+        )
+
+    def test_the_push_test_never_creates_a_container_driver_builder(self) -> None:
+        import test_oci_layout_push as push_tests
+
+        source = Path(push_tests.__file__).read_text(encoding="utf-8")
+        self.assertNotIn('"--driver", "docker-container"', source)
+        self.assertIn('"--driver", "remote"', source)
 
     def test_the_inner_command_runs_the_push_test_module(self) -> None:
         self.assertIn("unittest -v scripts.test_oci_layout_push", lane.INNER)

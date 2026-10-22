@@ -50,7 +50,7 @@ kind = "command"
 environment = "bare-host"
 argv = ["python3", "scripts/run_oci_push_lane.py", "--target", "trixie-py314-php85"]
 clean_tree = true
-required_env = ["CGROUP_PARENT_DEV_GATES"]
+required_env = ["CGROUP_PARENT_DEV_GATES", "BUILDKIT_HOST"]
 budget = "20m"
 
 [lanes.assay-full]
