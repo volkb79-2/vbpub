@@ -210,8 +210,8 @@ COPY tester-unified/local-wheel/ /tmp/cli-extended-local/
 #           the default and fails by itself when the pinned release is missing.
 ARG CLI_EXTENDED_RESOLVE=pinned
 ARG CLI_EXTENDED_POINTER_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-latest/latest.json
-ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.3.0/cli_extended-0.3.0-py3-none-any.whl
-ARG CLI_EXTENDED_WHEEL_SHA256=a0f80f1b614bcaf81fac235aa3a7f42f20eccac06f82311a6d8d5a725eea5f50
+ARG CLI_EXTENDED_WHEEL_URL=https://github.com/volkb79-2/vbpub/releases/download/cli-extended-v0.5.0/cli_extended-0.5.0-py3-none-any.whl
+ARG CLI_EXTENDED_WHEEL_SHA256=755c6f4919b587bbada9f9988a7bd677428513e93a040b4d3561fd76316ac951
 # CLI_EXTENDED_WHEEL_SHA256 is, in EVERY mode, the digest the installed wheel must
 # have: the repository pin (pinned), the supplied digest (local) or the published
 # digest the caller names (latest, which refuses to resolve without it). The label
