@@ -58,7 +58,7 @@ def _missing() -> list[str]:
     if not missing and not _docker_reachable():
         missing.append("a reachable docker daemon")
     if not os.environ.get("BUILDKIT_HOST", "").startswith("unix:///"):
-        missing.append("BUILDKIT_HOST (the managed mdt-buildkitd endpoint)")
+        missing.append("BUILDKIT_HOST (the configured BuildKit endpoint)")
     return missing
 
 
@@ -98,8 +98,8 @@ class OciLayoutPushTests(unittest.TestCase):
         # _push_oci_layouts) requires this configured explicitly per registry.
         subprocess.run(["regctl", "registry", "set", cls.registry, "--tls", "disabled"], check=True)
 
-        # A `remote` node on the managed mdt-buildkitd starts no container. A `docker-container`
-        # builder would be a rogue BuildKit worker that the host's mdt-buildkit-guard terminates.
+        # A `remote` node on the configured endpoint starts no container. A `docker-container`
+        # builder would be an extra BuildKit worker, which a host that governs builds may terminate.
         cls.builder_name = "mdt-oci-push-test-builder"
         _docker("buildx", "rm", cls.builder_name, check=False)
         _docker("buildx", "create", "--name", cls.builder_name, "--driver", "remote", os.environ["BUILDKIT_HOST"])

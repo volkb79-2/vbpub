@@ -15,9 +15,10 @@ missing, stale or ambiguous layout makes the lane FAIL - it never falls back to 
 
 * the container is placed in the gate tier (`--cgroup-parent $CGROUP_PARENT_DEV_GATES`),
   `--init`, uniquely named and removed BY EXACT NAME;
-* the host docker socket is mounted (the test starts a registry:2 container), and so is the managed
-  mdt-buildkitd socket directory (`BUILDKIT_HOST`, required): the test builds only through that
-  service. A `docker-container` builder of its own is terminated by the host's mdt-buildkit-guard;
+* the host docker socket is mounted (the test starts a registry:2 container), and so is the directory
+  of the configured BuildKit endpoint (`BUILDKIT_HOST`, from the project's cmru.toml [env] and
+  required; nothing is hardcoded here): the test builds only through that endpoint and never starts
+  a BuildKit worker of its own, which a host that governs builds may terminate;
 * the sources travel as a tar stream of the tracked `mdt-cockpit/` files on stdin, so no
   devcontainer-local path is ever bind-mounted;
 * MDT_OCI_PUSH_REQUIRED=1: a missing tool or unreachable registry FAILS the test.
@@ -53,12 +54,11 @@ def require_gates(environ: dict[str, str]) -> str:
 
 
 def require_buildkit_host(environ: dict[str, str]) -> str:
-    """The managed mdt-buildkitd endpoint, from the caller's own environment (the devcontainer
-    template exports it). The host guard terminates every other BuildKit worker, so the lane
-    never starts a builder of its own and never guesses a socket."""
+    """The configured BuildKit endpoint, from the environment the caller supplies (cmru.toml [env]
+    declares it). The lane never starts a builder of its own and never guesses a socket."""
     value = environ.get(ENV_BUILDKIT_HOST, "").strip()
     if not value.startswith("unix:///"):
-        raise SystemExit(f"{ENV_BUILDKIT_HOST} is not a unix:/// endpoint; the lane builds only through the managed mdt-buildkitd.")
+        raise SystemExit(f"{ENV_BUILDKIT_HOST} is not a unix:/// endpoint; the lane builds only through the configured BuildKit endpoint.")
     return value
 
 

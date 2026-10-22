@@ -256,7 +256,7 @@ class Driver(unittest.TestCase):
         self.assertEqual(lane.layout_root(), Path(lane.__file__).resolve().parents[1] / "build" / "oci-layouts")
 
     def test_the_container_is_gate_placed_reaped_named_and_forces_the_requirement(self) -> None:
-        argv = lane.docker_run_argv("img:1", "g.slice", "mdt-cockpit-oci-push-7", "unix:///run/mdt-buildkitd/buildkitd.sock")
+        argv = lane.docker_run_argv("img:1", "g.slice", "mdt-cockpit-oci-push-7", "unix:///run/buildkit-fixture/bk.sock")
         joined = " ".join(argv)
         self.assertIn("--cgroup-parent g.slice", joined)
         self.assertIn("--init", argv)
@@ -269,9 +269,9 @@ class Driver(unittest.TestCase):
         # managed BuildKit socket directory (the only builder the host guard lets run)
         self.assertEqual(
             [a for i, a in enumerate(argv) if argv[i - 1] == "-v"],
-            ["/var/run/docker.sock:/var/run/docker.sock", "/run/mdt-buildkitd:/run/mdt-buildkitd"],
+            ["/var/run/docker.sock:/var/run/docker.sock", "/run/buildkit-fixture:/run/buildkit-fixture"],
         )
-        self.assertIn("BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock", argv)
+        self.assertIn("BUILDKIT_HOST=unix:///run/buildkit-fixture/bk.sock", argv)
         self.assertNotIn("--network", argv)
 
     def test_the_managed_buildkit_endpoint_is_required_never_guessed(self) -> None:
@@ -279,8 +279,8 @@ class Driver(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 lane.require_buildkit_host(env)
         self.assertEqual(
-            lane.require_buildkit_host({lane.ENV_BUILDKIT_HOST: " unix:///run/mdt-buildkitd/buildkitd.sock "}),
-            "unix:///run/mdt-buildkitd/buildkitd.sock",
+            lane.require_buildkit_host({lane.ENV_BUILDKIT_HOST: " unix:///run/buildkit-fixture/bk.sock "}),
+            "unix:///run/buildkit-fixture/bk.sock",
         )
 
     def test_the_push_test_never_creates_a_container_driver_builder(self) -> None:
