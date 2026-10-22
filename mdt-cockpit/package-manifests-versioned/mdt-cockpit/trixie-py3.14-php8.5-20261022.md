@@ -3,7 +3,7 @@
 ## Release
 
 - Build date: `20261022`
-- Built at (UTC): `2026-10-22T11:57:34Z`
+- Built at (UTC): `2026-10-22T13:47:23Z`
 - Debian: `trixie`
 - Python: `3.14`
 - Immutable image tag: `trixie-py3.14-php8.5-20261022`
@@ -109,9 +109,9 @@ mdt-cockpit + PHP 8.5 base image. Adds PHP 8.5 CLI/FPM, composer, Xdebug, and th
 | `claude` | `2.1.308 (Claude Code)` | latest | https://github.com/anthropics/claude-code |  |
 | `claudelink` | `1.6.1` | latest | https://github.com/RBJGlobal/claudelink |  |
 | `codex` | `codex-cli 0.163.0` | latest | https://github.com/openai/codex |  |
-| `copilot` | `Package extraction took 17883ms` | latest | https://github.com/github/copilot-cli |  |
+| `copilot` | `Package extraction took 18250ms` | latest | https://github.com/github/copilot-cli |  |
 | `openclaw` | `OpenClaw 2026.9.8 (fc23bc8)` | latest | https://github.com/openclaw/openclaw |  |
-| `opencode` | `1.19.3` | latest | https://github.com/anomalyco/opencode |  |
+| `opencode` | `1.19.4` | latest | https://github.com/anomalyco/opencode |  |
 | `pi` | `1.4.0` | latest | https://github.com/earendil-works/pi |  |
 | `reasonix` | `reasonix v2.48.0` | latest | https://github.com/reasonix/reasonix |  |
 
