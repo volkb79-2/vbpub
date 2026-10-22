@@ -432,12 +432,14 @@ container-check logic is broken.
 ### Ordering with a dedicated Wings filesystem
 
 All mounts this unit makes are inside `/var/lib/pterodactyl/volumes/...`. If that tree becomes its own
-filesystem (planned: btrfs on its own LV, [BTRFS-COW.md](BTRFS-COW.md)), the unit needs it mounted first
+filesystem (planned: btrfs on its own LV, [BTRFS-ROLLOUT.md](BTRFS-ROLLOUT.md)), the unit needs it mounted first
 and must not run against the ext4 directory underneath. The shipped unit therefore carries
 `RequiresMountsFor=/var/lib/pterodactyl` next to `After=local-fs.target` / `Before=docker.service`:
 
-- **Start:** an fstab mount is ordered before `local-fs.target` (also with `nofail`), so the existing
-  `After=` already sufficed; `RequiresMountsFor=` states the dependency and adds the failure behaviour.
+- **Start:** an fstab mount is ordered before `local-fs.target` only if it has no `nofail` (verified on a
+  scratch host: a `nofail` mount is merely wanted by `local-fs.target`, not ordered before it), so with
+  `nofail` the existing `After=local-fs.target` does **not** guarantee the mount is up.
+  `RequiresMountsFor=` is what orders the unit after the mount and fails it when the mount cannot be made.
 - **Missing mount:** the unit fails (nothing is mounted onto the empty directory underneath); pair it with
   `chattr +i` on the unmounted mountpoint so Wings cannot fork its state onto ext4 either.
 - **Shutdown:** systemd stops this unit (`ExecStop` = teardown of every bind target and per-instance tmpfs)
