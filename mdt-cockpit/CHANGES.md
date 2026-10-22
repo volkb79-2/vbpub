@@ -4,6 +4,22 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [source-6779722438f3] - 2026-10-22
+<!-- cmru: generated -->
+<!-- cmru: source-end=6779722438f3027e190067cb97e55d9b136912fa -->
+
+### Added
+- feat(mdt-cockpit): host-setup wizard: nine numbered steps, related questions grouped, change summary (a8baa4ba8)
+- feat(mdt-cockpit): host-side-folder devcontainer template and opt-in CoW mount lines (666db1b7c)
+
+### Fixed
+- fix(mdt-cockpit): route every host build through mdt-managed; bootstrap roles from mount targets (MDT-HS-08) (7ab0d0187)
+
+### Documentation
+- docs(mdt-cockpit): CoW btrfs exploration, tool ciu integration (677972243)
+- docs(mdt-cockpit): restructure host-setup.env.example (overview, apply-mode tags, logical order; no value changes) (8a3b087a6)
+- docs(mdt-cockpit): optional btrfs copy-on-write area for the cockpit (BTRFS-COW guide, user-area and self-check scripts) (1ea00398d)
+
 ## [source-174351ab708e] - 2026-10-21
 <!-- cmru: generated -->
 <!-- cmru: source-end=174351ab708e540e0d7781d0646b1899c9feaedf -->
